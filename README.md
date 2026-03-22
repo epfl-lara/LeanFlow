@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://morph.new/gauss-batteries-opengauss-dev-wipv2-latest-20260319-024019">
+  <a href="https://morph.new/opengauss">
     <img src="https://img.shields.io/badge/Open%20in-Morph-f23f42?style=for-the-badge" alt="Open in Morph">
   </a>
 </p>
