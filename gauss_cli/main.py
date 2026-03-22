@@ -429,24 +429,27 @@ def cmd_chat(args):
     if not _has_any_provider_configured():
         if getattr(args, "query", None):
             print()
-            print("Gauss query mode needs a configured provider.")
+            print("No model provider configured. Chat requires an API key.")
             print()
             print("  Run:  gauss setup")
+            print("  Or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY")
             print()
             sys.exit(1)
 
         from gauss_cli.setup import is_interactive_stdin, print_noninteractive_setup_guidance
         if not is_interactive_stdin():
-            print_noninteractive_setup_guidance("No in-process model provider is configured yet.")
+            print_noninteractive_setup_guidance(
+                "No model provider configured. Set an API key or run 'gauss setup'."
+            )
             sys.exit(1)
 
         print()
-        print("No in-process model provider is configured yet.")
+        print("No model provider configured — chat commands won't work yet.")
         print(
-            "You can still use `/project`, `/prove`, `/draft`, `/autoprove`, "
-            "`/formalize`, `/autoformalize`, and `/swarm` in the interactive CLI."
+            "Slash commands still work: `/project`, `/prove`, `/draft`, "
+            "`/autoprove`, `/formalize`, `/autoformalize`, `/swarm`."
         )
-        print("Run `gauss setup` later if you also want direct Gauss chat/model commands.")
+        print("Run `gauss setup` to configure an API key for direct chat.")
         print()
 
     # Start update check in background (runs while other init happens)
