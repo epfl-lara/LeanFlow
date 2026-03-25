@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import gauss_cli.autoformalize as autoformalize_mod
 import gauss_cli.doctor as doctor
 import gauss_cli.gateway as gateway_cli
 from gauss_cli import doctor as doctor_mod
@@ -153,11 +154,12 @@ def test_check_managed_workflow_requirements_reports_healthy_claude_setup(tmp_pa
     assert issues == []
 
 
-def test_check_managed_workflow_requirements_reports_missing_codex_prereqs(tmp_path, capsys):
+def test_check_managed_workflow_requirements_reports_missing_codex_prereqs(monkeypatch, tmp_path, capsys):
     missing_project_dir = tmp_path / "outside"
     home_dir = tmp_path / "home"
     missing_project_dir.mkdir()
     home_dir.mkdir()
+    monkeypatch.setattr(autoformalize_mod, "get_env_value", lambda _key: None)
 
     issues: list[str] = []
     doctor._check_managed_workflow_requirements(
@@ -183,3 +185,40 @@ def test_check_managed_workflow_requirements_reports_missing_codex_prereqs(tmp_p
     assert any("/project init" in issue for issue in issues)
     assert any("uv" in issue for issue in issues)
     assert any("lake" in issue for issue in issues)
+
+
+def test_check_managed_workflow_requirements_warns_when_claude_login_mode_only_has_api_key(tmp_path, capsys):
+    bin_dir = tmp_path / "bin"
+    home_dir = tmp_path / "home"
+    project_root = tmp_path / "project"
+    bin_dir.mkdir()
+    (home_dir / ".claude").mkdir(parents=True)
+    for name in ("claude", "uvx", "lake"):
+        _write_executable(bin_dir / name)
+
+    (home_dir / ".claude.json").write_text(
+        json.dumps({"primaryApiKey": "sk-ant-api-key"}),
+        encoding="utf-8",
+    )
+    project_root.mkdir()
+    (project_root / "lakefile.lean").write_text("-- lean project\n", encoding="utf-8")
+    initialize_gauss_project(project_root, name="Login Mode Project")
+
+    issues: list[str] = []
+    doctor._check_managed_workflow_requirements(
+        issues,
+        config={
+            "gauss": {
+                "autoformalize": {"backend": "claude-code", "auth_mode": "login"},
+                "project": {"template_source": "https://example.com/template.git"},
+            }
+        },
+        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
+        active_cwd=project_root,
+        cli_name="gauss",
+    )
+
+    output = capsys.readouterr().out
+    assert "Claude auth" in output
+    assert "login mode ignores local Claude API keys" in output
+    assert issues == []

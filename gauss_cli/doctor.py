@@ -235,7 +235,7 @@ def _check_managed_workflow_requirements(
             if has_local_login:
                 check_ok("Claude auth", "(local Claude login)")
             elif has_local_api_key:
-                check_ok("Claude auth", "(local Claude API key)")
+                check_warn("Claude auth", "(login mode ignores local Claude API keys; first launch will prompt)")
             else:
                 check_warn("Claude auth", "(login mode will prompt on first launch)")
         else:
