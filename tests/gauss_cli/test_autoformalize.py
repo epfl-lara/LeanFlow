@@ -503,6 +503,15 @@ def test_build_claude_runtime_falls_back_to_macos_keychain_when_credentials_file
     assert "ANTHROPIC_API_KEY" not in runtime.child_env
 
 
+def test_has_local_claude_login_detects_macos_keychain_when_credentials_file_absent(monkeypatch, tmp_path: Path):
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    keychain_payload = json.dumps({"claudeAiOauth": {"accessToken": "sk-ant-oat01-test"}})
+    monkeypatch.setattr(autoformalize, "_read_keychain_claude_credentials", lambda: keychain_payload)
+
+    assert autoformalize._has_local_claude_login(real_home) is True
+
+
 def test_build_claude_runtime_accepts_anthropic_api_key(monkeypatch, tmp_path: Path):
     shared_bundle = _shared_bundle(tmp_path)
     workflow = _workflow("/formalize")
