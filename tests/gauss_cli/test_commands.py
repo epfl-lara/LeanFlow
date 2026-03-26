@@ -11,6 +11,10 @@ EXPECTED_COMMANDS = {
     "/project",
     "/prove",
     "/draft",
+    "/review",
+    "/checkpoint",
+    "/refactor",
+    "/golf",
     "/autoprove",
     "/formalize",
     "/autoformalize",
@@ -55,6 +59,10 @@ class TestCommands:
         assert COMMANDS["/project"] == "Create, convert, inspect, or switch the active Gauss project"
         assert COMMANDS["/prove"] == "Spawn a managed backend agent for the guided Lean prove workflow"
         assert COMMANDS["/draft"] == "Spawn a managed backend agent for the Lean draft workflow"
+        assert COMMANDS["/review"] == "Spawn a managed backend agent for the read-only Lean review workflow"
+        assert COMMANDS["/checkpoint"] == "Spawn a managed backend agent for the Lean checkpoint workflow"
+        assert COMMANDS["/refactor"] == "Spawn a managed backend agent for the Lean refactor workflow"
+        assert COMMANDS["/golf"] == "Spawn a managed backend agent for the Lean proof golfing workflow"
         assert COMMANDS["/autoprove"] == "Spawn a managed backend agent for the autonomous Lean autoprove workflow"
         assert COMMANDS["/formalize"] == "Spawn a managed backend agent for the interactive Lean formalize workflow"
         assert COMMANDS["/autoformalize"] == "Spawn a managed backend agent for the autonomous Lean autoformalize workflow"

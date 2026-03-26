@@ -14,6 +14,10 @@ Gauss intentionally ships a small default surface.
 |---|---|
 | `/prove [scope or flags]` | Launch the guided managed Lean prove workflow. |
 | `/draft [topic or flags]` | Launch the managed Lean draft workflow for declaration skeletons. |
+| `/review [scope or flags]` | Launch the read-only managed Lean review workflow. |
+| `/checkpoint [scope or flags]` | Launch the managed Lean checkpoint workflow. |
+| `/refactor [scope or flags]` | Launch the managed Lean refactor workflow. |
+| `/golf [scope or flags]` | Launch the managed Lean proof golfing workflow. |
 | `/autoprove [scope or flags]` | Launch the autonomous managed Lean prove workflow. |
 | `/formalize [topic or flags]` | Launch the interactive managed Lean formalize workflow. |
 | `/autoformalize [topic or flags]` | Launch the autonomous managed Lean autoformalize workflow. |
@@ -62,5 +66,6 @@ Gauss intentionally ships a small default surface.
 ## Compatibility Notes
 
 - `/handoff` is no longer a public generic workflow. In compatibility mode it forwards to `/autoformalize`.
-- Bundled skill slash commands are not part of the default Gauss surface.
+- Gauss only lifts a curated subset of the bundled Lean skill surface into public slash commands.
+- Inside the interactive CLI, common missing-slash forms such as `prove ...`, `review ...`, and `auto-proof ...` are rewritten to the matching managed workflow command.
 - `/reload-mcp` is not part of the default Gauss surface. Managed Lean workflows use their own isolated Lean MCP config.

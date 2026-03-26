@@ -63,6 +63,7 @@ from gauss_cli.autoformalize import (
     AutoformalizeConfigError,
     AutoformalizeError,
     normalize_autoformalize_backend_name,
+    rewrite_forgiving_managed_command,
     resolve_autoformalize_request,
     supported_autoformalize_backends,
 )
@@ -1575,10 +1576,16 @@ class GaussCLI:
         if (
             cmd_lower.startswith("/autoformalize")
             or cmd_lower.startswith("/auto_formalize")
+            or cmd_lower.startswith("/auto-formalize")
             or cmd_lower.startswith("/draft")
             or cmd_lower.startswith("/formalize")
             or cmd_lower.startswith("/prove")
+            or cmd_lower.startswith("/review")
+            or cmd_lower.startswith("/checkpoint")
+            or cmd_lower.startswith("/refactor")
+            or cmd_lower.startswith("/golf")
             or cmd_lower.startswith("/autoprove")
+            or cmd_lower.startswith("/auto-proof")
             or cmd_lower.startswith("/auto_proof")
             or cmd_lower.startswith("/handoff")
         ):
@@ -2365,8 +2372,8 @@ class GaussCLI:
                 )
 
         _cprint(
-            f"\n  {_DIM}Tip: Use /project first, then launch /prove, /draft, /autoprove, "
-            f"/formalize, or /autoformalize.{_RST}"
+            f"\n  {_DIM}Tip: Use /project first, then launch /prove, /review, /checkpoint, "
+            f"/refactor, /golf, /draft, /autoprove, /formalize, or /autoformalize.{_RST}"
         )
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
@@ -3674,7 +3681,8 @@ class GaussCLI:
             if not swarm.tasks:
                 cc.print(
                     "[dim]No managed workflow tasks. "
-                    "Use `/prove`, `/draft`, `/autoprove`, `/formalize`, or `/autoformalize` to spawn one.[/]"
+                    "Use `/prove`, `/review`, `/checkpoint`, `/refactor`, `/golf`, "
+                    "`/draft`, `/autoprove`, `/formalize`, or `/autoformalize` to spawn one.[/]"
                 )
                 return
             cc.print(swarm.render_table())
@@ -4055,6 +4063,14 @@ class GaussCLI:
         elif (
             cmd_lower == "/prove"
             or cmd_lower.startswith("/prove ")
+            or cmd_lower == "/review"
+            or cmd_lower.startswith("/review ")
+            or cmd_lower == "/checkpoint"
+            or cmd_lower.startswith("/checkpoint ")
+            or cmd_lower == "/refactor"
+            or cmd_lower.startswith("/refactor ")
+            or cmd_lower == "/golf"
+            or cmd_lower.startswith("/golf ")
             or cmd_lower == "/formalize"
             or cmd_lower.startswith("/formalize ")
             or cmd_lower == "/draft"
@@ -4064,10 +4080,14 @@ class GaussCLI:
         elif (
             cmd_lower == "/autoformalize"
             or cmd_lower.startswith("/autoformalize ")
+            or cmd_lower == "/auto-formalize"
+            or cmd_lower.startswith("/auto-formalize ")
             or cmd_lower == "/auto_formalize"
             or cmd_lower.startswith("/auto_formalize ")
             or cmd_lower == "/autoprove"
             or cmd_lower.startswith("/autoprove ")
+            or cmd_lower == "/auto-proof"
+            or cmd_lower.startswith("/auto-proof ")
             or cmd_lower == "/auto_proof"
             or cmd_lower.startswith("/auto_proof ")
         ):
@@ -4083,8 +4103,8 @@ class GaussCLI:
         elif cmd_lower == "/plan" or cmd_lower.startswith("/plan "):
             self._print_surface_notice(
                 "[bold yellow]`/plan` is no longer part of the default Gauss workflow.[/] "
-                "[dim]Use `/prove`, `/draft`, `/autoprove`, `/formalize`, or `/autoformalize` for Lean work.[/]",
-                "`/plan` is no longer part of the default Gauss workflow. Use /prove, /draft, /autoprove, /formalize, or /autoformalize for Lean work.",
+                "[dim]Use `/prove`, `/review`, `/checkpoint`, `/refactor`, `/golf`, `/autoprove`, `/formalize`, or `/autoformalize` for Lean work.[/]",
+                "`/plan` is no longer part of the default Gauss workflow. Use /prove, /review, /checkpoint, /refactor, /golf, /autoprove, /formalize, or /autoformalize for Lean work.",
             )
         elif cmd_lower == "/retry":
             retry_msg = self.retry_last()
@@ -4104,8 +4124,8 @@ class GaussCLI:
         elif cmd_lower.startswith("/skills"):
             self._print_surface_notice(
                 "[bold yellow]Bundled skills are not part of the default Gauss distribution.[/] "
-                "[dim]Gauss stages `/prove`, `/draft`, `/autoprove`, `/formalize`, and `/autoformalize` automatically.[/]",
-                "Bundled skills are not part of the default Gauss distribution. Gauss stages /prove, /draft, /autoprove, /formalize, and /autoformalize automatically.",
+                "[dim]Gauss stages `/prove`, `/review`, `/checkpoint`, `/refactor`, `/golf`, `/draft`, `/autoprove`, `/formalize`, and `/autoformalize` automatically.[/]",
+                "Bundled skills are not part of the default Gauss distribution. Gauss stages /prove, /review, /checkpoint, /refactor, /golf, /draft, /autoprove, /formalize, and /autoformalize automatically.",
             )
         elif cmd_lower == "/platforms" or cmd_lower == "/gateway":
             self._show_gateway_status()
@@ -4164,7 +4184,7 @@ class GaussCLI:
         elif cmd_lower.startswith("/background"):
             self.console.print(
                 "[bold yellow]`/background` is not part of the default Gauss workflow surface.[/] "
-                "[dim]Stay in the current session or use `/prove`, `/draft`, `/autoprove`, `/formalize`, or `/autoformalize` for Lean work.[/]"
+                "[dim]Stay in the current session or use `/prove`, `/review`, `/checkpoint`, `/refactor`, `/golf`, `/draft`, `/autoprove`, `/formalize`, or `/autoformalize` for Lean work.[/]"
             )
         elif cmd_lower.startswith("/skin"):
             self._handle_skin_command(cmd_original)
@@ -7142,10 +7162,17 @@ class GaussCLI:
                     if isinstance(user_input, tuple):
                         user_input, submit_images = user_input
                     
-                    # Check for commands
-                    if isinstance(user_input, str) and user_input.startswith("/"):
-                        _cprint(f"\n⚙️  {user_input}")
-                        if not self.process_command(user_input):
+                    # Check for commands, including forgiving managed-workflow aliases
+                    dispatched_command = None
+                    if isinstance(user_input, str):
+                        dispatched_command = (
+                            user_input
+                            if user_input.startswith("/")
+                            else rewrite_forgiving_managed_command(user_input)
+                        )
+                    if dispatched_command is not None:
+                        _cprint(f"\n⚙️  {dispatched_command}")
+                        if not self.process_command(dispatched_command):
                             self._should_exit = True
                             # Schedule app exit
                             if app.is_running:

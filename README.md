@@ -6,7 +6,7 @@
 
 # Open Gauss
 
-Open Gauss is a project-scoped Lean workflow orchestrator from Math, Inc. It gives `gauss` a multi-agent frontend for the `lean4-skills` `prove`, `draft`, `autoprove`, `formalize`, and `autoformalize` workflows, while staging the Lean tooling, MCP/LSP wiring, and backend session state those workflows need.
+Open Gauss is a project-scoped Lean workflow orchestrator from Math, Inc. It gives `gauss` a multi-agent frontend for the `lean4-skills` `prove`, `draft`, `review`, `checkpoint`, `refactor`, `golf`, `autoprove`, `formalize`, and `autoformalize` workflows, while staging the Lean tooling, MCP/LSP wiring, and backend session state those workflows need.
 
 Open Gauss handles project detection, managed backend setup, workflow spawning, swarm tracking, and recovery. The proving and formalization behavior still comes from `cameronfreer/lean4-skills`; Gauss exposes it through a Gauss-native CLI and project model.
 
@@ -14,6 +14,10 @@ Each lifted slash command spawns a managed backend child agent in the active pro
 
 - `/prove ...` -> `/lean4:prove ...`
 - `/draft ...` -> `/lean4:draft ...`
+- `/review ...` -> `/lean4:review ...`
+- `/checkpoint ...` -> `/lean4:checkpoint ...`
+- `/refactor ...` -> `/lean4:refactor ...`
+- `/golf ...` -> `/lean4:golf ...`
 - `/autoprove ...` -> `/lean4:autoprove ...`
 - `/formalize ...` -> `/lean4:formalize ...`
 - `/autoformalize ...` -> `/lean4:autoformalize ...`
@@ -124,7 +128,7 @@ gauss
 
 1. Start the CLI with `gauss`
 2. Create or select the active project with `/project`
-3. Launch `/prove`, `/draft`, `/autoprove`, `/formalize`, or `/autoformalize`
+3. Launch `/prove`, `/draft`, `/review`, `/checkpoint`, `/refactor`, `/golf`, `/autoprove`, `/formalize`, or `/autoformalize`
 4. Gauss spawns a managed backend child session that runs the corresponding `lean4-skills` workflow command in the active project
 5. Use `/swarm` to track or reattach to running workflow agents
 
@@ -148,12 +152,18 @@ Gauss discovers `.gauss/project.yaml` upward from the current working directory,
 
 - `/prove [scope or flags]` — spawn a guided proving agent
 - `/draft [topic or flags]` — draft Lean declaration skeletons
+- `/review [scope or flags]` — spawn a read-only Lean review agent
+- `/checkpoint [scope or flags]` — spawn the Lean checkpoint workflow
+- `/refactor [scope or flags]` — spawn a Lean refactor workflow agent
+- `/golf [scope or flags]` — spawn a Lean proof golfing workflow agent
 - `/autoprove [scope or flags]` — spawn an autonomous proving agent
 - `/formalize [topic or flags]` — spawn an interactive formalization agent
 - `/autoformalize [topic or flags]` — spawn an autonomous formalization agent
 - `/swarm` — list running workflow agents
 - `/swarm attach <task-id>` — reattach to a running agent
 - `/swarm cancel <task-id>` — cancel a running agent
+
+Inside the interactive CLI, Gauss also rewrites common missing-slash forms like `prove ...`, `review ...`, `checkpoint ...`, and `auto-proof ...` into the corresponding managed workflow commands.
 
 ## Managed workflow prerequisites
 

@@ -1185,7 +1185,8 @@ class GatewayRunner:
         command = event.get_command()
         
         # Emit command:* hook for any recognized slash command
-        _known_commands = {"new", "reset", "help", "handoff", "autoformalize", "status", "stop", "model", "reasoning",
+        _known_commands = {"new", "reset", "help", "handoff", "prove", "draft", "review", "checkpoint", "refactor", "golf",
+                          "autoprove", "formalize", "autoformalize", "status", "stop", "model", "reasoning",
                           "personality", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights",
                           "update", "title", "resume", "provider", "rollback",
@@ -1211,20 +1212,20 @@ class GatewayRunner:
                 + cli_only_managed_workflow_message("/autoformalize")
             )
 
-        if command in {"prove", "draft", "autoprove", "formalize", "autoformalize"}:
+        if command in {"prove", "draft", "review", "checkpoint", "refactor", "golf", "autoprove", "formalize", "autoformalize"}:
             from gauss_cli.autoformalize import cli_only_managed_workflow_message
             return cli_only_managed_workflow_message(f"/{command}")
 
         if command == "plan":
             return (
                 "`/plan` is no longer part of the default Gauss workflow. "
-                "Use `/prove`, `/draft`, `/autoprove`, `/formalize`, or `/autoformalize` from the interactive Gauss CLI for Lean work."
+                "Use `/prove`, `/review`, `/checkpoint`, `/refactor`, `/golf`, `/draft`, `/autoprove`, `/formalize`, or `/autoformalize` from the interactive Gauss CLI for Lean work."
             )
 
         if command == "skills":
             return (
                 "Bundled skills are not part of the default Gauss distribution. "
-                "Gauss stages `/prove`, `/draft`, `/autoprove`, `/formalize`, and `/autoformalize` automatically."
+                "Gauss stages `/prove`, `/review`, `/checkpoint`, `/refactor`, `/golf`, `/draft`, `/autoprove`, `/formalize`, and `/autoformalize` automatically."
             )
 
         if command == "reload-mcp":
@@ -1974,6 +1975,10 @@ class GatewayRunner:
             "📖 **Gauss Commands**\n",
             "`/prove [scope]` — Launch guided managed proving from the interactive CLI",
             "`/draft [claim]` — Draft Lean declaration skeletons from the interactive CLI",
+            "`/review [target]` — Launch read-only managed Lean review from the interactive CLI",
+            "`/checkpoint [target]` — Launch the managed Lean checkpoint workflow from the interactive CLI",
+            "`/refactor [target]` — Launch managed Lean refactoring from the interactive CLI",
+            "`/golf [target]` — Launch managed Lean proof golfing from the interactive CLI",
             "`/autoprove [scope]` — Launch autonomous managed proving from the interactive CLI",
             "`/formalize [claim]` — Launch interactive draft-plus-prove from the interactive CLI",
             "`/autoformalize [source/flags]` — Launch autonomous end-to-end formalization from the interactive CLI",

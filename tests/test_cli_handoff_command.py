@@ -214,6 +214,36 @@ def test_ambient_project_root_is_used_for_workflow_launch_cwd():
     )
 
 
+def test_review_command_dispatches_to_interactive_runner():
+    cli_obj = _make_cli()
+    plan = SimpleNamespace(
+        user_instruction="Main.lean",
+        handoff_request=SimpleNamespace(
+            argv=["/usr/bin/claude", "--model", "claude-opus-4-6"],
+            cwd="/tmp/project",
+            env={"HOME": "/tmp/home"},
+        ),
+        managed_context=SimpleNamespace(startup_context_path=None, backend_name="claude-code"),
+        workflow_kind="review",
+        backend_command="/lean4:review Main.lean",
+        project=SimpleNamespace(label="Demo Project", root="/tmp/project"),
+    )
+    swarm = MagicMock()
+    swarm.spawn_interactive.return_value = SimpleNamespace(task_id="af-001")
+
+    with patch.object(cli_mod, "resolve_autoformalize_request", return_value=plan) as mock_resolve, \
+         patch.object(cli_mod, "SwarmManager", return_value=swarm), \
+         patch.object(cli_mod, "ChatConsole", return_value=MagicMock()):
+        assert cli_obj.process_command("/review Main.lean") is True
+
+    mock_resolve.assert_called_once_with(
+        "/review Main.lean",
+        cli_obj.config,
+        active_cwd="/tmp",
+    )
+    swarm.spawn_interactive.assert_called_once()
+
+
 def test_project_init_flow_routes_prove_from_initialized_project_root(tmp_path):
     cli_obj = _make_cli()
     cli_obj._app = object()

@@ -142,6 +142,10 @@ async def test_connect_registers_managed_workflow_bot_commands(monkeypatch):
 
     assert "prove" in names
     assert "draft" in names
+    assert "review" in names
+    assert "checkpoint" in names
+    assert "refactor" in names
+    assert "golf" in names
     assert "autoprove" in names
     assert "formalize" in names
     assert "autoformalize" in names
