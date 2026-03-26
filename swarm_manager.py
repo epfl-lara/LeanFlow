@@ -205,7 +205,7 @@ def _normalize_claude_session_launch(
         i += 1
 
     if _is_effective_root():
-        stripped_argv[1:1] = ["--permission-mode", "dontAsk"]
+        stripped_argv[1:1] = ["--permission-mode", "bypassPermissions"]
     else:
         stripped_argv.insert(1, "--dangerously-skip-permissions")
     normalized_env["GAUSS_YOLO_MODE"] = "1"

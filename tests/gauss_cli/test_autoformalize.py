@@ -91,7 +91,8 @@ def _shared_bundle(
         skill_source=skill_source,
         scripts_root=scripts_root,
         references_root=references_root,
-        uv_runner=("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_GIT_SPEC, "lean-lsp-mcp"),
+        uv_runner=("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_SPEC, "lean-lsp-mcp"),
+        skill_revision="lean4-test-revision",
     )
 
 
@@ -125,7 +126,7 @@ def test_write_mcp_config_uses_managed_mcp_servers_payload(tmp_path: Path):
 
     autoformalize._write_mcp_config(
         mcp_config_path=config_path,
-        uv_runner=("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_GIT_SPEC, "lean-lsp-mcp"),
+        uv_runner=("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_SPEC, "lean-lsp-mcp"),
         lean_root=lean_root,
     )
 
@@ -137,7 +138,7 @@ def test_write_mcp_config_uses_managed_mcp_servers_payload(tmp_path: Path):
                 "command": "/usr/bin/uvx",
                 "args": [
                     "--from",
-                    autoformalize.LEAN_LSP_MCP_GIT_SPEC,
+                    autoformalize.LEAN_LSP_MCP_SPEC,
                     "lean-lsp-mcp",
                 ],
                 "env": {
@@ -219,6 +220,40 @@ def test_install_managed_claude_plugin_registers_marketplace_and_returns_install
     assert calls[0][1]["HOME"] == str(backend_home)
 
 
+def test_resolve_uv_runner_uses_default_user_scoped_package(monkeypatch):
+    monkeypatch.setattr(
+        autoformalize.shutil,
+        "which",
+        lambda name, path=None: f"/usr/bin/{name}" if name == "uvx" else None,
+    )
+
+    runner = autoformalize._resolve_uv_runner({"PATH": "/usr/bin"})
+
+    assert runner == ("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_SPEC, "lean-lsp-mcp")
+
+
+def test_resolve_uv_runner_allows_package_override(monkeypatch):
+    monkeypatch.setattr(
+        autoformalize.shutil,
+        "which",
+        lambda name, path=None: f"/usr/bin/{name}" if name == "uvx" else None,
+    )
+
+    runner = autoformalize._resolve_uv_runner(
+        {
+            "PATH": "/usr/bin",
+            autoformalize.LEAN_LSP_MCP_SPEC_ENV: "git+https://example.com/lean-lsp-mcp.git@abc123",
+        }
+    )
+
+    assert runner == (
+        "/usr/bin/uvx",
+        "--from",
+        "git+https://example.com/lean-lsp-mcp.git@abc123",
+        "lean-lsp-mcp",
+    )
+
+
 def test_write_codex_config_includes_instructions_and_lean_root(tmp_path: Path):
     config_path = tmp_path / "config.toml"
     instructions_path = tmp_path / "instructions.md"
@@ -228,7 +263,7 @@ def test_write_codex_config_includes_instructions_and_lean_root(tmp_path: Path):
     autoformalize._write_codex_config(
         config_path=config_path,
         instructions_path=instructions_path,
-        uv_runner=("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_GIT_SPEC, "lean-lsp-mcp"),
+        uv_runner=("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_SPEC, "lean-lsp-mcp"),
         lean_root=lean_root,
     )
 
@@ -349,7 +384,7 @@ def test_resolve_autoformalize_request_builds_managed_launch_plan(monkeypatch, t
     monkeypatch.setattr(
         autoformalize,
         "_resolve_uv_runner",
-        lambda _env: ("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_GIT_SPEC, "lean-lsp-mcp"),
+        lambda _env: ("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_SPEC, "lean-lsp-mcp"),
     )
     monkeypatch.setattr(autoformalize, "_prepare_shared_bundle", lambda **_kwargs: shared_bundle)
     monkeypatch.setattr(autoformalize, "_resolve_backend_runtime", lambda **_kwargs: runtime)
@@ -385,7 +420,7 @@ def test_resolve_autoformalize_request_requires_active_gauss_project(monkeypatch
     monkeypatch.setattr(
         autoformalize,
         "_resolve_uv_runner",
-        lambda _env: ("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_GIT_SPEC, "lean-lsp-mcp"),
+        lambda _env: ("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_SPEC, "lean-lsp-mcp"),
     )
 
     with pytest.raises(autoformalize.AutoformalizePreflightError, match="Run `/project init`"):
@@ -805,6 +840,6 @@ def test_stage_claude_credentials_can_strip_stale_auth_files(tmp_path: Path):
 
 def test_claude_permission_args_respects_effective_root(monkeypatch):
     monkeypatch.setattr(autoformalize, "_is_effective_root", lambda: True)
-    assert autoformalize._claude_permission_args() == ("--permission-mode", "dontAsk")
+    assert autoformalize._claude_permission_args() == ("--permission-mode", "bypassPermissions")
     monkeypatch.setattr(autoformalize, "_is_effective_root", lambda: False)
     assert autoformalize._claude_permission_args() == ("--dangerously-skip-permissions",)

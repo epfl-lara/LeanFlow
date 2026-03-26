@@ -31,11 +31,9 @@ AUTOFORMALIZE_USAGE = (
 CLAUDE_MODEL = "claude-opus-4-6"
 DEFAULT_MANAGED_CLAUDE_THEME = "dark"
 LEAN4_SKILLS_URL = "https://github.com/cameronfreer/lean4-skills.git"
-LEAN4_SKILLS_REV = "cdf1d675c3588227f1b1e849573c8132bf500846"
-LEAN_LSP_MCP_GIT_SPEC = (
-    "git+https://github.com/oOo0oOo/lean-lsp-mcp.git@"
-    "2c331c78a7bb242aab983f40605c3d2b48eeeb3d"
-)
+LEAN4_SKILLS_REF_ENV = "GAUSS_AUTOFORMALIZE_LEAN4_SKILLS_REF"
+LEAN_LSP_MCP_SPEC = "lean-lsp-mcp"
+LEAN_LSP_MCP_SPEC_ENV = "GAUSS_AUTOFORMALIZE_LEAN_LSP_MCP_SPEC"
 CLAUDE_AUTH_ENV_KEYS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_TOKEN", "ANTHROPIC_API_KEY")
 CODEX_AUTH_ENV_KEYS = ("OPENAI_API_KEY",)
 DEFAULT_AUTOFORMALIZE_BACKEND = "claude-code"
@@ -210,6 +208,7 @@ class SharedLeanBundle:
     scripts_root: Path
     references_root: Path
     uv_runner: tuple[str, ...]
+    skill_revision: str
 
 
 @dataclass(frozen=True)
@@ -426,17 +425,28 @@ def _require_executable(name: str, error_message: str, env: Mapping[str, str]) -
 
 
 def _resolve_uv_runner(env: Mapping[str, str]) -> tuple[str, ...]:
+    spec = _resolve_lean_lsp_mcp_spec(env)
     uvx = shutil.which("uvx", path=env.get("PATH"))
     if uvx:
-        return (uvx, "--from", LEAN_LSP_MCP_GIT_SPEC, "lean-lsp-mcp")
+        return (uvx, "--from", spec, "lean-lsp-mcp")
 
     uv = shutil.which("uv", path=env.get("PATH"))
     if uv:
-        return (uv, "x", "--from", LEAN_LSP_MCP_GIT_SPEC, "lean-lsp-mcp")
+        return (uv, "x", "--from", spec, "lean-lsp-mcp")
 
     raise AutoformalizePreflightError(
         "Neither `uvx` nor `uv` is available. Install uv so Gauss can run the managed Lean MCP server."
     )
+
+
+def _resolve_lean_lsp_mcp_spec(env: Mapping[str, str]) -> str:
+    spec = str(env.get(LEAN_LSP_MCP_SPEC_ENV, "") or "").strip()
+    return spec or LEAN_LSP_MCP_SPEC
+
+
+def _resolve_lean4_skills_ref(env: Mapping[str, str]) -> str | None:
+    value = str(env.get(LEAN4_SKILLS_REF_ENV, "") or "").strip()
+    return value or None
 
 
 def _find_lean_project_root(start: Path) -> Path | None:
@@ -466,8 +476,10 @@ def _claude_permission_args() -> tuple[str, ...]:
     # Managed Claude child sessions should always run without interactive
     # permission prompts so swarm-spawned workflows stay fully attachable.
     # Claude Code blocks --dangerously-skip-permissions under root/sudo.
+    # dontAsk suppresses prompts but does not grant the same MCP/tool access
+    # as a true approvals bypass.
     if _is_effective_root():
-        return ("--permission-mode", "dontAsk")
+        return ("--permission-mode", "bypassPermissions")
     return ("--dangerously-skip-permissions",)
 
 
@@ -670,9 +682,9 @@ def _prepare_shared_bundle(
         path.mkdir(parents=True, exist_ok=True)
 
     lean4_checkout = assets_root / "lean4-skills"
-    _ensure_git_checkout(
+    skill_revision = _ensure_git_checkout(
         repo_url=LEAN4_SKILLS_URL,
-        revision=LEAN4_SKILLS_REV,
+        revision=_resolve_lean4_skills_ref(env),
         destination=lean4_checkout,
         git_executable=git_executable,
     )
@@ -708,6 +720,7 @@ def _prepare_shared_bundle(
         scripts_root=scripts_root,
         references_root=references_root,
         uv_runner=tuple(uv_runner),
+        skill_revision=skill_revision,
     )
 
 
@@ -963,7 +976,11 @@ def _build_codex_runtime(
     for path in (backend_home, codex_home, skills_root.parent):
         path.mkdir(parents=True, exist_ok=True)
 
-    _stage_tree(source=shared_bundle.skill_source, destination=skills_root)
+    _stage_tree(
+        source=shared_bundle.skill_source,
+        destination=skills_root,
+        revision=shared_bundle.skill_revision,
+    )
     _stage_codex_auth(
         codex_home=codex_home,
         source_auth_path=local_auth_path if copy_local_auth else None,
@@ -1100,41 +1117,50 @@ def _managed_root(managed_state_base: Path, backend_name: str) -> Path:
 def _ensure_git_checkout(
     *,
     repo_url: str,
-    revision: str,
+    revision: str | None,
     destination: Path,
     git_executable: str,
-) -> None:
+) -> str:
     if destination.exists() and not destination.is_dir():
         raise AutoformalizeStagingError(f"Managed asset path is not a directory: {destination}")
 
     if (destination / ".git").exists():
-        head = _run(
-            [git_executable, "-C", str(destination), "rev-parse", "HEAD"],
-            error_prefix="Failed to read managed asset revision",
-        ).stdout.strip()
-        if head == revision:
-            return
+        fetch_target = revision or "HEAD"
         _run(
-            [git_executable, "-C", str(destination), "fetch", "--depth", "1", "origin", revision],
+            [git_executable, "-C", str(destination), "fetch", "--depth", "1", "origin", fetch_target],
             error_prefix="Failed to refresh managed asset checkout",
+        )
+        _run(
+            [git_executable, "-C", str(destination), "checkout", "--force", "FETCH_HEAD"],
+            error_prefix="Failed to check out the managed asset revision",
         )
     else:
         if destination.exists():
             shutil.rmtree(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        _run(
-            [git_executable, "clone", "--filter=blob:none", "--no-checkout", repo_url, str(destination)],
-            error_prefix=f"Failed to clone managed asset from {repo_url}",
-        )
-        _run(
-            [git_executable, "-C", str(destination), "fetch", "--depth", "1", "origin", revision],
-            error_prefix="Failed to fetch the pinned managed asset revision",
-        )
+        if revision:
+            _run(
+                [git_executable, "clone", "--filter=blob:none", "--no-checkout", repo_url, str(destination)],
+                error_prefix=f"Failed to clone managed asset from {repo_url}",
+            )
+            _run(
+                [git_executable, "-C", str(destination), "fetch", "--depth", "1", "origin", revision],
+                error_prefix="Failed to fetch the managed asset revision",
+            )
+            _run(
+                [git_executable, "-C", str(destination), "checkout", "--force", "FETCH_HEAD"],
+                error_prefix="Failed to check out the managed asset revision",
+            )
+        else:
+            _run(
+                [git_executable, "clone", "--depth", "1", "--filter=blob:none", repo_url, str(destination)],
+                error_prefix=f"Failed to clone managed asset from {repo_url}",
+            )
 
-    _run(
-        [git_executable, "-C", str(destination), "checkout", "--force", revision],
-        error_prefix="Failed to check out the pinned managed asset revision",
-    )
+    return _run(
+        [git_executable, "-C", str(destination), "rev-parse", "HEAD"],
+        error_prefix="Failed to read managed asset revision",
+    ).stdout.strip()
 
 
 def _run(
@@ -1163,15 +1189,15 @@ def _run(
     return result
 
 
-def _stage_tree(*, source: Path, destination: Path) -> None:
+def _stage_tree(*, source: Path, destination: Path, revision: str) -> None:
     revision_file = destination / ".gauss-managed-revision"
-    if revision_file.exists() and revision_file.read_text(encoding="utf-8").strip() == LEAN4_SKILLS_REV:
+    if revision_file.exists() and revision_file.read_text(encoding="utf-8").strip() == revision:
         return
 
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(source, destination)
-    revision_file.write_text(f"{LEAN4_SKILLS_REV}\n", encoding="utf-8")
+    revision_file.write_text(f"{revision}\n", encoding="utf-8")
 
 
 def _stage_claude_credentials(
