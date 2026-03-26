@@ -38,6 +38,10 @@ WORKSPACE_DIR="${GAUSS_WORKSPACE_DIR:-$HOME/GaussWorkspace}"
 RECREATE_VENV=false
 SKIP_SYSTEM_PACKAGES=false
 CREATE_WORKSPACE=false
+AUTO_CONFIGURED_MAIN_PROVIDER=false
+SETUP_MODE="auto"
+CLI_SELF_CHECK_STATUS=""
+MANAGED_SELF_CHECK_STATUS=""
 
 OS=""
 DISTRO=""
@@ -65,6 +69,8 @@ Options:
   --skip-system-packages  Do not run apt-get even on Debian/Ubuntu
   --with-workspace        Also create a prewarmed Lean+Mathlib workspace
                           (downloads ~2 GB, adds 5-15 min)
+  --skip-setup           Do not prompt for or run `gauss setup` at the end
+  --run-setup            Run `gauss setup` immediately at the end (requires a TTY)
   --recreate-venv         Remove and recreate the repository virtualenv
   -h, --help              Show this help
 
@@ -136,6 +142,22 @@ parse_args() {
                 ;;
             --with-workspace)
                 CREATE_WORKSPACE=true
+                shift
+                ;;
+            --skip-setup)
+                if [ "$SETUP_MODE" = "run" ]; then
+                    log_error "Use only one of --skip-setup or --run-setup."
+                    exit 1
+                fi
+                SETUP_MODE="skip"
+                shift
+                ;;
+            --run-setup)
+                if [ "$SETUP_MODE" = "skip" ]; then
+                    log_error "Use only one of --skip-setup or --run-setup."
+                    exit 1
+                fi
+                SETUP_MODE="run"
                 shift
                 ;;
             --recreate-venv)
@@ -1228,6 +1250,7 @@ PY_HELPERS
 auto_configure_main_provider() {
     log_info "Applying workflow-style main provider auto-selection..."
     if provider_status="$("$HOME/.local/bin/gauss-configure-main-provider" auto 2>&1)"; then
+        AUTO_CONFIGURED_MAIN_PROVIDER=true
         log_success "$provider_status"
     else
         log_warn "$provider_status"
@@ -1235,7 +1258,79 @@ auto_configure_main_provider() {
     fi
 }
 
+run_post_install_self_check() {
+    log_info "Running post-install verification..."
+
+    local version_output
+    if ! version_output="$("$GAUSS_BIN" --version 2>&1)"; then
+        log_error "Gauss CLI verification failed."
+        printf '%s\n' "$version_output" >&2
+        exit 1
+    fi
+    version_output="${version_output%%$'\n'*}"
+    CLI_SELF_CHECK_STATUS="$version_output"
+    log_success "Gauss CLI responds: $CLI_SELF_CHECK_STATUS"
+
+    if [ -f "$WORKSPACE_DIR/.gauss/project.yaml" ] && { [ -f "$WORKSPACE_DIR/lakefile.lean" ] || [ -f "$WORKSPACE_DIR/lakefile.toml" ]; }; then
+        if "$VENV_PYTHON" - "$WORKSPACE_DIR" "$REPO_ROOT" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+workspace_dir = Path(sys.argv[1]).resolve()
+repo_root = Path(sys.argv[2]).resolve()
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from gauss_cli.autoformalize import resolve_autoformalize_request
+from gauss_cli.config import load_config
+
+env = dict(os.environ)
+env["GAUSS_AUTOFORMALIZE_AUTH_MODE"] = "login"
+plan = resolve_autoformalize_request(
+    "/prove Main.lean",
+    load_config(),
+    active_cwd=str(workspace_dir),
+    base_env=env,
+)
+assert plan.backend_command.startswith("/lean4:prove")
+assert plan.managed_context.plugin_root.exists()
+assert plan.managed_context.mcp_config_path.exists()
+PY
+        then
+            MANAGED_SELF_CHECK_STATUS="$WORKSPACE_DIR"
+            log_success "Managed /prove staging verified: $MANAGED_SELF_CHECK_STATUS"
+        else
+            log_error "Managed /prove staging verification failed."
+            exit 1
+        fi
+    else
+        MANAGED_SELF_CHECK_STATUS=""
+        log_info "Skipping managed /prove staging verification because no active Lean workspace was found."
+    fi
+}
+
 print_summary() {
+    local active_shell shell_reload secondary_reload secondary_label
+    active_shell="$(basename "${SHELL:-bash}")"
+    case "$active_shell" in
+        zsh)
+            shell_reload="source ~/.zshrc"
+            secondary_reload="source ~/.bashrc"
+            secondary_label="bash"
+            ;;
+        bash)
+            shell_reload="source ~/.bashrc"
+            secondary_reload="source ~/.zshrc"
+            secondary_label="zsh"
+            ;;
+        *)
+            shell_reload="source ~/.profile"
+            secondary_reload="source ~/.bashrc"
+            secondary_label="bash"
+            ;;
+    esac
+
     echo
     echo -e "${GREEN}${BOLD}"
     echo "┌─────────────────────────────────────────────────────────┐"
@@ -1253,9 +1348,16 @@ print_summary() {
     echo "  Guide:      $GUIDE_DIR/index.html"
     echo
     echo -e "${CYAN}${BOLD}Next Steps:${NC}"
-    echo "  1. Reload your shell:  source ~/.zshrc"
-    echo "  2. Run the setup wizard: gauss setup"
-    echo "  3. Start chatting:      gauss"
+    echo "  1. Start immediately:   $GAUSS_BIN"
+    echo "  2. Verify the CLI:      $GAUSS_BIN --version"
+    echo "  3. Reload for \`gauss\`: $shell_reload   # current shell ($active_shell)"
+    echo "                          $secondary_reload   # if you switch to $secondary_label"
+    echo "  4. Review settings:     gauss setup"
+    echo
+    echo -e "${CYAN}${BOLD}Start Options:${NC}"
+    echo "  gauss                # direct CLI launch in this terminal"
+    echo "  gauss-open-session   # batteries-included launcher (tmux when interactive)"
+    echo "  gauss-open-guide     # open the local guide in a browser, or print its path"
     echo
     echo "  Inside Gauss, use /project create <path> to create a Lean project."
     echo
@@ -1270,6 +1372,14 @@ print_summary() {
     echo
     echo -e "${CYAN}${BOLD}Notes:${NC}"
     echo "  - The installer keeps code in your existing repository checkout."
+    echo "  - The installer updates future shells, but it cannot change PATH in the shell that launched ./scripts/install.sh."
+    echo "  - If \`gauss\` is not found in this terminal yet, use $GAUSS_BIN once or source one of the shell files above."
+    if [ -n "$CLI_SELF_CHECK_STATUS" ]; then
+        echo "  - Verified CLI startup: $CLI_SELF_CHECK_STATUS."
+    fi
+    if [ -n "$MANAGED_SELF_CHECK_STATUS" ]; then
+        echo "  - Verified managed /prove staging in: $MANAGED_SELF_CHECK_STATUS."
+    fi
     echo "  - The local guide is written to $GUIDE_DIR/index.html."
     echo "  - No Morph iframe is exposed automatically; use gauss-open-guide if you want the local guide in a browser."
     echo "  - No tmux session is opened during install; use gauss-open-session when you want the workflow launcher."
@@ -1299,11 +1409,33 @@ main() {
     ensure_shell_runtime_block
     write_helper_assets
     auto_configure_main_provider
+    run_post_install_self_check
     print_summary
     run_setup_wizard
 }
 
 run_setup_wizard() {
+    if [ "$SETUP_MODE" = "skip" ]; then
+        log_info "Skipping setup wizard (--skip-setup). Run \`gauss setup\` any time to review or change settings."
+        return
+    fi
+    if [ ! -t 0 ] || [ ! -t 1 ]; then
+        if [ "$SETUP_MODE" = "run" ]; then
+            log_error "--run-setup requires an interactive terminal because \`gauss setup\` is interactive."
+            exit 1
+        fi
+        return
+    fi
+    if [ "$SETUP_MODE" = "run" ]; then
+        log_info "Running setup wizard (--run-setup)..."
+        echo
+        "$VENV_PYTHON" -m gauss_cli.main setup
+        return
+    fi
+    if [ "$AUTO_CONFIGURED_MAIN_PROVIDER" = true ]; then
+        log_info "Skipping setup wizard prompt because the main provider was auto-configured. Run \`gauss setup\` any time to review or change it."
+        return
+    fi
     echo
     read -p "Would you like to run the setup wizard now? (configure API keys + model) [Y/n] " -n 1 -r
     echo
