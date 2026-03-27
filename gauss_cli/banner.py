@@ -6,6 +6,7 @@ Pure display functions with no Gauss CLI state dependency.
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -13,12 +14,14 @@ import time
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
+from rich import box as rich_box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+from gauss_cli.colors import render_terminal_text, supports_ansi, supports_unicode
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +38,16 @@ _RST = "\033[0m"
 
 def cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's renderer."""
-    _pt_print(_PT_ANSI(text))
+    ansi_enabled = supports_ansi()
+    rendered = render_terminal_text(
+        text,
+        allow_ansi=ansi_enabled,
+        allow_unicode=supports_unicode(),
+    )
+    if ansi_enabled:
+        _pt_print(_PT_ANSI(rendered))
+    else:
+        _pt_print(rendered)
 
 
 # =========================================================================
@@ -73,6 +85,12 @@ GAUSS_AGENT_LOGO = """[bold #FFD700] ██████╗  █████╗ �
 [#CD7F32]╚██████╔╝██║  ██║╚██████╔╝███████║███████║[/]
 [#CD7F32] ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚══════╝[/]"""
 
+GAUSS_AGENT_LOGO_ASCII = """[bold #FFD700]  ____    _    _   _ ____ ____[/]
+[bold #FFD700] / ___|  / \\  | | | / ___/ ___|[/]
+[#FFBF00]| |  _  / _ \\ | | | \\___ \\___ \\[/]
+[#FFBF00]| |_| |/ ___ \\| |_| |___) |__) |[/]
+[#CD7F32] \\____/_/   \\_\\\\___/|____/____/[/]"""
+
 GAUSS_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#CD7F32]⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀[/]
 [#FFBF00]⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀[/]
@@ -89,7 +107,10 @@ GAUSS_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
 
+GAUSS_CADUCEUS_ASCII = """[dim #B8860B]Lean workspace and managed proof workflows[/]"""
+
 COMPACT_BANNER = """[bold #FFD700]GAUSS[/] [dim #B8860B]· Lean Autoformalization[/]"""
+COMPACT_BANNER_ASCII = """[bold #FFD700]GAUSS[/] [dim #B8860B]- Lean Autoformalization[/]"""
 
 FULL_BANNER_MIN_WIDTH = 124
 FULL_STACK_BANNER_MIN_WIDTH = 88
@@ -97,20 +118,63 @@ MINI_BANNER_MIN_WIDTH = 34
 SIMPLIFIED_BANNER_WIDTH = 72
 
 
-def _select_banner_art(term_width: int, skin: Optional[Any]) -> Tuple[str, str, str]:
+_MARKUP_TAG_RE = re.compile(r"\[[^\]]+\]")
+
+
+def _markup_is_ascii(markup: str) -> bool:
+    plain = _MARKUP_TAG_RE.sub("", markup or "")
+    try:
+        plain.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _select_banner_art(
+    term_width: int,
+    skin: Optional[Any],
+    unicode_enabled: Optional[bool] = None,
+) -> Tuple[str, str, str]:
     """Return ``(layout_mode, logo_markup, hero_markup)`` for the current width."""
-    full_logo = skin.banner_logo if skin and getattr(skin, "banner_logo", "") else GAUSS_AGENT_LOGO
-    compact_logo = (
-        skin.banner_logo_compact
-        if skin and getattr(skin, "banner_logo_compact", "")
-        else COMPACT_BANNER
-    )
-    full_hero = skin.banner_hero if skin and getattr(skin, "banner_hero", "") else GAUSS_CADUCEUS
-    compact_hero = (
-        skin.banner_hero_compact
-        if skin and getattr(skin, "banner_hero_compact", "")
-        else ""
-    )
+    unicode_enabled = supports_unicode() if unicode_enabled is None else unicode_enabled
+    if unicode_enabled:
+        full_logo = skin.banner_logo if skin and getattr(skin, "banner_logo", "") else GAUSS_AGENT_LOGO
+        compact_logo = (
+            skin.banner_logo_compact
+            if skin and getattr(skin, "banner_logo_compact", "")
+            else COMPACT_BANNER
+        )
+        full_hero = skin.banner_hero if skin and getattr(skin, "banner_hero", "") else GAUSS_CADUCEUS
+        compact_hero = (
+            skin.banner_hero_compact
+            if skin and getattr(skin, "banner_hero_compact", "")
+            else ""
+        )
+    else:
+        full_logo = (
+            skin.banner_logo
+            if skin and getattr(skin, "banner_logo", "") and _markup_is_ascii(skin.banner_logo)
+            else GAUSS_AGENT_LOGO_ASCII
+        )
+        compact_logo = (
+            skin.banner_logo_compact
+            if skin
+            and getattr(skin, "banner_logo_compact", "")
+            and _markup_is_ascii(skin.banner_logo_compact)
+            else COMPACT_BANNER_ASCII
+        )
+        full_hero = (
+            skin.banner_hero
+            if skin and getattr(skin, "banner_hero", "") and _markup_is_ascii(skin.banner_hero)
+            else GAUSS_CADUCEUS_ASCII
+        )
+        compact_hero = (
+            skin.banner_hero_compact
+            if skin
+            and getattr(skin, "banner_hero_compact", "")
+            and _markup_is_ascii(skin.banner_hero_compact)
+            else ""
+        )
 
     if term_width >= FULL_BANNER_MIN_WIDTH:
         return "split", full_logo, full_hero
@@ -318,6 +382,10 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     """
     term_width = shutil.get_terminal_size().columns
     simplified = term_width < SIMPLIFIED_BANNER_WIDTH
+    unicode_enabled = supports_unicode()
+    separator = "·" if unicode_enabled else "|"
+    long_dash = "—" if unicode_enabled else "-"
+    warn_mark = "⚠" if unicode_enabled else "!"
 
     # Resolve skin colors once for the entire banner
     accent = _skin_color("banner_accent", "#FFBF00")
@@ -332,7 +400,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     except Exception:
         _bskin = None
 
-    layout_mode, _logo, _hero = _select_banner_art(term_width, _bskin)
+    layout_mode, _logo, _hero = _select_banner_art(term_width, _bskin, unicode_enabled=unicode_enabled)
 
     layout_table = Table.grid(padding=(0, 1 if layout_mode == "stack" else 2))
     if layout_mode == "split":
@@ -350,12 +418,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         model_short = model_short[: model_max - 3] + "..."
     ctx_str = ""
     if context_length and not simplified:
-        ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]"
+        ctx_str = f" [dim {dim}]{separator}[/] [dim {dim}]{_format_context_length(context_length)} context[/]"
     if simplified:
-        left_lines.append(f"[{accent}]{model_short}[/] [dim {dim}]·[/] [dim {dim}]Math Inc.[/]")
+        left_lines.append(f"[{accent}]{model_short}[/] [dim {dim}]{separator}[/] [dim {dim}]Math Inc.[/]")
         left_lines.append(f"[dim {dim}]{_shorten_middle(cwd, max(18, term_width - 10))}[/]")
     else:
-        left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Math Inc.[/]")
+        left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]{separator}[/] [dim {dim}]Math Inc.[/]")
         left_lines.append(f"[dim {dim}]{cwd}[/]")
     if project_label:
         left_lines.append(f"[dim {dim}]Project: {project_label}[/]")
@@ -376,13 +444,13 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         right_lines.append(f"[{text}]`/help`[/] [dim {dim}]commands and diagnostics[/]")
     else:
         right_lines.append(f"[bold {accent}]Primary Workflow[/]")
-        right_lines.append(f"[{text}]`/project`[/] [dim {dim}]— create, convert, inspect, or switch the active project[/]")
-        right_lines.append(f"[{text}]`/prove`[/] [dim {dim}]— spawn a guided managed proving agent[/]")
-        right_lines.append(f"[{text}]`/draft`[/] [dim {dim}]— draft Lean declaration skeletons[/]")
-        right_lines.append(f"[{text}]`/autoprove`[/] [dim {dim}]— spawn an autonomous managed proving agent[/]")
-        right_lines.append(f"[{text}]`/formalize`[/] [dim {dim}]— spawn an interactive managed formalization agent[/]")
-        right_lines.append(f"[{text}]`/autoformalize`[/] [dim {dim}]— spawn an autonomous managed formalization agent[/]")
-        right_lines.append(f"[{text}]`/help`[/] [dim {dim}]— session and diagnostics commands[/]")
+        right_lines.append(f"[{text}]`/project`[/] [dim {dim}]{long_dash} create, convert, inspect, or switch the active project[/]")
+        right_lines.append(f"[{text}]`/prove`[/] [dim {dim}]{long_dash} spawn a guided managed proving agent[/]")
+        right_lines.append(f"[{text}]`/draft`[/] [dim {dim}]{long_dash} draft Lean declaration skeletons[/]")
+        right_lines.append(f"[{text}]`/autoprove`[/] [dim {dim}]{long_dash} spawn an autonomous managed proving agent[/]")
+        right_lines.append(f"[{text}]`/formalize`[/] [dim {dim}]{long_dash} spawn an interactive managed formalization agent[/]")
+        right_lines.append(f"[{text}]`/autoformalize`[/] [dim {dim}]{long_dash} spawn an autonomous managed formalization agent[/]")
+        right_lines.append(f"[{text}]`/help`[/] [dim {dim}]{long_dash} session and diagnostics commands[/]")
         right_lines.append(f"[dim {dim}]Bundled skills and user-managed MCP are off by default.[/]")
 
     try:
@@ -405,7 +473,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         "/help",
     ]
     summary_parts.append("/help for commands")
-    right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
+    right_lines.append(f"[dim {dim}]{f' {separator} '.join(summary_parts)}[/]")
 
     # Update check — use prefetched result if available
     try:
@@ -413,8 +481,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         if behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"
             right_lines.append(
-                f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
-                f"[dim yellow] — run [bold]gauss update[/bold] to update[/]"
+                f"[bold yellow]{warn_mark} {behind} {commits_word} behind[/]"
+                f"[dim yellow] {long_dash} run [bold]gauss update[/bold] to update[/]"
             )
     except Exception:
         pass  # Never break the banner over an update check
@@ -435,6 +503,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         title=f"[bold {title_color}]{agent_name} v{VERSION} ({RELEASE_DATE})[/]",
         border_style=border_color,
         padding=(0, 2),
+        box=rich_box.ROUNDED if unicode_enabled else rich_box.ASCII,
     )
 
     console.print()
