@@ -1998,6 +1998,19 @@ def _refresh_workflow_runtime(repo_root: Path) -> None:
         print("→ Updating Node.js dependencies...")
         subprocess.run(["npm", "ci", "--silent"], cwd=repo_root, check=False)
 
+    try:
+        from gauss_cli.autoformalize import prepare_managed_runtime_assets
+
+        print("→ Refreshing managed Lean workflow assets...")
+        prepared = prepare_managed_runtime_assets(env=install_env)
+        revision = prepared.get("skill_revision", "").strip()
+        if revision:
+            print(f"✓ Managed Lean runtime ready: {revision[:12]}")
+        else:
+            print("✓ Managed Lean runtime ready")
+    except Exception as exc:
+        print(f"⚠ Managed Lean runtime refresh failed: {exc}")
+
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     status = subprocess.run(

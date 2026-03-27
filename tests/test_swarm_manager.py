@@ -167,7 +167,7 @@ class TestClaudeLaunchNormalization:
         ]
         assert env["GAUSS_YOLO_MODE"] == "1"
 
-    def test_claude_launch_uses_dont_ask_mode_for_root(self):
+    def test_claude_launch_uses_bypass_permissions_mode_for_root(self):
         with patch("swarm_manager._is_effective_root", return_value=True):
             argv, env = _normalize_claude_session_launch(
                 ["/usr/bin/claude", "--model", "sonnet", "--permission-mode", "acceptEdits", "prove this"],
@@ -177,7 +177,7 @@ class TestClaudeLaunchNormalization:
         assert argv == [
             "/usr/bin/claude",
             "--permission-mode",
-            "dontAsk",
+            "bypassPermissions",
             "--model",
             "sonnet",
             "prove this",

@@ -56,6 +56,7 @@ grep -F "Start Options:" "$INSTALL_LOG" >/dev/null || die "expected installer su
 grep -F "gauss-open-session" "$INSTALL_LOG" >/dev/null || die "expected installer summary to mention gauss-open-session"
 grep -F "gauss-open-guide" "$INSTALL_LOG" >/dev/null || die "expected installer summary to mention gauss-open-guide"
 grep -F "cannot change PATH in the shell that launched the installer." "$INSTALL_LOG" >/dev/null || die "expected installer summary to explain current-shell PATH behavior"
+grep -F "Managed Lean workflow assets ready:" "$INSTALL_LOG" >/dev/null || die "expected installer to prewarm managed Lean workflow assets"
 grep -F "Managed /prove staging verified:" "$INSTALL_LOG" >/dev/null || die "expected installer to verify managed /prove staging in the Lean workspace"
 if grep -F "Skipping managed /prove staging verification" "$INSTALL_LOG" >/dev/null; then
     die "expected installer managed /prove verification to run in the Lean workspace"
@@ -80,27 +81,34 @@ assert_exists "$GAUSS_HOME/.env"
 assert_exists "$GAUSS_HOME/config.yaml"
 assert_exists "$GAUSS_HOME/install-root"
 assert_exists "$GAUSS_HOME/guide/index.html"
+assert_exists "$GAUSS_HOME/autoformalize/assets/lean4-skills/.gauss-managed-revision"
 assert_exists "$GAUSS_HOME/skins/mathinc.yaml"
 assert_exists "$WORKSPACE_DIR/PAPER.md"
 assert_exists "$WORKSPACE_DIR/.gauss/project.yaml"
+assert_exists "$WORKSPACE_DIR/lean-toolchain"
 assert_exists "$HOME/.local/bin/gauss-configure-main-provider"
 assert_exists "$HOME/.local/bin/gauss-open-session"
 assert_exists "$HOME/.local/bin/gauss-open-guide"
 assert_exists "$HOME/.local/bin/gauss-launch-session"
+assert_exists "$HOME/.claude/settings.json"
+assert_exists "$HOME/.claude/plugins/known_marketplaces.json"
+assert_exists "$HOME/.claude/plugins/installed_plugins.json"
 
 echo "==> Verifying recorded install root"
 INSTALL_ROOT_VALUE="$(cat "$GAUSS_HOME/install-root")"
 [[ "$INSTALL_ROOT_VALUE" == "$REPO_ROOT" ]] || die "install-root mismatch: $INSTALL_ROOT_VALUE"
 
 echo "==> Verifying config defaults and staged provider state"
-python3 - "$GAUSS_HOME" "$WORKSPACE_DIR" "$INITIAL_OPENAI_API_KEY" <<'PY'
+python3 - "$GAUSS_HOME" "$WORKSPACE_DIR" "$INITIAL_OPENAI_API_KEY" "$HOME" <<'PY'
 from pathlib import Path
+import json
 import sys
 import yaml
 
 gauss_home = Path(sys.argv[1])
 workspace_dir = Path(sys.argv[2])
 expected_key = sys.argv[3]
+home_dir = Path(sys.argv[4])
 
 config = yaml.safe_load((gauss_home / "config.yaml").read_text(encoding="utf-8"))
 assert config["display"]["skin"] == "mathinc"
@@ -112,10 +120,28 @@ assert config["agent"]["max_turns"] == 90
 assert config["model"]["provider"] == "custom"
 assert config["model"]["default"] == "gpt-5.4"
 assert config["model"]["base_url"] == "https://api.openai.com/v1"
+assert (workspace_dir / "lean-toolchain").read_text(encoding="utf-8").strip() == "leanprover/lean4:v4.28.0"
 
 env_text = (gauss_home / ".env").read_text(encoding="utf-8")
 assert f'OPENAI_API_KEY="{expected_key}"' in env_text
 assert 'OPENAI_BASE_URL="https://api.openai.com/v1"' in env_text
+
+claude_settings = json.loads((home_dir / ".claude" / "settings.json").read_text(encoding="utf-8"))
+marketplace = claude_settings["extraKnownMarketplaces"]["lean4-skills"]
+assert marketplace["source"] == {"source": "github", "repo": "cameronfreer/lean4-skills"}
+assert marketplace["autoUpdate"] is True
+assert claude_settings["enabledPlugins"]["lean4@lean4-skills"] is True
+
+known_marketplaces = json.loads((home_dir / ".claude" / "plugins" / "known_marketplaces.json").read_text(encoding="utf-8"))
+known_marketplace = known_marketplaces["lean4-skills"]
+assert known_marketplace["source"] == {"source": "github", "repo": "cameronfreer/lean4-skills"}
+assert known_marketplace["autoUpdate"] is True
+assert Path(known_marketplace["installLocation"]).exists()
+
+installed_plugins = json.loads((home_dir / ".claude" / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+plugin_entry = installed_plugins["plugins"]["lean4@lean4-skills"][0]
+assert plugin_entry["scope"] == "user"
+assert Path(plugin_entry["installPath"]).exists()
 PY
 
 echo "==> Verifying gauss works from the repository-local venv"
