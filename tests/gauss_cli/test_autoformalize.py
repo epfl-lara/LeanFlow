@@ -961,6 +961,62 @@ def test_ensure_claude_user_plugin_state_enables_plugin_and_autoupdate(monkeypat
     ]
 
 
+def test_ensure_claude_user_plugin_state_reuses_existing_install_without_cli_calls(monkeypatch, tmp_path: Path):
+    real_home = tmp_path / "home"
+    plugin_root = real_home / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.5"
+    plugin_root.mkdir(parents=True)
+    installed_plugins_path = real_home / ".claude" / "plugins" / "installed_plugins.json"
+    installed_plugins_path.parent.mkdir(parents=True, exist_ok=True)
+    installed_plugins_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    "lean4@lean4-skills": [
+                        {
+                            "scope": "user",
+                            "installPath": str(plugin_root),
+                            "version": "4.4.5",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        autoformalize,
+        "_run",
+        lambda *args, **kwargs: pytest.fail("expected existing plugin install to avoid Claude CLI"),
+    )
+
+    install_path = autoformalize._ensure_claude_user_plugin_state(
+        claude_executable="/usr/bin/claude",
+        real_home=real_home,
+        base_environment={"PATH": "/usr/bin"},
+    )
+
+    assert install_path == plugin_root.resolve()
+
+
+def test_add_claude_marketplace_ignores_already_installed_error(monkeypatch):
+    def fake_run(argv, *, error_prefix, env=None, cwd=None):
+        del argv, env, cwd
+        raise autoformalize.AutoformalizeStagingError(
+            f"{error_prefix}: Marketplace 'lean4-skills' is already installed."
+        )
+
+    monkeypatch.setattr(autoformalize, "_run", fake_run)
+
+    autoformalize._add_claude_marketplace(
+        claude_executable="/usr/bin/claude",
+        cli_env={"HOME": "/tmp/home"},
+        marketplace_target="cameronfreer/lean4-skills",
+        error_prefix="Failed to register the Lean4 Claude marketplace in the user profile",
+    )
+
+
 def test_install_claude_plugin_target_falls_back_to_plugin_id(monkeypatch):
     calls: list[list[str]] = []
 
@@ -985,6 +1041,29 @@ def test_install_claude_plugin_target_falls_back_to_plugin_id(monkeypatch):
         ["/usr/bin/claude", "plugin", "install", "lean4"],
         ["/usr/bin/claude", "plugin", "install", "lean4@lean4-skills"],
     ]
+
+
+def test_install_claude_plugin_target_ignores_already_installed_error(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *, error_prefix, env=None, cwd=None):
+        del error_prefix, env, cwd
+        calls.append(list(argv))
+        raise autoformalize.AutoformalizeStagingError(
+            "Failed to install the Lean4 Claude plugin in the user profile: Plugin 'lean4' is already installed."
+        )
+
+    monkeypatch.setattr(autoformalize, "_run", fake_run)
+
+    autoformalize._install_claude_plugin_target(
+        claude_executable="/usr/bin/claude",
+        cli_env={"HOME": "/tmp/home"},
+        plugin_name="lean4",
+        plugin_id="lean4@lean4-skills",
+        error_prefix="Failed to install the Lean4 Claude plugin in the user profile",
+    )
+
+    assert calls == [["/usr/bin/claude", "plugin", "install", "lean4"]]
 
 
 def test_ensure_claude_user_plugin_state_subprocess_uses_documented_cli_commands(tmp_path: Path):

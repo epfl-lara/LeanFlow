@@ -781,6 +781,11 @@ def _find_claude_installed_plugin_root(real_home: Path) -> Path | None:
     return install_path.resolve()
 
 
+def _is_claude_already_installed_error(exc: AutoformalizeStagingError) -> bool:
+    message = str(exc).lower()
+    return "already installed" in message
+
+
 def _add_claude_marketplace(
     *,
     claude_executable: str,
@@ -788,17 +793,22 @@ def _add_claude_marketplace(
     marketplace_target: str,
     error_prefix: str,
 ) -> None:
-    _run(
-        [
-            claude_executable,
-            "plugin",
-            "marketplace",
-            "add",
-            marketplace_target,
-        ],
-        env=cli_env,
-        error_prefix=error_prefix,
-    )
+    try:
+        _run(
+            [
+                claude_executable,
+                "plugin",
+                "marketplace",
+                "add",
+                marketplace_target,
+            ],
+            env=cli_env,
+            error_prefix=error_prefix,
+        )
+    except AutoformalizeStagingError as exc:
+        if _is_claude_already_installed_error(exc):
+            return
+        raise
 
 
 def _install_claude_plugin_target(
@@ -824,6 +834,8 @@ def _install_claude_plugin_target(
             )
             return
         except AutoformalizeStagingError as exc:
+            if _is_claude_already_installed_error(exc):
+                return
             failures.append(str(exc))
     raise AutoformalizeStagingError(failures[-1])
 
@@ -836,6 +848,10 @@ def _ensure_claude_user_plugin_state(
 ) -> Path:
     real_home.mkdir(parents=True, exist_ok=True)
     _merge_claude_marketplace_settings(real_home)
+    existing_install_path = _find_claude_installed_plugin_root(real_home)
+    if existing_install_path is not None:
+        _mark_claude_known_marketplace_autoupdate(real_home)
+        return existing_install_path
 
     cli_env = dict(base_environment)
     cli_env["HOME"] = str(real_home)
