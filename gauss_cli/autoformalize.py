@@ -34,6 +34,11 @@ LEAN4_SKILLS_URL = "https://github.com/cameronfreer/lean4-skills.git"
 LEAN4_SKILLS_REF_ENV = "GAUSS_AUTOFORMALIZE_LEAN4_SKILLS_REF"
 LEAN_LSP_MCP_SPEC = "lean-lsp-mcp"
 LEAN_LSP_MCP_SPEC_ENV = "GAUSS_AUTOFORMALIZE_LEAN_LSP_MCP_SPEC"
+LEAN4_CLAUDE_MARKETPLACE_REPO = "cameronfreer/lean4-skills"
+LEAN4_CLAUDE_MARKETPLACE_NAME = "lean4-skills"
+LEAN4_CLAUDE_PLUGIN_NAME = "lean4"
+LEAN4_CLAUDE_PLUGIN_ID = f"{LEAN4_CLAUDE_PLUGIN_NAME}@{LEAN4_CLAUDE_MARKETPLACE_NAME}"
+LEAN4_CHECKOUT_REVISION_FILE = ".gauss-managed-revision"
 CLAUDE_AUTH_ENV_KEYS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_TOKEN", "ANTHROPIC_API_KEY")
 CODEX_AUTH_ENV_KEYS = ("OPENAI_API_KEY",)
 DEFAULT_AUTOFORMALIZE_BACKEND = "claude-code"
@@ -594,6 +599,312 @@ def _load_json_dict(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _write_json_dict(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(payload), indent=2) + "\n", encoding="utf-8")
+
+
+def _claude_settings_path(home: Path) -> Path:
+    return home / ".claude" / "settings.json"
+
+
+def _claude_plugins_root(home: Path) -> Path:
+    return home / ".claude" / "plugins"
+
+
+def _claude_known_marketplaces_path(home: Path) -> Path:
+    return _claude_plugins_root(home) / "known_marketplaces.json"
+
+
+def _claude_installed_plugins_path(home: Path) -> Path:
+    return _claude_plugins_root(home) / "installed_plugins.json"
+
+
+def _lean4_checkout_root(assets_root: Path) -> Path:
+    return assets_root / "lean4-skills"
+
+
+def _lean4_checkout_paths(checkout_root: Path) -> tuple[Path, Path, Path, Path]:
+    plugin_source = checkout_root / "plugins" / LEAN4_CLAUDE_PLUGIN_NAME
+    skill_source = plugin_source / "skills" / "lean4"
+    scripts_root = plugin_source / "lib" / "scripts"
+    references_root = skill_source / "references"
+    return plugin_source, skill_source, scripts_root, references_root
+
+
+def _lean4_checkout_missing_paths(checkout_root: Path) -> list[Path]:
+    plugin_source, skill_source, scripts_root, references_root = _lean4_checkout_paths(checkout_root)
+    return [
+        path
+        for path in (plugin_source, skill_source, scripts_root, references_root)
+        if not path.is_dir()
+    ]
+
+
+def _lean4_checkout_is_complete(checkout_root: Path) -> bool:
+    return not _lean4_checkout_missing_paths(checkout_root)
+
+
+def _lean4_checkout_revision_path(checkout_root: Path) -> Path:
+    return checkout_root / LEAN4_CHECKOUT_REVISION_FILE
+
+
+def _write_lean4_checkout_revision(checkout_root: Path, revision: str) -> None:
+    _lean4_checkout_revision_path(checkout_root).write_text(f"{revision.strip()}\n", encoding="utf-8")
+
+
+def _read_lean4_checkout_revision(checkout_root: Path) -> str | None:
+    path = _lean4_checkout_revision_path(checkout_root)
+    if not path.is_file():
+        return None
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def _current_git_revision(destination: Path, git_executable: str) -> str:
+    return _run(
+        [git_executable, "-C", str(destination), "rev-parse", "HEAD"],
+        error_prefix="Failed to read managed asset revision",
+    ).stdout.strip()
+
+
+def _ensure_lean4_checkout_assets(
+    *,
+    assets_root: Path,
+    env: Mapping[str, str],
+    git_executable: str,
+    refresh: bool,
+) -> tuple[Path, str]:
+    checkout_root = _lean4_checkout_root(assets_root)
+    requested_ref = _resolve_lean4_skills_ref(env)
+    needs_refresh = refresh or requested_ref is not None or not _lean4_checkout_is_complete(checkout_root)
+    if needs_refresh:
+        revision = _ensure_git_checkout(
+            repo_url=LEAN4_SKILLS_URL,
+            revision=requested_ref,
+            destination=checkout_root,
+            git_executable=git_executable,
+        )
+        _write_lean4_checkout_revision(checkout_root, revision)
+    else:
+        revision = _read_lean4_checkout_revision(checkout_root)
+        if revision is None:
+            revision = _current_git_revision(checkout_root, git_executable)
+            _write_lean4_checkout_revision(checkout_root, revision)
+
+    missing_paths = _lean4_checkout_missing_paths(checkout_root)
+    if missing_paths:
+        rendered = ", ".join(str(path) for path in missing_paths)
+        raise AutoformalizeStagingError(
+            f"Managed Lean bundle is incomplete after checkout: {rendered}"
+        )
+    return checkout_root, revision
+
+
+def _warm_lean_lsp_mcp_cache(uv_runner: Sequence[str]) -> None:
+    _run(
+        [*uv_runner, "--help"],
+        error_prefix="Failed to prewarm the managed Lean MCP runtime",
+    )
+
+
+def _claude_marketplace_source() -> dict[str, str]:
+    return {
+        "source": "github",
+        "repo": LEAN4_CLAUDE_MARKETPLACE_REPO,
+    }
+
+
+def _merge_claude_marketplace_settings(real_home: Path) -> None:
+    settings_path = _claude_settings_path(real_home)
+    settings_payload = _load_json_dict(settings_path)
+
+    marketplaces = settings_payload.get("extraKnownMarketplaces")
+    if not isinstance(marketplaces, dict):
+        marketplaces = {}
+    marketplace_entry = marketplaces.get(LEAN4_CLAUDE_MARKETPLACE_NAME)
+    if not isinstance(marketplace_entry, dict):
+        marketplace_entry = {}
+    marketplace_entry["source"] = _claude_marketplace_source()
+    marketplace_entry["autoUpdate"] = True
+    marketplaces[LEAN4_CLAUDE_MARKETPLACE_NAME] = marketplace_entry
+    settings_payload["extraKnownMarketplaces"] = marketplaces
+
+    enabled_plugins = settings_payload.get("enabledPlugins")
+    if not isinstance(enabled_plugins, dict):
+        enabled_plugins = {}
+    enabled_plugins[LEAN4_CLAUDE_PLUGIN_ID] = True
+    settings_payload["enabledPlugins"] = enabled_plugins
+
+    _write_json_dict(settings_path, settings_payload)
+
+
+def _mark_claude_known_marketplace_autoupdate(real_home: Path) -> None:
+    known_marketplaces_path = _claude_known_marketplaces_path(real_home)
+    payload = _load_json_dict(known_marketplaces_path)
+    entry = payload.get(LEAN4_CLAUDE_MARKETPLACE_NAME)
+    if not isinstance(entry, dict):
+        return
+    entry["autoUpdate"] = True
+    payload[LEAN4_CLAUDE_MARKETPLACE_NAME] = entry
+    _write_json_dict(known_marketplaces_path, payload)
+
+
+def _select_claude_installed_plugin_entry(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    plugins = payload.get("plugins")
+    if not isinstance(plugins, Mapping):
+        return None
+    entry = plugins.get(LEAN4_CLAUDE_PLUGIN_ID)
+    if isinstance(entry, list):
+        for candidate in entry:
+            if isinstance(candidate, Mapping):
+                install_path = Path(str(candidate.get("installPath", "")).strip()).expanduser()
+                if install_path.exists():
+                    return dict(candidate)
+        return dict(entry[0]) if entry and isinstance(entry[0], Mapping) else None
+    if isinstance(entry, Mapping):
+        return dict(entry)
+    return None
+
+
+def _find_claude_installed_plugin_root(real_home: Path) -> Path | None:
+    payload = _load_json_dict(_claude_installed_plugins_path(real_home))
+    entry = _select_claude_installed_plugin_entry(payload)
+    if entry is None:
+        return None
+    install_path = Path(str(entry.get("installPath", "")).strip()).expanduser()
+    if not install_path.exists():
+        return None
+    return install_path.resolve()
+
+
+def _ensure_claude_user_plugin_state(
+    *,
+    claude_executable: str,
+    real_home: Path,
+    base_environment: Mapping[str, str],
+) -> Path:
+    real_home.mkdir(parents=True, exist_ok=True)
+    _merge_claude_marketplace_settings(real_home)
+
+    cli_env = dict(base_environment)
+    cli_env["HOME"] = str(real_home)
+    _run(
+        [
+            claude_executable,
+            "plugin",
+            "marketplace",
+            "add",
+            "--scope",
+            "user",
+            LEAN4_CLAUDE_MARKETPLACE_REPO,
+        ],
+        env=cli_env,
+        error_prefix="Failed to register the Lean4 Claude marketplace in the user profile",
+    )
+    _run(
+        [
+            claude_executable,
+            "plugin",
+            "install",
+            "--scope",
+            "user",
+            LEAN4_CLAUDE_PLUGIN_ID,
+        ],
+        env=cli_env,
+        error_prefix="Failed to install the Lean4 Claude plugin in the user profile",
+    )
+
+    _merge_claude_marketplace_settings(real_home)
+    _mark_claude_known_marketplace_autoupdate(real_home)
+
+    install_path = _find_claude_installed_plugin_root(real_home)
+    if install_path is None:
+        raise AutoformalizeStagingError(
+            f"Managed Lean Claude plugin is not installed after configuration: {LEAN4_CLAUDE_PLUGIN_ID}"
+        )
+    return install_path
+
+
+def _replace_tree_link(destination: Path, source: Path) -> None:
+    if destination.exists() or destination.is_symlink():
+        if destination.is_symlink() or destination.is_file():
+            destination.unlink()
+        else:
+            shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        destination.symlink_to(source, target_is_directory=source.is_dir())
+    except OSError:
+        shutil.copytree(source, destination, symlinks=True)
+
+
+def _sync_prewarmed_claude_plugin(
+    *,
+    real_home: Path,
+    backend_home: Path,
+) -> Path | None:
+    plugin_root = _find_claude_installed_plugin_root(real_home)
+    settings_path = _claude_settings_path(real_home)
+    plugin_state_root = _claude_plugins_root(real_home)
+    if plugin_root is None or not settings_path.is_file() or not plugin_state_root.exists():
+        return None
+
+    managed_claude_dir = backend_home / ".claude"
+    managed_claude_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(settings_path, managed_claude_dir / "settings.json")
+    _replace_tree_link(managed_claude_dir / "plugins", plugin_state_root)
+    return plugin_root
+
+
+def prepare_managed_runtime_assets(
+    *,
+    config: Mapping[str, Any] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    base_environment = dict(env or os.environ)
+    managed_state_base = _resolve_managed_state_base(config, base_environment)
+    assets_root = managed_state_base / "assets"
+    assets_root.mkdir(parents=True, exist_ok=True)
+
+    git_executable = _require_executable(
+        "git",
+        "Git is required to prewarm the managed Lean workflow assets.",
+        base_environment,
+    )
+    uv_runner = _resolve_uv_runner(base_environment)
+    checkout_root, skill_revision = _ensure_lean4_checkout_assets(
+        assets_root=assets_root,
+        env=base_environment,
+        git_executable=git_executable,
+        refresh=True,
+    )
+    _warm_lean_lsp_mcp_cache(uv_runner)
+
+    result = {
+        "lean4_checkout_root": str(checkout_root),
+        "skill_revision": skill_revision,
+        "lean_lsp_mcp_spec": _resolve_lean_lsp_mcp_spec(base_environment),
+    }
+
+    claude_executable = shutil.which("claude", path=base_environment.get("PATH"))
+    if claude_executable:
+        real_home = Path(base_environment.get("HOME", str(Path.home()))).expanduser().resolve()
+        plugin_root = _ensure_claude_user_plugin_state(
+            claude_executable=claude_executable,
+            real_home=real_home,
+            base_environment=base_environment,
+        )
+        result["claude_plugin_root"] = str(plugin_root)
+    else:
+        result["claude_plugin_root"] = ""
+
+    return result
+
+
 def _read_claude_marketplace_name(marketplace_root: Path) -> str:
     payload = _load_json_dict(marketplace_root / ".claude-plugin" / "marketplace.json")
     name = str(payload.get("name", "") or "").strip()
@@ -681,28 +992,15 @@ def _prepare_shared_bundle(
     for path in (managed_root, assets_root, startup_dir, mcp_dir):
         path.mkdir(parents=True, exist_ok=True)
 
-    lean4_checkout = assets_root / "lean4-skills"
-    skill_revision = _ensure_git_checkout(
-        repo_url=LEAN4_SKILLS_URL,
-        revision=_resolve_lean4_skills_ref(env),
-        destination=lean4_checkout,
+    lean4_checkout, skill_revision = _ensure_lean4_checkout_assets(
+        assets_root=assets_root,
+        env=env,
         git_executable=git_executable,
+        refresh=False,
     )
-
-    plugin_source = lean4_checkout / "plugins" / "lean4"
-    skill_source = plugin_source / "skills" / "lean4"
-    scripts_root = plugin_source / "lib" / "scripts"
-    references_root = skill_source / "references"
-    missing_paths = [
-        path
-        for path in (plugin_source, skill_source, scripts_root, references_root)
-        if not path.is_dir()
-    ]
-    if missing_paths:
-        rendered = ", ".join(str(path) for path in missing_paths)
-        raise AutoformalizeStagingError(
-            f"Managed Lean bundle is incomplete after checkout: {rendered}"
-        )
+    plugin_source, skill_source, scripts_root, references_root = _lean4_checkout_paths(
+        lean4_checkout
+    )
 
     return SharedLeanBundle(
         backend_name=backend_name,
@@ -826,13 +1124,18 @@ def _build_claude_runtime(
         uv_runner=shared_bundle.uv_runner,
         lean_root=shared_bundle.lean_root,
     )
-    plugin_root = _install_managed_claude_plugin(
-        claude_executable=claude_exe,
+    plugin_root = _sync_prewarmed_claude_plugin(
+        real_home=real_home,
         backend_home=backend_home,
-        base_environment=base_environment,
-        marketplace_source=marketplace_source,
-        plugin_source=shared_bundle.plugin_source,
     )
+    if plugin_root is None:
+        plugin_root = _install_managed_claude_plugin(
+            claude_executable=claude_exe,
+            backend_home=backend_home,
+            base_environment=base_environment,
+            marketplace_source=marketplace_source,
+            plugin_source=shared_bundle.plugin_source,
+        )
     skills_root = plugin_root / "skills" / "lean4"
     _stage_claude_credentials(
         real_home=real_home,

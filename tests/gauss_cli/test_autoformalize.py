@@ -843,3 +843,262 @@ def test_claude_permission_args_respects_effective_root(monkeypatch):
     assert autoformalize._claude_permission_args() == ("--permission-mode", "bypassPermissions")
     monkeypatch.setattr(autoformalize, "_is_effective_root", lambda: False)
     assert autoformalize._claude_permission_args() == ("--dangerously-skip-permissions",)
+
+
+def test_ensure_lean4_checkout_assets_reuses_prewarmed_checkout_without_refresh(monkeypatch, tmp_path: Path):
+    assets_root = tmp_path / "assets"
+    checkout_root = assets_root / "lean4-skills"
+    plugin_source = checkout_root / "plugins" / "lean4"
+    skill_source = plugin_source / "skills" / "lean4"
+    scripts_root = plugin_source / "lib" / "scripts"
+    references_root = skill_source / "references"
+    references_root.mkdir(parents=True)
+    scripts_root.mkdir(parents=True)
+    (skill_source / "SKILL.md").write_text("# Lean4\n", encoding="utf-8")
+    (checkout_root / autoformalize.LEAN4_CHECKOUT_REVISION_FILE).write_text(
+        "prewarmed-revision\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        autoformalize,
+        "_ensure_git_checkout",
+        lambda **_kwargs: pytest.fail("expected prewarmed checkout to skip git refresh"),
+    )
+
+    resolved_root, revision = autoformalize._ensure_lean4_checkout_assets(
+        assets_root=assets_root,
+        env={"PATH": "/usr/bin"},
+        git_executable="/usr/bin/git",
+        refresh=False,
+    )
+
+    assert resolved_root == checkout_root
+    assert revision == "prewarmed-revision"
+
+
+def test_ensure_claude_user_plugin_state_enables_plugin_and_autoupdate(monkeypatch, tmp_path: Path):
+    real_home = tmp_path / "home"
+    plugin_root = real_home / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.5"
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *, error_prefix, env=None, cwd=None):
+        del error_prefix, cwd
+        calls.append(list(argv))
+        assert env is not None
+        assert env["HOME"] == str(real_home)
+        if list(argv)[1:4] == ["plugin", "marketplace", "add"]:
+            known_marketplaces_path = real_home / ".claude" / "plugins" / "known_marketplaces.json"
+            known_marketplaces_path.parent.mkdir(parents=True, exist_ok=True)
+            known_marketplaces_path.write_text(
+                json.dumps(
+                    {
+                        "lean4-skills": {
+                            "source": {"source": "github", "repo": "cameronfreer/lean4-skills"},
+                            "installLocation": str(real_home / ".claude" / "plugins" / "marketplaces" / "lean4-skills"),
+                            "lastUpdated": "2026-03-27T00:00:00Z",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+        if list(argv)[1:3] == ["plugin", "install"]:
+            plugin_root.mkdir(parents=True, exist_ok=True)
+            installed_plugins_path = real_home / ".claude" / "plugins" / "installed_plugins.json"
+            installed_plugins_path.parent.mkdir(parents=True, exist_ok=True)
+            installed_plugins_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "plugins": {
+                            "lean4@lean4-skills": [
+                                {
+                                    "scope": "user",
+                                    "installPath": str(plugin_root),
+                                    "version": "4.4.5",
+                                    "installedAt": "2026-03-27T00:00:01Z",
+                                    "lastUpdated": "2026-03-27T00:00:01Z",
+                                    "gitCommitSha": "a1cef7dc21d9b68b79311d57cd78ecf6b7ca22bf",
+                                }
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(autoformalize, "_run", fake_run)
+
+    install_path = autoformalize._ensure_claude_user_plugin_state(
+        claude_executable="/usr/bin/claude",
+        real_home=real_home,
+        base_environment={"PATH": "/usr/bin"},
+    )
+
+    assert install_path == plugin_root.resolve()
+    settings = json.loads((real_home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert settings["extraKnownMarketplaces"]["lean4-skills"]["source"] == {
+        "source": "github",
+        "repo": "cameronfreer/lean4-skills",
+    }
+    assert settings["extraKnownMarketplaces"]["lean4-skills"]["autoUpdate"] is True
+    assert settings["enabledPlugins"]["lean4@lean4-skills"] is True
+
+    known_marketplaces = json.loads(
+        (real_home / ".claude" / "plugins" / "known_marketplaces.json").read_text(encoding="utf-8")
+    )
+    assert known_marketplaces["lean4-skills"]["autoUpdate"] is True
+    assert calls[0] == [
+        "/usr/bin/claude",
+        "plugin",
+        "marketplace",
+        "add",
+        "--scope",
+        "user",
+        "cameronfreer/lean4-skills",
+    ]
+    assert calls[1] == [
+        "/usr/bin/claude",
+        "plugin",
+        "install",
+        "--scope",
+        "user",
+        "lean4@lean4-skills",
+    ]
+
+
+def test_sync_prewarmed_claude_plugin_links_plugin_state_into_managed_home(tmp_path: Path):
+    real_home = tmp_path / "real-home"
+    backend_home = tmp_path / "backend-home"
+    plugin_root = real_home / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.5"
+    plugin_root.mkdir(parents=True)
+    settings_path = real_home / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "extraKnownMarketplaces": {
+                    "lean4-skills": {
+                        "source": {"source": "github", "repo": "cameronfreer/lean4-skills"},
+                        "autoUpdate": True,
+                    }
+                },
+                "enabledPlugins": {"lean4@lean4-skills": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    installed_plugins_path = real_home / ".claude" / "plugins" / "installed_plugins.json"
+    installed_plugins_path.parent.mkdir(parents=True, exist_ok=True)
+    installed_plugins_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    "lean4@lean4-skills": [
+                        {
+                            "scope": "user",
+                            "installPath": str(plugin_root),
+                            "version": "4.4.5",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    staged_root = autoformalize._sync_prewarmed_claude_plugin(
+        real_home=real_home,
+        backend_home=backend_home,
+    )
+
+    assert staged_root == plugin_root.resolve()
+    assert (backend_home / ".claude" / "settings.json").exists()
+    plugins_entry = backend_home / ".claude" / "plugins"
+    assert plugins_entry.exists()
+    assert plugins_entry.is_symlink() or plugins_entry.is_dir()
+
+
+def test_build_claude_runtime_prefers_prewarmed_user_plugin(monkeypatch, tmp_path: Path):
+    shared_bundle = _shared_bundle(tmp_path)
+    workflow = _workflow("/prove", "File.lean")
+    prewarmed_plugin_root = (
+        tmp_path / "real-home" / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.5"
+    )
+    (prewarmed_plugin_root / "skills" / "lean4").mkdir(parents=True)
+    (prewarmed_plugin_root / "skills" / "lean4" / "SKILL.md").write_text("# Lean4\n", encoding="utf-8")
+    credentials_dir = shared_bundle.real_home / ".claude"
+    credentials_dir.mkdir(parents=True)
+    (credentials_dir / ".credentials.json").write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": "token"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(autoformalize, "_require_executable", lambda name, _msg, _env: f"/usr/bin/{name}")
+    monkeypatch.setattr(autoformalize, "_claude_permission_args", lambda: ("--dangerously-skip-permissions",))
+    monkeypatch.setattr(
+        autoformalize,
+        "_sync_prewarmed_claude_plugin",
+        lambda **_kwargs: prewarmed_plugin_root,
+    )
+    monkeypatch.setattr(
+        autoformalize,
+        "_install_managed_claude_plugin",
+        lambda **_kwargs: pytest.fail("expected prewarmed Claude plugin to avoid managed install"),
+    )
+
+    runtime = autoformalize._build_claude_runtime(
+        auth_mode="auto",
+        user_instruction=workflow.workflow_args,
+        workflow=workflow,
+        base_environment={"HOME": str(shared_bundle.real_home), "PATH": "/usr/bin"},
+        include_persisted_env=False,
+        shared_bundle=shared_bundle,
+    )
+
+    assert runtime.managed_context.plugin_root == prewarmed_plugin_root
+    assert runtime.child_env["CLAUDE_PLUGIN_ROOT"] == str(prewarmed_plugin_root)
+
+
+def test_prepare_managed_runtime_assets_uses_install_time_prewarm(monkeypatch, tmp_path: Path):
+    gauss_home = tmp_path / "gauss-home"
+    checkout_root = gauss_home / "autoformalize" / "assets" / "lean4-skills"
+    plugin_root = tmp_path / "home" / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.5"
+    warmed_uv: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(autoformalize, "get_gauss_home", lambda: gauss_home)
+    monkeypatch.setattr(autoformalize, "_require_executable", lambda name, _msg, _env: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        autoformalize,
+        "_resolve_uv_runner",
+        lambda _env: ("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_SPEC, "lean-lsp-mcp"),
+    )
+    monkeypatch.setattr(
+        autoformalize,
+        "_ensure_lean4_checkout_assets",
+        lambda **_kwargs: (checkout_root, "abc123def4567890"),
+    )
+    monkeypatch.setattr(autoformalize, "_warm_lean_lsp_mcp_cache", lambda uv_runner: warmed_uv.append(tuple(uv_runner)))
+    monkeypatch.setattr(
+        autoformalize.shutil,
+        "which",
+        lambda name, path=None: "/usr/bin/claude" if name == "claude" else None,
+    )
+    monkeypatch.setattr(
+        autoformalize,
+        "_ensure_claude_user_plugin_state",
+        lambda **_kwargs: plugin_root,
+    )
+
+    prepared = autoformalize.prepare_managed_runtime_assets(
+        env={"HOME": str(tmp_path / "home"), "PATH": "/usr/bin"},
+    )
+
+    assert prepared["lean4_checkout_root"] == str(checkout_root)
+    assert prepared["skill_revision"] == "abc123def4567890"
+    assert prepared["claude_plugin_root"] == str(plugin_root)
+    assert warmed_uv == [
+        ("/usr/bin/uvx", "--from", autoformalize.LEAN_LSP_MCP_SPEC, "lean-lsp-mcp")
+    ]

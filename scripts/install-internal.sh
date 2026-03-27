@@ -1290,6 +1290,38 @@ auto_configure_main_provider() {
     fi
 }
 
+prepare_managed_runtime_assets() {
+    log_info "Prewarming managed Lean workflow assets..."
+
+    local managed_status
+    if ! managed_status="$("$VENV_PYTHON" - <<'PY'
+import os
+
+from gauss_cli.autoformalize import prepare_managed_runtime_assets
+
+prepared = prepare_managed_runtime_assets(env=os.environ)
+revision = prepared.get("skill_revision", "").strip()
+claude_plugin_root = prepared.get("claude_plugin_root", "").strip()
+
+parts = []
+if revision:
+    parts.append(f"lean4-skills {revision[:12]}")
+if prepared.get("lean_lsp_mcp_spec", "").strip():
+    parts.append(f"lean-lsp-mcp {prepared['lean_lsp_mcp_spec']}")
+if claude_plugin_root:
+    parts.append(f"Claude plugin {claude_plugin_root}")
+else:
+    parts.append("Claude plugin skipped")
+print("; ".join(parts))
+PY
+    )"; then
+        log_error "Managed Lean workflow prewarm failed."
+        exit 1
+    fi
+
+    log_success "Managed Lean workflow assets ready: $managed_status"
+}
+
 run_post_install_self_check() {
     log_info "Running post-install verification..."
 
@@ -1425,6 +1457,7 @@ main() {
     ensure_shell_runtime_block
     write_helper_assets
     auto_configure_main_provider
+    prepare_managed_runtime_assets
     run_post_install_self_check
     print_summary
     run_setup_wizard
