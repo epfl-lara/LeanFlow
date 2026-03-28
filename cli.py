@@ -502,6 +502,7 @@ from gauss_cli.banner import (
     VERSION, RELEASE_DATE, GAUSS_AGENT_LOGO, GAUSS_CADUCEUS, COMPACT_BANNER,
     build_welcome_banner,
 )
+from gauss_cli.colors import render_terminal_text, spinner_frames, supports_ansi, supports_unicode
 from gauss_cli.commands import COMMANDS, SlashCommandCompleter
 from gauss_cli import callbacks as _callbacks
 from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, validate_toolset
@@ -819,7 +820,13 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     Using Rich Text.from_ansi preserves literal bracketed text like
     ``[not markup]`` while still interpreting real ANSI color codes.
     """
-    return _RichText.from_ansi(text or "")
+    return _RichText.from_ansi(
+        render_terminal_text(
+            text or "",
+            allow_ansi=supports_ansi(),
+            allow_unicode=supports_unicode(),
+        )
+    )
 
 
 def _cprint(text: str):
@@ -829,7 +836,16 @@ def _cprint(text: str):
     StdoutProxy.  Routing through print_formatted_text(ANSI(...)) lets
     prompt_toolkit parse the escapes and render real colors.
     """
-    _pt_print(_PT_ANSI(text))
+    ansi_enabled = supports_ansi()
+    rendered = render_terminal_text(
+        text,
+        allow_ansi=ansi_enabled,
+        allow_unicode=supports_unicode(),
+    )
+    if ansi_enabled:
+        _pt_print(_PT_ANSI(rendered))
+    else:
+        _pt_print(rendered)
 
 
 class ChatConsole:
@@ -843,12 +859,15 @@ class ChatConsole:
 
     def __init__(self):
         from io import StringIO
+
         self._buffer = StringIO()
+        self._ansi_enabled = supports_ansi()
         self._inner = Console(
             file=self._buffer,
-            force_terminal=True,
-            color_system="truecolor",
+            force_terminal=self._ansi_enabled,
+            color_system="truecolor" if self._ansi_enabled else None,
             highlight=False,
+            no_color=not self._ansi_enabled,
         )
 
     def print(self, *args, **kwargs):
@@ -909,7 +928,7 @@ def _build_compact_banner() -> str:
     compact_logo = (
         skin.banner_logo_compact
         if skin and getattr(skin, "banner_logo_compact", "")
-        else f"[bold {accent}]GAUSS[/] [dim {dim}]· Lean Autoformalization[/]"
+        else f"[bold {accent}]GAUSS[/] [dim {dim}]{'·' if supports_unicode() else '-'} Lean Autoformalization[/]"
     )
     return (
         f"\n{compact_logo}\n"
@@ -1586,8 +1605,9 @@ class GaussCLI:
         """Return the current spinner frame for slow slash commands."""
         import time as _time
 
-        frame_idx = int(_time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)
-        return _COMMAND_SPINNER_FRAMES[frame_idx]
+        frames = spinner_frames()
+        frame_idx = int(_time.monotonic() * 10) % len(frames)
+        return frames[frame_idx]
 
     @contextmanager
     def _busy_command(self, status: str):
@@ -1596,7 +1616,11 @@ class GaussCLI:
         self._command_status = status
         self._invalidate(min_interval=0.0)
         try:
-            print(f"⏳ {status}")
+            status_line = f"{'⏳' if supports_unicode() else '...'} {status}"
+            if self._app:
+                _cprint(f"{_DIM}{status_line}{_RST}")
+            else:
+                print(render_terminal_text(status_line, allow_ansi=False, allow_unicode=supports_unicode()))
             yield
         finally:
             self._command_running = False

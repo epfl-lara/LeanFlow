@@ -25,6 +25,10 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m'
+INFO_MARK='→'
+SUCCESS_MARK='✓'
+WARN_MARK='⚠'
+ERROR_MARK='✗'
 
 PYTHON_VERSION="3.11"
 NODE_MAJOR="22"
@@ -92,6 +96,7 @@ Environment:
   GAUSS_SETUP_MODE        auto/skip/run equivalent of setup flags
   GAUSS_LEAN_TOOLCHAIN    Lean toolchain used for workspace bootstrap
                           (default: leanprover/lean4:v4.28.0)
+  GAUSS_FORCE_ASCII       Force ASCII-only installer output
 
 Optional staged provider keys:
   OPENROUTER_API_KEY
@@ -105,34 +110,99 @@ Behavior:
 TXT
 }
 
+is_truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+supports_color_output() {
+    if [ -n "${NO_COLOR:-}" ]; then
+        return 1
+    fi
+    if ! [ -t 1 ]; then
+        return 1
+    fi
+    case "${TERM:-}" in
+        ""|dumb)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+supports_utf8_output() {
+    if is_truthy "${GAUSS_FORCE_ASCII:-}"; then
+        return 1
+    fi
+    case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+        *UTF-8*|*utf-8*|*utf8*|*UTF8*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+configure_display() {
+    if ! supports_color_output; then
+        RED=''
+        GREEN=''
+        YELLOW=''
+        CYAN=''
+        MAGENTA=''
+        BOLD=''
+        NC=''
+    fi
+
+    if supports_utf8_output; then
+        INFO_MARK='→'
+        SUCCESS_MARK='✓'
+        WARN_MARK='⚠'
+        ERROR_MARK='✗'
+    else
+        INFO_MARK='->'
+        SUCCESS_MARK='OK'
+        WARN_MARK='!'
+        ERROR_MARK='X'
+    fi
+}
+
 print_banner() {
     echo
-    echo -e "${MAGENTA}${BOLD}"
-    echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│        ∑ Open Gauss Workflow Installer                 │"
-    echo "├─────────────────────────────────────────────────────────┤"
-    echo "│  Repository-local, Lean-ready batteries included       │"
-    echo "└─────────────────────────────────────────────────────────┘"
-    echo -e "${NC}"
-    echo -e "${YELLOW}⚠ This install can take up to 10 minutes.${NC}"
-    echo -e "${YELLOW}⚠ For a setup in under 10 seconds, try: https://morph.new/opengauss${NC}"
+    if supports_utf8_output; then
+        printf '%b\n' "${MAGENTA}${BOLD}"
+        printf '%s\n' "┌─────────────────────────────────────────────────────────┐"
+        printf '%s\n' "│        ∑ Open Gauss Workflow Installer                 │"
+        printf '%s\n' "├─────────────────────────────────────────────────────────┤"
+        printf '%s\n' "│  Repository-local, Lean-ready batteries included       │"
+        printf '%s\n' "└─────────────────────────────────────────────────────────┘"
+        printf '%b\n' "${NC}"
+    else
+        printf '%b%s%b\n' "${MAGENTA}${BOLD}" "Open Gauss Workflow Installer" "${NC}"
+        printf '%s\n' "Repository-local, Lean-ready batteries included"
+    fi
+    printf '%b%s%b %s\n' "${YELLOW}" "${WARN_MARK}" "${NC}" "This install can take up to 10 minutes."
+    printf '%b%s%b %s\n' "${YELLOW}" "${WARN_MARK}" "${NC}" "For a setup in under 10 seconds, try: https://morph.new/opengauss"
     echo
 }
 
 log_info() {
-    echo -e "${CYAN}→${NC} $1"
+    printf '%b%s%b %s\n' "${CYAN}" "${INFO_MARK}" "${NC}" "$1"
 }
 
 log_success() {
-    echo -e "${GREEN}✓${NC} $1"
+    printf '%b%s%b %s\n' "${GREEN}" "${SUCCESS_MARK}" "${NC}" "$1"
 }
 
 log_warn() {
-    echo -e "${YELLOW}⚠${NC} $1"
+    printf '%b%s%b %s\n' "${YELLOW}" "${WARN_MARK}" "${NC}" "$1"
 }
 
 log_error() {
-    echo -e "${RED}✗${NC} $1"
+    printf '%b%s%b %s\n' "${RED}" "${ERROR_MARK}" "${NC}" "$1"
 }
 
 refresh_paths() {
@@ -1425,13 +1495,17 @@ PY
 
 print_summary() {
     echo
-    echo -e "${GREEN}${BOLD}"
-    echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│             ✓ Open Gauss Is Ready                       │"
-    echo "└─────────────────────────────────────────────────────────┘"
-    echo -e "${NC}"
+    if supports_utf8_output; then
+        printf '%b\n' "${GREEN}${BOLD}"
+        printf '%s\n' "┌─────────────────────────────────────────────────────────┐"
+        printf '%s\n' "│             ${SUCCESS_MARK} Open Gauss Is Ready                       │"
+        printf '%s\n' "└─────────────────────────────────────────────────────────┘"
+        printf '%b\n' "${NC}"
+    else
+        printf '%b%s%b\n' "${GREEN}${BOLD}" "${SUCCESS_MARK} Open Gauss Is Ready" "${NC}"
+    fi
     echo
-    echo -e "${CYAN}${BOLD}Ready Paths:${NC}"
+    printf '%b%s%b\n' "${CYAN}${BOLD}" "Ready Paths:" "${NC}"
     echo "  Repo:       $REPO_ROOT"
     echo "  Venv:       $VENV_DIR"
     echo "  Gauss home: $GAUSS_HOME"
@@ -1440,7 +1514,7 @@ print_summary() {
     fi
     echo "  Guide:      $GUIDE_DIR/index.html"
     echo
-    echo -e "${CYAN}${BOLD}Next Steps:${NC}"
+    printf '%b%s%b\n' "${CYAN}${BOLD}" "Next Steps:" "${NC}"
     echo "  1. Start immediately:   $GAUSS_BIN"
     echo "  2. Verify the CLI:      $GAUSS_BIN --version"
     echo "  3. Reload for \`gauss\`: $SHELL_RELOAD_HINT   # current shell ($ACTIVE_SHELL_NAME)"
@@ -1449,14 +1523,14 @@ print_summary() {
     fi
     echo "  4. Review settings:     gauss setup"
     echo
-    echo -e "${CYAN}${BOLD}Start Options:${NC}"
+    printf '%b%s%b\n' "${CYAN}${BOLD}" "Start Options:" "${NC}"
     echo "  gauss                # direct CLI launch in this terminal"
     echo "  gauss-open-session   # batteries-included launcher (tmux when interactive)"
     echo "  gauss-open-guide     # open the local guide in a browser, or print its path"
     echo
     echo "  Inside Gauss, use /project create <path> to create a Lean project."
     echo
-    echo -e "${CYAN}${BOLD}Helper Commands:${NC}"
+    printf '%b%s%b\n' "${CYAN}${BOLD}" "Helper Commands:" "${NC}"
     echo "  gauss-configure-main-provider [auto|openrouter|anthropic|openai]"
     echo "  gauss-use-openrouter-key"
     echo "  gauss-use-anthropic-key"
@@ -1465,7 +1539,7 @@ print_summary() {
     echo "  gauss-use-codex-backend"
     echo "  gauss-use-auto-auth"
     echo
-    echo -e "${CYAN}${BOLD}Notes:${NC}"
+    printf '%b%s%b\n' "${CYAN}${BOLD}" "Notes:" "${NC}"
     echo "  - The installer keeps code in your existing repository checkout."
     echo "  - The installer updates future shells, but it cannot change PATH in the shell that launched the installer."
     echo "  - If \`gauss\` is not found in this terminal yet, use $GAUSS_BIN once or source one of the shell files above."
@@ -1483,6 +1557,7 @@ print_summary() {
 main() {
     apply_env_overrides
     parse_args "$@"
+    configure_display
     print_banner
     detect_os
     require_repo_checkout

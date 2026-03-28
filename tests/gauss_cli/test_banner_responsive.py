@@ -79,6 +79,20 @@ def test_select_banner_art_hides_logo_on_very_small_terminals():
     assert hero == ""
 
 
+def test_select_banner_art_uses_ascii_assets_when_unicode_is_disabled():
+    from gauss_cli.banner import (
+        GAUSS_AGENT_LOGO_ASCII,
+        GAUSS_CADUCEUS_ASCII,
+        _select_banner_art,
+    )
+
+    layout, logo, hero = _select_banner_art(140, None, unicode_enabled=False)
+
+    assert layout == "split"
+    assert logo == GAUSS_AGENT_LOGO_ASCII
+    assert hero == GAUSS_CADUCEUS_ASCII
+
+
 def test_build_welcome_banner_renders_selected_logo(monkeypatch):
     from rich.console import Console
 
@@ -169,3 +183,45 @@ def test_build_welcome_banner_hides_tool_inventory(monkeypatch):
 
     exported = console.export_text()
     assert "Available Tools" not in exported
+
+
+def test_build_welcome_banner_falls_back_to_ascii_panel(monkeypatch):
+    from rich.console import Console
+
+    from gauss_cli.banner import build_welcome_banner
+
+    monkeypatch.setattr("gauss_cli.banner.supports_unicode", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("gauss_cli.banner.get_update_result", lambda timeout=0.5: 6)
+    monkeypatch.setattr(
+        "gauss_cli.banner.shutil.get_terminal_size",
+        lambda *_args, **_kwargs: __import__("os").terminal_size((120, 24)),
+    )
+
+    console = Console(record=True, width=120)
+    build_welcome_banner(
+        console=console,
+        model="anthropic/claude-opus-4.1",
+        cwd="/root/GaussWorkspace",
+        session_id=None,
+        context_length=None,
+    )
+
+    exported = console.export_text()
+    assert "!" in exported
+    assert "|" in exported
+    assert "⚠" not in exported
+    assert "·" not in exported
+    assert "│" not in exported
+
+
+def test_cprint_strips_ansi_when_terminal_lacks_color(monkeypatch):
+    from gauss_cli.banner import cprint
+
+    captured = []
+    monkeypatch.setattr("gauss_cli.banner.supports_ansi", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("gauss_cli.banner.supports_unicode", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("gauss_cli.banner._pt_print", lambda value: captured.append(value))
+
+    cprint("\033[1;33m⚠ Managed /prove — needs project first\033[0m")
+
+    assert captured == ["! Managed /prove - needs project first"]

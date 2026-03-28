@@ -109,3 +109,16 @@ class TestCLILoadingIndicator:
         assert cli_obj._command_running is False
         assert cli_obj._command_status == ""
         assert cli_obj._invalidate.call_count == 2
+
+    def test_busy_state_falls_back_to_ascii_prefix_when_unicode_is_disabled(self, capsys, monkeypatch):
+        cli_obj = self._make_cli()
+        monkeypatch.setattr(cli_mod, "supports_unicode", lambda *_args, **_kwargs: False)
+        monkeypatch.setattr(cli_mod, "supports_ansi", lambda *_args, **_kwargs: False)
+
+        with cli_obj._busy_command("Preparing managed Lean workflow session..."):
+            print("done")
+
+        output = capsys.readouterr().out
+        assert "... Preparing managed Lean workflow session..." in output
+        assert "⏳" not in output
+        assert "done" in output
