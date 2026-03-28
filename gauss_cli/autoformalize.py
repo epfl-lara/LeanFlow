@@ -620,6 +620,32 @@ def _claude_installed_plugins_path(home: Path) -> Path:
     return _claude_plugins_root(home) / "installed_plugins.json"
 
 
+def _claude_marketplaces_root(home: Path) -> Path:
+    return _claude_plugins_root(home) / "marketplaces"
+
+
+def _claude_marketplace_root(home: Path) -> Path:
+    return _claude_marketplaces_root(home) / LEAN4_CLAUDE_MARKETPLACE_NAME
+
+
+def _claude_plugin_cache_root(home: Path) -> Path:
+    return _claude_plugins_root(home) / "cache" / LEAN4_CLAUDE_MARKETPLACE_NAME / LEAN4_CLAUDE_PLUGIN_NAME
+
+
+def _path_text_within_root(path_text: str, root: Path) -> bool:
+    value = str(path_text or "").strip()
+    if not value:
+        return False
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        return False
+    try:
+        candidate.relative_to(root.expanduser())
+        return True
+    except ValueError:
+        return False
+
+
 def _lean4_checkout_root(assets_root: Path) -> Path:
     return assets_root / "lean4-skills"
 
@@ -742,18 +768,46 @@ def _merge_claude_marketplace_settings(real_home: Path) -> None:
     _write_json_dict(settings_path, settings_payload)
 
 
-def _mark_claude_known_marketplace_autoupdate(real_home: Path) -> None:
-    known_marketplaces_path = _claude_known_marketplaces_path(real_home)
+def _upsert_claude_known_marketplace_entry(
+    home: Path,
+    *,
+    install_location: Path | None = None,
+) -> None:
+    known_marketplaces_path = _claude_known_marketplaces_path(home)
     payload = _load_json_dict(known_marketplaces_path)
     entry = payload.get(LEAN4_CLAUDE_MARKETPLACE_NAME)
     if not isinstance(entry, dict):
-        return
+        entry = {}
+    entry["source"] = _claude_marketplace_source()
     entry["autoUpdate"] = True
+    if install_location is not None:
+        entry["installLocation"] = str(install_location)
     payload[LEAN4_CLAUDE_MARKETPLACE_NAME] = entry
     _write_json_dict(known_marketplaces_path, payload)
 
 
-def _select_claude_installed_plugin_entry(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+def _read_claude_known_marketplace_entry(home: Path) -> dict[str, Any] | None:
+    payload = _load_json_dict(_claude_known_marketplaces_path(home))
+    entry = payload.get(LEAN4_CLAUDE_MARKETPLACE_NAME)
+    return dict(entry) if isinstance(entry, Mapping) else None
+
+
+def _extract_claude_path(entry: Mapping[str, Any], field_name: str) -> Path | None:
+    value = str(entry.get(field_name, "") or "").strip()
+    if not value:
+        return None
+    return Path(value).expanduser()
+
+
+def _extract_claude_plugin_version(entry: Mapping[str, Any]) -> str:
+    return str(entry.get("version", "") or "").strip()
+
+
+def _select_claude_installed_plugin_entry(
+    payload: Mapping[str, Any],
+    *,
+    require_existing_path: bool = True,
+) -> dict[str, Any] | None:
     plugins = payload.get("plugins")
     if not isinstance(plugins, Mapping):
         return None
@@ -761,8 +815,8 @@ def _select_claude_installed_plugin_entry(payload: Mapping[str, Any]) -> dict[st
     if isinstance(entry, list):
         for candidate in entry:
             if isinstance(candidate, Mapping):
-                install_path = Path(str(candidate.get("installPath", "")).strip()).expanduser()
-                if install_path.exists():
+                install_path = _extract_claude_path(candidate, "installPath")
+                if install_path is not None and (not require_existing_path or install_path.exists()):
                     return dict(candidate)
         return dict(entry[0]) if entry and isinstance(entry[0], Mapping) else None
     if isinstance(entry, Mapping):
@@ -775,10 +829,104 @@ def _find_claude_installed_plugin_root(real_home: Path) -> Path | None:
     entry = _select_claude_installed_plugin_entry(payload)
     if entry is None:
         return None
-    install_path = Path(str(entry.get("installPath", "")).strip()).expanduser()
+    install_path = _extract_claude_path(entry, "installPath")
+    if install_path is None:
+        return None
     if not install_path.exists():
         return None
-    return install_path.resolve()
+    return install_path
+
+
+def _write_claude_installed_plugin_entry(
+    home: Path,
+    *,
+    install_path: Path,
+    version: str,
+) -> None:
+    installed_plugins_path = _claude_installed_plugins_path(home)
+    payload = _load_json_dict(installed_plugins_path)
+    plugins = payload.get("plugins")
+    if not isinstance(plugins, dict):
+        plugins = {}
+    plugins[LEAN4_CLAUDE_PLUGIN_ID] = [
+        {
+            "scope": "user",
+            "installPath": str(install_path),
+            "version": version,
+        }
+    ]
+    payload["version"] = 2
+    payload["plugins"] = plugins
+    _write_json_dict(installed_plugins_path, payload)
+
+
+def _delete_claude_known_marketplace_entry(home: Path) -> None:
+    known_marketplaces_path = _claude_known_marketplaces_path(home)
+    payload = _load_json_dict(known_marketplaces_path)
+    if LEAN4_CLAUDE_MARKETPLACE_NAME not in payload:
+        return
+    del payload[LEAN4_CLAUDE_MARKETPLACE_NAME]
+    _write_json_dict(known_marketplaces_path, payload)
+
+
+def _delete_claude_installed_plugin_entry(home: Path) -> None:
+    installed_plugins_path = _claude_installed_plugins_path(home)
+    payload = _load_json_dict(installed_plugins_path)
+    plugins = payload.get("plugins")
+    if not isinstance(plugins, dict):
+        return
+    if LEAN4_CLAUDE_PLUGIN_ID not in plugins:
+        return
+    del plugins[LEAN4_CLAUDE_PLUGIN_ID]
+    payload["plugins"] = plugins
+    if "version" not in payload:
+        payload["version"] = 2
+    _write_json_dict(installed_plugins_path, payload)
+
+
+def _scrub_claude_lean_plugin_state(home: Path) -> None:
+    _delete_claude_known_marketplace_entry(home)
+    _delete_claude_installed_plugin_entry(home)
+    _remove_existing_path(_claude_marketplace_root(home))
+    _remove_existing_path(_claude_plugin_cache_root(home))
+
+
+def _claude_user_plugin_state_is_healthy(real_home: Path) -> bool:
+    marketplace_entry = _read_claude_known_marketplace_entry(real_home)
+    if marketplace_entry is None:
+        return False
+    if marketplace_entry.get("source") != _claude_marketplace_source():
+        return False
+    marketplace_root = _extract_claude_path(marketplace_entry, "installLocation")
+    if marketplace_root is None:
+        return False
+    if not _path_text_within_root(str(marketplace_root), _claude_marketplaces_root(real_home)):
+        return False
+    if not marketplace_root.exists():
+        return False
+
+    payload = _load_json_dict(_claude_installed_plugins_path(real_home))
+    plugin_entry = _select_claude_installed_plugin_entry(payload)
+    if plugin_entry is None:
+        return False
+    install_path = _extract_claude_path(plugin_entry, "installPath")
+    if install_path is None:
+        return False
+    if not _path_text_within_root(str(install_path), _claude_plugin_cache_root(real_home)):
+        return False
+    return install_path.exists()
+
+
+def _find_claude_marketplace_root(home: Path) -> Path | None:
+    entry = _read_claude_known_marketplace_entry(home)
+    if entry is not None:
+        install_location = _extract_claude_path(entry, "installLocation")
+        if install_location is not None and install_location.exists():
+            return install_location
+    marketplace_root = _claude_marketplace_root(home)
+    if marketplace_root.exists():
+        return marketplace_root
+    return None
 
 
 def _is_claude_already_installed_error(exc: AutoformalizeStagingError) -> bool:
@@ -849,10 +997,14 @@ def _ensure_claude_user_plugin_state(
     real_home.mkdir(parents=True, exist_ok=True)
     _merge_claude_marketplace_settings(real_home)
     existing_install_path = _find_claude_installed_plugin_root(real_home)
-    if existing_install_path is not None:
-        _mark_claude_known_marketplace_autoupdate(real_home)
+    if existing_install_path is not None and _claude_user_plugin_state_is_healthy(real_home):
+        _upsert_claude_known_marketplace_entry(
+            real_home,
+            install_location=_claude_marketplace_root(real_home),
+        )
         return existing_install_path
 
+    _scrub_claude_lean_plugin_state(real_home)
     cli_env = dict(base_environment)
     cli_env["HOME"] = str(real_home)
     _add_claude_marketplace(
@@ -870,7 +1022,10 @@ def _ensure_claude_user_plugin_state(
     )
 
     _merge_claude_marketplace_settings(real_home)
-    _mark_claude_known_marketplace_autoupdate(real_home)
+    _upsert_claude_known_marketplace_entry(
+        real_home,
+        install_location=_claude_marketplace_root(real_home),
+    )
 
     install_path = _find_claude_installed_plugin_root(real_home)
     if install_path is None:
@@ -905,15 +1060,43 @@ def _sync_prewarmed_claude_plugin(
 ) -> Path | None:
     plugin_root = _find_claude_installed_plugin_root(real_home)
     settings_path = _claude_settings_path(real_home)
-    plugin_state_root = _claude_plugins_root(real_home)
-    if plugin_root is None or not settings_path.is_file() or not plugin_state_root.exists():
+    if plugin_root is None or not settings_path.is_file():
         return None
 
+    payload = _load_json_dict(_claude_installed_plugins_path(real_home))
+    plugin_entry = _select_claude_installed_plugin_entry(payload)
+    if plugin_entry is None:
+        return None
+    plugin_version = _extract_claude_plugin_version(plugin_entry)
+    if not plugin_version:
+        plugin_version = plugin_root.name
+
+    managed_plugins_root = _claude_plugins_root(backend_home)
+    _remove_existing_path(managed_plugins_root)
     managed_claude_dir = backend_home / ".claude"
     managed_claude_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(settings_path, managed_claude_dir / "settings.json")
-    _replace_tree_link(managed_claude_dir / "plugins", plugin_state_root)
-    return plugin_root
+    managed_install_path = _claude_plugin_cache_root(backend_home) / plugin_version
+    _replace_tree_link(managed_install_path, plugin_root)
+
+    marketplace_root = _find_claude_marketplace_root(real_home)
+    managed_marketplace_root = _claude_marketplace_root(backend_home)
+    if marketplace_root is not None:
+        _replace_tree_link(managed_marketplace_root, marketplace_root)
+    else:
+        managed_marketplace_root.mkdir(parents=True, exist_ok=True)
+
+    _merge_claude_marketplace_settings(backend_home)
+    _upsert_claude_known_marketplace_entry(
+        backend_home,
+        install_location=managed_marketplace_root,
+    )
+    _write_claude_installed_plugin_entry(
+        backend_home,
+        install_path=managed_install_path,
+        version=plugin_version,
+    )
+    return managed_install_path
 
 
 def prepare_managed_runtime_assets(

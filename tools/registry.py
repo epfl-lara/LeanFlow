@@ -217,7 +217,8 @@ class ToolRegistry:
         available = []
         unavailable = []
         seen = set()
-        for entry in self._tools.values():
+        entries = list(self._tools.values())
+        for entry in entries:
             ts = entry.toolset
             if ts in seen:
                 continue
@@ -228,7 +229,7 @@ class ToolRegistry:
                 unavailable.append({
                     "name": ts,
                     "env_vars": entry.requires_env,
-                    "tools": [e.name for e in self._tools.values() if e.toolset == ts],
+                    "tools": [e.name for e in entries if e.toolset == ts],
                 })
         return available, unavailable
 

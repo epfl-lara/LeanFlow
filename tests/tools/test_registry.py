@@ -231,6 +231,37 @@ class TestCheckFnExceptionHandling:
         assert "works" in available
         assert any(u["name"] == "crashes" for u in unavailable)
 
+    def test_check_tool_availability_uses_snapshot_when_registry_mutates(self):
+        reg = ToolRegistry()
+
+        def mutating_check():
+            reg.register(
+                name="late_tool",
+                toolset="late",
+                schema=_make_schema("late_tool"),
+                handler=_dummy_handler,
+            )
+            return False
+
+        reg.register(
+            name="stable_tool",
+            toolset="stable",
+            schema=_make_schema("stable_tool"),
+            handler=_dummy_handler,
+            check_fn=lambda: True,
+        )
+        reg.register(
+            name="mutating_tool",
+            toolset="mutating",
+            schema=_make_schema("mutating_tool"),
+            handler=_dummy_handler,
+            check_fn=mutating_check,
+        )
+
+        available, unavailable = reg.check_tool_availability()
+        assert "stable" in available
+        assert any(item["name"] == "mutating" for item in unavailable)
+
 
 class TestEmojiMetadata:
     """Verify per-tool emoji registration and lookup."""
