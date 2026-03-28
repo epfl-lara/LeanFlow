@@ -128,6 +128,62 @@ print_direct_start_hint() {
   printf 'Open Gauss is ready. Start with: gauss setup\n'
 }
 
+runner_python_is_supported() {
+  [ -x "$RUNNER_VENV/bin/python" ] || return 1
+  "$RUNNER_VENV/bin/python" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info < (3, 14) else 1)
+PY
+}
+
+select_runner_python() {
+  if [ -n "${OPEN_GAUSS_INSTALLER_RUNNER_PYTHON:-}" ]; then
+    printf '%s\n' "$OPEN_GAUSS_INSTALLER_RUNNER_PYTHON"
+    return
+  fi
+
+  local candidate
+  for candidate in python3.13 python3.12 python3.11 python3; do
+    if ! command -v "$candidate" >/dev/null 2>&1; then
+      continue
+    fi
+    if "$candidate" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info < (3, 14) else 1)
+PY
+    then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  printf '%s\n' '3.13'
+}
+
+recreate_runner_venv() {
+  python3 - "$RUNNER_VENV" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+
+path = Path(sys.argv[1])
+if path.exists() or path.is_symlink():
+    shutil.rmtree(path)
+PY
+}
+
+ensure_runner_venv() {
+  local runner_python
+  runner_python="$(select_runner_python)"
+  if runner_python_is_supported; then
+    return
+  fi
+  if [ -e "$RUNNER_VENV" ] || [ -L "$RUNNER_VENV" ]; then
+    recreate_runner_venv
+  fi
+  uv venv --python "$runner_python" "$RUNNER_VENV"
+}
+
 run_local_template() {
   if [ "${#MORPH_ARGS[@]}" -gt 0 ]; then
     "$RUNNER_VENV/bin/morphcloud" devbox template run "$INSTALL_TARGET" --experimental-run-locally "${MORPH_ARGS[@]}"
@@ -149,10 +205,7 @@ if ! command -v uv >/dev/null 2>&1; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 
-if [ ! -x "$RUNNER_VENV/bin/python" ]; then
-  uv venv "$RUNNER_VENV"
-fi
-
+ensure_runner_venv
 uv pip install --python "$RUNNER_VENV/bin/python" morphcloud --upgrade
 
 printf 'Running Open Gauss installer flow locally from target: %s\n' "$INSTALL_TARGET"

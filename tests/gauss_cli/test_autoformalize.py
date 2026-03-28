@@ -984,7 +984,7 @@ def test_ensure_claude_user_plugin_state_enables_plugin_and_autoupdate(monkeypat
         base_environment={"PATH": "/usr/bin"},
     )
 
-    assert install_path == plugin_root.resolve()
+    assert install_path == plugin_root
     settings = json.loads((real_home / ".claude" / "settings.json").read_text(encoding="utf-8"))
     assert settings["extraKnownMarketplaces"]["lean4-skills"]["source"] == {
         "source": "github",
@@ -1015,7 +1015,23 @@ def test_ensure_claude_user_plugin_state_enables_plugin_and_autoupdate(monkeypat
 def test_ensure_claude_user_plugin_state_reuses_existing_install_without_cli_calls(monkeypatch, tmp_path: Path):
     real_home = tmp_path / "home"
     plugin_root = real_home / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.5"
+    marketplace_root = real_home / ".claude" / "plugins" / "marketplaces" / "lean4-skills"
     plugin_root.mkdir(parents=True)
+    marketplace_root.mkdir(parents=True)
+    known_marketplaces_path = real_home / ".claude" / "plugins" / "known_marketplaces.json"
+    known_marketplaces_path.parent.mkdir(parents=True, exist_ok=True)
+    known_marketplaces_path.write_text(
+        json.dumps(
+            {
+                "lean4-skills": {
+                    "source": {"source": "github", "repo": "cameronfreer/lean4-skills"},
+                    "installLocation": str(marketplace_root),
+                    "autoUpdate": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     installed_plugins_path = real_home / ".claude" / "plugins" / "installed_plugins.json"
     installed_plugins_path.parent.mkdir(parents=True, exist_ok=True)
     installed_plugins_path.write_text(
@@ -1048,7 +1064,92 @@ def test_ensure_claude_user_plugin_state_reuses_existing_install_without_cli_cal
         base_environment={"PATH": "/usr/bin"},
     )
 
-    assert install_path == plugin_root.resolve()
+    assert install_path == plugin_root
+
+
+def test_ensure_claude_user_plugin_state_heals_corrupted_marketplace_metadata(monkeypatch, tmp_path: Path):
+    real_home = tmp_path / "home"
+    corrupted_root = tmp_path / "managed-home" / ".claude" / "plugins" / "marketplaces" / "lean4-skills"
+    plugin_root = real_home / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.5"
+    expected_marketplace_root = real_home / ".claude" / "plugins" / "marketplaces" / "lean4-skills"
+    calls: list[list[str]] = []
+
+    installed_plugins_path = real_home / ".claude" / "plugins" / "installed_plugins.json"
+    installed_plugins_path.parent.mkdir(parents=True, exist_ok=True)
+    installed_plugins_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    "lean4@lean4-skills": [
+                        {
+                            "scope": "user",
+                            "installPath": str(plugin_root),
+                            "version": "4.3.3",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    known_marketplaces_path = real_home / ".claude" / "plugins" / "known_marketplaces.json"
+    known_marketplaces_path.write_text(
+        json.dumps(
+            {
+                "lean4-skills": {
+                    "source": {"source": "github", "repo": "cameronfreer/lean4-skills"},
+                    "installLocation": str(corrupted_root),
+                    "autoUpdate": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_run(argv, *, error_prefix, env=None, cwd=None):
+        del error_prefix, cwd
+        calls.append(list(argv))
+        assert env is not None
+        assert env["HOME"] == str(real_home)
+        if list(argv)[1:4] == ["plugin", "marketplace", "add"]:
+            expected_marketplace_root.mkdir(parents=True, exist_ok=True)
+        if list(argv)[1:3] == ["plugin", "install"]:
+            plugin_root.mkdir(parents=True, exist_ok=True)
+            installed_plugins_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "plugins": {
+                            "lean4@lean4-skills": [
+                                {
+                                    "scope": "user",
+                                    "installPath": str(plugin_root),
+                                    "version": "4.4.5",
+                                }
+                            ]
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(autoformalize, "_run", fake_run)
+
+    install_path = autoformalize._ensure_claude_user_plugin_state(
+        claude_executable="/usr/bin/claude",
+        real_home=real_home,
+        base_environment={"PATH": "/usr/bin"},
+    )
+
+    assert install_path == plugin_root
+    known_marketplaces = json.loads(known_marketplaces_path.read_text(encoding="utf-8"))
+    assert known_marketplaces["lean4-skills"]["installLocation"] == str(expected_marketplace_root)
+    assert calls == [
+        ["/usr/bin/claude", "plugin", "marketplace", "add", "cameronfreer/lean4-skills"],
+        ["/usr/bin/claude", "plugin", "install", "lean4"],
+    ]
 
 
 def test_add_claude_marketplace_ignores_already_installed_error(monkeypatch):
@@ -1207,14 +1308,16 @@ raise SystemExit(2)
     ]
     assert install_path == (
         real_home / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.5"
-    ).resolve()
+    )
 
 
 def test_sync_prewarmed_claude_plugin_links_plugin_state_into_managed_home(tmp_path: Path):
     real_home = tmp_path / "real-home"
     backend_home = tmp_path / "backend-home"
     plugin_root = real_home / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.5"
+    marketplace_root = real_home / ".claude" / "plugins" / "marketplaces" / "lean4-skills"
     plugin_root.mkdir(parents=True)
+    marketplace_root.mkdir(parents=True)
     settings_path = real_home / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(
@@ -1250,17 +1353,43 @@ def test_sync_prewarmed_claude_plugin_links_plugin_state_into_managed_home(tmp_p
         ),
         encoding="utf-8",
     )
+    known_marketplaces_path = real_home / ".claude" / "plugins" / "known_marketplaces.json"
+    known_marketplaces_path.write_text(
+        json.dumps(
+            {
+                "lean4-skills": {
+                    "source": {"source": "github", "repo": "cameronfreer/lean4-skills"},
+                    "autoUpdate": True,
+                    "installLocation": str(marketplace_root),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     staged_root = autoformalize._sync_prewarmed_claude_plugin(
         real_home=real_home,
         backend_home=backend_home,
     )
 
-    assert staged_root == plugin_root.resolve()
+    assert staged_root == (
+        backend_home / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.5"
+    )
     assert (backend_home / ".claude" / "settings.json").exists()
-    plugins_entry = backend_home / ".claude" / "plugins"
-    assert plugins_entry.exists()
-    assert plugins_entry.is_symlink() or plugins_entry.is_dir()
+    assert staged_root.exists()
+    known_marketplaces = json.loads(
+        (backend_home / ".claude" / "plugins" / "known_marketplaces.json").read_text(encoding="utf-8")
+    )
+    assert known_marketplaces["lean4-skills"]["installLocation"] == str(
+        backend_home / ".claude" / "plugins" / "marketplaces" / "lean4-skills"
+    )
+    assert isinstance(known_marketplaces["lean4-skills"]["lastUpdated"], str)
+    installed_plugins = json.loads(
+        (backend_home / ".claude" / "plugins" / "installed_plugins.json").read_text(encoding="utf-8")
+    )
+    assert installed_plugins["plugins"]["lean4@lean4-skills"][0]["installPath"] == str(staged_root)
+    assert isinstance(installed_plugins["plugins"]["lean4@lean4-skills"][0]["installedAt"], str)
+    assert isinstance(installed_plugins["plugins"]["lean4@lean4-skills"][0]["lastUpdated"], str)
 
 
 def test_build_claude_runtime_prefers_prewarmed_user_plugin(monkeypatch, tmp_path: Path):

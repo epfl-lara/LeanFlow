@@ -1458,6 +1458,7 @@ run_post_install_self_check() {
         if "$VENV_PYTHON" - "$WORKSPACE_DIR" "$REPO_ROOT" <<'PY'
 import os
 import sys
+import json
 from pathlib import Path
 
 workspace_dir = Path(sys.argv[1]).resolve()
@@ -1479,6 +1480,15 @@ plan = resolve_autoformalize_request(
 assert plan.backend_command.startswith("/lean4:prove")
 assert plan.managed_context.plugin_root.exists()
 assert plan.managed_context.mcp_config_path.exists()
+
+managed_plugins_root = plan.managed_context.backend_home / ".claude" / "plugins"
+known_marketplaces = json.loads((managed_plugins_root / "known_marketplaces.json").read_text(encoding="utf-8"))
+install_location = Path(known_marketplaces["lean4-skills"]["installLocation"])
+assert install_location.is_relative_to(managed_plugins_root / "marketplaces")
+
+installed_plugins = json.loads((managed_plugins_root / "installed_plugins.json").read_text(encoding="utf-8"))
+managed_install_path = Path(installed_plugins["plugins"]["lean4@lean4-skills"][0]["installPath"])
+assert managed_install_path.is_relative_to(managed_plugins_root / "cache" / "lean4-skills" / "lean4")
 PY
         then
             MANAGED_SELF_CHECK_STATUS="$WORKSPACE_DIR"
