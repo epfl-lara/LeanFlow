@@ -881,16 +881,21 @@ def _ensure_claude_user_plugin_state(
 
 
 def _replace_tree_link(destination: Path, source: Path) -> None:
-    if destination.exists() or destination.is_symlink():
-        if destination.is_symlink() or destination.is_file():
-            destination.unlink()
-        else:
-            shutil.rmtree(destination)
+    _remove_existing_path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
         destination.symlink_to(source, target_is_directory=source.is_dir())
     except OSError:
         shutil.copytree(source, destination, symlinks=True)
+
+
+def _remove_existing_path(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+        return
+    shutil.rmtree(path)
 
 
 def _sync_prewarmed_claude_plugin(
@@ -1489,8 +1494,7 @@ def _ensure_git_checkout(
             error_prefix="Failed to check out the managed asset revision",
         )
     else:
-        if destination.exists():
-            shutil.rmtree(destination)
+        _remove_existing_path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         if revision:
             _run(
@@ -1548,8 +1552,7 @@ def _stage_tree(*, source: Path, destination: Path, revision: str) -> None:
     if revision_file.exists() and revision_file.read_text(encoding="utf-8").strip() == revision:
         return
 
-    if destination.exists():
-        shutil.rmtree(destination)
+    _remove_existing_path(destination)
     shutil.copytree(source, destination)
     revision_file.write_text(f"{revision}\n", encoding="utf-8")
 
@@ -1683,8 +1686,7 @@ def _install_managed_claude_plugin(
     plugin_id = f"{plugin_name}@{marketplace_name}"
 
     plugin_state_root = backend_home / ".claude" / "plugins"
-    if plugin_state_root.exists():
-        shutil.rmtree(plugin_state_root)
+    _remove_existing_path(plugin_state_root)
 
     cli_env = dict(base_environment)
     cli_env["HOME"] = str(backend_home)

@@ -217,6 +217,57 @@ def test_install_managed_claude_plugin_registers_marketplace_and_returns_install
     assert calls[0][1]["HOME"] == str(backend_home)
 
 
+def test_install_managed_claude_plugin_replaces_symlinked_plugin_state(monkeypatch, tmp_path: Path):
+    backend_home = tmp_path / "claude-home"
+    marketplace_source = tmp_path / "lean4-skills"
+    plugin_source = marketplace_source / "plugins" / "lean4"
+    install_path = backend_home / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.0"
+    legacy_plugins_root = tmp_path / "legacy-plugins"
+    (marketplace_source / ".claude-plugin").mkdir(parents=True)
+    (plugin_source / ".claude-plugin").mkdir(parents=True)
+    (marketplace_source / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps({"name": "lean4-skills"}),
+        encoding="utf-8",
+    )
+    (plugin_source / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "lean4", "version": "4.4.0"}),
+        encoding="utf-8",
+    )
+    legacy_plugins_root.mkdir(parents=True)
+    plugin_state_root = backend_home / ".claude" / "plugins"
+    plugin_state_root.parent.mkdir(parents=True, exist_ok=True)
+    plugin_state_root.symlink_to(legacy_plugins_root, target_is_directory=True)
+
+    def fake_run(argv, *, error_prefix, env=None, cwd=None):
+        stdout = ""
+        if list(argv)[1:3] == ["plugin", "install"]:
+            install_path.mkdir(parents=True, exist_ok=True)
+        if list(argv)[-2:] == ["list", "--json"]:
+            stdout = json.dumps(
+                [
+                    {
+                        "id": "lean4@lean4-skills",
+                        "installPath": str(install_path),
+                    }
+                ]
+            )
+        return SimpleNamespace(stdout=stdout)
+
+    monkeypatch.setattr(autoformalize, "_run", fake_run)
+
+    result = autoformalize._install_managed_claude_plugin(
+        claude_executable="/usr/bin/claude",
+        backend_home=backend_home,
+        base_environment={"PATH": "/usr/bin"},
+        marketplace_source=marketplace_source,
+        plugin_source=plugin_source,
+    )
+
+    assert result == install_path.resolve()
+    assert not plugin_state_root.is_symlink()
+    assert install_path.exists()
+
+
 def test_resolve_uv_runner_uses_default_user_scoped_package(monkeypatch):
     monkeypatch.setattr(
         autoformalize.shutil,
