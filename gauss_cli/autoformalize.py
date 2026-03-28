@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -604,6 +605,10 @@ def _write_json_dict(path: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(dict(payload), indent=2) + "\n", encoding="utf-8")
 
 
+def _utc_now_isoformat() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def _claude_settings_path(home: Path) -> Path:
     return home / ".claude" / "settings.json"
 
@@ -772,16 +777,21 @@ def _upsert_claude_known_marketplace_entry(
     home: Path,
     *,
     install_location: Path | None = None,
+    template_entry: Mapping[str, Any] | None = None,
 ) -> None:
     known_marketplaces_path = _claude_known_marketplaces_path(home)
     payload = _load_json_dict(known_marketplaces_path)
-    entry = payload.get(LEAN4_CLAUDE_MARKETPLACE_NAME)
-    if not isinstance(entry, dict):
-        entry = {}
+    if template_entry is not None:
+        entry = dict(template_entry)
+    else:
+        entry = payload.get(LEAN4_CLAUDE_MARKETPLACE_NAME)
+        if not isinstance(entry, dict):
+            entry = {}
     entry["source"] = _claude_marketplace_source()
     entry["autoUpdate"] = True
     if install_location is not None:
         entry["installLocation"] = str(install_location)
+    entry.setdefault("lastUpdated", _utc_now_isoformat())
     payload[LEAN4_CLAUDE_MARKETPLACE_NAME] = entry
     _write_json_dict(known_marketplaces_path, payload)
 
@@ -842,19 +852,20 @@ def _write_claude_installed_plugin_entry(
     *,
     install_path: Path,
     version: str,
+    template_entry: Mapping[str, Any] | None = None,
 ) -> None:
     installed_plugins_path = _claude_installed_plugins_path(home)
     payload = _load_json_dict(installed_plugins_path)
     plugins = payload.get("plugins")
     if not isinstance(plugins, dict):
         plugins = {}
-    plugins[LEAN4_CLAUDE_PLUGIN_ID] = [
-        {
-            "scope": "user",
-            "installPath": str(install_path),
-            "version": version,
-        }
-    ]
+    entry = dict(template_entry or {})
+    entry["scope"] = str(entry.get("scope", "") or "user")
+    entry["installPath"] = str(install_path)
+    entry["version"] = version
+    entry.setdefault("installedAt", _utc_now_isoformat())
+    entry.setdefault("lastUpdated", entry["installedAt"])
+    plugins[LEAN4_CLAUDE_PLUGIN_ID] = [entry]
     payload["version"] = 2
     payload["plugins"] = plugins
     _write_json_dict(installed_plugins_path, payload)
@@ -1079,6 +1090,7 @@ def _sync_prewarmed_claude_plugin(
     managed_install_path = _claude_plugin_cache_root(backend_home) / plugin_version
     _replace_tree_link(managed_install_path, plugin_root)
 
+    marketplace_entry = _read_claude_known_marketplace_entry(real_home)
     marketplace_root = _find_claude_marketplace_root(real_home)
     managed_marketplace_root = _claude_marketplace_root(backend_home)
     if marketplace_root is not None:
@@ -1090,11 +1102,13 @@ def _sync_prewarmed_claude_plugin(
     _upsert_claude_known_marketplace_entry(
         backend_home,
         install_location=managed_marketplace_root,
+        template_entry=marketplace_entry,
     )
     _write_claude_installed_plugin_entry(
         backend_home,
         install_path=managed_install_path,
         version=plugin_version,
+        template_entry=plugin_entry,
     )
     return managed_install_path
 

@@ -1383,10 +1383,13 @@ def test_sync_prewarmed_claude_plugin_links_plugin_state_into_managed_home(tmp_p
     assert known_marketplaces["lean4-skills"]["installLocation"] == str(
         backend_home / ".claude" / "plugins" / "marketplaces" / "lean4-skills"
     )
+    assert isinstance(known_marketplaces["lean4-skills"]["lastUpdated"], str)
     installed_plugins = json.loads(
         (backend_home / ".claude" / "plugins" / "installed_plugins.json").read_text(encoding="utf-8")
     )
     assert installed_plugins["plugins"]["lean4@lean4-skills"][0]["installPath"] == str(staged_root)
+    assert isinstance(installed_plugins["plugins"]["lean4@lean4-skills"][0]["installedAt"], str)
+    assert isinstance(installed_plugins["plugins"]["lean4@lean4-skills"][0]["lastUpdated"], str)
 
 
 def test_build_claude_runtime_prefers_prewarmed_user_plugin(monkeypatch, tmp_path: Path):
