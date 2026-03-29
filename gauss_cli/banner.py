@@ -442,6 +442,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         right_lines.append(f"[{text}]`/autoprove`[/] [dim {dim}]autonomous Lean workflow[/]")
         right_lines.append(f"[{text}]`/formalize`[/] [dim {dim}]interactive draft plus prove[/]")
         right_lines.append(f"[{text}]`/autoformalize`[/] [dim {dim}]autonomous draft plus autoprove[/]")
+        right_lines.append(f"[{text}]`/swarm`[/] [dim {dim}]track, attach, or cancel workflow agents[/]")
         right_lines.append(f"[{text}]`/help`[/] [dim {dim}]commands and diagnostics[/]")
     else:
         right_lines.append(f"[bold {accent}]Primary Workflow[/]")
@@ -452,6 +453,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         right_lines.append(f"[{text}]`/autoprove`[/] [dim {dim}]{long_dash} spawn an autonomous managed proving agent[/]")
         right_lines.append(f"[{text}]`/formalize`[/] [dim {dim}]{long_dash} spawn an interactive managed formalization agent[/]")
         right_lines.append(f"[{text}]`/autoformalize`[/] [dim {dim}]{long_dash} spawn an autonomous managed formalization agent[/]")
+        right_lines.append(f"[{text}]`/swarm`[/] [dim {dim}]{long_dash} track, attach, or cancel workflow agents[/]")
         right_lines.append(f"[{text}]`/help`[/] [dim {dim}]{long_dash} session and diagnostics commands[/]")
         right_lines.append(f"[dim {dim}]Bundled skills and user-managed MCP are off by default.[/]")
 
