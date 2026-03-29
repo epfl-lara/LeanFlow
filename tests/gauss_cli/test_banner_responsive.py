@@ -185,6 +185,30 @@ def test_build_welcome_banner_hides_tool_inventory(monkeypatch):
     assert "Available Tools" not in exported
 
 
+def test_build_welcome_banner_mentions_swarm_in_primary_workflow(monkeypatch):
+    from rich.console import Console
+
+    from gauss_cli.banner import build_welcome_banner
+
+    monkeypatch.setattr(
+        "gauss_cli.banner.shutil.get_terminal_size",
+        lambda *_args, **_kwargs: __import__("os").terminal_size((120, 24)),
+    )
+
+    console = Console(record=True, width=120)
+    build_welcome_banner(
+        console=console,
+        model="anthropic/claude-opus-4.1",
+        cwd="/root/GaussWorkspace",
+        session_id=None,
+        context_length=None,
+    )
+
+    exported = console.export_text()
+    assert "/swarm" in exported
+    assert "track, attach, or cancel workflow agents" in exported
+
+
 def test_build_welcome_banner_falls_back_to_ascii_panel(monkeypatch):
     from rich.console import Console
 

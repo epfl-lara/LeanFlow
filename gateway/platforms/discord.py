@@ -1475,6 +1475,26 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_draft(interaction: discord.Interaction, claim: str = ""):
             await self._run_simple_slash(interaction, f"/draft {claim}".strip())
 
+        @tree.command(name="review", description="Show how to launch managed Lean review from the CLI")
+        @discord.app_commands.describe(target="Optional file, theorem, or scope to review.")
+        async def slash_review(interaction: discord.Interaction, target: str = ""):
+            await self._run_simple_slash(interaction, f"/review {target}".strip())
+
+        @tree.command(name="checkpoint", description="Show how to launch managed Lean checkpoints from the CLI")
+        @discord.app_commands.describe(target="Optional path or scope to checkpoint.")
+        async def slash_checkpoint(interaction: discord.Interaction, target: str = ""):
+            await self._run_simple_slash(interaction, f"/checkpoint {target}".strip())
+
+        @tree.command(name="refactor", description="Show how to launch managed Lean refactoring from the CLI")
+        @discord.app_commands.describe(target="Optional file, declaration, or scope to refactor.")
+        async def slash_refactor(interaction: discord.Interaction, target: str = ""):
+            await self._run_simple_slash(interaction, f"/refactor {target}".strip())
+
+        @tree.command(name="golf", description="Show how to launch managed Lean proof golfing from the CLI")
+        @discord.app_commands.describe(target="Optional file, declaration, or scope to golf.")
+        async def slash_golf(interaction: discord.Interaction, target: str = ""):
+            await self._run_simple_slash(interaction, f"/golf {target}".strip())
+
         @tree.command(name="autoprove", description="Show how to launch autonomous Lean proving from the CLI")
         @discord.app_commands.describe(scope="Optional file or theorem to pass through.")
         async def slash_autoprove(interaction: discord.Interaction, scope: str = ""):

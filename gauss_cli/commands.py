@@ -23,6 +23,10 @@ COMMANDS_BY_CATEGORY = {
     "Workflow": {
         "/prove": "Spawn a managed backend agent for the guided Lean prove workflow",
         "/draft": "Spawn a managed backend agent for the Lean draft workflow",
+        "/review": "Spawn a managed backend agent for the read-only Lean review workflow",
+        "/checkpoint": "Spawn a managed backend agent for the Lean checkpoint workflow",
+        "/refactor": "Spawn a managed backend agent for the Lean refactor workflow",
+        "/golf": "Spawn a managed backend agent for the Lean proof golfing workflow",
         "/autoprove": "Spawn a managed backend agent for the autonomous Lean autoprove workflow",
         "/formalize": "Spawn a managed backend agent for the interactive Lean formalize workflow",
         "/autoformalize": "Spawn a managed backend agent for the autonomous Lean autoformalize workflow",

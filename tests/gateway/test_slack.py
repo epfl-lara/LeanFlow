@@ -797,6 +797,10 @@ class TestSlashCommands:
         [
             ("prove Main.lean", "/prove Main.lean"),
             ("draft Theorem 3.1", "/draft Theorem 3.1"),
+            ("review Main.lean", "/review Main.lean"),
+            ("checkpoint Main.lean", "/checkpoint Main.lean"),
+            ("refactor Main.lean", "/refactor Main.lean"),
+            ("golf Main.lean", "/golf Main.lean"),
             ("autoprove Main.lean", "/autoprove Main.lean"),
             ("formalize --source paper.pdf Theorem 3.1", "/formalize --source paper.pdf Theorem 3.1"),
             ("autoformalize Formalize theorem 1.1", "/autoformalize Formalize theorem 1.1"),

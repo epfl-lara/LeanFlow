@@ -26,6 +26,8 @@ from gauss_cli.project import (
 
 AUTOFORMALIZE_USAGE = (
     "Usage: /prove [scope or flags] | /draft [topic or flags] | "
+    "/review [target or flags] | /checkpoint [target or flags] | "
+    "/refactor [target or flags] | /golf [target or flags] | "
     "/autoprove [scope or flags] | /formalize [topic or flags] | "
     "/autoformalize [topic or flags]"
 )
@@ -59,11 +61,31 @@ _AUTOFORMALIZE_BACKEND_ALIASES = {
 _WORKFLOW_ALIAS_MAP = {
     "/prove": ("prove", "/prove", "/lean4:prove"),
     "/draft": ("draft", "/draft", "/lean4:draft"),
+    "/review": ("review", "/review", "/lean4:review"),
+    "/checkpoint": ("checkpoint", "/checkpoint", "/lean4:checkpoint"),
+    "/refactor": ("refactor", "/refactor", "/lean4:refactor"),
+    "/golf": ("golf", "/golf", "/lean4:golf"),
     "/autoprove": ("autoprove", "/autoprove", "/lean4:autoprove"),
+    "/auto-proof": ("autoprove", "/autoprove", "/lean4:autoprove"),
     "/auto_proof": ("autoprove", "/autoprove", "/lean4:autoprove"),
     "/formalize": ("formalize", "/formalize", "/lean4:formalize"),
     "/autoformalize": ("autoformalize", "/autoformalize", "/lean4:autoformalize"),
+    "/auto-formalize": ("autoformalize", "/autoformalize", "/lean4:autoformalize"),
     "/auto_formalize": ("autoformalize", "/autoformalize", "/lean4:autoformalize"),
+}
+
+_FORGIVING_WORKFLOW_ALIAS_MAP = {
+    "prove": "/prove",
+    "draft": "/draft",
+    "review": "/review",
+    "checkpoint": "/checkpoint",
+    "refactor": "/refactor",
+    "golf": "/golf",
+    "autoprove": "/autoprove",
+    "auto-proof": "/autoprove",
+    "formalize": "/formalize",
+    "autoformalize": "/autoformalize",
+    "auto-formalize": "/autoformalize",
 }
 
 
@@ -238,6 +260,23 @@ def cli_only_managed_workflow_message(command_label: str = "/autoformalize") -> 
 def cli_only_autoformalize_message() -> str:
     """Return the messaging-safe `/autoformalize` explanation."""
     return cli_only_managed_workflow_message("/autoformalize")
+
+
+def rewrite_forgiving_managed_command(command: str) -> str | None:
+    """Rewrite obvious managed-workflow intents like ``prove`` into slash commands."""
+    if not isinstance(command, str):
+        return None
+    text = command.strip()
+    if not text or text.startswith("/"):
+        return None
+
+    parts = text.split(maxsplit=1)
+    command_name = parts[0].strip().lower().replace("_", "-")
+    remainder = parts[1].strip() if len(parts) > 1 else ""
+    canonical = _FORGIVING_WORKFLOW_ALIAS_MAP.get(command_name)
+    if not canonical:
+        return None
+    return canonical if not remainder else f"{canonical} {remainder}"
 
 
 def resolve_autoformalize_request(

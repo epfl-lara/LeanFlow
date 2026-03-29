@@ -93,6 +93,10 @@ async def test_registers_managed_workflow_slashes_and_drops_reload_mcp(adapter):
 
     assert "prove" in adapter._client.tree.commands
     assert "draft" in adapter._client.tree.commands
+    assert "review" in adapter._client.tree.commands
+    assert "checkpoint" in adapter._client.tree.commands
+    assert "refactor" in adapter._client.tree.commands
+    assert "golf" in adapter._client.tree.commands
     assert "autoprove" in adapter._client.tree.commands
     assert "formalize" in adapter._client.tree.commands
     assert "autoformalize" in adapter._client.tree.commands

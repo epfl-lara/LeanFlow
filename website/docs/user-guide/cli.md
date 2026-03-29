@@ -22,6 +22,10 @@ Run this inside the interactive CLI:
 
 ```text
 /prove
+/review Main.lean
+/checkpoint Main.lean
+/refactor Main.lean
+/golf Main.lean
 /draft "Every continuous function on a compact set is bounded"
 /autoprove
 /formalize --source ./paper.pdf "Theorem 3.2"
@@ -34,6 +38,10 @@ Gauss stages the managed Lean runtime, yields the terminal to the configured bac
 
 - `/prove`
 - `/draft`
+- `/review`
+- `/checkpoint`
+- `/refactor`
+- `/golf`
 - `/autoprove`
 - `/formalize`
 - `/autoformalize`
@@ -46,5 +54,6 @@ Gauss stages the managed Lean runtime, yields the terminal to the configured bac
 ## Compatibility Notes
 
 - `/handoff` is no longer a public generic workflow and only survives as a compatibility alias to `/autoformalize`
-- bundled skill slash commands are not part of the default Gauss surface
+- only a curated subset of bundled skill slash commands are exposed directly by Gauss
+- inside the interactive CLI, common missing-slash forms like `prove ...`, `review ...`, and `auto-proof ...` are rewritten automatically
 - user-managed MCP commands are not part of the default Gauss surface

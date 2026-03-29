@@ -102,9 +102,15 @@ def _shared_bundle(
     [
         ("/prove File.lean", "prove", "/prove", "/lean4:prove File.lean"),
         ("/draft Theorem 3.2", "draft", "/draft", "/lean4:draft Theorem 3.2"),
+        ("/review Main.lean", "review", "/review", "/lean4:review Main.lean"),
+        ("/checkpoint Main.lean", "checkpoint", "/checkpoint", "/lean4:checkpoint Main.lean"),
+        ("/refactor Main.lean:42", "refactor", "/refactor", "/lean4:refactor Main.lean:42"),
+        ("/golf Main.lean --dry-run", "golf", "/golf", "/lean4:golf Main.lean --dry-run"),
         ("/autoprove --max-cycles=4", "autoprove", "/autoprove", "/lean4:autoprove --max-cycles=4"),
+        ("/auto-proof Main.lean", "autoprove", "/autoprove", "/lean4:autoprove Main.lean"),
         ("/auto_proof Main.lean", "autoprove", "/autoprove", "/lean4:autoprove Main.lean"),
         ("/formalize --source ./paper.pdf", "formalize", "/formalize", "/lean4:formalize --source ./paper.pdf"),
+        ("/auto-formalize Theorem 3.2", "autoformalize", "/autoformalize", "/lean4:autoformalize Theorem 3.2"),
         ("/autoformalize --source ./paper.pdf --claim-select=first --out=Paper.lean", "autoformalize", "/autoformalize", "/lean4:autoformalize --source ./paper.pdf --claim-select=first --out=Paper.lean"),
     ],
 )
@@ -119,6 +125,16 @@ def test_parse_managed_workflow_command_normalizes_aliases(
     assert spec.workflow_kind == kind
     assert spec.canonical_command == canonical
     assert spec.backend_command == backend
+
+
+def test_rewrite_forgiving_managed_command_recognizes_missing_slash_aliases():
+    assert autoformalize.rewrite_forgiving_managed_command("prove Main.lean") == "/prove Main.lean"
+    assert autoformalize.rewrite_forgiving_managed_command("review changed files") == "/review changed files"
+    assert autoformalize.rewrite_forgiving_managed_command("checkpoint Main.lean") == "/checkpoint Main.lean"
+    assert autoformalize.rewrite_forgiving_managed_command("auto_formalize theorem") == "/autoformalize theorem"
+    assert autoformalize.rewrite_forgiving_managed_command("auto-proof Main.lean") == "/autoprove Main.lean"
+    assert autoformalize.rewrite_forgiving_managed_command("/prove Main.lean") is None
+    assert autoformalize.rewrite_forgiving_managed_command("please prove Main.lean") is None
 
 
 def test_write_mcp_config_uses_managed_mcp_servers_payload(tmp_path: Path):
