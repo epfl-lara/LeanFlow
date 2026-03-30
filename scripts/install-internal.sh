@@ -205,6 +205,40 @@ log_error() {
     printf '%b%s%b %s\n' "${RED}" "${ERROR_MARK}" "${NC}" "$1"
 }
 
+print_captured_output() {
+    local output_file="$1"
+    if ! [ -s "$output_file" ]; then
+        return
+    fi
+    printf '%s\n' "Captured command output:"
+    sed 's/^/  /' "$output_file"
+}
+
+run_command_with_diagnostics() {
+    local error_message="$1"
+    local recovery_hint="$2"
+    shift 2
+
+    local output_file
+    local status
+    output_file="$(mktemp /tmp/opengauss-command.XXXXXX.log)"
+
+    "$@" >"$output_file" 2>&1
+    status=$?
+    if [ "$status" -eq 0 ]; then
+        rm -f "$output_file"
+        return 0
+    fi
+    log_error "$error_message"
+    print_captured_output "$output_file"
+    rm -f "$output_file"
+
+    if [ -n "$recovery_hint" ]; then
+        log_info "$recovery_hint"
+    fi
+    return "$status"
+}
+
 refresh_paths() {
     VENV_DIR="$REPO_ROOT/venv"
     VENV_BIN="$VENV_DIR/bin"
@@ -617,8 +651,21 @@ ensure_lean_toolchain() {
     if ! command -v elan >/dev/null 2>&1 && [ ! -x "$HOME/.elan/bin/elan" ]; then
         local elan_script
         elan_script="$(mktemp /tmp/elan-init.XXXXXX.sh)"
-        curl -L https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o "$elan_script"
-        bash "$elan_script" -y
+        if ! run_command_with_diagnostics \
+            "Failed to download the elan installer." \
+            "Try: curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o /tmp/elan-init.sh && bash /tmp/elan-init.sh -y" \
+            curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o "$elan_script"; then
+            rm -f "$elan_script"
+            exit 1
+        fi
+        if ! run_command_with_diagnostics \
+            "Failed to install elan." \
+            "Try: bash /tmp/elan-init.sh -y && export PATH=\"\$HOME/.elan/bin:\$PATH\" && elan --version" \
+            bash "$elan_script" -y; then
+            rm -f "$elan_script"
+            exit 1
+        fi
+        rm -f "$elan_script"
     fi
 
     export PATH="$HOME/.elan/bin:$PATH"
@@ -628,8 +675,22 @@ ensure_lean_toolchain() {
         exit 1
     fi
 
-    elan toolchain install "$LEAN_TOOLCHAIN" >/dev/null 2>&1 || true
-    elan default "$LEAN_TOOLCHAIN" >/dev/null 2>&1
+    if elan toolchain list 2>/dev/null | awk '{print $1}' | grep -Fx "$LEAN_TOOLCHAIN" >/dev/null 2>&1; then
+        log_info "Lean toolchain $LEAN_TOOLCHAIN is already installed."
+    else
+        if ! run_command_with_diagnostics \
+            "Failed to install Lean toolchain $LEAN_TOOLCHAIN." \
+            "Try: export PATH=\"\$HOME/.elan/bin:\$PATH\" && elan toolchain install \"$LEAN_TOOLCHAIN\" && elan default \"$LEAN_TOOLCHAIN\" && lake --version" \
+            elan toolchain install "$LEAN_TOOLCHAIN"; then
+            exit 1
+        fi
+    fi
+    if ! run_command_with_diagnostics \
+        "Failed to select Lean toolchain $LEAN_TOOLCHAIN as the default." \
+        "Try: export PATH=\"\$HOME/.elan/bin:\$PATH\" && elan default \"$LEAN_TOOLCHAIN\" && lake --version" \
+        elan default "$LEAN_TOOLCHAIN"; then
+        exit 1
+    fi
 
     if ! command -v lake >/dev/null 2>&1; then
         log_error "lake is not available after configuring Lean."
@@ -1350,7 +1411,6 @@ fi
 
 cd "$WORKSPACE_DIR"
 if [ -t 0 ] && [ -t 1 ]; then
-  GAUSS_FORCE_FIRST_TIME_SETUP=1 gauss setup || true
   exec bash -i
 fi
 if [ "$launch_gauss" -eq 1 ]; then
@@ -1621,14 +1681,7 @@ run_setup_wizard() {
         log_info "Skipping setup wizard prompt because the main provider was auto-configured. Run \`gauss setup\` any time to review or change it."
         return
     fi
-
-    echo
-    read -p "Would you like to run the setup wizard now? (configure API keys + model) [Y/n] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-        echo
-        "$VENV_PYTHON" -m gauss_cli.main setup
-    fi
+    log_info "Skipping setup wizard prompt in auto mode; run 'gauss setup' later to configure keys or models."
 }
 
 main "$@"
