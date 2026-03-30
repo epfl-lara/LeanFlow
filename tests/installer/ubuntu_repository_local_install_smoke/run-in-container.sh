@@ -62,7 +62,7 @@ if grep -F "Skipping managed /prove staging verification" "$INSTALL_LOG" >/dev/n
     die "expected installer managed /prove verification to run in the Lean workspace"
 fi
 if grep -F "Would you like to run the setup wizard now?" "$INSTALL_LOG" >/dev/null; then
-    die "expected installer to skip the setup wizard prompt when a main provider was auto-configured"
+    die "expected installer auto mode to stay non-interactive"
 fi
 if [ "$PATH_HAS_LOCAL_BIN" -ne 1 ] && command -v gauss >/dev/null 2>&1; then
     die "expected gauss to stay off PATH until the shell is reloaded"
@@ -194,8 +194,28 @@ PY
 NO_PROVIDER_SUMMARY="$(gauss-launch-session --print-summary)"
 printf '%s\n' "$NO_PROVIDER_SUMMARY"
 [[ "$NO_PROVIDER_SUMMARY" == *"No staged OpenRouter, Anthropic, or OpenAI key found for the main interactive provider."* ]] || die "expected missing-provider summary"
-grep -F "GAUSS_FORCE_FIRST_TIME_SETUP=1 gauss setup || true" "$HOME/.local/bin/gauss-launch-session" >/dev/null || die "expected forced first-time setup handoff in launcher"
+if grep -F "GAUSS_FORCE_FIRST_TIME_SETUP=1 gauss setup || true" "$HOME/.local/bin/gauss-launch-session" >/dev/null; then
+    die "expected launcher to stop forcing gauss setup"
+fi
 grep -F "exec bash -i" "$HOME/.local/bin/gauss-launch-session" >/dev/null || die "expected interactive shell fallback in launcher"
 mv "$GAUSS_HOME/.env.backup" "$GAUSS_HOME/.env"
+
+echo "==> Verifying Lean bootstrap failures surface useful diagnostics"
+BAD_TOOLCHAIN_HOME="/tmp/gauss-home-bad-toolchain"
+BAD_TOOLCHAIN_LOG="/tmp/opengauss-bad-toolchain.log"
+BAD_TOOLCHAIN_VALUE="leanprover/lean4:v0.0.0-opengauss-smoke"
+rm -rf "$BAD_TOOLCHAIN_HOME" "$BAD_TOOLCHAIN_LOG"
+if GAUSS_LEAN_TOOLCHAIN="$BAD_TOOLCHAIN_VALUE" ./scripts/install-internal.sh \
+    --gauss-home "$BAD_TOOLCHAIN_HOME" \
+    --workspace-dir /tmp/gauss-workspace-bad-toolchain \
+    --skip-system-packages \
+    --skip-setup \
+    >"$BAD_TOOLCHAIN_LOG" 2>&1; then
+    cat "$BAD_TOOLCHAIN_LOG"
+    die "expected invalid Lean toolchain bootstrap to fail"
+fi
+grep -F "Failed to install Lean toolchain $BAD_TOOLCHAIN_VALUE." "$BAD_TOOLCHAIN_LOG" >/dev/null || die "expected Lean toolchain failure message"
+grep -F "Captured command output:" "$BAD_TOOLCHAIN_LOG" >/dev/null || die "expected captured elan output"
+grep -F "Try: export PATH=\"\$HOME/.elan/bin:\$PATH\" && elan toolchain install \"$BAD_TOOLCHAIN_VALUE\"" "$BAD_TOOLCHAIN_LOG" >/dev/null || die "expected manual recovery hint"
 
 echo "==> ubuntu_repository_local_install_smoke passed"
