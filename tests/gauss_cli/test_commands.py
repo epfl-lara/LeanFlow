@@ -8,6 +8,7 @@ from gauss_cli.commands import COMMANDS, SlashCommandCompleter
 
 # All commands that must be present in the shared COMMANDS dict.
 EXPECTED_COMMANDS = {
+    "/chat",
     "/project",
     "/prove",
     "/draft",
@@ -56,6 +57,7 @@ class TestCommands:
     def test_shared_commands_include_project_and_workflow_entries(self):
         """Gauss ships project management plus managed workflow commands."""
         assert COMMANDS["/paste"] == "Check clipboard for an image and attach it"
+        assert COMMANDS["/chat"] == "Ask a plain-language question before choosing a Gauss project"
         assert COMMANDS["/project"] == "Create, convert, inspect, or switch the active Gauss project"
         assert COMMANDS["/prove"] == "Spawn a managed backend agent for the guided Lean prove workflow"
         assert COMMANDS["/draft"] == "Spawn a managed backend agent for the Lean draft workflow"

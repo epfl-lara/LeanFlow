@@ -17,7 +17,8 @@ from prompt_toolkit.completion import Completer, Completion
 
 # Commands organized by category for better help display
 COMMANDS_BY_CATEGORY = {
-    "Project": {
+    "Start Here": {
+        "/chat": "Ask a plain-language question before choosing a Gauss project",
         "/project": "Create, convert, inspect, or switch the active Gauss project",
     },
     "Workflow": {

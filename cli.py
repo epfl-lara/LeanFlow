@@ -1280,6 +1280,7 @@ class GaussCLI:
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
         self._project_override_root: Optional[Path] = None
+        self._chat_mode_enabled = False
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -2355,8 +2356,8 @@ class GaussCLI:
             _cprint(f"\n  {_DIM}Active project: {project_summary}{_RST}")
         else:
             _cprint(
-                f"\n  {_DIM}No active project — use /project init, /project convert, "
-                f"/project create <path>, or /project use <path>.{_RST}"
+                f"\n  {_DIM}No active project — use /chat for plain-language help, or /project init, "
+                f"/project convert, /project create <path>, or /project use <path>.{_RST}"
             )
 
         for category, commands in COMMANDS_BY_CATEGORY.items():
@@ -2372,8 +2373,8 @@ class GaussCLI:
                 )
 
         _cprint(
-            f"\n  {_DIM}Tip: Use /project first, then launch /prove, /review, /checkpoint, "
-            f"/refactor, /golf, /draft, /autoprove, /formalize, or /autoformalize.{_RST}"
+            f"\n  {_DIM}Tip: Start with /chat if you want orientation first. Use /project when you're ready to work in a Lean repo, "
+            f"then launch /prove, /review, /checkpoint, /refactor, /golf, /draft, /autoprove, /formalize, or /autoformalize.{_RST}"
         )
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
@@ -3307,6 +3308,7 @@ class GaussCLI:
         """Return whether *command* remains available before project selection."""
         cmd_lower = command.lower().strip()
         allowed_prefixes = (
+            "/chat",
             "/project",
             "/help",
             "/quit",
@@ -3341,9 +3343,26 @@ class GaussCLI:
             f"{prefix} Use /project init, /project convert, /project create <path>, or /project use <path> first.",
         )
         self._print_surface_notice(
+            "[dim]If you only want orientation first, run `/chat` and ask a plain-language question.[/]",
+            "If you only want orientation first, run /chat and ask a plain-language question.",
+        )
+        self._print_surface_notice(
             f"[dim]{detail}[/]",
             detail,
         )
+
+    def _chat_mode_active(self) -> bool:
+        """Return whether plain-text chat is allowed before project selection."""
+        return bool(getattr(self, "_chat_mode_enabled", False))
+
+    def _plain_input_requires_project(self) -> bool:
+        """Return True when a non-command message should be blocked by project lock."""
+        if not self._project_lock_enabled():
+            return False
+        if self._chat_mode_active():
+            return False
+        project, _source, _error = self._project_state()
+        return project is None
 
     def _enforce_project_lock(self, command: str) -> bool:
         """Return True when the command should be blocked by the interactive project lock."""
@@ -3357,6 +3376,57 @@ class GaussCLI:
         command_label = command.split()[0].strip() or "/chat"
         self._print_project_lock_notice(command_label=command_label)
         return True
+
+    def _handle_chat_command(self, cmd: str):
+        """Handle `/chat` onboarding mode before project selection."""
+        parts = cmd.strip().split(maxsplit=1)
+        payload = parts[1].strip() if len(parts) > 1 else ""
+        lowered = payload.lower()
+
+        if not payload or lowered in {"on", "enable", "start"}:
+            self._chat_mode_enabled = True
+            self._print_surface_notice(
+                "[bold green]`/chat` is on.[/] "
+                "[dim]Plain text now goes to the main interactive provider even without an active Gauss project. "
+                "Use `/chat off` to go back to project-first mode.[/]",
+                "`/chat` is on. Plain text now goes to the main interactive provider even without an active Gauss project. Use /chat off to go back to project-first mode.",
+            )
+            return
+
+        if lowered in {"off", "disable", "stop"}:
+            self._chat_mode_enabled = False
+            self._print_surface_notice(
+                "[bold yellow]`/chat` is off.[/] "
+                "[dim]Plain text without an active project will again prompt you to use `/project` first.[/]",
+                "`/chat` is off. Plain text without an active project will again prompt you to use /project first.",
+            )
+            return
+
+        if lowered == "status":
+            if self._chat_mode_active():
+                self._print_surface_notice(
+                    "[bold green]`/chat` is currently on.[/]",
+                    "`/chat` is currently on.",
+                )
+            else:
+                self._print_surface_notice(
+                    "[bold yellow]`/chat` is currently off.[/]",
+                    "`/chat` is currently off.",
+                )
+            return
+
+        self._chat_mode_enabled = True
+        self._print_surface_notice(
+            "[dim]`/chat` is on — sending your message to the main interactive provider.[/]",
+            "`/chat` is on - sending your message to the main interactive provider.",
+        )
+        if hasattr(self, "_pending_input") and hasattr(self._pending_input, "put"):
+            self._pending_input.put(payload)
+        else:
+            self._print_surface_notice(
+                "[bold yellow]Chat queue is not available in this mode.[/]",
+                "Chat queue is not available in this mode.",
+            )
 
     def _setup_swarm_completion_callback(self):
         """Wire up a one-time callback so finished swarm tasks notify the TUI."""
@@ -3866,6 +3936,8 @@ class GaussCLI:
         
         if cmd_lower in ("/quit", "/exit", "/q"):
             return False
+        elif cmd_lower == "/chat" or cmd_lower.startswith("/chat "):
+            self._handle_chat_command(cmd_original)
         elif cmd_lower == "/help":
             self.show_help()
         elif cmd_lower == "/project" or cmd_lower.startswith("/project "):
@@ -6172,10 +6244,10 @@ class GaussCLI:
         try:
             from gauss_cli.skin_engine import get_active_skin
             _welcome_skin = get_active_skin()
-            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Gauss! Type your message or /help for commands.")
+            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Gauss! Type /chat for orientation or /help for commands.")
             _welcome_color = _welcome_skin.get_color("banner_text", "#FFF8DC")
         except Exception:
-            _welcome_text = "Welcome to Gauss! Type your message or /help for commands."
+            _welcome_text = "Welcome to Gauss! Type /chat for orientation or /help for commands."
             _welcome_color = "#FFF8DC"
         self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
         self.console.print()
@@ -7179,11 +7251,9 @@ class GaussCLI:
                                 app.exit()
                         continue
 
-                    if self._project_lock_enabled():
-                        project, _source, _error = self._project_state()
-                        if project is None:
-                            self._print_project_lock_notice(command_label="/chat")
-                            continue
+                    if self._plain_input_requires_project():
+                        self._print_project_lock_notice(command_label="/chat")
+                        continue
                     
                     # Expand paste references back to full content
                     import re as _re

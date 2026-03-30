@@ -347,6 +347,34 @@ def test_project_lock_blocks_workflow_commands_before_project_selection():
     rendered = "\n".join(call.args[0] for call in cli_obj.console.print.call_args_list)
     assert "Gauss needs an active project before `/prove`." in rendered
     assert "/project init" in rendered
+    assert "/chat" in rendered
+
+
+def test_chat_command_enables_chat_mode_before_project_selection():
+    cli_obj = _make_cli()
+    cli_obj._app = object()
+    cli_obj._project_state = MagicMock(
+        return_value=(None, "ambient", "No active Gauss project found.")
+    )
+
+    assert cli_obj._plain_input_requires_project() is True
+    assert cli_obj.process_command("/chat") is True
+
+    assert cli_obj._chat_mode_enabled is True
+    assert cli_obj._plain_input_requires_project() is False
+    rendered = "\n".join(call.args[0] for call in cli_obj.console.print.call_args_list)
+    assert "`/chat` is on." in rendered
+
+
+def test_chat_command_with_payload_queues_plain_message():
+    cli_obj = _make_cli()
+    cli_obj._app = object()
+    cli_obj._pending_input = MagicMock()
+
+    assert cli_obj.process_command("/chat Explain what /project init does") is True
+
+    assert cli_obj._chat_mode_enabled is True
+    cli_obj._pending_input.put.assert_called_once_with("Explain what /project init does")
 
 
 def test_handoff_alias_rewrites_to_autoformalize():
