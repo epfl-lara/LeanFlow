@@ -914,11 +914,11 @@ repo_root = sys.argv[2]
 shell_configs = [Path(arg).expanduser() for arg in sys.argv[3:]]
 
 block = f"""# >>> gauss workflow installer env >>>
-export GAUSS_HOME="{gauss_home}"
-export GAUSS_INSTALL_ROOT="{repo_root}"
-if [ -f "{gauss_home}/.env" ]; then
+export GAUSS_HOME="${{GAUSS_HOME:-{gauss_home}}}"
+export GAUSS_INSTALL_ROOT="${{GAUSS_INSTALL_ROOT:-{repo_root}}}"
+if [ -f "$GAUSS_HOME/.env" ]; then
   set -a
-  . "{gauss_home}/.env"
+  . "$GAUSS_HOME/.env"
   set +a
 fi
 export PATH="$HOME/.local/bin:{repo_root}/venv/bin:$HOME/.elan/bin:$PATH"
@@ -1100,20 +1100,20 @@ guide_html = f"""<!DOCTYPE html>
     <a href="https://github.com/math-inc/OpenGauss" target="_blank" rel="noreferrer">Open repo</a>
   </header>
   <section class="hero">
-    <p>You do not need to understand MCP, marketplace plugins, or agent orchestration to use Open Gauss. If you just want orientation first, start the CLI and type <code>/chat</code>. If you already have a Lean repo, use <code>/project init</code>. If you want a new repo, use <code>/project create &lt;path&gt; --template-source &lt;template-or-git-url&gt;</code>.</p>
+    <p>You do not need to understand MCP, marketplace plugins, or agent orchestration to use Open Gauss. If you just want orientation first, start the CLI and type <code>/start</code> or <code>/chat</code>. If you already have a Lean repo, use <code>/project init</code>. If you want a new repo, use <code>/project create &lt;path&gt; --template-source &lt;template-or-git-url&gt;</code>.</p>
   </section>
   <section class="callout">
     <strong>30-second version</strong>
     <ul>
-      <li><strong>Morph</strong>: claim or save the session early if Morph offers it, then use <code>gauss-open-guide</code> or <code>/chat</code>.</li>
-      <li><strong>Local install</strong>: run <code>gauss-open-guide</code> or <code>gauss</code>, then start with <code>/chat</code> or <code>/project init</code>.</li>
+      <li><strong>Morph</strong>: claim or save the session early if Morph offers it, then use <code>gauss-open-guide</code> or <code>/start</code>.</li>
+      <li><strong>Local install</strong>: run <code>gauss-open-guide</code> or <code>gauss</code>, then start with <code>/start</code>, <code>/chat</code>, or <code>/project init</code>.</li>
       <li><strong>Lean work starts after project selection</strong>: use <code>/prove</code>, <code>/review</code>, <code>/draft</code>, or <code>/autoprove</code> once a project is active.</li>
     </ul>
   </section>
   <section class="grid">
     <div class="card">
       <strong>Use These First</strong>
-      <p><code>gauss-open-guide</code><br><code>gauss</code><br><code>/chat</code><br><code>/project init</code></p>
+      <p><code>gauss-open-guide</code><br><code>gauss</code><br><code>/start</code><br><code>/chat</code><br><code>/project init</code></p>
     </div>
     <div class="card">
       <strong>If You Opened This In Morph</strong>
@@ -1140,6 +1140,7 @@ guide_html = f"""<!DOCTYPE html>
     <h2>Start Here</h2>
     <ol>
       <li>Run <code>gauss</code>.</li>
+      <li>If you want a guided first step, type <code>/start</code>.</li>
       <li>If you want a normal conversation first, type <code>/chat</code>.</li>
       <li>If you already have a Lean repo, type <code>/project init</code> inside it.</li>
       <li>If you need a new Lean repo, type <code>/project create &lt;path&gt; --template-source &lt;template-or-git-url&gt;</code>.</li>
@@ -1147,7 +1148,8 @@ guide_html = f"""<!DOCTYPE html>
     </ol>
 
     <h2>Useful First Questions</h2>
-    <div class="code-block">/chat I am a mathematician new to Open Gauss. What should I do first?
+    <div class="code-block">/start
+/chat I am a mathematician new to Open Gauss. What should I do first?
 /chat What does /project init do?
 /prove Show me how to prove that 1 + 1 = 2 in Lean.</div>
 
@@ -1463,6 +1465,7 @@ Staged keys: ${staged_keys}
 Start here:
   gauss-open-guide
   gauss
+  /start
   /chat
   /project init
   /project use <path>
@@ -1490,6 +1493,7 @@ Backend helpers:
 Interactive provider notes:
   Auto-selection priority: OpenRouter, then Anthropic, then OpenAI-compatible.
   OpenRouter affects the main chat UI only; managed workflow backends stay separate.
+  /start and /chat use the main interactive provider, not the managed Lean backend.
   /chat uses the main interactive provider, not the managed Lean backend.
   PROMPT_TOOLKIT_NO_CPR=1 is enabled to avoid CPR warnings inside tmux.
 
@@ -1686,6 +1690,7 @@ print_summary() {
     echo "  5. Review settings:     gauss setup"
     echo
     printf '%b%s%b\n' "${CYAN}${BOLD}" "Start Options:" "${NC}"
+    echo "  /start               # turn on onboarding mode and show the first steps"
     echo "  /chat                # ask a plain-language question before choosing a project"
     echo "  /project init        # register the current Lean repo as the active project"
     echo "  /project create ...  # create a new Lean project from a template"
@@ -1715,7 +1720,7 @@ print_summary() {
         echo "  - Verified managed /prove staging in: $MANAGED_SELF_CHECK_STATUS."
     fi
     echo "  - The local guide is written to $GUIDE_DIR/index.html."
-    echo "  - If Open Gauss feels intimidating, start with /chat and ask a normal question."
+    echo "  - If Open Gauss feels intimidating, start with /start or /chat and ask a normal question."
     echo "  - No Morph iframe is exposed automatically; use gauss-open-guide if you want the local guide in a browser."
     echo "  - No tmux session is opened during install; use gauss-open-session when you want the workflow launcher."
 }

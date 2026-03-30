@@ -53,6 +53,7 @@ assert_exists "$HOME/.local/bin/gauss"
 grep -F "Start immediately:" "$INSTALL_LOG" >/dev/null || die "expected installer summary to show the direct gauss path"
 grep -F "$HOME/.local/bin/gauss" "$INSTALL_LOG" >/dev/null || die "expected installer summary to print the linked gauss path"
 grep -F "Start Options:" "$INSTALL_LOG" >/dev/null || die "expected installer summary to list post-install start options"
+grep -F "/start" "$INSTALL_LOG" >/dev/null || die "expected installer summary to mention /start"
 grep -F "gauss-open-session" "$INSTALL_LOG" >/dev/null || die "expected installer summary to mention gauss-open-session"
 grep -F "gauss-open-guide" "$INSTALL_LOG" >/dev/null || die "expected installer summary to mention gauss-open-guide"
 grep -F "cannot change PATH in the shell that launched the installer." "$INSTALL_LOG" >/dev/null || die "expected installer summary to explain current-shell PATH behavior"
@@ -70,6 +71,7 @@ fi
 
 export PATH="$HOME/.local/bin:$REPO_ROOT/venv/bin:$HOME/.elan/bin:$PATH"
 export GAUSS_HOME
+grep -F 'export GAUSS_HOME="${GAUSS_HOME:-' "$HOME/.bashrc" >/dev/null || die "expected shell block to preserve an explicitly set GAUSS_HOME"
 
 echo "==> Verifying core commands"
 for cmd in gauss uv node npm claude codex elan lake rg tmux ffmpeg; do
@@ -82,6 +84,7 @@ assert_exists "$GAUSS_HOME/config.yaml"
 assert_exists "$GAUSS_HOME/install-root"
 assert_exists "$GAUSS_HOME/guide/index.html"
 grep -F "Start Here" "$GAUSS_HOME/guide/index.html" >/dev/null || die "expected generated guide to include Start Here"
+grep -F "/start" "$GAUSS_HOME/guide/index.html" >/dev/null || die "expected generated guide to mention /start"
 grep -F "/chat" "$GAUSS_HOME/guide/index.html" >/dev/null || die "expected generated guide to mention /chat"
 grep -F "If You Opened This In Morph" "$GAUSS_HOME/guide/index.html" >/dev/null || die "expected generated guide to include Morph guidance"
 assert_exists "$GAUSS_HOME/autoformalize/assets/lean4-skills/.gauss-managed-revision"

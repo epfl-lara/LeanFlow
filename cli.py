@@ -68,6 +68,12 @@ from gauss_cli.autoformalize import (
     supported_autoformalize_backends,
 )
 from gauss_cli.banner import _format_context_length
+from gauss_cli.commands import (
+    COMMANDS,
+    SlashCommandCompleter,
+    rewrite_friendly_entry_command,
+    rewrite_friendly_slash_command,
+)
 from gauss_cli.handoff import HandoffError, HandoffUsageError, execute_handoff, resolve_handoff_request
 from gauss_cli.config import get_gauss_home
 from gauss_cli.project import (
@@ -504,7 +510,6 @@ from gauss_cli.banner import (
     build_welcome_banner,
 )
 from gauss_cli.colors import render_terminal_text, spinner_frames, supports_ansi, supports_unicode
-from gauss_cli.commands import COMMANDS, SlashCommandCompleter
 from gauss_cli import callbacks as _callbacks
 from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, validate_toolset
 
@@ -2356,7 +2361,7 @@ class GaussCLI:
             _cprint(f"\n  {_DIM}Active project: {project_summary}{_RST}")
         else:
             _cprint(
-                f"\n  {_DIM}No active project — use /chat for plain-language help, or /project init, "
+                f"\n  {_DIM}No active project — use /start or /chat for orientation, or /project init, "
                 f"/project convert, /project create <path>, or /project use <path>.{_RST}"
             )
 
@@ -2373,7 +2378,7 @@ class GaussCLI:
                 )
 
         _cprint(
-            f"\n  {_DIM}Tip: Start with /chat if you want orientation first. Use /project when you're ready to work in a Lean repo, "
+            f"\n  {_DIM}Tip: Start with /start or /chat if you want orientation first. Use /project when you're ready to work in a Lean repo, "
             f"then launch /prove, /review, /checkpoint, /refactor, /golf, /draft, /autoprove, /formalize, or /autoformalize.{_RST}"
         )
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
@@ -3308,6 +3313,7 @@ class GaussCLI:
         """Return whether *command* remains available before project selection."""
         cmd_lower = command.lower().strip()
         allowed_prefixes = (
+            "/start",
             "/chat",
             "/project",
             "/help",
@@ -3343,8 +3349,8 @@ class GaussCLI:
             f"{prefix} Use /project init, /project convert, /project create <path>, or /project use <path> first.",
         )
         self._print_surface_notice(
-            "[dim]If you only want orientation first, run `/chat` and ask a plain-language question.[/]",
-            "If you only want orientation first, run /chat and ask a plain-language question.",
+            "[dim]If you only want orientation first, run `/start` or `/chat` and ask a plain-language question.[/]",
+            "If you only want orientation first, run /start or /chat and ask a plain-language question.",
         )
         self._print_surface_notice(
             f"[dim]{detail}[/]",
@@ -3427,6 +3433,39 @@ class GaussCLI:
                 "[bold yellow]Chat queue is not available in this mode.[/]",
                 "Chat queue is not available in this mode.",
             )
+
+    def _handle_start_command(self, cmd: str):
+        """Handle `/start` with a short first-step guide and chat-mode enablement."""
+        parts = cmd.strip().split(maxsplit=1)
+        payload = parts[1].strip() if len(parts) > 1 else ""
+
+        self._chat_mode_enabled = True
+        self._print_surface_notice(
+            "[bold green]`/start` is on.[/] "
+            "[dim]Plain text now goes to the main interactive provider even without an active Gauss project.[/]",
+            "`/start` is on. Plain text now goes to the main interactive provider even without an active Gauss project.",
+        )
+        self._print_surface_notice(
+            "[dim]Next: use `/chat` for plain-language questions, `/project use <path>` for an existing Lean repo, "
+            "`/project init` in the current repo, or `/project create <path> --template-source <template-or-git-url>` for a new one.[/]",
+            "Next: use /chat for plain-language questions, /project use <path> for an existing Lean repo, /project init in the current repo, or /project create <path> --template-source <template-or-git-url> for a new one.",
+        )
+        self._print_surface_notice(
+            "[dim]When the project is ready, run `/prove`, `/review`, `/draft`, `/autoprove`, or `/swarm`.[/]",
+            "When the project is ready, run /prove, /review, /draft, /autoprove, or /swarm.",
+        )
+        if payload:
+            self._print_surface_notice(
+                "[dim]`/start` is sending your message to the main interactive provider.[/]",
+                "`/start` is sending your message to the main interactive provider.",
+            )
+            if hasattr(self, "_pending_input") and hasattr(self._pending_input, "put"):
+                self._pending_input.put(payload)
+            else:
+                self._print_surface_notice(
+                    "[bold yellow]Chat queue is not available in this mode.[/]",
+                    "Chat queue is not available in this mode.",
+                )
 
     def _setup_swarm_completion_callback(self):
         """Wire up a one-time callback so finished swarm tasks notify the TUI."""
@@ -3928,14 +3967,20 @@ class GaussCLI:
             bool: True to continue, False to exit
         """
         # Lowercase only for dispatch matching; preserve original case for arguments
-        cmd_lower = command.lower().strip()
         cmd_original = command.strip()
+        corrected = rewrite_friendly_slash_command(cmd_original)
+        if corrected and corrected != cmd_original:
+            _cprint(f"  {_DIM}Assuming {corrected.split()[0]} from your input.{_RST}")
+            cmd_original = corrected
+        cmd_lower = cmd_original.lower().strip()
 
         if self._enforce_project_lock(cmd_original):
             return True
         
         if cmd_lower in ("/quit", "/exit", "/q"):
             return False
+        elif cmd_lower == "/start" or cmd_lower.startswith("/start "):
+            self._handle_start_command(cmd_original)
         elif cmd_lower == "/chat" or cmd_lower.startswith("/chat "):
             self._handle_chat_command(cmd_original)
         elif cmd_lower == "/help":
@@ -4307,7 +4352,6 @@ class GaussCLI:
                 # Prefix matching: if input uniquely identifies one command, execute it.
                 # Matches against both built-in COMMANDS and installed skill commands so
                 # that execution-time resolution agrees with tab-completion.
-                from gauss_cli.commands import COMMANDS
                 typed_base = cmd_lower.split()[0]
                 all_known = set(COMMANDS) | set(_skill_commands)
                 matches = [c for c in all_known if c.startswith(typed_base)]
@@ -6244,10 +6288,10 @@ class GaussCLI:
         try:
             from gauss_cli.skin_engine import get_active_skin
             _welcome_skin = get_active_skin()
-            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Gauss! Type /chat for orientation or /help for commands.")
+            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Gauss! Type /start or /chat for orientation, or /help for commands.")
             _welcome_color = _welcome_skin.get_color("banner_text", "#FFF8DC")
         except Exception:
-            _welcome_text = "Welcome to Gauss! Type /chat for orientation or /help for commands."
+            _welcome_text = "Welcome to Gauss! Type /start or /chat for orientation, or /help for commands."
             _welcome_color = "#FFF8DC"
         self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
         self.console.print()
@@ -7240,7 +7284,10 @@ class GaussCLI:
                         dispatched_command = (
                             user_input
                             if user_input.startswith("/")
-                            else rewrite_forgiving_managed_command(user_input)
+                            else (
+                                rewrite_friendly_entry_command(user_input)
+                                or rewrite_forgiving_managed_command(user_input)
+                            )
                         )
                     if dispatched_command is not None:
                         _cprint(f"\n⚙️  {dispatched_command}")

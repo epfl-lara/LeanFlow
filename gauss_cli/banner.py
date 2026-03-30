@@ -435,6 +435,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     if simplified:
         right_lines.append(f"[bold {accent}]Start Here[/]")
+        right_lines.append(f"[{text}]`/start`[/] [dim {dim}]turn on onboarding mode and see the first steps[/]")
         right_lines.append(f"[{text}]`/chat`[/] [dim {dim}]ask a plain-language question first[/]")
         right_lines.append(f"[{text}]`/project`[/] [dim {dim}]select or create a Gauss project[/]")
         right_lines.append(f"[{text}]`/prove`[/] [dim {dim}]guided Lean workflow[/]")
@@ -447,6 +448,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         right_lines.append(f"[{text}]`/help`[/] [dim {dim}]commands and diagnostics[/]")
     else:
         right_lines.append(f"[bold {accent}]Start Here[/]")
+        right_lines.append(f"[{text}]`/start`[/] [dim {dim}]{long_dash} turn on onboarding mode and show the first steps[/]")
         right_lines.append(f"[{text}]`/chat`[/] [dim {dim}]{long_dash} ask a plain-language question before choosing a project[/]")
         right_lines.append(f"[{text}]`/project`[/] [dim {dim}]{long_dash} create, convert, inspect, or switch the active project[/]")
         right_lines.append(f"[{text}]`/prove`[/] [dim {dim}]{long_dash} spawn a guided managed proving agent[/]")
@@ -469,6 +471,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     right_lines.append("")
     summary_parts = [
+        "/start",
         "/chat",
         "/project",
         "/prove",

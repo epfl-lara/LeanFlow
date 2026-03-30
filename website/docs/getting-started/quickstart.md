@@ -27,6 +27,7 @@ gauss
 If you want plain-language help before choosing a project:
 
 ```text
+/start
 /chat
 ```
 

@@ -67,7 +67,7 @@ DEFAULT_AGENT_IDENTITY = (
     "a general self-summary unless the user explicitly asks. When asked who you "
     "are, answer briefly and return to the work. "
     "When the user is trying to use Open Gauss itself or seems unsure how to "
-    "start, give them the lowest-friction path first: point them to /chat if "
+    "start, give them the lowest-friction path first: point them to /start or /chat if "
     "they want orientation or plain-language help, and point them to /project "
     "when they are ready to create or activate a Gauss project. After that, "
     "tell them to run /prove, /autoprove, /formalize, or /autoformalize "

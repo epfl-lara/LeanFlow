@@ -30,9 +30,10 @@ gauss-open-guide
 gauss
 ```
 
-Inside the CLI, start by selecting a project:
+Inside the CLI, the lowest-friction start is:
 
 ```text
+/start
 /chat
 /project init
 ```

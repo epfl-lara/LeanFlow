@@ -8,19 +8,22 @@ description: "A plain-language OpenGauss quick start for mathematicians using ei
 
 OpenGauss is for Lean work, but you do **not** need to understand MCP, plugin internals, or agent orchestration to get started.
 
+If you only want a guided first step, use `/start`.
+
 If you only want to ask questions first, use `/chat`.
 
 If you want OpenGauss to work inside a Lean project, use `/project`.
 
 ## 30-Second Version
 
-- **Morph**: open `morph.new/opengauss`, claim or save the session early if Morph offers that option, run `gauss-open-guide` if the guide is not already open, then start with `/chat` or `/project init`.
-- **Local install**: run `./scripts/install.sh`, then `gauss-open-guide` or `gauss`, then start with `/chat` or `/project init`.
+- **Morph**: open `morph.new/opengauss`, claim or save the session early if Morph offers that option, run `gauss-open-guide` if the guide is not already open, then start with `/start`, `/chat`, or `/project init`.
+- **Local install**: run `./scripts/install.sh`, then `gauss-open-guide` or `gauss`, then start with `/start`, `/chat`, or `/project init`.
 - **Already have a Lean repo**: `cd` into it, run `gauss`, then `/project init`.
 - **Need a new Lean repo**: run `gauss`, then `/project create <path> --template-source <template-or-git-url>`.
 
 ## Which Command Should I Start With?
 
+- `/start` turns on onboarding mode, gives you the first useful commands, and lets plain text go straight to the main chat.
 - `/chat` asks a plain-language question in the main OpenGauss chat before you choose a project.
 - `/project init` tells OpenGauss that the current Lean repository is your working project.
 - `/project use <path>` points OpenGauss at an already-initialized project somewhere else on disk.
@@ -35,7 +38,7 @@ If you want OpenGauss to work inside a Lean project, use `/project`.
 2. If Morph shows a **Claim**, **Save**, or similar action for the session, use it early.
    The exact button text can change, but temporary sessions are easier to lose than claimed ones.
 3. Run `gauss-open-guide` if the browser guide is not already visible.
-4. If you want orientation first, type `/chat`.
+4. If you want orientation first, type `/start` or `/chat`.
 5. If you want to work on a Lean project, clone or open it and then run `/project init` or `/project use`.
 
 ### Making It Persistent
@@ -76,6 +79,7 @@ gauss
 
 Then:
 
+- use `/start` if you want a short first-step guide and plain-language chat mode
 - use `/chat` if you want a plain-language conversation first
 - use `/project init` if you are already inside a Lean repository
 - use `/project create <path> --template-source <template-or-git-url>` if you need a new project
@@ -83,6 +87,7 @@ Then:
 ## First Useful Examples
 
 ```text
+/start
 /chat I have a Lean theorem but I am not sure how to start proving it.
 /chat What does `/project init` do?
 /prove Show me how to prove that 1 + 1 = 2 in Lean.
@@ -100,7 +105,7 @@ Then:
 
 Start with this sequence:
 
-1. `/chat`
+1. `/start`
 2. Ask one plain question in English.
 3. Let OpenGauss explain the next command.
 4. Only after that, run `/project ...`
