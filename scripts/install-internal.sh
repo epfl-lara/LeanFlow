@@ -675,7 +675,7 @@ ensure_lean_toolchain() {
         exit 1
     fi
 
-    if elan toolchain list 2>/dev/null | grep -Fx "$LEAN_TOOLCHAIN" >/dev/null 2>&1; then
+    if elan toolchain list 2>/dev/null | awk '{print $1}' | grep -Fx "$LEAN_TOOLCHAIN" >/dev/null 2>&1; then
         log_info "Lean toolchain $LEAN_TOOLCHAIN is already installed."
     else
         if ! run_command_with_diagnostics \
