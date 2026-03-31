@@ -47,6 +47,7 @@ keys = [
     "GAUSS_CREATE_WORKSPACE",
     "GAUSS_SETUP_MODE",
     "GAUSS_RECREATE_VENV",
+    "OPEN_GAUSS_SKIP_SHELL_AUTOENV",
 ]
 Path("{env_log}").write_text(
     "".join(f"{{key}}={{os.environ.get(key, '')}}\\n" for key in keys),
@@ -128,6 +129,7 @@ PY
         "GAUSS_CREATE_WORKSPACE": "1",
         "GAUSS_SETUP_MODE": "skip",
         "GAUSS_RECREATE_VENV": "1",
+        "OPEN_GAUSS_SKIP_SHELL_AUTOENV": "1",
     }
 
 

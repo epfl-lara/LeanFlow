@@ -186,10 +186,12 @@ ensure_runner_venv() {
 
 run_local_template() {
   if [ "${#MORPH_ARGS[@]}" -gt 0 ]; then
-    "$RUNNER_VENV/bin/morphcloud" devbox template run "$INSTALL_TARGET" --experimental-run-locally "${MORPH_ARGS[@]}"
+    OPEN_GAUSS_SKIP_SHELL_AUTOENV=1 \
+      "$RUNNER_VENV/bin/morphcloud" devbox template run "$INSTALL_TARGET" --experimental-run-locally "${MORPH_ARGS[@]}"
     return
   fi
-  "$RUNNER_VENV/bin/morphcloud" devbox template run "$INSTALL_TARGET" --experimental-run-locally
+  OPEN_GAUSS_SKIP_SHELL_AUTOENV=1 \
+    "$RUNNER_VENV/bin/morphcloud" devbox template run "$INSTALL_TARGET" --experimental-run-locally
 }
 
 parse_args "$@"

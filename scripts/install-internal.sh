@@ -107,6 +107,9 @@ Behavior:
   Exported non-empty provider keys are written to ~/.gauss/.env.
   Unset provider keys leave existing ~/.gauss/.env values untouched.
   Export a provider key as an empty string to clear the staged value.
+  Template-driven installs ignore ambient provider keys by default; run
+  `gauss setup` later if you want to stage keys explicitly, or set
+  OPEN_GAUSS_TRUST_AMBIENT_PROVIDER_ENV=1 to opt back in.
 TXT
 }
 
@@ -245,6 +248,31 @@ refresh_paths() {
     VENV_PYTHON="$VENV_BIN/python"
     GUIDE_DIR="$GAUSS_HOME/guide"
     INSTALL_ROOT_FILE="$GAUSS_HOME/install-root"
+}
+
+ignore_ambient_provider_keys_if_needed() {
+    if [ -z "${OPEN_GAUSS_REPO_ROOT:-}" ] || [ "${OPEN_GAUSS_TRUST_AMBIENT_PROVIDER_ENV:-0}" = "1" ]; then
+        return
+    fi
+
+    local provider_keys=(
+        OPENROUTER_API_KEY
+        OPENAI_API_KEY
+        ANTHROPIC_API_KEY
+    )
+
+    local ignored=()
+    local key
+    for key in "${provider_keys[@]}"; do
+        if [ "${!key+x}" = "x" ] && [ -n "${!key}" ]; then
+            ignored+=("$key")
+            unset "$key"
+        fi
+    done
+
+    if [ "${#ignored[@]}" -gt 0 ]; then
+        log_info "Ignoring ambient provider keys in template install (${ignored[*]}). Run 'gauss setup' later if you want to stage keys explicitly."
+    fi
 }
 
 set_boolean_from_env() {
@@ -916,11 +944,21 @@ shell_configs = [Path(arg).expanduser() for arg in sys.argv[3:]]
 block = f"""# >>> gauss workflow installer env >>>
 export GAUSS_HOME="${{GAUSS_HOME:-{gauss_home}}}"
 export GAUSS_INSTALL_ROOT="${{GAUSS_INSTALL_ROOT:-{repo_root}}}"
-if [ -f "$GAUSS_HOME/.env" ]; then
+_gauss_shell_autoenv=1
+case "${{BASH_EXECUTION_STRING:-}}" in
+  *".opengauss-template/runtime.env"*)
+    _gauss_shell_autoenv=0
+    ;;
+esac
+if [ "${{OPEN_GAUSS_SKIP_SHELL_AUTOENV:-0}}" = "1" ]; then
+  _gauss_shell_autoenv=0
+fi
+if [ "$_gauss_shell_autoenv" = "1" ] && [ -f "$GAUSS_HOME/.env" ]; then
   set -a
   . "$GAUSS_HOME/.env"
   set +a
 fi
+unset _gauss_shell_autoenv
 export PATH="$HOME/.local/bin:{repo_root}/venv/bin:$HOME/.elan/bin:$PATH"
 export PROMPT_TOOLKIT_NO_CPR=1
 # <<< gauss workflow installer env <<<
@@ -1747,6 +1785,7 @@ main() {
     install_repo_dependencies
     link_repo_binaries
     prepare_gauss_home
+    ignore_ambient_provider_keys_if_needed
     sync_optional_provider_keys
     ensure_workspace
     initialize_gauss_workspace || true
