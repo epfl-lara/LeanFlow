@@ -57,6 +57,12 @@ grep -F "/start" "$INSTALL_LOG" >/dev/null || die "expected installer summary to
 grep -F "gauss-open-session" "$INSTALL_LOG" >/dev/null || die "expected installer summary to mention gauss-open-session"
 grep -F "gauss-open-guide" "$INSTALL_LOG" >/dev/null || die "expected installer summary to mention gauss-open-guide"
 grep -F "cannot change PATH in the shell that launched the installer." "$INSTALL_LOG" >/dev/null || die "expected installer summary to explain current-shell PATH behavior"
+if grep -F "Helper Commands:" "$INSTALL_LOG" >/dev/null; then
+    die "expected installer summary to avoid helper-command clutter"
+fi
+if grep -F "gauss-use-openrouter-key" "$INSTALL_LOG" >/dev/null; then
+    die "expected installer summary to avoid provider-key helper clutter"
+fi
 grep -F "Managed Lean workflow assets ready:" "$INSTALL_LOG" >/dev/null || die "expected installer to prewarm managed Lean workflow assets"
 grep -F "Managed /prove staging verified:" "$INSTALL_LOG" >/dev/null || die "expected installer to verify managed /prove staging in the Lean workspace"
 if grep -F "Skipping managed /prove staging verification" "$INSTALL_LOG" >/dev/null; then
@@ -87,6 +93,12 @@ grep -F "Start Here" "$GAUSS_HOME/guide/index.html" >/dev/null || die "expected 
 grep -F "/start" "$GAUSS_HOME/guide/index.html" >/dev/null || die "expected generated guide to mention /start"
 grep -F "/chat" "$GAUSS_HOME/guide/index.html" >/dev/null || die "expected generated guide to mention /chat"
 grep -F "If You Opened This In Morph" "$GAUSS_HOME/guide/index.html" >/dev/null || die "expected generated guide to include Morph guidance"
+if grep -F "gauss-use-claude-login" "$GAUSS_HOME/guide/index.html" >/dev/null; then
+    die "expected generated guide to avoid login-helper clutter"
+fi
+if grep -F "$GAUSS_HOME/.env" "$GAUSS_HOME/guide/index.html" >/dev/null; then
+    die "expected generated guide to avoid exposing the staged .env path"
+fi
 assert_exists "$GAUSS_HOME/autoformalize/assets/lean4-skills/.gauss-managed-revision"
 assert_exists "$GAUSS_HOME/skins/mathinc.yaml"
 assert_exists "$WORKSPACE_DIR/PAPER.md"
@@ -172,11 +184,21 @@ grep -F 'OPENAI_BASE_URL="https://api.openai.com/v1"' "$GAUSS_HOME/.env" >/dev/n
 echo "==> Verifying launcher summary"
 SUMMARY_OUTPUT="$(gauss-launch-session --print-summary)"
 printf '%s\n' "$SUMMARY_OUTPUT"
-[[ "$SUMMARY_OUTPUT" == *"OpenAI-compatible main provider configured"* ]] || die "expected OpenAI provider summary"
+[[ "$SUMMARY_OUTPUT" == *"Managed backend: claude-code"* ]] || die "expected managed backend summary"
+[[ "$SUMMARY_OUTPUT" == *"Main chat: ready."* ]] || die "expected ready main-chat summary"
 [[ "$SUMMARY_OUTPUT" == *"$WORKSPACE_DIR"* ]] || die "expected workspace path in launcher summary"
 [[ "$SUMMARY_OUTPUT" == *"/chat"* ]] || die "expected launcher summary to mention /chat"
 [[ "$SUMMARY_OUTPUT" == *"gauss-open-guide"* ]] || die "expected launcher summary to mention gauss-open-guide"
 [[ "$SUMMARY_OUTPUT" == *"begins with /start"* ]] || die "expected launcher summary to mention automatic /start"
+if [[ "$SUMMARY_OUTPUT" == *"Staged keys:"* ]]; then
+    die "expected launcher summary to avoid staged-key details"
+fi
+if [[ "$SUMMARY_OUTPUT" == *"Gauss Setup — Non-interactive mode"* ]]; then
+    die "expected launcher summary to avoid inlined setup output"
+fi
+if [[ "$SUMMARY_OUTPUT" == *"gauss-use-openrouter-key"* ]]; then
+    die "expected launcher summary to avoid provider-key helper clutter"
+fi
 
 echo "==> Verifying no-provider launcher fallback state"
 cp "$GAUSS_HOME/.env" "$GAUSS_HOME/.env.backup"
@@ -202,9 +224,9 @@ PY
 
 NO_PROVIDER_SUMMARY="$(gauss-launch-session --print-summary)"
 printf '%s\n' "$NO_PROVIDER_SUMMARY"
-[[ "$NO_PROVIDER_SUMMARY" == *"No staged OpenRouter, Anthropic, or OpenAI key found for the main interactive provider."* ]] || die "expected missing-provider summary"
+[[ "$NO_PROVIDER_SUMMARY" == *"Main chat: needs setup."* ]] || die "expected missing-provider launcher summary"
 [[ "$NO_PROVIDER_SUMMARY" == *"/chat opens the configured managed backend chat session"* ]] || die "expected provider notes to mention managed /chat"
-[[ "$NO_PROVIDER_SUMMARY" == *"runs gauss setup first"* ]] || die "expected missing-provider summary to mention setup fallback"
+[[ "$NO_PROVIDER_SUMMARY" == *"run gauss setup first and then leave you in a shell"* ]] || die "expected missing-provider summary to mention setup fallback"
 grep -F "GAUSS_FORCE_FIRST_TIME_SETUP=1 gauss setup || true" "$HOME/.local/bin/gauss-launch-session" >/dev/null || die "expected launcher to restore first-run setup fallback when no provider is staged"
 grep -F "gauss --startup-input /start" "$HOME/.local/bin/gauss-launch-session" >/dev/null || die "expected launcher to auto-start gauss with /start"
 grep -F "exec bash -i" "$HOME/.local/bin/gauss-launch-session" >/dev/null || die "expected interactive shell fallback when no provider is staged"

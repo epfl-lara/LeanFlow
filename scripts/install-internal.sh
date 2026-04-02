@@ -1166,12 +1166,12 @@ guide_html = f"""<!DOCTYPE html>
       <p>Commit important changes, push to a remote, and use any save or snapshot feature Morph exposes before closing the tab. Avoid leaving important work only in temp directories.</p>
     </div>
     <div class="card">
-      <strong>Ready Paths</strong>
-      <p><code>{escape(str(repo_root))}</code><br><code>{escape(str(workspace_dir))}</code><br><code>{escape(str(gauss_home / ".env"))}</code><br><code>{escape(str(start_here_doc))}</code></p>
+      <strong>Open Gauss Prepared</strong>
+      <p><code>{escape(str(repo_root))}</code><br><code>{escape(str(workspace_dir))}</code><br><code>{escape(str(start_here_doc))}</code></p>
     </div>
     <div class="card">
-      <strong>Backend Helpers</strong>
-      <p><code>gauss-use-claude-backend</code><br><code>gauss-use-codex-backend</code><br><code>gauss-use-auto-auth</code><br><code>gauss-use-claude-login</code><br><code>gauss-use-codex-login</code></p>
+      <strong>Change Settings Later</strong>
+      <p>Run <code>gauss setup</code> if you want to review providers, switch models, or change other defaults after the first session.</p>
     </div>
   </section>
   <main>
@@ -1467,22 +1467,15 @@ if [ "${1:-}" = "--print-summary" ]; then
   shift
 fi
 
-staged_keys="none"
-if [ -n "${OPENROUTER_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-  staged_keys=""
-  [ -n "${OPENROUTER_API_KEY:-}" ] && staged_keys="${staged_keys} OPENROUTER_API_KEY"
-  [ -n "${OPENAI_API_KEY:-}" ] && staged_keys="${staged_keys} OPENAI_API_KEY"
-  [ -n "${ANTHROPIC_API_KEY:-}" ] && staged_keys="${staged_keys} ANTHROPIC_API_KEY"
-  staged_keys="${staged_keys# }"
-fi
-
-interactive_provider="none staged"
+main_chat_status="needs setup."
+launcher_behavior="Because no main chat provider is staged, this launcher will run gauss setup first and then leave you in a shell."
 launch_gauss=0
 if provider_status="$(gauss-configure-main-provider auto 2>&1)"; then
-  interactive_provider="$provider_status"
+  main_chat_status="ready."
+  launcher_behavior="This launcher opens Gauss automatically and begins with /start."
   launch_gauss=1
 else
-  interactive_provider="$provider_status"
+  :
 fi
 
 clear >/dev/null 2>&1 || true
@@ -1495,10 +1488,8 @@ Commit: $(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf 'u
 Lean project: $WORKSPACE_DIR
 Guide: __GUIDE_PATH__
 Gauss project manifest: initialized
-Default managed backend: claude-code
-Default auth mode: auto
-Main interactive provider: ${interactive_provider}
-Staged keys: ${staged_keys}
+Managed backend: claude-code
+Main chat: ${main_chat_status}
 
 Start here:
   gauss-open-guide
@@ -1518,24 +1509,11 @@ Lean workflows:
   /autoformalize --source ./paper.pdf --claim-select=first --out=Paper.lean
   /swarm
 
-Backend helpers:
-  gauss-use-claude-backend
-  gauss-use-codex-backend
-  gauss-use-auto-auth
-  gauss-use-claude-login
-  gauss-use-codex-login
-  gauss-use-openrouter-key
-  gauss-use-anthropic-key
-  gauss-use-openai-key
-
-Interactive provider notes:
-  Auto-selection priority: OpenRouter, then Anthropic, then OpenAI-compatible.
-  OpenRouter affects the in-process main chat only; managed workflow backends stay separate.
+Notes:
   /start keeps you in Gauss and enables inline onboarding chat before project selection.
   /chat opens the configured managed backend chat session and returns you to Gauss when it exits.
-  gauss-use-claude-backend and gauss-use-codex-backend switch both /chat and the managed Lean workflows.
-  When the main provider is staged, this launcher opens Gauss automatically and begins with /start.
-  If no main provider is staged, this launcher runs gauss setup first and then falls back to a shell.
+  Run gauss setup later if you want to review or change providers and other settings.
+  $launcher_behavior
   PROMPT_TOOLKIT_NO_CPR=1 is enabled to avoid CPR warnings inside tmux.
 
 The local guide is written to __GUIDE_PATH__.
@@ -1745,15 +1723,6 @@ print_summary() {
     echo
     echo "  Inside Gauss, use /prove, /review, /draft, /autoprove, /formalize, or /autoformalize once a project is active."
     echo
-    printf '%b%s%b\n' "${CYAN}${BOLD}" "Helper Commands:" "${NC}"
-    echo "  gauss-configure-main-provider [auto|openrouter|anthropic|openai]"
-    echo "  gauss-use-openrouter-key"
-    echo "  gauss-use-anthropic-key"
-    echo "  gauss-use-openai-key"
-    echo "  gauss-use-claude-backend"
-    echo "  gauss-use-codex-backend"
-    echo "  gauss-use-auto-auth"
-    echo
     printf '%b%s%b\n' "${CYAN}${BOLD}" "Notes:" "${NC}"
     echo "  - The installer keeps code in your existing repository checkout."
     echo "  - The installer updates future shells, but it cannot change PATH in the shell that launched the installer."
@@ -1766,6 +1735,7 @@ print_summary() {
     fi
     echo "  - The local guide is written to $GUIDE_DIR/index.html."
     echo "  - If Open Gauss feels intimidating, start with /start for inline onboarding or /chat for managed backend chat."
+    echo "  - Use gauss setup later if you want to review providers or other settings."
     echo "  - No Morph iframe is exposed automatically; use gauss-open-guide if you want the local guide in a browser."
     echo "  - No tmux session is opened during install; use gauss-open-session when you want the workflow launcher."
 }
