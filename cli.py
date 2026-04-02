@@ -886,6 +886,43 @@ class ChatConsole:
         for line in output.rstrip("\n").split("\n"):
             _cprint(line)
 
+
+class RuntimeConsole:
+    """Route CLI console output through prompt_toolkit once the TUI is active."""
+
+    def __init__(self, app_getter):
+        self._app_getter = app_getter
+        self._rich = Console()
+        self._chat = ChatConsole()
+
+    def _active_app(self):
+        try:
+            return self._app_getter()
+        except Exception:
+            return None
+
+    @property
+    def width(self) -> int:
+        if self._active_app() is not None:
+            return shutil.get_terminal_size((80, 24)).columns
+        return self._rich.width
+
+    def print(self, *args, **kwargs):
+        if self._active_app() is not None:
+            return self._chat.print(*args, **kwargs)
+        return self._rich.print(*args, **kwargs)
+
+    def clear(self):
+        app = self._active_app()
+        if app is not None:
+            output = getattr(app, "output", None)
+            if output is not None:
+                output.erase_screen()
+                output.cursor_goto(0, 0)
+                output.flush()
+                return
+        self._rich.clear()
+
 # ASCII Art - GAUSS-AGENT logo (full width, single line - requires ~95 char terminal)
 GAUSS_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
 [bold #FFD700]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
@@ -1096,8 +1133,9 @@ class GaussCLI:
             resume: Session ID to resume (restores conversation history from SQLite)
             pass_session_id: Include the session ID in the agent's system prompt
         """
-        # Initialize Rich console
-        self.console = Console()
+        # Route output through prompt_toolkit-safe rendering once the TUI starts.
+        self._app = None  # prompt_toolkit Application (set in run())
+        self.console = RuntimeConsole(lambda: self._app)
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
@@ -1212,7 +1250,6 @@ class GaussCLI:
 
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
-        self._app = None  # prompt_toolkit Application (set in run())
         self._input_area = None
         
         # Conversation state
@@ -1242,7 +1279,6 @@ class GaussCLI:
         # History file for persistent input recall across sessions
         self._history_file = _gauss_home / ".gauss_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
-        self._app = None
 
         # State shared by interactive run() and single-query chat mode.
         # These must exist before any direct chat() call because single-query
