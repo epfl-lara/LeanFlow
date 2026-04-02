@@ -1,4 +1,4 @@
-"""Managed Lean autoformalization launcher for Gauss."""
+"""Managed backend session launchers for Gauss."""
 
 from __future__ import annotations
 
@@ -218,6 +218,52 @@ class AutoformalizeLaunchPlan:
 
 
 @dataclass(frozen=True)
+class ManagedChatRuntime:
+    """Backend-specific launch arguments and environment for `/chat`."""
+
+    argv: list[str]
+    child_env: dict[str, str]
+    backend_name: str
+
+
+@dataclass(frozen=True)
+class ManagedChatLaunchPlan:
+    """Managed launch plan for `/chat`."""
+
+    handoff_request: HandoffRequest
+    backend_name: str
+    user_instruction: str
+    active_cwd: Path
+
+    def staged_paths(self) -> dict[str, str]:
+        """Return the most useful launch metadata for diagnostics/tests."""
+        return {
+            "backend_name": self.backend_name,
+            "cwd": str(self.active_cwd),
+            "argv0": self.handoff_request.argv[0] if self.handoff_request.argv else "",
+        }
+
+
+@dataclass(frozen=True)
+class ClaudeAuthStagingPlan:
+    """Resolved Claude auth inputs for a managed child session."""
+
+    auth_env: dict[str, str]
+    copy_oauth_credentials: bool
+    copy_local_api_key: bool
+    strip_child_auth_env: bool
+
+
+@dataclass(frozen=True)
+class CodexAuthStagingPlan:
+    """Resolved Codex auth inputs for a managed child session."""
+
+    copy_local_auth: bool
+    staged_api_key: str
+    source_auth_path: Path | None
+
+
+@dataclass(frozen=True)
 class SharedLeanBundle:
     """Shared Lean assets and paths for a managed autoformalization run."""
 
@@ -236,6 +282,19 @@ class SharedLeanBundle:
     scripts_root: Path
     references_root: Path
     uv_runner: tuple[str, ...]
+    skill_revision: str
+
+
+@dataclass(frozen=True)
+class ManagedChatLeanAssets:
+    """Pinned Lean skill assets that `/chat` can reuse when available."""
+
+    assets_root: Path
+    checkout_root: Path
+    plugin_source: Path
+    skill_source: Path
+    scripts_root: Path
+    references_root: Path
     skill_revision: str
 
 
@@ -260,6 +319,51 @@ def cli_only_managed_workflow_message(command_label: str = "/autoformalize") -> 
 def cli_only_autoformalize_message() -> str:
     """Return the messaging-safe `/autoformalize` explanation."""
     return cli_only_managed_workflow_message("/autoformalize")
+
+
+def resolve_managed_chat_request(
+    user_instruction: str,
+    config: Mapping[str, Any] | None,
+    *,
+    active_cwd: str | None = None,
+    base_env: Mapping[str, str] | None = None,
+) -> ManagedChatLaunchPlan:
+    """Resolve `/chat` into a managed backend interactive session."""
+    include_persisted_env = base_env is None
+    base_environment = dict(base_env or os.environ)
+    active_dir = Path(active_cwd or base_environment.get("TERMINAL_CWD") or os.getcwd()).expanduser().resolve()
+    if not active_dir.exists():
+        raise AutoformalizePreflightError(f"Active working directory does not exist: {active_dir}")
+
+    backend_name = _resolve_backend_name(config, base_environment)
+    requested_mode = _resolve_requested_mode(config)
+    auth_mode = _resolve_auth_mode(config, base_environment)
+    managed_state_base = _resolve_managed_state_base(config, base_environment)
+    real_home = Path(base_environment.get("HOME", str(Path.home()))).expanduser().resolve()
+    runtime = _resolve_managed_chat_runtime(
+        backend_name=backend_name,
+        auth_mode=auth_mode,
+        user_instruction=str(user_instruction or "").strip(),
+        base_environment=base_environment,
+        include_persisted_env=include_persisted_env,
+        active_cwd=active_dir,
+        managed_state_base=managed_state_base,
+        real_home=real_home,
+    )
+    handoff_request = build_handoff_request(
+        argv=runtime.argv,
+        cwd=str(active_dir),
+        env=runtime.child_env,
+        requested_mode=requested_mode,
+        label="Gauss chat session",
+        source="gauss:chat",
+    )
+    return ManagedChatLaunchPlan(
+        handoff_request=handoff_request,
+        backend_name=runtime.backend_name,
+        user_instruction=str(user_instruction or "").strip(),
+        active_cwd=active_dir,
+    )
 
 
 def rewrite_forgiving_managed_command(command: str) -> str | None:
@@ -1223,13 +1327,15 @@ def _has_local_claude_api_key(real_home: Path) -> bool:
     return bool(str(data.get("primaryApiKey", "")).strip())
 
 
-def _local_codex_auth_path(real_home: Path, env: Mapping[str, str]) -> Path:
+def _local_codex_home(real_home: Path, env: Mapping[str, str]) -> Path:
     configured_home = str(env.get("CODEX_HOME", "") or "").strip()
     if configured_home:
-        codex_home = Path(configured_home).expanduser()
-    else:
-        codex_home = real_home / ".codex"
-    return codex_home / "auth.json"
+        return Path(configured_home).expanduser()
+    return real_home / ".codex"
+
+
+def _local_codex_auth_path(real_home: Path, env: Mapping[str, str]) -> Path:
+    return _local_codex_home(real_home, env) / "auth.json"
 
 
 def _load_local_codex_auth_payload(real_home: Path, env: Mapping[str, str]) -> dict[str, Any]:
@@ -1260,6 +1366,44 @@ def _codex_auth_payload_is_valid(payload: Mapping[str, Any]) -> bool:
 def _codex_auth_payload_has_api_key(payload: Mapping[str, Any]) -> bool:
     auth_mode = str(payload.get("auth_mode", "") or "").strip().lower()
     return auth_mode == "apikey" and bool(str(payload.get("OPENAI_API_KEY", "")).strip())
+
+
+def _prepare_managed_chat_lean_assets(
+    *,
+    managed_state_base: Path,
+    env: Mapping[str, str],
+) -> ManagedChatLeanAssets | None:
+    assets_root = managed_state_base / "assets"
+    assets_root.mkdir(parents=True, exist_ok=True)
+    checkout_root = _lean4_checkout_root(assets_root)
+    git_executable = shutil.which("git", path=env.get("PATH"))
+    if git_executable is None:
+        if not _lean4_checkout_is_complete(checkout_root):
+            return None
+        skill_revision = _read_lean4_checkout_revision(checkout_root)
+        if not skill_revision:
+            return None
+    else:
+        try:
+            checkout_root, skill_revision = _ensure_lean4_checkout_assets(
+                assets_root=assets_root,
+                env=env,
+                git_executable=git_executable,
+                refresh=False,
+            )
+        except AutoformalizeStagingError:
+            return None
+
+    plugin_source, skill_source, scripts_root, references_root = _lean4_checkout_paths(checkout_root)
+    return ManagedChatLeanAssets(
+        assets_root=assets_root,
+        checkout_root=checkout_root,
+        plugin_source=plugin_source,
+        skill_source=skill_source,
+        scripts_root=scripts_root,
+        references_root=references_root,
+        skill_revision=skill_revision,
+    )
 
 
 def _prepare_shared_bundle(
@@ -1345,21 +1489,47 @@ def _resolve_backend_runtime(
     raise AutoformalizeConfigError(f"Unsupported autoformalize backend: {backend_name}")
 
 
-def _build_claude_runtime(
+def _resolve_managed_chat_runtime(
     *,
+    backend_name: str,
     auth_mode: str,
     user_instruction: str,
-    workflow: ManagedWorkflowSpec,
     base_environment: Mapping[str, str],
     include_persisted_env: bool,
-    shared_bundle: SharedLeanBundle,
-) -> AutoformalizeBackendRuntime:
-    claude_exe = _require_executable(
-        "claude",
-        "Claude Code CLI not found. Install it with `npm install -g @anthropic-ai/claude-code`.",
-        base_environment,
-    )
-    real_home = shared_bundle.real_home
+    active_cwd: Path,
+    managed_state_base: Path,
+    real_home: Path,
+) -> ManagedChatRuntime:
+    if backend_name == DEFAULT_AUTOFORMALIZE_BACKEND:
+        return _build_claude_chat_runtime(
+            auth_mode=auth_mode,
+            user_instruction=user_instruction,
+            base_environment=base_environment,
+            include_persisted_env=include_persisted_env,
+            active_cwd=active_cwd,
+            managed_state_base=managed_state_base,
+            real_home=real_home,
+        )
+    if backend_name == CODEX_AUTOFORMALIZE_BACKEND:
+        return _build_codex_chat_runtime(
+            auth_mode=auth_mode,
+            user_instruction=user_instruction,
+            base_environment=base_environment,
+            include_persisted_env=include_persisted_env,
+            active_cwd=active_cwd,
+            managed_state_base=managed_state_base,
+            real_home=real_home,
+        )
+    raise AutoformalizeConfigError(f"Unsupported autoformalize backend: {backend_name}")
+
+
+def _resolve_claude_auth_staging_plan(
+    *,
+    auth_mode: str,
+    real_home: Path,
+    base_environment: Mapping[str, str],
+    include_persisted_env: bool,
+) -> ClaudeAuthStagingPlan:
     has_local_login = _has_local_claude_login(real_home)
     has_local_api_key = _has_local_claude_api_key(real_home)
     resolved_auth_env = _resolve_claude_auth_env(
@@ -1400,6 +1570,85 @@ def _build_claude_runtime(
                 "`gauss.autoformalize.auth_mode` back to `auto` or `login`."
             )
 
+    return ClaudeAuthStagingPlan(
+        auth_env=auth_env,
+        copy_oauth_credentials=copy_oauth_credentials,
+        copy_local_api_key=copy_local_api_key,
+        strip_child_auth_env=strip_child_auth_env,
+    )
+
+
+def _resolve_codex_auth_staging_plan(
+    *,
+    auth_mode: str,
+    real_home: Path,
+    base_environment: Mapping[str, str],
+    include_persisted_env: bool,
+) -> CodexAuthStagingPlan:
+    local_auth_path = _local_codex_auth_path(real_home, base_environment)
+    local_auth_payload = _load_local_codex_auth_payload(real_home, base_environment)
+    has_local_auth = _codex_auth_payload_is_valid(local_auth_payload)
+    has_local_api_key = _codex_auth_payload_has_api_key(local_auth_payload)
+    openai_api_key = _resolve_codex_api_key(
+        base_environment,
+        include_persisted_env=include_persisted_env,
+    )
+    copy_local_auth = False
+    staged_api_key = ""
+
+    if auth_mode == "auto":
+        if has_local_auth:
+            copy_local_auth = True
+        elif openai_api_key:
+            staged_api_key = openai_api_key
+        else:
+            raise AutoformalizePreflightError(
+                "Codex auth not found. Run `codex login`, save `OPENAI_API_KEY`, "
+                "or set `gauss.autoformalize.auth_mode: login` "
+                "(or `GAUSS_AUTOFORMALIZE_AUTH_MODE=login`) to launch the normal Codex login flow."
+            )
+    elif auth_mode == "login":
+        copy_local_auth = has_local_auth
+    else:
+        if openai_api_key:
+            staged_api_key = openai_api_key
+        elif has_local_api_key:
+            copy_local_auth = True
+        else:
+            raise AutoformalizePreflightError(
+                "Codex API-key auth not found. Save `OPENAI_API_KEY`, or switch "
+                "`gauss.autoformalize.auth_mode` back to `auto` or `login`."
+            )
+
+    return CodexAuthStagingPlan(
+        copy_local_auth=copy_local_auth,
+        staged_api_key=staged_api_key,
+        source_auth_path=local_auth_path if copy_local_auth else None,
+    )
+
+
+def _build_claude_runtime(
+    *,
+    auth_mode: str,
+    user_instruction: str,
+    workflow: ManagedWorkflowSpec,
+    base_environment: Mapping[str, str],
+    include_persisted_env: bool,
+    shared_bundle: SharedLeanBundle,
+) -> AutoformalizeBackendRuntime:
+    claude_exe = _require_executable(
+        "claude",
+        "Claude Code CLI not found. Install it with `npm install -g @anthropic-ai/claude-code`.",
+        base_environment,
+    )
+    real_home = shared_bundle.real_home
+    auth_plan = _resolve_claude_auth_staging_plan(
+        auth_mode=auth_mode,
+        real_home=real_home,
+        base_environment=base_environment,
+        include_persisted_env=include_persisted_env,
+    )
+
     backend_home = shared_bundle.managed_root / "claude-home"
     backend_config_path = backend_home / ".claude.json"
     mcp_config_path = shared_bundle.mcp_dir / "lean-lsp.mcp.json"
@@ -1432,9 +1681,9 @@ def _build_claude_runtime(
     _stage_claude_credentials(
         real_home=real_home,
         claude_home=backend_home,
-        auth_env=auth_env,
-        copy_oauth_credentials=copy_oauth_credentials,
-        copy_local_api_key=copy_local_api_key,
+        auth_env=auth_plan.auth_env,
+        copy_oauth_credentials=auth_plan.copy_oauth_credentials,
+        copy_local_api_key=auth_plan.copy_local_api_key,
         mcp_servers={"lean-lsp": mcp_server},
     )
     startup_context_path = _write_startup_context(
@@ -1467,10 +1716,10 @@ def _build_claude_runtime(
     )
 
     child_env = dict(base_environment)
-    if strip_child_auth_env:
+    if auth_plan.strip_child_auth_env:
         for key in CLAUDE_AUTH_ENV_KEYS:
             child_env.pop(key, None)
-    child_env.update(auth_env)
+    child_env.update(auth_plan.auth_env)
     child_env.update(
         _base_child_env(
             managed_context=managed_context,
@@ -1513,6 +1762,126 @@ def _build_claude_runtime(
     )
 
 
+def _managed_chat_backend_label(backend_name: str) -> str:
+    if backend_name == DEFAULT_AUTOFORMALIZE_BACKEND:
+        return "Claude Code"
+    if backend_name == CODEX_AUTOFORMALIZE_BACKEND:
+        return "Codex"
+    return backend_name
+
+
+def _build_managed_chat_prompt(
+    *,
+    backend_name: str,
+    active_cwd: Path,
+    user_instruction: str,
+) -> str:
+    backend_label = _managed_chat_backend_label(backend_name)
+    prompt_parts = [
+        f"You are {backend_label} in a Gauss-managed interactive chat session.",
+        "The user launched `/chat` from the main Gauss CLI and will return there when this session exits.",
+        f"Current working directory: {active_cwd}.",
+        "Use this session for onboarding, planning, repository questions, and general discussion before a specific Lean workflow is selected.",
+        "Use any skills and MCP tools that are already configured in this backend session when they are helpful.",
+        "If the user is ready to work in Lean, tell them to return to the main Gauss session and use `/project init`, `/project use`, or `/project create`, then `/prove`, `/review`, `/draft`, `/autoprove`, `/formalize`, or `/autoformalize`.",
+    ]
+    normalized_instruction = user_instruction.strip()
+    if normalized_instruction:
+        prompt_parts.append(f"Initial user request: {normalized_instruction}")
+    else:
+        prompt_parts.append("Start by asking what the user wants to do in Open Gauss.")
+    return " ".join(prompt_parts)
+
+
+def _build_claude_chat_runtime(
+    *,
+    auth_mode: str,
+    user_instruction: str,
+    base_environment: Mapping[str, str],
+    include_persisted_env: bool,
+    active_cwd: Path,
+    managed_state_base: Path,
+    real_home: Path,
+) -> ManagedChatRuntime:
+    claude_exe = _require_executable(
+        "claude",
+        "Claude Code CLI not found. Install it with `npm install -g @anthropic-ai/claude-code`.",
+        base_environment,
+    )
+    auth_plan = _resolve_claude_auth_staging_plan(
+        auth_mode=auth_mode,
+        real_home=real_home,
+        base_environment=base_environment,
+        include_persisted_env=include_persisted_env,
+    )
+    managed_root = _managed_chat_root(managed_state_base, DEFAULT_AUTOFORMALIZE_BACKEND)
+    backend_home = managed_root / "claude-home"
+    lean_assets = _prepare_managed_chat_lean_assets(
+        managed_state_base=managed_state_base,
+        env=base_environment,
+    )
+    backend_home.mkdir(parents=True, exist_ok=True)
+
+    plugin_root = _sync_prewarmed_claude_plugin(
+        real_home=real_home,
+        backend_home=backend_home,
+    )
+    if plugin_root is None and lean_assets is not None:
+        plugin_root = _install_managed_claude_plugin(
+            claude_executable=claude_exe,
+            backend_home=backend_home,
+            base_environment=base_environment,
+            marketplace_source=lean_assets.checkout_root,
+            plugin_source=lean_assets.plugin_source,
+        )
+    _stage_claude_credentials(
+        real_home=real_home,
+        claude_home=backend_home,
+        auth_env=auth_plan.auth_env,
+        copy_oauth_credentials=auth_plan.copy_oauth_credentials,
+        copy_local_api_key=auth_plan.copy_local_api_key,
+    )
+
+    child_env = dict(base_environment)
+    if auth_plan.strip_child_auth_env:
+        for key in CLAUDE_AUTH_ENV_KEYS:
+            child_env.pop(key, None)
+    child_env.update(auth_plan.auth_env)
+    child_env.update(
+        {
+            "GAUSS_MANAGED_CHAT": "1",
+            "GAUSS_MANAGED_CHAT_BACKEND": DEFAULT_AUTOFORMALIZE_BACKEND,
+            "GAUSS_CHAT_CWD": str(active_cwd),
+            "GAUSS_MANAGED_STATE_DIR": str(managed_root),
+            "GAUSS_REAL_HOME": str(real_home),
+            "HOME": str(backend_home),
+            "GAUSS_YOLO_MODE": "1",
+        }
+    )
+    if plugin_root is not None:
+        child_env.update(
+            {
+                "CLAUDE_PLUGIN_ROOT": str(plugin_root),
+                "LEAN4_PLUGIN_ROOT": str(plugin_root),
+                "LEAN4_SCRIPTS": str(plugin_root / "lib" / "scripts"),
+                "LEAN4_REFS": str(plugin_root / "skills" / "lean4" / "references"),
+            }
+        )
+    argv = [claude_exe]
+    prompt = _build_managed_chat_prompt(
+        backend_name=DEFAULT_AUTOFORMALIZE_BACKEND,
+        active_cwd=active_cwd,
+        user_instruction=user_instruction,
+    )
+    if prompt:
+        argv.append(prompt)
+    return ManagedChatRuntime(
+        argv=argv,
+        child_env=child_env,
+        backend_name=DEFAULT_AUTOFORMALIZE_BACKEND,
+    )
+
+
 def _build_codex_runtime(
     *,
     auth_mode: str,
@@ -1528,40 +1897,12 @@ def _build_codex_runtime(
         base_environment,
     )
     real_home = shared_bundle.real_home
-    local_auth_path = _local_codex_auth_path(real_home, base_environment)
-    local_auth_payload = _load_local_codex_auth_payload(real_home, base_environment)
-    has_local_auth = _codex_auth_payload_is_valid(local_auth_payload)
-    has_local_api_key = _codex_auth_payload_has_api_key(local_auth_payload)
-    openai_api_key = _resolve_codex_api_key(
-        base_environment,
+    auth_plan = _resolve_codex_auth_staging_plan(
+        auth_mode=auth_mode,
+        real_home=real_home,
+        base_environment=base_environment,
         include_persisted_env=include_persisted_env,
     )
-    copy_local_auth = False
-    staged_api_key = ""
-
-    if auth_mode == "auto":
-        if has_local_auth:
-            copy_local_auth = True
-        elif openai_api_key:
-            staged_api_key = openai_api_key
-        else:
-            raise AutoformalizePreflightError(
-                "Codex auth not found. Run `codex login`, save `OPENAI_API_KEY`, "
-                "or set `gauss.autoformalize.auth_mode: login` "
-                "(or `GAUSS_AUTOFORMALIZE_AUTH_MODE=login`) to launch the normal Codex login flow."
-            )
-    elif auth_mode == "login":
-        copy_local_auth = has_local_auth
-    else:
-        if openai_api_key:
-            staged_api_key = openai_api_key
-        elif has_local_api_key:
-            copy_local_auth = True
-        else:
-            raise AutoformalizePreflightError(
-                "Codex API-key auth not found. Save `OPENAI_API_KEY`, or switch "
-                "`gauss.autoformalize.auth_mode` back to `auto` or `login`."
-            )
 
     backend_home = shared_bundle.managed_root / "codex-home"
     codex_home = backend_home / ".codex"
@@ -1578,8 +1919,8 @@ def _build_codex_runtime(
     )
     _stage_codex_auth(
         codex_home=codex_home,
-        source_auth_path=local_auth_path if copy_local_auth else None,
-        api_key=staged_api_key,
+        source_auth_path=auth_plan.source_auth_path,
+        api_key=auth_plan.staged_api_key,
     )
 
     startup_context_path = _write_startup_context(
@@ -1672,6 +2013,120 @@ def _build_codex_runtime(
     )
 
 
+def _build_codex_chat_runtime(
+    *,
+    auth_mode: str,
+    user_instruction: str,
+    base_environment: Mapping[str, str],
+    include_persisted_env: bool,
+    active_cwd: Path,
+    managed_state_base: Path,
+    real_home: Path,
+) -> ManagedChatRuntime:
+    codex_exe = _require_executable(
+        "codex",
+        "Codex CLI not found. Install the OpenAI Codex CLI and try again.",
+        base_environment,
+    )
+    auth_plan = _resolve_codex_auth_staging_plan(
+        auth_mode=auth_mode,
+        real_home=real_home,
+        base_environment=base_environment,
+        include_persisted_env=include_persisted_env,
+    )
+    managed_root = _managed_chat_root(managed_state_base, CODEX_AUTOFORMALIZE_BACKEND)
+    backend_home = managed_root / "codex-home"
+    codex_home = backend_home / ".codex"
+    lean_assets = _prepare_managed_chat_lean_assets(
+        managed_state_base=managed_state_base,
+        env=base_environment,
+    )
+    source_codex_home = _local_codex_home(real_home, base_environment)
+    for path in (backend_home, codex_home):
+        path.mkdir(parents=True, exist_ok=True)
+    _stage_optional_file_copy(
+        source=source_codex_home / "config.toml",
+        destination=codex_home / "config.toml",
+    )
+    _stage_optional_tree_copy(
+        source=source_codex_home / "skills",
+        destination=codex_home / "skills",
+    )
+    _stage_optional_tree_copy(
+        source=source_codex_home / ".tmp" / "plugins",
+        destination=codex_home / ".tmp" / "plugins",
+    )
+    _stage_optional_tree_copy(
+        source=real_home / ".agents" / "skills",
+        destination=backend_home / ".agents" / "skills",
+    )
+    _stage_optional_tree_copy(
+        source=real_home / ".agents" / "plugins",
+        destination=backend_home / ".agents" / "plugins",
+    )
+
+    staged_skill_root: Path | None = None
+    if lean_assets is not None:
+        staged_skill_root = backend_home / ".agents" / "skills" / "lean4"
+        _stage_tree(
+            source=lean_assets.skill_source,
+            destination=staged_skill_root,
+            revision=lean_assets.skill_revision,
+        )
+        _stage_tree(
+            source=lean_assets.skill_source,
+            destination=codex_home / "skills" / "lean4",
+            revision=lean_assets.skill_revision,
+        )
+    _stage_codex_auth(
+        codex_home=codex_home,
+        source_auth_path=auth_plan.source_auth_path,
+        api_key=auth_plan.staged_api_key,
+    )
+
+    child_env = dict(base_environment)
+    for key in CODEX_AUTH_ENV_KEYS:
+        child_env.pop(key, None)
+    child_env.update(
+        {
+            "GAUSS_MANAGED_CHAT": "1",
+            "GAUSS_MANAGED_CHAT_BACKEND": CODEX_AUTOFORMALIZE_BACKEND,
+            "GAUSS_CHAT_CWD": str(active_cwd),
+            "GAUSS_MANAGED_STATE_DIR": str(managed_root),
+            "GAUSS_REAL_HOME": str(real_home),
+            "HOME": str(backend_home),
+            "CODEX_HOME": str(codex_home),
+            "GAUSS_YOLO_MODE": "1",
+        }
+    )
+    if lean_assets is not None:
+        child_env.update(
+            {
+                "LEAN4_PLUGIN_ROOT": str(lean_assets.plugin_source),
+                "LEAN4_SCRIPTS": str(lean_assets.scripts_root),
+            }
+        )
+    if staged_skill_root is not None:
+        child_env["GAUSS_AUTOFORMALIZE_SKILLS_ROOT"] = str(staged_skill_root)
+        child_env["LEAN4_REFS"] = str(staged_skill_root / "references")
+    argv = [
+        codex_exe,
+        "--dangerously-bypass-approvals-and-sandbox",
+    ]
+    prompt = _build_managed_chat_prompt(
+        backend_name=CODEX_AUTOFORMALIZE_BACKEND,
+        active_cwd=active_cwd,
+        user_instruction=user_instruction,
+    )
+    if prompt:
+        argv.append(prompt)
+    return ManagedChatRuntime(
+        argv=argv,
+        child_env=child_env,
+        backend_name=CODEX_AUTOFORMALIZE_BACKEND,
+    )
+
+
 def _base_child_env(
     *,
     managed_context: ManagedContext,
@@ -1707,6 +2162,10 @@ def _managed_root(managed_state_base: Path, backend_name: str) -> Path:
     ):
         return legacy_root
     return backend_root
+
+
+def _managed_chat_root(managed_state_base: Path, backend_name: str) -> Path:
+    return managed_state_base / backend_name / "chat"
 
 
 def _ensure_git_checkout(
@@ -1781,6 +2240,24 @@ def _run(
     except OSError as exc:
         raise AutoformalizeStagingError(f"{error_prefix}: {exc}") from exc
     return result
+
+
+def _stage_optional_file_copy(*, source: Path, destination: Path) -> bool:
+    if not source.is_file():
+        return False
+    _remove_existing_path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return True
+
+
+def _stage_optional_tree_copy(*, source: Path, destination: Path) -> bool:
+    if not source.is_dir():
+        return False
+    _remove_existing_path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, destination, symlinks=True)
+    return True
 
 
 def _stage_tree(*, source: Path, destination: Path, revision: str) -> None:
