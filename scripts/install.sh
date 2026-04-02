@@ -185,12 +185,49 @@ ensure_runner_venv() {
 }
 
 ensure_runner_pip() {
-  if "$RUNNER_VENV/bin/python" -m pip --version >/dev/null 2>&1; then
-    return
+  local pip_version_output=""
+  pip_version_output="$("$RUNNER_VENV/bin/python" -m pip --version 2>/dev/null || true)"
+  case "$pip_version_output" in
+    *"from $RUNNER_VENV/"*)
+      return
+      ;;
+  esac
+
+  "$RUNNER_VENV/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || true
+
+  pip_version_output="$("$RUNNER_VENV/bin/python" -m pip --version 2>/dev/null || true)"
+  case "$pip_version_output" in
+    *"from $RUNNER_VENV/"*)
+      return
+      ;;
+  esac
+
+  local runner_python
+  runner_python="$(select_runner_python)"
+
+  if [ -e "$RUNNER_VENV" ] || [ -L "$RUNNER_VENV" ]; then
+    recreate_runner_venv
   fi
 
-  "$RUNNER_VENV/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 \
-    || die "Failed to bootstrap pip inside $RUNNER_VENV."
+  uv venv --seed --python "$runner_python" "$RUNNER_VENV"
+
+  pip_version_output="$("$RUNNER_VENV/bin/python" -m pip --version 2>/dev/null || true)"
+  case "$pip_version_output" in
+    *"from $RUNNER_VENV/"*)
+      return
+      ;;
+  esac
+
+  "$RUNNER_VENV/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || die "Failed to bootstrap pip inside $RUNNER_VENV."
+
+  pip_version_output="$("$RUNNER_VENV/bin/python" -m pip --version 2>/dev/null || true)"
+  case "$pip_version_output" in
+    *"from $RUNNER_VENV/"*)
+      return
+      ;;
+  esac
+
+  die "Failed to bootstrap pip inside $RUNNER_VENV."
 }
 
 run_local_template() {

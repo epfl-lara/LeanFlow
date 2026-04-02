@@ -14,19 +14,38 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def _fake_runner_python_with_local_pip(venv_root: Path) -> str:
+    return f"""#!/usr/bin/env bash
+    set -euo pipefail
+    if [ "${{1:-}}" = "-" ]; then
+      exit 0
+    fi
+    if [ "${{1:-}}" = "-m" ] && [ "${{2:-}}" = "pip" ] && [ "${{3:-}}" = "--version" ]; then
+      printf '%s\\n' 'pip 24.1.2 from {venv_root}/lib/python3.13/site-packages/pip (python 3.13)'
+      exit 0
+    fi
+    if [ "${{1:-}}" = "-m" ] && [ "${{2:-}}" = "pip" ]; then
+      exit 0
+    fi
+    if [ "${{1:-}}" = "-m" ] && [ "${{2:-}}" = "ensurepip" ]; then
+      exit 0
+    fi
+    exit 1
+    """
+
+
 def test_install_wrapper_translates_installer_flags_for_local_template_run(tmp_path):
     repo = tmp_path / "repo"
     scripts_dir = repo / "scripts"
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
+    runner_root = repo / ".opengauss-installer-venv"
     runner_bin = repo / ".opengauss-installer-venv" / "bin"
     runner_bin.mkdir(parents=True)
     _write_executable(
         runner_bin / "python",
-        """#!/usr/bin/env bash
-        exit 0
-        """,
+        _fake_runner_python_with_local_pip(runner_root),
     )
 
     args_log = tmp_path / "morph-args.txt"
@@ -139,13 +158,12 @@ def test_install_wrapper_supports_empty_morph_passthrough_on_bash_nounset(tmp_pa
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
+    runner_root = repo / ".opengauss-installer-venv"
     runner_bin = repo / ".opengauss-installer-venv" / "bin"
     runner_bin.mkdir(parents=True)
     _write_executable(
         runner_bin / "python",
-        """#!/usr/bin/env bash
-        exit 0
-        """,
+        _fake_runner_python_with_local_pip(runner_root),
     )
 
     args_log = tmp_path / "morph-noargs.txt"
@@ -247,7 +265,22 @@ def test_install_wrapper_prefers_supported_runner_python_when_python3_is_too_new
           mkdir -p "$runner_dir"
           cat > "$runner_dir/python" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+set -euo pipefail
+runner_root="$(cd "$(dirname "$0")/.." && pwd)"
+if [ "${1:-}" = "-" ]; then
+  exit 0
+fi
+if [ "${1:-}" = "-m" ] && [ "${2:-}" = "pip" ] && [ "${3:-}" = "--version" ]; then
+  printf '%s\n' "pip 24.1.2 from $runner_root/lib/python3.13/site-packages/pip (python 3.13)"
+  exit 0
+fi
+if [ "${1:-}" = "-m" ] && [ "${2:-}" = "pip" ]; then
+  exit 0
+fi
+if [ "${1:-}" = "-m" ] && [ "${2:-}" = "ensurepip" ]; then
+  exit 0
+fi
+exit 1
 EOF
           chmod +x "$runner_dir/python"
           cat > "$runner_dir/morphcloud" <<'EOF'
@@ -353,7 +386,22 @@ raise SystemExit(1)
           mkdir -p "$runner_dir"
           cat > "$runner_dir/python" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+set -euo pipefail
+runner_root="$(cd "$(dirname "$0")/.." && pwd)"
+if [ "${1:-}" = "-" ]; then
+  exit 0
+fi
+if [ "${1:-}" = "-m" ] && [ "${2:-}" = "pip" ] && [ "${3:-}" = "--version" ]; then
+  printf '%s\n' "pip 24.1.2 from $runner_root/lib/python3.13/site-packages/pip (python 3.13)"
+  exit 0
+fi
+if [ "${1:-}" = "-m" ] && [ "${2:-}" = "pip" ]; then
+  exit 0
+fi
+if [ "${1:-}" = "-m" ] && [ "${2:-}" = "ensurepip" ]; then
+  exit 0
+fi
+exit 1
 EOF
           chmod +x "$runner_dir/python"
           cat > "$runner_dir/morphcloud" <<'EOF'
@@ -420,6 +468,7 @@ def test_install_wrapper_installs_morphcloud_with_runner_venv_pip(tmp_path):
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
+    runner_root = repo / ".opengauss-installer-venv"
     runner_bin = repo / ".opengauss-installer-venv" / "bin"
     runner_bin.mkdir(parents=True)
 
@@ -431,6 +480,10 @@ def test_install_wrapper_installs_morphcloud_with_runner_venv_pip(tmp_path):
         set -euo pipefail
         printf '%s\\n' "$@" >> "{pip_log}"
         if [ "${{1:-}}" = "-" ]; then
+          exit 0
+        fi
+        if [ "${{1:-}}" = "-m" ] && [ "${{2:-}}" = "pip" ] && [ "${{3:-}}" = "--version" ]; then
+          printf '%s\\n' 'pip 24.1.2 from {runner_root}/lib/python3.13/site-packages/pip (python 3.13)'
           exit 0
         fi
         if [ "${{1:-}}" = "-m" ] && [ "${{2:-}}" = "pip" ]; then
@@ -503,6 +556,106 @@ def test_install_wrapper_installs_morphcloud_with_runner_venv_pip(tmp_path):
     ]
     assert not uv_log.exists()
     assert args_log.read_text(encoding="utf-8").splitlines() == [
+        "devbox",
+        "template",
+        "run",
+        "opengauss",
+        "--experimental-run-locally",
+    ]
+
+
+def test_install_wrapper_reseeds_runner_pip_when_existing_runner_uses_external_pip(tmp_path):
+    repo = tmp_path / "repo"
+    scripts_dir = repo / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
+
+    runner_root = repo / ".opengauss-installer-venv"
+    runner_bin = runner_root / "bin"
+    runner_bin.mkdir(parents=True)
+
+    args_log = tmp_path / "runner-pip-log.txt"
+    morph_args_log = tmp_path / "morph-args.txt"
+    ensurepip_state = tmp_path / "ensurepip.state"
+    _write_executable(
+        runner_bin / "python",
+        f"""#!/usr/bin/env bash
+        set -euo pipefail
+        if [ "${{1:-}}" = "-" ]; then
+          exit 0
+        fi
+        if [ "${{1:-}}" = "-m" ] && [ "${{2:-}}" = "pip" ] && [ "${{3:-}}" = "--version" ]; then
+          if [ -f "{ensurepip_state}" ]; then
+            printf '%s\\n' 'pip 24.1.2 from {runner_root}/lib/python3.13/site-packages/pip (python 3.13)'
+          else
+            printf '%s\\n' 'pip 24.1.2 from /Users/freer/.local/share/uv/python/cpython-3.13.0-macos-aarch64-none/lib/python3.13/site-packages/pip (python 3.13)'
+          fi
+          exit 0
+        fi
+        if [ "${{1:-}}" = "-m" ] && [ "${{2:-}}" = "ensurepip" ]; then
+          touch "{ensurepip_state}"
+          exit 0
+        fi
+        if [ "${{1:-}}" = "-m" ] && [ "${{2:-}}" = "pip" ]; then
+          printf '%s\\n' "$@" > "{args_log}"
+          exit 0
+        fi
+        exit 1
+        """,
+    )
+    _write_executable(
+        runner_bin / "morphcloud",
+        f"""#!/usr/bin/env bash
+        set -euo pipefail
+        printf '%s\\n' "$@" > "{morph_args_log}"
+        """,
+    )
+
+    uv_log = tmp_path / "uv-log.txt"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "uv",
+        f"""#!/usr/bin/env bash
+        set -euo pipefail
+        printf '%s\\n' "$@" >> "{uv_log}"
+        exit 0
+        """,
+    )
+    _write_executable(
+        fake_bin / "tmux",
+        """#!/usr/bin/env bash
+        set -euo pipefail
+        exit 1
+        """,
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["OPEN_GAUSS_AUTO_ATTACH"] = "0"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/install.sh",
+            "--skip-setup",
+        ],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert ensurepip_state.exists()
+    assert not uv_log.exists()
+    assert args_log.read_text(encoding="utf-8").splitlines() == [
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "morphcloud",
+    ]
+    assert morph_args_log.read_text(encoding="utf-8").splitlines() == [
         "devbox",
         "template",
         "run",
