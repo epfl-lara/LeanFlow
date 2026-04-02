@@ -417,44 +417,155 @@ def test_resolve_backend_name_rejects_unknown_backend():
         autoformalize._resolve_backend_name(_config(backend="not-a-backend"), {})
 
 
-def test_build_claude_chat_runtime_uses_existing_environment_and_prompt(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr(autoformalize, "_require_executable", lambda name, _msg, _env: f"/usr/bin/{name}")
-
-    runtime = autoformalize._build_claude_chat_runtime(
-        user_instruction="Explain what /project init does",
-        base_environment={"PATH": "/usr/bin", "HOME": "/tmp/chat-home"},
-        active_cwd=tmp_path,
+def test_build_claude_chat_runtime_stages_managed_home_and_plugin_context(monkeypatch, tmp_path: Path):
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    (real_home / ".claude.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "existing": {
+                        "type": "stdio",
+                        "command": "true",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
     )
 
+    def fake_sync_prewarmed_claude_plugin(*, real_home: Path, backend_home: Path) -> Path:
+        del real_home
+        plugin_root = backend_home / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.0"
+        (plugin_root / "skills" / "lean4" / "references").mkdir(parents=True)
+        (plugin_root / "lib" / "scripts").mkdir(parents=True)
+        return plugin_root
+
+    monkeypatch.setattr(autoformalize, "_require_executable", lambda name, _msg, _env: f"/usr/bin/{name}")
+    monkeypatch.setattr(autoformalize, "_sync_prewarmed_claude_plugin", fake_sync_prewarmed_claude_plugin)
+    monkeypatch.setattr(autoformalize, "_prepare_managed_chat_lean_assets", lambda **_kwargs: None)
+
+    runtime = autoformalize._build_claude_chat_runtime(
+        auth_mode="auto",
+        user_instruction="Explain what /project init does",
+        base_environment={
+            "PATH": "/usr/bin",
+            "HOME": str(real_home),
+            "ANTHROPIC_API_KEY": "sk-ant-api03-test",
+        },
+        include_persisted_env=False,
+        active_cwd=tmp_path,
+        managed_state_base=tmp_path / "managed-state",
+        real_home=real_home,
+    )
+
+    managed_root = tmp_path / "managed-state" / "claude-code" / "chat"
+    managed_home = managed_root / "claude-home"
     assert runtime.backend_name == "claude-code"
     assert runtime.argv[0] == "/usr/bin/claude"
     assert "Explain what /project init does" in runtime.argv[1]
     assert "skills and MCP tools" in runtime.argv[1]
-    assert runtime.child_env["HOME"] == "/tmp/chat-home"
+    assert runtime.child_env["HOME"] == str(managed_home)
     assert runtime.child_env["GAUSS_MANAGED_CHAT"] == "1"
     assert runtime.child_env["GAUSS_MANAGED_CHAT_BACKEND"] == "claude-code"
     assert runtime.child_env["GAUSS_CHAT_CWD"] == str(tmp_path)
+    assert runtime.child_env["GAUSS_MANAGED_STATE_DIR"] == str(managed_root)
+    assert runtime.child_env["GAUSS_REAL_HOME"] == str(real_home)
     assert runtime.child_env["GAUSS_YOLO_MODE"] == "1"
+    assert runtime.child_env["CLAUDE_PLUGIN_ROOT"].startswith(str(managed_home))
+    payload = json.loads((managed_home / ".claude.json").read_text(encoding="utf-8"))
+    assert payload["primaryApiKey"] == "sk-ant-api03-test"
+    assert payload["hasCompletedOnboarding"] is True
+    assert payload["mcpServers"]["existing"]["command"] == "true"
 
 
-def test_build_codex_chat_runtime_uses_existing_environment_and_prompt(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr(autoformalize, "_require_executable", lambda name, _msg, _env: f"/usr/bin/{name}")
+def test_build_codex_chat_runtime_stages_managed_home_and_preserves_codex_context(monkeypatch, tmp_path: Path):
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    source_codex_home = tmp_path / "source-codex-home"
+    (source_codex_home / "skills" / "github-auth").mkdir(parents=True)
+    (source_codex_home / "skills" / "github-auth" / "SKILL.md").write_text("# github-auth\n", encoding="utf-8")
+    (source_codex_home / ".tmp" / "plugins").mkdir(parents=True)
+    (source_codex_home / ".tmp" / "plugins" / "README.md").write_text("plugins\n", encoding="utf-8")
+    source_config = 'model = "gpt-5.2-codex"\n\n[mcp_servers.demo]\ncommand = "demo"\n'
+    (source_codex_home / "config.toml").write_text(source_config, encoding="utf-8")
+    (real_home / ".agents" / "skills" / "assistant-handoff").mkdir(parents=True)
+    (real_home / ".agents" / "skills" / "assistant-handoff" / "SKILL.md").write_text(
+        "# assistant-handoff\n",
+        encoding="utf-8",
+    )
+    (real_home / ".agents" / "plugins").mkdir(parents=True)
+    (real_home / ".agents" / "plugins" / "marketplace.json").write_text("{}", encoding="utf-8")
 
-    runtime = autoformalize._build_codex_chat_runtime(
-        user_instruction="Plan the next onboarding step",
-        base_environment={"PATH": "/usr/bin", "CODEX_HOME": "/tmp/codex-home"},
-        active_cwd=tmp_path,
+    checkout_root = tmp_path / "assets" / "lean4-skills"
+    plugin_source = checkout_root / "plugins" / "lean4"
+    skill_source = plugin_source / "skills" / "lean4"
+    scripts_root = plugin_source / "lib" / "scripts"
+    references_root = skill_source / "references"
+    references_root.mkdir(parents=True)
+    scripts_root.mkdir(parents=True)
+    (skill_source / "SKILL.md").write_text("# Lean4\n", encoding="utf-8")
+    lean_assets = autoformalize.ManagedChatLeanAssets(
+        assets_root=tmp_path / "assets",
+        checkout_root=checkout_root,
+        plugin_source=plugin_source,
+        skill_source=skill_source,
+        scripts_root=scripts_root,
+        references_root=references_root,
+        skill_revision="lean4-chat-test-revision",
     )
 
+    monkeypatch.setattr(autoformalize, "_require_executable", lambda name, _msg, _env: f"/usr/bin/{name}")
+    monkeypatch.setattr(autoformalize, "_prepare_managed_chat_lean_assets", lambda **_kwargs: lean_assets)
+
+    runtime = autoformalize._build_codex_chat_runtime(
+        auth_mode="auto",
+        user_instruction="Plan the next onboarding step",
+        base_environment={
+            "PATH": "/usr/bin",
+            "HOME": str(real_home),
+            "CODEX_HOME": str(source_codex_home),
+            "OPENAI_API_KEY": "sk-openai-test",
+        },
+        include_persisted_env=False,
+        active_cwd=tmp_path,
+        managed_state_base=tmp_path / "managed-state",
+        real_home=real_home,
+    )
+
+    managed_root = tmp_path / "managed-state" / "codex" / "chat"
+    managed_home = managed_root / "codex-home"
+    managed_codex_home = managed_home / ".codex"
     assert runtime.backend_name == "codex"
     assert runtime.argv[0] == "/usr/bin/codex"
     assert runtime.argv[1] == "--dangerously-bypass-approvals-and-sandbox"
     assert "Plan the next onboarding step" in runtime.argv[2]
     assert "return to the main Gauss session" in runtime.argv[2]
-    assert runtime.child_env["CODEX_HOME"] == "/tmp/codex-home"
+    assert runtime.child_env["HOME"] == str(managed_home)
+    assert runtime.child_env["CODEX_HOME"] == str(managed_codex_home)
     assert runtime.child_env["GAUSS_MANAGED_CHAT"] == "1"
     assert runtime.child_env["GAUSS_MANAGED_CHAT_BACKEND"] == "codex"
     assert runtime.child_env["GAUSS_CHAT_CWD"] == str(tmp_path)
+    assert runtime.child_env["GAUSS_MANAGED_STATE_DIR"] == str(managed_root)
+    assert runtime.child_env["GAUSS_REAL_HOME"] == str(real_home)
+    assert runtime.child_env["GAUSS_AUTOFORMALIZE_SKILLS_ROOT"] == str(
+        managed_home / ".agents" / "skills" / "lean4"
+    )
+    assert runtime.child_env["LEAN4_SCRIPTS"] == str(scripts_root)
+    assert runtime.child_env["LEAN4_REFS"] == str(managed_home / ".agents" / "skills" / "lean4" / "references")
+    assert "OPENAI_API_KEY" not in runtime.child_env
+
+    assert (managed_codex_home / "skills" / "github-auth" / "SKILL.md").exists()
+    assert (managed_codex_home / ".tmp" / "plugins" / "README.md").exists()
+    assert (managed_home / ".agents" / "skills" / "assistant-handoff" / "SKILL.md").exists()
+    assert (managed_home / ".agents" / "skills" / "lean4" / "SKILL.md").exists()
+    assert (managed_codex_home / "skills" / "lean4" / "SKILL.md").exists()
+    assert (managed_codex_home / "config.toml").read_text(encoding="utf-8") == source_config
+    auth_payload = json.loads((managed_codex_home / "auth.json").read_text(encoding="utf-8"))
+    assert auth_payload == {
+        "auth_mode": "apikey",
+        "OPENAI_API_KEY": "sk-openai-test",
+    }
 
 
 def test_resolve_managed_chat_request_builds_launch_plan(monkeypatch, tmp_path: Path):
