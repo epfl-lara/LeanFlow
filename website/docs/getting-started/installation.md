@@ -6,6 +6,8 @@ description: "Install Gauss from a Linux repository checkout."
 
 # Installation
 
+> If you want the mathematician-friendly version first, start with [Start Here](/docs/getting-started/start-here).
+
 ## Recommended
 
 ```bash
@@ -24,12 +26,15 @@ This repository-local installer targets Linux checkouts, with Ubuntu, Debian, an
 ## After Install
 
 ```bash
+gauss-open-guide
 gauss
 ```
 
-Inside the CLI, start by selecting a project:
+Inside the CLI, the lowest-friction start is:
 
 ```text
+/start
+/chat
 /project init
 ```
 

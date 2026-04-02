@@ -181,15 +181,63 @@ ensure_runner_venv() {
   if [ -e "$RUNNER_VENV" ] || [ -L "$RUNNER_VENV" ]; then
     recreate_runner_venv
   fi
-  uv venv --python "$runner_python" "$RUNNER_VENV"
+  uv venv --seed --python "$runner_python" "$RUNNER_VENV"
+}
+
+ensure_runner_pip() {
+  local pip_version_output=""
+  pip_version_output="$("$RUNNER_VENV/bin/python" -m pip --version 2>/dev/null || true)"
+  case "$pip_version_output" in
+    *"from $RUNNER_VENV/"*)
+      return
+      ;;
+  esac
+
+  "$RUNNER_VENV/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || true
+
+  pip_version_output="$("$RUNNER_VENV/bin/python" -m pip --version 2>/dev/null || true)"
+  case "$pip_version_output" in
+    *"from $RUNNER_VENV/"*)
+      return
+      ;;
+  esac
+
+  local runner_python
+  runner_python="$(select_runner_python)"
+
+  if [ -e "$RUNNER_VENV" ] || [ -L "$RUNNER_VENV" ]; then
+    recreate_runner_venv
+  fi
+
+  uv venv --seed --python "$runner_python" "$RUNNER_VENV"
+
+  pip_version_output="$("$RUNNER_VENV/bin/python" -m pip --version 2>/dev/null || true)"
+  case "$pip_version_output" in
+    *"from $RUNNER_VENV/"*)
+      return
+      ;;
+  esac
+
+  "$RUNNER_VENV/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || die "Failed to bootstrap pip inside $RUNNER_VENV."
+
+  pip_version_output="$("$RUNNER_VENV/bin/python" -m pip --version 2>/dev/null || true)"
+  case "$pip_version_output" in
+    *"from $RUNNER_VENV/"*)
+      return
+      ;;
+  esac
+
+  die "Failed to bootstrap pip inside $RUNNER_VENV."
 }
 
 run_local_template() {
   if [ "${#MORPH_ARGS[@]}" -gt 0 ]; then
-    "$RUNNER_VENV/bin/morphcloud" devbox template run "$INSTALL_TARGET" --experimental-run-locally "${MORPH_ARGS[@]}"
+    OPEN_GAUSS_SKIP_SHELL_AUTOENV=1 \
+      "$RUNNER_VENV/bin/morphcloud" devbox template run "$INSTALL_TARGET" --experimental-run-locally "${MORPH_ARGS[@]}"
     return
   fi
-  "$RUNNER_VENV/bin/morphcloud" devbox template run "$INSTALL_TARGET" --experimental-run-locally
+  OPEN_GAUSS_SKIP_SHELL_AUTOENV=1 \
+    "$RUNNER_VENV/bin/morphcloud" devbox template run "$INSTALL_TARGET" --experimental-run-locally
 }
 
 parse_args "$@"
@@ -206,7 +254,8 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 ensure_runner_venv
-uv pip install --python "$RUNNER_VENV/bin/python" morphcloud --upgrade
+ensure_runner_pip
+"$RUNNER_VENV/bin/python" -m pip install --upgrade morphcloud
 
 printf 'Running Open Gauss installer flow locally from target: %s\n' "$INSTALL_TARGET"
 run_local_template

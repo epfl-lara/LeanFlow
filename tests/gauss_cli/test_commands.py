@@ -3,11 +3,18 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from gauss_cli.commands import COMMANDS, SlashCommandCompleter
+from gauss_cli.commands import (
+    COMMANDS,
+    SlashCommandCompleter,
+    rewrite_friendly_entry_command,
+    rewrite_friendly_slash_command,
+)
 
 
 # All commands that must be present in the shared COMMANDS dict.
 EXPECTED_COMMANDS = {
+    "/start",
+    "/chat",
     "/project",
     "/prove",
     "/draft",
@@ -56,6 +63,8 @@ class TestCommands:
     def test_shared_commands_include_project_and_workflow_entries(self):
         """Gauss ships project management plus managed workflow commands."""
         assert COMMANDS["/paste"] == "Check clipboard for an image and attach it"
+        assert COMMANDS["/start"] == "Show the first-step guide and enable plain-language chat mode"
+        assert COMMANDS["/chat"] == "Ask a plain-language question before choosing a Gauss project"
         assert COMMANDS["/project"] == "Create, convert, inspect, or switch the active Gauss project"
         assert COMMANDS["/prove"] == "Spawn a managed backend agent for the guided Lean prove workflow"
         assert COMMANDS["/draft"] == "Spawn a managed backend agent for the Lean draft workflow"
@@ -113,6 +122,18 @@ class TestSlashCommandCompleter:
 
     def test_no_completions_for_empty_input(self):
         assert _completions(SlashCommandCompleter(), "") == []
+
+    def test_friendly_entry_rewriter_handles_exact_and_fuzzy_inputs(self):
+        assert rewrite_friendly_entry_command("chat explain /project init") == "/chat explain /project init"
+        assert rewrite_friendly_entry_command("start") == "/start"
+        assert rewrite_friendly_entry_command("strat") == "/start"
+        assert rewrite_friendly_entry_command("caht hello") == "/chat hello"
+        assert rewrite_friendly_entry_command("get started") == "/start"
+
+    def test_friendly_slash_rewriter_handles_obvious_typos(self):
+        assert rewrite_friendly_slash_command("/strat") == "/start"
+        assert rewrite_friendly_slash_command("/caht hello") == "/chat hello"
+        assert rewrite_friendly_slash_command("/project use .") is None
 
     # -- skill commands via provider ------------------------------------
 

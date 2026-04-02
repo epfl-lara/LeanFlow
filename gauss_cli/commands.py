@@ -7,7 +7,9 @@ interactive CLI.
 
 from __future__ import annotations
 
+import difflib
 import os
+import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -17,7 +19,9 @@ from prompt_toolkit.completion import Completer, Completion
 
 # Commands organized by category for better help display
 COMMANDS_BY_CATEGORY = {
-    "Project": {
+    "Start Here": {
+        "/start": "Show the first-step guide and enable plain-language chat mode",
+        "/chat": "Ask a plain-language question before choosing a Gauss project",
         "/project": "Create, convert, inspect, or switch the active Gauss project",
     },
     "Workflow": {
@@ -67,6 +71,85 @@ COMMANDS_BY_CATEGORY = {
 COMMANDS = {}
 for category_commands in COMMANDS_BY_CATEGORY.values():
     COMMANDS.update(category_commands)
+
+
+_FRIENDLY_ENTRY_ALIASES = {
+    "chat": "/chat",
+    "start": "/start",
+    "begin": "/start",
+    "project": "/project",
+    "help": "/help",
+}
+
+_FRIENDLY_ENTRY_PHRASES = (
+    "get started",
+    "getting started",
+    "how do i start",
+    "how do i get started",
+    "what do i do first",
+    "what should i do first",
+    "where do i start",
+)
+
+_FRIENDLY_FUZZY_TARGETS = {
+    "chat": "/chat",
+    "start": "/start",
+    "project": "/project",
+    "help": "/help",
+}
+
+
+def _normalize_entry_token(token: str) -> str:
+    return re.sub(r"[^a-z]", "", token.lower())
+
+
+def rewrite_friendly_entry_command(command: str) -> str | None:
+    """Rewrite low-friction onboarding inputs into slash commands."""
+    if not isinstance(command, str):
+        return None
+    text = command.strip()
+    if not text or text.startswith("/"):
+        return None
+
+    lowered = " ".join(text.lower().split())
+    if lowered in _FRIENDLY_ENTRY_PHRASES:
+        return "/start"
+
+    parts = text.split(maxsplit=1)
+    token = _normalize_entry_token(parts[0])
+    remainder = parts[1].strip() if len(parts) > 1 else ""
+
+    direct = _FRIENDLY_ENTRY_ALIASES.get(token)
+    if direct:
+        return direct if not remainder else f"{direct} {remainder}"
+
+    matches = difflib.get_close_matches(token, _FRIENDLY_FUZZY_TARGETS.keys(), n=1, cutoff=0.75)
+    if not matches:
+        return None
+    corrected = _FRIENDLY_FUZZY_TARGETS[matches[0]]
+    return corrected if not remainder else f"{corrected} {remainder}"
+
+
+def rewrite_friendly_slash_command(command: str) -> str | None:
+    """Rewrite obvious misspelled onboarding slash commands."""
+    if not isinstance(command, str):
+        return None
+    text = command.strip()
+    if not text.startswith("/"):
+        return None
+
+    parts = text.split(maxsplit=1)
+    token = parts[0].strip().lower()
+    remainder = parts[1].strip() if len(parts) > 1 else ""
+    if token in COMMANDS:
+        return None
+
+    normalized = _normalize_entry_token(token.lstrip("/"))
+    matches = difflib.get_close_matches(normalized, _FRIENDLY_FUZZY_TARGETS.keys(), n=1, cutoff=0.75)
+    if not matches:
+        return None
+    corrected = _FRIENDLY_FUZZY_TARGETS[matches[0]]
+    return corrected if not remainder else f"{corrected} {remainder}"
 
 
 class SlashCommandCompleter(Completer):

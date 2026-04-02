@@ -205,6 +205,10 @@ def test_build_welcome_banner_mentions_swarm_in_primary_workflow(monkeypatch):
     )
 
     exported = console.export_text()
+    assert "/start" in exported
+    assert "turn on onboarding mode" in exported
+    assert "/chat" in exported
+    assert "ask a plain-language question before choosing a project" in exported
     assert "/swarm" in exported
     assert "track, attach, or cancel workflow agents" in exported
 

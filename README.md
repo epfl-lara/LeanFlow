@@ -8,6 +8,13 @@
 
 Open Gauss is a project-scoped Lean workflow orchestrator from Math, Inc. It gives `gauss` a multi-agent frontend for the `lean4-skills` `prove`, `draft`, `review`, `checkpoint`, `refactor`, `golf`, `autoprove`, `formalize`, and `autoformalize` workflows, while staging the Lean tooling, MCP/LSP wiring, and backend session state those workflows need.
 
+> New to OpenGauss, Lean tooling, or AI-agent workflows?
+> Start with the [Start Here guide](website/docs/getting-started/start-here.md).
+>
+> Very short version:
+> - Morph: open `morph.new/opengauss`, claim or save the session early if Morph offers it, then use `gauss-open-guide` or type `/start`.
+> - Local: run `./scripts/install.sh`, then `gauss-open-guide` or `gauss`, then start with `/start`, `/chat`, or `/project init`.
+
 Open Gauss handles project detection, managed backend setup, workflow spawning, swarm tracking, and recovery. The proving and formalization behavior still comes from `cameronfreer/lean4-skills`; Gauss exposes it through a Gauss-native CLI and project model.
 
 Each lifted slash command spawns a managed backend child agent in the active project and forwards the same argument tail into the corresponding `lean4-skills` workflow command:
@@ -25,6 +32,8 @@ Each lifted slash command spawns a managed backend child agent in the active pro
 ## Install
 
 If you want the fastest path, `https://morph.new/opengauss` launches the hosted setup in under 10 seconds. The local installers below are the batteries-included path for your own machine and can take up to 10 minutes.
+
+If you are not already comfortable with OpenGauss, read the [Start Here guide](website/docs/getting-started/start-here.md) before picking a workflow.
 
 ### macOS and Linux
 
@@ -108,8 +117,12 @@ gauss update
 
 ## Quick start
 
+If you want the plain-language version first, read the [Start Here guide](website/docs/getting-started/start-here.md).
+
 ```
 gauss                         # Launch the CLI
+/start                        # Show the first steps and turn on plain-language chat
+/chat                         # Ask a plain-language question first
 /project create ~/my-project --template-source <template-or-git-url>
 /prove 1+1=2                  # Spawn a proving agent
 /swarm                        # See running agents
@@ -120,6 +133,8 @@ If you already have a Lean project:
 ```
 cd ~/my-lean-project
 gauss
+/start                        # Optional: turn on onboarding mode first
+/chat                         # Optional: ask questions before choosing a workflow
 /project init                 # Register it as a Gauss project
 /prove                        # Start proving
 ```

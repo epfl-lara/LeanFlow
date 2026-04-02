@@ -6,6 +6,9 @@ description: "Install Gauss, select a project, and launch the managed Lean prove
 
 # Quickstart
 
+> New to OpenGauss or not comfortable with AI tooling yet?
+> Read [Start Here](/docs/getting-started/start-here) first.
+
 ## 1. Install
 
 ```bash
@@ -19,6 +22,13 @@ The installer targets Linux checkouts, defaults runtime state to `~/.gauss/`, ex
 
 ```bash
 gauss
+```
+
+If you want plain-language help before choosing a project:
+
+```text
+/start
+/chat
 ```
 
 ## 3. Select the active project

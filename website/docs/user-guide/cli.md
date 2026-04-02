@@ -8,6 +8,8 @@ description: "Use the Gauss terminal interface and launch the managed Lean workf
 
 Gauss is a terminal-first product. The public surface is intentionally small.
 
+If you are still orienting yourself, read [Start Here](/docs/getting-started/start-here) first and use `/start` or `/chat` before choosing a project.
+
 ## Start the CLI
 
 ```bash
@@ -15,6 +17,8 @@ gauss
 gauss --resume <session_id>
 gauss chat -q "hello"
 ```
+
+Inside the interactive CLI, `/start` and `/chat` are the simplest on-ramps when you want orientation before selecting a Lean project.
 
 ## Primary Workflow
 
@@ -36,6 +40,8 @@ Gauss stages the managed Lean runtime, yields the terminal to the configured bac
 
 ## Default Slash Commands
 
+- `/start`
+- `/chat`
 - `/prove`
 - `/draft`
 - `/review`

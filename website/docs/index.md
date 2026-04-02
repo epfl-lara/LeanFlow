@@ -13,6 +13,8 @@ Gauss is a narrow product on purpose. It is not trying to be a general agent pla
 3. enter the managed Lean session for that workflow
 4. return to the same Gauss session when that child exits
 
+If you are opening OpenGauss for the first time and just want a plain-language explanation of what to do next, start with [Start Here](/docs/getting-started/start-here).
+
 ## Core Ideas
 
 - **Lean workflow menu**: guided proving, drafting, autonomous proving, interactive formalization, and autonomous formalization
@@ -22,6 +24,7 @@ Gauss is a narrow product on purpose. It is not trying to be a general agent pla
 
 ## Start Here
 
+- [Start Here](/docs/getting-started/start-here)
 - [Quickstart](/docs/getting-started/quickstart)
 - [Installation](/docs/getting-started/installation)
 - [Migration to Gauss](/docs/getting-started/migration-to-gauss)

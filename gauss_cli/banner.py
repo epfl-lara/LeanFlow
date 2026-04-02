@@ -434,7 +434,9 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     right_lines = []
 
     if simplified:
-        right_lines.append(f"[bold {accent}]Workflow[/]")
+        right_lines.append(f"[bold {accent}]Start Here[/]")
+        right_lines.append(f"[{text}]`/start`[/] [dim {dim}]turn on onboarding mode and see the first steps[/]")
+        right_lines.append(f"[{text}]`/chat`[/] [dim {dim}]ask a plain-language question first[/]")
         right_lines.append(f"[{text}]`/project`[/] [dim {dim}]select or create a Gauss project[/]")
         right_lines.append(f"[{text}]`/prove`[/] [dim {dim}]guided Lean workflow[/]")
         right_lines.append(f"[{text}]`/review`[/] [dim {dim}]review, checkpoint, refactor, golf[/]")
@@ -445,7 +447,9 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         right_lines.append(f"[{text}]`/swarm`[/] [dim {dim}]track, attach, or cancel workflow agents[/]")
         right_lines.append(f"[{text}]`/help`[/] [dim {dim}]commands and diagnostics[/]")
     else:
-        right_lines.append(f"[bold {accent}]Primary Workflow[/]")
+        right_lines.append(f"[bold {accent}]Start Here[/]")
+        right_lines.append(f"[{text}]`/start`[/] [dim {dim}]{long_dash} turn on onboarding mode and show the first steps[/]")
+        right_lines.append(f"[{text}]`/chat`[/] [dim {dim}]{long_dash} ask a plain-language question before choosing a project[/]")
         right_lines.append(f"[{text}]`/project`[/] [dim {dim}]{long_dash} create, convert, inspect, or switch the active project[/]")
         right_lines.append(f"[{text}]`/prove`[/] [dim {dim}]{long_dash} spawn a guided managed proving agent[/]")
         right_lines.append(f"[{text}]`/review`[/] [dim {dim}]{long_dash} review, checkpoint, refactor, or golf Lean proofs[/]")
@@ -455,7 +459,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         right_lines.append(f"[{text}]`/autoformalize`[/] [dim {dim}]{long_dash} spawn an autonomous managed formalization agent[/]")
         right_lines.append(f"[{text}]`/swarm`[/] [dim {dim}]{long_dash} track, attach, or cancel workflow agents[/]")
         right_lines.append(f"[{text}]`/help`[/] [dim {dim}]{long_dash} session and diagnostics commands[/]")
-        right_lines.append(f"[dim {dim}]Bundled skills and user-managed MCP are off by default.[/]")
+        right_lines.append(f"[dim {dim}]You can ignore MCP and plugin internals at first; Open Gauss stages the default Lean workflow setup for you.[/]")
 
     try:
         from swarm_manager import SwarmManager
@@ -467,6 +471,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     right_lines.append("")
     summary_parts = [
+        "/start",
+        "/chat",
         "/project",
         "/prove",
         "/review",

@@ -549,7 +549,8 @@ class TestBuildSystemPrompt:
 
     def test_includes_open_gauss_entry_workflow_guidance(self, agent):
         prompt = agent._build_system_prompt()
-        assert "create or activate a Gauss project with /project" in prompt
+        assert "point them to /start or /chat" in prompt
+        assert "point them to /project" in prompt
         assert "/autoprove The de Bruijn - Erdos theorem" in prompt
         assert "Ctrl-] detaches and returns them to the main Gauss session" in prompt
 

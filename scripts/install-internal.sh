@@ -107,6 +107,9 @@ Behavior:
   Exported non-empty provider keys are written to ~/.gauss/.env.
   Unset provider keys leave existing ~/.gauss/.env values untouched.
   Export a provider key as an empty string to clear the staged value.
+  Template-driven installs ignore ambient provider keys by default; run
+  `gauss setup` later if you want to stage keys explicitly, or set
+  OPEN_GAUSS_TRUST_AMBIENT_PROVIDER_ENV=1 to opt back in.
 TXT
 }
 
@@ -245,6 +248,31 @@ refresh_paths() {
     VENV_PYTHON="$VENV_BIN/python"
     GUIDE_DIR="$GAUSS_HOME/guide"
     INSTALL_ROOT_FILE="$GAUSS_HOME/install-root"
+}
+
+ignore_ambient_provider_keys_if_needed() {
+    if [ -z "${OPEN_GAUSS_REPO_ROOT:-}" ] || [ "${OPEN_GAUSS_TRUST_AMBIENT_PROVIDER_ENV:-0}" = "1" ]; then
+        return
+    fi
+
+    local provider_keys=(
+        OPENROUTER_API_KEY
+        OPENAI_API_KEY
+        ANTHROPIC_API_KEY
+    )
+
+    local ignored=()
+    local key
+    for key in "${provider_keys[@]}"; do
+        if [ "${!key+x}" = "x" ] && [ -n "${!key}" ]; then
+            ignored+=("$key")
+            unset "$key"
+        fi
+    done
+
+    if [ "${#ignored[@]}" -gt 0 ]; then
+        log_info "Ignoring ambient provider keys in template install (${ignored[*]}). Run 'gauss setup' later if you want to stage keys explicitly."
+    fi
 }
 
 set_boolean_from_env() {
@@ -863,10 +891,11 @@ ensure_workspace() {
 This Lean workspace is prewarmed and already registered as the active Gauss project.
 
 Quickstart:
-1. Run `gauss-open-session` for the batteries-included launcher.
-2. Or launch `gauss` directly inside this workspace.
-3. Use `/prove`, `/draft`, `/autoprove`, `/formalize`, `/autoformalize`, or `/swarm`.
-4. Keep paper notes, extracted statements, and scratch proofs in this project.
+1. Run `gauss-open-guide` if you want the plain-language walkthrough first.
+2. Run `gauss-open-session` for the batteries-included launcher, or `gauss` directly.
+3. Use `/chat` if you want orientation before choosing a Lean workflow.
+4. Then use `/prove`, `/review`, `/draft`, `/autoprove`, `/formalize`, `/autoformalize`, or `/swarm`.
+5. Keep paper notes, extracted statements, and scratch proofs in this project.
 TXT
         log_success "Created $WORKSPACE_DIR/PAPER.md"
     else
@@ -913,13 +942,23 @@ repo_root = sys.argv[2]
 shell_configs = [Path(arg).expanduser() for arg in sys.argv[3:]]
 
 block = f"""# >>> gauss workflow installer env >>>
-export GAUSS_HOME="{gauss_home}"
-export GAUSS_INSTALL_ROOT="{repo_root}"
-if [ -f "{gauss_home}/.env" ]; then
+export GAUSS_HOME="${{GAUSS_HOME:-{gauss_home}}}"
+export GAUSS_INSTALL_ROOT="${{GAUSS_INSTALL_ROOT:-{repo_root}}}"
+_gauss_shell_autoenv=1
+case "${{BASH_EXECUTION_STRING:-}}" in
+  *".opengauss-template/runtime.env"*)
+    _gauss_shell_autoenv=0
+    ;;
+esac
+if [ "${{OPEN_GAUSS_SKIP_SHELL_AUTOENV:-0}}" = "1" ]; then
+  _gauss_shell_autoenv=0
+fi
+if [ "$_gauss_shell_autoenv" = "1" ] && [ -f "$GAUSS_HOME/.env" ]; then
   set -a
-  . "{gauss_home}/.env"
+  . "$GAUSS_HOME/.env"
   set +a
 fi
+unset _gauss_shell_autoenv
 export PATH="$HOME/.local/bin:{repo_root}/venv/bin:$HOME/.elan/bin:$PATH"
 export PROMPT_TOOLKIT_NO_CPR=1
 # <<< gauss workflow installer env <<<
@@ -969,6 +1008,7 @@ helper_dir.mkdir(parents=True, exist_ok=True)
 guide_dir.mkdir(parents=True, exist_ok=True)
 
 readme = (repo_root / "README.md").read_text(encoding="utf-8")
+start_here_doc = repo_root / "website/docs/getting-started/start-here.md"
 repo_head = subprocess.check_output(
     ["git", "-C", str(repo_root), "rev-parse", "--short=12", "HEAD"],
     text=True,
@@ -1017,7 +1057,7 @@ guide_html = f"""<!DOCTYPE html>
       border-radius: 18px;
       background: var(--panel);
     }}
-    .hero p, .grid p {{ margin: 0; line-height: 1.6; }}
+    .hero p, .grid p, .grid li, main li {{ margin: 0; line-height: 1.6; }}
     .grid {{
       display: grid;
       gap: 12px;
@@ -1039,6 +1079,13 @@ guide_html = f"""<!DOCTYPE html>
       padding: 2px 6px;
       border-radius: 6px;
     }}
+    .callout {{
+      margin: 0 20px 14px;
+      padding: 14px 18px;
+      border-left: 4px solid var(--accent);
+      border-radius: 14px;
+      background: rgba(72, 93, 66, 0.08);
+    }}
     main {{
       margin: 0 20px 20px;
       padding: 18px;
@@ -1047,12 +1094,41 @@ guide_html = f"""<!DOCTYPE html>
       background: var(--surface);
       overflow: auto;
     }}
-    pre {{
-      margin: 0;
+    h2, h3 {{
+      margin: 0 0 10px;
+      color: var(--accent);
+    }}
+    h2 {{ margin-top: 20px; }}
+    h2:first-child {{ margin-top: 0; }}
+    ul, ol {{
+      margin: 10px 0 0 22px;
+      padding: 0;
+    }}
+    li + li {{ margin-top: 8px; }}
+    .code-block, pre {{
+      margin: 12px 0 0;
       white-space: pre-wrap;
       word-break: break-word;
       font: 13px/1.45 "IBM Plex Mono", "SFMono-Regular", monospace;
       color: var(--ink);
+      background: var(--code-bg);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }}
+    details {{
+      margin-top: 20px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(240, 229, 217, 0.55);
+    }}
+    summary {{
+      cursor: pointer;
+      font-weight: 700;
+      color: var(--accent);
+    }}
+    pre {{
+      margin-top: 12px;
     }}
   </style>
 </head>
@@ -1062,27 +1138,72 @@ guide_html = f"""<!DOCTYPE html>
     <a href="https://github.com/math-inc/OpenGauss" target="_blank" rel="noreferrer">Open repo</a>
   </header>
   <section class="hero">
-    <p>This local installer uses the checked-out <code>math-inc/OpenGauss</code> repository at <code>{escape(str(repo_root))}</code> and currently resolves to <code>{repo_head}</code>. It preloads Lean 4, Claude Code, OpenAI Codex, the Math Inc skin, and a ready project at <code>{escape(str(workspace_dir))}</code>. Run <code>gauss-open-session</code> for the batteries-included launcher or <code>gauss</code> directly if you prefer to skip the session wrapper.</p>
+    <p>You do not need to understand MCP, marketplace plugins, or agent orchestration to use Open Gauss. If you just want orientation first, start the CLI and type <code>/start</code> or <code>/chat</code>. If you already have a Lean repo, use <code>/project init</code>. If you want a new repo, use <code>/project create &lt;path&gt; --template-source &lt;template-or-git-url&gt;</code>.</p>
+  </section>
+  <section class="callout">
+    <strong>30-second version</strong>
+    <ul>
+      <li><strong>Morph</strong>: claim or save the session early if Morph offers it, then use <code>gauss-open-guide</code> or <code>/start</code>.</li>
+      <li><strong>Local install</strong>: run <code>gauss-open-guide</code> or <code>gauss</code>, then start with <code>/start</code>, <code>/chat</code>, or <code>/project init</code>.</li>
+      <li><strong>Lean work starts after project selection</strong>: use <code>/prove</code>, <code>/review</code>, <code>/draft</code>, or <code>/autoprove</code> once a project is active.</li>
+    </ul>
   </section>
   <section class="grid">
     <div class="card">
+      <strong>Use These First</strong>
+      <p><code>gauss-open-guide</code><br><code>gauss</code><br><code>/start</code><br><code>/chat</code><br><code>/project init</code></p>
+    </div>
+    <div class="card">
+      <strong>If You Opened This In Morph</strong>
+      <p>Claim or save the session early if Morph offers that action. The exact button name can change, but a claimed or saved session is less disposable than a temporary one.</p>
+    </div>
+    <div class="card">
+      <strong>Bring Your Existing Project</strong>
+      <p>The safest path is still git: push the project somewhere, then clone it here. For small files, Morph upload or drag-and-drop is fine if your current view supports it.</p>
+    </div>
+    <div class="card">
+      <strong>Keep Your Work</strong>
+      <p>Commit important changes, push to a remote, and use any save or snapshot feature Morph exposes before closing the tab. Avoid leaving important work only in temp directories.</p>
+    </div>
+    <div class="card">
       <strong>Ready Paths</strong>
-      <p><code>{escape(str(repo_root))}</code><br><code>{escape(str(workspace_dir))}</code><br><code>{escape(str(gauss_home / ".env"))}</code></p>
+      <p><code>{escape(str(repo_root))}</code><br><code>{escape(str(workspace_dir))}</code><br><code>{escape(str(gauss_home / ".env"))}</code><br><code>{escape(str(start_here_doc))}</code></p>
     </div>
     <div class="card">
       <strong>Backend Helpers</strong>
       <p><code>gauss-use-claude-backend</code><br><code>gauss-use-codex-backend</code><br><code>gauss-use-auto-auth</code><br><code>gauss-use-claude-login</code><br><code>gauss-use-codex-login</code></p>
     </div>
-    <div class="card">
-      <strong>Main Provider Helpers</strong>
-      <p><code>gauss-use-openrouter-key</code><br><code>gauss-use-anthropic-key</code><br><code>gauss-use-openai-key</code><br><code>gauss-configure-main-provider</code><br><code>gauss-open-session</code></p>
-    </div>
-    <div class="card">
-      <strong>Optional Staged Keys</strong>
-      <p><code>OPENROUTER_API_KEY</code><br><code>OPENAI_API_KEY</code><br><code>ANTHROPIC_API_KEY</code></p>
-    </div>
   </section>
-  <main><pre>{escape(readme)}</pre></main>
+  <main>
+    <h2>Start Here</h2>
+    <ol>
+      <li>Run <code>gauss</code>.</li>
+      <li>If you want a guided first step, type <code>/start</code>.</li>
+      <li>If you want a normal conversation first, type <code>/chat</code>.</li>
+      <li>If you already have a Lean repo, type <code>/project init</code> inside it.</li>
+      <li>If you need a new Lean repo, type <code>/project create &lt;path&gt; --template-source &lt;template-or-git-url&gt;</code>.</li>
+      <li>After that, use <code>/prove</code>, <code>/review</code>, <code>/draft</code>, or <code>/autoprove</code>.</li>
+    </ol>
+
+    <h2>Useful First Questions</h2>
+    <div class="code-block">/start
+/chat I am a mathematician new to Open Gauss. What should I do first?
+/chat What does /project init do?
+/prove Show me how to prove that 1 + 1 = 2 in Lean.</div>
+
+    <h2>What This Install Prepared</h2>
+    <ul>
+      <li>Repository checkout: <code>{escape(str(repo_root))}</code> at commit <code>{repo_head}</code></li>
+      <li>Lean workspace: <code>{escape(str(workspace_dir))}</code></li>
+      <li>Gauss home: <code>{escape(str(gauss_home))}</code></li>
+      <li>Guide source doc: <code>{escape(str(start_here_doc))}</code></li>
+    </ul>
+
+    <details>
+      <summary>Advanced repo README</summary>
+      <pre>{escape(readme)}</pre>
+    </details>
+  </main>
 </body>
 </html>
 """
@@ -1379,8 +1500,18 @@ Default auth mode: auto
 Main interactive provider: ${interactive_provider}
 Staged keys: ${staged_keys}
 
-Quickstart:
+Start here:
+  gauss-open-guide
+  gauss
+  /start
+  /chat
+  /project init
+  /project use <path>
+  /project create <path> --template-source <template-or-git-url>
+
+Lean workflows:
   /prove
+  /review Main.lean
   /draft "Theorem 3.2"
   /autoprove
   /formalize --source ./paper.pdf "Theorem 3.2"
@@ -1400,6 +1531,8 @@ Backend helpers:
 Interactive provider notes:
   Auto-selection priority: OpenRouter, then Anthropic, then OpenAI-compatible.
   OpenRouter affects the main chat UI only; managed workflow backends stay separate.
+  /start and /chat use the main interactive provider, not the managed Lean backend.
+  /chat uses the main interactive provider, not the managed Lean backend.
   PROMPT_TOOLKIT_NO_CPR=1 is enabled to avoid CPR warnings inside tmux.
 
 The local guide is written to __GUIDE_PATH__.
@@ -1585,20 +1718,25 @@ print_summary() {
     echo "  Guide:      $GUIDE_DIR/index.html"
     echo
     printf '%b%s%b\n' "${CYAN}${BOLD}" "Next Steps:" "${NC}"
-    echo "  1. Start immediately:   $GAUSS_BIN"
-    echo "  2. Verify the CLI:      $GAUSS_BIN --version"
-    echo "  3. Reload for \`gauss\`: $SHELL_RELOAD_HINT   # current shell ($ACTIVE_SHELL_NAME)"
+    echo "  1. Open the guide:      gauss-open-guide"
+    echo "  2. Start immediately:   $GAUSS_BIN"
+    echo "  3. Verify the CLI:      $GAUSS_BIN --version"
+    echo "  4. Reload for \`gauss\`: $SHELL_RELOAD_HINT   # current shell ($ACTIVE_SHELL_NAME)"
     if [ -n "$SECONDARY_SHELL_RELOAD_HINT" ]; then
         echo "                          $SECONDARY_SHELL_RELOAD_HINT   # if you switch to $SECONDARY_SHELL_NAME"
     fi
-    echo "  4. Review settings:     gauss setup"
+    echo "  5. Review settings:     gauss setup"
     echo
     printf '%b%s%b\n' "${CYAN}${BOLD}" "Start Options:" "${NC}"
+    echo "  /start               # turn on onboarding mode and show the first steps"
+    echo "  /chat                # ask a plain-language question before choosing a project"
+    echo "  /project init        # register the current Lean repo as the active project"
+    echo "  /project create ...  # create a new Lean project from a template"
     echo "  gauss                # direct CLI launch in this terminal"
     echo "  gauss-open-session   # batteries-included launcher (tmux when interactive)"
     echo "  gauss-open-guide     # open the local guide in a browser, or print its path"
     echo
-    echo "  Inside Gauss, use /project create <path> to create a Lean project."
+    echo "  Inside Gauss, use /prove, /review, /draft, /autoprove, /formalize, or /autoformalize once a project is active."
     echo
     printf '%b%s%b\n' "${CYAN}${BOLD}" "Helper Commands:" "${NC}"
     echo "  gauss-configure-main-provider [auto|openrouter|anthropic|openai]"
@@ -1620,6 +1758,7 @@ print_summary() {
         echo "  - Verified managed /prove staging in: $MANAGED_SELF_CHECK_STATUS."
     fi
     echo "  - The local guide is written to $GUIDE_DIR/index.html."
+    echo "  - If Open Gauss feels intimidating, start with /start or /chat and ask a normal question."
     echo "  - No Morph iframe is exposed automatically; use gauss-open-guide if you want the local guide in a browser."
     echo "  - No tmux session is opened during install; use gauss-open-session when you want the workflow launcher."
 }
@@ -1646,6 +1785,7 @@ main() {
     install_repo_dependencies
     link_repo_binaries
     prepare_gauss_home
+    ignore_ambient_provider_keys_if_needed
     sync_optional_provider_keys
     ensure_workspace
     initialize_gauss_workspace || true
