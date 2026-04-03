@@ -1468,7 +1468,7 @@ if [ "${1:-}" = "--print-summary" ]; then
 fi
 
 main_chat_status="needs setup."
-launcher_behavior="Because no main chat provider is staged, this launcher will run gauss setup first and then leave you in a shell."
+launcher_behavior="Because no main chat provider is staged, this launcher will run gauss setup first. If setup completes, it then opens Gauss and begins with /start. If setup is interrupted, it falls back to a shell."
 launch_gauss=0
 if provider_status="$(gauss-configure-main-provider auto 2>&1)"; then
   main_chat_status="ready."
@@ -1528,7 +1528,9 @@ if [ -t 0 ] && [ -t 1 ]; then
   if [ "$launch_gauss" -eq 1 ]; then
     exec gauss --startup-input /start "$@"
   fi
-  GAUSS_FORCE_FIRST_TIME_SETUP=1 gauss setup || true
+  if GAUSS_FORCE_FIRST_TIME_SETUP=1 gauss setup; then
+    exec gauss --startup-input /start "$@"
+  fi
   exec bash -i
 fi
 if [ "$launch_gauss" -eq 1 ]; then

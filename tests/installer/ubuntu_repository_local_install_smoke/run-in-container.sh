@@ -226,10 +226,43 @@ NO_PROVIDER_SUMMARY="$(gauss-launch-session --print-summary)"
 printf '%s\n' "$NO_PROVIDER_SUMMARY"
 [[ "$NO_PROVIDER_SUMMARY" == *"Main chat: needs setup."* ]] || die "expected missing-provider launcher summary"
 [[ "$NO_PROVIDER_SUMMARY" == *"/chat opens the configured managed backend chat session"* ]] || die "expected provider notes to mention managed /chat"
-[[ "$NO_PROVIDER_SUMMARY" == *"run gauss setup first and then leave you in a shell"* ]] || die "expected missing-provider summary to mention setup fallback"
-grep -F "GAUSS_FORCE_FIRST_TIME_SETUP=1 gauss setup || true" "$HOME/.local/bin/gauss-launch-session" >/dev/null || die "expected launcher to restore first-run setup fallback when no provider is staged"
+[[ "$NO_PROVIDER_SUMMARY" == *"run gauss setup first. If setup completes, it then opens Gauss and begins with /start."* ]] || die "expected missing-provider summary to mention setup-then-launch behavior"
+grep -F "if GAUSS_FORCE_FIRST_TIME_SETUP=1 gauss setup; then" "$HOME/.local/bin/gauss-launch-session" >/dev/null || die "expected launcher to restore first-run setup fallback when no provider is staged"
 grep -F "gauss --startup-input /start" "$HOME/.local/bin/gauss-launch-session" >/dev/null || die "expected launcher to auto-start gauss with /start"
 grep -F "exec bash -i" "$HOME/.local/bin/gauss-launch-session" >/dev/null || die "expected interactive shell fallback when no provider is staged"
+
+echo "==> Verifying no-provider launcher enters gauss after setup completes"
+FAKE_BIN="$(mktemp -d)"
+LAUNCH_LOG="$(mktemp)"
+cat >"$FAKE_BIN/gauss" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GAUSS_LAUNCH_LOG"
+if [ "${1:-}" = "setup" ]; then
+    exit 0
+fi
+if [ "${1:-}" = "--startup-input" ] && [ "${2:-}" = "/start" ]; then
+    exit 0
+fi
+printf 'unexpected gauss args: %s\n' "$*" >&2
+exit 99
+EOF
+chmod +x "$FAKE_BIN/gauss"
+if ! GAUSS_LAUNCH_LOG="$LAUNCH_LOG" PATH="$FAKE_BIN:$PATH" timeout 15s python3 - <<'PY'
+import os
+import pty
+import sys
+
+status = pty.spawn(["gauss-launch-session"])
+if hasattr(os, "waitstatus_to_exitcode"):
+    status = os.waitstatus_to_exitcode(status)
+sys.exit(status)
+PY
+then
+    die "expected no-provider launcher to reach gauss after setup"
+fi
+grep -Fx "setup" "$LAUNCH_LOG" >/dev/null || die "expected launcher to run gauss setup before launching gauss"
+grep -Fx "--startup-input /start" "$LAUNCH_LOG" >/dev/null || die "expected launcher to auto-start gauss with /start after setup"
 mv "$GAUSS_HOME/.env.backup" "$GAUSS_HOME/.env"
 
 echo "==> Verifying Lean bootstrap failures surface useful diagnostics"
