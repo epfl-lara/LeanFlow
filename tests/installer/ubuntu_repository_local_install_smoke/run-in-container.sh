@@ -226,21 +226,23 @@ NO_PROVIDER_SUMMARY="$(gauss-launch-session --print-summary)"
 printf '%s\n' "$NO_PROVIDER_SUMMARY"
 [[ "$NO_PROVIDER_SUMMARY" == *"Main chat: needs setup."* ]] || die "expected missing-provider launcher summary"
 [[ "$NO_PROVIDER_SUMMARY" == *"/chat opens the configured managed backend chat session"* ]] || die "expected provider notes to mention managed /chat"
-[[ "$NO_PROVIDER_SUMMARY" == *"run gauss setup first. If setup completes, it then opens Gauss and begins with /start."* ]] || die "expected missing-provider summary to mention setup-then-launch behavior"
-grep -F "if GAUSS_FORCE_FIRST_TIME_SETUP=1 gauss setup; then" "$HOME/.local/bin/gauss-launch-session" >/dev/null || die "expected launcher to restore first-run setup fallback when no provider is staged"
+[[ "$NO_PROVIDER_SUMMARY" == *"still opens Gauss automatically and begins with /start."* ]] || die "expected missing-provider summary to mention direct gauss launch"
+[[ "$NO_PROVIDER_SUMMARY" == *"direct Gauss chat/model commands stay disabled until you run gauss setup."* ]] || die "expected missing-provider summary to mention deferred provider setup"
 grep -F "gauss --startup-input /start" "$HOME/.local/bin/gauss-launch-session" >/dev/null || die "expected launcher to auto-start gauss with /start"
-grep -F "exec bash -i" "$HOME/.local/bin/gauss-launch-session" >/dev/null || die "expected interactive shell fallback when no provider is staged"
+if grep -F "gauss setup" "$HOME/.local/bin/gauss-launch-session" >/dev/null; then
+    die "expected launcher to avoid forcing gauss setup when no provider is staged"
+fi
+if grep -F "exec bash -i" "$HOME/.local/bin/gauss-launch-session" >/dev/null; then
+    die "expected launcher to avoid shell fallback when no provider is staged"
+fi
 
-echo "==> Verifying no-provider launcher enters gauss after setup completes"
+echo "==> Verifying no-provider launcher enters gauss directly"
 FAKE_BIN="$(mktemp -d)"
 LAUNCH_LOG="$(mktemp)"
 cat >"$FAKE_BIN/gauss" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GAUSS_LAUNCH_LOG"
-if [ "${1:-}" = "setup" ]; then
-    exit 0
-fi
 if [ "${1:-}" = "--startup-input" ] && [ "${2:-}" = "/start" ]; then
     exit 0
 fi
@@ -259,10 +261,12 @@ if hasattr(os, "waitstatus_to_exitcode"):
 sys.exit(status)
 PY
 then
-    die "expected no-provider launcher to reach gauss after setup"
+    die "expected no-provider launcher to reach gauss directly"
 fi
-grep -Fx "setup" "$LAUNCH_LOG" >/dev/null || die "expected launcher to run gauss setup before launching gauss"
-grep -Fx "--startup-input /start" "$LAUNCH_LOG" >/dev/null || die "expected launcher to auto-start gauss with /start after setup"
+if grep -Fx "setup" "$LAUNCH_LOG" >/dev/null; then
+    die "expected launcher to skip gauss setup before launching gauss"
+fi
+grep -Fx "--startup-input /start" "$LAUNCH_LOG" >/dev/null || die "expected launcher to auto-start gauss with /start"
 mv "$GAUSS_HOME/.env.backup" "$GAUSS_HOME/.env"
 
 echo "==> Verifying Lean bootstrap failures surface useful diagnostics"

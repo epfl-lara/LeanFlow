@@ -1468,12 +1468,10 @@ if [ "${1:-}" = "--print-summary" ]; then
 fi
 
 main_chat_status="needs setup."
-launcher_behavior="Because no main chat provider is staged, this launcher will run gauss setup first. If setup completes, it then opens Gauss and begins with /start. If setup is interrupted, it falls back to a shell."
-launch_gauss=0
-if provider_status="$(gauss-configure-main-provider auto 2>&1)"; then
+launcher_behavior="This launcher still opens Gauss automatically and begins with /start. Because no main chat provider is staged yet, direct Gauss chat/model commands stay disabled until you run gauss setup."
+if gauss-configure-main-provider auto >/dev/null 2>&1; then
   main_chat_status="ready."
   launcher_behavior="This launcher opens Gauss automatically and begins with /start."
-  launch_gauss=1
 else
   :
 fi
@@ -1525,19 +1523,10 @@ fi
 
 cd "$WORKSPACE_DIR"
 if [ -t 0 ] && [ -t 1 ]; then
-  if [ "$launch_gauss" -eq 1 ]; then
-    exec gauss --startup-input /start "$@"
-  fi
-  if GAUSS_FORCE_FIRST_TIME_SETUP=1 gauss setup; then
-    exec gauss --startup-input /start "$@"
-  fi
-  exec bash -i
+  exec gauss --startup-input /start "$@"
 fi
-if [ "$launch_gauss" -eq 1 ]; then
-  gauss --startup-input /start "$@" || true
-  exit 0
-fi
-exit 1
+gauss --startup-input /start "$@" || true
+exit 0
 """,
     "gauss-open-session": """#!/usr/bin/env bash
 set -euo pipefail
