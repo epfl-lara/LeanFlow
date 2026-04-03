@@ -244,6 +244,9 @@ def check_for_updates() -> Optional[int]:
     ``~/.gauss/.update_check``).  Returns the number of commits behind,
     or ``None`` if the check fails or isn't applicable.
     """
+    if os.getenv("GAUSS_SKIP_UPDATE_CHECK", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return None
+
     from gauss_cli.config import get_gauss_home, get_installed_repo_root
 
     gauss_home = get_gauss_home()

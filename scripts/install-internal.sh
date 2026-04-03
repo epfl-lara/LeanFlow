@@ -1614,7 +1614,7 @@ run_post_install_self_check() {
     log_info "Running post-install verification..."
 
     local version_output
-    if ! version_output="$("$GAUSS_BIN" --version 2>&1)"; then
+    if ! version_output="$(GAUSS_SKIP_UPDATE_CHECK=1 "$GAUSS_BIN" --version 2>&1)"; then
         log_error "Gauss CLI verification failed."
         printf '%s\n' "$version_output" >&2
         exit 1
