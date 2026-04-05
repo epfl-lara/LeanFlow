@@ -120,11 +120,11 @@ gauss update
 If you want the plain-language version first, read the [Start Here guide](website/docs/getting-started/start-here.md).
 
 ```
-gauss                         # Launch the CLI
-/start                        # Show the first steps and turn on plain-language chat
-/chat                         # Open the configured managed backend chat session first
+gauss                         # Launch top-level Gauss
+/chat                         # Turn on inline onboarding and plain-language chat
+/managed-chat                 # Optional: open the configured managed backend child session
 /project create ~/my-project --template-source <template-or-git-url>
-/prove 1+1=2                  # Spawn a proving agent
+/prove 1+1=2                  # Spawn a proving agent after selecting a project
 /swarm                        # See running agents
 ```
 
@@ -133,8 +133,8 @@ If you already have a Lean project:
 ```
 cd ~/my-lean-project
 gauss
-/start                        # Optional: turn on onboarding mode first
-/chat                         # Optional: open the configured managed backend chat session before choosing a workflow
+/chat                         # Optional: inline onboarding in the current Gauss session
+/managed-chat                 # Optional: open the configured managed backend child session first
 /project init                 # Register it as a Gauss project
 /prove                        # Start proving
 ```
