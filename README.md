@@ -13,7 +13,7 @@ Open Gauss is a project-scoped Lean workflow orchestrator from Math, Inc. It giv
 >
 > Very short version:
 > - Morph: open <https://morph.new/opengauss-0-2-2>, claim or save the session early if Morph offers it, then use `gauss-open-guide`, `gauss`, `/chat`, or `/project init`.
-> - Local: run `./scripts/install.sh`, then `gauss-open-guide` or `gauss`, then start with `/chat`, `/managed-chat`, or `/project init`.
+> - Local: run `./scripts/install.sh`, then `gauss-open-guide` or `gauss`, then start with `/chat`, `/project init`, or `/project create`.
 
 Open Gauss handles project detection, managed backend setup, workflow spawning, swarm tracking, and recovery. The proving and formalization behavior still comes from `cameronfreer/lean4-skills`; Gauss exposes it through a Gauss-native CLI and project model.
 
@@ -122,7 +122,6 @@ If you want the plain-language version first, read the [Start Here guide](websit
 ```
 gauss                         # Launch top-level Gauss
 /chat                         # Turn on inline onboarding and plain-language chat
-/managed-chat                 # Optional: open the configured managed backend child session
 /project create ~/my-project --template-source <template-or-git-url>
 /prove 1+1=2                  # Spawn a proving agent after selecting a project
 /swarm                        # See running agents
@@ -134,7 +133,6 @@ If you already have a Lean project:
 cd ~/my-lean-project
 gauss
 /chat                         # Optional: inline onboarding in the current Gauss session
-/managed-chat                 # Optional: open the configured managed backend child session first
 /project init                 # Register it as a Gauss project
 /prove                        # Start proving
 ```

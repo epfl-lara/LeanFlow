@@ -2441,7 +2441,7 @@ class GaussCLI:
             _cprint(f"\n  {_DIM}Active project: {project_summary}{_RST}")
         else:
             _cprint(
-                f"\n  {_DIM}No active project — use /chat for inline onboarding, /managed-chat for a managed backend child session, or /project init, "
+                f"\n  {_DIM}No active project — use /chat for inline onboarding, or /project init, "
                 f"/project convert, /project create <path>, or /project use <path>.{_RST}"
             )
 
@@ -2458,7 +2458,7 @@ class GaussCLI:
                 )
 
         _cprint(
-            f"\n  {_DIM}Tip: Start with /chat for inline onboarding if you want orientation first. Use /managed-chat if you want the configured managed backend child session. Use /project when you're ready to work in a Lean repo, "
+            f"\n  {_DIM}Tip: Start with /chat for inline onboarding if you want orientation first. Use /project when you're ready to work in a Lean repo, "
             f"then launch /prove, /review, /checkpoint, /refactor, /golf, /draft, /autoprove, /formalize, or /autoformalize.{_RST}"
         )
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
@@ -3430,8 +3430,8 @@ class GaussCLI:
             f"{prefix} Use /project init, /project convert, /project create <path>, or /project use <path> first.",
         )
         self._print_surface_notice(
-            "[dim]If you only want orientation first, run `/chat` for inline onboarding chat or `/managed-chat` for the configured managed backend child session.[/]",
-            "If you only want orientation first, run /chat for inline onboarding chat or /managed-chat for the configured managed backend child session.",
+            "[dim]If you only want orientation first, run `/chat` for inline onboarding chat.[/]",
+            "If you only want orientation first, run /chat for inline onboarding chat.",
         )
         self._print_surface_notice(
             f"[dim]{detail}[/]",
