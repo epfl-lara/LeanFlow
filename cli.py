@@ -1730,7 +1730,25 @@ class GaussCLI:
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
         if not isinstance(api_key, str) or not api_key:
-            self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
+            if resolved_provider in {"openrouter", "custom"}:
+                message = (
+                    "No main interactive provider is configured yet. "
+                    "Run `gauss setup`, or save `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, "
+                    "or `ANTHROPIC_API_KEY` in `~/.gauss/.env`."
+                )
+            elif resolved_provider == "anthropic":
+                message = (
+                    "No Anthropic credentials are available for chat. "
+                    "Run `gauss setup`, `claude auth login`, or save `ANTHROPIC_API_KEY`."
+                )
+            elif resolved_provider == "openai-codex":
+                message = (
+                    "No Codex credentials are available for chat. "
+                    "Run `gauss setup`, `codex login`, or save `OPENAI_API_KEY`."
+                )
+            else:
+                message = "Provider resolver returned an empty API key."
+            self.console.print(f"[bold red]{message}[/]")
             return False
         if not isinstance(base_url, str) or not base_url:
             self.console.print("[bold red]Provider resolver returned an empty base URL.[/]")
