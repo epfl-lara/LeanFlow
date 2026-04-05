@@ -348,7 +348,6 @@ def test_project_lock_blocks_workflow_commands_before_project_selection():
     assert "Gauss needs an active project before `/prove`." in rendered
     assert "/project init" in rendered
     assert "/chat" in rendered
-    assert "/managed-chat" in rendered
 
 
 def test_managed_chat_command_dispatches_to_managed_interactive_runner():

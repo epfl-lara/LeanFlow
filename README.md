@@ -12,8 +12,8 @@ Open Gauss is a project-scoped Lean workflow orchestrator from Math, Inc. It giv
 > Start with the [Start Here guide](website/docs/getting-started/start-here.md).
 >
 > Very short version:
-> - Morph: open `morph.new/opengauss-0-2-2`, claim or save the session early if Morph offers it, then use `gauss-open-guide`, `gauss`, `/chat`, or `/project init`.
-> - Local: run `./scripts/install.sh`, then `gauss-open-guide` or `gauss`, then start with `/chat`, `/managed-chat`, or `/project init`.
+> - Morph: open [https://morph.new/opengauss-0-2-2](https://morph.new/opengauss-0-2-2), claim or save the session early if Morph offers it, then use `gauss-open-guide`, `gauss`, `/chat`, or `/project init`.
+> - Local: run `./scripts/install.sh`, then `gauss-open-guide` or `gauss`, then start with `/chat`, `/project init`, or `/project create`.
 
 Open Gauss handles project detection, managed backend setup, workflow spawning, swarm tracking, and recovery. The proving and formalization behavior still comes from `cameronfreer/lean4-skills`; Gauss exposes it through a Gauss-native CLI and project model.
 
@@ -31,7 +31,7 @@ Each lifted slash command spawns a managed backend child agent in the active pro
 
 ## Install
 
-If you want the fastest pinned release path, `https://morph.new/opengauss-0-2-2` launches the hosted setup in under 10 seconds. The local installers below are the batteries-included path for your own machine and can take up to 10 minutes.
+If you want the fastest pinned release path, [https://morph.new/opengauss-0-2-2](https://morph.new/opengauss-0-2-2) launches the hosted setup in under 10 seconds. The local installers below are the batteries-included path for your own machine and can take up to 10 minutes.
 
 If you are not already comfortable with OpenGauss, read the [Start Here guide](website/docs/getting-started/start-here.md) before picking a workflow.
 
@@ -120,11 +120,10 @@ gauss update
 If you want the plain-language version first, read the [Start Here guide](website/docs/getting-started/start-here.md).
 
 ```
-gauss                         # Launch the CLI
-/start                        # Show the first steps and turn on plain-language chat
-/chat                         # Open the configured managed backend chat session first
+gauss                         # Launch top-level Gauss
+/chat                         # Turn on inline onboarding and plain-language chat
 /project create ~/my-project --template-source <template-or-git-url>
-/prove 1+1=2                  # Spawn a proving agent
+/prove 1+1=2                  # Spawn a proving agent after selecting a project
 /swarm                        # See running agents
 ```
 
@@ -133,8 +132,7 @@ If you already have a Lean project:
 ```
 cd ~/my-lean-project
 gauss
-/start                        # Optional: turn on onboarding mode first
-/chat                         # Optional: open the configured managed backend chat session before choosing a workflow
+/chat                         # Optional: inline onboarding in the current Gauss session
 /project init                 # Register it as a Gauss project
 /prove                        # Start proving
 ```
