@@ -88,6 +88,31 @@ def test_resolve_workflow_request_normalizes_requested_active_file(tmp_path):
     assert plan.workflow.workflow_args == "GaussTest/RealTheorems-homework.lean"
 
 
+def test_resolve_workflow_request_recovers_similar_requested_active_file(tmp_path):
+    root = tmp_path / "GaussTest"
+    (root / ".epflemma").mkdir(parents=True)
+    (root / ".epflemma" / "project.yaml").write_text(
+        "schema_version: 1\nname: GaussTest\nkind: lean4\nlean_root: .\ncreated_at: now\npaths:\n  runtime: .epflemma/runtime\n  cache: .epflemma/cache\n  workflows: .epflemma/workflows\nsource:\n  mode: init\n  template_source: ''\nblueprint:\n  markers: []\n",
+        encoding="utf-8",
+    )
+    (root / ".epflemma" / "runtime").mkdir()
+    (root / ".epflemma" / "cache").mkdir()
+    (root / ".epflemma" / "workflows").mkdir()
+    (root / "lakefile.toml").write_text("name = 'GaussTest'\n", encoding="utf-8")
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+    (root / "GaussTest").mkdir()
+    (root / "GaussTest" / "RealTheorems-homework.lean").write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    plan = resolve_workflow_request(
+        "/prove ./wrong/subdir/RealTheorems-homework.lean",
+        active_cwd=root,
+    )
+
+    assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "GaussTest/RealTheorems-homework.lean"
+    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/lean4:autoprove GaussTest/RealTheorems-homework.lean"
+    assert plan.workflow.workflow_args == "GaussTest/RealTheorems-homework.lean"
+
+
 def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     shell = InteractiveShell()

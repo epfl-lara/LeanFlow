@@ -6,6 +6,7 @@ import os
 import shlex
 import subprocess
 import sys
+from difflib import SequenceMatcher
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -67,6 +68,58 @@ class NativeLaunchPlan:
     toolset_name: str
 
 
+def _project_lean_files(project_root: Path) -> list[Path]:
+    if not project_root.is_dir():
+        return []
+    skipped = {".lake", ".git", ".epflemma", "build"}
+    return [
+        path
+        for path in project_root.rglob("*.lean")
+        if not any(part in skipped for part in path.parts)
+    ]
+
+
+def _candidate_path_strings(candidate: Path, project_root: Path) -> list[str]:
+    values: list[str] = []
+    try:
+        relative = str(candidate.resolve().relative_to(project_root.resolve()))
+        values.append(relative)
+    except Exception:
+        pass
+    values.append(candidate.name)
+    values.append(str(candidate))
+    deduped: list[str] = []
+    for value in values:
+        if value and value not in deduped:
+            deduped.append(value)
+    return deduped
+
+
+def _recover_similar_project_file(project_root: Path, raw: str) -> str:
+    raw = str(raw or "").strip()
+    if not raw:
+        return ""
+    target_name = Path(raw).name
+    target_suffix = raw.lstrip("./")
+    best_score = 0.0
+    best_match = ""
+    for candidate in _project_lean_files(project_root):
+        strings = _candidate_path_strings(candidate, project_root)
+        score = max(SequenceMatcher(None, target_suffix, value).ratio() for value in strings)
+        if target_name and candidate.name == target_name:
+            score += 0.35
+        if target_suffix and any(value.endswith(target_suffix) for value in strings):
+            score += 0.2
+        if score <= best_score:
+            continue
+        try:
+            best_match = str(candidate.resolve().relative_to(project_root.resolve()))
+        except Exception:
+            best_match = str(candidate.resolve())
+        best_score = score
+    return best_match if best_score >= 0.72 else ""
+
+
 def _normalize_requested_active_file(project_root: Path, cwd: Path, workflow_args: str) -> str:
     raw = str(workflow_args or "").strip()
     if not raw or not raw.endswith(".lean"):
@@ -94,7 +147,7 @@ def _normalize_requested_active_file(project_root: Path, cwd: Path, workflow_arg
                 return str(resolved.relative_to(project_root.resolve()))
             except Exception:
                 return str(resolved)
-    return ""
+    return _recover_similar_project_file(project_root, trimmed if trimmed != raw else raw)
 
 
 def _normalize_workflow_args(project_root: Path, cwd: Path, workflow_args: str) -> str:
