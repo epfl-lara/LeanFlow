@@ -104,6 +104,8 @@ def test_discover_project_imports_legacy_manifest(monkeypatch, tmp_path):
 def test_runtime_provider_resolves_direct_custom_and_local(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("GLM_API_KEY", "glm-key")
+    monkeypatch.delenv("EPFLEMMA_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("EPFLEMMA_OPENAI_API_KEY", raising=False)
 
     direct = resolve_runtime_provider(requested="zai")
     assert direct["provider"] == "zai"
