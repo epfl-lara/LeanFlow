@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from opengauss_cli import native_runner as runner
+from opengauss_cli.workflow_state import read_workflow_activity
 
 
 class _FakeCompressor:
@@ -105,6 +106,8 @@ def test_build_agent_uses_opengauss_native_toolset(monkeypatch):
     assert captured["provider"] == "zai"
     assert captured["api_mode"] == "responses"
     assert captured["max_iterations"] == 77
+    assert callable(captured["tool_progress_callback"])
+    assert callable(captured["step_callback"])
 
 
 def test_build_agent_uses_swarm_toolset_when_user_enabled_swarm(monkeypatch):
@@ -127,6 +130,23 @@ def test_build_agent_uses_swarm_toolset_when_user_enabled_swarm(monkeypatch):
 
     assert captured["enabled_toolsets"] == ["opengauss-native-swarm"]
     assert os.getenv("OPENGAUSS_NATIVE_RUNNER_OWNER", "") == "runner-session"
+
+
+def test_tool_progress_callback_persists_structured_events(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("OPENGAUSS_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "/lean4:prove Main.lean")
+    monkeypatch.setenv("OPENGAUSS_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
+
+    runner._tool_progress_callback("terminal", "Run lake build", {"command": "lake build"})
+    runner._tool_progress_callback("_thinking", "Inspecting theorem and diagnostics")
+    runner._step_callback(3, ["search_files", "terminal"])
+
+    events = read_workflow_activity(limit=3)
+
+    assert [event["type"] for event in events] == ["tool-start", "assistant-plan", "api-call"]
+    assert events[0]["details"]["tool"] == "terminal"
+    assert events[2]["details"]["iteration"] == 3
 
 
 def test_compact_history_creates_snapshot_and_reduces_history(monkeypatch):
@@ -169,6 +189,54 @@ def test_auto_compact_history_prunes_old_tool_output(monkeypatch):
     assert status["reason"] == "disabled"
     assert status["compacted"] is False
     assert history[0]["content"].endswith("[opengauss-native pruned older tool output to preserve context budget]")
+
+
+def test_count_project_sorries_ignores_dependencies_and_build_dirs(tmp_path):
+    project = tmp_path / "Demo"
+    (project / ".lake" / "packages" / "mathlib").mkdir(parents=True)
+    (project / "build" / "ir").mkdir(parents=True)
+    (project / "Demo").mkdir(parents=True)
+    (project / "Demo" / "Main.lean").write_text("theorem t : True := by\n  sorry\n", encoding="utf-8")
+    (project / ".lake" / "packages" / "mathlib" / "Ignored.lean").write_text("theorem x : True := by\n  sorry\n", encoding="utf-8")
+    (project / "build" / "ir" / "Ignored.lean").write_text("theorem y : True := by\n  sorry\n", encoding="utf-8")
+
+    count, files = runner._count_project_sorries(str(project))
+
+    assert count == 1
+    assert files == ["Demo/Main.lean (1)"]
+
+
+def test_live_state_is_not_verified_when_project_still_has_sorries():
+    live_state = {
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake build succeeded",
+        "sorry_count": 0,
+        "project_sorry_count": 2,
+    }
+
+    assert runner._live_state_is_verified(live_state) is False
+
+
+def test_promote_live_state_requires_explicit_build_success(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setattr(runner, "_run_explicit_verification_build", lambda: (False, "build reported errors: unresolved import"))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "lake build succeeded",
+            "sorry_count": 0,
+        }
+    )
+
+    assert promoted["build_status"] == "build reported errors: unresolved import"
+    assert runner._live_state_is_verified(promoted) is False
 
 
 def test_write_workflow_checkpoint_persists_index_and_current(monkeypatch, tmp_path):

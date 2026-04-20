@@ -52,6 +52,23 @@ def test_initialize_project_uses_opengauss_manifest(monkeypatch, tmp_path):
     assert not (root / ".gauss" / "project.yaml").exists()
 
 
+def test_initialize_project_is_idempotent(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "home"))
+    root = tmp_path / "Demo"
+    root.mkdir()
+    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+
+    project = initialize_opengauss_project(root)
+    manifest_before = project.manifest_path.read_text(encoding="utf-8")
+
+    reloaded = initialize_opengauss_project(root)
+    manifest_after = project.manifest_path.read_text(encoding="utf-8")
+
+    assert reloaded.manifest_path == project.manifest_path
+    assert manifest_after == manifest_before
+
+
 def test_discover_project_imports_legacy_manifest(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "home"))
     root = tmp_path / "LegacyProject"

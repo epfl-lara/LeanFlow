@@ -1,4 +1,4 @@
-"""Central registry for all gauss-agent tools.
+"""Central registry for all runtime tools.
 
 Each tool file calls ``registry.register()`` at module level to declare its
 schema, handler, toolset membership, and availability check.  ``model_tools.py``
@@ -11,7 +11,7 @@ Import chain (circular-import safe):
            ^
     model_tools.py  (imports tools.registry + all tool modules)
            ^
-    run_agent.py, cli.py, batch_runner.py, etc.
+    run_agent.py, cli.py, and other runtime entrypoints.
 """
 
 import json

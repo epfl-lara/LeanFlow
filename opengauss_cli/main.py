@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 
 from opengauss_cli import __version__
@@ -61,7 +61,12 @@ from opengauss_cli.runtime_provider import (
 )
 from opengauss_cli.skill_core import discover_skill_commands, discover_skills, load_skill
 from opengauss_cli.workflow import FORGIVING_WORKFLOW_ALIAS_MAP, describe_launch_plan, resolve_workflow_request, run_workflow
-from opengauss_cli.workflow_state import load_workflow_checkpoints, load_workflow_live_status, read_workflow_activity
+from opengauss_cli.workflow_state import (
+    load_workflow_checkpoints,
+    load_workflow_live_status,
+    read_workflow_activity,
+    read_workflow_run_log,
+)
 
 
 WORKFLOW_COMMANDS = {
@@ -269,6 +274,13 @@ class InteractiveShell:
         except Exception:
             return "(none)"
 
+    def _project_name(self) -> str:
+        try:
+            project = discover_opengauss_project(self.cwd)
+            return project.label
+        except Exception:
+            return "No Project"
+
     def _provider_label(self, requested: str | None = None) -> str:
         try:
             resolved = resolve_runtime_provider(requested=requested)
@@ -296,22 +308,64 @@ class InteractiveShell:
         workflow_status = self._workflow_status_payload()
         return str(workflow_status.get("active_skill", "") or "(none)")
 
-    def _overlay_label(self) -> str:
-        sources = {skill.source for skill in discover_skills(self.cwd) if skill.source in {"project", "user"}}
-        if not sources:
-            return "builtin"
-        return "+".join(sorted(sources))
+    def _target_label(self) -> str:
+        workflow_status = self._workflow_status_payload()
+        return str(workflow_status.get("target_symbol", "") or "-")
+
+    def _phase_label(self) -> str:
+        workflow_status = self._workflow_status_payload()
+        return str(workflow_status.get("phase", "") or "idle")
+
+    def _latest_activity_label(self) -> str:
+        events = self._workflow_activity(limit=1)
+        if not events:
+            return "-"
+        latest = events[-1]
+        label = str(latest.get("type", "") or "")
+        message = str(latest.get("message", "") or "")
+        combined = f"{label}: {message}" if label else message
+        return self._toolbar_piece(combined, 22)
+
+    @staticmethod
+    def _plain_notice(message: str) -> None:
+        print(message)
+
+    @staticmethod
+    def _toolbar_piece(value: str, max_len: int = 22) -> str:
+        text = str(value or "-")
+        if len(text) <= max_len:
+            return text
+        return f"{text[:max_len - 3]}..."
+
+    def _prompt_message(self) -> FormattedText:
+        project = self._toolbar_piece(self._project_name(), 28)
+        phase = self._toolbar_piece(self._phase_label(), 18)
+        theorem = self._target_label()
+        status_suffix = phase
+        if theorem and theorem != "-":
+            status_suffix = f"{status_suffix} · {self._toolbar_piece(theorem, 28)}"
+        return FormattedText(
+            [
+                ("fg:#ff5a5f bold", project),
+                ("fg:#b0b0b0", "  "),
+                ("fg:#d9d9d9", status_suffix),
+                ("", "\n"),
+                ("fg:#f5f5f5 bold", "› "),
+            ]
+        )
 
     def _bottom_toolbar(self) -> str:
         workflow_status = self._workflow_status_payload()
         phase = str(workflow_status.get("phase", "idle") or "idle")
         file_label = str(workflow_status.get("active_file_label", "") or "-")
-        theorem = str(workflow_status.get("target_symbol", "") or "-")
         build = str(workflow_status.get("build_status", "") or "-")
-        checkpoint = str(workflow_status.get("latest_checkpoint_label", "") or "-")
+        model = self._toolbar_piece(self._model_label(), 22)
+        file_short = self._toolbar_piece(Path(file_label).name if file_label != "-" else "-", 18)
+        theorem = self._toolbar_piece(self._target_label(), 16)
+        skill = self._toolbar_piece(self._active_skill_label(), 18)
+        latest = self._latest_activity_label()
         return (
-            f" workflow:{phase} | file:{file_label} | theorem:{theorem} | "
-            f"build:{build} | checkpoint:{checkpoint} | skill:{self._active_skill_label()} | overlays:{self._overlay_label()} "
+            f" @ {model} | {phase} | {build} | {file_short} | {theorem} | {skill} | {latest} "
         )
 
     def show_banner(self) -> None:
@@ -387,9 +441,20 @@ class InteractiveShell:
             return 0
         if subcmd == "activity":
             payload = self._workflow_status_payload()
-            render_workflow_status_panel(self.console, status=payload or {"phase": "idle", "workflow_kind": "[none]"}, activities=self._workflow_activity(limit=12))
+            render_workflow_status_panel(self.console, status=payload or {"phase": "idle", "workflow_kind": "[none]"}, activities=self._workflow_activity(limit=20))
             return 0
-        self.console.print("[dim]Usage: /workflow status|history|activity[/]")
+        if subcmd == "log":
+            tail = 120
+            if len(argv) > 1:
+                try:
+                    tail = max(1, int(argv[1]))
+                except ValueError:
+                    self.console.print("[dim]Usage: /workflow log [tail-lines][/]")
+                    return 1
+            payload = read_workflow_run_log(tail_lines=tail)
+            print(payload if payload else "[no workflow run log recorded yet]")
+            return 0
+        self.console.print("[dim]Usage: /workflow status|history|activity|log [tail-lines][/]")
         return 1
 
     def _run_skills_command(self, argv: list[str]) -> int:
@@ -420,8 +485,13 @@ class InteractiveShell:
 
     def _run_project_command(self, argv: list[str]) -> int:
         if not argv:
-            self.console.print("[dim]Usage: /project init|create|show ...[/]")
-            return 1
+            try:
+                project = discover_opengauss_project(self.cwd)
+            except ProjectNotFoundError:
+                self.console.print("[dim]No active Lean workspace is open here. Use `/project init` in a Lean repo or `/project create <path>` to start one.[/]")
+                return 1
+            render_project_panel(self.console, project_summary=_project_payload(project))
+            return 0
         subcmd = argv[0]
         if subcmd == "init":
             path = argv[1] if len(argv) > 1 and not argv[1].startswith("--") else str(self.cwd)
@@ -430,9 +500,17 @@ class InteractiveShell:
                 idx = argv.index("--name")
                 if idx + 1 < len(argv):
                     name = argv[idx + 1]
+            target = Path(path).expanduser().resolve()
+            already_initialized = (
+                (target / ".opengauss" / "project.yaml").is_file()
+                or (target / ".gauss" / "project.yaml").is_file()
+            )
             project = initialize_opengauss_project(path, name=name or None)
             self.cwd = project.root
-            self.console.print(f"[bold #5DB8F5]Initialized project[/] {project.label}")
+            if already_initialized:
+                self._plain_notice(f"Project already initialized: {project.label}")
+            else:
+                self._plain_notice(f"Initialized project: {project.label}")
             return 0
         if subcmd == "create":
             if len(argv) < 2:
@@ -456,7 +534,7 @@ class InteractiveShell:
                 return 1
             project = clone_project_template(path, template_source=template_source, name=name or None)
             self.cwd = project.root
-            self.console.print(f"[bold #5DB8F5]Created project[/] {project.label}")
+            self._plain_notice(f"Created project: {project.label}")
             return 0
         if subcmd == "show":
             target = argv[1] if len(argv) > 1 else str(self.cwd)
@@ -545,6 +623,8 @@ class InteractiveShell:
 
         render_workflow_launch(self.console, launch_summary=describe_launch_plan(plan))
         code = run_workflow(raw, active_cwd=self.cwd, active_skill=self.active_skill or None)
+        self.console.print()
+        self.show_banner()
         if code != 0:
             self.console.print(f"[bold red]Workflow exited with code {code}[/]")
         workflow_status = self._workflow_status_payload()
@@ -673,18 +753,17 @@ class InteractiveShell:
 
     def run(self) -> int:
         self.show_banner()
-        with patch_stdout():
-            while True:
-                try:
-                    raw = self.session.prompt("opengauss> ", bottom_toolbar=self._bottom_toolbar)
-                except EOFError:
-                    print()
-                    return 0
-                except KeyboardInterrupt:
-                    print()
-                    continue
-                if not self._handle_command(raw):
-                    return 0
+        while True:
+            try:
+                raw = self.session.prompt(self._prompt_message(), bottom_toolbar=self._bottom_toolbar)
+            except EOFError:
+                print()
+                return 0
+            except KeyboardInterrupt:
+                print()
+                continue
+            if not self._handle_command(raw):
+                return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -707,7 +786,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "project":
         return _handle_project(args)
     if args.command == "workflow":
-        if args.workflow in {"status", "history", "activity"}:
+        if args.workflow in {"status", "history", "activity", "log"}:
             payload = load_workflow_live_status()
             if args.workflow == "history":
                 render_workflow_status_panel(Console(), status=payload or {"phase": "idle", "workflow_kind": "[none]"}, activities=[
@@ -719,7 +798,22 @@ def main(argv: list[str] | None = None) -> int:
                     for entry in reversed(load_workflow_checkpoints())[:12]
                 ])
                 return 0
-            render_workflow_status_panel(Console(), status=payload or {"phase": "idle", "workflow_kind": "[none]"}, activities=read_workflow_activity(limit=12) if args.workflow != "status" else read_workflow_activity(limit=8))
+            if args.workflow == "log":
+                tail = 120
+                if args.args:
+                    try:
+                        tail = max(1, int(args.args[0]))
+                    except ValueError:
+                        print("Usage: opengauss workflow log [tail-lines]", file=sys.stderr)
+                        return 1
+                output = read_workflow_run_log(tail_lines=tail)
+                print(output if output else "[no workflow run log recorded yet]")
+                return 0
+            render_workflow_status_panel(
+                Console(),
+                status=payload or {"phase": "idle", "workflow_kind": "[none]"},
+                activities=read_workflow_activity(limit=20) if args.workflow != "status" else read_workflow_activity(limit=8),
+            )
             return 0 if payload else 1
         text = f"/{args.workflow}" if not str(args.workflow).startswith("/") else str(args.workflow)
         if args.args:

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from rich import box
 from rich.console import Console
+from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 
@@ -25,13 +26,15 @@ EPFL_EMMA_WORDMARK = "\n".join(
     [
         f"[bold {BRAND_COLORS['primary_soft']}]███████╗██████╗ ███████╗██╗     ███████╗███╗   ███╗███╗   ███╗ █████╗[/]",
         f"[bold {BRAND_COLORS['primary_soft']}]██╔════╝██╔══██╗██╔════╝██║     ██╔════╝████╗ ████║████╗ ████║██╔══██╗[/]",
-        f"[bold {BRAND_COLORS['primary']}]█████╗  ██████╔╝█████╗  ██║     █████╗  ██╔████╔██║██╔████╔██║███████║[/]",
-        f"[bold {BRAND_COLORS['primary']}]██╔══╝  ██╔═══╝ ██╔══╝  ██║     ██╔══╝  ██║╚██╔╝██║██║╚██╔╝██║██╔══██║[/]",
-        f"[bold {BRAND_COLORS['primary_dim']}]███████╗██║     ██║     ███████╗███████╗██║ ╚═╝ ██║██║ ╚═╝ ██║██║  ██║[/]",
-        f"[bold {BRAND_COLORS['primary_dim']}]╚══════╝╚═╝     ╚═╝     ╚══════╝╚══════╝╚═╝     ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝[/]",
+        f"[bold {BRAND_COLORS['primary']     }]╚═███╗  ██████╔╝╚═███╗  ██║     █████╗  ██╔████╔██║██╔████╔██║███████║[/]",
+        f"[bold {BRAND_COLORS['primary']}     ]██╔══╝  ██╔═══╝ ██╔══╝  ██║     ██╔══╝  ██║╚██╔╝██║██║╚██╔╝██║██╔══██║[/]",
+        f"[bold {BRAND_COLORS['primary_dim'] }]███████╗██║     ██║     ███████╗███████╗██║ ╚═╝ ██║██║ ╚═╝ ██║██║  ██║[/]",
+        f"[bold {BRAND_COLORS['primary_dim']  }]╚══════╝╚═╝     ╚═╝     ╚══════╝╚══════╝╚═╝     ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝[/]",
         f"[{BRAND_COLORS['muted']}]{get_product_tagline()}[/]",
     ]
 )
+
+MISSION_LINE = "Dedicated to verified Lean proving and autoformalization"
 
 
 def _shorten_middle(text: str, max_len: int) -> str:
@@ -42,6 +45,19 @@ def _shorten_middle(text: str, max_len: int) -> str:
     head = max(2, (max_len - 3) // 2)
     tail = max(2, max_len - head - 3)
     return f"{text[:head]}...{text[-tail:]}"
+
+
+def _build_metric_strip(*, project_label: str, model: str, provider: str, local_runtime: str) -> Table:
+    strip = Table.grid(expand=True)
+    strip.add_column(ratio=1)
+    strip.add_column(ratio=1)
+    strip.add_column(ratio=1)
+    strip.add_row(
+        f"[bold {BRAND_COLORS['primary_soft']}]Model[/] [{BRAND_COLORS['text']}]{_shorten_middle(model, 28)}[/]",
+        f"[bold {BRAND_COLORS['primary_soft']}]Route[/] [{BRAND_COLORS['text']}]{_shorten_middle(provider, 44)}[/]",
+        f"[bold {BRAND_COLORS['primary_soft']}]Runtime[/] [{BRAND_COLORS['text']}]{_shorten_middle(local_runtime, 24)}[/]",
+    )
+    return strip
 
 
 def build_welcome_banner(
@@ -58,63 +74,66 @@ def build_welcome_banner(
     width = shutil.get_terminal_size().columns
     simplified = width < 90
 
-    left = Table.grid(padding=(0, 1))
-    left.add_column()
-    left.add_row(f"[bold {BRAND_COLORS['primary_soft']}]Model[/]   [{BRAND_COLORS['text']}]{model}[/]")
-    left.add_row(f"[bold {BRAND_COLORS['primary_soft']}]Provider[/] [{BRAND_COLORS['text']}]{provider}[/]")
-    left.add_row(f"[bold {BRAND_COLORS['primary_soft']}]Project[/] [{BRAND_COLORS['text']}]{project_label or '(none)'}[/]")
-    left.add_row(f"[bold {BRAND_COLORS['primary_soft']}]Local[/]   [{BRAND_COLORS['text']}]{local_runtime}[/]")
-    left.add_row(f"[bold {BRAND_COLORS['primary_soft']}]CWD[/]     [{BRAND_COLORS['muted']}]{_shorten_middle(cwd, 48 if simplified else 72)}[/]")
-
     right = Table.grid(padding=(0, 1))
     right.add_column()
     if simplified:
         right.add_row(f"[bold {BRAND_COLORS['primary']}]Start Here[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/project init[/] [dim]register this Lean repo[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/prove Main.lean[/] [dim]guided workflow[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/autoprove Main.lean[/] [dim]autonomous workflow[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/autoprove Main.lean --agents 3[/] [dim]user-approved swarm[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/status[/] [dim]project, provider, model[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/help[/] [dim]all commands[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/project init[/]  [dim]register this Lean repo[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/prove Main.lean[/]  [dim]guided proof repair[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/autoprove Main.lean[/]  [dim]autonomous proving loop[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/project[/]  [dim]current Lean workspace[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/help[/]  [dim]all commands[/]")
     else:
-        right.add_row(f"[bold {BRAND_COLORS['primary']}]Primary Workflow[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/project init[/] [dim]- register an existing Lean 4 repo[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/project create <path>[/] [dim]- clone a template repo and register it[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/prove[/] [dim]- guided Lean workflow[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/autoprove[/] [dim]- autonomous Lean workflow[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/autoprove Main.lean --agents 3[/] [dim]- user-approved Lean swarm[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/formalize[/] [dim]- interactive formalization workflow[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/autoformalize[/] [dim]- autonomous formalization workflow[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/models local use vllm MODEL[/] [dim]- select a local OpenAI-compatible runtime[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/help[/] [dim]- command catalog and tips[/]")
+        right.add_row(f"[bold {BRAND_COLORS['primary']}]Launch Paths[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/project init[/]  [dim]register an existing Lean 4 repo[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/prove Main.lean[/]  [dim]guided proof repair[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/autoprove Main.lean[/]  [dim]autonomous proving loop[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/autoprove Main.lean --agents 3[/]  [dim]user-approved Lean swarm[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/formalize \"statement\"[/]  [dim]interactive formalization[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/autoformalize \"statement\"[/]  [dim]autonomous formalization[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/project[/]  [dim]show current Lean workspace[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/status[/]  [dim]live project and runner state[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/workflow activity[/]  [dim]recent managed steps[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/workflow log 120[/]  [dim]saved managed runner log[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/help[/]  [dim]command catalog and tips[/]")
 
-    grid = Table.grid(expand=True, padding=(0, 2))
-    grid.add_column(ratio=1)
-    grid.add_column(ratio=1)
-    grid.add_row(left, right)
+    launch_panel = Panel(
+        right,
+        title=f"[bold {BRAND_COLORS['primary_soft']}]Workflow[/]",
+        border_style=BRAND_COLORS["panel"],
+        box=box.SQUARE,
+        padding=(0, 1),
+    )
 
     console.print()
     console.print(EPFL_EMMA_WORDMARK, justify="center")
     console.print()
-    console.print(
+    banner_group = Group(
         Panel(
-            grid,
+            _build_metric_strip(
+                project_label=project_label,
+                model=model,
+                provider=provider,
+                local_runtime=local_runtime,
+            ),
             title=f"[bold {BRAND_COLORS['primary_soft']}]{product_name} v{__version__}[/]",
             subtitle=f"[dim]{get_product_subtitle()}[/]",
             border_style=BRAND_COLORS["panel"],
-            box=box.ROUNDED,
+            box=box.SQUARE,
             padding=(0, 1),
-        )
+        ),
+        launch_panel,
     )
-    console.print(
-        f"[{BRAND_COLORS['text']}]{product_name} runs through the [/]"
-        f"[bold {BRAND_COLORS['primary_soft']}]`{cli_name}`[/]"
-        f"[{BRAND_COLORS['text']}] CLI. Type [/]"
-        f"[bold {BRAND_COLORS['primary_soft']}]/help[/]"
-        f"[{BRAND_COLORS['text']}] for commands, or run [/]"
-        f"[bold {BRAND_COLORS['primary_soft']}]prove Main.lean[/]"
-        f"[{BRAND_COLORS['text']}] directly.[/]"
+    console.print(banner_group)
+    console.print(f"[bold {BRAND_COLORS['muted']}]{MISSION_LINE}[/]")
+    footer = Table.grid(expand=True)
+    footer.add_column(ratio=1)
+    footer.add_column(justify="right")
+    footer.add_row(
+        f"[{BRAND_COLORS['muted']}]Prompt-centered Lean shell via `{cli_name}`[/]",
+        f"[{BRAND_COLORS['muted']}]Try /project, /help, or prove Main.lean[/]",
     )
+    console.print(footer)
 
 
 def render_help(console: Console) -> None:
@@ -131,6 +150,7 @@ def render_help(console: Console) -> None:
     console.print("[dim]Tip: workflow commands also accept forgiving forms like `prove Main.lean` without the leading slash.[/]")
     console.print("[dim]Tip: add `--agents N` to `autoprove` or `autoformalize` only when you explicitly want user-approved swarm mode.[/]")
     console.print("[dim]Tip: use `/provider local`, `/provider zai`, or `/provider custom` to inspect how a request will resolve before launching a workflow.[/]")
+    console.print("[dim]Tip: use `/workflow activity` for structured managed steps and `/workflow log 120` for the full saved runner log.[/]")
 
 
 def render_status_panel(
@@ -152,7 +172,7 @@ def render_status_panel(
     table.add_row("Provider", provider)
     table.add_row("Model", model)
     table.add_row("Local runtime", local_runtime)
-    console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]{get_product_name()} Status[/]", border_style=BRAND_COLORS["panel"], box=box.ROUNDED))
+    console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]{get_product_name()} Status[/]", subtitle="[dim]shell context[/]", border_style=BRAND_COLORS["panel"], box=box.SQUARE))
 
 
 def render_provider_panel(console: Console, *, resolved: dict[str, str], requested: str, targets: list[dict[str, str]]) -> None:
@@ -177,7 +197,7 @@ def render_provider_panel(console: Console, *, resolved: dict[str, str], request
             str(target.get("description", "")),
         )
 
-    console.print(Panel(current, title=f"[bold {BRAND_COLORS['primary']}]Resolved Provider[/]", border_style=BRAND_COLORS["panel"], box=box.ROUNDED))
+    console.print(Panel(current, title=f"[bold {BRAND_COLORS['primary']}]Resolved Provider[/]", subtitle="[dim]current route[/]", border_style=BRAND_COLORS["panel"], box=box.SQUARE))
     console.print()
     console.print(f"[bold {BRAND_COLORS['primary']}]Available Targets[/]")
     console.print(table)
@@ -189,7 +209,7 @@ def render_project_panel(console: Console, *, project_summary: dict[str, str]) -
     table.add_column(style=BRAND_COLORS["text"])
     for key, value in project_summary.items():
         table.add_row(key, value)
-    console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]{get_product_name()} Project[/]", border_style=BRAND_COLORS["panel"], box=box.ROUNDED))
+    console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]{get_product_name()} Project[/]", subtitle="[dim]registered Lean workspace[/]", border_style=BRAND_COLORS["panel"], box=box.SQUARE))
 
 
 def render_local_runtime_table(console: Console, *, runtimes: list[dict[str, object]]) -> None:
@@ -222,7 +242,7 @@ def render_workflow_launch(console: Console, *, launch_summary: dict[str, str]) 
     table.add_row("Skill", launch_summary.get("skill", ""))
     table.add_row("Agents", launch_summary.get("agents", "1"))
     table.add_row("Base URL", launch_summary.get("base_url", ""))
-    console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]Launching Workflow[/]", border_style=BRAND_COLORS["panel"], box=box.ROUNDED))
+    console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]Launching Workflow[/]", subtitle="[dim]managed Lean execution plan[/]", border_style=BRAND_COLORS["panel"], box=box.SQUARE))
 
 
 def render_workflow_status_panel(console: Console, *, status: dict[str, object], activities: list[dict[str, object]] | None = None) -> None:
@@ -240,10 +260,11 @@ def render_workflow_status_panel(console: Console, *, status: dict[str, object],
     table.add_row("File", str(status.get("active_file_label", "[unknown]")))
     table.add_row("Theorem", str(status.get("target_symbol", "[unknown]")))
     table.add_row("Build", str(status.get("build_status", "unknown")))
+    table.add_row("Project sorries", str(status.get("project_sorry_count", "[unknown]")))
     table.add_row("Checkpoint", str(status.get("latest_checkpoint_label", "[none]")))
     table.add_row("Locks", str(status.get("held_locks", 0)))
     table.add_row("Updated", str(status.get("updated_at", "[unknown]")))
-    console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]Managed Workflow Status[/]", border_style=BRAND_COLORS["panel"], box=box.ROUNDED))
+    console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]Managed Workflow Status[/]", subtitle="[dim]live Lean runner state[/]", border_style=BRAND_COLORS["panel"], box=box.SQUARE))
 
     if activities:
         console.print()
@@ -251,10 +272,22 @@ def render_workflow_status_panel(console: Console, *, status: dict[str, object],
         activity_table = Table(box=box.SIMPLE_HEAD, pad_edge=False)
         activity_table.add_column("Time", style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
         activity_table.add_column("Type", style=BRAND_COLORS["primary_dim"], no_wrap=True)
+        activity_table.add_column("Context", style=BRAND_COLORS["muted"], no_wrap=True)
         activity_table.add_column("Message", style=BRAND_COLORS["text"])
         for event in activities:
             timestamp = str(event.get("timestamp", "") or "")
-            activity_table.add_row(timestamp[-8:] if len(timestamp) >= 8 else timestamp, str(event.get("type", "")), str(event.get("message", "")))
+            details = event.get("details") if isinstance(event.get("details"), dict) else {}
+            context = (
+                str(details.get("tool", "") or details.get("phase", "") or details.get("iteration", "") or "")
+                if isinstance(details, dict)
+                else ""
+            )
+            activity_table.add_row(
+                timestamp[-8:] if len(timestamp) >= 8 else timestamp,
+                str(event.get("type", "")),
+                context,
+                str(event.get("message", "")),
+            )
         console.print(activity_table)
 
 
@@ -284,6 +317,6 @@ def render_skill_panel(console: Console, *, skill: dict[str, object], active: bo
     linked = skill.get("linked_files") or {}
     linked_count = sum(len(items) for items in linked.values()) if isinstance(linked, dict) else 0
     table.add_row("Linked files", str(linked_count))
-    console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]Skill[/]", border_style=BRAND_COLORS["panel"], box=box.ROUNDED))
+    console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]Skill[/]", subtitle="[dim]active prompt overlay[/]", border_style=BRAND_COLORS["panel"], box=box.SQUARE))
     console.print()
     console.print(str(skill.get("content", "") or "").strip())

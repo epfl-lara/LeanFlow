@@ -24,7 +24,12 @@ from agent.model_metadata import estimate_messages_tokens_rough
 from model_tools import handle_function_call
 from opengauss_cli.file_locks import list_file_locks, release_all_file_locks
 from opengauss_cli.skill_core import build_skill_prompt
-from opengauss_cli.workflow_state import append_workflow_activity, save_workflow_live_status
+from opengauss_cli.workflow_state import (
+    append_workflow_activity,
+    append_workflow_run_log,
+    reset_workflow_run_log,
+    save_workflow_live_status,
+)
 from run_agent import AIAgent
 from tools.mcp_tool import discover_mcp_tools
 from tools.registry import registry
@@ -44,6 +49,7 @@ LIVE_PROOF_STATE_PREFIX = (
     "for the active workflow. Treat it as current unless newer tool results contradict it."
 )
 AUTONOMOUS_WORKFLOW_KINDS = {"autoprove", "autoformalize"}
+PROJECT_SCAN_SKIP_DIRS = {".git", ".lake", ".opengauss", ".gauss", "build"}
 
 
 def _utc_now_isoformat() -> str:
@@ -101,6 +107,22 @@ def _autonomous_followup_limit() -> int:
         return max(1, int(raw))
     except ValueError:
         return 6
+
+
+def _autonomous_blocked_limit() -> int:
+    raw = _read_native_env("AUTONOMOUS_BLOCKED_LIMIT", "3")
+    try:
+        return max(2, int(raw))
+    except ValueError:
+        return 3
+
+
+def _autonomous_stalled_limit() -> int:
+    raw = _read_native_env("AUTONOMOUS_STALLED_LIMIT", "4")
+    try:
+        return max(2, int(raw))
+    except ValueError:
+        return 4
 
 
 def _workflow_state_root() -> Path:
@@ -251,6 +273,7 @@ def _persist_live_status(
         "build_status": str(live_state.get("build_status", "") or "unknown"),
         "proof_state_message": str(live_state.get("message", "") or ""),
         "sorry_count": live_state.get("sorry_count"),
+        "project_sorry_count": live_state.get("project_sorry_count"),
         "checkpoint_count": int(checkpoint_state.get("count", 0) or 0),
         "latest_checkpoint_label": str(current_checkpoint.get("label", "") or "[none]"),
         "latest_filesystem_checkpoint": str(current_checkpoint.get("linked_filesystem_checkpoint", "") or "[none]"),
@@ -269,6 +292,70 @@ def _record_activity(event_type: str, message: str, **details: Any) -> None:
         workflow_command=_read_native_env("WORKFLOW_COMMAND", "[unset]"),
         active_skill=_active_skill(),
         **details,
+    )
+
+
+def _single_line(text: Any, limit: int = 220) -> str:
+    collapsed = " ".join(str(text or "").split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 3] + "..."
+
+
+class _WorkflowLogTee:
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def write(self, data: str) -> int:
+        append_workflow_run_log(data)
+        return self._stream.write(data)
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def isatty(self) -> bool:
+        try:
+            return bool(self._stream.isatty())
+        except Exception:
+            return False
+
+    def fileno(self) -> int:
+        return self._stream.fileno()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+def _install_workflow_run_log_capture() -> None:
+    reset_workflow_run_log()
+    if not isinstance(sys.stdout, _WorkflowLogTee):
+        sys.stdout = _WorkflowLogTee(sys.stdout)
+    if not isinstance(sys.stderr, _WorkflowLogTee):
+        sys.stderr = _WorkflowLogTee(sys.stderr)
+
+
+def _tool_progress_callback(name: str, preview: str, args: Mapping[str, Any] | None = None) -> None:
+    if name == "_thinking":
+        _record_activity("assistant-plan", _single_line(preview, 280))
+        return
+    arguments = dict(args or {})
+    _record_activity(
+        "tool-start",
+        _single_line(preview or name, 280),
+        tool=name,
+        args_preview=_single_line(json.dumps(arguments, ensure_ascii=False), 320) if arguments else "",
+    )
+
+
+def _step_callback(iteration: int, previous_tools: list[str]) -> None:
+    label = f"API call #{iteration}"
+    if previous_tools:
+        label += f" after {', '.join(previous_tools[:4])}"
+    _record_activity(
+        "api-call",
+        label,
+        iteration=iteration,
+        previous_tools=list(previous_tools or []),
     )
 
 
@@ -307,7 +394,7 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
         ),
         "autoprove": (
             "autonomous proving session",
-            "Drive the proving loop end-to-end, use Lean diagnostics aggressively, and continue iterating until the proof is verified or a concrete blocker remains.",
+            "Drive the proving loop end-to-end, use Lean diagnostics aggressively, and continue iterating until the target is verified and the project has no remaining build errors or `sorry`, or a concrete blocker remains.",
         ),
         "formalize": (
             "interactive formalization session",
@@ -315,7 +402,7 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
         ),
         "autoformalize": (
             "autonomous formalization session",
-            "Handle drafting plus proving as one workflow, iterating on declarations and proofs until the formalization is verified or blocked by a concrete gap.",
+            "Handle drafting plus proving as one workflow, iterating on declarations and proofs until the formalization is verified and the project has no remaining build errors or `sorry`, or a concrete blocker remains.",
         ),
     }
     label, detail = guidance_map.get(
@@ -634,6 +721,39 @@ def _count_sorries(active_file: str) -> int | None:
     return len(re.findall(r"\bsorry\b", sanitized))
 
 
+def _project_lean_files(project_root: str) -> list[Path]:
+    root = Path(project_root)
+    if not root.is_dir():
+        return []
+    paths: list[Path] = []
+    for path in root.rglob("*.lean"):
+        if any(part in PROJECT_SCAN_SKIP_DIRS for part in path.parts):
+            continue
+        paths.append(path)
+    return sorted(paths)
+
+
+def _count_project_sorries(project_root: str) -> tuple[int | None, list[str]]:
+    if not project_root:
+        return None, []
+    total = 0
+    files: list[str] = []
+    try:
+        for path in _project_lean_files(project_root):
+            count = _count_sorries(str(path))
+            if not isinstance(count, int) or count <= 0:
+                continue
+            total += count
+            try:
+                label = str(path.resolve().relative_to(Path(project_root).resolve()))
+            except Exception:
+                label = str(path)
+            files.append(f"{label} ({count})")
+    except Exception:
+        return None, []
+    return total, files[:8]
+
+
 def _flatten_text_fragments(value: Any) -> list[str]:
     if value is None:
         return []
@@ -715,6 +835,7 @@ def _build_live_proof_state(
     diagnostics = _query_live_diagnostics(active_file)
     goals = _query_live_goals(active_file, target_symbol)
     sorry_count = _count_sorries(active_file)
+    project_sorry_count, project_sorry_files = _count_project_sorries(_project_root())
     build_status = _extract_recent_build_status(history)
     blocker_summary = _extract_blocker_summary(_collect_message_text(history[-10:]))
     active_file_label = ""
@@ -742,6 +863,12 @@ def _build_live_proof_state(
             "",
             "Proof status:",
             f"sorry count: {sorry_count if sorry_count is not None else '[unknown]'}",
+            f"project sorry count: {project_sorry_count if project_sorry_count is not None else '[unknown]'}",
+            (
+                "project files with sorry: " + ", ".join(project_sorry_files)
+                if project_sorry_files
+                else "project files with sorry: [none]"
+            ),
         ]
     ).strip()
     live_state = {
@@ -752,6 +879,8 @@ def _build_live_proof_state(
         "goals": goals,
         "build_status": build_status,
         "sorry_count": sorry_count,
+        "project_sorry_count": project_sorry_count,
+        "project_sorry_files": list(project_sorry_files),
         "blocker_summary": blocker_summary,
         "message": body,
     }
@@ -776,6 +905,12 @@ def _build_live_proof_state(
                 "",
                 "Proof status:",
                 f"sorry count: {live_state.get('sorry_count', '[unknown]')}",
+                f"project sorry count: {live_state.get('project_sorry_count', '[unknown]')}",
+                (
+                    "project files with sorry: " + ", ".join(live_state.get("project_sorry_files", []) or [])
+                    if live_state.get("project_sorry_files")
+                    else "project files with sorry: [none]"
+                ),
             ]
         ).strip()
     return live_state
@@ -830,8 +965,11 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     goals = str(live_state.get("goals", "") or "")
     build_status = str(live_state.get("build_status", "") or "")
     sorry_count = live_state.get("sorry_count")
+    project_sorry_count = live_state.get("project_sorry_count")
 
     if isinstance(sorry_count, int) and sorry_count > 0:
+        return False
+    if isinstance(project_sorry_count, int) and project_sorry_count > 0:
         return False
     if _diagnostics_indicate_failure(diagnostics):
         return False
@@ -879,6 +1017,14 @@ def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dic
 
     ok, build_status = _run_explicit_verification_build()
     normalized["build_status"] = build_status
+    project_sorry_count, project_sorry_files = _count_project_sorries(_project_root())
+    normalized["project_sorry_count"] = project_sorry_count
+    normalized["project_sorry_files"] = project_sorry_files
+    if isinstance(project_sorry_count, int) and project_sorry_count > 0:
+        normalized["blocker_summary"] = (
+            f"project still contains {project_sorry_count} sorry placeholder(s): "
+            + ", ".join(project_sorry_files[:4])
+        )
     return normalized
 
 
@@ -1312,6 +1458,8 @@ def _build_agent() -> AIAgent:
         platform="cli",
         checkpoints_enabled=True,
         checkpoint_max_snapshots=50,
+        tool_progress_callback=_tool_progress_callback,
+        step_callback=_step_callback,
     )
     owner_id = str(getattr(agent, "session_id", "") or "")
     if owner_id:
@@ -1334,9 +1482,24 @@ def _print_header() -> None:
     print(f"Parallel agents: {_parallel_agents()}")
     if project_root:
         print(f"Project: {project_root}")
+    print(f"Run log: {_workflow_state_root() / 'latest-run.log'}")
     print("")
     print("Commands: /help, /status, /proof-state, /diagnostics, /goals, /history, /checkpoint [note], /rollback <N>, /resume-plan [N], /compact, /exit")
+    print("Inspect later from the shell with /workflow activity or /workflow log 120.")
     print("")
+
+
+def _print_interactive_mode_header(live_state: Mapping[str, Any] | None = None) -> None:
+    live_state = dict(live_state or {})
+    phase = str(live_state.get("build_status", "") or "managed session")
+    active_file = str(live_state.get("active_file_label", "") or "[unknown file]")
+    theorem = str(live_state.get("target_symbol", "") or "[unknown target]")
+    print("")
+    print("─" * 78)
+    print(f"prover-agent mode  ·  {phase}")
+    print(f"file: {active_file}  ·  target: {theorem}")
+    print("commands: /status  /proof-state  /diagnostics  /goals  /history  /exit")
+    print("─" * 78)
 
 
 def _history_status_lines(
@@ -1379,6 +1542,7 @@ def _history_status_lines(
         f"Latest filesystem checkpoint: {str(current_checkpoint.get('linked_filesystem_checkpoint', '') or '[none]')}",
         f"Active file: {str(live_state.get('active_file_label', '') or '[unknown]')}",
         f"Target theorem: {str(live_state.get('target_symbol', '') or '[unknown]')}",
+        f"Project sorries: {str(live_state.get('project_sorry_count', '') or '[unknown]')}",
     ]
 
 
@@ -1403,11 +1567,14 @@ def _record_turn_activity(
     summary_text = _collect_message_text(delta).strip().replace("\n", " ")
     if len(summary_text) > 180:
         summary_text = summary_text[:177] + "..."
+    if tool_names and not summary_text:
+        summary_text = f"Completed {phase} step via {', '.join(tool_names[:4])}"
     _record_activity(
         "turn",
         summary_text or f"Managed {phase} step completed",
         phase=phase,
         tools=tool_names,
+        tool_count=len(tool_names),
     )
 
 
@@ -1541,6 +1708,7 @@ def _managed_system_prompt() -> str:
         "Prefer Lean/LSP-first workflows and use the staged `lean-lsp` MCP server for navigation, diagnostics, and proof goals.",
         "Use tools aggressively, keep changes reproducible, and explain blockers clearly when a proof or formalization fails.",
         "A proof is not verified merely because `sorry` disappeared or style warnings remain. Treat a workflow as verified only after an explicit successful Lean build plus clean diagnostics and no remaining proof goals.",
+        "For autonomous workflows, use project-wide verification: do not stop while the Lean project still contains build errors or any remaining `sorry` placeholders outside dependencies.",
         "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff instead of reconstructing the full transcript from memory.",
         "Do not use multi-agent delegation unless the user explicitly enabled swarm mode for this workflow.",
     ]
@@ -1635,12 +1803,12 @@ def _autonomous_stop_reason(
     if blocker_summary:
         blocked_runs = int(autonomy_state.get("continuation_blocked_runs", 0)) + 1
         autonomy_state["continuation_blocked_runs"] = blocked_runs
-        if blocked_runs >= 2:
+        if blocked_runs >= _autonomous_blocked_limit():
             return "blocked"
     else:
         autonomy_state["continuation_blocked_runs"] = 0
 
-    if stable_cycles >= 2:
+    if stable_cycles >= _autonomous_stalled_limit():
         return "stalled"
 
     return "continue"
@@ -1654,9 +1822,10 @@ def _autonomous_continuation_prompt(live_state: Mapping[str, Any], cycle_number:
         "- explicit successful `lake build`\n"
         "- clean Lean diagnostics\n"
         "- no open goals\n"
-        "- no remaining `sorry`\n\n"
+        "- no remaining `sorry` in the active file\n"
+        "- no remaining `sorry` anywhere else in the project outside dependencies\n\n"
         f"This is autonomous continuation cycle {cycle_number}. Use the refreshed live proof state below, "
-        "make the next strongest move, and re-check the project before concluding."
+        "make the next strongest move, and re-check the whole project before concluding."
     )
     if _swarm_enabled():
         prompt += (
@@ -1681,6 +1850,7 @@ def _drive_autonomous_followups(
     for cycle in range(1, _autonomous_followup_limit() + 1):
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state(history, checkpoint_state)
+        live_state = _promote_live_state_to_verified(live_state)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="verifying")
         stop_reason = _autonomous_stop_reason(history, live_state, autonomy_state)
         if stop_reason != "continue":
@@ -1708,12 +1878,14 @@ def _drive_autonomous_followups(
         history = result["messages"]
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state(history, checkpoint_state)
+        live_state = _promote_live_state_to_verified(live_state)
         _record_turn_activity(previous_history, history, phase="autonomous")
         _maybe_write_milestone_checkpoint(previous_history, history, agent, autonomy_state, live_state=live_state)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state)
 
     checkpoint_state = _journal_status()
     live_state = _build_live_proof_state(history, checkpoint_state)
+    live_state = _promote_live_state_to_verified(live_state)
     if not _live_state_is_verified(live_state):
         print(
             "Autonomous workflow paused after additional continuation cycles without reaching verification. "
@@ -1757,6 +1929,7 @@ def _rollback_to_checkpoint(agent: AIAgent, entry: Mapping[str, Any]) -> tuple[l
 
 
 def main() -> int:
+    _install_workflow_run_log_capture()
     agent = _build_agent()
     try:
         system_prompt = _managed_system_prompt()
@@ -1794,6 +1967,7 @@ def main() -> int:
         history = result["messages"]
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state(history, checkpoint_state)
+        live_state = _promote_live_state_to_verified(live_state)
         _record_turn_activity(previous_history, history, phase="startup")
         _persist_live_status(history, compaction_state, checkpoint_state, live_state)
         history, compaction_state, checkpoint_state, live_state = _drive_autonomous_followups(
@@ -1804,10 +1978,11 @@ def main() -> int:
             checkpoint_state,
             autonomy_state,
         )
+        _print_interactive_mode_header(live_state)
 
         while True:
             try:
-                raw = input("\nopengauss-native> ")
+                raw = input("\nprover-agent> ")
             except EOFError:
                 print("")
                 if _is_autonomous_workflow() and history:
@@ -1822,7 +1997,7 @@ def main() -> int:
                 _record_activity("runner-exit", "Managed workflow runner exited via EOF")
                 return 0
             except KeyboardInterrupt:
-                print("\nInterrupted. Use /exit to quit.")
+                print("\nInterrupted. Use /exit to leave prover-agent mode.")
                 continue
 
             text = raw.strip()
@@ -1831,6 +2006,7 @@ def main() -> int:
             if text in {"/exit", "/quit"}:
                 if _is_autonomous_workflow() and history:
                     live_state = _build_live_proof_state(history, checkpoint_state)
+                    live_state = _promote_live_state_to_verified(live_state)
                     _write_workflow_checkpoint(
                         history,
                         agent,
@@ -1841,6 +2017,7 @@ def main() -> int:
                     )
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
                 _record_activity("runner-exit", "Managed workflow runner exited by command")
+                _print_header()
                 return 0
             if text == "/help":
                 _print_runner_help()
@@ -1848,6 +2025,7 @@ def main() -> int:
             if text == "/status":
                 checkpoint_state = _journal_status()
                 live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state)
                 for line in _history_status_lines(history, compaction_state, checkpoint_state, live_state):
                     print(line)
@@ -1855,18 +2033,21 @@ def main() -> int:
             if text == "/proof-state":
                 checkpoint_state = _journal_status()
                 live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state)
                 _print_live_proof_state(live_state)
                 continue
             if text == "/diagnostics":
                 checkpoint_state = _journal_status()
                 live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state)
                 _print_live_proof_state(live_state, section="diagnostics")
                 continue
             if text == "/goals":
                 checkpoint_state = _journal_status()
                 live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state)
                 _print_live_proof_state(live_state, section="goals")
                 continue
@@ -1876,6 +2057,7 @@ def main() -> int:
             if text.startswith("/checkpoint"):
                 note = text[len("/checkpoint"):].strip()
                 live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
                 entry = _write_workflow_checkpoint(
                     history,
                     agent,
@@ -1899,6 +2081,7 @@ def main() -> int:
                 history = _resume_plan_from_checkpoint(entry)
                 checkpoint_state = _journal_status()
                 live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
                 _record_activity("resume", f"Loaded workflow plan from {entry['label']}")
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="resumed")
                 print(f"Loaded workflow plan from checkpoint {entry['label']}.")
@@ -1915,6 +2098,7 @@ def main() -> int:
                     continue
                 history, message = _rollback_to_checkpoint(agent, entry)
                 live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
                 post = _write_workflow_checkpoint(
                     history,
                     agent,
@@ -1926,17 +2110,21 @@ def main() -> int:
                 )
                 checkpoint_state = _journal_status()
                 live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
                 _record_activity("rollback", message, checkpoint_label=str(entry.get("label", "") or "checkpoint"))
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="resumed")
                 print(message)
                 print(f"Recorded {post['label']} ({post['checkpoint_id']}).")
+                _print_interactive_mode_header(live_state)
                 continue
             if text == "/compact":
                 live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
                 _maybe_checkpoint_before_compaction(history, agent, live_state=live_state)
                 history, compaction_state = _auto_compact_history(history, agent, force=True)
                 checkpoint_state = _journal_status()
                 live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="compacted" if compaction_state["compacted"] else "in-progress")
                 if compaction_state["compacted"]:
                     print(
@@ -1945,13 +2133,16 @@ def main() -> int:
                     )
                 else:
                     print("Managed session compaction skipped: not enough history to compact yet.")
+                _print_interactive_mode_header(live_state)
                 continue
 
             live_state = _build_live_proof_state(history, checkpoint_state)
+            live_state = _promote_live_state_to_verified(live_state)
             _maybe_checkpoint_before_compaction(history, agent, live_state=live_state)
             history, compaction_state = _auto_compact_history(history, agent)
             previous_history = history[:]
             live_state = _build_live_proof_state(history, checkpoint_state)
+            live_state = _promote_live_state_to_verified(live_state)
             _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
             augmented_text = _attach_live_proof_state(text, live_state)
             result = agent.run_conversation(
@@ -1962,10 +2153,12 @@ def main() -> int:
             )
             history = result["messages"]
             live_state = _build_live_proof_state(history, checkpoint_state)
+            live_state = _promote_live_state_to_verified(live_state)
             _record_turn_activity(previous_history, history, phase="interactive")
             _maybe_write_milestone_checkpoint(previous_history, history, agent, autonomy_state, live_state=live_state)
             checkpoint_state = _journal_status()
             live_state = _build_live_proof_state(history, checkpoint_state)
+            live_state = _promote_live_state_to_verified(live_state)
             _persist_live_status(history, compaction_state, checkpoint_state, live_state)
             history, compaction_state, checkpoint_state, live_state = _drive_autonomous_followups(
                 agent,
@@ -1975,6 +2168,7 @@ def main() -> int:
                 checkpoint_state,
                 autonomy_state,
             )
+            _print_interactive_mode_header(live_state)
     finally:
         owner_id = str(getattr(agent, "session_id", "") or "")
         if owner_id:

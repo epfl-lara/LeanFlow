@@ -347,7 +347,7 @@ function Main {
     Write-Success "EPFLemma is installed in WSL."
     Write-Info "For daily use, open your WSL shell and run:"
     Write-Host "  cd $LinuxRepoDir" -ForegroundColor Yellow
-    Write-Host "  gauss" -ForegroundColor Yellow
+    Write-Host "  opengauss" -ForegroundColor Yellow
     Write-Host ""
 }
 

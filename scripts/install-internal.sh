@@ -105,17 +105,11 @@ export OPENGAUSS_HOME
 exec "${OPENGAUSS_VENV_DIR}/bin/opengauss-agent" "\$@"
 EOF
 
-cat > "$OPENGAUSS_BIN_DIR/opengauss-acp" <<EOF
-#!/usr/bin/env bash
-: "\${OPENGAUSS_HOME:=${OPENGAUSS_HOME}}"
-export OPENGAUSS_HOME
-exec "${OPENGAUSS_VENV_DIR}/bin/opengauss-acp" "\$@"
-EOF
-
 chmod +x \
   "$OPENGAUSS_BIN_DIR/opengauss" \
-  "$OPENGAUSS_BIN_DIR/opengauss-agent" \
-  "$OPENGAUSS_BIN_DIR/opengauss-acp"
+  "$OPENGAUSS_BIN_DIR/opengauss-agent"
+
+rm -f "$OPENGAUSS_BIN_DIR/opengauss-acp"
 
 cat > "${OPENGAUSS_HOME}/install-root" <<EOF
 repo_root=${REPO_ROOT}

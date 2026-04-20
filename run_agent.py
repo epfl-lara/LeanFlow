@@ -486,7 +486,6 @@ class AIAgent:
                     'tools',               # all tools.* (terminal, browser, web, file, etc.)
                     'minisweagent',         # mini-swe-agent execution backend
                     'run_agent',            # agent runner internals
-                    'trajectory_compressor',
                     'cron',                 # scheduler (only relevant in daemon mode)
                     'gauss_cli',           # CLI helpers
                 ]:
@@ -5713,7 +5712,7 @@ def main(
                 entry = (name, info)
                 if name in ["web", "search", "file", "browser"]:
                     basic_toolsets.append(entry)
-                elif name in ["autoformalize", "opengauss-acp", "opengauss-cli", "opengauss-native"]:
+                elif name in ["autoformalize", "opengauss-cli", "opengauss-native"]:
                     composite_toolsets.append(entry)
                 else:
                     scenario_toolsets.append(entry)
@@ -5838,7 +5837,7 @@ def main(
         sample_id = str(uuid.uuid4())[:8]
         sample_filename = f"sample_{sample_id}.json"
         
-        # Convert messages to trajectory format (same as batch_runner)
+        # Convert messages to the persisted trajectory format used by EPFLemma.
         trajectory = agent._convert_to_trajectory_format(
             result['messages'], 
             user_query, 

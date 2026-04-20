@@ -27,7 +27,7 @@ COMMANDS_BY_CATEGORY = {
     },
     "Runtime": {
         "/status": "Show the current project, provider, model, and runtime summary",
-        "/workflow": "Inspect the latest managed workflow status, history, or activity",
+        "/workflow": "Inspect the latest managed workflow status, history, activity, or run log",
         "/goals": "Show the latest persisted Lean goals from the managed workflow",
         "/diagnostics": "Show the latest persisted Lean diagnostics from the managed workflow",
         "/proof-state": "Show the latest persisted full Lean proof-state snapshot",
