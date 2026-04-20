@@ -5,7 +5,7 @@ EPFLemma is a Lean AI for Math shell focused on automated Lean coding agents. Th
 The product is optimized for two main jobs:
 
 - `autoprove`: drive Lean proof repair and completion until the code compiles cleanly
-- `formalize` / `autoformalize`: translate mathematical intent into Lean declarations and verified proofs
+- `autoformalize`: translate mathematical intent into Lean declarations and verified proofs
 
 It installs as `epflemma`, uses `~/.epflemma` for user-level config, keeps project-owned workflow state in `.epflemma/`, and can live alongside an existing `gauss` install without overwriting it.
 
@@ -32,13 +32,13 @@ EPFLemma ships with a small curated skill core for Lean workflows. Skills are no
 Built-in skills:
 
 - `lean-proof-loop`
-  - standard proof-repair loop for `prove` and `autoprove`
+  - standard proof-repair loop for `autoprove`
   - emphasizes: inspect diagnostics/goals first, make minimal edits, rebuild, and do not stop until the project is actually verified
 - `lean-diagnostics`
   - focused diagnostic mode for `review` and `checkpoint`
   - emphasizes: current blockers, open goals, verification state, and project-wide remaining `sorry`
 - `lean-formalization`
-  - formalization and declaration-building skill for `formalize`, `autoformalize`, and `draft`
+  - formalization and declaration-building skill for `autoformalize` and `draft`
   - emphasizes: small verifiable steps, dependency order, and zero build errors / zero `sorry`
 - `lean-refactor-golf`
   - refactor / golfing skill for `refactor` and `golf`
@@ -57,8 +57,8 @@ Built-in skills:
 There are three ways a skill gets into the agent:
 
 1. Automatic workflow assignment
-   - `prove`, `autoprove` -> `lean-proof-loop`
-   - `formalize`, `autoformalize`, `draft` -> `lean-formalization`
+   - `autoprove` -> `lean-proof-loop`
+   - `autoformalize`, `draft` -> `lean-formalization`
    - `review`, `checkpoint` -> `lean-diagnostics`
    - `refactor`, `golf` -> `lean-refactor-golf`
    - `--agents N` on autonomous workflows switches to `lean-autonomous-swarm`
@@ -121,14 +121,12 @@ Use `/skills` to see what the agent can currently load and where each skill came
 - `epflemma` CLI with EPFLemma shell branding
 - `epflemma-agent` shared agent entrypoint
 - Lean workflows:
-  - `/prove`
   - `/draft`
   - `/review`
   - `/checkpoint`
   - `/refactor`
   - `/golf`
   - `/autoprove`
-  - `/formalize`
   - `/autoformalize`
 - Local runtime commands:
   - `epflemma models local list`
@@ -257,10 +255,9 @@ epflemma project show
 Run a workflow:
 
 ```bash
-epflemma workflow prove Main.lean
 epflemma workflow autoprove Main.lean
 epflemma workflow autoprove Main.lean --agents 3
-epflemma workflow formalize "Define the object and prove the first lemma"
+epflemma workflow autoformalize "Define the object and prove the first lemma"
 ```
 
 Interactive mode:
@@ -289,10 +286,9 @@ Inside the shell:
 /cd path/to/project
 /project init
 /project create DemoProject --template-source https://github.com/example/lean-template.git
-/prove Main.lean
 /autoprove Main.lean
 /autoprove Main.lean --agents 3
-/formalize "state the theorem"
+/autoformalize "state the theorem"
 /doctor
 /config get model.default
 /quit
@@ -301,7 +297,6 @@ Inside the shell:
 Workflow commands also accept forgiving forms without the leading slash:
 
 ```text
-prove Main.lean
 autoprove Main.lean
 autoprove Main.lean --agents 3
 autoformalize "formalize this statement"

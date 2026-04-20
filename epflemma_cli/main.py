@@ -70,14 +70,12 @@ from epflemma_cli.workflow_state import (
 
 
 WORKFLOW_COMMANDS = {
-    "/prove",
     "/draft",
     "/review",
     "/checkpoint",
     "/refactor",
     "/golf",
     "/autoprove",
-    "/formalize",
     "/autoformalize",
 }
 

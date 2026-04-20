@@ -64,8 +64,8 @@ def test_workflow_startup_guidance_mentions_user_approved_swarm(monkeypatch):
 
 
 def test_history_status_lines_summarize_message_counts(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:prove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
 
@@ -82,7 +82,7 @@ def test_history_status_lines_summarize_message_counts(monkeypatch):
     assert "Users: 1" in lines
     assert "Assistants: 1" in lines
     assert "Tools: 2" in lines
-    assert "Workflow: prove" in lines
+    assert "Workflow: autoprove" in lines
 
 
 def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
@@ -134,8 +134,8 @@ def test_build_agent_uses_swarm_toolset_when_user_enabled_swarm(monkeypatch):
 
 def test_tool_progress_callback_persists_structured_events(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:prove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
 
     runner._tool_progress_callback("terminal", "Run lake build", {"command": "lake build"})

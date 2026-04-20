@@ -19,7 +19,7 @@ def test_render_help_mentions_forgiving_workflow_commands():
     assert "/provider" in output
     assert "/workflow" in output
     assert "/skills" in output
-    assert "prove Main.lean" in output
+    assert "autoprove Main.lean" in output
     assert "/workflow log 120" in output
 
 
@@ -33,10 +33,10 @@ def test_list_runtime_provider_targets_includes_local_and_zai():
 
 def test_describe_launch_plan_formats_provider_and_model(tmp_path):
     spec = NativeWorkflowSpec(
-        workflow_kind="prove",
-        frontend_command="/prove",
-        canonical_command="/prove",
-        backend_command="/lean4:prove Main.lean",
+        workflow_kind="autoprove",
+        frontend_command="/autoprove",
+        canonical_command="/autoprove",
+        backend_command="/lean4:autoprove Main.lean",
         workflow_args="Main.lean",
     )
     plan = NativeLaunchPlan(
@@ -58,7 +58,7 @@ def test_describe_launch_plan_formats_provider_and_model(tmp_path):
 
     assert summary["provider"] == "local:vllm"
     assert summary["model"] == "google/gemma-4-31B-it"
-    assert summary["command"] == "/lean4:prove Main.lean"
+    assert summary["command"] == "/lean4:autoprove Main.lean"
     assert summary["skill"] == "lean-proof-loop"
     assert summary["agents"] == "1"
 

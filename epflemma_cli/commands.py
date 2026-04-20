@@ -15,14 +15,12 @@ COMMANDS_BY_CATEGORY = {
         "/pwd": "Show the current shell working directory",
     },
     "Workflow": {
-        "/prove": "Run the guided Lean prove workflow",
         "/draft": "Run the Lean draft workflow",
         "/review": "Run the Lean review workflow",
         "/checkpoint": "Run the Lean checkpoint workflow",
         "/refactor": "Run the Lean refactor workflow",
         "/golf": "Run the Lean proof golfing workflow",
         "/autoprove": "Run the autonomous Lean proving workflow; add --agents N for explicit swarm mode",
-        "/formalize": "Run the interactive Lean formalization workflow",
         "/autoformalize": "Run the autonomous Lean formalization workflow; add --agents N for explicit swarm mode",
     },
     "Runtime": {
