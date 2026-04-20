@@ -12,6 +12,7 @@ from epflemma_cli.workflow_state import (
     resolve_workflow_agent_id,
     reset_workflow_run_log,
     summarize_workflow_agents,
+    terminate_all_workflow_agents,
     terminate_workflow_agent,
     terminate_workflow_agent_descendants,
     workflow_agent_transcript,
@@ -219,6 +220,27 @@ def test_workflow_agent_descendant_termination(monkeypatch, tmp_path):
     assert killed == [303, 202] or killed == [202, 303]
 
 
+def test_terminate_all_workflow_agents_excludes_current(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    append_workflow_activity("conversation-start", "start", agent_session_id="11111", process_id=101)
+    append_workflow_activity("conversation-start", "start", agent_session_id="22222", process_id=202)
+    append_workflow_activity("conversation-start", "start", agent_session_id="33333", process_id=303)
+
+    killed: list[int] = []
+
+    def _fake_killpg(pid: int, sig: int) -> None:
+        killed.append(pid)
+
+    monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
+
+    result = terminate_all_workflow_agents(exclude_agent_id="22222", exclude_process_id=303)
+
+    assert result["success"] is True
+    assert result["count"] == 1
+    assert result["terminated"] == ["11111"]
+    assert killed == [101]
+
+
 def test_workflow_agent_transcript_collects_recent_interactions(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     append_workflow_activity(
@@ -297,6 +319,7 @@ def test_workflow_agent_queue_and_waiting_state(monkeypatch, tmp_path):
         process_id=24680,
         status="verified",
     )
+    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
 
     result = enqueue_workflow_agent_message("12345", "Try a different proof strategy.")
 
@@ -310,3 +333,19 @@ def test_workflow_agent_queue_and_waiting_state(monkeypatch, tmp_path):
     transcript = workflow_agent_transcript("12345", limit=6)
     assert transcript[-1]["role"] == "user"
     assert "different proof strategy" in transcript[-1]["content"]
+
+
+def test_enqueue_workflow_agent_message_rejects_dead_agent(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="12345",
+        process_id=24680,
+    )
+    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: False)
+
+    result = enqueue_workflow_agent_message("12345", "Try again")
+
+    assert result["success"] is False
+    assert result["error"] == "Agent process is no longer running."

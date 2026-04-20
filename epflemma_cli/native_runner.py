@@ -32,6 +32,7 @@ from epflemma_cli.workflow_state import (
     reset_workflow_run_log,
     save_workflow_live_status,
     summarize_workflow_agents,
+    terminate_all_workflow_agents,
     terminate_workflow_agent_descendants,
     workflow_agent_detail,
 )
@@ -441,7 +442,7 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
         ),
         "autoprove": (
             "autonomous proving session",
-            "Drive the proving loop end-to-end, use Lean diagnostics and proof goals aggressively, and continue iterating until the target is verified and the project has no remaining build errors or `sorry`, or a concrete blocker remains. Avoid repeated `lake env lean <file>` checks; prefer lean-lsp for iteration and a focused `lake build <Module>` or final `lake build` near milestones.",
+            "Drive the proving loop end-to-end. First identify the declarations in scope that still have `sorry`, Lean errors, or warnings. Then work through them one by one, fixing and re-checking after each meaningful edit. continue iterating until the requested file is clean if a file was given, or the project is clean if no file was given. Avoid repeated `lake env lean <file>` checks; prefer lean-lsp for iteration and a focused `lake build <Module>` or final `lake build` near milestones.",
         ),
         "formalize": (
             "interactive formalization session",
@@ -449,7 +450,7 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
         ),
         "autoformalize": (
             "autonomous formalization session",
-            "Handle drafting plus proving as one workflow, iterating on declarations and proofs until the formalization is verified and the project has no remaining build errors or `sorry`, or a concrete blocker remains. Avoid repeated `lake env lean <file>` checks; prefer lean-lsp for iteration and a focused `lake build <Module>` or final `lake build` near milestones.",
+            "Handle drafting plus proving as one workflow. Identify declarations in scope that still have `sorry`, Lean errors, or warnings, then clear them one by one and continue iterating until the requested file is clean if a file was given, or the project is clean if no file was given. Avoid repeated `lake env lean <file>` checks; prefer lean-lsp for iteration and a focused `lake build <Module>` or final `lake build` near milestones.",
         ),
     }
     label, detail = guidance_map.get(
@@ -595,7 +596,7 @@ def _extract_target_symbol(text: str) -> str:
         r"\blemma\s+([A-Za-z_][A-Za-z0-9_']*)",
         r"\bdef\s+([A-Za-z_][A-Za-z0-9_']*)",
     ]
-    combined = f"{_read_native_env('WORKFLOW_COMMAND')} {text}"
+    combined = str(text or "")
     for pattern in patterns:
         match = re.search(pattern, combined)
         if match:
@@ -656,6 +657,15 @@ def _extract_recent_build_status(history: list[dict[str, Any]]) -> str:
 
 
 def _resolve_active_file(history: list[dict[str, Any]], checkpoint_state: Mapping[str, Any] | None = None) -> str:
+    configured_active_file = _read_native_env("ACTIVE_FILE")
+    if configured_active_file:
+        configured_path = Path(configured_active_file)
+        if configured_path.is_file():
+            return str(configured_path.resolve())
+        candidate = Path(_project_root()) / configured_active_file
+        if candidate.is_file():
+            return str(candidate.resolve())
+
     workflow_command = _read_native_env("WORKFLOW_COMMAND")
     command_files = _extract_active_files(workflow_command)
     if command_files:
@@ -686,7 +696,7 @@ def _resolve_target_symbol(history: list[dict[str, Any]], checkpoint_state: Mapp
     target = str(current.get("target_symbol", "") or "").strip()
     if target:
         return target
-    return _extract_target_symbol(_collect_message_text(history[-16:]))
+    return _extract_target_symbol(_read_native_env("WORKFLOW_COMMAND"))
 
 
 def _find_symbol_line(active_file: str, target_symbol: str) -> int | None:
@@ -993,6 +1003,8 @@ def _diagnostics_indicate_failure(diagnostics: str) -> bool:
     failure_patterns = (
         r"\berror\b",
         r"\berrors\b",
+        r"\bwarning\b",
+        r"\bwarnings\b",
         r"\bsorry\b",
         r"\bunsolved\b",
         r"\bfailed\b",
@@ -1019,25 +1031,27 @@ def _goals_still_open(goals: str) -> bool:
 def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     if not live_state:
         return False
+    active_file = str(live_state.get("active_file", "") or "")
     diagnostics = str(live_state.get("diagnostics", "") or "")
     goals = str(live_state.get("goals", "") or "")
     build_status = str(live_state.get("build_status", "") or "")
     sorry_count = live_state.get("sorry_count")
     project_sorry_count = live_state.get("project_sorry_count")
+    verification_ok = live_state.get("verification_ok")
 
+    if not active_file:
+        return False
     if isinstance(sorry_count, int) and sorry_count > 0:
         return False
     if isinstance(project_sorry_count, int) and project_sorry_count > 0:
         return False
     if _diagnostics_indicate_failure(diagnostics):
         return False
-    if build_status == "build reported errors":
+    if "reported errors" in build_status:
         return False
-    if build_status == "lake build succeeded":
-        return True
     if _goals_still_open(goals):
         return False
-    return False
+    return bool(verification_ok)
 
 
 def _module_name_for_file(active_file: str) -> str:
@@ -1106,6 +1120,7 @@ def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dic
     normalized = dict(live_state or {})
     if not normalized or not normalized.get("active_file"):
         return normalized
+    normalized["verification_ok"] = False
     if _diagnostics_indicate_failure(str(normalized.get("diagnostics", "") or "")):
         return normalized
     if _goals_still_open(str(normalized.get("goals", "") or "")):
@@ -1123,6 +1138,7 @@ def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dic
         full_project=needs_full_project_build,
     )
     normalized["build_status"] = build_status
+    normalized["verification_ok"] = bool(ok)
     if isinstance(project_sorry_count, int) and project_sorry_count > 0:
         normalized["blocker_summary"] = (
             f"project still contains {project_sorry_count} sorry placeholder(s): "
@@ -1816,6 +1832,27 @@ def _terminate_descendant_agents(agent: Any) -> None:
         )
 
 
+def _terminate_other_agents(agent: Any) -> None:
+    agent_id = str(getattr(agent, "session_id", "") or "")
+    result = terminate_all_workflow_agents(exclude_agent_id=agent_id, exclude_process_id=os.getpid())
+    count = int(result.get("count", 0) or 0)
+    failed = result.get("failed")
+    if count:
+        _record_agent_activity(
+            agent,
+            "agents-terminated",
+            f"Interrupted {count} other workflow agent(s) during runner exit",
+            terminated=result.get("terminated", []),
+        )
+    if failed:
+        _record_agent_activity(
+            agent,
+            "agents-termination-failed",
+            "Some workflow agents could not be interrupted during runner exit",
+            failed=failed,
+        )
+
+
 def _run_background_control_loop(
     agent: Any,
     system_prompt: str,
@@ -1854,6 +1891,7 @@ def _run_background_control_loop(
                 continue
             if kind == "exit":
                 _terminate_descendant_agents(agent)
+                _terminate_other_agents(agent)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
                 _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited by remote command")
                 return 0
@@ -2035,9 +2073,11 @@ def _managed_system_prompt() -> str:
         "Treat `/lean4:*` entries as workflow labels and instructions, not shell commands.",
         "Prefer Lean/LSP-first workflows and use the staged `lean-lsp` MCP server for navigation, diagnostics, and proof goals.",
         "Do not repeatedly call `lake env lean <file>` as an iteration loop. It is too slow on large imports. Use lean-lsp diagnostics/goals for most cycles, then a focused `lake build <Module>` or final `lake build` only when the file looks close to clean.",
+        "For `prove` and `formalize`, first enumerate the declarations in scope that still contain `sorry`, Lean errors, or warnings, then clear them one by one.",
+        "If the workflow request names a Lean file, keep the work pinned to that file and do not drift to unrelated helper files or declarations discovered later.",
         "Use tools aggressively, keep changes reproducible, and explain blockers clearly when a proof or formalization fails.",
-        "A proof is not verified merely because `sorry` disappeared or style warnings remain. Treat a workflow as verified only after an explicit successful Lean build plus clean diagnostics and no remaining proof goals.",
-        "For autonomous workflows, use project-wide verification: do not stop while the Lean project still contains build errors or any remaining `sorry` placeholders outside dependencies.",
+        "A proof is not verified merely because `sorry` disappeared or style warnings remain. Treat a workflow as verified only after an explicit successful Lean build plus clean diagnostics, no warnings in scope, and no remaining proof goals.",
+        "For autonomous workflows, do not stop while the requested scope still contains build errors, warnings, open goals, or any remaining `sorry` placeholders outside dependencies.",
         "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff instead of reconstructing the full transcript from memory.",
         "Do not use multi-agent delegation unless the user explicitly enabled swarm mode for this workflow.",
     ]
@@ -2147,9 +2187,15 @@ def _autonomous_continuation_prompt(live_state: Mapping[str, Any], cycle_number:
     prompt = (
         "Continue the autonomous workflow. Do not stop yet unless the workflow is truly verified or "
         "you have a concrete blocker that still remains after another attempt.\n\n"
+        "Required working style:\n"
+        "- identify the remaining declarations in scope with `sorry`, Lean errors, or warnings\n"
+        "- pick one declaration at a time\n"
+        "- fix it, re-check it, then move to the next remaining declaration\n"
+        "- do not declare success after clearing only the first theorem in the file\n\n"
         "Verification requires all of the following:\n"
         "- explicit successful `lake build`\n"
         "- clean Lean diagnostics\n"
+        "- no warnings in the requested scope\n"
         "- no open goals\n"
         "- no remaining `sorry` in the active file\n"
         "- no remaining `sorry` anywhere else in the project outside dependencies\n\n"
@@ -2332,6 +2378,12 @@ def main() -> int:
                 autonomy_state,
             )
         if not _native_interactive_enabled():
+            if _live_state_is_verified(live_state):
+                _terminate_descendant_agents(agent)
+                _terminate_other_agents(agent)
+                _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
+                _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited after verified completion")
+                return 0
             return _run_background_control_loop(
                 agent,
                 system_prompt,
@@ -2357,6 +2409,7 @@ def main() -> int:
                         force_filesystem_checkpoint=True,
                     )
                 _terminate_descendant_agents(agent)
+                _terminate_other_agents(agent)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
                 _record_activity("runner-exit", "Managed workflow runner exited via EOF")
                 return 0
@@ -2380,6 +2433,7 @@ def main() -> int:
                         live_state=live_state,
                     )
                 _terminate_descendant_agents(agent)
+                _terminate_other_agents(agent)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
                 _record_activity("runner-exit", "Managed workflow runner exited by command")
                 _print_header()
