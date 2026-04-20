@@ -3,10 +3,12 @@ from __future__ import annotations
 from epflemma_cli import native_runner as runner
 from epflemma_cli.workflow_state import (
     append_workflow_run_log,
+    append_workflow_activity,
     load_workflow_live_status,
     read_workflow_activity,
     read_workflow_run_log,
     reset_workflow_run_log,
+    workflow_runs_root,
 )
 
 
@@ -93,3 +95,24 @@ def test_workflow_run_log_round_trip(monkeypatch, tmp_path):
     append_workflow_run_log("line 3\n")
 
     assert read_workflow_run_log(tail_lines=2) == "line 2\nline 3"
+
+
+def test_workflow_run_log_creates_timestamped_copy(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+
+    reset_workflow_run_log()
+    append_workflow_run_log("alpha\nbeta\n")
+
+    run_logs = list(workflow_runs_root().glob("*.log"))
+    assert len(run_logs) == 1
+    assert run_logs[0].read_text(encoding="utf-8") == "alpha\nbeta\n"
+
+
+def test_workflow_activity_preserves_full_payload(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    full_text = "x" * 500
+
+    append_workflow_activity("assistant-response", "Assistant response received", content=full_text)
+
+    events = read_workflow_activity(limit=1)
+    assert events[0]["details"]["content"] == full_text
