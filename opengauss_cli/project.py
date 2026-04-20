@@ -280,6 +280,11 @@ def initialize_opengauss_project(root: str | Path, *, name: str | None = None) -
     if not project_root.exists():
         raise ProjectCommandError(f"Project root does not exist: {project_root}")
 
+    manifest_path = project_root / OPENGAUSS_PROJECT_DIRNAME / OPENGAUSS_PROJECT_MANIFEST_FILENAME
+    legacy_manifest_path = project_root / LEGACY_PROJECT_DIRNAME / OPENGAUSS_PROJECT_MANIFEST_FILENAME
+    if manifest_path.is_file() or legacy_manifest_path.is_file():
+        return load_opengauss_project(project_root)
+
     lean_root = find_lean_project_root(project_root)
     if lean_root is None:
         raise ProjectCommandError(

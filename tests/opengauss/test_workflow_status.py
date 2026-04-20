@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from opengauss_cli import native_runner as runner
-from opengauss_cli.workflow_state import load_workflow_live_status, read_workflow_activity
+from opengauss_cli.workflow_state import (
+    append_workflow_run_log,
+    load_workflow_live_status,
+    read_workflow_activity,
+    read_workflow_run_log,
+    reset_workflow_run_log,
+)
 
 
 def test_persist_live_status_writes_shell_visible_payload(monkeypatch, tmp_path):
@@ -63,3 +69,14 @@ def test_record_activity_captures_workflow_and_skill_context(monkeypatch, tmp_pa
     assert events[0]["details"]["workflow_kind"] == "prove"
     assert events[0]["details"]["active_skill"] == "lean-diagnostics"
     assert events[0]["details"]["checkpoint_label"] == "milestone"
+
+
+def test_workflow_run_log_round_trip(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "home"))
+
+    reset_workflow_run_log()
+    append_workflow_run_log("line 1\n")
+    append_workflow_run_log("line 2\n")
+    append_workflow_run_log("line 3\n")
+
+    assert read_workflow_run_log(tail_lines=2) == "line 2\nline 3"

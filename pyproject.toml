@@ -44,7 +44,6 @@ all = [
 [project.scripts]
 opengauss = "opengauss_cli.main:main"
 opengauss-agent = "opengauss_agent:main"
-opengauss-acp = "opengauss_acp:main"
 
 [tool.setuptools]
 py-modules = [
@@ -53,7 +52,6 @@ py-modules = [
   "gauss_time",
   "minisweagent_path",
   "model_tools",
-  "opengauss_acp",
   "opengauss_agent",
   "run_agent",
   "toolsets",

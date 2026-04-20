@@ -25,11 +25,101 @@ EPFLemma is intentionally Lean-first and automation-first.
 - Agents do not auto-spawn by default.
 - When swarm mode is enabled, file locks are used to keep concurrent agents off the same file.
 
+## Skills
+
+EPFLemma ships with a small curated skill core for Lean workflows. Skills are not a side feature here; they are part of how the agent is steered toward proving, diagnostics, formalization, resume, and user-approved swarm behavior.
+
+Built-in skills:
+
+- `lean-proof-loop`
+  - standard proof-repair loop for `prove` and `autoprove`
+  - emphasizes: inspect diagnostics/goals first, make minimal edits, rebuild, and do not stop until the project is actually verified
+- `lean-diagnostics`
+  - focused diagnostic mode for `review` and `checkpoint`
+  - emphasizes: current blockers, open goals, verification state, and project-wide remaining `sorry`
+- `lean-formalization`
+  - formalization and declaration-building skill for `formalize`, `autoformalize`, and `draft`
+  - emphasizes: small verifiable steps, dependency order, and zero build errors / zero `sorry`
+- `lean-refactor-golf`
+  - refactor / golfing skill for `refactor` and `golf`
+  - emphasizes: simplifying proof structure without breaking verification
+- `lean-autonomous-swarm`
+  - swarm skill used only when you explicitly launch a workflow with `--agents N`
+  - emphasizes: file ownership, verifier roles, and strict final verification
+- `provider-fallback`
+  - provider/runtime fallback helper when you need to switch between direct APIs, RCP/custom endpoints, or local runtimes
+- `long-session-resume`
+  - resume/handoff skill for compacted or checkpoint-restored workflows
+  - emphasizes: trust persisted state, compare it to the current filesystem, and continue from the real current Lean state
+
+### How Skills Are Assigned
+
+There are three ways a skill gets into the agent:
+
+1. Automatic workflow assignment
+   - `prove`, `autoprove` -> `lean-proof-loop`
+   - `formalize`, `autoformalize`, `draft` -> `lean-formalization`
+   - `review`, `checkpoint` -> `lean-diagnostics`
+   - `refactor`, `golf` -> `lean-refactor-golf`
+   - `--agents N` on autonomous workflows switches to `lean-autonomous-swarm`
+
+2. Manual shell activation
+   - `/skill lean-proof-loop`
+   - `/skill lean-diagnostics`
+   - `/skill reload`
+   - direct activation also works via `/<skill-name>`
+
+3. Resume/continuation context
+   - the managed runner can carry the active skill through checkpoints, compaction, and autonomous continuation cycles
+
+When a skill is active, its `SKILL.md` content is inserted into the agent prompt as explicit workflow guidance.
+
+### Skill Install And Override Paths
+
+Skill discovery order is:
+
+- built-in repo skills in `opengauss_skills/`
+- user overrides in `~/.opengauss/skills`
+- project overrides in `.opengauss/skills`
+
+Precedence is:
+
+- project overrides user
+- user overrides built-in
+
+That means you can replace a built-in skill for one machine or one project without editing the shipped repo skill.
+
+Install patterns:
+
+- user-wide skill:
+  - create `~/.opengauss/skills/<skill-name>/SKILL.md`
+- project-local skill:
+  - create `.opengauss/skills/<skill-name>/SKILL.md` inside the Lean project
+
+Example:
+
+```text
+~/.opengauss/skills/my-proof-policy/SKILL.md
+.opengauss/skills/lean-proof-loop/SKILL.md
+```
+
+The second example overrides the built-in `lean-proof-loop` only for that project.
+
+### How The Agent Sees Skills
+
+The agent does not install skills as code plugins. It loads them as prompt-time workflow instructions:
+
+- the skill resolver finds the highest-precedence matching skill
+- EPFLemma reads the skill’s `SKILL.md`
+- that content is embedded into the agent prompt for the active workflow
+- supporting files under `references/`, `templates/`, `scripts/`, and `assets/` stay discoverable through the skill system when needed
+
+Use `/skills` to see what the agent can currently load and where each skill came from.
+
 ## What Ships
 
 - `opengauss` CLI with EPFLemma shell branding
 - `opengauss-agent` shared agent entrypoint
-- `opengauss-acp` placeholder entrypoint for the kernel build
 - Lean workflows:
   - `/prove`
   - `/draft`
@@ -65,7 +155,6 @@ Supported product surface:
 Removed from the supported product:
 
 - gateway and messaging platforms
-- ACP/editor integration server
 - cron/scheduler product surfaces
 - browser automation workflow surface
 - website/landing page/docs site
@@ -103,7 +192,7 @@ If you already have the repo checked out locally, just run:
 Default install locations:
 
 - state: `~/.opengauss`
-- wrappers: `~/.local/bin/opengauss`, `~/.local/bin/opengauss-agent`, `~/.local/bin/opengauss-acp`
+- wrappers: `~/.local/bin/opengauss`, `~/.local/bin/opengauss-agent`
 - virtualenv: `./.opengauss-venv`
 
 The installer does not touch `~/.gauss` or replace an existing `gauss` binary.
@@ -186,6 +275,7 @@ Inside the shell:
 /workflow status
 /workflow history
 /workflow activity
+/workflow log 120
 /goals
 /diagnostics
 /proof-state
@@ -222,15 +312,15 @@ The bottom toolbar is live workflow context, not decoration. It surfaces:
 - current managed workflow phase
 - active file and target theorem
 - latest build state
-- latest checkpoint label
 - active skill
-- whether project or user overlays are in effect
+- latest structured workflow event
 
 The shell also reads persisted managed-workflow state so these commands work across resumed sessions:
 
 - `/workflow status`
 - `/workflow history`
 - `/workflow activity`
+- `/workflow log 120`
 - `/goals`
 - `/diagnostics`
 - `/proof-state`
@@ -252,9 +342,17 @@ What counts as success:
 1. the relevant Lean code builds successfully
 2. diagnostics are clean
 3. there are no open goals
-4. there are no `sorry`
+4. there are no `sorry` in the active target
+5. there are no remaining `sorry` elsewhere in the project outside dependencies
 
-EPFLemma writes managed workflow status, activity, and checkpoints into `~/.opengauss/workflow-state/` so long runs can be resumed and inspected.
+Autonomous workflows are intentionally stricter than a local file-only loop. `autoprove` and `autoformalize` should keep going until the project is clean, not merely until the current theorem looks finished.
+
+EPFLemma writes managed workflow status, activity, checkpoints, and the full latest managed runner log into `~/.opengauss/workflow-state/` so long runs can be resumed and inspected.
+
+The inspection split is intentional:
+
+- `/workflow activity` is the structured step feed: API calls, assistant plans, tool starts, resumes, checkpoints, and autonomous follow-ups
+- `/workflow log 120` is the raw saved runner transcript when you want the exact command/tool chronology that scrolled by during execution
 
 ## User-Approved Swarm Mode
 
@@ -398,7 +496,7 @@ The main active codepaths are:
 - `tools/` for the Lean-kernel tool surface
 - `tests/opengauss/` plus selected agent/runtime tests for the supported product
 
-You should not expect deleted gateway, website, cron, ACP, or broad skill-catalog directories to exist anymore.
+You should not expect deleted gateway, website, cron, data-generation, voice, or broad skill-catalog directories to exist anymore.
 
 ## Provider Configuration
 
@@ -515,15 +613,16 @@ opengauss:
     autonomous_followups: 6
 
 model:
-  default: google/gemma-4-31B-it
-  provider: auto
-  base_url: ""
+  default: zai-org/GLM-5
+  provider: zai
+  base_url: "https://inference.rcp.epfl.ch/v1"
   api_key: ""
 
 compression:
   enabled: true
   threshold: 0.5
-  summary_model: google/gemma-4-31B-it
+  summary_model: zai-org/GLM-5
+  summary_provider: zai
   reserved_output_tokens: 20000
   prune_tool_output: true
   prune_keep_recent_user_turns: 2
@@ -591,7 +690,6 @@ Console scripts:
 
 - `opengauss`
 - `opengauss-agent`
-- `opengauss-acp`
 
 ## Verification Notes
 
@@ -602,7 +700,7 @@ Current verified behavior from this repo:
 - existing `gauss` remains independently resolvable
 - workflow request resolution works against `.opengauss/project.yaml`
 - RCP remote smoke succeeded with `google/gemma-4-31B-it`
-- dead gateway/ACP/cron/website/community-skill directories have been removed from the repo tree
+- dead gateway/cron/voice/data-generation/website/community-skill directories have been removed from the repo tree
 
 ## Development
 

@@ -45,6 +45,10 @@ def workflow_activity_path() -> Path:
     return workflow_state_root() / "activity.jsonl"
 
 
+def workflow_run_log_path() -> Path:
+    return workflow_state_root() / "latest-run.log"
+
+
 def read_json_file(path: Path) -> dict[str, Any]:
     try:
         if path.is_file():
@@ -99,6 +103,34 @@ def read_workflow_activity(limit: int = 20) -> list[dict[str, Any]]:
         if isinstance(payload, dict):
             events.append(payload)
     return events
+
+
+def reset_workflow_run_log() -> Path:
+    path = workflow_run_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+    return path
+
+
+def append_workflow_run_log(text: str) -> None:
+    if not text:
+        return
+    path = workflow_run_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def read_workflow_run_log(tail_lines: int = 120) -> str:
+    path = workflow_run_log_path()
+    if not path.is_file():
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return ""
+    tail = lines[-max(1, tail_lines):]
+    return "\n".join(tail)
 
 
 def load_workflow_checkpoints() -> list[dict[str, Any]]:
