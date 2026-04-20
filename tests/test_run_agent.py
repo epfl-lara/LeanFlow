@@ -218,6 +218,54 @@ class TestStripThinkBlocks:
     def test_no_blocks_unchanged(self, agent):
         assert agent._strip_think_blocks("hello world") == "hello world"
 
+
+def test_format_tool_args_for_log_summarizes_patch_payload():
+    lines = run_agent._format_tool_args_for_log(
+        "patch",
+        {
+            "path": "GaussTest/GaussTest/RealTheorems-homework.lean",
+            "old_string": "abc",
+            "new_string": "abc",
+        },
+    )
+
+    assert any("path: GaussTest/GaussTest/RealTheorems-homework.lean" in line for line in lines)
+    assert any("old_string: 3 chars across 1 line(s)" in line for line in lines)
+    assert any("new_string: 3 chars across 1 line(s)" in line for line in lines)
+
+
+def test_format_tool_result_for_log_pretty_prints_terminal_result():
+    payload = json.dumps(
+        {
+            "output": "error: [root]: no configuration file\n/Users/lmilikic/GaussWorkspace/GaussTest/lakefile.toml",
+            "exit_code": 1,
+            "error": None,
+        }
+    )
+
+    lines = run_agent._format_tool_result_for_log("terminal", payload)
+
+    assert "exit_code: 1" in lines
+    assert "error: None" in lines
+    assert "output:" in lines
+    assert any("error: [root]: no configuration file" in line for line in lines)
+
+
+def test_format_tool_result_for_log_summarizes_large_file_list():
+    payload = json.dumps(
+        {
+            "total_count": 19,
+            "files": [f"./GaussTest/File{i}.lean" for i in range(19)],
+        }
+    )
+
+    lines = run_agent._format_tool_result_for_log("search_files", payload)
+
+    assert "total_count: 19" in lines
+    assert "files: 19 item(s)" in lines
+    assert any("./GaussTest/File0.lean" in line for line in lines)
+    assert any("more item(s) omitted" in line for line in lines)
+
     def test_single_block_removed(self, agent):
         result = agent._strip_think_blocks("<think>reasoning</think> answer")
         assert "reasoning" not in result
