@@ -45,6 +45,128 @@ class _FakeAgent:
         self._checkpoint_mgr = _FakeCheckpointManager()
 
 
+def test_run_managed_conversation_passes_through_result():
+    class _Agent:
+        def run_conversation(self, **kwargs):
+            return {"messages": [], "interrupted": False, "kwargs": kwargs}
+
+    result = runner._run_managed_conversation(_Agent(), user_message="hello", persist_user_message="hello")
+
+    assert result["interrupted"] is False
+    assert result["kwargs"]["user_message"] == "hello"
+
+
+def test_run_managed_conversation_interrupts_on_ctrl_c(monkeypatch, capsys):
+    class _Agent:
+        def __init__(self):
+            self.interrupt_calls = 0
+
+        def interrupt(self):
+            self.interrupt_calls += 1
+
+        def run_conversation(self, **kwargs):
+            return {"messages": [{"role": "assistant", "content": "partial"}], "interrupted": True}
+
+    agent = _Agent()
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+            self._alive = True
+            self._raised = False
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            if not self._raised:
+                self._raised = True
+                raise KeyboardInterrupt
+            if self._target is not None:
+                self._target()
+            self._alive = False
+
+    monkeypatch.setattr(runner.threading, "Thread", _FakeThread)
+
+    result = runner._run_managed_conversation(agent, user_message="hello")
+
+    assert agent.interrupt_calls == 1
+    assert result["interrupted"] is True
+    output = capsys.readouterr().out
+    assert "Interrupt requested" in output
+    assert "Returned to prover-agent mode after interrupt." in output
+
+
+def test_run_managed_conversation_converts_worker_interrupted_error(monkeypatch, capsys):
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(self, **kwargs):
+            raise InterruptedError("interrupted")
+
+    agent = _Agent()
+
+    result = runner._run_managed_conversation(agent, user_message="hello")
+
+    assert result["interrupted"] is True
+    assert result["messages"] == [{"role": "assistant", "content": "partial"}]
+    output = capsys.readouterr().out
+    assert "Returned to prover-agent mode after interrupt." in output
+
+
+def test_run_managed_conversation_calls_interrupt_callback(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self.interrupt_calls = 0
+
+        def interrupt(self):
+            self.interrupt_calls += 1
+
+        def run_conversation(self, **kwargs):
+            return {"messages": [], "interrupted": True}
+
+    agent = _Agent()
+    callback_hits = {"count": 0}
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+            self._alive = True
+            self._raised = False
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            if not self._raised:
+                self._raised = True
+                raise KeyboardInterrupt
+            if self._target is not None:
+                self._target()
+            self._alive = False
+
+    monkeypatch.setattr(runner.threading, "Thread", _FakeThread)
+
+    runner._run_managed_conversation(
+        agent,
+        user_message="hello",
+        on_interrupt=lambda: callback_hits.__setitem__("count", callback_hits["count"] + 1),
+    )
+
+    assert agent.interrupt_calls == 1
+    assert callback_hits["count"] == 1
+
+
 def test_workflow_startup_guidance_mentions_autonomous_loop():
     text = runner._workflow_startup_guidance("autoprove", "/lean4:autoprove Main.lean")
 

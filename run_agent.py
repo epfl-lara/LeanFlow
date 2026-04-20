@@ -35,6 +35,7 @@ import sys
 import tempfile
 import time
 import threading
+import textwrap
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
@@ -227,6 +228,154 @@ _DESTRUCTIVE_PATTERNS = re.compile(
     )""",
     re.VERBOSE,
 )
+
+
+def _wrap_log_text(text: str, width: int = 96) -> list[str]:
+    lines: list[str] = []
+    for raw_line in str(text).splitlines() or [""]:
+        wrapped = textwrap.wrap(
+            raw_line,
+            width=width,
+            replace_whitespace=False,
+            drop_whitespace=False,
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
+        lines.extend(wrapped or [""])
+    return lines or [""]
+
+
+def _summarize_arg_value(key: str, value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        if key in {"old_string", "new_string", "patch_content", "content"}:
+            line_count = value.count("\n") + 1 if value else 0
+            return f"{len(value):,} chars across {line_count} line(s)"
+        return value
+    if isinstance(value, list):
+        return f"{len(value)} item(s)"
+    if isinstance(value, dict):
+        return f"{len(value)} field(s)"
+    return str(value)
+
+
+def _format_tool_args_for_log(function_name: str, function_args: dict[str, Any]) -> list[str]:
+    if not function_args:
+        return ["args: {}"]
+
+    preferred_order = [
+        "path",
+        "command",
+        "workdir",
+        "query",
+        "pattern",
+        "file_glob",
+        "target",
+        "mode",
+        "old_string",
+        "new_string",
+        "patch_content",
+        "content",
+    ]
+    ordered_keys = [key for key in preferred_order if key in function_args]
+    ordered_keys.extend(key for key in function_args if key not in ordered_keys)
+
+    lines: list[str] = []
+    for key in ordered_keys:
+        value = function_args[key]
+        if isinstance(value, list) and value and all(not isinstance(item, (dict, list)) for item in value):
+            lines.append(f"{key}: {len(value)} item(s)")
+            for item in value[:8]:
+                lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=90)])
+            if len(value) > 8:
+                lines.append(f"  [{len(value) - 8} more item(s) omitted]")
+            continue
+        if isinstance(value, dict):
+            lines.append(f"{key}:")
+            for sub_key, sub_value in value.items():
+                summary = _summarize_arg_value(sub_key, sub_value)
+                lines.extend([f"  {part}" for part in _wrap_log_text(f"{sub_key}: {summary}", width=90)])
+            continue
+        summary = _summarize_arg_value(key, value)
+        lines.extend(_wrap_log_text(f"{key}: {summary}", width=92))
+    return lines
+
+
+def _format_tool_result_for_log(function_name: str, function_result: str) -> list[str]:
+    try:
+        parsed = json.loads(function_result)
+    except Exception:
+        parsed = None
+
+    if isinstance(parsed, dict):
+        lines: list[str] = []
+        preferred_order = [
+            "success",
+            "error",
+            "exit_code",
+            "output",
+            "total_count",
+            "count",
+            "files",
+            "matches",
+        ]
+        ordered_keys = [key for key in preferred_order if key in parsed]
+        ordered_keys.extend(key for key in parsed if key not in ordered_keys)
+
+        for key in ordered_keys:
+            value = parsed[key]
+            if isinstance(value, list) and value and all(not isinstance(item, (dict, list)) for item in value):
+                lines.append(f"{key}: {len(value)} item(s)")
+                for item in value[:10]:
+                    lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=88)])
+                if len(value) > 10:
+                    lines.append(f"  [{len(value) - 10} more item(s) omitted]")
+                continue
+            if isinstance(value, str) and "\n" in value:
+                value_lines = value.splitlines()
+                lines.append(f"{key}:")
+                for raw_line in value_lines[:14]:
+                    lines.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=88)])
+                if len(value_lines) > 14:
+                    lines.append(f"  [output truncated: {len(value_lines) - 14} more line(s)]")
+                continue
+            if isinstance(value, str) and len(value) > 220:
+                wrapped = _wrap_log_text(value, width=88)
+                lines.append(f"{key}:")
+                for part in wrapped[:8]:
+                    lines.append(f"  {part}")
+                if len(wrapped) > 8:
+                    lines.append(f"  [output truncated: {len(wrapped) - 8} more wrapped line(s)]")
+                continue
+            if isinstance(value, (dict, list)):
+                pretty = json.dumps(value, indent=2, ensure_ascii=False)
+                pretty_lines = pretty.splitlines()
+                lines.append(f"{key}:")
+                for raw_line in pretty_lines[:12]:
+                    lines.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=88)])
+                if len(pretty_lines) > 12:
+                    lines.append(f"  [structured output truncated: {len(pretty_lines) - 12} more line(s)]")
+                continue
+            lines.extend(_wrap_log_text(f"{key}: {value}", width=92))
+        return lines
+
+    if isinstance(parsed, list):
+        lines = [f"items: {len(parsed)}"]
+        for item in parsed[:10]:
+            lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=88)])
+        if len(parsed) > 10:
+            lines.append(f"  [{len(parsed) - 10} more item(s) omitted]")
+        return lines
+
+    wrapped = _wrap_log_text(function_result, width=92)
+    if len(wrapped) > 12:
+        return wrapped[:12] + [f"[output truncated: {len(wrapped) - 12} more wrapped line(s)]"]
+    return wrapped
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
@@ -3543,12 +3692,14 @@ class AIAgent:
         if not self.quiet_mode:
             print(f"\n{self.log_prefix}┌─ Tools: {num_tools} concurrent call(s) — {tool_names_str}")
             for i, (tc, name, args) in enumerate(parsed_calls, 1):
-                preview = _build_tool_preview(name, args)
                 if self.verbose_logging:
                     print(f"{self.log_prefix}│  {i}. {name}")
-                    print(f"{self.log_prefix}│     {json.dumps(args, ensure_ascii=False)}")
+                    for line in _format_tool_args_for_log(name, args):
+                        print(f"{self.log_prefix}│     {line}")
                 else:
-                    print(f"{self.log_prefix}│  {i}. {name} — {preview}")
+                    print(f"{self.log_prefix}│  {i}. {name}")
+                    for line in _format_tool_args_for_log(name, args):
+                        print(f"{self.log_prefix}│     {line}")
 
         for _, name, args in parsed_calls:
             if self.tool_progress_callback:
@@ -3621,13 +3772,9 @@ class AIAgent:
                 cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
                 print(f"  {cute_msg}")
             elif not self.quiet_mode:
-                if self.verbose_logging:
-                    print(f"{self.log_prefix}│  {i+1}. {name} done in {tool_duration:.2f}s")
-                    print(f"{self.log_prefix}│     {function_result}")
-                else:
-                    response_preview = function_result[:280] + "..." if len(function_result) > 280 else function_result
-                    print(f"{self.log_prefix}│  {i+1}. {name} done in {tool_duration:.2f}s")
-                    print(f"{self.log_prefix}│     {response_preview}")
+                print(f"{self.log_prefix}│  {i+1}. {name} done in {tool_duration:.2f}s")
+                for line in _format_tool_result_for_log(name, function_result):
+                    print(f"{self.log_prefix}│     {line}")
 
             # Truncate oversized results
             MAX_TOOL_RESULT_CHARS = 100_000
@@ -3705,13 +3852,9 @@ class AIAgent:
                 function_args = {}
 
             if not self.quiet_mode:
-                args_str = json.dumps(function_args, ensure_ascii=False)
-                if self.verbose_logging:
-                    print(f"\n{self.log_prefix}┌─ Tool {i}: {function_name}")
-                    print(f"{self.log_prefix}│  {args_str}")
-                else:
-                    print(f"\n{self.log_prefix}┌─ Tool {i}: {function_name}")
-                    print(f"{self.log_prefix}│  {_build_tool_preview(function_name, function_args)}")
+                print(f"\n{self.log_prefix}┌─ Tool {i}: {function_name}")
+                for line in _format_tool_args_for_log(function_name, function_args):
+                    print(f"{self.log_prefix}│  {line}")
 
             if self.tool_progress_callback:
                 try:
@@ -3897,13 +4040,9 @@ class AIAgent:
             messages.append(tool_msg)
 
             if not self.quiet_mode:
-                if self.verbose_logging:
-                    print(f"{self.log_prefix}│  done in {tool_duration:.2f}s")
-                    print(f"{self.log_prefix}│  {function_result}")
-                else:
-                    response_preview = function_result[:280] + "..." if len(function_result) > 280 else function_result
-                    print(f"{self.log_prefix}│  done in {tool_duration:.2f}s")
-                    print(f"{self.log_prefix}│  {response_preview}")
+                print(f"{self.log_prefix}│  done in {tool_duration:.2f}s")
+                for line in _format_tool_result_for_log(function_name, function_result):
+                    print(f"{self.log_prefix}│  {line}")
                 print(f"{self.log_prefix}└─")
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):

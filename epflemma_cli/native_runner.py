@@ -8,10 +8,11 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -449,6 +450,7 @@ def _print_runner_help() -> None:
     print("  /rollback <N>          Restore files and workflow state from checkpoint N")
     print("  /compact               Force managed-session compaction now")
     print("  /exit                  Leave the managed session")
+    print("  Ctrl+C                 Interrupt the active agent turn and return here")
 
 
 def _all_checkpoint_entries_latest_first() -> list[dict[str, Any]]:
@@ -1541,7 +1543,7 @@ def _print_header() -> None:
         print(f"Project: {project_root}")
     print(f"Run log: {_workflow_state_root() / 'latest-run.log'}")
     print("")
-    print("Commands: /help, /status, /proof-state, /diagnostics, /goals, /history, /checkpoint [note], /rollback <N>, /resume-plan [N], /compact, /exit")
+    print("Commands: /help, /status, /proof-state, /diagnostics, /goals, /history, /checkpoint [note], /rollback <N>, /resume-plan [N], /compact, /exit, Ctrl+C")
     print("Inspect later from the shell with /workflow activity or /workflow log 120.")
     print("")
 
@@ -1555,8 +1557,70 @@ def _print_interactive_mode_header(live_state: Mapping[str, Any] | None = None) 
     print("─" * 78)
     print(f"prover-agent mode  ·  {phase}")
     print(f"file: {active_file}  ·  target: {theorem}")
-    print("commands: /status  /proof-state  /diagnostics  /goals  /history  /exit")
+    print("commands: /status  /proof-state  /diagnostics  /goals  /history  /compact  /exit  Ctrl+C")
     print("─" * 78)
+
+
+def _run_managed_conversation(
+    agent: AIAgent,
+    *,
+    on_interrupt: Callable[[], None] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    result_holder: dict[str, Any] = {}
+    error_holder: dict[str, BaseException] = {}
+
+    def _target() -> None:
+        try:
+            result_holder["result"] = agent.run_conversation(**kwargs)
+        except BaseException as exc:  # pragma: no cover - exercised through caller behavior
+            error_holder["error"] = exc
+
+    worker = threading.Thread(target=_target, daemon=True)
+    worker.start()
+
+    interrupt_requested = False
+    while worker.is_alive():
+        try:
+            worker.join(timeout=0.1)
+        except KeyboardInterrupt:
+            if not interrupt_requested:
+                interrupt_requested = True
+                print("\nInterrupt requested. Stopping the active agent turn...")
+                if on_interrupt is not None:
+                    try:
+                        on_interrupt()
+                    except Exception:
+                        pass
+                agent.interrupt()
+            else:
+                print("\nStill stopping the active agent turn...")
+
+    if "error" in error_holder:
+        error = error_holder["error"]
+        if isinstance(error, (KeyboardInterrupt, InterruptedError)):
+            try:
+                agent.clear_interrupt()
+            except Exception:
+                pass
+            result = {
+                "messages": list(getattr(agent, "_session_messages", []) or kwargs.get("conversation_history") or []),
+                "api_calls": 0,
+                "completed": False,
+                "interrupted": True,
+                "final_response": "Operation interrupted by user.",
+            }
+            print("Returned to prover-agent mode after interrupt.")
+            return result
+        raise error
+
+    result = result_holder.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError("Managed conversation did not return a result payload")
+
+    if result.get("interrupted"):
+        print("Returned to prover-agent mode after interrupt.")
+    return result
 
 
 def _history_status_lines(
@@ -1927,8 +1991,16 @@ def _drive_autonomous_followups(
             _autonomous_continuation_prompt(live_state, cycle),
             live_state,
         )
-        result = agent.run_conversation(
-            augmented_text,
+        result = _run_managed_conversation(
+            agent,
+            on_interrupt=lambda: _persist_live_status(
+                history,
+                compaction_state,
+                checkpoint_state,
+                live_state,
+                phase="paused",
+            ),
+            user_message=augmented_text,
             system_message=system_prompt,
             conversation_history=history,
             persist_user_message=f"[epflemma-native autonomous continuation #{cycle}]",
@@ -1940,6 +2012,10 @@ def _drive_autonomous_followups(
         _record_turn_activity(previous_history, history, phase="autonomous")
         _maybe_write_milestone_checkpoint(previous_history, history, agent, autonomy_state, live_state=live_state)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state)
+        if result.get("interrupted"):
+            _record_activity("autonomy-interrupted", f"Autonomous continuation #{cycle} interrupted by user", cycle=cycle)
+            _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="paused")
+            return history, compaction_state, checkpoint_state, live_state
 
     checkpoint_state = _journal_status()
     live_state = _build_live_proof_state(history, checkpoint_state)
@@ -2015,8 +2091,16 @@ def main() -> int:
 
         initial_message = _attach_live_proof_state(_startup_user_message(resumed_checkpoint), live_state)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
-        result = agent.run_conversation(
-            initial_message,
+        result = _run_managed_conversation(
+            agent,
+            on_interrupt=lambda: _persist_live_status(
+                history,
+                compaction_state,
+                checkpoint_state,
+                live_state,
+                phase="paused",
+            ),
+            user_message=initial_message,
             system_message=system_prompt,
             conversation_history=history,
             persist_user_message="[epflemma-native startup workflow request]",
@@ -2028,14 +2112,18 @@ def main() -> int:
         live_state = _promote_live_state_to_verified(live_state)
         _record_turn_activity(previous_history, history, phase="startup")
         _persist_live_status(history, compaction_state, checkpoint_state, live_state)
-        history, compaction_state, checkpoint_state, live_state = _drive_autonomous_followups(
-            agent,
-            system_prompt,
-            history,
-            compaction_state,
-            checkpoint_state,
-            autonomy_state,
-        )
+        if result.get("interrupted"):
+            _record_activity("startup-interrupted", "Startup agent turn interrupted by user")
+            _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="paused")
+        else:
+            history, compaction_state, checkpoint_state, live_state = _drive_autonomous_followups(
+                agent,
+                system_prompt,
+                history,
+                compaction_state,
+                checkpoint_state,
+                autonomy_state,
+            )
         _print_interactive_mode_header(live_state)
 
         while True:
@@ -2203,8 +2291,16 @@ def main() -> int:
             live_state = _promote_live_state_to_verified(live_state)
             _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
             augmented_text = _attach_live_proof_state(text, live_state)
-            result = agent.run_conversation(
-                augmented_text,
+            result = _run_managed_conversation(
+                agent,
+                on_interrupt=lambda: _persist_live_status(
+                    history,
+                    compaction_state,
+                    checkpoint_state,
+                    live_state,
+                    phase="paused",
+                ),
+                user_message=augmented_text,
                 system_message=system_prompt,
                 conversation_history=history,
                 persist_user_message=text,
@@ -2218,14 +2314,18 @@ def main() -> int:
             live_state = _build_live_proof_state(history, checkpoint_state)
             live_state = _promote_live_state_to_verified(live_state)
             _persist_live_status(history, compaction_state, checkpoint_state, live_state)
-            history, compaction_state, checkpoint_state, live_state = _drive_autonomous_followups(
-                agent,
-                system_prompt,
-                history,
-                compaction_state,
-                checkpoint_state,
-                autonomy_state,
-            )
+            if result.get("interrupted"):
+                _record_activity("interactive-interrupted", "Interactive agent turn interrupted by user")
+                _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="paused")
+            else:
+                history, compaction_state, checkpoint_state, live_state = _drive_autonomous_followups(
+                    agent,
+                    system_prompt,
+                    history,
+                    compaction_state,
+                    checkpoint_state,
+                    autonomy_state,
+                )
             _print_interactive_mode_header(live_state)
     finally:
         owner_id = str(getattr(agent, "session_id", "") or "")
