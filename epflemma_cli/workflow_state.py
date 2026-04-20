@@ -435,6 +435,7 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
             {
                 "agent_id": agent_id,
                 "parent_agent_id": "",
+                "project_root": "",
                 "delegate_depth": 0,
                 "model": "",
                 "provider": "",
@@ -452,6 +453,9 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
             },
         )
         summary["parent_agent_id"] = str(details.get("parent_agent_session_id", "") or summary["parent_agent_id"])
+        project_root = str(details.get("project_root", "") or "")
+        if project_root:
+            summary["project_root"] = project_root
         try:
             summary["delegate_depth"] = int(details.get("delegate_depth", summary["delegate_depth"]) or 0)
         except Exception:
@@ -675,6 +679,39 @@ def terminate_all_workflow_agents(*, exclude_agent_id: str = "", exclude_process
         agent_id = str(summary.get("agent_id", "") or "")
         process_id = int(summary.get("process_id", 0) or 0)
         if not agent_id or process_id <= 0:
+            continue
+        if exclude_agent_id and agent_id == exclude_agent_id:
+            continue
+        if exclude_process_id and process_id == exclude_process_id:
+            continue
+        results.append(terminate_workflow_agent(agent_id))
+
+    success_count = sum(1 for item in results if item.get("success"))
+    failed = [item for item in results if not item.get("success")]
+    return {
+        "success": not failed,
+        "terminated": [item.get("agent_id") for item in results if item.get("success")],
+        "failed": failed,
+        "count": success_count,
+    }
+
+
+def terminate_project_workflow_agents(
+    project_root: str,
+    *,
+    exclude_agent_id: str = "",
+    exclude_process_id: int = 0,
+) -> dict[str, Any]:
+    normalized_root = str(project_root or "").strip()
+    summaries = summarize_workflow_agents(activity_limit=1)
+    results: list[dict[str, Any]] = []
+    for summary in summaries:
+        agent_id = str(summary.get("agent_id", "") or "")
+        process_id = int(summary.get("process_id", 0) or 0)
+        agent_root = str(summary.get("project_root", "") or "")
+        if not agent_id or process_id <= 0:
+            continue
+        if normalized_root and agent_root and agent_root != normalized_root:
             continue
         if exclude_agent_id and agent_id == exclude_agent_id:
             continue
