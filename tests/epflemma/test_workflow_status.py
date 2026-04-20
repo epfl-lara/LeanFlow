@@ -8,7 +8,9 @@ from epflemma_cli.workflow_state import (
     read_workflow_activity,
     read_workflow_run_log,
     reset_workflow_run_log,
+    summarize_workflow_agents,
     workflow_runs_root,
+    workflow_agent_detail,
 )
 
 
@@ -116,3 +118,48 @@ def test_workflow_activity_preserves_full_payload(monkeypatch, tmp_path):
 
     events = read_workflow_activity(limit=1)
     assert events[0]["details"]["content"] == full_text
+
+
+def test_workflow_agent_summary_groups_events(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="agent-main",
+        model="google/gemma-4-31B-it",
+        provider="custom",
+        delegate_depth=0,
+        user_message="Prove theorem t",
+    )
+    append_workflow_activity(
+        "api-request",
+        "API call #1",
+        agent_session_id="agent-main",
+        iteration=1,
+    )
+    append_workflow_activity(
+        "assistant-response",
+        "Assistant response received",
+        agent_session_id="agent-main",
+        content="I will inspect diagnostics first.",
+    )
+    append_workflow_activity(
+        "conversation-end",
+        "Agent conversation finished",
+        agent_session_id="agent-main",
+        completed=True,
+        api_calls=1,
+    )
+
+    summaries = summarize_workflow_agents(activity_limit=3)
+
+    assert len(summaries) == 1
+    assert summaries[0]["agent_id"] == "agent-main"
+    assert summaries[0]["status"] == "completed"
+    assert summaries[0]["api_calls"] == 1
+    assert summaries[0]["model"] == "google/gemma-4-31B-it"
+
+    detail = workflow_agent_detail("agent-main", activity_limit=2)
+    assert detail["agent_id"] == "agent-main"
+    assert len(detail["recent_activity"]) == 2

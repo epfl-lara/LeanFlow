@@ -140,7 +140,7 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
         handle.write("\n")
 
 
-def read_workflow_activity(limit: int = 20) -> list[dict[str, Any]]:
+def _read_all_workflow_activity() -> list[dict[str, Any]]:
     path = workflow_activity_path()
     if not path.is_file():
         return []
@@ -149,7 +149,7 @@ def read_workflow_activity(limit: int = 20) -> list[dict[str, Any]]:
     except Exception:
         return []
     events: list[dict[str, Any]] = []
-    for line in lines[-max(1, limit):]:
+    for line in lines:
         try:
             payload = json.loads(line)
         except Exception:
@@ -157,6 +157,168 @@ def read_workflow_activity(limit: int = 20) -> list[dict[str, Any]]:
         if isinstance(payload, dict):
             events.append(payload)
     return events
+
+
+def read_workflow_activity(
+    limit: int = 20,
+    *,
+    agent_id: str | None = None,
+    event_types: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    events = _read_all_workflow_activity()
+    if agent_id:
+        filtered: list[dict[str, Any]] = []
+        for event in events:
+            details = event.get("details")
+            if not isinstance(details, dict):
+                continue
+            if str(details.get("agent_session_id", "") or "") != agent_id:
+                continue
+            filtered.append(event)
+        events = filtered
+    if event_types:
+        events = [event for event in events if str(event.get("type", "") or "") in event_types]
+    return events[-max(1, limit):]
+
+
+def _shorten_text(text: Any, limit: int = 120) -> str:
+    collapsed = " ".join(str(text or "").split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 3] + "..."
+
+
+def _agent_event_preview(event: Mapping[str, Any]) -> str:
+    details = event.get("details")
+    details = details if isinstance(details, dict) else {}
+    event_type = str(event.get("type", "") or "")
+    if event_type == "assistant-response":
+        content = str(details.get("content", "") or "")
+        if content.strip():
+            return _shorten_text(content, limit=140)
+        tool_calls = details.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            names = [
+                str(call.get("name", "") or "")
+                for call in tool_calls
+                if isinstance(call, dict) and str(call.get("name", "") or "")
+            ]
+            if names:
+                return f"Requested tools: {', '.join(names[:4])}"
+    if event_type == "tool-call":
+        tool_name = str(details.get("tool", "") or "")
+        if tool_name:
+            return f"Call {tool_name}"
+    if event_type == "tool-result":
+        tool_name = str(details.get("tool", "") or "")
+        is_error = bool(details.get("is_error"))
+        if tool_name:
+            return f"{tool_name} {'failed' if is_error else 'completed'}"
+    if event_type == "api-request":
+        iteration = details.get("iteration")
+        if iteration is not None:
+            return f"API call #{iteration}"
+    if event_type == "conversation-start":
+        return _shorten_text(details.get("user_message", ""), limit=140) or str(event.get("message", "") or "")
+    if event_type == "conversation-end":
+        if details.get("interrupted"):
+            return "Interrupted"
+        if details.get("completed"):
+            return "Completed"
+    return _shorten_text(event.get("message", ""), limit=140)
+
+
+def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]]:
+    events = _read_all_workflow_activity()
+    by_agent: dict[str, dict[str, Any]] = {}
+    for event in events:
+        details = event.get("details")
+        if not isinstance(details, dict):
+            continue
+        agent_id = str(details.get("agent_session_id", "") or "")
+        if not agent_id:
+            continue
+        summary = by_agent.setdefault(
+            agent_id,
+            {
+                "agent_id": agent_id,
+                "parent_agent_id": "",
+                "delegate_depth": 0,
+                "model": "",
+                "provider": "",
+                "base_url": "",
+                "status": "active",
+                "started_at": "",
+                "finished_at": "",
+                "api_calls": 0,
+                "tool_calls": 0,
+                "last_event_type": "",
+                "last_event_at": "",
+                "last_message": "",
+                "_recent_activity": [],
+            },
+        )
+        summary["parent_agent_id"] = str(details.get("parent_agent_session_id", "") or summary["parent_agent_id"])
+        try:
+            summary["delegate_depth"] = int(details.get("delegate_depth", summary["delegate_depth"]) or 0)
+        except Exception:
+            pass
+        for key in ("model", "provider", "base_url"):
+            value = str(details.get(key, "") or "")
+            if value:
+                summary[key] = value
+        timestamp = str(event.get("timestamp", "") or "")
+        event_type = str(event.get("type", "") or "")
+        summary["last_event_type"] = event_type
+        summary["last_event_at"] = timestamp
+        summary["last_message"] = _agent_event_preview(event)
+        if event_type == "conversation-start" and not summary["started_at"]:
+            summary["started_at"] = timestamp
+            summary["status"] = "active"
+        elif event_type == "conversation-end":
+            summary["finished_at"] = timestamp
+            if details.get("interrupted"):
+                summary["status"] = "interrupted"
+            elif details.get("completed"):
+                summary["status"] = "completed"
+            else:
+                summary["status"] = "stopped"
+            try:
+                summary["api_calls"] = max(int(details.get("api_calls", 0) or 0), int(summary["api_calls"] or 0))
+            except Exception:
+                pass
+        elif event_type == "api-request":
+            try:
+                summary["api_calls"] = max(int(details.get("iteration", 0) or 0), int(summary["api_calls"] or 0))
+            except Exception:
+                pass
+        elif event_type == "tool-call":
+            summary["tool_calls"] = int(summary["tool_calls"] or 0) + 1
+        summary["_recent_activity"].append(
+            {
+                "timestamp": timestamp,
+                "type": event_type,
+                "message": str(event.get("message", "") or ""),
+                "preview": _agent_event_preview(event),
+            }
+        )
+        summary["_recent_activity"] = summary["_recent_activity"][-max(1, activity_limit):]
+
+    ordered = sorted(
+        by_agent.values(),
+        key=lambda item: (str(item.get("last_event_at", "") or ""), str(item.get("agent_id", "") or "")),
+        reverse=True,
+    )
+    for summary in ordered:
+        summary["recent_activity"] = summary.pop("_recent_activity")
+    return ordered
+
+
+def workflow_agent_detail(agent_id: str, *, activity_limit: int = 5) -> dict[str, Any]:
+    for summary in summarize_workflow_agents(activity_limit=activity_limit):
+        if str(summary.get("agent_id", "") or "") == agent_id:
+            return summary
+    return {}
 
 
 def reset_workflow_run_log() -> Path:

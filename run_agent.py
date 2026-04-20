@@ -391,6 +391,24 @@ def _emit_workflow_event(event_type: str, message: str, **details: Any) -> None:
         append_workflow_activity(event_type, message, **details)
     except Exception:
         logger.debug("Failed to append workflow event %s", event_type, exc_info=True)
+
+
+def _workflow_agent_event_details(agent: Any, **details: Any) -> dict[str, Any]:
+    payload = dict(details)
+    payload.setdefault("agent_session_id", str(getattr(agent, "session_id", "") or ""))
+    payload.setdefault(
+        "parent_agent_session_id",
+        str(getattr(agent, "_parent_session_id", "") or ""),
+    )
+    try:
+        payload.setdefault("delegate_depth", int(getattr(agent, "_delegate_depth", 0) or 0))
+    except Exception:
+        payload.setdefault("delegate_depth", 0)
+    payload.setdefault("model", str(getattr(agent, "model", "") or ""))
+    payload.setdefault("provider", str(getattr(agent, "provider", "") or ""))
+    payload.setdefault("api_mode", str(getattr(agent, "api_mode", "") or ""))
+    payload.setdefault("base_url", str(getattr(agent, "base_url", "") or ""))
+    return payload
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
@@ -3726,10 +3744,13 @@ class AIAgent:
             _emit_workflow_event(
                 "tool-call",
                 f"Concurrent tool call: {name}",
-                tool=name,
-                arguments=args,
-                concurrent=True,
-                iteration=api_call_count,
+                **_workflow_agent_event_details(
+                    self,
+                    tool=name,
+                    arguments=args,
+                    concurrent=True,
+                    iteration=api_call_count,
+                ),
             )
 
         # ── Concurrent execution ─────────────────────────────────────────
@@ -3801,13 +3822,16 @@ class AIAgent:
             _emit_workflow_event(
                 "tool-result",
                 f"Concurrent tool result: {name}",
-                tool=name,
-                arguments=args,
-                result=function_result,
-                duration_seconds=tool_duration,
-                concurrent=True,
-                iteration=api_call_count,
-                is_error=_detect_tool_failure(name, function_result)[0],
+                **_workflow_agent_event_details(
+                    self,
+                    tool=name,
+                    arguments=args,
+                    result=function_result,
+                    duration_seconds=tool_duration,
+                    concurrent=True,
+                    iteration=api_call_count,
+                    is_error=_detect_tool_failure(name, function_result)[0],
+                ),
             )
 
             # Truncate oversized results
@@ -3899,10 +3923,13 @@ class AIAgent:
             _emit_workflow_event(
                 "tool-call",
                 f"Tool call: {function_name}",
-                tool=function_name,
-                arguments=function_args,
-                concurrent=False,
-                iteration=api_call_count,
+                **_workflow_agent_event_details(
+                    self,
+                    tool=function_name,
+                    arguments=function_args,
+                    concurrent=False,
+                    iteration=api_call_count,
+                ),
             )
 
             # Checkpoint: snapshot working dir before file-mutating tools
@@ -4089,13 +4116,16 @@ class AIAgent:
             _emit_workflow_event(
                 "tool-result",
                 f"Tool result: {function_name}",
-                tool=function_name,
-                arguments=function_args,
-                result=function_result,
-                duration_seconds=tool_duration,
-                concurrent=False,
-                iteration=api_call_count,
-                is_error=_detect_tool_failure(function_name, function_result)[0],
+                **_workflow_agent_event_details(
+                    self,
+                    tool=function_name,
+                    arguments=function_args,
+                    result=function_result,
+                    duration_seconds=tool_duration,
+                    concurrent=False,
+                    iteration=api_call_count,
+                    is_error=_detect_tool_failure(function_name, function_result)[0],
+                ),
             )
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
@@ -4410,13 +4440,12 @@ class AIAgent:
         _emit_workflow_event(
             "conversation-start",
             "Agent conversation started",
-            user_message=user_message,
-            persist_user_message=persist_user_message,
-            system_message=system_message or "",
-            model=self.model,
-            provider=self.provider or "",
-            api_mode=self.api_mode or "",
-            base_url=self.base_url,
+            **_workflow_agent_event_details(
+                self,
+                user_message=user_message,
+                persist_user_message=persist_user_message,
+                system_message=system_message or "",
+            ),
         )
         
         # ── System prompt (cached per session for prefix caching) ──
@@ -4640,16 +4669,15 @@ class AIAgent:
             _emit_workflow_event(
                 "api-request",
                 f"API call #{api_call_count}",
-                iteration=api_call_count,
-                message_count=len(api_messages),
-                approx_tokens=approx_tokens,
-                total_chars=total_chars,
-                available_tools=[tool["function"]["name"] for tool in self.tools] if self.tools else [],
-                messages=api_messages,
-                model=self.model,
-                provider=self.provider or "",
-                api_mode=self.api_mode or "",
-                base_url=self.base_url,
+                **_workflow_agent_event_details(
+                    self,
+                    iteration=api_call_count,
+                    message_count=len(api_messages),
+                    approx_tokens=approx_tokens,
+                    total_chars=total_chars,
+                    available_tools=[tool["function"]["name"] for tool in self.tools] if self.tools else [],
+                    messages=api_messages,
+                ),
             )
             
             # Log request details if verbose
@@ -5390,21 +5418,24 @@ class AIAgent:
                 _emit_workflow_event(
                     "assistant-response",
                     "Assistant response received",
-                    iteration=api_call_count,
-                    finish_reason=finish_reason,
-                    content=assistant_message.content or "",
-                    reasoning=getattr(assistant_message, "reasoning", None),
-                    reasoning_content=getattr(assistant_message, "reasoning_content", None),
-                    tool_calls=[
-                        {
-                            "id": getattr(tc, "id", ""),
-                            "name": getattr(getattr(tc, "function", None), "name", ""),
-                            "arguments": getattr(getattr(tc, "function", None), "arguments", ""),
-                        }
-                        for tc in (assistant_message.tool_calls or [])
-                    ],
-                    usage=usage_dict if 'usage_dict' in locals() else {},
-                    response_model=getattr(response, "model", ""),
+                    **_workflow_agent_event_details(
+                        self,
+                        iteration=api_call_count,
+                        finish_reason=finish_reason,
+                        content=assistant_message.content or "",
+                        reasoning=getattr(assistant_message, "reasoning", None),
+                        reasoning_content=getattr(assistant_message, "reasoning_content", None),
+                        tool_calls=[
+                            {
+                                "id": getattr(tc, "id", ""),
+                                "name": getattr(getattr(tc, "function", None), "name", ""),
+                                "arguments": getattr(getattr(tc, "function", None), "arguments", ""),
+                            }
+                            for tc in (assistant_message.tool_calls or [])
+                        ],
+                        usage=usage_dict if 'usage_dict' in locals() else {},
+                        response_model=getattr(response, "model", ""),
+                    ),
                 )
                 
                 # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
@@ -5490,15 +5521,18 @@ class AIAgent:
                     _emit_workflow_event(
                         "tool-call-batch",
                         f"Processing {len(assistant_message.tool_calls)} tool call(s)",
-                        iteration=api_call_count,
-                        tool_calls=[
-                            {
-                                "id": getattr(tc, "id", ""),
-                                "name": getattr(getattr(tc, "function", None), "name", ""),
-                                "arguments": getattr(getattr(tc, "function", None), "arguments", ""),
-                            }
-                            for tc in assistant_message.tool_calls
-                        ],
+                        **_workflow_agent_event_details(
+                            self,
+                            iteration=api_call_count,
+                            tool_calls=[
+                                {
+                                    "id": getattr(tc, "id", ""),
+                                    "name": getattr(getattr(tc, "function", None), "name", ""),
+                                    "arguments": getattr(getattr(tc, "function", None), "arguments", ""),
+                                }
+                                for tc in assistant_message.tool_calls
+                            ],
+                        ),
                     )
                     
                     if self.verbose_logging:
@@ -5897,12 +5931,15 @@ class AIAgent:
         _emit_workflow_event(
             "conversation-end",
             "Agent conversation finished",
-            completed=completed,
-            interrupted=interrupted,
-            api_calls=api_call_count,
-            final_response=final_response,
-            response_previewed=getattr(self, "_response_was_previewed", False),
-            message_count=len(messages),
+            **_workflow_agent_event_details(
+                self,
+                completed=completed,
+                interrupted=interrupted,
+                api_calls=api_call_count,
+                final_response=final_response,
+                response_previewed=getattr(self, "_response_was_previewed", False),
+                message_count=len(messages),
+            ),
         )
 
         # Clear interrupt state after handling

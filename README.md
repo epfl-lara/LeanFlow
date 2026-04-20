@@ -4,8 +4,8 @@ EPFLemma is a Lean AI for Math shell focused on automated Lean coding agents. Th
 
 The product is optimized for two main jobs:
 
-- `autoprove`: drive Lean proof repair and completion until the code compiles cleanly
-- `autoformalize`: translate mathematical intent into Lean declarations and verified proofs
+- `prove`: drive Lean proof repair and completion until the code compiles cleanly
+- `formalize`: translate mathematical intent into Lean declarations and verified proofs
 
 It installs as `epflemma`, uses `~/.epflemma` for user-level config, keeps project-owned workflow state in `.epflemma/`, and can live alongside an existing `gauss` install without overwriting it.
 
@@ -32,13 +32,13 @@ EPFLemma ships with a small curated skill core for Lean workflows. Skills are no
 Built-in skills:
 
 - `lean-proof-loop`
-  - standard proof-repair loop for `autoprove`
+  - standard proof-repair loop for `prove`
   - emphasizes: inspect diagnostics/goals first, make minimal edits, rebuild, and do not stop until the project is actually verified
 - `lean-diagnostics`
   - focused diagnostic mode for `review` and `checkpoint`
   - emphasizes: current blockers, open goals, verification state, and project-wide remaining `sorry`
 - `lean-formalization`
-  - formalization and declaration-building skill for `autoformalize` and `draft`
+  - formalization and declaration-building skill for `formalize` and `draft`
   - emphasizes: small verifiable steps, dependency order, and zero build errors / zero `sorry`
 - `lean-refactor-golf`
   - refactor / golfing skill for `refactor` and `golf`
@@ -57,8 +57,8 @@ Built-in skills:
 There are three ways a skill gets into the agent:
 
 1. Automatic workflow assignment
-   - `autoprove` -> `lean-proof-loop`
-   - `autoformalize`, `draft` -> `lean-formalization`
+   - `prove` -> `lean-proof-loop`
+   - `formalize`, `draft` -> `lean-formalization`
    - `review`, `checkpoint` -> `lean-diagnostics`
    - `refactor`, `golf` -> `lean-refactor-golf`
    - `--agents N` on autonomous workflows switches to `lean-autonomous-swarm`
@@ -126,8 +126,9 @@ Use `/skills` to see what the agent can currently load and where each skill came
   - `/checkpoint`
   - `/refactor`
   - `/golf`
-  - `/autoprove`
-  - `/autoformalize`
+  - `/prove`
+  - `/formalize`
+  - `/autoprove` and `/autoformalize` as compatibility aliases
 - Local runtime commands:
   - `epflemma models local list`
   - `epflemma models local start`
@@ -255,9 +256,9 @@ epflemma project show
 Run a workflow:
 
 ```bash
-epflemma workflow autoprove Main.lean
-epflemma workflow autoprove Main.lean --agents 3
-epflemma workflow autoformalize "Define the object and prove the first lemma"
+epflemma workflow prove Main.lean
+epflemma workflow prove Main.lean --agents 3
+epflemma workflow formalize "Define the object and prove the first lemma"
 ```
 
 Interactive mode:
@@ -279,6 +280,7 @@ Inside the shell:
 /diagnostics
 /proof-state
 /provider
+/swarm
 /skills
 /skill lean-proof-loop
 /skill reload
@@ -286,9 +288,9 @@ Inside the shell:
 /cd path/to/project
 /project init
 /project create DemoProject --template-source https://github.com/example/lean-template.git
-/autoprove Main.lean
-/autoprove Main.lean --agents 3
-/autoformalize "state the theorem"
+/prove Main.lean
+/prove Main.lean --agents 3
+/formalize "state the theorem"
 /doctor
 /config get model.default
 /quit
@@ -297,9 +299,9 @@ Inside the shell:
 Workflow commands also accept forgiving forms without the leading slash:
 
 ```text
-autoprove Main.lean
-autoprove Main.lean --agents 3
-autoformalize "formalize this statement"
+prove Main.lean
+prove Main.lean --agents 3
+formalize "formalize this statement"
 ```
 
 The interactive shell starts with an EPFLemma banner that shows the current route and the main Lean commands you are expected to use.
@@ -342,7 +344,7 @@ What counts as success:
 4. there are no `sorry` in the active target
 5. there are no remaining `sorry` elsewhere in the project outside dependencies
 
-Autonomous workflows are intentionally stricter than a local file-only loop. `autoprove` and `autoformalize` should keep going until the project is clean, not merely until the current theorem looks finished.
+Autonomous workflows are intentionally stricter than a local file-only loop. `prove` and `formalize` should keep going until the project is clean, not merely until the current theorem looks finished.
 
 EPFLemma writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.epflemma/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
 
@@ -364,14 +366,14 @@ EPFLemma supports multi-agent Lean work, but only when the user explicitly reque
 
 Default behavior:
 
-- `autoprove` and `autoformalize` run as a single autonomous agent
+- `prove` and `formalize` run as a single autonomous agent
 - no automatic agent spawning is allowed
 
 Explicit swarm behavior:
 
 ```bash
-epflemma workflow autoprove Main.lean --agents 3
-epflemma workflow autoformalize "formalize theorem X" --agents 3
+epflemma workflow prove Main.lean --agents 3
+epflemma workflow formalize "formalize theorem X" --agents 3
 ```
 
 What `--agents N` does:

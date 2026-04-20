@@ -30,6 +30,8 @@ from epflemma_cli.workflow_state import (
     append_workflow_run_log,
     reset_workflow_run_log,
     save_workflow_live_status,
+    summarize_workflow_agents,
+    workflow_agent_detail,
 )
 from run_agent import AIAgent
 from tools.mcp_tool import discover_mcp_tools
@@ -441,9 +443,11 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
 def _print_runner_help() -> None:
     print("epflemma-native session commands:")
     print("  /status                Show workflow, checkpoint, and compaction status")
+    print("  /status <agent> [N]    Show one workflow agent and its latest N events")
     print("  /proof-state           Show the latest runner-refreshed Lean proof state")
     print("  /diagnostics           Show current Lean diagnostics for the active file")
     print("  /goals                 Show current Lean goals for the active target")
+    print("  /swarm [agent] [N]     List workflow agents or inspect one directly")
     print("  /history               List persisted workflow checkpoints")
     print("  /checkpoint [note]     Save a manual workflow checkpoint")
     print("  /resume-plan [N]       Reload the structured plan from checkpoint N")
@@ -1543,7 +1547,7 @@ def _print_header() -> None:
         print(f"Project: {project_root}")
     print(f"Run log: {_workflow_state_root() / 'latest-run.log'}")
     print("")
-    print("Commands: /help, /status, /proof-state, /diagnostics, /goals, /history, /checkpoint [note], /rollback <N>, /resume-plan [N], /compact, /exit, Ctrl+C")
+    print("Commands: /help, /status, /status <agent> [N], /swarm [agent] [N], /proof-state, /diagnostics, /goals, /history, /checkpoint [note], /rollback <N>, /resume-plan [N], /compact, /exit, Ctrl+C")
     print("Inspect later from the shell with /workflow activity or /workflow log 120.")
     print("")
 
@@ -1557,7 +1561,7 @@ def _print_interactive_mode_header(live_state: Mapping[str, Any] | None = None) 
     print("─" * 78)
     print(f"prover-agent mode  ·  {phase}")
     print(f"file: {active_file}  ·  target: {theorem}")
-    print("commands: /status  /proof-state  /diagnostics  /goals  /history  /compact  /exit  Ctrl+C")
+    print("commands: /status  /status <agent> [N]  /swarm [agent] [N]  /proof-state  /diagnostics  /goals  /history  /compact  /exit  Ctrl+C")
     print("─" * 78)
 
 
@@ -1646,6 +1650,8 @@ def _history_status_lines(
     live_state = live_state or {}
     snapshot_exists = bool(compaction_state.get("snapshot_text"))
     current_checkpoint = checkpoint_state.get("current") or {}
+    agents = summarize_workflow_agents(activity_limit=1)
+    active_agents = sum(1 for agent in agents if str(agent.get("status", "") or "") == "active")
     return [
         f"Messages: {len(history)}",
         f"Users: {user_messages}",
@@ -1664,7 +1670,53 @@ def _history_status_lines(
         f"Active file: {str(live_state.get('active_file_label', '') or '[unknown]')}",
         f"Target theorem: {str(live_state.get('target_symbol', '') or '[unknown]')}",
         f"Project sorries: {str(live_state.get('project_sorry_count', '') or '[unknown]')}",
+        f"Agents: {len(agents)} total / {active_agents} active",
     ]
+
+
+def _print_swarm_overview(activity_limit: int = 5) -> None:
+    agents = summarize_workflow_agents(activity_limit=activity_limit)
+    if not agents:
+        print("No workflow agents have been recorded yet.")
+        return
+    print("Agents:")
+    for agent in agents:
+        agent_id = str(agent.get("agent_id", "") or "[unknown]")
+        status = str(agent.get("status", "") or "active")
+        depth = str(agent.get("delegate_depth", 0))
+        api_calls = str(agent.get("api_calls", 0))
+        model = str(agent.get("model", "") or "[unknown]")
+        latest = str(agent.get("last_message", "") or "")
+        print(f"- {agent_id}  [{status}]  depth={depth}  api_calls={api_calls}  model={model}")
+        if latest:
+            print(f"  latest: {latest}")
+
+
+def _print_agent_detail(agent_id: str, recent_limit: int = 5) -> bool:
+    agent = workflow_agent_detail(agent_id, activity_limit=recent_limit)
+    if not agent:
+        print(f"Agent not found: {agent_id}")
+        return False
+    print(f"Agent: {agent.get('agent_id', '[unknown]')}")
+    print(f"Parent: {agent.get('parent_agent_id') or '[root]'}")
+    print(f"State: {agent.get('status', '[unknown]')}")
+    print(f"Depth: {agent.get('delegate_depth', 0)}")
+    print(f"Model: {agent.get('model') or '[unknown]'}")
+    print(f"Provider: {agent.get('provider') or '[unknown]'}")
+    print(f"Base URL: {agent.get('base_url') or '[unknown]'}")
+    print(f"API calls: {agent.get('api_calls', 0)}")
+    print(f"Tool calls: {agent.get('tool_calls', 0)}")
+    print(f"Started: {agent.get('started_at') or '[unknown]'}")
+    print(f"Finished: {agent.get('finished_at') or '[active]'}")
+    recent = agent.get("recent_activity")
+    if isinstance(recent, list) and recent:
+        print("Recent activity:")
+        for event in recent[-max(1, recent_limit):]:
+            timestamp = str(event.get("timestamp", "") or "")
+            event_type = str(event.get("type", "") or "")
+            preview = str(event.get("preview", "") or "")
+            print(f"- {timestamp}  {event_type}  {preview}")
+    return True
 
 
 def _record_turn_activity(
@@ -2168,13 +2220,38 @@ def main() -> int:
             if text == "/help":
                 _print_runner_help()
                 continue
-            if text == "/status":
+            if text == "/status" or text.startswith("/status "):
+                parts = text.split()
+                if len(parts) > 1:
+                    recent_limit = 5
+                    if len(parts) > 2:
+                        try:
+                            recent_limit = max(1, int(parts[2]))
+                        except ValueError:
+                            print("Usage: /status [agent-id] [recent-events]")
+                            continue
+                    _print_agent_detail(parts[1], recent_limit=recent_limit)
+                    continue
                 checkpoint_state = _journal_status()
                 live_state = _build_live_proof_state(history, checkpoint_state)
                 live_state = _promote_live_state_to_verified(live_state)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state)
                 for line in _history_status_lines(history, compaction_state, checkpoint_state, live_state):
                     print(line)
+                continue
+            if text == "/swarm" or text.startswith("/swarm "):
+                parts = text.split()
+                if len(parts) == 1:
+                    _print_swarm_overview()
+                    continue
+                recent_limit = 5
+                if len(parts) > 2:
+                    try:
+                        recent_limit = max(1, int(parts[2]))
+                    except ValueError:
+                        print("Usage: /swarm [agent-id] [recent-events]")
+                        continue
+                _print_agent_detail(parts[1], recent_limit=recent_limit)
                 continue
             if text == "/proof-state":
                 checkpoint_state = _journal_status()

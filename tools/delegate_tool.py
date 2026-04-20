@@ -238,6 +238,7 @@ def _run_single_child(
 
         # Set delegation depth so children can't spawn grandchildren
         child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
+        child._parent_session_id = str(getattr(parent_agent, "session_id", "") or "")
 
         # Register child for interrupt propagation
         if hasattr(parent_agent, '_active_children'):
