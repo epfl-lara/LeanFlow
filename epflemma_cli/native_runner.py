@@ -28,9 +28,11 @@ from epflemma_cli.skill_core import build_skill_prompt
 from epflemma_cli.workflow_state import (
     append_workflow_activity,
     append_workflow_run_log,
+    read_workflow_agent_inbox,
     reset_workflow_run_log,
     save_workflow_live_status,
     summarize_workflow_agents,
+    terminate_workflow_agent_descendants,
     workflow_agent_detail,
 )
 from run_agent import AIAgent
@@ -88,6 +90,20 @@ def _project_root() -> str:
 
 def _workflow_kind() -> str:
     return _read_native_env("WORKFLOW_KIND", "workflow").strip().lower()
+
+
+def _workflow_display_name(workflow_kind: str | None = None) -> str:
+    kind = str(workflow_kind or _workflow_kind() or "")
+    if kind == "autoprove":
+        return "prove"
+    if kind == "autoformalize":
+        return "formalize"
+    return kind
+
+
+def _native_interactive_enabled() -> bool:
+    raw = _read_native_env("INTERACTIVE", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def _is_autonomous_workflow() -> bool:
@@ -305,6 +321,25 @@ def _record_activity(event_type: str, message: str, **details: Any) -> None:
         active_skill=_active_skill(),
         **details,
     )
+
+
+def _agent_activity_details(agent: Any) -> dict[str, Any]:
+    return {
+        "agent_session_id": str(getattr(agent, "session_id", "") or ""),
+        "parent_agent_session_id": str(getattr(agent, "_parent_session_id", "") or ""),
+        "delegate_depth": int(getattr(agent, "_delegate_depth", 0) or 0),
+        "model": _read_native_env("MODEL"),
+        "provider": _read_native_env("PROVIDER"),
+        "base_url": _read_native_env("BASE_URL"),
+        "api_mode": _read_native_env("API_MODE"),
+        "process_id": os.getpid(),
+    }
+
+
+def _record_agent_activity(agent: Any, event_type: str, message: str, **details: Any) -> None:
+    payload = _agent_activity_details(agent)
+    payload.update(details)
+    _record_activity(event_type, message, **payload)
 
 
 def _single_line(text: Any, limit: int = 220) -> str:
@@ -1030,7 +1065,7 @@ def _recommended_verification_command(active_file: str) -> str:
         relative_label = str(Path(active_file).resolve().relative_to(Path(_project_root()).resolve()))
     except Exception:
         relative_label = active_file
-    return f"lean-lsp diagnostics/goals on {relative_label}, then final `lake build` only when close to clean"
+    return f"lean-lsp diagnostics/goals on {relative_label}, then final `lake env lean {relative_label}` when close to clean"
 
 
 def _run_explicit_verification_build(active_file: str = "", *, full_project: bool = False) -> tuple[bool, str]:
@@ -1040,6 +1075,13 @@ def _run_explicit_verification_build(active_file: str = "", *, full_project: boo
     if not full_project and module_name:
         build_cmd = ["lake", "build", module_name]
         build_label = f"lake build {module_name}"
+    elif not full_project and active_file:
+        try:
+            relative_file = str(Path(active_file).resolve().relative_to(Path(_project_root()).resolve()))
+        except Exception:
+            relative_file = active_file
+        build_cmd = ["lake", "env", "lean", relative_file]
+        build_label = f"lake env lean {relative_file}"
     try:
         result = subprocess.run(
             build_cmd,
@@ -1531,7 +1573,7 @@ def _build_agent() -> AIAgent:
 
 
 def _print_header() -> None:
-    workflow_kind = _workflow_kind()
+    workflow_kind = _workflow_display_name()
     project_root = _project_root()
     model = _read_native_env("MODEL")
     provider = _read_native_env("PROVIDER")
@@ -1658,7 +1700,7 @@ def _history_status_lines(
         f"Assistants: {assistant_messages}",
         f"Tools: {tool_messages}",
         f"Rough tokens: {rough_tokens}",
-        f"Workflow: {_workflow_kind()}",
+        f"Workflow: {_workflow_display_name()}",
         f"Command: {_read_native_env('WORKFLOW_COMMAND', '[unset]')}",
         f"Model: {_read_native_env('MODEL')}",
         f"Project: {_project_root()}",
@@ -1749,6 +1791,119 @@ def _record_turn_activity(
         tools=tool_names,
         tool_count=len(tool_names),
     )
+
+
+def _terminate_descendant_agents(agent: Any) -> None:
+    agent_id = str(getattr(agent, "session_id", "") or "")
+    if not agent_id:
+        return
+    result = terminate_workflow_agent_descendants(agent_id)
+    count = int(result.get("count", 0) or 0)
+    failed = result.get("failed")
+    if count:
+        _record_agent_activity(
+            agent,
+            "descendants-terminated",
+            f"Interrupted {count} descendant agent(s) during runner exit",
+            terminated=result.get("terminated", []),
+        )
+    if failed:
+        _record_agent_activity(
+            agent,
+            "descendants-termination-failed",
+            "Some descendant agents could not be interrupted during runner exit",
+            failed=failed,
+        )
+
+
+def _run_background_control_loop(
+    agent: Any,
+    system_prompt: str,
+    history: list[dict[str, Any]],
+    compaction_state: dict[str, Any],
+    checkpoint_state: dict[str, Any],
+    live_state: dict[str, Any],
+    autonomy_state: dict[str, Any],
+) -> int:
+    agent_id = str(getattr(agent, "session_id", "") or "")
+    last_seq = 0
+    announced_waiting = False
+
+    while True:
+        waiting_phase = "verified" if _live_state_is_verified(live_state) else "paused"
+        _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase=waiting_phase)
+        if not announced_waiting:
+            _record_agent_activity(
+                agent,
+                "agent-awaiting-input",
+                "Background workflow agent is waiting for input",
+                status=waiting_phase,
+            )
+            announced_waiting = True
+
+        pending = [entry for entry in read_workflow_agent_inbox(agent_id) if int(entry.get("seq", 0) or 0) > last_seq]
+        if not pending:
+            time.sleep(0.5)
+            continue
+
+        for command in pending:
+            last_seq = int(command.get("seq", 0) or last_seq)
+            kind = str(command.get("kind", "message") or "message")
+            text = str(command.get("text", "") or "").strip()
+            if not text:
+                continue
+            if kind == "exit":
+                _terminate_descendant_agents(agent)
+                _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
+                _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited by remote command")
+                return 0
+
+            announced_waiting = False
+            _record_agent_activity(agent, "agent-resume", "Processing queued prompt", text=text)
+            live_state = _build_live_proof_state(history, checkpoint_state)
+            live_state = _promote_live_state_to_verified(live_state)
+            _maybe_checkpoint_before_compaction(history, agent, live_state=live_state)
+            history, compaction_state = _auto_compact_history(history, agent)
+            previous_history = history[:]
+            live_state = _build_live_proof_state(history, checkpoint_state)
+            live_state = _promote_live_state_to_verified(live_state)
+            _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
+            augmented_text = _attach_live_proof_state(text, live_state)
+            result = _run_managed_conversation(
+                agent,
+                on_interrupt=lambda: _persist_live_status(
+                    history,
+                    compaction_state,
+                    checkpoint_state,
+                    live_state,
+                    phase="paused",
+                ),
+                user_message=augmented_text,
+                system_message=system_prompt,
+                conversation_history=history,
+                persist_user_message=text,
+            )
+            history = result["messages"]
+            live_state = _build_live_proof_state(history, checkpoint_state)
+            live_state = _promote_live_state_to_verified(live_state)
+            _record_turn_activity(previous_history, history, phase="interactive")
+            _maybe_write_milestone_checkpoint(previous_history, history, agent, autonomy_state, live_state=live_state)
+            checkpoint_state = _journal_status()
+            live_state = _build_live_proof_state(history, checkpoint_state)
+            live_state = _promote_live_state_to_verified(live_state)
+            _persist_live_status(history, compaction_state, checkpoint_state, live_state)
+            if result.get("interrupted"):
+                _record_activity("interactive-interrupted", "Interactive agent turn interrupted by user")
+                _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="paused")
+            else:
+                history, compaction_state, checkpoint_state, live_state = _drive_autonomous_followups(
+                    agent,
+                    system_prompt,
+                    history,
+                    compaction_state,
+                    checkpoint_state,
+                    autonomy_state,
+                )
 
 
 def _milestone_label_for_delta(
@@ -2176,6 +2331,16 @@ def main() -> int:
                 checkpoint_state,
                 autonomy_state,
             )
+        if not _native_interactive_enabled():
+            return _run_background_control_loop(
+                agent,
+                system_prompt,
+                history,
+                compaction_state,
+                checkpoint_state,
+                live_state,
+                autonomy_state,
+            )
         _print_interactive_mode_header(live_state)
 
         while True:
@@ -2191,6 +2356,7 @@ def main() -> int:
                         trigger="pre-exit",
                         force_filesystem_checkpoint=True,
                     )
+                _terminate_descendant_agents(agent)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
                 _record_activity("runner-exit", "Managed workflow runner exited via EOF")
                 return 0
@@ -2213,6 +2379,7 @@ def main() -> int:
                         force_filesystem_checkpoint=True,
                         live_state=live_state,
                     )
+                _terminate_descendant_agents(agent)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
                 _record_activity("runner-exit", "Managed workflow runner exited by command")
                 _print_header()

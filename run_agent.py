@@ -116,6 +116,21 @@ def _cleanup_optional_browser_state(task_id: str) -> None:
     except Exception:
         logger.debug("Optional browser cleanup failed", exc_info=True)
 
+
+_issued_session_ids: set[str] = set()
+_issued_session_ids_lock = threading.Lock()
+
+
+def _generate_short_session_id() -> str:
+    for _ in range(100):
+        candidate = f"{random.randint(0, 99999):05d}"
+        with _issued_session_ids_lock:
+            if candidate not in _issued_session_ids:
+                _issued_session_ids.add(candidate)
+                return candidate
+    # Extremely unlikely fallback.
+    return f"{int(time.time() * 1000) % 100000:05d}"
+
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError from broken pipes.
 
@@ -408,6 +423,7 @@ def _workflow_agent_event_details(agent: Any, **details: Any) -> dict[str, Any]:
     payload.setdefault("provider", str(getattr(agent, "provider", "") or ""))
     payload.setdefault("api_mode", str(getattr(agent, "api_mode", "") or ""))
     payload.setdefault("base_url", str(getattr(agent, "base_url", "") or ""))
+    payload.setdefault("process_id", os.getpid())
     return payload
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
@@ -828,9 +844,7 @@ class AIAgent:
             self.session_id = session_id
         else:
             # Generate a new session ID
-            timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
-            short_uuid = uuid.uuid4().hex[:6]
-            self.session_id = f"{timestamp_str}_{short_uuid}"
+            self.session_id = _generate_short_session_id()
         
         # Session logs go into ~/.gauss/sessions/ alongside gateway sessions
         gauss_home = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss"))
@@ -3555,7 +3569,7 @@ class AIAgent:
                 old_title = self._session_db.get_session_title(self.session_id)
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
-                self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                self.session_id = _generate_short_session_id()
                 self._session_db.create_session(
                     session_id=self.session_id,
                     source=self.platform or "cli",

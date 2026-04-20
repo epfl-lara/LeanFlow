@@ -532,7 +532,7 @@ class TestInit:
             assert a.valid_tool_names == {"web_search", "terminal"}
 
     def test_session_id_auto_generated(self):
-        """Session ID should be auto-generated in YYYYMMDD_HHMMSS_<hex6> format."""
+        """Session ID should be auto-generated as a short 5-digit id."""
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
@@ -544,8 +544,7 @@ class TestInit:
                 skip_context_files=True,
                 skip_memory=True,
             )
-            # Format: YYYYMMDD_HHMMSS_<6 hex chars>
-            assert re.match(r"^\d{8}_\d{6}_[0-9a-f]{6}$", a.session_id), (
+            assert re.match(r"^\d{5}$", a.session_id), (
                 f"session_id doesn't match expected format: {a.session_id}"
             )
 

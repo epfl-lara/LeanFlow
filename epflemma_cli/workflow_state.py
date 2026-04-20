@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -89,6 +90,15 @@ def workflow_runs_root() -> Path:
     return workflow_state_root() / "runs"
 
 
+def workflow_agent_inbox_root() -> Path:
+    return workflow_state_root() / "agent-inbox"
+
+
+def workflow_agent_inbox_path(agent_id: str) -> Path:
+    safe_agent_id = "".join(ch for ch in str(agent_id or "").strip() if ch.isalnum() or ch in {"-", "_"})
+    return workflow_agent_inbox_root() / f"{safe_agent_id or 'unknown'}.jsonl"
+
+
 def _workflow_run_id() -> str:
     run_id = str(os.getenv("EPFLEMMA_WORKFLOW_RUN_ID", "") or "").strip()
     if run_id:
@@ -159,6 +169,57 @@ def _read_all_workflow_activity() -> list[dict[str, Any]]:
     return events
 
 
+def read_workflow_agent_inbox(agent_id: str) -> list[dict[str, Any]]:
+    path = workflow_agent_inbox_path(agent_id)
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    commands: list[dict[str, Any]] = []
+    for idx, line in enumerate(lines, start=1):
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            entry = dict(payload)
+            entry.setdefault("seq", idx)
+            commands.append(entry)
+    return commands
+
+
+def enqueue_workflow_agent_message(agent_ref: str, text: str, *, kind: str = "message") -> dict[str, Any]:
+    agent_id = resolve_workflow_agent_id(agent_ref)
+    if not agent_id:
+        return {"success": False, "error": "Agent not found or ambiguous."}
+    message = str(text or "").strip()
+    if not message:
+        return {"success": False, "error": "Message is empty.", "agent_id": agent_id}
+    path = workflow_agent_inbox_path(agent_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    seq = len(read_workflow_agent_inbox(agent_id)) + 1
+    entry = {
+        "seq": seq,
+        "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "kind": str(kind or "message"),
+        "text": message,
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, sort_keys=True))
+        handle.write("\n")
+    append_workflow_activity(
+        "agent-input-queued",
+        "Queued user message for workflow agent",
+        agent_session_id=agent_id,
+        input_kind=entry["kind"],
+        text=message,
+        seq=seq,
+    )
+    return {"success": True, "agent_id": agent_id, "seq": seq, "kind": entry["kind"]}
+
+
 def read_workflow_activity(
     limit: int = 20,
     *,
@@ -188,6 +249,46 @@ def _shorten_text(text: Any, limit: int = 120) -> str:
     return collapsed[: limit - 3] + "..."
 
 
+def _coerce_tool_arguments(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str):
+        try:
+            payload = json.loads(arguments)
+        except Exception:
+            return {}
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _summarize_requested_tools(tool_calls: list[dict[str, Any]]) -> str:
+    if not tool_calls:
+        return ""
+    previews: list[str] = []
+    for call in tool_calls[:3]:
+        name = str(call.get("name", "") or "").strip()
+        if not name:
+            continue
+        args = _coerce_tool_arguments(call.get("arguments"))
+        preview = _tool_call_preview(name, args)
+        if preview:
+            if name == "terminal":
+                previews.append(f"Run {preview}")
+            elif name == "patch":
+                previews.append(f"Edit {preview}")
+            elif name == "read_file":
+                previews.append(f"Read {preview}")
+            else:
+                previews.append(preview)
+    if not previews:
+        names = [str(call.get("name", "") or "") for call in tool_calls[:3] if str(call.get("name", "") or "")]
+        return f"Requested tools: {', '.join(names)}" if names else ""
+    if len(tool_calls) == 1:
+        return previews[0]
+    return "Queued tools: " + "; ".join(previews)
+
+
 def _agent_event_preview(event: Mapping[str, Any]) -> str:
     details = event.get("details")
     details = details if isinstance(details, dict) else {}
@@ -198,22 +299,19 @@ def _agent_event_preview(event: Mapping[str, Any]) -> str:
             return _shorten_text(content, limit=140)
         tool_calls = details.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
-            names = [
-                str(call.get("name", "") or "")
-                for call in tool_calls
-                if isinstance(call, dict) and str(call.get("name", "") or "")
-            ]
-            if names:
-                return f"Requested tools: {', '.join(names[:4])}"
+            normalized = [dict(call) for call in tool_calls if isinstance(call, dict)]
+            requested = _summarize_requested_tools(normalized)
+            if requested:
+                return requested
     if event_type == "tool-call":
         tool_name = str(details.get("tool", "") or "")
         if tool_name:
-            return f"Call {tool_name}"
+            return _tool_call_preview(tool_name, details.get("arguments"))
     if event_type == "tool-result":
         tool_name = str(details.get("tool", "") or "")
         is_error = bool(details.get("is_error"))
         if tool_name:
-            return f"{tool_name} {'failed' if is_error else 'completed'}"
+            return _tool_result_preview(tool_name, details.get("result"), is_error=is_error)
     if event_type == "api-request":
         iteration = details.get("iteration")
         if iteration is not None:
@@ -225,7 +323,80 @@ def _agent_event_preview(event: Mapping[str, Any]) -> str:
             return "Interrupted"
         if details.get("completed"):
             return "Completed"
+    if event_type == "agent-input-queued":
+        return f"Queued prompt: {_shorten_text(details.get('text', ''), limit=140)}"
+    if event_type == "agent-awaiting-input":
+        status = str(details.get("status", "") or "paused")
+        return f"Waiting for input ({status})"
+    if event_type == "agent-resume":
+        return _shorten_text(details.get("text", ""), limit=140) or "Processing queued prompt"
+    if event_type == "runner-exit":
+        return _shorten_text(event.get("message", ""), limit=140) or "Runner exited"
     return _shorten_text(event.get("message", ""), limit=140)
+
+
+def _tool_call_preview(tool_name: str, arguments: Any) -> str:
+    args = _coerce_tool_arguments(arguments)
+    if tool_name == "terminal":
+        command = str(args.get("command", "") or "").strip()
+        return _shorten_text(command or "Call terminal", limit=180)
+    if tool_name in {"patch", "read_file", "write_file"}:
+        path = str(args.get("path", "") or "").strip()
+        mode = str(args.get("mode", "") or "").strip()
+        if path and mode:
+            return _shorten_text(f"{path} ({mode})", limit=180)
+        if path:
+            return _shorten_text(path, limit=180)
+    path = str(args.get("path", "") or "").strip()
+    if path:
+        return _shorten_text(f"{tool_name}: {path}", limit=180)
+    return f"Call {tool_name}"
+
+
+def _tool_result_preview(tool_name: str, result: Any, *, is_error: bool) -> str:
+    raw = str(result or "")
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        payload = None
+
+    if isinstance(payload, dict):
+        if tool_name == "terminal":
+            exit_code = payload.get("exit_code")
+            output = _shorten_text(payload.get("output", ""), limit=180)
+            if output:
+                return f"exit {exit_code}: {output}" if exit_code is not None else output
+            return f"{tool_name} {'failed' if is_error else 'completed'}"
+        if tool_name == "patch":
+            success = payload.get("success")
+            error = _shorten_text(payload.get("error", ""), limit=180)
+            files_modified = payload.get("files_modified")
+            modified_list = files_modified if isinstance(files_modified, list) else []
+            first_file = str(modified_list[0] or "") if modified_list else ""
+            diff = str(payload.get("diff", "") or "")
+            hunk_count = diff.count("\n@@ ")
+            if diff.startswith("@@ "):
+                hunk_count += 1
+            if success:
+                summary_parts: list[str] = []
+                if first_file:
+                    summary_parts.append(_shorten_text(first_file, limit=100))
+                if modified_list:
+                    summary_parts.append(f"{len(modified_list)} file(s)")
+                if hunk_count:
+                    summary_parts.append(f"{hunk_count} hunk(s)")
+                if summary_parts:
+                    return "updated " + " · ".join(summary_parts)
+                return "patch applied"
+            if error:
+                return f"patch failed: {error}"
+            return "patch failed"
+        if tool_name == "read_file":
+            total_lines = payload.get("total_lines")
+            path = payload.get("path")
+            if path and total_lines is not None:
+                return f"{path} ({total_lines} lines)"
+    return f"{tool_name} {'failed' if is_error else 'completed'}"
 
 
 def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]]:
@@ -247,6 +418,7 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
                 "model": "",
                 "provider": "",
                 "base_url": "",
+                "process_id": 0,
                 "status": "active",
                 "started_at": "",
                 "finished_at": "",
@@ -267,6 +439,12 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
             value = str(details.get(key, "") or "")
             if value:
                 summary[key] = value
+        try:
+            process_id = int(details.get("process_id", 0) or 0)
+            if process_id > 0:
+                summary["process_id"] = process_id
+        except Exception:
+            pass
         timestamp = str(event.get("timestamp", "") or "")
         event_type = str(event.get("type", "") or "")
         summary["last_event_type"] = event_type
@@ -294,6 +472,17 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
                 pass
         elif event_type == "tool-call":
             summary["tool_calls"] = int(summary["tool_calls"] or 0) + 1
+        elif event_type == "agent-input-queued":
+            summary["status"] = "queued"
+            summary["finished_at"] = ""
+        elif event_type == "agent-resume":
+            summary["status"] = "active"
+            summary["finished_at"] = ""
+        elif event_type == "agent-awaiting-input":
+            summary["status"] = str(details.get("status", "") or "paused")
+        elif event_type == "runner-exit":
+            summary["status"] = "exited"
+            summary["finished_at"] = timestamp
         summary["_recent_activity"].append(
             {
                 "timestamp": timestamp,
@@ -319,6 +508,143 @@ def workflow_agent_detail(agent_id: str, *, activity_limit: int = 5) -> dict[str
         if str(summary.get("agent_id", "") or "") == agent_id:
             return summary
     return {}
+
+
+def workflow_agent_transcript(agent_id: str, *, limit: int = 12) -> list[dict[str, Any]]:
+    events = read_workflow_activity(
+        limit=max(1, limit * 8),
+        agent_id=agent_id,
+        event_types={
+            "agent-input-queued",
+            "agent-resume",
+            "conversation-start",
+            "assistant-response",
+            "tool-call",
+            "tool-result",
+            "conversation-end",
+            "agent-awaiting-input",
+            "runner-exit",
+        },
+    )
+    transcript: list[dict[str, Any]] = []
+    for event in events:
+        details = event.get("details")
+        details = details if isinstance(details, dict) else {}
+        event_type = str(event.get("type", "") or "")
+        role = "event"
+        content = str(event.get("message", "") or "")
+        if event_type == "conversation-start":
+            role = "user"
+            content = str(details.get("user_message", "") or content)
+        elif event_type == "agent-input-queued":
+            role = "user"
+            content = str(details.get("text", "") or _agent_event_preview(event))
+        elif event_type == "agent-resume":
+            role = "event"
+            content = _agent_event_preview(event)
+        elif event_type == "assistant-response":
+            role = "assistant"
+            content = str(details.get("content", "") or _agent_event_preview(event))
+        elif event_type == "tool-call":
+            role = "tool-call"
+            content = _agent_event_preview(event)
+        elif event_type == "tool-result":
+            role = "tool-result"
+            content = _agent_event_preview(event)
+        elif event_type == "conversation-end":
+            role = "event"
+            content = _agent_event_preview(event)
+        elif event_type == "agent-awaiting-input":
+            role = "event"
+            content = _agent_event_preview(event)
+        elif event_type == "runner-exit":
+            role = "event"
+            content = _agent_event_preview(event)
+        transcript.append(
+            {
+                "timestamp": str(event.get("timestamp", "") or ""),
+                "type": event_type,
+                "role": role,
+                "content": content.strip(),
+            }
+        )
+    return transcript[-max(1, limit):]
+
+
+def workflow_agent_transcript_all(agent_id: str) -> list[dict[str, Any]]:
+    return workflow_agent_transcript(agent_id, limit=10000)
+
+
+def resolve_workflow_agent_id(agent_ref: str) -> str:
+    ref = str(agent_ref or "").strip()
+    if not ref:
+        return ""
+    summaries = summarize_workflow_agents(activity_limit=1)
+    exact = [str(summary.get("agent_id", "") or "") for summary in summaries if str(summary.get("agent_id", "") or "") == ref]
+    if exact:
+        return exact[0]
+    prefix = [str(summary.get("agent_id", "") or "") for summary in summaries if str(summary.get("agent_id", "") or "").startswith(ref)]
+    if len(prefix) == 1:
+        return prefix[0]
+    return ""
+
+
+def terminate_workflow_agent(agent_ref: str) -> dict[str, Any]:
+    agent_id = resolve_workflow_agent_id(agent_ref)
+    if not agent_id:
+        return {"success": False, "error": "Agent not found or ambiguous."}
+    detail = workflow_agent_detail(agent_id, activity_limit=1)
+    process_id = int(detail.get("process_id", 0) or 0)
+    if process_id <= 0:
+        return {"success": False, "error": "No process id recorded for this agent.", "agent_id": agent_id}
+    try:
+        os.killpg(process_id, signal.SIGINT)
+    except Exception:
+        try:
+            os.kill(process_id, signal.SIGINT)
+        except ProcessLookupError:
+            return {"success": False, "error": "Process already exited.", "agent_id": agent_id, "process_id": process_id}
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "agent_id": agent_id, "process_id": process_id}
+    return {"success": True, "agent_id": agent_id, "process_id": process_id}
+
+
+def terminate_workflow_agent_descendants(agent_ref: str) -> dict[str, Any]:
+    agent_id = resolve_workflow_agent_id(agent_ref)
+    if not agent_id:
+        return {"success": False, "error": "Agent not found or ambiguous."}
+    summaries = summarize_workflow_agents(activity_limit=1)
+    by_parent: dict[str, list[str]] = {}
+    for summary in summaries:
+        child_id = str(summary.get("agent_id", "") or "")
+        parent_id = str(summary.get("parent_agent_id", "") or "")
+        if child_id and parent_id:
+            by_parent.setdefault(parent_id, []).append(child_id)
+
+    descendants: list[str] = []
+    stack = list(by_parent.get(agent_id, []))
+    seen: set[str] = set()
+    while stack:
+        child_id = stack.pop()
+        if child_id in seen:
+            continue
+        seen.add(child_id)
+        descendants.append(child_id)
+        stack.extend(by_parent.get(child_id, []))
+
+    results: list[dict[str, Any]] = []
+    for child_id in descendants:
+        results.append(terminate_workflow_agent(child_id))
+
+    success_count = sum(1 for item in results if item.get("success"))
+    failed = [item for item in results if not item.get("success")]
+    return {
+        "success": not failed,
+        "agent_id": agent_id,
+        "terminated": [item.get("agent_id") for item in results if item.get("success")],
+        "failed": failed,
+        "count": success_count,
+    }
 
 
 def reset_workflow_run_log() -> Path:

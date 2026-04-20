@@ -4,7 +4,7 @@ from rich.console import Console
 
 from epflemma_cli.banner import render_help
 from epflemma_cli.main import InteractiveShell, main
-from epflemma_cli.workflow_state import append_workflow_activity, append_workflow_run_log, reset_workflow_run_log
+from epflemma_cli.workflow_state import append_workflow_activity, append_workflow_run_log, load_workflow_live_status, reset_workflow_run_log
 from epflemma_cli.runtime_provider import list_runtime_provider_targets
 from epflemma_cli.workflow import NativeLaunchPlan, NativeWorkflowSpec, describe_launch_plan
 
@@ -34,8 +34,8 @@ def test_list_runtime_provider_targets_includes_local_and_zai():
 def test_describe_launch_plan_formats_provider_and_model(tmp_path):
     spec = NativeWorkflowSpec(
         workflow_kind="autoprove",
-        frontend_command="/autoprove",
-        canonical_command="/autoprove",
+        frontend_command="/prove",
+        canonical_command="/prove",
         backend_command="/lean4:autoprove Main.lean",
         workflow_args="Main.lean",
     )
@@ -58,9 +58,48 @@ def test_describe_launch_plan_formats_provider_and_model(tmp_path):
 
     assert summary["provider"] == "local:vllm"
     assert summary["model"] == "google/gemma-4-31B-it"
-    assert summary["command"] == "/lean4:autoprove Main.lean"
+    assert summary["command"] == "/prove Main.lean"
     assert summary["skill"] == "lean-proof-loop"
     assert summary["agents"] == "1"
+
+
+def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    shell = InteractiveShell()
+    shell.cwd = tmp_path
+
+    fake_plan = NativeLaunchPlan(
+        project=type("Project", (), {"label": "Demo", "root": tmp_path})(),
+        workflow=NativeWorkflowSpec(
+            workflow_kind="autoprove",
+            frontend_command="/prove",
+            canonical_command="/prove",
+            backend_command="/lean4:autoprove Main.lean",
+            workflow_args="Main.lean",
+        ),
+        runtime={"provider": "custom", "model": "zai-org/GLM-5", "base_url": "https://inference.rcp.epfl.ch/v1"},
+        child_env={},
+        argv=["python", "-m", "epflemma_cli.native_runner"],
+        active_skill="lean-proof-loop",
+        toolset_name="epflemma-native",
+    )
+
+    monkeypatch.setattr("epflemma_cli.main.resolve_workflow_request", lambda *args, **kwargs: fake_plan)
+    monkeypatch.setattr("epflemma_cli.main.describe_launch_plan", lambda plan: {"workflow": "prove", "command": "/prove Main.lean", "project": "Demo", "project_root": str(tmp_path), "provider": "custom", "base_url": "https://inference.rcp.epfl.ch/v1", "model": "zai-org/GLM-5", "skill": "lean-proof-loop", "agents": "1"})
+
+    class _FakeProcess:
+        pid = 43210
+
+    monkeypatch.setattr("epflemma_cli.main.spawn_workflow", lambda *args, **kwargs: (fake_plan, _FakeProcess()))
+    monkeypatch.setattr("epflemma_cli.main.load_workflow_live_status", lambda: {})
+
+    assert shell._run_workflow_command("/prove Main.lean") == 0
+    output = capsys.readouterr().out
+    assert "Workflow running in background" in output
+    assert "43210" in output
+    payload = load_workflow_live_status()
+    assert payload["phase"] == "busy"
+    assert payload["build_status"] == "workflow launching"
 
 
 def test_interactive_project_init_reports_already_initialized(monkeypatch, tmp_path, capsys):
@@ -117,6 +156,105 @@ def test_swarm_command_renders_agent_table(monkeypatch, tmp_path, capsys):
     output = capsys.readouterr().out
     assert "agent-main" in output
     assert "active" in output
+
+
+def test_top_level_kill_command_interrupts_agent(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    shell = InteractiveShell()
+
+    monkeypatch.setattr(
+        "epflemma_cli.main.terminate_workflow_agent",
+        lambda agent_id: {"success": True, "agent_id": "12345", "process_id": 24680},
+    )
+
+    assert shell._run_kill_command(["12345"]) == 0
+    output = capsys.readouterr().out
+    assert "Sent interrupt to workflow agent" in output
+    assert "12345" in output
+
+
+def test_swarm_agent_view_renders_transcript_not_status_panel(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="12345",
+        user_message="Prove theorem foo",
+        model="zai-org/GLM-5",
+    )
+    append_workflow_activity(
+        "assistant-response",
+        "Assistant response received",
+        agent_session_id="12345",
+        content="I will inspect diagnostics first.",
+    )
+    append_workflow_activity(
+        "tool-call",
+        "Tool call: terminal",
+        agent_session_id="12345",
+        tool="terminal",
+        arguments={"command": "lake env lean Demo/RealTheorems-homework.lean"},
+    )
+    append_workflow_activity(
+        "tool-result",
+        "Tool result: terminal",
+        agent_session_id="12345",
+        tool="terminal",
+        is_error=True,
+        result='{"exit_code":1,"output":"error: type mismatch"}',
+    )
+    append_workflow_activity(
+        "conversation-end",
+        "Agent conversation finished",
+        agent_session_id="12345",
+        completed=True,
+    )
+
+    shell = InteractiveShell()
+    monkeypatch.setattr(shell.session, "prompt", lambda *args, **kwargs: "/exit")
+
+    assert shell._run_swarm_command(["12345", "5"]) == 0
+    output = capsys.readouterr().out
+    assert "Swarm View" in output
+    assert "Prove theorem foo" in output
+    assert "inspect diagnostics first" in output
+    assert "Following agent output" in output
+    assert "lake env lean Demo/RealTheorems-homework.lean" in output
+    assert "exit 1: error: type mismatch" in output
+    assert "Enter a follow-up prompt" in output
+
+
+def test_swarm_agent_view_can_queue_follow_up_prompt(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    shell = InteractiveShell()
+
+    agent = {
+        "agent_id": "12345",
+        "status": "verified",
+        "model": "zai-org/GLM-5",
+        "parent_agent_id": "",
+    }
+    transcript = [
+        {"timestamp": "2026-04-20T10:00:00+00:00", "type": "assistant-response", "role": "assistant", "content": "Initial pass done."},
+    ]
+    queued = {}
+    prompts = iter(["Try the continuity lemma next.", "/exit"])
+
+    monkeypatch.setattr("epflemma_cli.main.resolve_workflow_agent_id", lambda ref: "12345")
+    monkeypatch.setattr("epflemma_cli.main.workflow_agent_detail", lambda *args, **kwargs: dict(agent))
+    monkeypatch.setattr("epflemma_cli.main.workflow_agent_transcript", lambda *args, **kwargs: list(transcript))
+    monkeypatch.setattr("epflemma_cli.main.workflow_agent_transcript_all", lambda *args, **kwargs: list(transcript))
+    monkeypatch.setattr(
+        "epflemma_cli.main.enqueue_workflow_agent_message",
+        lambda agent_id, text: queued.setdefault("payload", {"success": True, "agent_id": agent_id, "text": text}),
+    )
+    monkeypatch.setattr(shell.session, "prompt", lambda *args, **kwargs: next(prompts))
+
+    assert shell._run_swarm_command(["12345", "5"]) == 0
+    output = capsys.readouterr().out
+    assert "Agent 12345 is verified" in output
+    assert "Queued prompt for agent 12345" in output
+    assert queued["payload"]["text"] == "Try the continuity lemma next."
 
 
 def test_status_agent_detail_renders_recent_activity(monkeypatch, tmp_path, capsys):

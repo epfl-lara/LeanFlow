@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,8 @@ from epflemma_cli.banner import (
     render_status_panel,
     render_swarm_agent_panel,
     render_swarm_table,
+    render_swarm_transcript,
+    render_swarm_transcript_entry,
     render_workflow_status_panel,
     render_workflow_launch,
 )
@@ -63,13 +66,19 @@ from epflemma_cli.runtime_provider import (
     resolve_runtime_provider,
 )
 from epflemma_cli.skill_core import discover_skill_commands, discover_skills, load_skill
-from epflemma_cli.workflow import FORGIVING_WORKFLOW_ALIAS_MAP, describe_launch_plan, resolve_workflow_request, run_workflow
+from epflemma_cli.workflow import FORGIVING_WORKFLOW_ALIAS_MAP, describe_launch_plan, resolve_workflow_request, run_workflow, spawn_workflow
 from epflemma_cli.workflow_state import (
+    enqueue_workflow_agent_message,
     load_workflow_checkpoints,
     load_workflow_live_status,
     read_workflow_activity,
     read_workflow_run_log,
+    save_workflow_live_status,
     summarize_workflow_agents,
+    terminate_workflow_agent,
+    resolve_workflow_agent_id,
+    workflow_agent_transcript_all,
+    workflow_agent_transcript,
     workflow_agent_detail,
 )
 
@@ -443,7 +452,21 @@ class InteractiveShell:
             render_swarm_table(self.console, agents=agents)
             return 0
 
-        agent_id = argv[0]
+        if argv[0] == "kill":
+            if len(argv) < 2:
+                self.console.print("[dim]Usage: /swarm kill <agent-id>[/]")
+                return 1
+            result = terminate_workflow_agent(argv[1])
+            if not result.get("success"):
+                self.console.print(f"[bold red]{result.get('error', 'Failed to kill workflow agent.')}[/]")
+                return 1
+            self.console.print(
+                f"[bold #5DB8F5]Sent interrupt to workflow agent[/] "
+                f"{result.get('agent_id')} (pid {result.get('process_id')})."
+            )
+            return 0
+
+        agent_id = resolve_workflow_agent_id(argv[0]) or argv[0]
         recent_limit = 5
         if len(argv) > 1:
             try:
@@ -455,7 +478,87 @@ class InteractiveShell:
         if not agent:
             self.console.print(f"[bold red]Agent not found:[/] {agent_id}")
             return 1
-        render_swarm_agent_panel(self.console, agent=agent, recent_limit=recent_limit)
+        transcript = workflow_agent_transcript(agent_id, limit=recent_limit)
+        render_swarm_transcript(self.console, agent=agent, transcript=transcript)
+        self.console.print("[dim]Following agent output. Press Ctrl+C to return to the swarm prompt.[/]")
+        shown = len(workflow_agent_transcript_all(agent_id))
+        while True:
+            try:
+                while True:
+                    time.sleep(0.5)
+                    agent = workflow_agent_detail(agent_id, activity_limit=recent_limit) or agent
+                    transcript_all = workflow_agent_transcript_all(agent_id)
+                    new_entries = transcript_all[shown:]
+                    for entry in new_entries:
+                        render_swarm_transcript_entry(self.console, entry=entry)
+                    shown = len(transcript_all)
+                    if str(agent.get("status", "") or "") != "active":
+                        break
+            except KeyboardInterrupt:
+                self.console.print("\n[dim]Stopped following live output. Agent remains available in swarm mode.[/]")
+            state = str(agent.get("status", "") or "[unknown]")
+            self.console.print(
+                f"[dim]Agent {agent.get('agent_id')} is {state}. "
+                "Enter a follow-up prompt, `/status`, `/kill`, or `/exit`.[/]"
+            )
+            try:
+                command = self.session.prompt(
+                    FormattedText(
+                        [
+                            ("#7AA2F7", f"swarm:{agent.get('agent_id', agent_id)}"),
+                            ("#AAB6C3", " "),
+                            ("#E6EDF3", "› "),
+                        ]
+                    )
+                )
+            except KeyboardInterrupt:
+                self.console.print()
+                return 0
+            except EOFError:
+                self.console.print()
+                return 0
+            text = command.strip()
+            if not text or text in {"/exit", "/quit", "exit", "quit"}:
+                return 0
+            if text == "/status":
+                agent = workflow_agent_detail(agent_id, activity_limit=recent_limit) or agent
+                render_swarm_agent_panel(self.console, agent=agent, recent_limit=recent_limit)
+                continue
+            if text == "/kill":
+                result = terminate_workflow_agent(agent_id)
+                if not result.get("success"):
+                    self.console.print(f"[bold red]{result.get('error', 'Failed to kill workflow agent.')}[/]")
+                    return 1
+                self.console.print(
+                    f"[bold #5DB8F5]Sent interrupt to workflow agent[/] "
+                    f"{result.get('agent_id')} (pid {result.get('process_id')})."
+                )
+                return 0
+            result = enqueue_workflow_agent_message(agent_id, text)
+            if not result.get("success"):
+                self.console.print(f"[bold red]{result.get('error', 'Failed to queue prompt.')}[/]")
+                return 1
+            self.console.print(f"[dim]Queued prompt for agent {result.get('agent_id')}.[/]")
+            agent = workflow_agent_detail(agent_id, activity_limit=recent_limit) or agent
+            transcript_all = workflow_agent_transcript_all(agent_id)
+            new_entries = transcript_all[shown:]
+            for entry in new_entries:
+                render_swarm_transcript_entry(self.console, entry=entry)
+            shown = len(transcript_all)
+            self.console.print("[dim]Following agent output. Press Ctrl+C to return to the swarm prompt.[/]")
+
+    def _run_kill_command(self, argv: list[str]) -> int:
+        if not argv:
+            self.console.print("[dim]Usage: /kill <agent-id>[/]")
+            return 1
+        result = terminate_workflow_agent(argv[0])
+        if not result.get("success"):
+            self.console.print(f"[bold red]{result.get('error', 'Failed to kill workflow agent.')}[/]")
+            return 1
+        self.console.print(
+            f"[bold #5DB8F5]Sent interrupt to workflow agent[/] "
+            f"{result.get('agent_id')} (pid {result.get('process_id')})."
+        )
         return 0
 
     def _render_workflow_history(self) -> None:
@@ -685,16 +788,53 @@ class InteractiveShell:
             return 1
 
         render_workflow_launch(self.console, launch_summary=describe_launch_plan(plan))
-        code = run_workflow(raw, active_cwd=self.cwd, active_skill=self.active_skill or None)
+        current_status = self._workflow_status_payload()
+        save_workflow_live_status(
+            {
+                "version": int(current_status.get("version", 1) or 1),
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "phase": "busy",
+                "workflow_kind": str(plan.workflow.workflow_kind or "[none]"),
+                "workflow_command": str(plan.workflow.frontend_command or raw),
+                "project_root": str(plan.project.root),
+                "provider": str(plan.runtime.get("provider", "") or "[unknown]"),
+                "model": str(plan.runtime.get("model", "") or "[unknown]"),
+                "base_url": str(plan.runtime.get("base_url", "") or "[unknown]"),
+                "active_skill": str(plan.active_skill or current_status.get("active_skill", "") or "[none]"),
+                "parallel_agents": 1,
+                "active_file": str(current_status.get("active_file", "") or ""),
+                "active_file_label": str(current_status.get("active_file_label", "") or "[launching]"),
+                "target_symbol": str(current_status.get("target_symbol", "") or "[launching]"),
+                "diagnostics": str(current_status.get("diagnostics", "") or "Workflow launching..."),
+                "goals": str(current_status.get("goals", "") or "Workflow launching..."),
+                "build_status": "workflow launching",
+                "proof_state_message": "Workflow launching in background.",
+                "sorry_count": current_status.get("sorry_count"),
+                "project_sorry_count": current_status.get("project_sorry_count"),
+                "checkpoint_count": int(current_status.get("checkpoint_count", 0) or 0),
+                "latest_checkpoint_label": str(current_status.get("latest_checkpoint_label", "") or "[none]"),
+                "latest_filesystem_checkpoint": str(current_status.get("latest_filesystem_checkpoint", "") or "[none]"),
+                "last_compaction_reason": str(current_status.get("last_compaction_reason", "") or "[none]"),
+                "snapshot_present": bool(current_status.get("snapshot_present", False)),
+                "held_locks": int(current_status.get("held_locks", 0) or 0),
+            }
+        )
+        _, process = spawn_workflow(
+            raw,
+            active_cwd=self.cwd,
+            active_skill=self.active_skill or None,
+            interactive=False,
+        )
         self.console.print()
-        self.show_banner()
-        if code != 0:
-            self.console.print(f"[bold red]Workflow exited with code {code}[/]")
+        self.console.print(
+            f"[bold #5DB8F5]Workflow running in background[/] (pid {process.pid}). "
+            "Use `/status`, `/status <agent-id>`, `/swarm`, `/workflow activity`, or `/workflow log 120`."
+        )
         workflow_status = self._workflow_status_payload()
         if workflow_status:
             self.console.print()
             render_workflow_status_panel(self.console, status=workflow_status, activities=self._workflow_activity(limit=6))
-        return code
+        return 0
 
     def _handle_command(self, raw: str) -> bool:
         stripped = raw.strip()
@@ -726,6 +866,14 @@ class InteractiveShell:
                 self.console.print(f"[bold red]{exc}[/]")
                 return True
             self._run_swarm_command(argv)
+            return True
+        if stripped == "/kill" or stripped.startswith("/kill "):
+            try:
+                argv = shlex.split(stripped)[1:]
+            except ValueError as exc:
+                self.console.print(f"[bold red]{exc}[/]")
+                return True
+            self._run_kill_command(argv)
             return True
         if stripped == "/goals":
             self._print_live_section("goals")
@@ -831,7 +979,11 @@ class InteractiveShell:
         self.show_banner()
         while True:
             try:
-                raw = self.session.prompt(self._prompt_message(), bottom_toolbar=self._bottom_toolbar)
+                raw = self.session.prompt(
+                    self._prompt_message(),
+                    bottom_toolbar=self._bottom_toolbar,
+                    refresh_interval=0.5,
+                )
             except EOFError:
                 print()
                 return 0
