@@ -1,205 +1,631 @@
-<p align="center">
-  <a href="https://morph.new/opengauss-0-2-2">
-    <img src="https://img.shields.io/badge/Open%20in-Morph-f23f42?style=for-the-badge" alt="Open in Morph">
-  </a>
-</p>
+# EPFLemma
 
-# Open Gauss
+EPFLemma is the visible product identity for this repo: an EPFL-inspired Lean AI for Math shell focused on automated Lean coding agents. The stable executable and install surface remain `opengauss`, so existing local installs and scripts do not break.
 
-Open Gauss is a project-scoped Lean workflow orchestrator from Math, Inc. It gives `gauss` a multi-agent frontend for the `lean4-skills` `prove`, `draft`, `review`, `checkpoint`, `refactor`, `golf`, `autoprove`, `formalize`, and `autoformalize` workflows, while staging the Lean tooling, MCP/LSP wiring, and backend session state those workflows need.
+The product is optimized for two main jobs:
 
-> New to OpenGauss, Lean tooling, or AI-agent workflows?
-> Start with the [Start Here guide](website/docs/getting-started/start-here.md).
->
-> Very short version:
-> - Morph: open [https://morph.new/opengauss-0-2-2](https://morph.new/opengauss-0-2-2), claim or save the session early if Morph offers it, then use `gauss-open-guide`, `gauss`, `/chat`, or `/project init`.
-> - Local: run `./scripts/install.sh`, then `gauss-open-guide` or `gauss`, then start with `/chat`, `/project init`, or `/project create`.
+- `autoprove`: drive Lean proof repair and completion until the code compiles cleanly
+- `formalize` / `autoformalize`: translate mathematical intent into Lean declarations and verified proofs
 
-Open Gauss handles project detection, managed backend setup, workflow spawning, swarm tracking, and recovery. The proving and formalization behavior still comes from `cameronfreer/lean4-skills`; Gauss exposes it through a Gauss-native CLI and project model.
+It installs as `opengauss`, uses `~/.opengauss`, keeps project manifests in `.opengauss/project.yaml`, and can live alongside an existing `gauss` install without overwriting it.
 
-Each lifted slash command spawns a managed backend child agent in the active project and forwards the same argument tail into the corresponding `lean4-skills` workflow command:
+This fork removes the old managed `claude-code` and `codex` backend flow. EPFLemma now runs Lean workflows through its own internal `opengauss-native` runtime and routes inference through direct provider APIs, OpenAI-compatible endpoints such as RCP, or local runtimes such as `vllm`, `ollama`, and `llama.cpp`.
 
-- `/prove ...` -> `/lean4:prove ...`
-- `/draft ...` -> `/lean4:draft ...`
-- `/review ...` -> `/lean4:review ...`
-- `/checkpoint ...` -> `/lean4:checkpoint ...`
-- `/refactor ...` -> `/lean4:refactor ...`
-- `/golf ...` -> `/lean4:golf ...`
-- `/autoprove ...` -> `/lean4:autoprove ...`
-- `/formalize ...` -> `/lean4:formalize ...`
-- `/autoformalize ...` -> `/lean4:autoformalize ...`
+## Brand And Naming
+
+- Visible product name: `EPFLemma`
+- Stable executable: `opengauss`
+- Stable state directory: `~/.opengauss`
+- Stable project manifest: `.opengauss/project.yaml`
+- Visual direction: EPFL-inspired Swiss-red terminal UI, restrained typography, generous whitespace, and Lean-first workflow messaging
+
+The shell branding is inspired by official EPFL brand guidance and the public AI for Math project language around open-source Lean autoformalization tools. It does not use the official EPFL logo and should not be presented as an official EPFL product without the right approval.
+
+## Product Direction
+
+EPFLemma is intentionally Lean-first and automation-first.
+
+- The default shell and workflow UX are built around Lean proving and formalization, not generic assistant chat.
+- Autonomous workflows are judged by strict Lean verification, not by partial progress:
+  - explicit successful build
+  - clean diagnostics
+  - no open goals
+  - no `sorry`
+- Multi-agent execution exists only as an explicit user-approved mode.
+- Agents do not auto-spawn by default.
+- When swarm mode is enabled, file locks are used to keep concurrent agents off the same file.
+
+## What Ships
+
+- `opengauss` CLI with EPFLemma shell branding
+- `opengauss-agent` shared agent entrypoint
+- `opengauss-acp` placeholder entrypoint for the kernel build
+- Lean workflows:
+  - `/prove`
+  - `/draft`
+  - `/review`
+  - `/checkpoint`
+  - `/refactor`
+  - `/golf`
+  - `/autoprove`
+  - `/formalize`
+  - `/autoformalize`
+- Local runtime commands:
+  - `opengauss models local list`
+  - `opengauss models local start`
+  - `opengauss models local stop`
+  - `opengauss models local status`
+  - `opengauss models local logs`
+  - `opengauss models local use`
+
+## Kernel-Only Scope
+
+This repo is now intentionally trimmed to the Lean workflow kernel.
+
+Supported product surface:
+
+- EPFLemma shell UX on top of `opengauss`
+- Lean proving and formalization workflows
+- user-approved multi-agent swarm mode
+- file locking for concurrent Lean editing
+- curated Lean skill core in `opengauss_skills/`
+- provider routing for direct APIs, RCP/custom endpoints, and local runtimes
+- managed local runtimes: `vllm`, `ollama`, `llama.cpp`
+
+Removed from the supported product:
+
+- gateway and messaging platforms
+- ACP/editor integration server
+- cron/scheduler product surfaces
+- browser automation workflow surface
+- website/landing page/docs site
+- RL/benchmark environment suites
+- generic and marketplace-style skill catalogs
+- WhatsApp bridge and other non-Lean platform extras
+
+If you still see references to legacy Gauss-era modules in comments or compatibility fallbacks, treat them as migration residue rather than supported product features.
 
 ## Install
 
-If you want the fastest pinned release path, [https://morph.new/opengauss-0-2-2](https://morph.new/opengauss-0-2-2) launches the hosted setup in under 10 seconds. The local installers below are the batteries-included path for your own machine and can take up to 10 minutes.
-
-If you are not already comfortable with OpenGauss, read the [Start Here guide](website/docs/getting-started/start-here.md) before picking a workflow.
-
-### macOS and Linux
+Local install from the current repo:
 
 ```bash
-git clone https://github.com/math-inc/OpenGauss.git
-cd OpenGauss
+git clone https://github.com/Lemmy00/ReallyOpenGauss.git
+cd ReallyOpenGauss
 ./scripts/install.sh
 ```
 
-This is the canonical local install path. It bootstraps the local installer runtime, runs the shared `opengauss` installer flow on your machine, and then auto-attaches to the final `gauss` tmux session when possible.
-
-It will:
-
-1. Install `uv` if needed
-2. Create a repo-local installer environment
-3. Install or upgrade the local runner
-4. Run the shared `opengauss` installer flow on your machine
-5. Auto-attach you to the local `gauss` tmux session when possible, or print the exact `tmux attach -t gauss` command if not
-
-You can pass normal template-runner flags through to the alternate script, for example:
+If you already have the repo checked out locally, just run:
 
 ```bash
-./scripts/install.sh --plain
-./scripts/install.sh --secret OPENAI_API_KEY=...
-./scripts/install.sh --secret ANTHROPIC_API_KEY=...
-```
-
-### Windows (via WSL2)
-
-Open Gauss on Windows runs through WSL2 using the same shared installer flow.
-
-From PowerShell:
-
-```powershell
-.\scripts\install.ps1 -WithWorkspace
-```
-
-This bootstrap:
-
-1. Starts your WSL distro
-2. Clones or updates `OpenGauss` inside your WSL home directory
-3. Runs `./scripts/install.sh` there, which executes the shared `opengauss` installer flow inside WSL
-
-If no WSL distro is initialized yet, the bootstrap will install Ubuntu for you with `wsl --install -d Ubuntu`. If that process drops you into the new Linux shell, type `exit` to return to PowerShell and rerun `.\scripts\install.ps1 -WithWorkspace`. Windows may also ask to enable WSL features or restart before you rerun the installer.
-
-If WSL is not installed yet:
-
-```powershell
-wsl --install -d Ubuntu
-```
-
-You can also install manually inside WSL:
-
-```bash
-wsl
-git clone https://github.com/math-inc/OpenGauss.git ~/OpenGauss
-cd ~/OpenGauss
 ./scripts/install.sh
 ```
 
-Use a Linux path such as `~/OpenGauss`, not `/mnt/c/...`, for the best performance and terminal behavior.
+Default install locations:
+
+- state: `~/.opengauss`
+- wrappers: `~/.local/bin/opengauss`, `~/.local/bin/opengauss-agent`, `~/.local/bin/opengauss-acp`
+- virtualenv: `./.opengauss-venv`
+
+The installer does not touch `~/.gauss` or replace an existing `gauss` binary.
+
+Custom install locations:
+
+```bash
+./scripts/install.sh \
+  --opengauss-home "$HOME/.opengauss" \
+  --bin-dir "$HOME/.local/bin" \
+  --venv-dir "$PWD/.opengauss-venv"
+```
+
+## Update
+
+EPFLemma no longer uses the old `gauss update` flow. Update by reinstalling from the repo:
+
+```bash
+cd ReallyOpenGauss
+git pull
+./scripts/install.sh
+```
+
+## Coexistence And Migration
+
+EPFLemma is designed to coexist with Gauss:
+
+- `gauss` and `opengauss` are separate binaries
+- Gauss state stays in `~/.gauss`
+- EPFLemma state stays in `~/.opengauss`
+- Gauss project manifests stay in `.gauss/project.yaml`
+- EPFLemma project manifests stay in `.opengauss/project.yaml`
+
+On first run, EPFLemma can import legacy settings from:
+
+- `~/.gauss/config.yaml`
+- `~/.gauss/.env`
+- `.gauss/project.yaml`
+
+That import is one-time and non-destructive. After import, EPFLemma uses only its own paths.
+
+## Quick Start
+
+Check the install:
+
+```bash
+opengauss --help
+opengauss doctor
+opengauss config show
+```
+
+Initialize an existing Lean project:
+
+```bash
+cd /path/to/lean-project
+opengauss project init
+opengauss project show
+```
+
+Run a workflow:
+
+```bash
+opengauss workflow prove Main.lean
+opengauss workflow autoprove Main.lean
+opengauss workflow autoprove Main.lean --agents 3
+opengauss workflow formalize "Define the object and prove the first lemma"
+```
+
+Interactive mode:
+
+```bash
+opengauss
+```
+
+Inside the shell:
+
+```text
+/banner
+/status
+/workflow status
+/workflow history
+/workflow activity
+/goals
+/diagnostics
+/proof-state
+/provider
+/skills
+/skill lean-proof-loop
+/skill reload
+/models local list
+/cd path/to/project
+/project init
+/project create DemoProject --template-source https://github.com/example/lean-template.git
+/prove Main.lean
+/autoprove Main.lean
+/autoprove Main.lean --agents 3
+/formalize "state the theorem"
+/doctor
+/config get model.default
+/quit
+```
+
+Workflow commands also accept forgiving forms without the leading slash:
+
+```text
+prove Main.lean
+autoprove Main.lean
+autoprove Main.lean --agents 3
+autoformalize "formalize this statement"
+```
+
+The interactive shell starts with an EPFLemma banner that shows the current project, provider, model, local runtime, and the main Lean commands you are expected to use.
+
+The bottom toolbar is live workflow context, not decoration. It surfaces:
+
+- current managed workflow phase
+- active file and target theorem
+- latest build state
+- latest checkpoint label
+- active skill
+- whether project or user overlays are in effect
+
+The shell also reads persisted managed-workflow state so these commands work across resumed sessions:
+
+- `/workflow status`
+- `/workflow history`
+- `/workflow activity`
+- `/goals`
+- `/diagnostics`
+- `/proof-state`
+
+## Autonomous Lean Behavior
+
+The native runner is designed for Lean automation, not free-form chat.
+
+What the autonomous runner tries to do:
+
+- identify the active Lean file and target declaration
+- inspect diagnostics and goals first
+- make the smallest useful edit
+- rebuild or re-check diagnostics after meaningful edits
+- continue until the target is verified or a concrete blocker remains
+
+What counts as success:
+
+1. the relevant Lean code builds successfully
+2. diagnostics are clean
+3. there are no open goals
+4. there are no `sorry`
+
+EPFLemma writes managed workflow status, activity, and checkpoints into `~/.opengauss/workflow-state/` so long runs can be resumed and inspected.
+
+## User-Approved Swarm Mode
+
+EPFLemma supports multi-agent Lean work, but only when the user explicitly requests it.
+
+Default behavior:
+
+- `autoprove` and `autoformalize` run as a single autonomous agent
+- no automatic agent spawning is allowed
+
+Explicit swarm behavior:
+
+```bash
+opengauss workflow autoprove Main.lean --agents 3
+opengauss workflow autoformalize "formalize theorem X" --agents 3
+```
+
+What `--agents N` does:
+
+- switches the native workflow from `opengauss-native` to the swarm-capable tool surface
+- enables user-approved delegation inside that workflow only
+- activates the `lean-autonomous-swarm` skill unless you manually selected another skill
+- records the configured agent count in workflow status
+
+Important constraint:
+
+- swarm mode is user-approved only
+- agents do not decide to spawn other agents unless the workflow was launched with `--agents N`
+
+Recommended use:
+
+- one agent per file when files are independent
+- one verifier-oriented path to keep builds and diagnostics honest
+- no duplicate ownership of the same Lean file
+
+## Project Model
+
+EPFLemma currently exposes two project commands:
+
+- `opengauss project init [path] [--name NAME]`
+- `opengauss project create <path> [--template-source SOURCE] [--name NAME]`
+- `opengauss project show [path]`
+
+Requirements for `project init`:
+
+- the target must be inside a Lean 4 repo
+- a Lean root must be detectable from `lakefile.lean` or `lakefile.toml`
+
+EPFLemma writes:
+
+- `.opengauss/project.yaml`
+- `.opengauss/runtime/`
+- `.opengauss/cache/`
+- `.opengauss/workflows/`
+
+## Skills And Overlays
+
+EPFLemma ships a curated Lean-first skill core. It does not use the old broad marketplace-style catalog in the supported product.
+
+Builtin skills live in:
+
+```text
+opengauss_skills/
+```
+
+User and project overlays live in:
+
+```text
+~/.opengauss/skills
+.opengauss/skills
+```
+
+Overlay precedence is:
+
+1. project
+2. user
+3. builtin
+
+Supported shell commands:
+
+```text
+/skills
+/skill <name>
+/skill reload
+/<skill-name>
+```
+
+Current curated builtin skills:
+
+- `lean-proof-loop`
+- `lean-diagnostics`
+- `lean-formalization`
+- `lean-refactor-golf`
+- `lean-autonomous-swarm`
+- `provider-fallback`
+- `long-session-resume`
+
+Lean workflows automatically select a matching default skill unless you activate another one explicitly.
+
+The swarm-specific skill is only relevant when the user enabled parallel agents. It encodes:
+
+- file-specific delegation
+- verifier roles
+- strict zero-sorry finish conditions
+- lock-before-edit behavior for shared Lean files
+
+## File Locking
+
+EPFLemma includes file reservations for concurrent Lean work.
+
+Purpose:
+
+- stop two agents from editing the same Lean file at the same time
+- make user-approved swarm runs safer and easier to reason about
+
+How it works:
+
+- file reservations are stored in `~/.opengauss/workflow-state/file_locks.json`
+- the native workflow tool surface includes:
+  - `acquire_file_lock`
+  - `release_file_lock`
+  - `list_file_locks`
+- file writes through `write_file` and `patch` respect existing locks
+- if another agent owns the lock, the write is rejected instead of silently racing
+- locks are keyed to the stable agent session id, not a transient per-turn task id
+- native runner and delegated child agents release their locks on exit
+
+Current scope:
+
+- lock enforcement is wired into file-tool writes
+- this gives strong protection for the recommended edit path
+- terminal-based ad hoc shell edits are still a weaker path and should be avoided in swarm workflows
+
+## Repository Layout
+
+The main active codepaths are:
+
+- `opengauss_cli/` for shell UX, config, project/workflow orchestration, local runtimes, locks, and workflow state
+- `opengauss_skills/` for the curated Lean skill core
+- `agent/` for prompt assembly, context compression, display, and shared agent internals
+- `tools/` for the Lean-kernel tool surface
+- `tests/opengauss/` plus selected agent/runtime tests for the supported product
+
+You should not expect deleted gateway, website, cron, ACP, or broad skill-catalog directories to exist anymore.
+
+## Provider Configuration
+
+Inspect the active provider selection:
+
+```bash
+opengauss provider
+opengauss provider --requested zai
+opengauss provider --requested local
+opengauss provider --requested custom
+```
+
+EPFLemma supports three provider classes:
+
+1. Direct provider APIs
+2. OpenAI-compatible remote endpoints
+3. Managed local runtimes
+
+### Direct Providers
+
+Supported direct providers include:
+
+- `zai`
+- `kimi-coding`
+- `minimax`
+- `minimax-cn`
+- `deepseek`
+- `anthropic`
+
+Example:
+
+```bash
+export GLM_API_KEY=...
+opengauss provider --requested zai
+```
+
+### OpenAI-Compatible Remote Endpoints
+
+RCP-style endpoints work through the `custom` path:
+
+```bash
+export OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
+export OPENAI_API_KEY="..."
+opengauss provider --requested custom
+```
+
+If GLM is down, the tested fallback model on that endpoint is:
+
+```text
+google/gemma-4-31B-it
+```
+
+Use the exact model name. The endpoint is case-sensitive.
+
+Inside the interactive shell, `/provider` shows both the resolved provider and the supported target names so you can verify the route before launching a workflow.
+
+### Local Runtimes
+
+Select a local runtime:
+
+```bash
+opengauss models local use vllm google/gemma-4-31B-it
+opengauss provider --requested local
+```
+
+Start a local runtime:
+
+```bash
+opengauss models local start vllm google/gemma-4-31B-it
+opengauss models local status vllm
+opengauss models local logs vllm
+```
+
+Other supported runtimes:
+
+- `ollama`
+- `llama_cpp`
+
+## Workflow Tool Surfaces
+
+There are now two important internal workflow surfaces:
+
+- `opengauss-native`
+  - default single-agent Lean workflow runtime
+  - includes file, terminal, web, session search, skills, and file-lock coordination
+  - does not include delegation
+- `opengauss-native-swarm`
+  - enabled only for user-approved `--agents N` workflows
+  - adds delegation to the native Lean tool surface
+  - intended for bounded multi-agent Lean runs with file ownership rules
+
 ## Configuration
 
-### 🖥️ Using Local Models (vLLM)
-If you prefer to run models locally (e.g., using a local GPU) to save on API costs:
+Main config file:
 
-1. **Start your vLLM server** (OpenAI-compatible):
-   ```bash
-   python -m vllm.entrypoints.openai.api_server --model <model_name>
-   ```
+```text
+~/.opengauss/config.yaml
+```
 
-2. **Point Gauss at that server** with `gauss setup`, or update `OPENAI_BASE_URL` in `~/.gauss/.env`.
+Main env file:
 
-### Updating
+```text
+~/.opengauss/.env
+```
+
+Top-level config shape:
+
+```yaml
+opengauss:
+  project:
+    template_source: ""
+  workflow:
+    managed_state_dir: ""
+    autonomous_followups: 6
+
+model:
+  default: google/gemma-4-31B-it
+  provider: auto
+  base_url: ""
+  api_key: ""
+
+compression:
+  enabled: true
+  threshold: 0.5
+  summary_model: google/gemma-4-31B-it
+  reserved_output_tokens: 20000
+  prune_tool_output: true
+  prune_keep_recent_user_turns: 2
+
+local_models:
+  default_runtime: vllm
+  active_runtime: ""
+  active_model: ""
+  runtimes:
+    vllm:
+      host: 127.0.0.1
+      port: 8000
+      extra_args: []
+    ollama:
+      host: 127.0.0.1
+      port: 11434
+      extra_args: []
+    llama_cpp:
+      host: 127.0.0.1
+      port: 8080
+      extra_args: []
+```
+
+Useful commands:
 
 ```bash
-cd OpenGauss
-git pull
-gauss update
+opengauss config get model.default
+opengauss config set model.default '"zai-org/GLM-5"'
+opengauss config set model.provider '"zai"'
+opengauss config set model.base_url '"https://inference.rcp.epfl.ch/v1"'
 ```
 
-## Quick start
+Compression defaults are tuned for long Lean sessions:
 
-If you want the plain-language version first, read the [Start Here guide](website/docs/getting-started/start-here.md).
+- `reserved_output_tokens` keeps headroom for the next response instead of filling the full context window.
+- `prune_tool_output` replaces stale old tool result bodies with a fixed marker.
+- `prune_keep_recent_user_turns` keeps the newest user turns and their nearby tool output intact.
 
-```
-gauss                         # Launch top-level Gauss
-/chat                         # Turn on inline onboarding and plain-language chat
-/project create ~/my-project --template-source <template-or-git-url>
-/prove 1+1=2                  # Spawn a proving agent after selecting a project
-/swarm                        # See running agents
-```
+## Doctor
 
-If you already have a Lean project:
+Run:
 
-```
-cd ~/my-lean-project
-gauss
-/chat                         # Optional: inline onboarding in the current Gauss session
-/project init                 # Register it as a Gauss project
-/prove                        # Start proving
+```bash
+opengauss doctor
 ```
 
-## The core loop
+It checks:
 
-1. Start the CLI with `gauss`
-2. Create or select the active project with `/project`
-3. Launch `/prove`, `/draft`, `/review`, `/checkpoint`, `/refactor`, `/golf`, `/autoprove`, `/formalize`, or `/autoformalize`
-4. Gauss spawns a managed backend child session that runs the corresponding `lean4-skills` workflow command in the active project
-5. Use `/swarm` to track or reattach to running workflow agents
+- `git`
+- `rg`
+- `lake`
+- current EPFLemma home and config
+- active project discovery
+- current provider resolution
 
-## Project model
+## Packaging
 
-Gauss treats Lean work as project-scoped by default. Before launching managed workflows, select the active project once and then let Gauss keep spawning backend child agents inside that project root.
+Python package:
 
-- `/project init [path] [--name <name>]` registers an existing Lean repo as a Gauss project
-- `/project convert [path] [--name <name>]` registers an existing Lean blueprint repo
-- `/project create <path> [--template-source <source>] [--name <name>]` bootstraps a project from a template and registers it
-- `/project use [path]` pins the current session to an existing Gauss project
-- `/project clear` removes the session override and falls back to ambient project discovery
+```text
+opengauss-agent
+```
 
-If you use `/project create` often, set a default template once with
-`gauss.project.template_source` in `~/.gauss/config.yaml` or the
-`GAUSS_BLUEPRINT_TEMPLATE_SOURCE` environment variable.
+Console scripts:
 
-Gauss discovers `.gauss/project.yaml` upward from the current working directory, but managed workflow child agents launch from the active project root so the forwarded Lean workflow command always runs in the right project context.
+- `opengauss`
+- `opengauss-agent`
+- `opengauss-acp`
 
-## Workflow commands
+## Verification Notes
 
-- `/prove [scope or flags]` — spawn a guided proving agent
-- `/draft [topic or flags]` — draft Lean declaration skeletons
-- `/review [scope or flags]` — spawn a read-only Lean review agent
-- `/checkpoint [scope or flags]` — spawn the Lean checkpoint workflow
-- `/refactor [scope or flags]` — spawn a Lean refactor workflow agent
-- `/golf [scope or flags]` — spawn a Lean proof golfing workflow agent
-- `/autoprove [scope or flags]` — spawn an autonomous proving agent
-- `/formalize [topic or flags]` — spawn an interactive formalization agent
-- `/autoformalize [topic or flags]` — spawn an autonomous formalization agent
-- `/swarm` — list running workflow agents
-- `/swarm attach <task-id>` — reattach to a running agent
-- `/swarm cancel <task-id>` — cancel a running agent
+Current verified behavior from this repo:
 
-Inside the interactive CLI, Gauss also rewrites common missing-slash forms like `prove ...`, `review ...`, `checkpoint ...`, and `auto-proof ...` into the corresponding managed workflow commands.
+- focused EPFLemma test suite passes
+- standalone install works with a separate EPFLemma home
+- existing `gauss` remains independently resolvable
+- workflow request resolution works against `.opengauss/project.yaml`
+- RCP remote smoke succeeded with `google/gemma-4-31B-it`
+- dead gateway/ACP/cron/website/community-skill directories have been removed from the repo tree
 
-## Managed workflow prerequisites
+## Development
 
-- `gauss.autoformalize.backend` defaults to `claude-code`
-- Built-in backends: `claude-code`, `codex`
-- `claude` or `codex` installed and authenticated for the backend you select
-- Claude auth can come from either:
-  - the normal `claude auth login` flow / Claude credential files
-  - a saved `ANTHROPIC_API_KEY` in `~/.gauss/.env`
-- If both are present, Gauss defaults to Claude's own local auth and only falls back to `ANTHROPIC_API_KEY` when no Claude credentials are available
-- Override with `gauss.autoformalize.auth_mode` in `~/.gauss/config.yaml`:
-  - `auto` (default): prefer local backend auth, then fall back to saved env/API-key auth
-  - `login`: ignore staged API-key auth and let the backend use the normal interactive login flow
-  - `api-key`: force the managed session onto saved env/API-key auth
-- `uv` or `uvx` available
-- `ripgrep` (`rg`) available for Lean local search
-- An active Gauss project selected via `.gauss/project.yaml`
+Create the repo venv and install editable deps:
 
-Gauss checks these before launch and tells you exactly what is missing.
-`gauss doctor` also reports the managed-workflow backend, auth mode, `uv` / `lake`
-availability, and whether the current working directory resolves to an active
-Gauss project.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e '.[dev]'
+```
 
----
+Run the focused EPFLemma tests:
 
-This repository was forked from `nousresearch/hermes-agent`.
+```bash
+source .venv/bin/activate
+python -m pytest tests/opengauss -q -n 0
+```
+
+Recommended broader verification for the supported kernel:
+
+```bash
+source .venv/bin/activate
+python -m pytest tests/opengauss tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py tests/test_run_agent.py tests/test_run_agent_codex_responses.py tests/test_windows_installer_links.py -q -n 0
+```

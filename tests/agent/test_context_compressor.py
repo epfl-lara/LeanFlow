@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.context_compressor import ContextCompressor, STALE_TOOL_OUTPUT_MARKER, SUMMARY_PREFIX
 
 
 @pytest.fixture()
@@ -112,6 +112,31 @@ class TestCompress:
         # Last 2 messages should be preserved (protect_last_n=2)
         assert result[-1]["content"] == msgs[-1]["content"]
         assert result[-2]["content"] == msgs[-2]["content"]
+
+    def test_prunes_stale_tool_outputs_but_keeps_recent_ones(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                quiet_mode=True,
+                prune_tool_output=True,
+                prune_keep_recent_user_turns=2,
+            )
+
+        pruned, pruned_count = c._prune_stale_tool_outputs(
+            [
+                {"role": "assistant", "content": "old assistant"},
+                {"role": "tool", "content": "old tool output"},
+                {"role": "user", "content": "middle user"},
+                {"role": "assistant", "content": "middle assistant"},
+                {"role": "tool", "content": "recent tool output"},
+                {"role": "user", "content": "latest user"},
+                {"role": "assistant", "content": "latest assistant"},
+            ]
+        )
+
+        assert pruned_count == 1
+        assert pruned[1]["content"] == STALE_TOOL_OUTPUT_MARKER
+        assert pruned[4]["content"] == "recent tool output"
 
 
 class TestGenerateSummaryNoneContent:

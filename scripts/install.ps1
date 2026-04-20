@@ -1,33 +1,33 @@
 # ============================================================================
-# Open Gauss WSL Installer Bootstrap
+# EPFLemma WSL Installer Bootstrap
 # ============================================================================
-# Windows convenience wrapper that installs Open Gauss inside WSL2 using the
+# Windows convenience wrapper that installs EPFLemma inside WSL2 using the
 # shared installer flow.
 #
 # Usage:
 #   .\scripts\install.ps1
 #   .\scripts\install.ps1 -WithWorkspace
 #   .\scripts\install.ps1 -Distro Ubuntu
-#   .\scripts\install.ps1 -LinuxRepoDir "~/OpenGauss"
+#   .\scripts\install.ps1 -LinuxRepoDir "~/ReallyOpenGauss"
 #
 # ============================================================================
 
 param(
     [switch]$WithWorkspace,
     [string]$Distro = "",
-    [string]$LinuxRepoDir = "~/OpenGauss",
+    [string]$LinuxRepoDir = "~/ReallyOpenGauss",
     [string]$Branch = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-$DefaultRepoUrl = "https://github.com/math-inc/OpenGauss.git"
+$DefaultRepoUrl = "https://github.com/Lemmy00/ReallyOpenGauss.git"
 $script:ResolvedDistro = $null
 
 function Write-Banner {
     Write-Host ""
     Write-Host "┌─────────────────────────────────────────────────────────┐" -ForegroundColor Magenta
-    Write-Host "│              Open Gauss WSL Installer                  │" -ForegroundColor Magenta
+    Write-Host "│               EPFLemma WSL Installer                   │" -ForegroundColor Magenta
     Write-Host "├─────────────────────────────────────────────────────────┤" -ForegroundColor Magenta
     Write-Host "│   Windows uses WSL2 and the shared installer flow      │" -ForegroundColor Magenta
     Write-Host "└─────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
@@ -85,7 +85,7 @@ function Get-RerunCommand {
         $parts += "-Distro"
         $parts += "`"$Distro`""
     }
-    if ($LinuxRepoDir -and $LinuxRepoDir -ne "~/OpenGauss") {
+    if ($LinuxRepoDir -and $LinuxRepoDir -ne "~/ReallyOpenGauss") {
         $parts += "-LinuxRepoDir"
         $parts += "`"$LinuxRepoDir`""
     }
@@ -231,7 +231,7 @@ if ! command -v git >/dev/null 2>&1; then
     sudo apt-get update
     sudo apt-get install -y git
   else
-    echo "✗ git is required inside WSL before Open Gauss can be installed."
+    echo "✗ git is required inside WSL before EPFLemma can be installed."
     exit 1
   fi
 fi
@@ -268,7 +268,7 @@ fi
 cd "$TARGET_DIR"
 if [ "$CREATE_WORKSPACE" = "1" ]; then
   echo "→ -WithWorkspace is accepted for compatibility."
-  echo "→ The shared Open Gauss template already provisions the workspace."
+  echo "→ The shared EPFLemma template already provisions the workspace."
 fi
 ./scripts/install.sh
 '@
@@ -294,7 +294,7 @@ function Resolve-WSLPath {
 
 function Main {
     Write-Banner
-    Write-Info "Open Gauss on Windows runs through WSL2."
+    Write-Info "EPFLemma on Windows runs through WSL2."
     Write-Info "This bootstrap clones into your WSL home and then runs ./scripts/install.sh there."
     Ensure-WSL
 
@@ -344,7 +344,7 @@ function Main {
     }
 
     Write-Host ""
-    Write-Success "Open Gauss is installed in WSL."
+    Write-Success "EPFLemma is installed in WSL."
     Write-Info "For daily use, open your WSL shell and run:"
     Write-Host "  cd $LinuxRepoDir" -ForegroundColor Yellow
     Write-Host "  gauss" -ForegroundColor Yellow

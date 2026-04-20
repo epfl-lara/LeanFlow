@@ -43,11 +43,18 @@ import fire
 from datetime import datetime
 from pathlib import Path
 
-# Load .env from ~/.gauss/.env first, then project root as dev fallback.
+# Load .env from the active OpenGauss home first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from gauss_cli.env_loader import load_gauss_dotenv
+try:
+    from opengauss_cli.env_loader import load_opengauss_dotenv as load_gauss_dotenv
+except Exception:  # pragma: no cover - legacy fallback for older installs
+    from gauss_cli.env_loader import load_gauss_dotenv
 
-_gauss_home = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss"))
+_gauss_home = Path(
+    os.getenv("OPENGAUSS_HOME")
+    or os.getenv("GAUSS_HOME")
+    or (Path.home() / ".opengauss")
+)
 _project_env = Path(__file__).parent / '.env'
 _loaded_env_paths = load_gauss_dotenv(gauss_home=_gauss_home, project_env=_project_env)
 if _loaded_env_paths:
@@ -56,7 +63,7 @@ if _loaded_env_paths:
 else:
     logger.info("No .env file found. Using system environment variables.")
 
-# Point mini-swe-agent at ~/.gauss/ so it shares our config
+# Point mini-swe-agent at the active OpenGauss home so it shares our config
 os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_gauss_home))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
@@ -64,7 +71,6 @@ os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
 from tools.terminal_tool import cleanup_vm
 from tools.interrupt import set_interrupt as _set_interrupt
-from tools.browser_tool import cleanup_browser
 
 import requests
 
@@ -95,6 +101,18 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write
+
+
+def _cleanup_optional_browser_state(task_id: str) -> None:
+    """Best-effort browser cleanup for legacy local state."""
+    try:
+        from tools.browser_tool import cleanup_browser
+    except Exception:
+        return
+    try:
+        cleanup_browser(task_id)
+    except Exception:
+        logger.debug("Optional browser cleanup failed", exc_info=True)
 
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError from broken pipes.
@@ -517,8 +535,8 @@ class AIAgent:
                 effective_base = base_url
                 if "openrouter" in effective_base.lower():
                     client_kwargs["default_headers"] = {
-                        "HTTP-Referer": "https://gauss-agent.nousresearch.com",
-                        "X-OpenRouter-Title": "Gauss Agent",
+                        "HTTP-Referer": "https://opengauss.dev",
+                        "X-OpenRouter-Title": "EPFLemma Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
                 elif "api.kimi.com" in effective_base.lower():
@@ -544,8 +562,8 @@ class AIAgent:
                         "api_key": os.getenv("OPENROUTER_API_KEY", ""),
                         "base_url": OPENROUTER_BASE_URL,
                         "default_headers": {
-                            "HTTP-Referer": "https://gauss-agent.nousresearch.com",
-                            "X-OpenRouter-Title": "Gauss Agent",
+                            "HTTP-Referer": "https://opengauss.dev",
+                            "X-OpenRouter-Title": "EPFLemma Agent",
                             "X-OpenRouter-Categories": "productivity,cli-agent",
                         },
                     }
@@ -682,7 +700,10 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         if not skip_memory:
             try:
-                from gauss_cli.config import load_config as _load_mem_config
+                try:
+                    from opengauss_cli.config import load_config as _load_mem_config
+                except Exception:  # pragma: no cover - legacy fallback
+                    from gauss_cli.config import load_config as _load_mem_config
                 mem_config = _load_mem_config().get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
@@ -701,18 +722,50 @@ class AIAgent:
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
         try:
-            from gauss_cli.config import load_config as _load_skills_config
+            try:
+                from opengauss_cli.config import load_config as _load_skills_config
+            except Exception:  # pragma: no cover - legacy fallback
+                from gauss_cli.config import load_config as _load_skills_config
             skills_config = _load_skills_config().get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 15))
         except Exception:
             pass
         
-        # Initialize context compressor for automatic context management
-        # Compresses conversation when approaching model's context limit
-        # Configuration via config.yaml (compression section) or environment variables
-        compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", "0.50"))
-        compression_enabled = os.getenv("CONTEXT_COMPRESSION_ENABLED", "true").lower() in ("true", "1", "yes")
-        compression_summary_model = os.getenv("CONTEXT_COMPRESSION_MODEL") or None
+        # Initialize context compressor for automatic context management.
+        compression_cfg = {}
+        try:
+            try:
+                from opengauss_cli.config import load_config as _load_runtime_config
+            except Exception:  # pragma: no cover - legacy fallback
+                from gauss_cli.config import load_config as _load_runtime_config
+            loaded_cfg = _load_runtime_config()
+            if isinstance(loaded_cfg.get("compression"), dict):
+                compression_cfg = dict(loaded_cfg.get("compression") or {})
+        except Exception:
+            compression_cfg = {}
+
+        compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", str(compression_cfg.get("threshold", 0.50))))
+        compression_enabled = os.getenv(
+            "CONTEXT_COMPRESSION_ENABLED",
+            str(compression_cfg.get("enabled", True)).lower(),
+        ).lower() in ("true", "1", "yes")
+        compression_summary_model = os.getenv("CONTEXT_COMPRESSION_MODEL") or compression_cfg.get("summary_model") or None
+        compression_reserved_output = int(
+            os.getenv(
+                "CONTEXT_COMPRESSION_RESERVED_OUTPUT_TOKENS",
+                str(compression_cfg.get("reserved_output_tokens", 0) or 0),
+            )
+        )
+        compression_prune_tool_output = os.getenv(
+            "CONTEXT_COMPRESSION_PRUNE_TOOL_OUTPUT",
+            str(compression_cfg.get("prune_tool_output", False)).lower(),
+        ).lower() in ("true", "1", "yes")
+        compression_prune_keep_recent_user_turns = int(
+            os.getenv(
+                "CONTEXT_COMPRESSION_PRUNE_KEEP_RECENT_USER_TURNS",
+                str(compression_cfg.get("prune_keep_recent_user_turns", 2) or 2),
+            )
+        )
         
         self.context_compressor = ContextCompressor(
             model=self.model,
@@ -723,6 +776,9 @@ class AIAgent:
             summary_model_override=compression_summary_model,
             quiet_mode=self.quiet_mode,
             base_url=self.base_url,
+            reserved_output_tokens=compression_reserved_output,
+            prune_tool_output=compression_prune_tool_output,
+            prune_keep_recent_user_turns=compression_prune_keep_recent_user_turns,
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
@@ -735,7 +791,11 @@ class AIAgent:
         
         if not self.quiet_mode:
             if compression_enabled:
-                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
+                print(
+                    f"📊 Context limit: {self.context_compressor.context_length:,} tokens "
+                    f"(compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,}, "
+                    f"reserve {self.context_compressor.reserved_output_tokens:,} for output)"
+                )
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
     
@@ -908,17 +968,13 @@ class AIAgent:
         return None
     
     def _cleanup_task_resources(self, task_id: str) -> None:
-        """Clean up VM and browser resources for a given task."""
+        """Clean up task-local runtime resources for a given task."""
         try:
             cleanup_vm(task_id)
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")
-        try:
-            cleanup_browser(task_id)
-        except Exception as e:
-            if self.verbose_logging:
-                logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
+        _cleanup_optional_browser_state(task_id)
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
@@ -2278,7 +2334,10 @@ class AIAgent:
             return False
 
         try:
-            from gauss_cli.auth import resolve_codex_runtime_credentials
+            try:
+                from opengauss_cli.auth import resolve_codex_runtime_credentials
+            except Exception:  # pragma: no cover - legacy fallback
+                from gauss_cli.auth import resolve_codex_runtime_credentials
 
             creds = resolve_codex_runtime_credentials(force_refresh=force)
         except Exception as exc:
@@ -2307,7 +2366,10 @@ class AIAgent:
             return False
 
         try:
-            from gauss_cli.auth import resolve_nous_runtime_credentials
+            try:
+                from opengauss_cli.auth import resolve_nous_runtime_credentials
+            except Exception:  # pragma: no cover - legacy fallback
+                from gauss_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, int(os.getenv("GAUSS_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
@@ -2948,7 +3010,7 @@ class AIAgent:
 
         # Nous Portal product attribution
         if _is_nous:
-            extra_body["tags"] = ["product=gauss-agent"]
+            extra_body["tags"] = ["product=opengauss-agent"]
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body
@@ -3411,6 +3473,7 @@ class AIAgent:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                owner_id=self.session_id,
             )
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -3774,6 +3837,7 @@ class AIAgent:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        owner_id=self.session_id,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -3788,6 +3852,7 @@ class AIAgent:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        owner_id=self.session_id,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -3942,7 +4007,7 @@ class AIAgent:
                         "effort": "medium"
                     }
             if _is_nous:
-                summary_extra_body["tags"] = ["product=gauss-agent"]
+                summary_extra_body["tags"] = ["product=opengauss-agent"]
 
             if self.api_mode == "codex_responses":
                 codex_kwargs = self._build_api_kwargs(api_messages)
@@ -4773,12 +4838,12 @@ class AIAgent:
                         print(f"{self.log_prefix}   Auth method: {auth_method}")
                         print(f"{self.log_prefix}   Token prefix: {key[:12]}..." if key and len(key) > 12 else f"{self.log_prefix}   Token: (empty or short)")
                         print(f"{self.log_prefix}   Troubleshooting:")
-                        print(f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in ~/.gauss/.env for Gauss-managed OAuth/setup tokens")
-                        print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in ~/.gauss/.env for API keys or legacy token values")
+                        print(f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in ~/.opengauss/.env for OpenGauss-managed OAuth/setup tokens")
+                        print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in ~/.opengauss/.env for API keys or legacy token values")
                         print(f"{self.log_prefix}     • For API keys: verify at https://console.anthropic.com/settings/keys")
                         print(f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
-                        print(f"{self.log_prefix}     • Clear stale keys: gauss config set ANTHROPIC_TOKEN \"\"")
-                        print(f"{self.log_prefix}     • Legacy cleanup: gauss config set ANTHROPIC_API_KEY \"\"")
+                        print(f"{self.log_prefix}     • Clear stale keys: opengauss config set ANTHROPIC_TOKEN \"\"")
+                        print(f"{self.log_prefix}     • Legacy cleanup: opengauss config set ANTHROPIC_API_KEY \"\"")
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
@@ -5648,7 +5713,7 @@ def main(
                 entry = (name, info)
                 if name in ["web", "search", "file", "browser"]:
                     basic_toolsets.append(entry)
-                elif name in ["autoformalize", "gauss-acp", "gauss-cli", "gauss-gateway"]:
+                elif name in ["autoformalize", "opengauss-acp", "opengauss-cli", "opengauss-native"]:
                     composite_toolsets.append(entry)
                 else:
                     scenario_toolsets.append(entry)
