@@ -69,8 +69,8 @@ def test_workflow_state_prefers_project_local_state(monkeypatch, tmp_path):
 
 def test_record_activity_captures_workflow_and_skill_context(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:prove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "review")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:review Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-diagnostics")
 
     runner._record_activity("resume", "Loaded workflow checkpoint", checkpoint_label="milestone")
@@ -79,7 +79,7 @@ def test_record_activity_captures_workflow_and_skill_context(monkeypatch, tmp_pa
 
     assert len(events) == 1
     assert events[0]["type"] == "resume"
-    assert events[0]["details"]["workflow_kind"] == "prove"
+    assert events[0]["details"]["workflow_kind"] == "review"
     assert events[0]["details"]["active_skill"] == "lean-diagnostics"
     assert events[0]["details"]["checkpoint_label"] == "milestone"
 

@@ -20,27 +20,23 @@ from epflemma_cli.runtime_provider import resolve_runtime_provider
 
 
 WORKFLOW_ALIAS_MAP = {
-    "/prove": ("prove", "/prove", "/lean4:prove"),
     "/draft": ("draft", "/draft", "/lean4:draft"),
     "/review": ("review", "/review", "/lean4:review"),
     "/checkpoint": ("checkpoint", "/checkpoint", "/lean4:checkpoint"),
     "/refactor": ("refactor", "/refactor", "/lean4:refactor"),
     "/golf": ("golf", "/golf", "/lean4:golf"),
     "/autoprove": ("autoprove", "/autoprove", "/lean4:autoprove"),
-    "/formalize": ("formalize", "/formalize", "/lean4:formalize"),
     "/autoformalize": ("autoformalize", "/autoformalize", "/lean4:autoformalize"),
 }
 
 
 FORGIVING_WORKFLOW_ALIAS_MAP = {
-    "prove": "/prove",
     "draft": "/draft",
     "review": "/review",
     "checkpoint": "/checkpoint",
     "refactor": "/refactor",
     "golf": "/golf",
     "autoprove": "/autoprove",
-    "formalize": "/formalize",
     "autoformalize": "/autoformalize",
 }
 

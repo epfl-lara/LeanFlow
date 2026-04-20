@@ -79,17 +79,15 @@ def build_welcome_banner(
     if simplified:
         right.add_row(f"[bold {BRAND_COLORS['primary']}]Start Here[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/project init[/]  [dim]register this Lean repo[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/prove Main.lean[/]  [dim]guided proof repair[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/autoprove Main.lean[/]  [dim]autonomous proving loop[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/autoformalize \"statement\"[/]  [dim]autonomous formalization[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/project[/]  [dim]current Lean workspace[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/help[/]  [dim]all commands[/]")
     else:
         right.add_row(f"[bold {BRAND_COLORS['primary']}]Launch Paths[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/project init[/]  [dim]register an existing Lean 4 repo[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/prove Main.lean[/]  [dim]guided proof repair[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/autoprove Main.lean[/]  [dim]autonomous proving loop[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/autoprove Main.lean --agents 3[/]  [dim]user-approved Lean swarm[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/formalize \"statement\"[/]  [dim]interactive formalization[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/autoformalize \"statement\"[/]  [dim]autonomous formalization[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/project[/]  [dim]show current Lean workspace[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/status[/]  [dim]live project and runner state[/]")
@@ -131,7 +129,7 @@ def build_welcome_banner(
     footer.add_column(justify="right")
     footer.add_row(
         f"[{BRAND_COLORS['muted']}]Prompt-centered Lean shell via `{cli_name}`[/]",
-        f"[{BRAND_COLORS['muted']}]Try /project, /help, or prove Main.lean[/]",
+        f"[{BRAND_COLORS['muted']}]Try /project, /help, or autoprove Main.lean[/]",
     )
     console.print(footer)
 
@@ -147,7 +145,7 @@ def render_help(console: Console) -> None:
         console.print(f"[bold {BRAND_COLORS['primary']}]{category}[/]")
         console.print(table)
     console.print()
-    console.print("[dim]Tip: workflow commands also accept forgiving forms like `prove Main.lean` without the leading slash.[/]")
+    console.print("[dim]Tip: workflow commands also accept forgiving forms like `autoprove Main.lean` without the leading slash.[/]")
     console.print("[dim]Tip: add `--agents N` to `autoprove` or `autoformalize` only when you explicitly want user-approved swarm mode.[/]")
     console.print("[dim]Tip: use `/provider local`, `/provider zai`, or `/provider custom` to inspect how a request will resolve before launching a workflow.[/]")
     console.print("[dim]Tip: use `/workflow activity` for structured managed steps and `/workflow log 120` for the full saved runner log.[/]")
