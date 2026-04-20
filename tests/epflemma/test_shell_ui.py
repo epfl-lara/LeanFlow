@@ -3,7 +3,7 @@ from __future__ import annotations
 from rich.console import Console
 
 from epflemma_cli.banner import render_help
-from epflemma_cli.main import InteractiveShell
+from epflemma_cli.main import InteractiveShell, main
 from epflemma_cli.workflow_state import append_workflow_run_log, reset_workflow_run_log
 from epflemma_cli.runtime_provider import list_runtime_provider_targets
 from epflemma_cli.workflow import NativeLaunchPlan, NativeWorkflowSpec, describe_launch_plan
@@ -151,3 +151,56 @@ def test_project_command_without_args_has_polished_empty_state(monkeypatch, tmp_
     assert shell._run_project_command([]) == 1
     output = capsys.readouterr().out
     assert "No active Lean workspace is open here." in output
+
+
+def test_main_loads_epflemma_dotenv_before_provider_resolution(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir(parents=True)
+    (home / ".env").write_text("OPENROUTER_API_KEY=or-from-dotenv\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_HOME", str(home))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    captured: dict[str, str] = {}
+
+    def _fake_render_provider_panel(console, *, resolved, requested, targets):
+        captured["api_key"] = str(resolved.get("api_key", ""))
+        captured["provider"] = str(resolved.get("provider", ""))
+
+    monkeypatch.setattr("epflemma_cli.main.render_provider_panel", _fake_render_provider_panel)
+
+    assert main(["provider", "--requested", "openrouter"]) == 0
+    assert captured["provider"] == "openrouter"
+    assert captured["api_key"] == "or-from-dotenv"
+
+
+def test_main_prefers_epflemma_scoped_env_names(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir(parents=True)
+    (home / ".env").write_text(
+        "EPFLEMMA_OPENAI_BASE_URL=https://rcp.epfl.example/v1\n"
+        "EPFLEMMA_OPENAI_API_KEY=epflemma-rcp-key\n"
+        "OPENAI_BASE_URL=https://api.openai.com/v1\n"
+        "OPENAI_API_KEY=global-openai-key\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_HOME", str(home))
+    monkeypatch.delenv("EPFLEMMA_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("EPFLEMMA_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    captured: dict[str, str] = {}
+
+    def _fake_render_provider_panel(console, *, resolved, requested, targets):
+        captured["api_key"] = str(resolved.get("api_key", ""))
+        captured["base_url"] = str(resolved.get("base_url", ""))
+        captured["provider"] = str(resolved.get("provider", ""))
+
+    monkeypatch.setattr("epflemma_cli.main.render_provider_panel", _fake_render_provider_panel)
+
+    assert main(["provider", "--requested", "custom"]) == 0
+    assert captured["provider"] == "custom"
+    assert captured["base_url"] == "https://rcp.epfl.example/v1"
+    assert captured["api_key"] == "epflemma-rcp-key"

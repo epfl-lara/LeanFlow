@@ -74,6 +74,17 @@ PROVIDER_REGISTRY = {
 KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
 
 
+def _read_provider_env(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+        file_value = str(get_env_value(name, "") or "").strip()
+        if file_value:
+            return file_value
+    return ""
+
+
 def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
     if env_override:
         return env_override
@@ -88,17 +99,24 @@ def _read_codex_tokens() -> dict[str, str]:
 
 def resolve_codex_runtime_credentials(*, force_refresh: bool = True) -> dict[str, str]:
     del force_refresh
-    api_key = (
-        os.getenv("OPENAI_API_KEY", "").strip()
-        or get_env_value("OPENAI_API_KEY", "").strip()
-        or os.getenv("OPENROUTER_API_KEY", "").strip()
-        or get_env_value("OPENROUTER_API_KEY", "").strip()
+    api_key = _read_provider_env(
+        "EPFLEMMA_OPENAI_API_KEY",
+        "OPENGAUSS_OPENAI_API_KEY",
+        "GAUSS_OPENAI_API_KEY",
+        "OPENAI_API_KEY",
+        "EPFLEMMA_OPENROUTER_API_KEY",
+        "OPENGAUSS_OPENROUTER_API_KEY",
+        "GAUSS_OPENROUTER_API_KEY",
+        "OPENROUTER_API_KEY",
     )
-    base_url = (
-        os.getenv("OPENAI_BASE_URL", "").strip()
-        or get_env_value("OPENAI_BASE_URL", "").strip()
-        or "https://api.openai.com/v1"
+    base_url = _read_provider_env(
+        "EPFLEMMA_OPENAI_BASE_URL",
+        "OPENGAUSS_OPENAI_BASE_URL",
+        "GAUSS_OPENAI_BASE_URL",
+        "OPENAI_BASE_URL",
     )
+    if not base_url:
+        base_url = "https://api.openai.com/v1"
     return {"api_key": api_key, "base_url": base_url.rstrip("/")}
 
 
