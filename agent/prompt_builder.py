@@ -61,21 +61,19 @@ def _scan_context_content(content: str, filename: str) -> str:
 # =========================================================================
 
 DEFAULT_AGENT_IDENTITY = (
-    "You are Gauss, a direct and capable AI assistant. "
+    "You are EPFLemma, a direct and capable AI assistant for Lean and AI-for-math workflows. "
     "Focus on the user's task instead of introducing yourself. "
     "Do not volunteer company history, model lineage, product background, or "
     "a general self-summary unless the user explicitly asks. When asked who you "
     "are, answer briefly and return to the work. "
-    "When the user is trying to use Open Gauss itself or seems unsure how to "
-    "start, give them the lowest-friction path first: point them to /chat if "
-    "they want inline orientation or plain-language help, point them to /managed-chat "
-    "if they want a managed Claude Code or Codex child session, and point them to /project "
-    "when they are ready to create or activate a Gauss project. After that, "
-    "tell them to run /prove, /autoprove, /formalize, or /autoformalize "
-    "followed by a natural-language instruction, for example /autoprove The "
-    "de Bruijn - Erdos theorem. If they attach to a child session with /swarm "
-    "attach, tell them Ctrl-] detaches and returns them to the main Gauss "
-    "session. "
+    "When the user is trying to use the shell itself or seems unsure how to "
+    "start, give them the lowest-friction Lean path first: point them to /project "
+    "to initialize the repo, then /prove, /autoprove, /formalize, or /autoformalize "
+    "with a concrete file or goal. "
+    "Keep the workflow centered on verified Lean output: successful builds, "
+    "clean diagnostics, no open goals, and no `sorry`. "
+    "User-approved swarm mode exists only when the workflow was launched with "
+    "`--agents N`; otherwise keep the run single-agent. "
     "Be clear, admit uncertainty when appropriate, and prioritize being "
     "genuinely useful over being verbose unless otherwise directed below. "
     "Be targeted and efficient in your exploration and investigations."
@@ -102,12 +100,9 @@ SESSION_SEARCH_GUIDANCE = (
 )
 
 SKILLS_GUIDANCE = (
-    "After completing a complex task (5+ tool calls), fixing a tricky error, "
-    "or discovering a non-trivial workflow, save the approach as a "
-    "skill with skill_manage so you can reuse it next time.\n"
-    "When using a skill and finding it outdated, incomplete, or wrong, "
-    "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
-    "Skills that aren't maintained become liabilities."
+    "Treat the EPFLemma skill system as a Lean workflow aid, not a marketplace. "
+    "If the task matches a curated Lean skill or a project-local override, load it and follow it. "
+    "Prefer project-local overlays when they exist because they capture repo-specific solver guidance."
 )
 
 PLATFORM_HINTS = {
@@ -264,75 +259,35 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
 ) -> str:
-    """Build a compact skill index for the system prompt.
+    """Build a compact EPFLemma skill index for the system prompt."""
+    try:
+        from epflemma_cli.skill_core import discover_skills
 
-    Scans ~/.gauss/skills/ for SKILL.md files grouped by category.
-    Includes per-skill descriptions from frontmatter so the model can
-    match skills by meaning, not just name.
-    Filters out skills incompatible with the current OS platform.
-    """
-    gauss_home = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss"))
-    skills_dir = gauss_home / "skills"
-
-    if not skills_dir.exists():
+        skills = discover_skills()
+    except Exception as exc:
+        logger.debug("Failed to discover EPFLemma skills: %s", exc)
         return ""
 
-    # Collect skills with descriptions, grouped by category.
-    # Each entry: (skill_name, description)
-    # Supports sub-categories: skills/mlops/training/axolotl/SKILL.md
-    # -> category "mlops/training", skill "axolotl"
-    skills_by_category: dict[str, list[tuple[str, str]]] = {}
-    for skill_file in skills_dir.rglob("SKILL.md"):
-        is_compatible, _, desc = _parse_skill_file(skill_file)
-        if not is_compatible:
-            continue
-        # Skip skills whose conditional activation rules exclude them
-        conditions = _read_skill_conditions(skill_file)
-        if not _skill_should_show(conditions, available_tools, available_toolsets):
-            continue
-        rel_path = skill_file.relative_to(skills_dir)
-        parts = rel_path.parts
-        if len(parts) >= 2:
-            # Category is everything between skills_dir and the skill folder
-            # e.g. parts = ("mlops", "training", "axolotl", "SKILL.md")
-            #   → category = "mlops/training", skill_name = "axolotl"
-            # e.g. parts = ("github", "github-auth", "SKILL.md")
-            #   → category = "github", skill_name = "github-auth"
-            skill_name = parts[-2]
-            category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
-        else:
-            category = "general"
-            skill_name = skill_file.parent.name
-        skills_by_category.setdefault(category, []).append((skill_name, desc))
-
-    if not skills_by_category:
+    if not skills:
         return ""
 
-    # Read category-level descriptions from DESCRIPTION.md
-    # Checks both the exact category path and parent directories
-    category_descriptions = {}
-    for category in skills_by_category:
-        cat_path = Path(category)
-        desc_file = skills_dir / cat_path / "DESCRIPTION.md"
-        if desc_file.exists():
-            try:
-                content = desc_file.read_text(encoding="utf-8")
-                match = re.search(r"^---\s*\n.*?description:\s*(.+?)\s*\n.*?^---", content, re.MULTILINE | re.DOTALL)
-                if match:
-                    category_descriptions[category] = match.group(1).strip()
-            except Exception as e:
-                logger.debug("Could not read skill description %s: %s", desc_file, e)
+    skills_by_source: dict[str, list[tuple[str, str]]] = {}
+    for skill in skills:
+        skills_by_source.setdefault(skill.source, []).append((skill.name, skill.description))
 
-    index_lines = []
-    for category in sorted(skills_by_category.keys()):
-        cat_desc = category_descriptions.get(category, "")
-        if cat_desc:
-            index_lines.append(f"  {category}: {cat_desc}")
-        else:
-            index_lines.append(f"  {category}:")
-        # Deduplicate and sort skills within each category
-        seen = set()
-        for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
+    source_labels = {
+        "project": "project overrides",
+        "user": "user overlays",
+        "builtin": "builtin core",
+    }
+    index_lines: list[str] = []
+    for source in ("project", "user", "builtin"):
+        entries = skills_by_source.get(source) or []
+        if not entries:
+            continue
+        index_lines.append(f"  {source_labels[source]}:")
+        seen: set[str] = set()
+        for name, desc in sorted(entries, key=lambda item: item[0]):
             if name in seen:
                 continue
             seen.add(name)
@@ -342,19 +297,15 @@ def build_skills_system_prompt(
                 index_lines.append(f"    - {name}")
 
     return (
-        "## Skills (mandatory)\n"
-        "Before replying, scan the skills below. If one clearly matches your task, "
-        "load it with skill_view(name) and follow its instructions. "
-        "If a skill has issues, fix it with skill_manage(action='patch').\n"
-        "After difficult/iterative tasks, offer to save as a skill. "
-        "If a skill you loaded was missing steps, had wrong commands, or needed "
-        "pitfalls you discovered, update it before finishing.\n"
+        "## EPFLemma Skills\n"
+        "Before replying, scan the skills below. Load a skill with `skill_view(name)` when it clearly matches the task. "
+        "Prefer Lean workflow skills and any project-local override over the builtin default.\n"
         "\n"
         "<available_skills>\n"
-        + "\n".join(index_lines) + "\n"
-        "</available_skills>\n"
+        + "\n".join(index_lines)
+        + "\n</available_skills>\n"
         "\n"
-        "If none match, proceed normally without loading a skill."
+        "If none match, continue normally without loading a skill."
     )
 
 

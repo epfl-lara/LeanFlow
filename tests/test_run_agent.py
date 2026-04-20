@@ -218,6 +218,89 @@ class TestStripThinkBlocks:
     def test_no_blocks_unchanged(self, agent):
         assert agent._strip_think_blocks("hello world") == "hello world"
 
+
+def test_format_tool_args_for_log_summarizes_patch_payload():
+    lines = run_agent._format_tool_args_for_log(
+        "patch",
+        {
+            "path": "GaussTest/GaussTest/RealTheorems-homework.lean",
+            "old_string": "abc",
+            "new_string": "abc",
+        },
+    )
+
+    assert any("path: GaussTest/GaussTest/RealTheorems-homework.lean" in line for line in lines)
+    assert any("old_string: 3 chars across 1 line(s)" in line for line in lines)
+    assert any("new_string: 3 chars across 1 line(s)" in line for line in lines)
+
+
+def test_format_tool_result_for_log_pretty_prints_terminal_result():
+    payload = json.dumps(
+        {
+            "output": "error: [root]: no configuration file\n/Users/lmilikic/GaussWorkspace/GaussTest/lakefile.toml",
+            "exit_code": 1,
+            "error": None,
+        }
+    )
+
+    lines = run_agent._format_tool_result_for_log("terminal", payload)
+
+    assert "exit_code: 1" in lines
+    assert "error: None" in lines
+    assert "output:" in lines
+    assert any("error: [root]: no configuration file" in line for line in lines)
+
+
+def test_format_tool_result_for_log_summarizes_large_file_list():
+    payload = json.dumps(
+        {
+            "total_count": 19,
+            "files": [f"./GaussTest/File{i}.lean" for i in range(19)],
+        }
+    )
+
+    lines = run_agent._format_tool_result_for_log("search_files", payload)
+
+    assert "total_count: 19" in lines
+    assert "files: 19 item(s)" in lines
+    assert any("./GaussTest/File0.lean" in line for line in lines)
+    assert any("more item(s) omitted" in line for line in lines)
+
+
+def test_emit_workflow_event_forwards_full_details(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
+    captured = {}
+
+    def _fake_append(event_type, message, **details):
+        captured["event_type"] = event_type
+        captured["message"] = message
+        captured["details"] = details
+
+    monkeypatch.setattr("epflemma_cli.workflow_state.append_workflow_activity", _fake_append)
+
+    run_agent._emit_workflow_event("assistant-response", "Assistant response received", content="x" * 400)
+
+    assert captured["event_type"] == "assistant-response"
+    assert captured["message"] == "Assistant response received"
+    assert captured["details"]["content"] == "x" * 400
+
+
+def test_workflow_agent_event_details_include_session_metadata(agent):
+    agent.session_id = "agent-123"
+    agent._delegate_depth = 1
+    agent._parent_session_id = "parent-456"
+    agent.provider = "custom"
+    agent.api_mode = "chat"
+    agent.base_url = "https://example.invalid/v1"
+
+    details = run_agent._workflow_agent_event_details(agent, iteration=4)
+
+    assert details["agent_session_id"] == "agent-123"
+    assert details["parent_agent_session_id"] == "parent-456"
+    assert details["delegate_depth"] == 1
+    assert details["iteration"] == 4
+    assert details["base_url"] == "https://example.invalid/v1"
+
     def test_single_block_removed(self, agent):
         result = agent._strip_think_blocks("<think>reasoning</think> answer")
         assert "reasoning" not in result
@@ -449,7 +532,7 @@ class TestInit:
             assert a.valid_tool_names == {"web_search", "terminal"}
 
     def test_session_id_auto_generated(self):
-        """Session ID should be auto-generated in YYYYMMDD_HHMMSS_<hex6> format."""
+        """Session ID should be auto-generated as a short 5-digit id."""
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
@@ -461,8 +544,7 @@ class TestInit:
                 skip_context_files=True,
                 skip_memory=True,
             )
-            # Format: YYYYMMDD_HHMMSS_<6 hex chars>
-            assert re.match(r"^\d{8}_\d{6}_[0-9a-f]{6}$", a.session_id), (
+            assert re.match(r"^\d{5}$", a.session_id), (
                 f"session_id doesn't match expected format: {a.session_id}"
             )
 
@@ -547,13 +629,13 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert DEFAULT_AGENT_IDENTITY in prompt
 
-    def test_includes_open_gauss_entry_workflow_guidance(self, agent):
+    def test_includes_epflemma_lean_entry_workflow_guidance(self, agent):
         prompt = agent._build_system_prompt()
-        assert "point them to /chat if they want inline orientation or plain-language help" in prompt
-        assert "point them to /managed-chat if they want a managed Claude Code or Codex child session" in prompt
         assert "point them to /project" in prompt
-        assert "/autoprove The de Bruijn - Erdos theorem" in prompt
-        assert "Ctrl-] detaches and returns them to the main Gauss session" in prompt
+        assert "then /prove, /autoprove, /formalize, or /autoformalize" in prompt
+        assert "successful builds" in prompt
+        assert "no `sorry`" in prompt
+        assert "`--agents N`" in prompt
 
     def test_includes_system_message(self, agent):
         prompt = agent._build_system_prompt(system_message="Custom instruction")
@@ -937,6 +1019,7 @@ class TestConcurrentToolExecution:
             mock_hfc.assert_called_once_with(
                 "web_search", {"q": "test"}, "task-1",
                 enabled_tools=list(agent.valid_tool_names),
+                owner_id=agent.session_id,
             )
             assert result == "result"
 
@@ -1372,7 +1455,7 @@ class TestNousCredentialRefresh:
             return _RebuiltClient()
 
         monkeypatch.setattr(
-            "gauss_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
+            "epflemma_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
         )
 
         agent.client = _ExistingClient()
@@ -1484,7 +1567,7 @@ class TestSystemPromptStability:
         # Should have built fresh, not queried the DB
         mock_db.get_session.assert_not_called()
         assert agent._cached_system_prompt is not None
-        assert "You are Gauss" in agent._cached_system_prompt
+        assert "You are EPFLemma" in agent._cached_system_prompt
         assert "Gauss Agent" not in agent._cached_system_prompt
 
     def test_fresh_build_when_db_has_no_prompt(self, agent):
@@ -1512,7 +1595,7 @@ class TestSystemPromptStability:
                 agent._cached_system_prompt = agent._build_system_prompt()
 
         # Empty string is falsy, so should fall through to fresh build
-        assert "You are Gauss" in agent._cached_system_prompt
+        assert "You are EPFLemma" in agent._cached_system_prompt
         assert "Gauss Agent" not in agent._cached_system_prompt
 
 # ---------------------------------------------------------------------------

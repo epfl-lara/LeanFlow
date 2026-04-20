@@ -18,14 +18,22 @@ if str(PROJECT_ROOT) not in sys.path:
 
 @pytest.fixture(autouse=True)
 def _isolate_gauss_home(tmp_path, monkeypatch):
-    """Redirect GAUSS_HOME to a temp dir so tests never write to ~/.gauss/."""
+    """Redirect legacy and EPFLemma homes so tests never write to real user state."""
     fake_home = tmp_path / "gauss_test"
+    fake_epflemma_home = tmp_path / "epflemma_test"
     fake_home.mkdir()
+    fake_epflemma_home.mkdir()
     (fake_home / "sessions").mkdir()
     (fake_home / "cron").mkdir()
     (fake_home / "memories").mkdir()
     (fake_home / "skills").mkdir()
+    (fake_epflemma_home / "sessions").mkdir()
+    (fake_epflemma_home / "logs").mkdir()
+    (fake_epflemma_home / "memories").mkdir()
+    (fake_epflemma_home / "workflow-state").mkdir()
+    (fake_epflemma_home / "local-models").mkdir()
     monkeypatch.setenv("GAUSS_HOME", str(fake_home))
+    monkeypatch.setenv("EPFLEMMA_HOME", str(fake_epflemma_home))
     # Reset plugin singleton so tests don't leak plugins from ~/.gauss/plugins/
     try:
         import gauss_cli.plugins as _plugins_mod

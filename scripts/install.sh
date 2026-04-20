@@ -3,288 +3,89 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-RUNNER_VENV="$REPO_ROOT/.opengauss-installer-venv"
-DEFAULT_INSTALL_TARGET="opengauss"
-INSTALL_TARGET="${OPEN_GAUSS_INSTALL_TARGET:-${OPEN_GAUSS_TEMPLATE_TARGET:-$DEFAULT_INSTALL_TARGET}}"
-DEFAULT_SESSION_NAME="gauss"
-SESSION_NAME="${OPEN_GAUSS_SESSION_NAME:-$DEFAULT_SESSION_NAME}"
-MORPH_ARGS=()
+RUNNER_VENV="${REPO_ROOT}/.epflemma-installer-venv"
+RUNNER_PYTHON="${RUNNER_VENV}/bin/python"
+RUNNER_MORPH="${RUNNER_VENV}/bin/morphcloud"
 
-usage() {
-  cat <<'TXT'
-Open Gauss installer wrapper
-
-Usage:
-  ./scripts/install.sh [installer options] [morphcloud passthrough options]
-
-Installer options:
-  --gauss-home PATH
-  --workspace-dir PATH
-  --skip-system-packages
-  --with-workspace
-  --skip-setup
-  --run-setup
-  --noninteractive
-  --skip-setup-wizard
-  --recreate-venv
-  -h, --help
-
-Morph passthrough options:
-  --attach
-  --force
-  --json
-  --plain
-  --param KEY=VALUE
-  --secret KEY=VALUE
-
-Behavior:
-  Installer options are translated into environment variables for the local
-  Morph template run, so they work with `--experimental-run-locally`.
-TXT
-}
-
-die() {
-  printf '%s\n' "$1" >&2
-  exit 1
-}
-
-set_setup_mode() {
-  local mode="$1"
-  local current="${GAUSS_SETUP_MODE:-auto}"
-  if [ "$current" != "auto" ] && [ "$current" != "$mode" ]; then
-    die "Use only one of --skip-setup/--noninteractive or --run-setup."
+ensure_runner_venv() {
+  if [[ -x "$RUNNER_PYTHON" ]] && "$RUNNER_PYTHON" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0)
+PY
+  then
+    return 0
   fi
-  export GAUSS_SETUP_MODE="$mode"
+
+  local runner_python_version="${OPEN_GAUSS_INSTALLER_RUNNER_PYTHON:-3.13}"
+  uv venv --seed --python "$runner_python_version" "$RUNNER_VENV"
 }
 
-parse_args() {
+ensure_runner_pip() {
+  local pip_version
+  pip_version="$("$RUNNER_PYTHON" -m pip --version 2>/dev/null || true)"
+  if [[ "$pip_version" != *"$RUNNER_VENV"* ]]; then
+    "$RUNNER_PYTHON" -m ensurepip --upgrade
+  fi
+}
+
+install_runner_morphcloud() {
+  "$RUNNER_PYTHON" -m pip install --upgrade morphcloud
+}
+
+main() {
+  local morph_args=()
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --gauss-home)
-        if [ $# -lt 2 ]; then
-          die "--gauss-home requires a PATH value."
-        fi
+      --epflemma-home|--gauss-home)
         export GAUSS_HOME="$2"
         shift 2
         ;;
       --workspace-dir)
-        if [ $# -lt 2 ]; then
-          die "--workspace-dir requires a PATH value."
-        fi
         export GAUSS_WORKSPACE_DIR="$2"
         shift 2
         ;;
       --skip-system-packages)
-        export GAUSS_SKIP_SYSTEM_PACKAGES=1
+        export GAUSS_SKIP_SYSTEM_PACKAGES="1"
         shift
         ;;
       --with-workspace)
-        export GAUSS_CREATE_WORKSPACE=1
+        export GAUSS_CREATE_WORKSPACE="1"
         shift
         ;;
-      --skip-setup|--noninteractive|--skip-setup-wizard)
-        set_setup_mode "skip"
-        shift
-        ;;
-      --run-setup)
-        set_setup_mode "run"
+      --skip-setup)
+        export GAUSS_SETUP_MODE="skip"
         shift
         ;;
       --recreate-venv)
-        export GAUSS_RECREATE_VENV=1
+        export GAUSS_RECREATE_VENV="1"
         shift
         ;;
-      --attach|--force|--json|--plain)
-        MORPH_ARGS+=("$1")
+      --plain|--json)
+        morph_args+=("$1")
         shift
         ;;
       --param|--secret)
-        if [ $# -lt 2 ]; then
-          die "$1 requires a KEY=VALUE argument."
-        fi
-        MORPH_ARGS+=("$1" "$2")
+        morph_args+=("$1" "$2")
         shift 2
         ;;
-      -h|--help)
-        usage
-        exit 0
-        ;;
-      --)
-        shift
-        while [[ $# -gt 0 ]]; do
-          MORPH_ARGS+=("$1")
-          shift
-        done
-        ;;
       *)
-        MORPH_ARGS+=("$1")
+        morph_args+=("$1")
         shift
         ;;
     esac
   done
-}
 
-print_direct_start_hint() {
-  printf 'Open Gauss is ready. Start with: gauss setup\n'
-}
+  export OPEN_GAUSS_SKIP_SHELL_AUTOENV="1"
 
-runner_python_is_supported() {
-  [ -x "$RUNNER_VENV/bin/python" ] || return 1
-  "$RUNNER_VENV/bin/python" - <<'PY' >/dev/null 2>&1
-import sys
-raise SystemExit(0 if sys.version_info < (3, 14) else 1)
-PY
-}
+  ensure_runner_venv
+  ensure_runner_pip
+  install_runner_morphcloud
 
-select_runner_python() {
-  if [ -n "${OPEN_GAUSS_INSTALLER_RUNNER_PYTHON:-}" ]; then
-    printf '%s\n' "$OPEN_GAUSS_INSTALLER_RUNNER_PYTHON"
-    return
+  if ((${#morph_args[@]})); then
+    exec "$RUNNER_MORPH" devbox template run epflemma --experimental-run-locally "${morph_args[@]}"
   fi
-
-  local candidate
-  for candidate in python3.13 python3.12 python3.11 python3; do
-    if ! command -v "$candidate" >/dev/null 2>&1; then
-      continue
-    fi
-    if "$candidate" - <<'PY' >/dev/null 2>&1
-import sys
-raise SystemExit(0 if sys.version_info < (3, 14) else 1)
-PY
-    then
-      printf '%s\n' "$candidate"
-      return
-    fi
-  done
-
-  printf '%s\n' '3.13'
+  exec "$RUNNER_MORPH" devbox template run epflemma --experimental-run-locally
 }
 
-recreate_runner_venv() {
-  python3 - "$RUNNER_VENV" <<'PY'
-from pathlib import Path
-import shutil
-import sys
-
-path = Path(sys.argv[1])
-if path.exists() or path.is_symlink():
-    shutil.rmtree(path)
-PY
-}
-
-ensure_runner_venv() {
-  local runner_python
-  runner_python="$(select_runner_python)"
-  if runner_python_is_supported; then
-    return
-  fi
-  if [ -e "$RUNNER_VENV" ] || [ -L "$RUNNER_VENV" ]; then
-    recreate_runner_venv
-  fi
-  uv venv --seed --python "$runner_python" "$RUNNER_VENV"
-}
-
-ensure_runner_pip() {
-  local pip_version_output=""
-  pip_version_output="$("$RUNNER_VENV/bin/python" -m pip --version 2>/dev/null || true)"
-  case "$pip_version_output" in
-    *"from $RUNNER_VENV/"*)
-      return
-      ;;
-  esac
-
-  "$RUNNER_VENV/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || true
-
-  pip_version_output="$("$RUNNER_VENV/bin/python" -m pip --version 2>/dev/null || true)"
-  case "$pip_version_output" in
-    *"from $RUNNER_VENV/"*)
-      return
-      ;;
-  esac
-
-  local runner_python
-  runner_python="$(select_runner_python)"
-
-  if [ -e "$RUNNER_VENV" ] || [ -L "$RUNNER_VENV" ]; then
-    recreate_runner_venv
-  fi
-
-  uv venv --seed --python "$runner_python" "$RUNNER_VENV"
-
-  pip_version_output="$("$RUNNER_VENV/bin/python" -m pip --version 2>/dev/null || true)"
-  case "$pip_version_output" in
-    *"from $RUNNER_VENV/"*)
-      return
-      ;;
-  esac
-
-  "$RUNNER_VENV/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || die "Failed to bootstrap pip inside $RUNNER_VENV."
-
-  pip_version_output="$("$RUNNER_VENV/bin/python" -m pip --version 2>/dev/null || true)"
-  case "$pip_version_output" in
-    *"from $RUNNER_VENV/"*)
-      return
-      ;;
-  esac
-
-  die "Failed to bootstrap pip inside $RUNNER_VENV."
-}
-
-run_local_template() {
-  if [ "${#MORPH_ARGS[@]}" -gt 0 ]; then
-    OPEN_GAUSS_SKIP_SHELL_AUTOENV=1 \
-      "$RUNNER_VENV/bin/morphcloud" devbox template run "$INSTALL_TARGET" --experimental-run-locally "${MORPH_ARGS[@]}"
-    return
-  fi
-  OPEN_GAUSS_SKIP_SHELL_AUTOENV=1 \
-    "$RUNNER_VENV/bin/morphcloud" devbox template run "$INSTALL_TARGET" --experimental-run-locally
-}
-
-parse_args "$@"
-
-if ! command -v python3 >/dev/null 2>&1; then
-  printf '%s\n' 'python3 is required to bootstrap the Open Gauss installer.' >&2
-  exit 1
-fi
-
-if ! command -v uv >/dev/null 2>&1; then
-  printf '%s\n' 'Installing uv (required to bootstrap the Open Gauss installer)...'
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.local/bin:$PATH"
-fi
-
-ensure_runner_venv
-ensure_runner_pip
-"$RUNNER_VENV/bin/python" -m pip install --upgrade morphcloud
-
-printf 'Running Open Gauss installer flow locally from target: %s\n' "$INSTALL_TARGET"
-run_local_template
-run_exit=$?
-if [ "$run_exit" -ne 0 ]; then
-  exit "$run_exit"
-fi
-
-if ! command -v tmux >/dev/null 2>&1; then
-  print_direct_start_hint
-  exit 0
-fi
-
-if ! tmux has-session -t "$SESSION_NAME" >/dev/null 2>&1; then
-  printf 'Open Gauss is ready, but tmux session %s was not found.\n' "$SESSION_NAME" >&2
-  print_direct_start_hint
-  exit 0
-fi
-
-if [ "${OPEN_GAUSS_AUTO_ATTACH:-1}" != "0" ] && [ -t 0 ] && [ -t 1 ]; then
-  printf 'Attaching to Open Gauss session: %s\n' "$SESSION_NAME"
-  if [ -n "${TMUX:-}" ]; then
-    if tmux switch-client -t "$SESSION_NAME"; then
-      exit 0
-    fi
-    printf 'Open Gauss is ready. Attach with: tmux attach -t %s\n' "$SESSION_NAME"
-    exit 0
-  fi
-  exec tmux attach -t "$SESSION_NAME"
-fi
-
-printf 'Open Gauss is ready. Attach with: tmux attach -t %s\n' "$SESSION_NAME"
+main "$@"

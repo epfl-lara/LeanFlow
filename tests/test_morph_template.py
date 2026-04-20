@@ -3,7 +3,7 @@ from pathlib import Path
 import yaml
 
 
-TEMPLATE_PATH = Path(__file__).resolve().parents[1] / ".github" / "morph" / "opengauss-template.yaml"
+TEMPLATE_PATH = Path(__file__).resolve().parents[1] / ".github" / "morph" / "epflemma-template.yaml"
 
 
 def _load_template() -> dict:

@@ -5116,7 +5116,7 @@ class GaussCLI:
                 logging.getLogger(noisy).setLevel(logging.WARNING)
         else:
             logging.getLogger().setLevel(logging.INFO)
-            for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'gauss_cli'):
+            for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'cron', 'gauss_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
 
     def _show_insights(self, command: str = "/insights"):

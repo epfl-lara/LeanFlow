@@ -26,6 +26,7 @@ SUMMARY_PREFIX = (
     "avoid repeating work:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+STALE_TOOL_OUTPUT_MARKER = "[Old tool result content cleared during context compaction]"
 
 
 class ContextCompressor:
@@ -45,6 +46,9 @@ class ContextCompressor:
         quiet_mode: bool = False,
         summary_model_override: str = None,
         base_url: str = "",
+        reserved_output_tokens: int = 0,
+        prune_tool_output: bool = False,
+        prune_keep_recent_user_turns: int = 2,
     ):
         self.model = model
         self.base_url = base_url
@@ -53,9 +57,18 @@ class ContextCompressor:
         self.protect_last_n = protect_last_n
         self.summary_target_tokens = summary_target_tokens
         self.quiet_mode = quiet_mode
+        self.reserved_output_tokens = max(0, int(reserved_output_tokens or 0))
+        self.prune_tool_output = bool(prune_tool_output)
+        self.prune_keep_recent_user_turns = max(1, int(prune_keep_recent_user_turns or 2))
 
         self.context_length = get_model_context_length(model, base_url=base_url)
-        self.threshold_tokens = int(self.context_length * threshold_percent)
+        percent_threshold = int(self.context_length * threshold_percent)
+        reserved_threshold = (
+            max(0, self.context_length - self.reserved_output_tokens)
+            if self.reserved_output_tokens
+            else percent_threshold
+        )
+        self.threshold_tokens = min(percent_threshold, reserved_threshold) if reserved_threshold else percent_threshold
         self.compression_count = 0
         self._context_probed = False  # True after a step-down from context error
 
@@ -89,6 +102,8 @@ class ContextCompressor:
             "context_length": self.context_length,
             "usage_percent": (self.last_prompt_tokens / self.context_length * 100) if self.context_length else 0,
             "compression_count": self.compression_count,
+            "reserved_output_tokens": self.reserved_output_tokens,
+            "prune_tool_output": self.prune_tool_output,
         }
 
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> Optional[str]:
@@ -112,15 +127,25 @@ class ContextCompressor:
             parts.append(f"[{role.upper()}]: {content}")
 
         content_to_summarize = "\n\n".join(parts)
-        prompt = f"""Create a concise handoff summary for a later assistant that will continue this conversation after earlier turns are compacted.
+        prompt = f"""Create a concise but high-signal handoff for a later assistant that will continue this conversation after earlier turns are compacted.
 
-Describe:
-1. What actions were taken (tool calls, searches, file operations)
-2. Key information or results obtained
-3. Important decisions, constraints, or user preferences
-4. Relevant data, file names, outputs, or next steps needed to continue
+Use this structure:
+## Goal
+[What the user is trying to accomplish]
 
-Keep it factual, concise, and focused on helping the next assistant resume without repeating work. Target ~{self.summary_target_tokens} tokens.
+## Instructions
+- [Important user instructions, constraints, and preferences]
+
+## Discoveries
+[Important findings, tool results, file names, and technical facts]
+
+## Accomplished
+[What is already done, what changed, and what remains]
+
+## Next Steps
+- [Concrete next action]
+
+Keep it factual and resume-oriented. Mention relevant files and avoid repeating stale tool output unless it matters. Target ~{self.summary_target_tokens} tokens.
 
 ---
 TURNS TO SUMMARIZE:
@@ -237,6 +262,40 @@ Write only the summary body. Do not include any preamble or prefix; the system w
 
         return messages
 
+    def _prune_stale_tool_outputs(self, messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], int]:
+        """Trim old tool-result payloads while preserving recent turns.
+
+        This is a lightweight version of Kilo/OpenCode-style stale output pruning:
+        keep the most recent user turns intact, then replace older tool result bodies
+        with a fixed marker so the assistant can keep the execution history without
+        paying the full token cost of stale command output.
+        """
+        if not self.prune_tool_output:
+            return [dict(message) for message in messages], 0
+
+        pruned_messages: List[Dict[str, Any]] = []
+        recent_user_turns = 0
+        pruned_count = 0
+
+        for message in reversed(messages):
+            cloned = dict(message)
+            if cloned.get("role") == "user":
+                recent_user_turns += 1
+
+            should_prune = (
+                cloned.get("role") == "tool"
+                and recent_user_turns >= self.prune_keep_recent_user_turns
+                and cloned.get("content") not in (None, "", STALE_TOOL_OUTPUT_MARKER)
+            )
+            if should_prune:
+                cloned["content"] = STALE_TOOL_OUTPUT_MARKER
+                pruned_count += 1
+
+            pruned_messages.append(cloned)
+
+        pruned_messages.reverse()
+        return pruned_messages, pruned_count
+
     def _align_boundary_forward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Push a compress-start boundary forward past any orphan tool results.
 
@@ -272,7 +331,8 @@ Write only the summary body. Do not include any preamble or prefix; the system w
         After compression, orphaned tool_call / tool_result pairs are cleaned
         up so the API never receives mismatched IDs.
         """
-        n_messages = len(messages)
+        working_messages, pruned_count = self._prune_stale_tool_outputs(messages)
+        n_messages = len(working_messages)
         if n_messages <= self.protect_first_n + self.protect_last_n + 1:
             if not self.quiet_mode:
                 print(f"⚠️  Cannot compress: only {n_messages} messages (need > {self.protect_first_n + self.protect_last_n + 1})")
@@ -284,13 +344,13 @@ Write only the summary body. Do not include any preamble or prefix; the system w
             return messages
 
         # Adjust boundaries to avoid splitting tool_call/result groups.
-        compress_start = self._align_boundary_forward(messages, compress_start)
-        compress_end = self._align_boundary_backward(messages, compress_end)
+        compress_start = self._align_boundary_forward(working_messages, compress_start)
+        compress_end = self._align_boundary_backward(working_messages, compress_end)
         if compress_start >= compress_end:
-            return messages
+            return working_messages
 
-        turns_to_summarize = messages[compress_start:compress_end]
-        display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        turns_to_summarize = working_messages[compress_start:compress_end]
+        display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(working_messages)
 
         if not self.quiet_mode:
             print(f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)")
@@ -303,7 +363,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
 
         compressed = []
         for i in range(compress_start):
-            msg = messages[i].copy()
+            msg = working_messages[i].copy()
             if i == 0 and msg.get("role") == "system" and self.compression_count == 0:
                 msg["content"] = (
                     (msg.get("content") or "")
@@ -312,7 +372,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
             compressed.append(msg)
 
         if summary:
-            last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
+            last_head_role = working_messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
             summary_role = "user" if last_head_role in ("assistant", "tool") else "assistant"
             compressed.append({"role": summary_role, "content": summary})
         else:
@@ -320,7 +380,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
                 print("   ⚠️  No summary model available — middle turns dropped without summary")
 
         for i in range(compress_end, n_messages):
-            compressed.append(messages[i].copy())
+            compressed.append(working_messages[i].copy())
 
         self.compression_count += 1
 
@@ -330,6 +390,8 @@ Write only the summary body. Do not include any preamble or prefix; the system w
             new_estimate = estimate_messages_tokens_rough(compressed)
             saved_estimate = display_tokens - new_estimate
             print(f"   ✅ Compressed: {n_messages} → {len(compressed)} messages (~{saved_estimate:,} tokens saved)")
+            if pruned_count:
+                print(f"   ✂️  Pruned stale tool outputs: {pruned_count}")
             print(f"   💡 Compression #{self.compression_count} complete")
 
         return compressed

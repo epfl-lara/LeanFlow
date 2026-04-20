@@ -1888,20 +1888,20 @@ def _update_via_zip(args):
     from urllib.request import urlretrieve
     
     branch = "main"
-    zip_url = f"https://github.com/math-inc/opengauss/archive/refs/heads/{branch}.zip"
+    zip_url = f"https://github.com/math-inc/epflemma/archive/refs/heads/{branch}.zip"
     
     print("→ Downloading latest version...")
     try:
         tmp_dir = tempfile.mkdtemp(prefix="gauss-update-")
-        zip_path = os.path.join(tmp_dir, f"opengauss-{branch}.zip")
+        zip_path = os.path.join(tmp_dir, f"epflemma-{branch}.zip")
         urlretrieve(zip_url, zip_path)
         
         print("→ Extracting...")
         with zipfile.ZipFile(zip_path, 'r') as zf:
             zf.extractall(tmp_dir)
         
-        # GitHub ZIPs extract to opengauss-<branch>/
-        extracted = os.path.join(tmp_dir, f"opengauss-{branch}")
+        # GitHub ZIPs extract to epflemma-<branch>/
+        extracted = os.path.join(tmp_dir, f"epflemma-{branch}")
         if not os.path.isdir(extracted):
             # Try to find it
             for d in os.listdir(tmp_dir):
@@ -1942,9 +1942,9 @@ def _update_via_zip(args):
 
 
 def _print_repo_local_reinstall_guidance() -> None:
-    print("✗ Not a git repository. Reinstall from a checked-out math-inc/opengauss repository:")
-    print("  git clone https://github.com/math-inc/opengauss.git")
-    print("  cd opengauss")
+    print("✗ Not a git repository. Reinstall from a checked-out math-inc/epflemma repository:")
+    print("  git clone https://github.com/math-inc/epflemma.git")
+    print("  cd epflemma")
     print("  ./scripts/install.sh")
 
 

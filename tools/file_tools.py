@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 from typing import Optional
+from epflemma_cli.file_locks import ensure_file_lock
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
 
@@ -264,9 +265,24 @@ def notify_other_tool_call(task_id: str = "default"):
             task_data["consecutive"] = 0
 
 
-def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
+def _guard_file_lock(path: str, owner_id: str, purpose: str) -> dict | None:
+    result = ensure_file_lock(path, owner_id=owner_id, purpose=purpose)
+    if result.get("success"):
+        return None
+    return {
+        "error": str(result.get("error", "file is locked")),
+        "path": path,
+        "lock": result.get("lock"),
+    }
+
+
+def write_file_tool(path: str, content: str, task_id: str = "default", owner_id: str = "") -> str:
     """Write content to a file."""
     try:
+        if owner_id:
+            conflict = _guard_file_lock(path, owner_id, "write_file")
+            if conflict:
+                return json.dumps(conflict, ensure_ascii=False)
         file_ops = _get_file_ops(task_id)
         result = file_ops.write_file(path, content)
         return json.dumps(result.to_dict(), ensure_ascii=False)
@@ -280,7 +296,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
-               task_id: str = "default") -> str:
+               task_id: str = "default", owner_id: str = "") -> str:
     """Patch a file using replace mode or V4A patch format."""
     try:
         file_ops = _get_file_ops(task_id)
@@ -290,6 +306,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 return json.dumps({"error": "path required"})
             if old_string is None or new_string is None:
                 return json.dumps({"error": "old_string and new_string required"})
+            if owner_id:
+                conflict = _guard_file_lock(path, owner_id, "patch")
+                if conflict:
+                    return json.dumps(conflict, ensure_ascii=False)
             result = file_ops.patch_replace(path, old_string, new_string, replace_all)
         elif mode == "patch":
             if not patch:
@@ -462,15 +482,17 @@ def _handle_read_file(args, **kw):
 
 def _handle_write_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return write_file_tool(path=args.get("path", ""), content=args.get("content", ""), task_id=tid)
+    owner = str(kw.get("owner_id", "") or "")
+    return write_file_tool(path=args.get("path", ""), content=args.get("content", ""), task_id=tid, owner_id=owner)
 
 
 def _handle_patch(args, **kw):
     tid = kw.get("task_id") or "default"
+    owner = str(kw.get("owner_id", "") or "")
     return patch_tool(
         mode=args.get("mode", "replace"), path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid)
+        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid, owner_id=owner)
 
 
 def _handle_search_files(args, **kw):

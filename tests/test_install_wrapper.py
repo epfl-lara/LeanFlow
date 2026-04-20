@@ -40,8 +40,8 @@ def test_install_wrapper_translates_installer_flags_for_local_template_run(tmp_p
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
-    runner_root = repo / ".opengauss-installer-venv"
-    runner_bin = repo / ".opengauss-installer-venv" / "bin"
+    runner_root = repo / ".epflemma-installer-venv"
+    runner_bin = repo / ".epflemma-installer-venv" / "bin"
     runner_bin.mkdir(parents=True)
     _write_executable(
         runner_bin / "python",
@@ -127,7 +127,7 @@ PY
         "devbox",
         "template",
         "run",
-        "opengauss",
+        "epflemma",
         "--experimental-run-locally",
         "--plain",
         "--json",
@@ -158,8 +158,8 @@ def test_install_wrapper_supports_empty_morph_passthrough_on_bash_nounset(tmp_pa
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
-    runner_root = repo / ".opengauss-installer-venv"
-    runner_bin = repo / ".opengauss-installer-venv" / "bin"
+    runner_root = repo / ".epflemma-installer-venv"
+    runner_bin = repo / ".epflemma-installer-venv" / "bin"
     runner_bin.mkdir(parents=True)
     _write_executable(
         runner_bin / "python",
@@ -216,7 +216,7 @@ def test_install_wrapper_supports_empty_morph_passthrough_on_bash_nounset(tmp_pa
         "devbox",
         "template",
         "run",
-        "opengauss",
+        "epflemma",
         "--experimental-run-locally",
     ]
 
@@ -329,13 +329,13 @@ EOF
         "--seed",
         "--python",
         "3.13",
-        str(repo / ".opengauss-installer-venv"),
+        str(repo / ".epflemma-installer-venv"),
     ]
     assert args_log.read_text(encoding="utf-8").splitlines() == [
         "devbox",
         "template",
         "run",
-        "opengauss",
+        "epflemma",
         "--experimental-run-locally",
     ]
 
@@ -346,7 +346,7 @@ def test_install_wrapper_recreates_unsupported_runner_venv(tmp_path):
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
-    runner_bin = repo / ".opengauss-installer-venv" / "bin"
+    runner_bin = repo / ".epflemma-installer-venv" / "bin"
     runner_bin.mkdir(parents=True)
     _write_executable(
         runner_bin / "python",
@@ -451,13 +451,13 @@ EOF
         "--seed",
         "--python",
         "3.13",
-        str(repo / ".opengauss-installer-venv"),
+        str(repo / ".epflemma-installer-venv"),
     ]
     assert args_log.read_text(encoding="utf-8").splitlines() == [
         "devbox",
         "template",
         "run",
-        "opengauss",
+        "epflemma",
         "--experimental-run-locally",
     ]
 
@@ -468,8 +468,8 @@ def test_install_wrapper_installs_morphcloud_with_runner_venv_pip(tmp_path):
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
-    runner_root = repo / ".opengauss-installer-venv"
-    runner_bin = repo / ".opengauss-installer-venv" / "bin"
+    runner_root = repo / ".epflemma-installer-venv"
+    runner_bin = repo / ".epflemma-installer-venv" / "bin"
     runner_bin.mkdir(parents=True)
 
     pip_log = tmp_path / "runner-pip-log.txt"
@@ -559,7 +559,7 @@ def test_install_wrapper_installs_morphcloud_with_runner_venv_pip(tmp_path):
         "devbox",
         "template",
         "run",
-        "opengauss",
+        "epflemma",
         "--experimental-run-locally",
     ]
 
@@ -570,7 +570,7 @@ def test_install_wrapper_reseeds_runner_pip_when_existing_runner_uses_external_p
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
-    runner_root = repo / ".opengauss-installer-venv"
+    runner_root = repo / ".epflemma-installer-venv"
     runner_bin = runner_root / "bin"
     runner_bin.mkdir(parents=True)
 
@@ -659,6 +659,6 @@ def test_install_wrapper_reseeds_runner_pip_when_existing_runner_uses_external_p
         "devbox",
         "template",
         "run",
-        "opengauss",
+        "epflemma",
         "--experimental-run-locally",
     ]

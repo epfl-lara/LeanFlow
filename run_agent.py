@@ -35,6 +35,7 @@ import sys
 import tempfile
 import time
 import threading
+import textwrap
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
@@ -43,11 +44,19 @@ import fire
 from datetime import datetime
 from pathlib import Path
 
-# Load .env from ~/.gauss/.env first, then project root as dev fallback.
+# Load .env from the active EPFLemma home first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from gauss_cli.env_loader import load_gauss_dotenv
+try:
+    from epflemma_cli.env_loader import load_epflemma_dotenv as load_gauss_dotenv
+except Exception:  # pragma: no cover - legacy fallback for older installs
+    from gauss_cli.env_loader import load_gauss_dotenv
 
-_gauss_home = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss"))
+_gauss_home = Path(
+    os.getenv("EPFLEMMA_HOME")
+    or os.getenv("OPENGAUSS_HOME")
+    or os.getenv("GAUSS_HOME")
+    or (Path.home() / ".epflemma")
+)
 _project_env = Path(__file__).parent / '.env'
 _loaded_env_paths = load_gauss_dotenv(gauss_home=_gauss_home, project_env=_project_env)
 if _loaded_env_paths:
@@ -56,7 +65,7 @@ if _loaded_env_paths:
 else:
     logger.info("No .env file found. Using system environment variables.")
 
-# Point mini-swe-agent at ~/.gauss/ so it shares our config
+# Point mini-swe-agent at the active EPFLemma home so it shares our config
 os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_gauss_home))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
@@ -64,7 +73,6 @@ os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
 from tools.terminal_tool import cleanup_vm
 from tools.interrupt import set_interrupt as _set_interrupt
-from tools.browser_tool import cleanup_browser
 
 import requests
 
@@ -95,6 +103,33 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write
+
+
+def _cleanup_optional_browser_state(task_id: str) -> None:
+    """Best-effort browser cleanup for legacy local state."""
+    try:
+        from tools.browser_tool import cleanup_browser
+    except Exception:
+        return
+    try:
+        cleanup_browser(task_id)
+    except Exception:
+        logger.debug("Optional browser cleanup failed", exc_info=True)
+
+
+_issued_session_ids: set[str] = set()
+_issued_session_ids_lock = threading.Lock()
+
+
+def _generate_short_session_id() -> str:
+    for _ in range(100):
+        candidate = f"{random.randint(0, 99999):05d}"
+        with _issued_session_ids_lock:
+            if candidate not in _issued_session_ids:
+                _issued_session_ids.add(candidate)
+                return candidate
+    # Extremely unlikely fallback.
+    return f"{int(time.time() * 1000) % 100000:05d}"
 
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError from broken pipes.
@@ -208,6 +243,188 @@ _DESTRUCTIVE_PATTERNS = re.compile(
     )""",
     re.VERBOSE,
 )
+
+
+def _wrap_log_text(text: str, width: int = 96) -> list[str]:
+    lines: list[str] = []
+    for raw_line in str(text).splitlines() or [""]:
+        wrapped = textwrap.wrap(
+            raw_line,
+            width=width,
+            replace_whitespace=False,
+            drop_whitespace=False,
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
+        lines.extend(wrapped or [""])
+    return lines or [""]
+
+
+def _summarize_arg_value(key: str, value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        if key in {"old_string", "new_string", "patch_content", "content"}:
+            line_count = value.count("\n") + 1 if value else 0
+            return f"{len(value):,} chars across {line_count} line(s)"
+        return value
+    if isinstance(value, list):
+        return f"{len(value)} item(s)"
+    if isinstance(value, dict):
+        return f"{len(value)} field(s)"
+    return str(value)
+
+
+def _format_tool_args_for_log(function_name: str, function_args: dict[str, Any]) -> list[str]:
+    if not function_args:
+        return ["args: {}"]
+
+    preferred_order = [
+        "path",
+        "command",
+        "workdir",
+        "query",
+        "pattern",
+        "file_glob",
+        "target",
+        "mode",
+        "old_string",
+        "new_string",
+        "patch_content",
+        "content",
+    ]
+    ordered_keys = [key for key in preferred_order if key in function_args]
+    ordered_keys.extend(key for key in function_args if key not in ordered_keys)
+
+    lines: list[str] = []
+    for key in ordered_keys:
+        value = function_args[key]
+        if isinstance(value, list) and value and all(not isinstance(item, (dict, list)) for item in value):
+            lines.append(f"{key}: {len(value)} item(s)")
+            for item in value[:8]:
+                lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=90)])
+            if len(value) > 8:
+                lines.append(f"  [{len(value) - 8} more item(s) omitted]")
+            continue
+        if isinstance(value, dict):
+            lines.append(f"{key}:")
+            for sub_key, sub_value in value.items():
+                summary = _summarize_arg_value(sub_key, sub_value)
+                lines.extend([f"  {part}" for part in _wrap_log_text(f"{sub_key}: {summary}", width=90)])
+            continue
+        summary = _summarize_arg_value(key, value)
+        lines.extend(_wrap_log_text(f"{key}: {summary}", width=92))
+    return lines
+
+
+def _format_tool_result_for_log(function_name: str, function_result: str) -> list[str]:
+    try:
+        parsed = json.loads(function_result)
+    except Exception:
+        parsed = None
+
+    if isinstance(parsed, dict):
+        lines: list[str] = []
+        preferred_order = [
+            "success",
+            "error",
+            "exit_code",
+            "output",
+            "total_count",
+            "count",
+            "files",
+            "matches",
+        ]
+        ordered_keys = [key for key in preferred_order if key in parsed]
+        ordered_keys.extend(key for key in parsed if key not in ordered_keys)
+
+        for key in ordered_keys:
+            value = parsed[key]
+            if isinstance(value, list) and value and all(not isinstance(item, (dict, list)) for item in value):
+                lines.append(f"{key}: {len(value)} item(s)")
+                for item in value[:10]:
+                    lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=88)])
+                if len(value) > 10:
+                    lines.append(f"  [{len(value) - 10} more item(s) omitted]")
+                continue
+            if isinstance(value, str) and "\n" in value:
+                value_lines = value.splitlines()
+                lines.append(f"{key}:")
+                for raw_line in value_lines[:14]:
+                    lines.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=88)])
+                if len(value_lines) > 14:
+                    lines.append(f"  [output truncated: {len(value_lines) - 14} more line(s)]")
+                continue
+            if isinstance(value, str) and len(value) > 220:
+                wrapped = _wrap_log_text(value, width=88)
+                lines.append(f"{key}:")
+                for part in wrapped[:8]:
+                    lines.append(f"  {part}")
+                if len(wrapped) > 8:
+                    lines.append(f"  [output truncated: {len(wrapped) - 8} more wrapped line(s)]")
+                continue
+            if isinstance(value, (dict, list)):
+                pretty = json.dumps(value, indent=2, ensure_ascii=False)
+                pretty_lines = pretty.splitlines()
+                lines.append(f"{key}:")
+                for raw_line in pretty_lines[:12]:
+                    lines.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=88)])
+                if len(pretty_lines) > 12:
+                    lines.append(f"  [structured output truncated: {len(pretty_lines) - 12} more line(s)]")
+                continue
+            lines.extend(_wrap_log_text(f"{key}: {value}", width=92))
+        return lines
+
+    if isinstance(parsed, list):
+        lines = [f"items: {len(parsed)}"]
+        for item in parsed[:10]:
+            lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=88)])
+        if len(parsed) > 10:
+            lines.append(f"  [{len(parsed) - 10} more item(s) omitted]")
+        return lines
+
+    wrapped = _wrap_log_text(function_result, width=92)
+    if len(wrapped) > 12:
+        return wrapped[:12] + [f"[output truncated: {len(wrapped) - 12} more wrapped line(s)]"]
+    return wrapped
+
+
+def _emit_workflow_event(event_type: str, message: str, **details: Any) -> None:
+    if not (
+        os.getenv("EPFLEMMA_PROJECT_ROOT")
+        or os.getenv("OPENGAUSS_PROJECT_ROOT")
+        or os.getenv("GAUSS_PROJECT_ROOT")
+    ):
+        return
+    try:
+        from epflemma_cli.workflow_state import append_workflow_activity
+
+        append_workflow_activity(event_type, message, **details)
+    except Exception:
+        logger.debug("Failed to append workflow event %s", event_type, exc_info=True)
+
+
+def _workflow_agent_event_details(agent: Any, **details: Any) -> dict[str, Any]:
+    payload = dict(details)
+    payload.setdefault("agent_session_id", str(getattr(agent, "session_id", "") or ""))
+    payload.setdefault(
+        "parent_agent_session_id",
+        str(getattr(agent, "_parent_session_id", "") or ""),
+    )
+    try:
+        payload.setdefault("delegate_depth", int(getattr(agent, "_delegate_depth", 0) or 0))
+    except Exception:
+        payload.setdefault("delegate_depth", 0)
+    payload.setdefault("model", str(getattr(agent, "model", "") or ""))
+    payload.setdefault("provider", str(getattr(agent, "provider", "") or ""))
+    payload.setdefault("api_mode", str(getattr(agent, "api_mode", "") or ""))
+    payload.setdefault("base_url", str(getattr(agent, "base_url", "") or ""))
+    payload.setdefault("process_id", os.getpid())
+    return payload
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
@@ -468,7 +685,6 @@ class AIAgent:
                     'tools',               # all tools.* (terminal, browser, web, file, etc.)
                     'minisweagent',         # mini-swe-agent execution backend
                     'run_agent',            # agent runner internals
-                    'trajectory_compressor',
                     'cron',                 # scheduler (only relevant in daemon mode)
                     'gauss_cli',           # CLI helpers
                 ]:
@@ -517,8 +733,8 @@ class AIAgent:
                 effective_base = base_url
                 if "openrouter" in effective_base.lower():
                     client_kwargs["default_headers"] = {
-                        "HTTP-Referer": "https://gauss-agent.nousresearch.com",
-                        "X-OpenRouter-Title": "Gauss Agent",
+                        "HTTP-Referer": "https://epflemma.dev",
+                        "X-OpenRouter-Title": "EPFLemma Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
                 elif "api.kimi.com" in effective_base.lower():
@@ -544,8 +760,8 @@ class AIAgent:
                         "api_key": os.getenv("OPENROUTER_API_KEY", ""),
                         "base_url": OPENROUTER_BASE_URL,
                         "default_headers": {
-                            "HTTP-Referer": "https://gauss-agent.nousresearch.com",
-                            "X-OpenRouter-Title": "Gauss Agent",
+                            "HTTP-Referer": "https://epflemma.dev",
+                            "X-OpenRouter-Title": "EPFLemma Agent",
                             "X-OpenRouter-Categories": "productivity,cli-agent",
                         },
                     }
@@ -628,9 +844,7 @@ class AIAgent:
             self.session_id = session_id
         else:
             # Generate a new session ID
-            timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
-            short_uuid = uuid.uuid4().hex[:6]
-            self.session_id = f"{timestamp_str}_{short_uuid}"
+            self.session_id = _generate_short_session_id()
         
         # Session logs go into ~/.gauss/sessions/ alongside gateway sessions
         gauss_home = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss"))
@@ -682,7 +896,10 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         if not skip_memory:
             try:
-                from gauss_cli.config import load_config as _load_mem_config
+                try:
+                    from epflemma_cli.config import load_config as _load_mem_config
+                except Exception:  # pragma: no cover - legacy fallback
+                    from gauss_cli.config import load_config as _load_mem_config
                 mem_config = _load_mem_config().get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
@@ -701,18 +918,50 @@ class AIAgent:
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
         try:
-            from gauss_cli.config import load_config as _load_skills_config
+            try:
+                from epflemma_cli.config import load_config as _load_skills_config
+            except Exception:  # pragma: no cover - legacy fallback
+                from gauss_cli.config import load_config as _load_skills_config
             skills_config = _load_skills_config().get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 15))
         except Exception:
             pass
         
-        # Initialize context compressor for automatic context management
-        # Compresses conversation when approaching model's context limit
-        # Configuration via config.yaml (compression section) or environment variables
-        compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", "0.50"))
-        compression_enabled = os.getenv("CONTEXT_COMPRESSION_ENABLED", "true").lower() in ("true", "1", "yes")
-        compression_summary_model = os.getenv("CONTEXT_COMPRESSION_MODEL") or None
+        # Initialize context compressor for automatic context management.
+        compression_cfg = {}
+        try:
+            try:
+                from epflemma_cli.config import load_config as _load_runtime_config
+            except Exception:  # pragma: no cover - legacy fallback
+                from gauss_cli.config import load_config as _load_runtime_config
+            loaded_cfg = _load_runtime_config()
+            if isinstance(loaded_cfg.get("compression"), dict):
+                compression_cfg = dict(loaded_cfg.get("compression") or {})
+        except Exception:
+            compression_cfg = {}
+
+        compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", str(compression_cfg.get("threshold", 0.50))))
+        compression_enabled = os.getenv(
+            "CONTEXT_COMPRESSION_ENABLED",
+            str(compression_cfg.get("enabled", True)).lower(),
+        ).lower() in ("true", "1", "yes")
+        compression_summary_model = os.getenv("CONTEXT_COMPRESSION_MODEL") or compression_cfg.get("summary_model") or None
+        compression_reserved_output = int(
+            os.getenv(
+                "CONTEXT_COMPRESSION_RESERVED_OUTPUT_TOKENS",
+                str(compression_cfg.get("reserved_output_tokens", 0) or 0),
+            )
+        )
+        compression_prune_tool_output = os.getenv(
+            "CONTEXT_COMPRESSION_PRUNE_TOOL_OUTPUT",
+            str(compression_cfg.get("prune_tool_output", False)).lower(),
+        ).lower() in ("true", "1", "yes")
+        compression_prune_keep_recent_user_turns = int(
+            os.getenv(
+                "CONTEXT_COMPRESSION_PRUNE_KEEP_RECENT_USER_TURNS",
+                str(compression_cfg.get("prune_keep_recent_user_turns", 2) or 2),
+            )
+        )
         
         self.context_compressor = ContextCompressor(
             model=self.model,
@@ -723,6 +972,9 @@ class AIAgent:
             summary_model_override=compression_summary_model,
             quiet_mode=self.quiet_mode,
             base_url=self.base_url,
+            reserved_output_tokens=compression_reserved_output,
+            prune_tool_output=compression_prune_tool_output,
+            prune_keep_recent_user_turns=compression_prune_keep_recent_user_turns,
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
@@ -735,7 +987,11 @@ class AIAgent:
         
         if not self.quiet_mode:
             if compression_enabled:
-                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
+                print(
+                    f"📊 Context limit: {self.context_compressor.context_length:,} tokens "
+                    f"(compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,}, "
+                    f"reserve {self.context_compressor.reserved_output_tokens:,} for output)"
+                )
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
     
@@ -908,17 +1164,13 @@ class AIAgent:
         return None
     
     def _cleanup_task_resources(self, task_id: str) -> None:
-        """Clean up VM and browser resources for a given task."""
+        """Clean up task-local runtime resources for a given task."""
         try:
             cleanup_vm(task_id)
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")
-        try:
-            cleanup_browser(task_id)
-        except Exception as e:
-            if self.verbose_logging:
-                logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
+        _cleanup_optional_browser_state(task_id)
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
@@ -2278,7 +2530,10 @@ class AIAgent:
             return False
 
         try:
-            from gauss_cli.auth import resolve_codex_runtime_credentials
+            try:
+                from epflemma_cli.auth import resolve_codex_runtime_credentials
+            except Exception:  # pragma: no cover - legacy fallback
+                from gauss_cli.auth import resolve_codex_runtime_credentials
 
             creds = resolve_codex_runtime_credentials(force_refresh=force)
         except Exception as exc:
@@ -2307,7 +2562,10 @@ class AIAgent:
             return False
 
         try:
-            from gauss_cli.auth import resolve_nous_runtime_credentials
+            try:
+                from epflemma_cli.auth import resolve_nous_runtime_credentials
+            except Exception:  # pragma: no cover - legacy fallback
+                from gauss_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, int(os.getenv("GAUSS_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
@@ -2948,7 +3206,7 @@ class AIAgent:
 
         # Nous Portal product attribution
         if _is_nous:
-            extra_body["tags"] = ["product=gauss-agent"]
+            extra_body["tags"] = ["product=epflemma-agent"]
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body
@@ -3311,7 +3569,7 @@ class AIAgent:
                 old_title = self._session_db.get_session_title(self.session_id)
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
-                self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                self.session_id = _generate_short_session_id()
                 self._session_db.create_session(
                     session_id=self.session_id,
                     source=self.platform or "cli",
@@ -3411,6 +3669,7 @@ class AIAgent:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                owner_id=self.session_id,
             )
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -3478,15 +3737,16 @@ class AIAgent:
         # ── Logging / callbacks ──────────────────────────────────────────
         tool_names_str = ", ".join(name for _, name, _ in parsed_calls)
         if not self.quiet_mode:
-            print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
+            print(f"\n{self.log_prefix}┌─ Tools: {num_tools} concurrent call(s) — {tool_names_str}")
             for i, (tc, name, args) in enumerate(parsed_calls, 1):
-                args_str = json.dumps(args, ensure_ascii=False)
                 if self.verbose_logging:
-                    print(f"  📞 Tool {i}: {name}({list(args.keys())})")
-                    print(f"     Args: {args_str}")
+                    print(f"{self.log_prefix}│  {i}. {name}")
+                    for line in _format_tool_args_for_log(name, args):
+                        print(f"{self.log_prefix}│     {line}")
                 else:
-                    args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
-                    print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
+                    print(f"{self.log_prefix}│  {i}. {name}")
+                    for line in _format_tool_args_for_log(name, args):
+                        print(f"{self.log_prefix}│     {line}")
 
         for _, name, args in parsed_calls:
             if self.tool_progress_callback:
@@ -3495,6 +3755,17 @@ class AIAgent:
                     self.tool_progress_callback(name, preview, args)
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
+            _emit_workflow_event(
+                "tool-call",
+                f"Concurrent tool call: {name}",
+                **_workflow_agent_event_details(
+                    self,
+                    tool=name,
+                    arguments=args,
+                    concurrent=True,
+                    iteration=api_call_count,
+                ),
+            )
 
         # ── Concurrent execution ─────────────────────────────────────────
         # Each slot holds (function_name, function_args, function_result, duration, error_flag)
@@ -3559,12 +3830,23 @@ class AIAgent:
                 cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
                 print(f"  {cute_msg}")
             elif not self.quiet_mode:
-                if self.verbose_logging:
-                    print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
-                    print(f"     Result: {function_result}")
-                else:
-                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
-                    print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
+                print(f"{self.log_prefix}│  {i+1}. {name} done in {tool_duration:.2f}s")
+                for line in _format_tool_result_for_log(name, function_result):
+                    print(f"{self.log_prefix}│     {line}")
+            _emit_workflow_event(
+                "tool-result",
+                f"Concurrent tool result: {name}",
+                **_workflow_agent_event_details(
+                    self,
+                    tool=name,
+                    arguments=args,
+                    result=function_result,
+                    duration_seconds=tool_duration,
+                    concurrent=True,
+                    iteration=api_call_count,
+                    is_error=_detect_tool_failure(name, function_result)[0],
+                ),
+            )
 
             # Truncate oversized results
             MAX_TOOL_RESULT_CHARS = 100_000
@@ -3583,6 +3865,9 @@ class AIAgent:
                 "tool_call_id": tc.id,
             }
             messages.append(tool_msg)
+
+        if not self.quiet_mode:
+            print(f"{self.log_prefix}└─ Tool batch complete")
 
         # ── Budget pressure injection ────────────────────────────────────
         budget_warning = self._get_budget_warning(api_call_count)
@@ -3639,13 +3924,9 @@ class AIAgent:
                 function_args = {}
 
             if not self.quiet_mode:
-                args_str = json.dumps(function_args, ensure_ascii=False)
-                if self.verbose_logging:
-                    print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
-                    print(f"     Args: {args_str}")
-                else:
-                    args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
-                    print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+                print(f"\n{self.log_prefix}┌─ Tool {i}: {function_name}")
+                for line in _format_tool_args_for_log(function_name, function_args):
+                    print(f"{self.log_prefix}│  {line}")
 
             if self.tool_progress_callback:
                 try:
@@ -3653,6 +3934,17 @@ class AIAgent:
                     self.tool_progress_callback(function_name, preview, function_args)
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
+            _emit_workflow_event(
+                "tool-call",
+                f"Tool call: {function_name}",
+                **_workflow_agent_event_details(
+                    self,
+                    tool=function_name,
+                    arguments=function_args,
+                    concurrent=False,
+                    iteration=api_call_count,
+                ),
+            )
 
             # Checkpoint: snapshot working dir before file-mutating tools
             if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
@@ -3774,6 +4066,7 @@ class AIAgent:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        owner_id=self.session_id,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -3788,6 +4081,7 @@ class AIAgent:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        owner_id=self.session_id,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -3829,12 +4123,24 @@ class AIAgent:
             messages.append(tool_msg)
 
             if not self.quiet_mode:
-                if self.verbose_logging:
-                    print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
-                    print(f"     Result: {function_result}")
-                else:
-                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
-                    print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
+                print(f"{self.log_prefix}│  done in {tool_duration:.2f}s")
+                for line in _format_tool_result_for_log(function_name, function_result):
+                    print(f"{self.log_prefix}│  {line}")
+                print(f"{self.log_prefix}└─")
+            _emit_workflow_event(
+                "tool-result",
+                f"Tool result: {function_name}",
+                **_workflow_agent_event_details(
+                    self,
+                    tool=function_name,
+                    arguments=function_args,
+                    result=function_result,
+                    duration_seconds=tool_duration,
+                    concurrent=False,
+                    iteration=api_call_count,
+                    is_error=_detect_tool_failure(function_name, function_result)[0],
+                ),
+            )
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i
@@ -3942,7 +4248,7 @@ class AIAgent:
                         "effort": "medium"
                     }
             if _is_nous:
-                summary_extra_body["tags"] = ["product=gauss-agent"]
+                summary_extra_body["tags"] = ["product=epflemma-agent"]
 
             if self.api_mode == "codex_responses":
                 codex_kwargs = self._build_api_kwargs(api_messages)
@@ -4145,6 +4451,16 @@ class AIAgent:
         
         if not self.quiet_mode:
             print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+        _emit_workflow_event(
+            "conversation-start",
+            "Agent conversation started",
+            **_workflow_agent_event_details(
+                self,
+                user_message=user_message,
+                persist_user_message=persist_user_message,
+                system_message=system_message or "",
+            ),
+        )
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
@@ -4364,6 +4680,19 @@ class AIAgent:
                     spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
                     thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
                     thinking_spinner.start()
+            _emit_workflow_event(
+                "api-request",
+                f"API call #{api_call_count}",
+                **_workflow_agent_event_details(
+                    self,
+                    iteration=api_call_count,
+                    message_count=len(api_messages),
+                    approx_tokens=approx_tokens,
+                    total_chars=total_chars,
+                    available_tools=[tool["function"]["name"] for tool in self.tools] if self.tools else [],
+                    messages=api_messages,
+                ),
+            )
             
             # Log request details if verbose
             if self.verbose_logging:
@@ -4773,12 +5102,12 @@ class AIAgent:
                         print(f"{self.log_prefix}   Auth method: {auth_method}")
                         print(f"{self.log_prefix}   Token prefix: {key[:12]}..." if key and len(key) > 12 else f"{self.log_prefix}   Token: (empty or short)")
                         print(f"{self.log_prefix}   Troubleshooting:")
-                        print(f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in ~/.gauss/.env for Gauss-managed OAuth/setup tokens")
-                        print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in ~/.gauss/.env for API keys or legacy token values")
+                        print(f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in ~/.epflemma/.env for EPFLemma-managed OAuth/setup tokens")
+                        print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in ~/.epflemma/.env for API keys or legacy token values")
                         print(f"{self.log_prefix}     • For API keys: verify at https://console.anthropic.com/settings/keys")
                         print(f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
-                        print(f"{self.log_prefix}     • Clear stale keys: gauss config set ANTHROPIC_TOKEN \"\"")
-                        print(f"{self.log_prefix}     • Legacy cleanup: gauss config set ANTHROPIC_API_KEY \"\"")
+                        print(f"{self.log_prefix}     • Clear stale keys: epflemma config set ANTHROPIC_TOKEN \"\"")
+                        print(f"{self.log_prefix}     • Legacy cleanup: epflemma config set ANTHROPIC_API_KEY \"\"")
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
@@ -5066,9 +5395,21 @@ class AIAgent:
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     if self.verbose_logging:
-                        self._vprint(f"{self.log_prefix}🤖 Assistant: {assistant_message.content}")
+                        self._vprint(f"\n{self.log_prefix}┌─ Agent")
+                        for line in (assistant_message.content or "").splitlines() or [""]:
+                            self._vprint(f"{self.log_prefix}│  {line}")
+                        self._vprint(f"{self.log_prefix}└─")
                     else:
-                        self._vprint(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
+                        preview_lines = [line.strip() for line in (assistant_message.content or "").splitlines() if line.strip()]
+                        if not preview_lines:
+                            preview_lines = [""]
+                        preview_text = "\n".join(preview_lines[:3])
+                        if len(preview_text) > 320:
+                            preview_text = preview_text[:317] + "..."
+                        self._vprint(f"\n{self.log_prefix}┌─ Agent")
+                        for line in preview_text.splitlines():
+                            self._vprint(f"{self.log_prefix}│  {line}")
+                        self._vprint(f"{self.log_prefix}└─")
 
                 # Notify progress callback of model's thinking (used by subagent
                 # delegation to relay the child's reasoning to the parent display).
@@ -5087,6 +5428,29 @@ class AIAgent:
                             self.tool_progress_callback("_thinking", first_line)
                         except Exception:
                             pass
+
+                _emit_workflow_event(
+                    "assistant-response",
+                    "Assistant response received",
+                    **_workflow_agent_event_details(
+                        self,
+                        iteration=api_call_count,
+                        finish_reason=finish_reason,
+                        content=assistant_message.content or "",
+                        reasoning=getattr(assistant_message, "reasoning", None),
+                        reasoning_content=getattr(assistant_message, "reasoning_content", None),
+                        tool_calls=[
+                            {
+                                "id": getattr(tc, "id", ""),
+                                "name": getattr(getattr(tc, "function", None), "name", ""),
+                                "arguments": getattr(getattr(tc, "function", None), "arguments", ""),
+                            }
+                            for tc in (assistant_message.tool_calls or [])
+                        ],
+                        usage=usage_dict if 'usage_dict' in locals() else {},
+                        response_model=getattr(response, "model", ""),
+                    ),
+                )
                 
                 # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
                 # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
@@ -5167,7 +5531,23 @@ class AIAgent:
                 # Check for tool calls
                 if assistant_message.tool_calls:
                     if not self.quiet_mode:
-                        self._vprint(f"{self.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
+                        self._vprint(f"\n{self.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
+                    _emit_workflow_event(
+                        "tool-call-batch",
+                        f"Processing {len(assistant_message.tool_calls)} tool call(s)",
+                        **_workflow_agent_event_details(
+                            self,
+                            iteration=api_call_count,
+                            tool_calls=[
+                                {
+                                    "id": getattr(tc, "id", ""),
+                                    "name": getattr(getattr(tc, "function", None), "name", ""),
+                                    "arguments": getattr(getattr(tc, "function", None), "arguments", ""),
+                                }
+                                for tc in assistant_message.tool_calls
+                            ],
+                        ),
+                    )
                     
                     if self.verbose_logging:
                         for tc in assistant_message.tool_calls:
@@ -5561,7 +5941,21 @@ class AIAgent:
         # Include interrupt message if one triggered the interrupt
         if interrupted and self._interrupt_message:
             result["interrupt_message"] = self._interrupt_message
-        
+
+        _emit_workflow_event(
+            "conversation-end",
+            "Agent conversation finished",
+            **_workflow_agent_event_details(
+                self,
+                completed=completed,
+                interrupted=interrupted,
+                api_calls=api_call_count,
+                final_response=final_response,
+                response_previewed=getattr(self, "_response_was_previewed", False),
+                message_count=len(messages),
+            ),
+        )
+
         # Clear interrupt state after handling
         self.clear_interrupt()
 
@@ -5648,7 +6042,7 @@ def main(
                 entry = (name, info)
                 if name in ["web", "search", "file", "browser"]:
                     basic_toolsets.append(entry)
-                elif name in ["autoformalize", "gauss-acp", "gauss-cli", "gauss-gateway"]:
+                elif name in ["autoformalize", "epflemma-cli", "epflemma-native"]:
                     composite_toolsets.append(entry)
                 else:
                     scenario_toolsets.append(entry)
@@ -5773,7 +6167,7 @@ def main(
         sample_id = str(uuid.uuid4())[:8]
         sample_filename = f"sample_{sample_id}.json"
         
-        # Convert messages to trajectory format (same as batch_runner)
+        # Convert messages to the persisted trajectory format used by EPFLemma.
         trajectory = agent._convert_to_trajectory_format(
             result['messages'], 
             user_query, 

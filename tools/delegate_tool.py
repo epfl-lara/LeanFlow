@@ -238,6 +238,7 @@ def _run_single_child(
 
         # Set delegation depth so children can't spawn grandchildren
         child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
+        child._parent_session_id = str(getattr(parent_agent, "session_id", "") or "")
 
         # Register child for interrupt propagation
         if hasattr(parent_agent, '_active_children'):
@@ -358,6 +359,14 @@ def _run_single_child(
                 parent_agent._active_children.remove(child)
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
+        try:
+            from epflemma_cli.file_locks import release_all_file_locks
+
+            child_session_id = str(getattr(locals().get("child"), "session_id", "") or "")
+            if child_session_id:
+                release_all_file_locks(owner_id=child_session_id)
+        except Exception:
+            logger.debug("Could not release child file locks", exc_info=True)
 
 
 def delegate_task(
