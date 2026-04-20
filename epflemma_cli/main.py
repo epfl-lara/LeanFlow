@@ -334,7 +334,10 @@ class InteractiveShell:
 
     def _target_label(self) -> str:
         workflow_status = self._workflow_status_payload()
-        return str(workflow_status.get("target_symbol", "") or "-")
+        value = str(workflow_status.get("target_symbol", "") or "").strip()
+        if value in {"", "-", "[unknown]", "[launching]"}:
+            return "-"
+        return value
 
     def _phase_label(self) -> str:
         workflow_status = self._workflow_status_payload()
@@ -361,10 +364,23 @@ class InteractiveShell:
             return text
         return f"{text[:max_len - 3]}..."
 
+    def _prompt_focus_label(self) -> str:
+        theorem = self._target_label()
+        if theorem != "-":
+            return theorem
+        workflow_status = self._workflow_status_payload()
+        file_label = str(workflow_status.get("active_file_label", "") or "").strip()
+        if file_label not in {"", "-", "[unknown]", "[launching]"}:
+            return Path(file_label).name
+        build = str(workflow_status.get("build_status", "") or "").strip()
+        if build not in {"", "-", "unknown", "workflow launching"}:
+            return build
+        return "-"
+
     def _prompt_message(self) -> FormattedText:
         project = self._toolbar_piece(self._project_name(), 28)
         phase = self._toolbar_piece(self._phase_label(), 18)
-        theorem = self._target_label()
+        theorem = self._prompt_focus_label()
         status_suffix = phase
         if theorem and theorem != "-":
             status_suffix = f"{status_suffix} · {self._toolbar_piece(theorem, 28)}"

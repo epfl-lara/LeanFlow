@@ -4,7 +4,7 @@ from rich.console import Console
 
 from epflemma_cli.banner import render_help
 from epflemma_cli.main import InteractiveShell, main
-from epflemma_cli.workflow_state import append_workflow_activity, append_workflow_run_log, load_workflow_live_status, reset_workflow_run_log
+from epflemma_cli.workflow_state import append_workflow_activity, append_workflow_run_log, load_workflow_live_status, reset_workflow_run_log, save_workflow_live_status
 from epflemma_cli.runtime_provider import list_runtime_provider_targets
 from epflemma_cli.workflow import NativeLaunchPlan, NativeWorkflowSpec, describe_launch_plan, resolve_workflow_request
 
@@ -387,6 +387,38 @@ def test_prompt_message_includes_project_and_phase(monkeypatch, tmp_path):
     assert "Demo" in text
     assert "idle" in text
     assert text.endswith("\n› ")
+
+
+def test_prompt_message_hides_unknown_theorem_placeholder(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    root = tmp_path / "Demo"
+    root.mkdir()
+    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+    (root / ".epflemma").mkdir()
+    (root / ".epflemma" / "project.yaml").write_text(
+        "schema_version: 1\nname: Demo\nkind: lean4\nlean_root: .\ncreated_at: now\npaths:\n  runtime: .epflemma/runtime\n  cache: .epflemma/cache\n  workflows: .epflemma/workflows\nsource:\n  mode: init\n  template_source: ''\nblueprint:\n  markers: []\n",
+        encoding="utf-8",
+    )
+    (root / ".epflemma" / "runtime").mkdir()
+    (root / ".epflemma" / "cache").mkdir()
+    (root / ".epflemma" / "workflows").mkdir()
+    save_workflow_live_status(
+        {
+            "phase": "busy",
+            "target_symbol": "[unknown]",
+            "active_file_label": "GaussTest/RealTheorems-homework.lean",
+            "build_status": "unknown",
+        }
+    )
+
+    shell = InteractiveShell()
+    shell.cwd = root
+
+    fragments = shell._prompt_message()
+    text = "".join(fragment for _, fragment in fragments)
+    assert "[unknown]" not in text
+    assert "RealTheorems-homework.lean" in text
 
 
 def test_project_command_without_args_shows_current_project(monkeypatch, tmp_path, capsys):

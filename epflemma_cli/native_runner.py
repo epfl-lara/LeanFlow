@@ -343,6 +343,9 @@ def _record_agent_activity(agent: Any, event_type: str, message: str, **details:
     _record_activity(event_type, message, **payload)
 
 
+_CURRENT_AGENT_ACTIVITY_DETAILS: dict[str, Any] = {}
+
+
 def _single_line(text: Any, limit: int = 220) -> str:
     collapsed = " ".join(str(text or "").split())
     if len(collapsed) <= limit:
@@ -387,11 +390,17 @@ def _tool_progress_callback(name: str, preview: str, args: Mapping[str, Any] | N
         _record_activity("assistant-plan", _single_line(preview, 280))
         return
     arguments = dict(args or {})
+    payload = dict(_CURRENT_AGENT_ACTIVITY_DETAILS)
+    payload.update(
+        {
+            "tool": name,
+            "args_preview": _single_line(json.dumps(arguments, ensure_ascii=False), 320) if arguments else "",
+        }
+    )
     _record_activity(
         "tool-start",
         _single_line(preview or name, 280),
-        tool=name,
-        args_preview=_single_line(json.dumps(arguments, ensure_ascii=False), 320) if arguments else "",
+        **payload,
     )
 
 
@@ -399,11 +408,17 @@ def _step_callback(iteration: int, previous_tools: list[str]) -> None:
     label = f"API call #{iteration}"
     if previous_tools:
         label += f" after {', '.join(previous_tools[:4])}"
+    payload = dict(_CURRENT_AGENT_ACTIVITY_DETAILS)
+    payload.update(
+        {
+            "iteration": iteration,
+            "previous_tools": list(previous_tools or []),
+        }
+    )
     _record_activity(
         "api-call",
         label,
-        iteration=iteration,
-        previous_tools=list(previous_tools or []),
+        **payload,
     )
 
 
@@ -1585,6 +1600,8 @@ def _build_agent() -> AIAgent:
     owner_id = str(getattr(agent, "session_id", "") or "")
     if owner_id:
         os.environ["EPFLEMMA_NATIVE_RUNNER_OWNER"] = owner_id
+    global _CURRENT_AGENT_ACTIVITY_DETAILS
+    _CURRENT_AGENT_ACTIVITY_DETAILS = _agent_activity_details(agent)
     return agent
 
 

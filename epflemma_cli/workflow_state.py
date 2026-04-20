@@ -5,12 +5,24 @@ from __future__ import annotations
 import json
 import os
 import signal
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 PROJECT_STATE_DIRNAME = ".epflemma"
 LEGACY_PROJECT_DIRNAMES = (".opengauss", ".gauss")
+WORKFLOW_TASK_LABELS = {
+    "autoprove": "prove",
+    "autoformalize": "formalize",
+    "prove": "prove",
+    "formalize": "formalize",
+    "draft": "draft",
+    "review": "review",
+    "checkpoint": "checkpoint",
+    "refactor": "refactor",
+    "golf": "golf",
+}
 
 
 def _epflemma_home() -> Path:
@@ -78,8 +90,16 @@ def workflow_live_status_path() -> Path:
     return workflow_state_root() / "live_status.json"
 
 
-def workflow_activity_path() -> Path:
-    return workflow_state_root() / "activity.jsonl"
+def workflow_activity_root() -> Path:
+    return workflow_state_root() / "activity"
+
+
+def workflow_run_activity_root() -> Path:
+    return workflow_activity_root() / "runs"
+
+
+def workflow_agent_activity_root() -> Path:
+    return workflow_activity_root() / "agents"
 
 
 def workflow_run_log_path() -> Path:
@@ -99,12 +119,54 @@ def workflow_agent_inbox_path(agent_id: str) -> Path:
     return workflow_agent_inbox_root() / f"{safe_agent_id or 'unknown'}.jsonl"
 
 
+def workflow_run_activity_path(run_id: str) -> Path:
+    safe_run_id = "".join(ch for ch in str(run_id or "").strip() if ch.isalnum() or ch in {"-", "_"})
+    return workflow_run_activity_root() / f"{safe_run_id or 'unknown'}.jsonl"
+
+
+def workflow_agent_activity_path(agent_id: str, task_label: str = "") -> Path:
+    safe_agent_id = "".join(ch for ch in str(agent_id or "").strip() if ch.isalnum() or ch in {"-", "_"})
+    safe_task = "".join(ch for ch in str(task_label or "").strip() if ch.isalnum() or ch in {"-", "_"}).strip() or "agent"
+    return workflow_agent_activity_root() / f"{safe_task}-{safe_agent_id or 'unknown'}.jsonl"
+
+
+def workflow_latest_run_activity_path() -> Path | None:
+    current_run_id = str(os.getenv("EPFLEMMA_WORKFLOW_RUN_ID", "") or "").strip()
+    if current_run_id:
+        path = workflow_run_activity_path(current_run_id)
+        if path.is_file():
+            return path
+    root = workflow_run_activity_root()
+    if not root.is_dir():
+        return None
+    candidates = sorted(root.glob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _workflow_task_label(kind: str, active_skill: str = "", delegate_depth: int = 0) -> str:
+    normalized_kind = str(kind or "").strip().lower()
+    if normalized_kind in WORKFLOW_TASK_LABELS:
+        return WORKFLOW_TASK_LABELS[normalized_kind]
+    if delegate_depth > 0:
+        return "swarm"
+    skill = str(active_skill or "").strip()
+    if skill:
+        return skill
+    return "agent"
+
+
 def _workflow_run_id() -> str:
     run_id = str(os.getenv("EPFLEMMA_WORKFLOW_RUN_ID", "") or "").strip()
     if run_id:
         return run_id
     started = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_id = f"{started}-pid{os.getpid()}"
+    task = _workflow_task_label(
+        str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_KIND", "")),
+        str(os.getenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "") or os.getenv("OPENGAUSS_NATIVE_ACTIVE_SKILL", "")),
+        0,
+    )
+    safe_task = "".join(ch for ch in task if ch.isalnum() or ch in {"-", "_"}).strip() or "agent"
+    run_id = f"{safe_task}-{started}-pid{os.getpid()}"
     os.environ["EPFLEMMA_WORKFLOW_RUN_ID"] = run_id
     return run_id
 
@@ -139,19 +201,46 @@ def save_workflow_live_status(payload: Mapping[str, Any]) -> None:
 
 def append_workflow_activity(event_type: str, message: str, **details: Any) -> None:
     ensure_workflow_state_root()
+    normalized_details = dict(details)
+    normalized_details.setdefault("workflow_kind", str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_KIND", "")))
+    normalized_details.setdefault("workflow_command", str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")))
+    normalized_details.setdefault("active_skill", str(os.getenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "") or os.getenv("OPENGAUSS_NATIVE_ACTIVE_SKILL", "")))
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    run_id = _workflow_run_id()
+    agent_id = str(normalized_details.get("agent_session_id", "") or "")
+    try:
+        delegate_depth = int(normalized_details.get("delegate_depth", 0) or 0)
+    except Exception:
+        delegate_depth = 0
+    task_label = _workflow_task_label(
+        str(normalized_details.get("workflow_kind", "") or ""),
+        str(normalized_details.get("active_skill", "") or ""),
+        delegate_depth,
+    )
     event = {
-        "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "event_id": uuid.uuid4().hex[:12],
+        "timestamp": timestamp,
         "type": event_type,
+        "run_id": run_id,
+        "agent_id": agent_id,
+        "task_label": task_label,
         "message": message,
-        "details": details,
+        "details": normalized_details,
     }
-    with workflow_activity_path().open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, sort_keys=True))
-        handle.write("\n")
+    serialized = json.dumps(event, sort_keys=True)
+    paths = [workflow_run_activity_path(run_id)]
+    if agent_id:
+        paths.append(workflow_agent_activity_path(agent_id, task_label))
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(serialized)
+            handle.write("\n")
 
 
-def _read_all_workflow_activity() -> list[dict[str, Any]]:
-    path = workflow_activity_path()
+def _read_activity_file(path: Path | None) -> list[dict[str, Any]]:
+    if path is None:
+        return []
     if not path.is_file():
         return []
     try:
@@ -167,6 +256,10 @@ def _read_all_workflow_activity() -> list[dict[str, Any]]:
         if isinstance(payload, dict):
             events.append(payload)
     return events
+
+
+def _read_all_workflow_activity() -> list[dict[str, Any]]:
+    return _read_activity_file(workflow_latest_run_activity_path())
 
 
 def read_workflow_agent_inbox(agent_id: str) -> list[dict[str, Any]]:
@@ -436,6 +529,9 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
                 "agent_id": agent_id,
                 "parent_agent_id": "",
                 "project_root": "",
+                "task_label": "",
+                "workflow_kind": "",
+                "active_skill": "",
                 "delegate_depth": 0,
                 "model": "",
                 "provider": "",
@@ -456,10 +552,21 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
         project_root = str(details.get("project_root", "") or "")
         if project_root:
             summary["project_root"] = project_root
+        workflow_kind = str(details.get("workflow_kind", "") or "")
+        if workflow_kind:
+            summary["workflow_kind"] = workflow_kind
+        active_skill = str(details.get("active_skill", "") or "")
+        if active_skill:
+            summary["active_skill"] = active_skill
         try:
             summary["delegate_depth"] = int(details.get("delegate_depth", summary["delegate_depth"]) or 0)
         except Exception:
             pass
+        summary["task_label"] = _workflow_task_label(
+            str(summary.get("workflow_kind", "") or ""),
+            str(summary.get("active_skill", "") or ""),
+            int(summary.get("delegate_depth", 0) or 0),
+        )
         for key in ("model", "provider", "base_url"):
             value = str(details.get(key, "") or "")
             if value:
