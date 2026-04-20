@@ -167,6 +167,90 @@ def test_run_managed_conversation_calls_interrupt_callback(monkeypatch):
     assert callback_hits["count"] == 1
 
 
+def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeypatch):
+    class _Agent:
+        session_id = "12345"
+        _parent_session_id = ""
+        _delegate_depth = 0
+
+    agent = _Agent()
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    persisted: list[str] = []
+    queue_reads = iter(
+        [
+            [{"seq": 1, "kind": "message", "text": "Try another proof."}],
+            [{"seq": 1, "kind": "message", "text": "Try another proof."}, {"seq": 2, "kind": "exit", "text": "exit"}],
+        ]
+    )
+
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
+
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")))
+    monkeypatch.setattr(runner, "_record_activity", lambda event_type, message, **details: recorded.append((event_type, message, details)))
+    monkeypatch.setattr(runner, "read_workflow_agent_inbox", lambda agent_id: next(queue_reads))
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state: {"message": "ok"})
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: dict(live_state, verified=True))
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: True)
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent, force=False: (history, {"compacted": False}))
+    monkeypatch.setattr(
+        runner,
+        "_run_managed_conversation",
+        lambda *args, **kwargs: {"messages": [{"role": "assistant", "content": "done"}], "interrupted": False},
+    )
+    monkeypatch.setattr(runner, "_record_turn_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {"count": 0, "current": {}})
+    monkeypatch.setattr(runner, "_drive_autonomous_followups", lambda *args, **kwargs: (args[2], {"compacted": False}, {"count": 0, "current": {}}, {"verified": True}))
+    monkeypatch.setattr(runner.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = runner._run_background_control_loop(
+        agent,
+        "system",
+        [{"role": "assistant", "content": "start"}],
+        {"compacted": False},
+        {"count": 0, "current": {}},
+        {"verified": True},
+        {},
+    )
+
+    assert result == 0
+    assert any(event_type == "agent-resume" and details.get("text") == "Try another proof." for event_type, _, details in recorded)
+    assert any(event_type == "runner-exit" for event_type, _, _ in recorded)
+    assert "busy" in persisted
+    assert "exited" in persisted
+
+
+def test_terminate_descendant_agents_records_shutdown_activity(monkeypatch):
+    class _Agent:
+        session_id = "12345"
+        _parent_session_id = ""
+        _delegate_depth = 0
+
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "terminate_workflow_agent_descendants",
+        lambda agent_id: {"success": True, "count": 2, "terminated": ["22222", "33333"], "failed": []},
+    )
+
+    runner._terminate_descendant_agents(_Agent())
+
+    assert any(event_type == "descendants-terminated" for event_type, _, _ in recorded)
+
+
 def test_workflow_startup_guidance_mentions_autonomous_loop():
     text = runner._workflow_startup_guidance("autoprove", "/lean4:autoprove Main.lean")
 
@@ -204,7 +288,7 @@ def test_history_status_lines_summarize_message_counts(monkeypatch):
     assert "Users: 1" in lines
     assert "Assistants: 1" in lines
     assert "Tools: 2" in lines
-    assert "Workflow: autoprove" in lines
+    assert "Workflow: prove" in lines
 
 
 def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
@@ -380,6 +464,52 @@ def test_recommended_verification_command_prefers_module_build(tmp_path, monkeyp
     command = runner._recommended_verification_command(str(active))
 
     assert command == "lake build Demo.Main"
+
+
+def test_recommended_verification_command_falls_back_to_lake_env_lean_for_non_module_file(tmp_path, monkeypatch):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "RealTheorems-homework.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+
+    command = runner._recommended_verification_command(str(active))
+
+    assert command == (
+        "lean-lsp diagnostics/goals on Demo/RealTheorems-homework.lean, "
+        "then final `lake env lean Demo/RealTheorems-homework.lean` when close to clean"
+    )
+
+
+def test_explicit_verification_build_uses_lake_env_lean_for_non_module_file(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "RealTheorems-homework.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+
+    captured: dict[str, object] = {}
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        return _Result()
+
+    monkeypatch.setattr(runner.subprocess, "run", _fake_run)
+
+    ok, status = runner._run_explicit_verification_build(str(active), full_project=False)
+
+    assert ok is True
+    assert captured["cmd"] == ["lake", "env", "lean", "Demo/RealTheorems-homework.lean"]
+    assert captured["cwd"] == str(project)
+    assert status == "lake env lean Demo/RealTheorems-homework.lean succeeded"
 
 
 def test_write_workflow_checkpoint_persists_index_and_current(monkeypatch, tmp_path):

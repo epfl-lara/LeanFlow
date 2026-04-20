@@ -128,7 +128,6 @@ Use `/skills` to see what the agent can currently load and where each skill came
   - `/golf`
   - `/prove`
   - `/formalize`
-  - `/autoprove` and `/autoformalize` as compatibility aliases
 - Local runtime commands:
   - `epflemma models local list`
   - `epflemma models local start`

@@ -4,11 +4,17 @@ from epflemma_cli import native_runner as runner
 from epflemma_cli.workflow_state import (
     append_workflow_run_log,
     append_workflow_activity,
+    enqueue_workflow_agent_message,
     load_workflow_live_status,
     read_workflow_activity,
+    read_workflow_agent_inbox,
     read_workflow_run_log,
+    resolve_workflow_agent_id,
     reset_workflow_run_log,
     summarize_workflow_agents,
+    terminate_workflow_agent,
+    terminate_workflow_agent_descendants,
+    workflow_agent_transcript,
     workflow_runs_root,
     workflow_agent_detail,
 )
@@ -127,6 +133,7 @@ def test_workflow_agent_summary_groups_events(monkeypatch, tmp_path):
         "conversation-start",
         "Agent conversation started",
         agent_session_id="agent-main",
+        process_id=12345,
         model="google/gemma-4-31B-it",
         provider="custom",
         delegate_depth=0,
@@ -159,7 +166,147 @@ def test_workflow_agent_summary_groups_events(monkeypatch, tmp_path):
     assert summaries[0]["status"] == "completed"
     assert summaries[0]["api_calls"] == 1
     assert summaries[0]["model"] == "google/gemma-4-31B-it"
+    assert summaries[0]["process_id"] == 12345
 
     detail = workflow_agent_detail("agent-main", activity_limit=2)
     assert detail["agent_id"] == "agent-main"
     assert len(detail["recent_activity"]) == 2
+
+
+def test_workflow_agent_resolution_and_termination(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="12345",
+        process_id=24680,
+    )
+
+    assert resolve_workflow_agent_id("123") == "12345"
+
+    captured: dict[str, tuple[int, int]] = {}
+
+    def _fake_killpg(pid: int, sig: int) -> None:
+        captured["killpg"] = (pid, sig)
+
+    monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
+
+    result = terminate_workflow_agent("123")
+
+    assert result["success"] is True
+    assert result["agent_id"] == "12345"
+    assert captured["killpg"][0] == 24680
+
+
+def test_workflow_agent_descendant_termination(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    append_workflow_activity("conversation-start", "start", agent_session_id="11111", process_id=101)
+    append_workflow_activity("conversation-start", "start", agent_session_id="22222", parent_agent_session_id="11111", process_id=202)
+    append_workflow_activity("conversation-start", "start", agent_session_id="33333", parent_agent_session_id="22222", process_id=303)
+
+    killed: list[int] = []
+
+    def _fake_killpg(pid: int, sig: int) -> None:
+        killed.append(pid)
+
+    monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
+
+    result = terminate_workflow_agent_descendants("11111")
+
+    assert result["success"] is True
+    assert result["count"] == 2
+    assert set(result["terminated"]) == {"22222", "33333"}
+    assert killed == [303, 202] or killed == [202, 303]
+
+
+def test_workflow_agent_transcript_collects_recent_interactions(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="54321",
+        user_message="Prove theorem foo",
+    )
+    append_workflow_activity(
+        "assistant-response",
+        "Assistant response received",
+        agent_session_id="54321",
+        content="I will inspect diagnostics first.",
+    )
+    append_workflow_activity(
+        "tool-call",
+        "Tool call: terminal",
+        agent_session_id="54321",
+        tool="terminal",
+    )
+
+    transcript = workflow_agent_transcript("54321", limit=5)
+
+    assert transcript[0]["role"] == "user"
+    assert transcript[0]["content"] == "Prove theorem foo"
+    assert transcript[1]["role"] == "assistant"
+    assert "inspect diagnostics" in transcript[1]["content"]
+    assert transcript[2]["role"] == "tool-call"
+
+
+def test_workflow_agent_transcript_uses_specific_tool_previews(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    append_workflow_activity(
+        "assistant-response",
+        "Assistant response received",
+        agent_session_id="55555",
+        content="",
+        tool_calls=[
+            {
+                "name": "patch",
+                "arguments": '{"path":"./GaussTest/GaussTest/RealTheorems-homework.lean","mode":"replace"}',
+            }
+        ],
+    )
+    append_workflow_activity(
+        "tool-result",
+        "Tool result: patch",
+        agent_session_id="55555",
+        tool="patch",
+        is_error=False,
+        result='{"success":true,"files_modified":["./GaussTest/GaussTest/RealTheorems-homework.lean"],"diff":"@@ -1 +1 @@\\n-old\\n+new\\n"}',
+    )
+
+    transcript = workflow_agent_transcript("55555", limit=4)
+
+    assert transcript[0]["role"] == "assistant"
+    assert "Edit ./GaussTest/GaussTest/RealTheorems-homework.lean (replace)" in transcript[0]["content"]
+    assert transcript[1]["role"] == "tool-result"
+    assert "updated ./GaussTest/GaussTest/RealTheorems-homework.lean" in transcript[1]["content"]
+    assert "1 hunk(s)" in transcript[1]["content"]
+
+
+def test_workflow_agent_queue_and_waiting_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="12345",
+        process_id=24680,
+        model="zai-org/GLM-5",
+    )
+    append_workflow_activity(
+        "agent-awaiting-input",
+        "Background workflow agent is waiting for input",
+        agent_session_id="12345",
+        process_id=24680,
+        status="verified",
+    )
+
+    result = enqueue_workflow_agent_message("12345", "Try a different proof strategy.")
+
+    assert result["success"] is True
+    inbox = read_workflow_agent_inbox("12345")
+    assert inbox[-1]["text"] == "Try a different proof strategy."
+
+    summaries = summarize_workflow_agents(activity_limit=4)
+    assert summaries[0]["status"] == "queued"
+
+    transcript = workflow_agent_transcript("12345", limit=6)
+    assert transcript[-1]["role"] == "user"
+    assert "different proof strategy" in transcript[-1]["content"]

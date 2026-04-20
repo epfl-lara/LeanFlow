@@ -27,8 +27,8 @@ WORKFLOW_ALIAS_MAP = {
     "/golf": ("golf", "/golf", "/lean4:golf"),
     "/prove": ("autoprove", "/prove", "/lean4:autoprove"),
     "/formalize": ("autoformalize", "/formalize", "/lean4:autoformalize"),
-    "/autoprove": ("autoprove", "/autoprove", "/lean4:autoprove"),
-    "/autoformalize": ("autoformalize", "/autoformalize", "/lean4:autoformalize"),
+    "/autoprove": ("autoprove", "/prove", "/lean4:autoprove"),
+    "/autoformalize": ("autoformalize", "/formalize", "/lean4:autoformalize"),
 }
 
 
@@ -40,8 +40,8 @@ FORGIVING_WORKFLOW_ALIAS_MAP = {
     "golf": "/golf",
     "prove": "/prove",
     "formalize": "/formalize",
-    "autoprove": "/autoprove",
-    "autoformalize": "/autoformalize",
+    "autoprove": "/prove",
+    "autoformalize": "/formalize",
 }
 
 
@@ -74,9 +74,12 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
     provider_label = provider
     if provider == "local" and runtime_name:
         provider_label = f"local:{runtime_name}"
+    frontend_command = plan.workflow.canonical_command
+    if plan.workflow.workflow_args:
+        frontend_command = f"{frontend_command} {plan.workflow.workflow_args}"
     return {
         "workflow": plan.workflow.canonical_command.lstrip("/"),
-        "command": plan.workflow.backend_command,
+        "command": frontend_command,
         "project": plan.project.label,
         "project_root": str(plan.project.root),
         "provider": provider_label,
@@ -218,6 +221,35 @@ def load_default_model() -> str:
     return "zai-org/GLM-5"
 
 
+def spawn_workflow(
+    command: str,
+    *,
+    active_cwd: str | os.PathLike[str] | None = None,
+    requested_provider: str | None = None,
+    active_skill: str | None = None,
+    interactive: bool = False,
+) -> tuple[NativeLaunchPlan, subprocess.Popen[bytes]]:
+    plan = resolve_workflow_request(
+        command,
+        active_cwd=active_cwd,
+        requested_provider=requested_provider,
+        active_skill=active_skill,
+    )
+    child_env = dict(plan.child_env)
+    child_env["EPFLEMMA_NATIVE_INTERACTIVE"] = "1" if interactive else "0"
+    child_env["OPENGAUSS_NATIVE_INTERACTIVE"] = "1" if interactive else "0"
+    process = subprocess.Popen(
+        plan.argv,
+        cwd=str(plan.project.root),
+        env=child_env,
+        stdin=subprocess.DEVNULL if not interactive else None,
+        stdout=subprocess.DEVNULL if not interactive else None,
+        stderr=subprocess.DEVNULL if not interactive else None,
+        start_new_session=not interactive,
+    )
+    return plan, process
+
+
 def run_workflow(
     command: str,
     *,
@@ -225,11 +257,12 @@ def run_workflow(
     requested_provider: str | None = None,
     active_skill: str | None = None,
 ) -> int:
-    plan = resolve_workflow_request(
+    plan, process = spawn_workflow(
         command,
         active_cwd=active_cwd,
         requested_provider=requested_provider,
         active_skill=active_skill,
+        interactive=True,
     )
-    process = subprocess.run(plan.argv, cwd=str(plan.project.root), env=plan.child_env, check=False)
+    process.wait()
     return process.returncode

@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from epflemma_cli import __version__
 from epflemma_cli.branding import (
@@ -212,6 +213,51 @@ def render_swarm_agent_panel(console: Console, *, agent: dict[str, object], rece
                 str(event.get("preview", "") or ""),
             )
         console.print(activity_table)
+
+
+def render_swarm_transcript(console: Console, *, agent: dict[str, object], transcript: list[dict[str, object]]) -> None:
+    title = str(agent.get("agent_id", "") or "[unknown]")
+    header = Table.grid(padding=(0, 1))
+    header.add_column(style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
+    header.add_column(style=BRAND_COLORS["text"])
+    header.add_row("Agent", title)
+    header.add_row("State", str(agent.get("status", "") or "[unknown]"))
+    header.add_row("Model", str(agent.get("model", "") or "[unknown]"))
+    header.add_row("Parent", str(agent.get("parent_agent_id", "") or "[root]"))
+    console.print(Panel(header, title=f"[bold {BRAND_COLORS['primary']}]Swarm View[/]", subtitle="[dim]recent agent transcript[/]", border_style=BRAND_COLORS["panel"], box=box.SQUARE))
+
+    if not transcript:
+        console.print("[dim]No transcript events recorded for this agent yet.[/]")
+        return
+
+    console.print()
+    for entry in transcript:
+        render_swarm_transcript_entry(console, entry=entry)
+
+
+def render_swarm_transcript_entry(console: Console, *, entry: dict[str, object]) -> None:
+    role = str(entry.get("role", "") or "event")
+    timestamp = str(entry.get("timestamp", "") or "")[-8:]
+    content = str(entry.get("content", "") or "").strip() or "[no content]"
+    if role == "user":
+        label = "User"
+        style = BRAND_COLORS["primary_soft"]
+    elif role == "assistant":
+        label = "Agent"
+        style = BRAND_COLORS["text"]
+    elif role == "tool-call":
+        label = "Tool Call"
+        style = BRAND_COLORS["primary_dim"]
+    elif role == "tool-result":
+        label = "Tool Result"
+        style = BRAND_COLORS["muted"]
+    else:
+        label = "Event"
+        style = BRAND_COLORS["muted"]
+    body = Text()
+    body.append(f"{timestamp}  {label}\n", style=f"bold {style}")
+    body.append(content, style=BRAND_COLORS["text"])
+    console.print(Panel(body, border_style=BRAND_COLORS["panel"], box=box.SQUARE, padding=(0, 1)))
 
 
 def render_status_panel(
