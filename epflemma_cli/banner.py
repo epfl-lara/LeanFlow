@@ -36,6 +36,11 @@ EPFL_EMMA_WORDMARK = "\n".join(
 
 MISSION_LINE = "Dedicated to verified Lean proving and autoformalization"
 
+WORKFLOW_DISPLAY_NAMES = {
+    "autoprove": "prove",
+    "autoformalize": "formalize",
+}
+
 
 def _shorten_middle(text: str, max_len: int) -> str:
     if max_len <= 0 or len(text) <= max_len:
@@ -79,18 +84,19 @@ def build_welcome_banner(
     if simplified:
         right.add_row(f"[bold {BRAND_COLORS['primary']}]Start Here[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/project init[/]  [dim]register this Lean repo[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/autoprove Main.lean[/]  [dim]autonomous proving loop[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/autoformalize \"statement\"[/]  [dim]autonomous formalization[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/prove Main.lean[/]  [dim]autonomous proving loop[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/formalize \"statement\"[/]  [dim]autonomous formalization[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/project[/]  [dim]current Lean workspace[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/help[/]  [dim]all commands[/]")
     else:
         right.add_row(f"[bold {BRAND_COLORS['primary']}]Launch Paths[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/project init[/]  [dim]register an existing Lean 4 repo[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/autoprove Main.lean[/]  [dim]autonomous proving loop[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/autoprove Main.lean --agents 3[/]  [dim]user-approved Lean swarm[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/autoformalize \"statement\"[/]  [dim]autonomous formalization[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/prove Main.lean[/]  [dim]autonomous proving loop[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/prove Main.lean --agents 3[/]  [dim]user-approved Lean swarm[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/formalize \"statement\"[/]  [dim]autonomous formalization[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/project[/]  [dim]show current Lean workspace[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/status[/]  [dim]live project and runner state[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/swarm[/]  [dim]active workflow agents and recent output[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/workflow activity[/]  [dim]recent managed steps[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/workflow log 120[/]  [dim]saved managed runner log[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/help[/]  [dim]command catalog and tips[/]")
@@ -129,7 +135,7 @@ def build_welcome_banner(
     footer.add_column(justify="right")
     footer.add_row(
         f"[{BRAND_COLORS['muted']}]Prompt-centered Lean shell via `{cli_name}`[/]",
-        f"[{BRAND_COLORS['muted']}]Try /project, /help, or autoprove Main.lean[/]",
+        f"[{BRAND_COLORS['muted']}]Try /project, /help, or prove Main.lean[/]",
     )
     console.print(footer)
 
@@ -145,10 +151,67 @@ def render_help(console: Console) -> None:
         console.print(f"[bold {BRAND_COLORS['primary']}]{category}[/]")
         console.print(table)
     console.print()
-    console.print("[dim]Tip: workflow commands also accept forgiving forms like `autoprove Main.lean` without the leading slash.[/]")
-    console.print("[dim]Tip: add `--agents N` to `autoprove` or `autoformalize` only when you explicitly want user-approved swarm mode.[/]")
+    console.print("[dim]Tip: workflow commands also accept forgiving forms like `prove Main.lean` without the leading slash.[/]")
+    console.print("[dim]Tip: add `--agents N` to `prove` or `formalize` only when you explicitly want user-approved swarm mode.[/]")
     console.print("[dim]Tip: use `/provider local`, `/provider zai`, or `/provider custom` to inspect how a request will resolve before launching a workflow.[/]")
     console.print("[dim]Tip: use `/workflow activity` for structured managed steps and `/workflow log 120` for the full saved runner log.[/]")
+
+
+def render_swarm_table(console: Console, *, agents: list[dict[str, object]]) -> None:
+    table = Table(box=box.SIMPLE_HEAD, pad_edge=False)
+    table.add_column("Agent", style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
+    table.add_column("State", style=BRAND_COLORS["primary_dim"], no_wrap=True)
+    table.add_column("Depth", style=BRAND_COLORS["text"], no_wrap=True)
+    table.add_column("Model", style=BRAND_COLORS["text"])
+    table.add_column("Calls", style=BRAND_COLORS["text"], no_wrap=True)
+    table.add_column("Last Update", style=BRAND_COLORS["muted"], no_wrap=True)
+    table.add_column("Latest", style=BRAND_COLORS["text"])
+    for agent in agents:
+        agent_id = str(agent.get("agent_id", "") or "")
+        table.add_row(
+            _shorten_middle(agent_id, 18),
+            str(agent.get("status", "") or "active"),
+            str(agent.get("delegate_depth", 0)),
+            _shorten_middle(str(agent.get("model", "") or "[unknown]"), 28),
+            str(agent.get("api_calls", 0)),
+            str(agent.get("last_event_at", "") or "")[-8:],
+            str(agent.get("last_message", "") or ""),
+        )
+    console.print(table)
+
+
+def render_swarm_agent_panel(console: Console, *, agent: dict[str, object], recent_limit: int = 5) -> None:
+    table = Table.grid(padding=(0, 1))
+    table.add_column(style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
+    table.add_column(style=BRAND_COLORS["text"])
+    table.add_row("Agent", str(agent.get("agent_id", "") or "[unknown]"))
+    table.add_row("Parent", str(agent.get("parent_agent_id", "") or "[root]"))
+    table.add_row("State", str(agent.get("status", "") or "[unknown]"))
+    table.add_row("Depth", str(agent.get("delegate_depth", 0)))
+    table.add_row("Model", str(agent.get("model", "") or "[unknown]"))
+    table.add_row("Provider", str(agent.get("provider", "") or "[unknown]"))
+    table.add_row("Base URL", str(agent.get("base_url", "") or "[unknown]"))
+    table.add_row("API calls", str(agent.get("api_calls", 0)))
+    table.add_row("Tool calls", str(agent.get("tool_calls", 0)))
+    table.add_row("Started", str(agent.get("started_at", "") or "[unknown]"))
+    table.add_row("Finished", str(agent.get("finished_at", "") or "[active]"))
+    console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]Workflow Agent[/]", subtitle="[dim]agent detail[/]", border_style=BRAND_COLORS["panel"], box=box.SQUARE))
+
+    recent = agent.get("recent_activity")
+    if isinstance(recent, list) and recent:
+        console.print()
+        console.print(f"[bold {BRAND_COLORS['primary']}]Recent Agent Activity[/]")
+        activity_table = Table(box=box.SIMPLE_HEAD, pad_edge=False)
+        activity_table.add_column("Time", style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
+        activity_table.add_column("Type", style=BRAND_COLORS["primary_dim"], no_wrap=True)
+        activity_table.add_column("Preview", style=BRAND_COLORS["text"])
+        for event in recent[-max(1, recent_limit):]:
+            activity_table.add_row(
+                str(event.get("timestamp", "") or "")[-8:],
+                str(event.get("type", "") or ""),
+                str(event.get("preview", "") or ""),
+            )
+        console.print(activity_table)
 
 
 def render_status_panel(
@@ -244,11 +307,13 @@ def render_workflow_launch(console: Console, *, launch_summary: dict[str, str]) 
 
 
 def render_workflow_status_panel(console: Console, *, status: dict[str, object], activities: list[dict[str, object]] | None = None) -> None:
+    workflow_name = str(status.get("workflow_kind", "[none]") or "[none]")
+    workflow_name = WORKFLOW_DISPLAY_NAMES.get(workflow_name, workflow_name)
     table = Table.grid(padding=(0, 1))
     table.add_column(style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
     table.add_column(style=BRAND_COLORS["text"])
     table.add_row("Phase", str(status.get("phase", "[none]")))
-    table.add_row("Workflow", str(status.get("workflow_kind", "[none]")))
+    table.add_row("Workflow", workflow_name)
     table.add_row("Command", str(status.get("workflow_command", "[none]")))
     table.add_row("Project", str(status.get("project_root", "[none]")))
     table.add_row("Provider", str(status.get("provider", "[none]")))

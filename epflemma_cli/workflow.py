@@ -25,6 +25,8 @@ WORKFLOW_ALIAS_MAP = {
     "/checkpoint": ("checkpoint", "/checkpoint", "/lean4:checkpoint"),
     "/refactor": ("refactor", "/refactor", "/lean4:refactor"),
     "/golf": ("golf", "/golf", "/lean4:golf"),
+    "/prove": ("autoprove", "/prove", "/lean4:autoprove"),
+    "/formalize": ("autoformalize", "/formalize", "/lean4:autoformalize"),
     "/autoprove": ("autoprove", "/autoprove", "/lean4:autoprove"),
     "/autoformalize": ("autoformalize", "/autoformalize", "/lean4:autoformalize"),
 }
@@ -36,6 +38,8 @@ FORGIVING_WORKFLOW_ALIAS_MAP = {
     "checkpoint": "/checkpoint",
     "refactor": "/refactor",
     "golf": "/golf",
+    "prove": "/prove",
+    "formalize": "/formalize",
     "autoprove": "/autoprove",
     "autoformalize": "/autoformalize",
 }
@@ -71,7 +75,7 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
     if provider == "local" and runtime_name:
         provider_label = f"local:{runtime_name}"
     return {
-        "workflow": plan.workflow.workflow_kind,
+        "workflow": plan.workflow.canonical_command.lstrip("/"),
         "command": plan.workflow.backend_command,
         "project": plan.project.label,
         "project_root": str(plan.project.root),

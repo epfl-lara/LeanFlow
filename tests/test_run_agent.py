@@ -284,6 +284,23 @@ def test_emit_workflow_event_forwards_full_details(monkeypatch):
     assert captured["message"] == "Assistant response received"
     assert captured["details"]["content"] == "x" * 400
 
+
+def test_workflow_agent_event_details_include_session_metadata(agent):
+    agent.session_id = "agent-123"
+    agent._delegate_depth = 1
+    agent._parent_session_id = "parent-456"
+    agent.provider = "custom"
+    agent.api_mode = "chat"
+    agent.base_url = "https://example.invalid/v1"
+
+    details = run_agent._workflow_agent_event_details(agent, iteration=4)
+
+    assert details["agent_session_id"] == "agent-123"
+    assert details["parent_agent_session_id"] == "parent-456"
+    assert details["delegate_depth"] == 1
+    assert details["iteration"] == 4
+    assert details["base_url"] == "https://example.invalid/v1"
+
     def test_single_block_removed(self, agent):
         result = agent._strip_think_blocks("<think>reasoning</think> answer")
         assert "reasoning" not in result

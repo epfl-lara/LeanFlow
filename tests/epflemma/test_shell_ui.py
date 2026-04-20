@@ -4,7 +4,7 @@ from rich.console import Console
 
 from epflemma_cli.banner import render_help
 from epflemma_cli.main import InteractiveShell, main
-from epflemma_cli.workflow_state import append_workflow_run_log, reset_workflow_run_log
+from epflemma_cli.workflow_state import append_workflow_activity, append_workflow_run_log, reset_workflow_run_log
 from epflemma_cli.runtime_provider import list_runtime_provider_targets
 from epflemma_cli.workflow import NativeLaunchPlan, NativeWorkflowSpec, describe_launch_plan
 
@@ -19,7 +19,7 @@ def test_render_help_mentions_forgiving_workflow_commands():
     assert "/provider" in output
     assert "/workflow" in output
     assert "/skills" in output
-    assert "autoprove Main.lean" in output
+    assert "prove Main.lean" in output
     assert "/workflow log 120" in output
 
 
@@ -92,6 +92,58 @@ def test_interactive_workflow_log_prints_saved_runner_log(monkeypatch, tmp_path,
     output = capsys.readouterr().out
     assert "beta" in output
     assert "gamma" in output
+
+
+def test_swarm_command_renders_agent_table(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="agent-main",
+        model="google/gemma-4-31B-it",
+        provider="custom",
+        delegate_depth=0,
+    )
+    append_workflow_activity(
+        "assistant-response",
+        "Assistant response received",
+        agent_session_id="agent-main",
+        content="Inspecting theorem and diagnostics.",
+    )
+
+    shell = InteractiveShell()
+
+    assert shell._run_swarm_command([]) == 0
+    output = capsys.readouterr().out
+    assert "agent-main" in output
+    assert "active" in output
+
+
+def test_status_agent_detail_renders_recent_activity(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="agent-child",
+        parent_agent_session_id="agent-main",
+        delegate_depth=1,
+        model="zai-org/GLM-5",
+    )
+    append_workflow_activity(
+        "tool-result",
+        "Tool result: terminal",
+        agent_session_id="agent-child",
+        tool="terminal",
+        is_error=False,
+    )
+
+    shell = InteractiveShell()
+
+    assert shell.show_status(["agent-child", "2"]) == 0
+    output = capsys.readouterr().out
+    assert "agent-child" in output
+    assert "agent-main" in output
+    assert "terminal completed" in output
 
 
 def test_prompt_message_includes_project_and_phase(monkeypatch, tmp_path):

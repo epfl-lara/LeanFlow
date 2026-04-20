@@ -25,6 +25,8 @@ from epflemma_cli.banner import (
     render_skill_panel,
     render_skill_table,
     render_status_panel,
+    render_swarm_agent_panel,
+    render_swarm_table,
     render_workflow_status_panel,
     render_workflow_launch,
 )
@@ -67,6 +69,8 @@ from epflemma_cli.workflow_state import (
     load_workflow_live_status,
     read_workflow_activity,
     read_workflow_run_log,
+    summarize_workflow_agents,
+    workflow_agent_detail,
 )
 
 
@@ -76,6 +80,8 @@ WORKFLOW_COMMANDS = {
     "/checkpoint",
     "/refactor",
     "/golf",
+    "/prove",
+    "/formalize",
     "/autoprove",
     "/autoformalize",
 }
@@ -266,6 +272,9 @@ class InteractiveShell:
     def _workflow_activity(self, limit: int = 8) -> list[dict[str, Any]]:
         return read_workflow_activity(limit=limit)
 
+    def _workflow_agents(self, activity_limit: int = 5) -> list[dict[str, Any]]:
+        return summarize_workflow_agents(activity_limit=activity_limit)
+
     def _model_label(self) -> str:
         config = load_config()
         model_cfg = config.get("model")
@@ -386,7 +395,8 @@ class InteractiveShell:
     def show_help(self) -> None:
         render_help(self.console)
 
-    def show_status(self) -> None:
+    def show_status(self, argv: list[str] | None = None) -> int:
+        argv = argv or []
         render_status_panel(
             self.console,
             cwd=self.cwd,
@@ -397,9 +407,56 @@ class InteractiveShell:
             home=get_epflemma_home(),
         )
         workflow_status = self._workflow_status_payload()
+        if argv:
+            agent_id = argv[0]
+            recent_limit = 5
+            if len(argv) > 1:
+                try:
+                    recent_limit = max(1, int(argv[1]))
+                except ValueError:
+                    self.console.print("[dim]Usage: /status [agent-id] [recent-events][/]")
+                    return 1
+            agent = workflow_agent_detail(agent_id, activity_limit=recent_limit)
+            if not agent:
+                self.console.print()
+                self.console.print(f"[bold red]Agent not found:[/] {agent_id}")
+                return 1
+            self.console.print()
+            render_swarm_agent_panel(self.console, agent=agent, recent_limit=recent_limit)
+            return 0
         if workflow_status:
             self.console.print()
             render_workflow_status_panel(self.console, status=workflow_status, activities=self._workflow_activity(limit=6))
+        agents = self._workflow_agents(activity_limit=4)
+        if agents:
+            self.console.print()
+            self.console.print("[bold #5DB8F5]Workflow Agents[/]")
+            render_swarm_table(self.console, agents=agents)
+        return 0
+
+    def _run_swarm_command(self, argv: list[str]) -> int:
+        agents = self._workflow_agents(activity_limit=8)
+        if not argv:
+            if not agents:
+                self.console.print("[dim]No workflow agents have been recorded yet.[/]")
+                return 1
+            render_swarm_table(self.console, agents=agents)
+            return 0
+
+        agent_id = argv[0]
+        recent_limit = 5
+        if len(argv) > 1:
+            try:
+                recent_limit = max(1, int(argv[1]))
+            except ValueError:
+                self.console.print("[dim]Usage: /swarm [agent-id] [recent-events][/]")
+                return 1
+        agent = workflow_agent_detail(agent_id, activity_limit=recent_limit)
+        if not agent:
+            self.console.print(f"[bold red]Agent not found:[/] {agent_id}")
+            return 1
+        render_swarm_agent_panel(self.console, agent=agent, recent_limit=recent_limit)
+        return 0
 
     def _render_workflow_history(self) -> None:
         checkpoints = list(reversed(load_workflow_checkpoints()))
@@ -654,8 +711,21 @@ class InteractiveShell:
         if stripped in {"/help", "help"}:
             self.show_help()
             return True
-        if stripped == "/status":
-            self.show_status()
+        if stripped == "/status" or stripped.startswith("/status "):
+            try:
+                argv = shlex.split(stripped)[1:]
+            except ValueError as exc:
+                self.console.print(f"[bold red]{exc}[/]")
+                return True
+            self.show_status(argv)
+            return True
+        if stripped == "/swarm" or stripped.startswith("/swarm "):
+            try:
+                argv = shlex.split(stripped)[1:]
+            except ValueError as exc:
+                self.console.print(f"[bold red]{exc}[/]")
+                return True
+            self._run_swarm_command(argv)
             return True
         if stripped == "/goals":
             self._print_live_section("goals")
