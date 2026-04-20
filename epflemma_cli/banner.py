@@ -161,6 +161,7 @@ def render_help(console: Console) -> None:
 def render_swarm_table(console: Console, *, agents: list[dict[str, object]]) -> None:
     table = Table(box=box.SIMPLE_HEAD, pad_edge=False)
     table.add_column("Agent", style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
+    table.add_column("Task", style=BRAND_COLORS["text"], no_wrap=True)
     table.add_column("State", style=BRAND_COLORS["primary_dim"], no_wrap=True)
     table.add_column("Depth", style=BRAND_COLORS["text"], no_wrap=True)
     table.add_column("Model", style=BRAND_COLORS["text"])
@@ -171,6 +172,7 @@ def render_swarm_table(console: Console, *, agents: list[dict[str, object]]) -> 
         agent_id = str(agent.get("agent_id", "") or "")
         table.add_row(
             _shorten_middle(agent_id, 18),
+            str(agent.get("task_label", "") or "agent"),
             str(agent.get("status", "") or "active"),
             str(agent.get("delegate_depth", 0)),
             _shorten_middle(str(agent.get("model", "") or "[unknown]"), 28),
@@ -186,6 +188,7 @@ def render_swarm_agent_panel(console: Console, *, agent: dict[str, object], rece
     table.add_column(style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
     table.add_column(style=BRAND_COLORS["text"])
     table.add_row("Agent", str(agent.get("agent_id", "") or "[unknown]"))
+    table.add_row("Task", str(agent.get("task_label", "") or "agent"))
     table.add_row("Parent", str(agent.get("parent_agent_id", "") or "[root]"))
     table.add_row("State", str(agent.get("status", "") or "[unknown]"))
     table.add_row("Depth", str(agent.get("delegate_depth", 0)))
@@ -221,6 +224,7 @@ def render_swarm_transcript(console: Console, *, agent: dict[str, object], trans
     header.add_column(style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
     header.add_column(style=BRAND_COLORS["text"])
     header.add_row("Agent", title)
+    header.add_row("Task", str(agent.get("task_label", "") or "agent"))
     header.add_row("State", str(agent.get("status", "") or "[unknown]"))
     header.add_row("Model", str(agent.get("model", "") or "[unknown]"))
     header.add_row("Parent", str(agent.get("parent_agent_id", "") or "[root]"))

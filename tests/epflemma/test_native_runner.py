@@ -408,6 +408,7 @@ def test_tool_progress_callback_persists_structured_events(monkeypatch, tmp_path
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
+    runner._CURRENT_AGENT_ACTIVITY_DETAILS = {"agent_session_id": "12345", "delegate_depth": 0}
 
     runner._tool_progress_callback("terminal", "Run lake build", {"command": "lake build"})
     runner._tool_progress_callback("_thinking", "Inspecting theorem and diagnostics")
@@ -416,6 +417,8 @@ def test_tool_progress_callback_persists_structured_events(monkeypatch, tmp_path
     events = read_workflow_activity(limit=3)
 
     assert [event["type"] for event in events] == ["tool-start", "assistant-plan", "api-call"]
+    assert events[0]["agent_id"] == "12345"
+    assert events[0]["task_label"] == "prove"
     assert events[0]["details"]["tool"] == "terminal"
     assert events[2]["details"]["iteration"] == 3
 

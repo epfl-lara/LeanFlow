@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from epflemma_cli import native_runner as runner
 from epflemma_cli.workflow_state import (
     append_workflow_run_log,
@@ -12,6 +14,9 @@ from epflemma_cli.workflow_state import (
     resolve_workflow_agent_id,
     reset_workflow_run_log,
     summarize_workflow_agents,
+    workflow_agent_activity_path,
+    workflow_latest_run_activity_path,
+    workflow_run_activity_path,
     terminate_project_workflow_agents,
     terminate_all_workflow_agents,
     terminate_workflow_agent,
@@ -109,23 +114,64 @@ def test_workflow_run_log_round_trip(monkeypatch, tmp_path):
 
 def test_workflow_run_log_creates_timestamped_copy(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.delenv("EPFLEMMA_WORKFLOW_RUN_ID", raising=False)
 
     reset_workflow_run_log()
     append_workflow_run_log("alpha\nbeta\n")
 
     run_logs = list(workflow_runs_root().glob("*.log"))
     assert len(run_logs) == 1
+    assert run_logs[0].name.startswith("prove-")
     assert run_logs[0].read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 
 def test_workflow_activity_preserves_full_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
     full_text = "x" * 500
 
     append_workflow_activity("assistant-response", "Assistant response received", content=full_text)
 
     events = read_workflow_activity(limit=1)
+    assert events[0]["event_id"]
+    assert events[0]["run_id"]
+    assert events[0]["timestamp"]
+    assert events[0]["task_label"] == "prove"
     assert events[0]["details"]["content"] == full_text
+
+
+def test_workflow_activity_writes_run_and_agent_jsonl_streams(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.delenv("EPFLEMMA_WORKFLOW_RUN_ID", raising=False)
+
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="12345",
+        workflow_kind="autoprove",
+        active_skill="lean-proof-loop",
+    )
+
+    latest_run_path = workflow_latest_run_activity_path()
+    assert latest_run_path is not None
+    root_events = latest_run_path.read_text(encoding="utf-8").splitlines()
+    root_event = json.loads(root_events[0])
+    run_path = workflow_run_activity_path(root_event["run_id"])
+    agent_path = workflow_agent_activity_path("12345", "prove")
+
+    assert run_path.is_file()
+    assert agent_path.is_file()
+    assert not (tmp_path / "home" / "workflow-state" / "activity.jsonl").exists()
+
+    run_event = json.loads(run_path.read_text(encoding="utf-8").splitlines()[0])
+    agent_event = json.loads(agent_path.read_text(encoding="utf-8").splitlines()[0])
+
+    assert run_event["event_id"] == root_event["event_id"]
+    assert agent_event["agent_id"] == "12345"
+    assert agent_event["task_label"] == "prove"
 
 
 def test_workflow_agent_summary_groups_events(monkeypatch, tmp_path):
@@ -169,10 +215,28 @@ def test_workflow_agent_summary_groups_events(monkeypatch, tmp_path):
     assert summaries[0]["api_calls"] == 1
     assert summaries[0]["model"] == "google/gemma-4-31B-it"
     assert summaries[0]["process_id"] == 12345
+    assert summaries[0]["task_label"] == "agent"
 
     detail = workflow_agent_detail("agent-main", activity_limit=2)
     assert detail["agent_id"] == "agent-main"
     assert len(detail["recent_activity"]) == 2
+
+
+def test_workflow_agent_summary_uses_workflow_task_label(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="12345",
+        process_id=24680,
+        workflow_kind="autoprove",
+        active_skill="lean-proof-loop",
+    )
+
+    summaries = summarize_workflow_agents(activity_limit=1)
+
+    assert summaries[0]["task_label"] == "prove"
 
 
 def test_workflow_agent_resolution_and_termination(monkeypatch, tmp_path):
