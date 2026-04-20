@@ -212,10 +212,10 @@ def load_default_model() -> str:
     config = load_config()
     model_cfg = config.get("model")
     if isinstance(model_cfg, Mapping):
-        return str(model_cfg.get("default", "google/gemma-4-31B-it") or "google/gemma-4-31B-it")
+        return str(model_cfg.get("default", "zai-org/GLM-5") or "zai-org/GLM-5")
     if isinstance(model_cfg, str) and model_cfg.strip():
         return model_cfg.strip()
-    return "google/gemma-4-31B-it"
+    return "zai-org/GLM-5"
 
 
 def run_workflow(

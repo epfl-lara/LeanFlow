@@ -30,7 +30,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "model": {
-        "default": "google/gemma-4-31B-it",
+        "default": "zai-org/GLM-5",
         "provider": "auto",
         "base_url": "",
         "api_key": "",
@@ -42,7 +42,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "compression": {
         "enabled": True,
         "threshold": 0.50,
-        "summary_model": "google/gemma-4-31B-it",
+        "summary_model": "zai-org/GLM-5",
         "reserved_output_tokens": 20000,
         "prune_tool_output": True,
         "prune_keep_recent_user_turns": 2,
