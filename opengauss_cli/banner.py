@@ -13,7 +13,6 @@ from rich.table import Table
 from opengauss_cli import __version__
 from opengauss_cli.branding import (
     BRAND_COLORS,
-    get_brand_note,
     get_cli_command_name,
     get_product_name,
     get_product_subtitle,
@@ -24,7 +23,6 @@ from opengauss_cli.commands import COMMANDS_BY_CATEGORY
 
 EPFL_EMMA_WORDMARK = "\n".join(
     [
-        f"[bold {BRAND_COLORS['primary']}]■[/]",
         f"[bold {BRAND_COLORS['primary_soft']}]███████╗██████╗ ███████╗██╗     ███████╗███╗   ███╗███╗   ███╗ █████╗[/]",
         f"[bold {BRAND_COLORS['primary_soft']}]██╔════╝██╔══██╗██╔════╝██║     ██╔════╝████╗ ████║████╗ ████║██╔══██╗[/]",
         f"[bold {BRAND_COLORS['primary']}]█████╗  ██████╔╝█████╗  ██║     █████╗  ██╔████╔██║██╔████╔██║███████║[/]",
@@ -117,7 +115,6 @@ def build_welcome_banner(
         f"[bold {BRAND_COLORS['primary_soft']}]prove Main.lean[/]"
         f"[{BRAND_COLORS['text']}] directly.[/]"
     )
-    console.print(f"[dim]{get_brand_note()}[/]")
 
 
 def render_help(console: Console) -> None:

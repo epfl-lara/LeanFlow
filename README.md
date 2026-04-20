@@ -1,6 +1,6 @@
 # EPFLemma
 
-EPFLemma is the visible product identity for this repo: an EPFL-inspired Lean AI for Math shell focused on automated Lean coding agents. The stable executable and install surface remain `opengauss`, so existing local installs and scripts do not break.
+EPFLemma is a Lean AI for Math shell focused on automated Lean coding agents. The command you install and run is still `opengauss`, so existing local setup and scripts stay stable.
 
 The product is optimized for two main jobs:
 
@@ -10,16 +10,6 @@ The product is optimized for two main jobs:
 It installs as `opengauss`, uses `~/.opengauss`, keeps project manifests in `.opengauss/project.yaml`, and can live alongside an existing `gauss` install without overwriting it.
 
 This fork removes the old managed `claude-code` and `codex` backend flow. EPFLemma now runs Lean workflows through its own internal `opengauss-native` runtime and routes inference through direct provider APIs, OpenAI-compatible endpoints such as RCP, or local runtimes such as `vllm`, `ollama`, and `llama.cpp`.
-
-## Brand And Naming
-
-- Visible product name: `EPFLemma`
-- Stable executable: `opengauss`
-- Stable state directory: `~/.opengauss`
-- Stable project manifest: `.opengauss/project.yaml`
-- Visual direction: EPFL-inspired Swiss-red terminal UI, restrained typography, generous whitespace, and Lean-first workflow messaging
-
-The shell branding is inspired by official EPFL brand guidance and the public AI for Math project language around open-source Lean autoformalization tools. It does not use the official EPFL logo and should not be presented as an official EPFL product without the right approval.
 
 ## Product Direction
 
@@ -84,6 +74,15 @@ Removed from the supported product:
 - WhatsApp bridge and other non-Lean platform extras
 
 If you still see references to legacy Gauss-era modules in comments or compatibility fallbacks, treat them as migration residue rather than supported product features.
+
+## Name, CLI, and Paths
+
+- Product name: `EPFLemma`
+- CLI command: `opengauss`
+- State directory: `~/.opengauss`
+- Project manifest: `.opengauss/project.yaml`
+
+The interface is styled around EPFL / Lean / AI-for-math work, but the executable name stays `opengauss` for compatibility and coexistence.
 
 ## Install
 
