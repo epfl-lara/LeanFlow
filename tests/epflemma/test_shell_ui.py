@@ -6,7 +6,7 @@ from epflemma_cli.banner import render_help
 from epflemma_cli.main import InteractiveShell, main
 from epflemma_cli.workflow_state import append_workflow_activity, append_workflow_run_log, load_workflow_live_status, reset_workflow_run_log
 from epflemma_cli.runtime_provider import list_runtime_provider_targets
-from epflemma_cli.workflow import NativeLaunchPlan, NativeWorkflowSpec, describe_launch_plan
+from epflemma_cli.workflow import NativeLaunchPlan, NativeWorkflowSpec, describe_launch_plan, resolve_workflow_request
 
 
 def test_render_help_mentions_forgiving_workflow_commands():
@@ -61,6 +61,31 @@ def test_describe_launch_plan_formats_provider_and_model(tmp_path):
     assert summary["command"] == "/prove Main.lean"
     assert summary["skill"] == "lean-proof-loop"
     assert summary["agents"] == "1"
+
+
+def test_resolve_workflow_request_normalizes_requested_active_file(tmp_path):
+    root = tmp_path / "GaussTest"
+    (root / ".epflemma").mkdir(parents=True)
+    (root / ".epflemma" / "project.yaml").write_text(
+        "schema_version: 1\nname: GaussTest\nkind: lean4\nlean_root: .\ncreated_at: now\npaths:\n  runtime: .epflemma/runtime\n  cache: .epflemma/cache\n  workflows: .epflemma/workflows\nsource:\n  mode: init\n  template_source: ''\nblueprint:\n  markers: []\n",
+        encoding="utf-8",
+    )
+    (root / ".epflemma" / "runtime").mkdir()
+    (root / ".epflemma" / "cache").mkdir()
+    (root / ".epflemma" / "workflows").mkdir()
+    (root / "lakefile.toml").write_text("name = 'GaussTest'\n", encoding="utf-8")
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+    (root / "GaussTest").mkdir()
+    (root / "GaussTest" / "RealTheorems-homework.lean").write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    plan = resolve_workflow_request(
+        "/prove ./GaussTest/GaussTest/RealTheorems-homework.lean",
+        active_cwd=root,
+    )
+
+    assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "GaussTest/RealTheorems-homework.lean"
+    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/lean4:autoprove GaussTest/RealTheorems-homework.lean"
+    assert plan.workflow.workflow_args == "GaussTest/RealTheorems-homework.lean"
 
 
 def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_path, capsys):
@@ -221,7 +246,8 @@ def test_swarm_agent_view_renders_transcript_not_status_panel(monkeypatch, tmp_p
     assert "Following agent output" in output
     assert "lake env lean Demo/RealTheorems-homework.lean" in output
     assert "exit 1: error: type mismatch" in output
-    assert "Enter a follow-up prompt" in output
+    assert "Returning to the main shell" in output
+    assert "Enter a follow-up prompt" not in output
 
 
 def test_swarm_agent_view_can_queue_follow_up_prompt(monkeypatch, tmp_path, capsys):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from itertools import chain, repeat
 
 from epflemma_cli import native_runner as runner
 from epflemma_cli.workflow_state import read_workflow_activity
@@ -251,6 +252,70 @@ def test_terminate_descendant_agents_records_shutdown_activity(monkeypatch):
     assert any(event_type == "descendants-terminated" for event_type, _, _ in recorded)
 
 
+def test_terminate_other_agents_records_shutdown_activity(monkeypatch):
+    class _Agent:
+        session_id = "12345"
+        _parent_session_id = ""
+        _delegate_depth = 0
+
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "terminate_all_workflow_agents",
+        lambda **kwargs: {"success": True, "count": 2, "terminated": ["22222", "33333"], "failed": []},
+    )
+
+    runner._terminate_other_agents(_Agent())
+
+    assert any(event_type == "agents-terminated" for event_type, _, _ in recorded)
+
+
+def test_background_runner_exits_immediately_after_verified_completion(monkeypatch):
+    class _Agent:
+        session_id = "12345"
+        _parent_session_id = ""
+        _delegate_depth = 0
+
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    persisted: list[str] = []
+
+    monkeypatch.setenv("EPFLEMMA_NATIVE_INTERACTIVE", "0")
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(runner, "_build_agent", lambda: _Agent())
+    monkeypatch.setattr(runner, "_managed_system_prompt", lambda: "system")
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_print_header", lambda: None)
+    monkeypatch.setattr(runner, "_startup_user_message", lambda resumed: "start")
+    monkeypatch.setattr(runner, "_attach_live_proof_state", lambda text, live_state: text)
+    monkeypatch.setattr(runner, "_run_managed_conversation", lambda *args, **kwargs: {"messages": [{"role": "assistant", "content": "done"}], "interrupted": False})
+    monkeypatch.setattr(runner, "_record_turn_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_drive_autonomous_followups",
+        lambda *args, **kwargs: (args[2], {"compacted": False}, {}, {"active_file": "/tmp/project/Main.lean", "diagnostics": "no errors found", "goals": "no goals", "sorry_count": 0, "project_sorry_count": 0, "verification_ok": True}),
+    )
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state: {"active_file": "/tmp/project/Main.lean", "diagnostics": "no errors found", "goals": "no goals", "sorry_count": 0, "project_sorry_count": 0})
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: dict(live_state, verification_ok=True))
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: bool(live_state.get("verification_ok")))
+    monkeypatch.setattr(runner, "_terminate_descendant_agents", lambda agent: recorded.append(("terminate", "descendants", {})))
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")))
+    monkeypatch.setattr(runner, "_record_activity", lambda event_type, message, **details: recorded.append((event_type, message, details)))
+
+    assert runner.main() == 0
+    assert "exited" in persisted
+    assert any(event_type == "terminate" for event_type, _, _ in recorded)
+    assert any(event_type == "runner-exit" and "verified completion" in message for event_type, message, _ in recorded)
+
+
 def test_workflow_startup_guidance_mentions_autonomous_loop():
     text = runner._workflow_startup_guidance("autoprove", "/lean4:autoprove Main.lean")
 
@@ -415,14 +480,33 @@ def test_count_project_sorries_ignores_dependencies_and_build_dirs(tmp_path):
 
 def test_live_state_is_not_verified_when_project_still_has_sorries():
     live_state = {
+        "active_file": "/tmp/project/Main.lean",
         "diagnostics": "no errors found",
         "goals": "no goals",
         "build_status": "lake build succeeded",
+        "verification_ok": True,
         "sorry_count": 0,
         "project_sorry_count": 2,
     }
 
     assert runner._live_state_is_verified(live_state) is False
+
+
+def test_live_state_is_not_verified_without_explicit_verification_result():
+    live_state = {
+        "active_file": "/tmp/project/Main.lean",
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake build succeeded",
+        "sorry_count": 0,
+        "project_sorry_count": 0,
+    }
+
+    assert runner._live_state_is_verified(live_state) is False
+
+
+def test_diagnostics_indicate_failure_for_warnings():
+    assert runner._diagnostics_indicate_failure("warning: declaration uses simp") is True
 
 
 def test_promote_live_state_uses_focused_build_before_full_project_build(monkeypatch, tmp_path):
@@ -450,6 +534,7 @@ def test_promote_live_state_uses_focused_build_before_full_project_build(monkeyp
 
     assert calls == [(str(active), True)]
     assert promoted["build_status"] == "lake build Main reported errors: unresolved import"
+    assert promoted["verification_ok"] is False
     assert runner._live_state_is_verified(promoted) is False
 
 
@@ -480,6 +565,32 @@ def test_recommended_verification_command_falls_back_to_lake_env_lean_for_non_mo
         "lean-lsp diagnostics/goals on Demo/RealTheorems-homework.lean, "
         "then final `lake env lean Demo/RealTheorems-homework.lean` when close to clean"
     )
+
+
+def test_resolve_active_file_prefers_configured_active_file(monkeypatch, tmp_path):
+    project = tmp_path / "GaussTest"
+    target = project / "GaussTest" / "RealTheorems-homework.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "GaussTest/RealTheorems-homework.lean")
+
+    resolved = runner._resolve_active_file([])
+
+    assert resolved == str(target.resolve())
+
+
+def test_resolve_target_symbol_does_not_drift_from_history(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove ./GaussTest/RealTheorems-homework.lean")
+
+    symbol = runner._resolve_target_symbol(
+        [
+            {"role": "assistant", "content": "reading Basic.lean"},
+            {"role": "tool", "content": "def hello := \"world\""},
+        ]
+    )
+
+    assert symbol == ""
 
 
 def test_explicit_verification_build_uses_lake_env_lean_for_non_module_file(monkeypatch, tmp_path):
@@ -579,9 +690,19 @@ def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeyp
                 + [{"role": "assistant", "content": f"continuation {len(self.calls)}"}]
             }
 
-    live_states = iter(
+    final_state = {
+        "active_file": "/tmp/project/Main.lean",
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake build succeeded",
+        "verification_ok": True,
+        "sorry_count": 0,
+        "message": "live-verified-stable",
+    }
+    live_states = chain(
         [
             {
+                "active_file": "/tmp/project/Main.lean",
                 "diagnostics": "warning: declaration uses sorry",
                 "goals": "x : Nat\n⊢ x = x",
                 "build_status": "unknown",
@@ -589,6 +710,7 @@ def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeyp
                 "message": "live-1",
             },
             {
+                "active_file": "/tmp/project/Main.lean",
                 "diagnostics": "warning: declaration uses sorry",
                 "goals": "x : Nat\n⊢ x = x",
                 "build_status": "unknown",
@@ -596,24 +718,22 @@ def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeyp
                 "message": "live-2",
             },
             {
+                "active_file": "/tmp/project/Main.lean",
                 "diagnostics": "no errors found",
                 "goals": "no goals",
                 "build_status": "lake build succeeded",
+                "verification_ok": True,
                 "sorry_count": 0,
                 "message": "live-verified",
             },
-            {
-                "diagnostics": "no errors found",
-                "goals": "no goals",
-                "build_status": "lake build succeeded",
-                "sorry_count": 0,
-                "message": "live-verified-stable",
-            },
-        ]
+            final_state,
+        ],
+        repeat(final_state),
     )
 
     monkeypatch.setattr(runner, "_journal_status", lambda: {})
     monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
     monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "", "reason": "no-op"}))
     monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)

@@ -497,6 +497,9 @@ class InteractiveShell:
             except KeyboardInterrupt:
                 self.console.print("\n[dim]Stopped following live output. Agent remains available in swarm mode.[/]")
             state = str(agent.get("status", "") or "[unknown]")
+            if state in {"exited", "completed", "stopped", "interrupted"}:
+                self.console.print(f"[dim]Agent {agent.get('agent_id')} is {state}. Returning to the main shell.[/]")
+                return 0
             self.console.print(
                 f"[dim]Agent {agent.get('agent_id')} is {state}. "
                 "Enter a follow-up prompt, `/status`, `/kill`, or `/exit`.[/]"

@@ -6,7 +6,7 @@ import os
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -65,6 +65,46 @@ class NativeLaunchPlan:
     argv: list[str]
     active_skill: str
     toolset_name: str
+
+
+def _normalize_requested_active_file(project_root: Path, cwd: Path, workflow_args: str) -> str:
+    raw = str(workflow_args or "").strip()
+    if not raw or not raw.endswith(".lean"):
+        return ""
+    candidates = [
+        Path(raw).expanduser(),
+        cwd / raw,
+        project_root / raw,
+    ]
+    project_name = project_root.name
+    trimmed = raw
+    for prefix in (f"./{project_name}/", f"{project_name}/"):
+        if trimmed.startswith(prefix):
+            trimmed = trimmed[len(prefix):]
+            break
+    if trimmed != raw:
+        candidates.extend([cwd / trimmed, project_root / trimmed, Path(trimmed).expanduser()])
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            continue
+        if resolved.is_file():
+            try:
+                return str(resolved.relative_to(project_root.resolve()))
+            except Exception:
+                return str(resolved)
+    return ""
+
+
+def _normalize_workflow_args(project_root: Path, cwd: Path, workflow_args: str) -> str:
+    raw = str(workflow_args or "").strip()
+    if not raw:
+        return raw
+    normalized_active_file = _normalize_requested_active_file(project_root, cwd, raw)
+    if normalized_active_file:
+        return normalized_active_file
+    return raw
 
 
 def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
@@ -161,10 +201,24 @@ def resolve_workflow_request(
     cwd = Path(active_cwd or os.getcwd()).expanduser().resolve()
     project = discover_epflemma_project(cwd)
     runtime = resolve_runtime_provider(requested=requested_provider)
+    normalized_workflow_args = _normalize_workflow_args(project.root, cwd, workflow.workflow_args)
+    if normalized_workflow_args != workflow.workflow_args:
+        workflow = replace(
+            workflow,
+            workflow_args=normalized_workflow_args,
+            backend_command=(
+                workflow.backend_command.rsplit(" ", 1)[0]
+                if workflow.workflow_args
+                else workflow.backend_command
+            )
+            if not normalized_workflow_args
+            else f"{WORKFLOW_ALIAS_MAP[workflow.frontend_command][2]} {normalized_workflow_args}",
+        )
     selected_skill = (active_skill or "").strip() or default_workflow_skill(workflow.workflow_kind)
     if workflow.parallel_agents > 1 and not active_skill:
         selected_skill = "lean-autonomous-swarm"
     toolset_name = "epflemma-native-swarm" if workflow.parallel_agents > 1 else "epflemma-native"
+    normalized_active_file = _normalize_requested_active_file(project.root, cwd, workflow.workflow_args)
 
     child_env = dict(os.environ)
     child_env.update(
@@ -195,6 +249,8 @@ def resolve_workflow_request(
             "OPENGAUSS_NATIVE_EXPLICIT_GOAL": workflow.explicit_goal,
             "EPFLEMMA_NATIVE_TOOLSET": toolset_name,
             "OPENGAUSS_NATIVE_TOOLSET": toolset_name,
+            "EPFLEMMA_NATIVE_ACTIVE_FILE": normalized_active_file,
+            "OPENGAUSS_NATIVE_ACTIVE_FILE": normalized_active_file,
         }
     )
     argv = [sys.executable, "-m", _native_runner_module()]

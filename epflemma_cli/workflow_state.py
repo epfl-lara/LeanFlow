@@ -190,10 +190,31 @@ def read_workflow_agent_inbox(agent_id: str) -> list[dict[str, Any]]:
     return commands
 
 
+def _process_seems_alive(process_id: int) -> bool:
+    if process_id <= 0:
+        return False
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+    return True
+
+
 def enqueue_workflow_agent_message(agent_ref: str, text: str, *, kind: str = "message") -> dict[str, Any]:
     agent_id = resolve_workflow_agent_id(agent_ref)
     if not agent_id:
         return {"success": False, "error": "Agent not found or ambiguous."}
+    detail = workflow_agent_detail(agent_id, activity_limit=1)
+    process_id = int(detail.get("process_id", 0) or 0)
+    status = str(detail.get("status", "") or "")
+    if process_id <= 0 or not _process_seems_alive(process_id):
+        return {"success": False, "error": "Agent process is no longer running.", "agent_id": agent_id}
+    if status in {"exited", "stopped", "interrupted"}:
+        return {"success": False, "error": f"Agent is no longer accepting input ({status}).", "agent_id": agent_id}
     message = str(text or "").strip()
     if not message:
         return {"success": False, "error": "Message is empty.", "agent_id": agent_id}
@@ -641,6 +662,30 @@ def terminate_workflow_agent_descendants(agent_ref: str) -> dict[str, Any]:
     return {
         "success": not failed,
         "agent_id": agent_id,
+        "terminated": [item.get("agent_id") for item in results if item.get("success")],
+        "failed": failed,
+        "count": success_count,
+    }
+
+
+def terminate_all_workflow_agents(*, exclude_agent_id: str = "", exclude_process_id: int = 0) -> dict[str, Any]:
+    summaries = summarize_workflow_agents(activity_limit=1)
+    results: list[dict[str, Any]] = []
+    for summary in summaries:
+        agent_id = str(summary.get("agent_id", "") or "")
+        process_id = int(summary.get("process_id", 0) or 0)
+        if not agent_id or process_id <= 0:
+            continue
+        if exclude_agent_id and agent_id == exclude_agent_id:
+            continue
+        if exclude_process_id and process_id == exclude_process_id:
+            continue
+        results.append(terminate_workflow_agent(agent_id))
+
+    success_count = sum(1 for item in results if item.get("success"))
+    failed = [item for item in results if not item.get("success")]
+    return {
+        "success": not failed,
         "terminated": [item.get("agent_id") for item in results if item.get("success")],
         "failed": failed,
         "count": success_count,
