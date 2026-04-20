@@ -75,6 +75,7 @@ from epflemma_cli.workflow_state import (
     read_workflow_run_log,
     save_workflow_live_status,
     summarize_workflow_agents,
+    terminate_project_workflow_agents,
     terminate_workflow_agent,
     resolve_workflow_agent_id,
     workflow_agent_transcript_all,
@@ -839,6 +840,23 @@ class InteractiveShell:
             render_workflow_status_panel(self.console, status=workflow_status, activities=self._workflow_activity(limit=6))
         return 0
 
+    def _shutdown_project_workflows(self) -> None:
+        project_root = ""
+        try:
+            project = discover_epflemma_project(self.cwd)
+            project_root = str(project.root)
+        except Exception:
+            status = self._workflow_status_payload()
+            project_root = str(status.get("project_root", "") or "")
+        if not project_root:
+            return
+        result = terminate_project_workflow_agents(project_root)
+        count = int(result.get("count", 0) or 0)
+        if count:
+            self.console.print(
+                f"[dim]Interrupted {count} workflow agent(s) for {project_root} before exiting the shell.[/]"
+            )
+
     def _handle_command(self, raw: str) -> bool:
         stripped = raw.strip()
         if not stripped:
@@ -850,6 +868,7 @@ class InteractiveShell:
             return True
 
         if stripped in {"/exit", "/quit", "exit", "quit"}:
+            self._shutdown_project_workflows()
             return False
         if stripped in {"/help", "help"}:
             self.show_help()
@@ -988,6 +1007,7 @@ class InteractiveShell:
                     refresh_interval=0.5,
                 )
             except EOFError:
+                self._shutdown_project_workflows()
                 print()
                 return 0
             except KeyboardInterrupt:

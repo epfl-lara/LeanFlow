@@ -12,6 +12,7 @@ from epflemma_cli.workflow_state import (
     resolve_workflow_agent_id,
     reset_workflow_run_log,
     summarize_workflow_agents,
+    terminate_project_workflow_agents,
     terminate_all_workflow_agents,
     terminate_workflow_agent,
     terminate_workflow_agent_descendants,
@@ -234,6 +235,28 @@ def test_terminate_all_workflow_agents_excludes_current(monkeypatch, tmp_path):
     monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
 
     result = terminate_all_workflow_agents(exclude_agent_id="22222", exclude_process_id=303)
+
+    assert result["success"] is True
+    assert result["count"] == 1
+    assert result["terminated"] == ["11111"]
+    assert killed == [101]
+
+
+def test_terminate_project_workflow_agents_filters_by_project_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    project_a = str(tmp_path / "A")
+    project_b = str(tmp_path / "B")
+    append_workflow_activity("conversation-start", "start", agent_session_id="11111", process_id=101, project_root=project_a)
+    append_workflow_activity("conversation-start", "start", agent_session_id="22222", process_id=202, project_root=project_b)
+
+    killed: list[int] = []
+
+    def _fake_killpg(pid: int, sig: int) -> None:
+        killed.append(pid)
+
+    monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
+
+    result = terminate_project_workflow_agents(project_a)
 
     assert result["success"] is True
     assert result["count"] == 1

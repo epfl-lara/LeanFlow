@@ -223,6 +223,35 @@ def test_top_level_kill_command_interrupts_agent(monkeypatch, tmp_path, capsys):
     assert "12345" in output
 
 
+def test_shell_exit_interrupts_current_project_workflows(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    root = tmp_path / "Demo"
+    root.mkdir()
+    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+    (root / ".epflemma").mkdir()
+    (root / ".epflemma" / "project.yaml").write_text(
+        "schema_version: 1\nname: Demo\nkind: lean4\nlean_root: .\ncreated_at: now\npaths:\n  runtime: .epflemma/runtime\n  cache: .epflemma/cache\n  workflows: .epflemma/workflows\nsource:\n  mode: init\n  template_source: ''\nblueprint:\n  markers: []\n",
+        encoding="utf-8",
+    )
+    (root / ".epflemma" / "runtime").mkdir()
+    (root / ".epflemma" / "cache").mkdir()
+    (root / ".epflemma" / "workflows").mkdir()
+
+    shell = InteractiveShell()
+    shell.cwd = root
+
+    monkeypatch.setattr(
+        "epflemma_cli.main.terminate_project_workflow_agents",
+        lambda project_root: {"success": True, "count": 1, "terminated": ["12345"], "failed": []},
+    )
+
+    assert shell._handle_command("/exit") is False
+    output = capsys.readouterr().out
+    assert "Interrupted 1 workflow agent(s)" in output
+    assert "Demo before exiting the shell" in output
+
+
 def test_swarm_agent_view_renders_transcript_not_status_panel(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     append_workflow_activity(
