@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from opengauss_cli.skill_core import discover_skill_commands, find_skill, load_skill
+from epflemma_cli.skill_core import discover_skill_commands, find_skill, load_skill
 
 logger = logging.getLogger(__name__)
 
@@ -125,14 +125,14 @@ def _build_skill_message(
 
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Return the current OpenGauss skill command map."""
+    """Return the current EPFLemma skill command map."""
     global _skill_commands
     _skill_commands = dict(discover_skill_commands())
     try:
         for command, payload in list(_skill_commands.items()):
             payload.setdefault("description", f"Invoke the {payload.get('name', command.lstrip('/'))} skill")
     except Exception:
-        logger.debug("Failed to scan OpenGauss skill commands", exc_info=True)
+        logger.debug("Failed to scan EPFLemma skill commands", exc_info=True)
     return _skill_commands
 
 

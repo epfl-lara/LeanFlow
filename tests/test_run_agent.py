@@ -1373,7 +1373,7 @@ class TestNousCredentialRefresh:
             return _RebuiltClient()
 
         monkeypatch.setattr(
-            "opengauss_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
+            "epflemma_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
         )
 
         agent.client = _ExistingClient()

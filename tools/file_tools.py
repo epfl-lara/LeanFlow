@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 from typing import Optional
-from opengauss_cli.file_locks import ensure_file_lock
+from epflemma_cli.file_locks import ensure_file_lock
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
 

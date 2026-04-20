@@ -1,15 +1,15 @@
 # EPFLemma
 
-EPFLemma is a Lean AI for Math shell focused on automated Lean coding agents. The command you install and run is still `opengauss`, so existing local setup and scripts stay stable.
+EPFLemma is a Lean AI for Math shell focused on automated Lean coding agents. The command you install and run is still `epflemma`, so existing local setup and scripts stay stable.
 
 The product is optimized for two main jobs:
 
 - `autoprove`: drive Lean proof repair and completion until the code compiles cleanly
 - `formalize` / `autoformalize`: translate mathematical intent into Lean declarations and verified proofs
 
-It installs as `opengauss`, uses `~/.opengauss`, keeps project manifests in `.opengauss/project.yaml`, and can live alongside an existing `gauss` install without overwriting it.
+It installs as `epflemma`, uses `~/.epflemma` for user-level config, keeps project-owned workflow state in `.epflemma/`, and can live alongside an existing `gauss` install without overwriting it.
 
-This fork removes the old managed `claude-code` and `codex` backend flow. EPFLemma now runs Lean workflows through its own internal `opengauss-native` runtime and routes inference through direct provider APIs, OpenAI-compatible endpoints such as RCP, or local runtimes such as `vllm`, `ollama`, and `llama.cpp`.
+This fork removes the old managed `claude-code` and `codex` backend flow. EPFLemma now runs Lean workflows through its own internal `epflemma-native` runtime and routes inference through direct provider APIs, OpenAI-compatible endpoints such as RCP, or local runtimes such as `vllm`, `ollama`, and `llama.cpp`.
 
 ## Product Direction
 
@@ -78,9 +78,9 @@ When a skill is active, its `SKILL.md` content is inserted into the agent prompt
 
 Skill discovery order is:
 
-- built-in repo skills in `opengauss_skills/`
-- user overrides in `~/.opengauss/skills`
-- project overrides in `.opengauss/skills`
+- built-in repo skills in `epflemma_skills/`
+- user overrides in `~/.epflemma/skills`
+- project overrides in `.epflemma/skills`
 
 Precedence is:
 
@@ -92,15 +92,15 @@ That means you can replace a built-in skill for one machine or one project witho
 Install patterns:
 
 - user-wide skill:
-  - create `~/.opengauss/skills/<skill-name>/SKILL.md`
+  - create `~/.epflemma/skills/<skill-name>/SKILL.md`
 - project-local skill:
-  - create `.opengauss/skills/<skill-name>/SKILL.md` inside the Lean project
+  - create `.epflemma/skills/<skill-name>/SKILL.md` inside the Lean project
 
 Example:
 
 ```text
-~/.opengauss/skills/my-proof-policy/SKILL.md
-.opengauss/skills/lean-proof-loop/SKILL.md
+~/.epflemma/skills/my-proof-policy/SKILL.md
+.epflemma/skills/lean-proof-loop/SKILL.md
 ```
 
 The second example overrides the built-in `lean-proof-loop` only for that project.
@@ -118,8 +118,8 @@ Use `/skills` to see what the agent can currently load and where each skill came
 
 ## What Ships
 
-- `opengauss` CLI with EPFLemma shell branding
-- `opengauss-agent` shared agent entrypoint
+- `epflemma` CLI with EPFLemma shell branding
+- `epflemma-agent` shared agent entrypoint
 - Lean workflows:
   - `/prove`
   - `/draft`
@@ -131,12 +131,12 @@ Use `/skills` to see what the agent can currently load and where each skill came
   - `/formalize`
   - `/autoformalize`
 - Local runtime commands:
-  - `opengauss models local list`
-  - `opengauss models local start`
-  - `opengauss models local stop`
-  - `opengauss models local status`
-  - `opengauss models local logs`
-  - `opengauss models local use`
+  - `epflemma models local list`
+  - `epflemma models local start`
+  - `epflemma models local stop`
+  - `epflemma models local status`
+  - `epflemma models local logs`
+  - `epflemma models local use`
 
 ## Kernel-Only Scope
 
@@ -144,11 +144,11 @@ This repo is now intentionally trimmed to the Lean workflow kernel.
 
 Supported product surface:
 
-- EPFLemma shell UX on top of `opengauss`
+- EPFLemma shell UX on top of `epflemma`
 - Lean proving and formalization workflows
 - user-approved multi-agent swarm mode
 - file locking for concurrent Lean editing
-- curated Lean skill core in `opengauss_skills/`
+- curated Lean skill core in `epflemma_skills/`
 - provider routing for direct APIs, RCP/custom endpoints, and local runtimes
 - managed local runtimes: `vllm`, `ollama`, `llama.cpp`
 
@@ -167,43 +167,45 @@ If you still see references to legacy Gauss-era modules in comments or compatibi
 ## Name, CLI, and Paths
 
 - Product name: `EPFLemma`
-- CLI command: `opengauss`
-- State directory: `~/.opengauss`
-- Project manifest: `.opengauss/project.yaml`
+- CLI command: `epflemma`
+- State directory: `~/.epflemma`
+- Project manifest: `.epflemma/project.yaml`
 
-The interface is styled around EPFL / Lean / AI-for-math work, but the executable name stays `opengauss` for compatibility and coexistence.
+The interface is styled around EPFL / Lean / AI-for-math work, but the executable name stays `epflemma` for compatibility and coexistence.
 
 ## Install
 
-Local install from the current repo:
+Direct local install from the current repo:
 
 ```bash
-git clone https://github.com/Lemmy00/ReallyOpenGauss.git
-cd ReallyOpenGauss
-./scripts/install.sh
+git clone https://github.com/Lemmy00/EPFLemma.git
+cd EPFLemma
+./scripts/install-internal.sh
 ```
 
 If you already have the repo checked out locally, just run:
 
 ```bash
-./scripts/install.sh
+./scripts/install-internal.sh
 ```
+
+`./scripts/install.sh` is the Morph/local-template wrapper. Use `./scripts/install-internal.sh` when you want the repo to install its own local CLI wrappers directly.
 
 Default install locations:
 
-- state: `~/.opengauss`
-- wrappers: `~/.local/bin/opengauss`, `~/.local/bin/opengauss-agent`
-- virtualenv: `./.opengauss-venv`
+- state: `~/.epflemma`
+- wrappers: `~/.local/bin/epflemma`, `~/.local/bin/epflemma-agent`
+- virtualenv: `./.epflemma-venv`
 
 The installer does not touch `~/.gauss` or replace an existing `gauss` binary.
 
 Custom install locations:
 
 ```bash
-./scripts/install.sh \
-  --opengauss-home "$HOME/.opengauss" \
+./scripts/install-internal.sh \
+  --epflemma-home "$HOME/.epflemma" \
   --bin-dir "$HOME/.local/bin" \
-  --venv-dir "$PWD/.opengauss-venv"
+  --venv-dir "$PWD/.epflemma-venv"
 ```
 
 ## Update
@@ -211,20 +213,20 @@ Custom install locations:
 EPFLemma no longer uses the old `gauss update` flow. Update by reinstalling from the repo:
 
 ```bash
-cd ReallyOpenGauss
+cd EPFLemma
 git pull
-./scripts/install.sh
+./scripts/install-internal.sh
 ```
 
 ## Coexistence And Migration
 
 EPFLemma is designed to coexist with Gauss:
 
-- `gauss` and `opengauss` are separate binaries
+- `gauss` and `epflemma` are separate binaries
 - Gauss state stays in `~/.gauss`
-- EPFLemma state stays in `~/.opengauss`
+- EPFLemma state stays in `~/.epflemma`
 - Gauss project manifests stay in `.gauss/project.yaml`
-- EPFLemma project manifests stay in `.opengauss/project.yaml`
+- EPFLemma project manifests stay in `.epflemma/project.yaml`
 
 On first run, EPFLemma can import legacy settings from:
 
@@ -239,32 +241,32 @@ That import is one-time and non-destructive. After import, EPFLemma uses only it
 Check the install:
 
 ```bash
-opengauss --help
-opengauss doctor
-opengauss config show
+epflemma --help
+epflemma doctor
+epflemma config show
 ```
 
 Initialize an existing Lean project:
 
 ```bash
 cd /path/to/lean-project
-opengauss project init
-opengauss project show
+epflemma project init
+epflemma project show
 ```
 
 Run a workflow:
 
 ```bash
-opengauss workflow prove Main.lean
-opengauss workflow autoprove Main.lean
-opengauss workflow autoprove Main.lean --agents 3
-opengauss workflow formalize "Define the object and prove the first lemma"
+epflemma workflow prove Main.lean
+epflemma workflow autoprove Main.lean
+epflemma workflow autoprove Main.lean --agents 3
+epflemma workflow formalize "Define the object and prove the first lemma"
 ```
 
 Interactive mode:
 
 ```bash
-opengauss
+epflemma
 ```
 
 Inside the shell:
@@ -305,7 +307,7 @@ autoprove Main.lean --agents 3
 autoformalize "formalize this statement"
 ```
 
-The interactive shell starts with an EPFLemma banner that shows the current project, provider, model, local runtime, and the main Lean commands you are expected to use.
+The interactive shell starts with an EPFLemma banner that shows the current route and the main Lean commands you are expected to use.
 
 The bottom toolbar is live workflow context, not decoration. It surfaces:
 
@@ -347,7 +349,14 @@ What counts as success:
 
 Autonomous workflows are intentionally stricter than a local file-only loop. `autoprove` and `autoformalize` should keep going until the project is clean, not merely until the current theorem looks finished.
 
-EPFLemma writes managed workflow status, activity, checkpoints, and the full latest managed runner log into `~/.opengauss/workflow-state/` so long runs can be resumed and inspected.
+EPFLemma writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.epflemma/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
+
+The verification loop is intentionally Lean-LSP-first:
+
+- use diagnostics and proof goals for most iterations
+- avoid repeated `lake env lean <file>` checks because they are slow on large imports
+- prefer a focused `lake build <Module>` when the active file is close to clean
+- reserve full-project `lake build` for milestone verification and final success checks
 
 The inspection split is intentional:
 
@@ -366,13 +375,13 @@ Default behavior:
 Explicit swarm behavior:
 
 ```bash
-opengauss workflow autoprove Main.lean --agents 3
-opengauss workflow autoformalize "formalize theorem X" --agents 3
+epflemma workflow autoprove Main.lean --agents 3
+epflemma workflow autoformalize "formalize theorem X" --agents 3
 ```
 
 What `--agents N` does:
 
-- switches the native workflow from `opengauss-native` to the swarm-capable tool surface
+- switches the native workflow from `epflemma-native` to the swarm-capable tool surface
 - enables user-approved delegation inside that workflow only
 - activates the `lean-autonomous-swarm` skill unless you manually selected another skill
 - records the configured agent count in workflow status
@@ -392,9 +401,9 @@ Recommended use:
 
 EPFLemma currently exposes two project commands:
 
-- `opengauss project init [path] [--name NAME]`
-- `opengauss project create <path> [--template-source SOURCE] [--name NAME]`
-- `opengauss project show [path]`
+- `epflemma project init [path] [--name NAME]`
+- `epflemma project create <path> [--template-source SOURCE] [--name NAME]`
+- `epflemma project show [path]`
 
 Requirements for `project init`:
 
@@ -403,10 +412,11 @@ Requirements for `project init`:
 
 EPFLemma writes:
 
-- `.opengauss/project.yaml`
-- `.opengauss/runtime/`
-- `.opengauss/cache/`
-- `.opengauss/workflows/`
+- `.epflemma/project.yaml`
+- `.epflemma/runtime/`
+- `.epflemma/cache/`
+- `.epflemma/workflows/`
+- `.epflemma/workflow-state/`
 
 ## Skills And Overlays
 
@@ -415,14 +425,14 @@ EPFLemma ships a curated Lean-first skill core. It does not use the old broad ma
 Builtin skills live in:
 
 ```text
-opengauss_skills/
+epflemma_skills/
 ```
 
 User and project overlays live in:
 
 ```text
-~/.opengauss/skills
-.opengauss/skills
+~/.epflemma/skills
+.epflemma/skills
 ```
 
 Overlay precedence is:
@@ -470,7 +480,7 @@ Purpose:
 
 How it works:
 
-- file reservations are stored in `~/.opengauss/workflow-state/file_locks.json`
+- file reservations are stored in `.epflemma/workflow-state/file_locks.json` inside the active project
 - the native workflow tool surface includes:
   - `acquire_file_lock`
   - `release_file_lock`
@@ -490,11 +500,11 @@ Current scope:
 
 The main active codepaths are:
 
-- `opengauss_cli/` for shell UX, config, project/workflow orchestration, local runtimes, locks, and workflow state
-- `opengauss_skills/` for the curated Lean skill core
+- `epflemma_cli/` for shell UX, config, project/workflow orchestration, local runtimes, locks, and workflow state
+- `epflemma_skills/` for the curated Lean skill core
 - `agent/` for prompt assembly, context compression, display, and shared agent internals
 - `tools/` for the Lean-kernel tool surface
-- `tests/opengauss/` plus selected agent/runtime tests for the supported product
+- `tests/epflemma/` plus selected agent/runtime tests for the supported product
 
 You should not expect deleted gateway, website, cron, data-generation, voice, or broad skill-catalog directories to exist anymore.
 
@@ -503,10 +513,10 @@ You should not expect deleted gateway, website, cron, data-generation, voice, or
 Inspect the active provider selection:
 
 ```bash
-opengauss provider
-opengauss provider --requested zai
-opengauss provider --requested local
-opengauss provider --requested custom
+epflemma provider
+epflemma provider --requested zai
+epflemma provider --requested local
+epflemma provider --requested custom
 ```
 
 EPFLemma supports three provider classes:
@@ -530,7 +540,7 @@ Example:
 
 ```bash
 export GLM_API_KEY=...
-opengauss provider --requested zai
+epflemma provider --requested zai
 ```
 
 ### OpenAI-Compatible Remote Endpoints
@@ -540,7 +550,7 @@ RCP-style endpoints work through the `custom` path:
 ```bash
 export OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
 export OPENAI_API_KEY="..."
-opengauss provider --requested custom
+epflemma provider --requested custom
 ```
 
 If GLM is down, the tested fallback model on that endpoint is:
@@ -558,16 +568,16 @@ Inside the interactive shell, `/provider` shows both the resolved provider and t
 Select a local runtime:
 
 ```bash
-opengauss models local use vllm google/gemma-4-31B-it
-opengauss provider --requested local
+epflemma models local use vllm google/gemma-4-31B-it
+epflemma provider --requested local
 ```
 
 Start a local runtime:
 
 ```bash
-opengauss models local start vllm google/gemma-4-31B-it
-opengauss models local status vllm
-opengauss models local logs vllm
+epflemma models local start vllm google/gemma-4-31B-it
+epflemma models local status vllm
+epflemma models local logs vllm
 ```
 
 Other supported runtimes:
@@ -579,11 +589,11 @@ Other supported runtimes:
 
 There are now two important internal workflow surfaces:
 
-- `opengauss-native`
+- `epflemma-native`
   - default single-agent Lean workflow runtime
   - includes file, terminal, web, session search, skills, and file-lock coordination
   - does not include delegation
-- `opengauss-native-swarm`
+- `epflemma-native-swarm`
   - enabled only for user-approved `--agents N` workflows
   - adds delegation to the native Lean tool surface
   - intended for bounded multi-agent Lean runs with file ownership rules
@@ -593,19 +603,19 @@ There are now two important internal workflow surfaces:
 Main config file:
 
 ```text
-~/.opengauss/config.yaml
+~/.epflemma/config.yaml
 ```
 
 Main env file:
 
 ```text
-~/.opengauss/.env
+~/.epflemma/.env
 ```
 
 Top-level config shape:
 
 ```yaml
-opengauss:
+epflemma:
   project:
     template_source: ""
   workflow:
@@ -649,10 +659,10 @@ local_models:
 Useful commands:
 
 ```bash
-opengauss config get model.default
-opengauss config set model.default '"zai-org/GLM-5"'
-opengauss config set model.provider '"zai"'
-opengauss config set model.base_url '"https://inference.rcp.epfl.ch/v1"'
+epflemma config get model.default
+epflemma config set model.default '"zai-org/GLM-5"'
+epflemma config set model.provider '"zai"'
+epflemma config set model.base_url '"https://inference.rcp.epfl.ch/v1"'
 ```
 
 Compression defaults are tuned for long Lean sessions:
@@ -666,7 +676,7 @@ Compression defaults are tuned for long Lean sessions:
 Run:
 
 ```bash
-opengauss doctor
+epflemma doctor
 ```
 
 It checks:
@@ -683,13 +693,13 @@ It checks:
 Python package:
 
 ```text
-opengauss-agent
+epflemma-agent
 ```
 
 Console scripts:
 
-- `opengauss`
-- `opengauss-agent`
+- `epflemma`
+- `epflemma-agent`
 
 ## Verification Notes
 
@@ -698,7 +708,7 @@ Current verified behavior from this repo:
 - focused EPFLemma test suite passes
 - standalone install works with a separate EPFLemma home
 - existing `gauss` remains independently resolvable
-- workflow request resolution works against `.opengauss/project.yaml`
+- workflow request resolution works against `.epflemma/project.yaml`
 - RCP remote smoke succeeded with `google/gemma-4-31B-it`
 - dead gateway/cron/voice/data-generation/website/community-skill directories have been removed from the repo tree
 
@@ -717,12 +727,12 @@ Run the focused EPFLemma tests:
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/opengauss -q -n 0
+python -m pytest tests/epflemma -q -n 0
 ```
 
 Recommended broader verification for the supported kernel:
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/opengauss tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py tests/test_run_agent.py tests/test_run_agent_codex_responses.py tests/test_windows_installer_links.py -q -n 0
+python -m pytest tests/epflemma tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py tests/test_run_agent.py tests/test_run_agent_codex_responses.py tests/test_windows_installer_links.py -q -n 0
 ```

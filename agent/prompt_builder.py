@@ -261,7 +261,7 @@ def build_skills_system_prompt(
 ) -> str:
     """Build a compact EPFLemma skill index for the system prompt."""
     try:
-        from opengauss_cli.skill_core import discover_skills
+        from epflemma_cli.skill_core import discover_skills
 
         skills = discover_skills()
     except Exception as exc:

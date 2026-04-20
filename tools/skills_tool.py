@@ -77,9 +77,9 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 
 import yaml
 from gauss_cli.config import load_env, _ENV_VAR_NAME_RE
-from opengauss_cli.skill_core import discover_skills as _og_discover_skills
-from opengauss_cli.skill_core import load_skill as _og_load_skill
-from opengauss_cli.skill_core import load_skill_file as _og_load_skill_file
+from epflemma_cli.skill_core import discover_skills as _og_discover_skills
+from epflemma_cli.skill_core import load_skill as _og_load_skill
+from epflemma_cli.skill_core import load_skill_file as _og_load_skill_file
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
@@ -415,7 +415,7 @@ def _build_setup_note(
 
 
 def check_skills_requirements() -> bool:
-    """OpenGauss curated skills are always available."""
+    """EPFLemma curated skills are always available."""
     return True
 
 
@@ -755,18 +755,18 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             {
                 "name": skill.name,
                 "description": skill.description,
-                "category": "opengauss",
+                "category": "epflemma",
                 "source": skill.source,
             }
             for skill in _og_discover_skills()
         ]
-        if category and category != "opengauss":
+        if category and category != "epflemma":
             all_skills = []
         return json.dumps(
             {
                 "success": True,
                 "skills": all_skills,
-                "categories": ["opengauss"] if all_skills else [],
+                "categories": ["epflemma"] if all_skills else [],
                 "count": len(all_skills),
                 "hint": "Use skill_view(name) to see the full skill content or linked files.",
             },
@@ -797,7 +797,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     "success": False,
                     "error": f"Skill '{name}' not found.",
                     "available_skills": available,
-                    "hint": "Use skills_list to inspect the curated OpenGauss skill set.",
+                    "hint": "Use skills_list to inspect the curated EPFLemma skill set.",
                 },
                 ensure_ascii=False,
             )

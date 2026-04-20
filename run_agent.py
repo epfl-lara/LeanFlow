@@ -43,17 +43,18 @@ import fire
 from datetime import datetime
 from pathlib import Path
 
-# Load .env from the active OpenGauss home first, then project root as dev fallback.
+# Load .env from the active EPFLemma home first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 try:
-    from opengauss_cli.env_loader import load_opengauss_dotenv as load_gauss_dotenv
+    from epflemma_cli.env_loader import load_epflemma_dotenv as load_gauss_dotenv
 except Exception:  # pragma: no cover - legacy fallback for older installs
     from gauss_cli.env_loader import load_gauss_dotenv
 
 _gauss_home = Path(
-    os.getenv("OPENGAUSS_HOME")
+    os.getenv("EPFLEMMA_HOME")
+    or os.getenv("OPENGAUSS_HOME")
     or os.getenv("GAUSS_HOME")
-    or (Path.home() / ".opengauss")
+    or (Path.home() / ".epflemma")
 )
 _project_env = Path(__file__).parent / '.env'
 _loaded_env_paths = load_gauss_dotenv(gauss_home=_gauss_home, project_env=_project_env)
@@ -63,7 +64,7 @@ if _loaded_env_paths:
 else:
     logger.info("No .env file found. Using system environment variables.")
 
-# Point mini-swe-agent at the active OpenGauss home so it shares our config
+# Point mini-swe-agent at the active EPFLemma home so it shares our config
 os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_gauss_home))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
@@ -534,7 +535,7 @@ class AIAgent:
                 effective_base = base_url
                 if "openrouter" in effective_base.lower():
                     client_kwargs["default_headers"] = {
-                        "HTTP-Referer": "https://opengauss.dev",
+                        "HTTP-Referer": "https://epflemma.dev",
                         "X-OpenRouter-Title": "EPFLemma Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
@@ -561,7 +562,7 @@ class AIAgent:
                         "api_key": os.getenv("OPENROUTER_API_KEY", ""),
                         "base_url": OPENROUTER_BASE_URL,
                         "default_headers": {
-                            "HTTP-Referer": "https://opengauss.dev",
+                            "HTTP-Referer": "https://epflemma.dev",
                             "X-OpenRouter-Title": "EPFLemma Agent",
                             "X-OpenRouter-Categories": "productivity,cli-agent",
                         },
@@ -700,7 +701,7 @@ class AIAgent:
         if not skip_memory:
             try:
                 try:
-                    from opengauss_cli.config import load_config as _load_mem_config
+                    from epflemma_cli.config import load_config as _load_mem_config
                 except Exception:  # pragma: no cover - legacy fallback
                     from gauss_cli.config import load_config as _load_mem_config
                 mem_config = _load_mem_config().get("memory", {})
@@ -722,7 +723,7 @@ class AIAgent:
         self._skill_nudge_interval = 10
         try:
             try:
-                from opengauss_cli.config import load_config as _load_skills_config
+                from epflemma_cli.config import load_config as _load_skills_config
             except Exception:  # pragma: no cover - legacy fallback
                 from gauss_cli.config import load_config as _load_skills_config
             skills_config = _load_skills_config().get("skills", {})
@@ -734,7 +735,7 @@ class AIAgent:
         compression_cfg = {}
         try:
             try:
-                from opengauss_cli.config import load_config as _load_runtime_config
+                from epflemma_cli.config import load_config as _load_runtime_config
             except Exception:  # pragma: no cover - legacy fallback
                 from gauss_cli.config import load_config as _load_runtime_config
             loaded_cfg = _load_runtime_config()
@@ -2334,7 +2335,7 @@ class AIAgent:
 
         try:
             try:
-                from opengauss_cli.auth import resolve_codex_runtime_credentials
+                from epflemma_cli.auth import resolve_codex_runtime_credentials
             except Exception:  # pragma: no cover - legacy fallback
                 from gauss_cli.auth import resolve_codex_runtime_credentials
 
@@ -2366,7 +2367,7 @@ class AIAgent:
 
         try:
             try:
-                from opengauss_cli.auth import resolve_nous_runtime_credentials
+                from epflemma_cli.auth import resolve_nous_runtime_credentials
             except Exception:  # pragma: no cover - legacy fallback
                 from gauss_cli.auth import resolve_nous_runtime_credentials
 
@@ -3009,7 +3010,7 @@ class AIAgent:
 
         # Nous Portal product attribution
         if _is_nous:
-            extra_body["tags"] = ["product=opengauss-agent"]
+            extra_body["tags"] = ["product=epflemma-agent"]
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body
@@ -3540,15 +3541,14 @@ class AIAgent:
         # ── Logging / callbacks ──────────────────────────────────────────
         tool_names_str = ", ".join(name for _, name, _ in parsed_calls)
         if not self.quiet_mode:
-            print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
+            print(f"\n{self.log_prefix}┌─ Tools: {num_tools} concurrent call(s) — {tool_names_str}")
             for i, (tc, name, args) in enumerate(parsed_calls, 1):
-                args_str = json.dumps(args, ensure_ascii=False)
+                preview = _build_tool_preview(name, args)
                 if self.verbose_logging:
-                    print(f"  📞 Tool {i}: {name}({list(args.keys())})")
-                    print(f"     Args: {args_str}")
+                    print(f"{self.log_prefix}│  {i}. {name}")
+                    print(f"{self.log_prefix}│     {json.dumps(args, ensure_ascii=False)}")
                 else:
-                    args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
-                    print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
+                    print(f"{self.log_prefix}│  {i}. {name} — {preview}")
 
         for _, name, args in parsed_calls:
             if self.tool_progress_callback:
@@ -3622,11 +3622,12 @@ class AIAgent:
                 print(f"  {cute_msg}")
             elif not self.quiet_mode:
                 if self.verbose_logging:
-                    print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
-                    print(f"     Result: {function_result}")
+                    print(f"{self.log_prefix}│  {i+1}. {name} done in {tool_duration:.2f}s")
+                    print(f"{self.log_prefix}│     {function_result}")
                 else:
-                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
-                    print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
+                    response_preview = function_result[:280] + "..." if len(function_result) > 280 else function_result
+                    print(f"{self.log_prefix}│  {i+1}. {name} done in {tool_duration:.2f}s")
+                    print(f"{self.log_prefix}│     {response_preview}")
 
             # Truncate oversized results
             MAX_TOOL_RESULT_CHARS = 100_000
@@ -3645,6 +3646,9 @@ class AIAgent:
                 "tool_call_id": tc.id,
             }
             messages.append(tool_msg)
+
+        if not self.quiet_mode:
+            print(f"{self.log_prefix}└─ Tool batch complete")
 
         # ── Budget pressure injection ────────────────────────────────────
         budget_warning = self._get_budget_warning(api_call_count)
@@ -3703,11 +3707,11 @@ class AIAgent:
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)
                 if self.verbose_logging:
-                    print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
-                    print(f"     Args: {args_str}")
+                    print(f"\n{self.log_prefix}┌─ Tool {i}: {function_name}")
+                    print(f"{self.log_prefix}│  {args_str}")
                 else:
-                    args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
-                    print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+                    print(f"\n{self.log_prefix}┌─ Tool {i}: {function_name}")
+                    print(f"{self.log_prefix}│  {_build_tool_preview(function_name, function_args)}")
 
             if self.tool_progress_callback:
                 try:
@@ -3894,11 +3898,13 @@ class AIAgent:
 
             if not self.quiet_mode:
                 if self.verbose_logging:
-                    print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
-                    print(f"     Result: {function_result}")
+                    print(f"{self.log_prefix}│  done in {tool_duration:.2f}s")
+                    print(f"{self.log_prefix}│  {function_result}")
                 else:
-                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
-                    print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
+                    response_preview = function_result[:280] + "..." if len(function_result) > 280 else function_result
+                    print(f"{self.log_prefix}│  done in {tool_duration:.2f}s")
+                    print(f"{self.log_prefix}│  {response_preview}")
+                print(f"{self.log_prefix}└─")
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i
@@ -4006,7 +4012,7 @@ class AIAgent:
                         "effort": "medium"
                     }
             if _is_nous:
-                summary_extra_body["tags"] = ["product=opengauss-agent"]
+                summary_extra_body["tags"] = ["product=epflemma-agent"]
 
             if self.api_mode == "codex_responses":
                 codex_kwargs = self._build_api_kwargs(api_messages)
@@ -4837,12 +4843,12 @@ class AIAgent:
                         print(f"{self.log_prefix}   Auth method: {auth_method}")
                         print(f"{self.log_prefix}   Token prefix: {key[:12]}..." if key and len(key) > 12 else f"{self.log_prefix}   Token: (empty or short)")
                         print(f"{self.log_prefix}   Troubleshooting:")
-                        print(f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in ~/.opengauss/.env for OpenGauss-managed OAuth/setup tokens")
-                        print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in ~/.opengauss/.env for API keys or legacy token values")
+                        print(f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in ~/.epflemma/.env for EPFLemma-managed OAuth/setup tokens")
+                        print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in ~/.epflemma/.env for API keys or legacy token values")
                         print(f"{self.log_prefix}     • For API keys: verify at https://console.anthropic.com/settings/keys")
                         print(f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
-                        print(f"{self.log_prefix}     • Clear stale keys: opengauss config set ANTHROPIC_TOKEN \"\"")
-                        print(f"{self.log_prefix}     • Legacy cleanup: opengauss config set ANTHROPIC_API_KEY \"\"")
+                        print(f"{self.log_prefix}     • Clear stale keys: epflemma config set ANTHROPIC_TOKEN \"\"")
+                        print(f"{self.log_prefix}     • Legacy cleanup: epflemma config set ANTHROPIC_API_KEY \"\"")
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
@@ -5130,9 +5136,21 @@ class AIAgent:
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     if self.verbose_logging:
-                        self._vprint(f"{self.log_prefix}🤖 Assistant: {assistant_message.content}")
+                        self._vprint(f"\n{self.log_prefix}┌─ Agent")
+                        for line in (assistant_message.content or "").splitlines() or [""]:
+                            self._vprint(f"{self.log_prefix}│  {line}")
+                        self._vprint(f"{self.log_prefix}└─")
                     else:
-                        self._vprint(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
+                        preview_lines = [line.strip() for line in (assistant_message.content or "").splitlines() if line.strip()]
+                        if not preview_lines:
+                            preview_lines = [""]
+                        preview_text = "\n".join(preview_lines[:3])
+                        if len(preview_text) > 320:
+                            preview_text = preview_text[:317] + "..."
+                        self._vprint(f"\n{self.log_prefix}┌─ Agent")
+                        for line in preview_text.splitlines():
+                            self._vprint(f"{self.log_prefix}│  {line}")
+                        self._vprint(f"{self.log_prefix}└─")
 
                 # Notify progress callback of model's thinking (used by subagent
                 # delegation to relay the child's reasoning to the parent display).
@@ -5231,7 +5249,7 @@ class AIAgent:
                 # Check for tool calls
                 if assistant_message.tool_calls:
                     if not self.quiet_mode:
-                        self._vprint(f"{self.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
+                        self._vprint(f"\n{self.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
                     
                     if self.verbose_logging:
                         for tc in assistant_message.tool_calls:
@@ -5712,7 +5730,7 @@ def main(
                 entry = (name, info)
                 if name in ["web", "search", "file", "browser"]:
                     basic_toolsets.append(entry)
-                elif name in ["autoformalize", "opengauss-cli", "opengauss-native"]:
+                elif name in ["autoformalize", "epflemma-cli", "epflemma-native"]:
                     composite_toolsets.append(entry)
                 else:
                     scenario_toolsets.append(entry)
