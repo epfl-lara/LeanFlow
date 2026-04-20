@@ -4,51 +4,51 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-OPENGAUSS_HOME="${OPENGAUSS_HOME:-$HOME/.opengauss}"
-OPENGAUSS_BIN_DIR="${OPENGAUSS_BIN_DIR:-$HOME/.local/bin}"
-OPENGAUSS_VENV_DIR="${OPENGAUSS_VENV_DIR:-$REPO_ROOT/.opengauss-venv}"
-OPENGAUSS_INSTALL_PYTHON="${OPENGAUSS_INSTALL_PYTHON:-python3}"
+EPFLEMMA_HOME="${EPFLEMMA_HOME:-$HOME/.epflemma}"
+EPFLEMMA_BIN_DIR="${EPFLEMMA_BIN_DIR:-${OPENGAUSS_BIN_DIR:-$HOME/.local/bin}}"
+EPFLEMMA_VENV_DIR="${EPFLEMMA_VENV_DIR:-${OPENGAUSS_VENV_DIR:-$REPO_ROOT/.epflemma-venv}}"
+EPFLEMMA_INSTALL_PYTHON="${EPFLEMMA_INSTALL_PYTHON:-${OPENGAUSS_INSTALL_PYTHON:-python3}}"
 INSTALL_MODE="editable"
 RECREATE_VENV=0
 
 usage() {
   cat <<'TXT'
-OpenGauss local installer
+EPFLemma local installer
 
 Usage:
   ./scripts/install-internal.sh [options]
 
 Options:
-  --opengauss-home PATH  OpenGauss state directory (default: ~/.opengauss)
-  --bin-dir PATH         Directory for opengauss wrappers (default: ~/.local/bin)
-  --venv-dir PATH        Virtualenv path (default: ./.opengauss-venv)
+  --epflemma-home PATH  EPFLemma state directory (default: ~/.epflemma)
+  --bin-dir PATH         Directory for EPFLemma wrappers (default: ~/.local/bin)
+  --venv-dir PATH        Virtualenv path (default: ./.epflemma-venv)
   --python BIN           Python interpreter to use (default: python3)
   --recreate-venv        Remove and recreate the virtualenv
   --no-editable          Install a wheel instead of editable mode
   -h, --help             Show this help
 
 Behavior:
-  This installer creates separate OpenGauss binaries and state under ~/.opengauss.
+  This installer creates separate EPFLemma binaries and state under ~/.epflemma.
   It does not touch ~/.gauss or existing gauss binaries.
 TXT
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --opengauss-home|--gauss-home)
-      OPENGAUSS_HOME="$2"
+    --epflemma-home|--gauss-home)
+      EPFLEMMA_HOME="$2"
       shift 2
       ;;
     --bin-dir)
-      OPENGAUSS_BIN_DIR="$2"
+      EPFLEMMA_BIN_DIR="$2"
       shift 2
       ;;
     --venv-dir)
-      OPENGAUSS_VENV_DIR="$2"
+      EPFLEMMA_VENV_DIR="$2"
       shift 2
       ;;
     --python)
-      OPENGAUSS_INSTALL_PYTHON="$2"
+      EPFLEMMA_INSTALL_PYTHON="$2"
       shift 2
       ;;
     --recreate-venv)
@@ -71,18 +71,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-mkdir -p "$OPENGAUSS_HOME" "$OPENGAUSS_BIN_DIR"
+mkdir -p "$EPFLEMMA_HOME" "$EPFLEMMA_BIN_DIR"
 
-if [[ "$RECREATE_VENV" == "1" && -e "$OPENGAUSS_VENV_DIR" ]]; then
-  rm -rf "$OPENGAUSS_VENV_DIR"
+if [[ "$RECREATE_VENV" == "1" && -e "$EPFLEMMA_VENV_DIR" ]]; then
+  rm -rf "$EPFLEMMA_VENV_DIR"
 fi
 
-if [[ ! -x "$OPENGAUSS_VENV_DIR/bin/python" ]]; then
-  "$OPENGAUSS_INSTALL_PYTHON" -m venv "$OPENGAUSS_VENV_DIR"
+if [[ ! -x "$EPFLEMMA_VENV_DIR/bin/python" ]]; then
+  "$EPFLEMMA_INSTALL_PYTHON" -m venv "$EPFLEMMA_VENV_DIR"
 fi
 
 # shellcheck disable=SC1090
-source "$OPENGAUSS_VENV_DIR/bin/activate"
+source "$EPFLEMMA_VENV_DIR/bin/activate"
 
 python -m pip install --upgrade pip setuptools wheel
 if [[ "$INSTALL_MODE" == "editable" ]]; then
@@ -91,38 +91,40 @@ else
   python -m pip install "$REPO_ROOT"
 fi
 
-cat > "$OPENGAUSS_BIN_DIR/opengauss" <<EOF
+cat > "$EPFLEMMA_BIN_DIR/epflemma" <<EOF
 #!/usr/bin/env bash
-: "\${OPENGAUSS_HOME:=${OPENGAUSS_HOME}}"
-export OPENGAUSS_HOME
-exec "${OPENGAUSS_VENV_DIR}/bin/opengauss" "\$@"
+: "\${EPFLEMMA_HOME:=${EPFLEMMA_HOME}}"
+export OPENGAUSS_HOME="\${OPENGAUSS_HOME:-\${EPFLEMMA_HOME}}"
+export EPFLEMMA_HOME
+exec "${EPFLEMMA_VENV_DIR}/bin/epflemma" "\$@"
 EOF
 
-cat > "$OPENGAUSS_BIN_DIR/opengauss-agent" <<EOF
+cat > "$EPFLEMMA_BIN_DIR/epflemma-agent" <<EOF
 #!/usr/bin/env bash
-: "\${OPENGAUSS_HOME:=${OPENGAUSS_HOME}}"
-export OPENGAUSS_HOME
-exec "${OPENGAUSS_VENV_DIR}/bin/opengauss-agent" "\$@"
+: "\${EPFLEMMA_HOME:=${EPFLEMMA_HOME}}"
+export OPENGAUSS_HOME="\${OPENGAUSS_HOME:-\${EPFLEMMA_HOME}}"
+export EPFLEMMA_HOME
+exec "${EPFLEMMA_VENV_DIR}/bin/epflemma-agent" "\$@"
 EOF
 
 chmod +x \
-  "$OPENGAUSS_BIN_DIR/opengauss" \
-  "$OPENGAUSS_BIN_DIR/opengauss-agent"
+  "$EPFLEMMA_BIN_DIR/epflemma" \
+  "$EPFLEMMA_BIN_DIR/epflemma-agent"
 
-rm -f "$OPENGAUSS_BIN_DIR/opengauss-acp"
+rm -f "$EPFLEMMA_BIN_DIR/epflemma-acp" "$EPFLEMMA_BIN_DIR/opengauss" "$EPFLEMMA_BIN_DIR/opengauss-agent"
 
-cat > "${OPENGAUSS_HOME}/install-root" <<EOF
+cat > "${EPFLEMMA_HOME}/install-root" <<EOF
 repo_root=${REPO_ROOT}
-venv_dir=${OPENGAUSS_VENV_DIR}
-bin_dir=${OPENGAUSS_BIN_DIR}
+venv_dir=${EPFLEMMA_VENV_DIR}
+bin_dir=${EPFLEMMA_BIN_DIR}
 installed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 EOF
 
-printf 'OpenGauss installed.\n'
+printf 'EPFLemma installed.\n'
 printf '  repo: %s\n' "$REPO_ROOT"
-printf '  home: %s\n' "$OPENGAUSS_HOME"
-printf '  venv: %s\n' "$OPENGAUSS_VENV_DIR"
-printf '  bin : %s\n' "$OPENGAUSS_BIN_DIR"
+printf '  home: %s\n' "$EPFLEMMA_HOME"
+printf '  venv: %s\n' "$EPFLEMMA_VENV_DIR"
+printf '  bin : %s\n' "$EPFLEMMA_BIN_DIR"
 printf '\n'
-printf 'Add %s to PATH if needed, then run:\n' "$OPENGAUSS_BIN_DIR"
-printf '  opengauss --help\n'
+printf 'Add %s to PATH if needed, then run:\n' "$EPFLEMMA_BIN_DIR"
+printf '  epflemma --help\n'

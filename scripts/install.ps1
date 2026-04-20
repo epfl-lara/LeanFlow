@@ -8,20 +8,20 @@
 #   .\scripts\install.ps1
 #   .\scripts\install.ps1 -WithWorkspace
 #   .\scripts\install.ps1 -Distro Ubuntu
-#   .\scripts\install.ps1 -LinuxRepoDir "~/ReallyOpenGauss"
+#   .\scripts\install.ps1 -LinuxRepoDir "~/EPFLemma"
 #
 # ============================================================================
 
 param(
     [switch]$WithWorkspace,
     [string]$Distro = "",
-    [string]$LinuxRepoDir = "~/ReallyOpenGauss",
+    [string]$LinuxRepoDir = "~/EPFLemma",
     [string]$Branch = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-$DefaultRepoUrl = "https://github.com/Lemmy00/ReallyOpenGauss.git"
+$DefaultRepoUrl = "https://github.com/Lemmy00/EPFLemma.git"
 $script:ResolvedDistro = $null
 
 function Write-Banner {
@@ -33,7 +33,7 @@ function Write-Banner {
     Write-Host "└─────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
     Write-Host ""
     Write-Host "[note] This install can take up to 10 minutes." -ForegroundColor Yellow
-    Write-Host "[note] For a setup in under 10 seconds, try: https://morph.new/opengauss" -ForegroundColor Yellow
+    Write-Host "[note] For a setup in under 10 seconds, try: https://morph.new/epflemma" -ForegroundColor Yellow
     Write-Host ""
 }
 
@@ -85,7 +85,7 @@ function Get-RerunCommand {
         $parts += "-Distro"
         $parts += "`"$Distro`""
     }
-    if ($LinuxRepoDir -and $LinuxRepoDir -ne "~/ReallyOpenGauss") {
+    if ($LinuxRepoDir -and $LinuxRepoDir -ne "~/EPFLemma") {
         $parts += "-LinuxRepoDir"
         $parts += "`"$LinuxRepoDir`""
     }
@@ -309,7 +309,7 @@ function Main {
 
     $bashScript = (Build-InstallScript).Replace("`r`n", "`n").Replace("`r", "`n")
     $workspaceFlag = if ($WithWorkspace.IsPresent) { "1" } else { "0" }
-    $tempDir = Join-Path $env:TEMP "opengauss-wsl-bootstrap"
+    $tempDir = Join-Path $env:TEMP "epflemma-wsl-bootstrap"
     $tempScriptPath = Join-Path $tempDir "install.sh"
     New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
     [System.IO.File]::WriteAllText(
@@ -347,7 +347,7 @@ function Main {
     Write-Success "EPFLemma is installed in WSL."
     Write-Info "For daily use, open your WSL shell and run:"
     Write-Host "  cd $LinuxRepoDir" -ForegroundColor Yellow
-    Write-Host "  opengauss" -ForegroundColor Yellow
+    Write-Host "  epflemma" -ForegroundColor Yellow
     Write-Host ""
 }
 

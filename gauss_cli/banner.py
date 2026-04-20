@@ -256,8 +256,8 @@ def check_for_updates() -> Optional[int]:
     installed_repo_root = get_installed_repo_root()
     if installed_repo_root is not None:
         candidate_repo_dirs.append(installed_repo_root.expanduser())
-    candidate_repo_dirs.append(gauss_home / "opengauss")
-    candidate_repo_dirs.append(gauss_home / "opengauss-dev")
+    candidate_repo_dirs.append(gauss_home / "epflemma")
+    candidate_repo_dirs.append(gauss_home / "epflemma-dev")
     candidate_repo_dirs.append(Path(__file__).parent.parent.resolve())
 
     repo_dir = None

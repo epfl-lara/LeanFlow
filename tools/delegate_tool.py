@@ -359,7 +359,7 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
         try:
-            from opengauss_cli.file_locks import release_all_file_locks
+            from epflemma_cli.file_locks import release_all_file_locks
 
             child_session_id = str(getattr(locals().get("child"), "session_id", "") or "")
             if child_session_id:

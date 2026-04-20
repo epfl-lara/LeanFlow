@@ -20,16 +20,16 @@ python -m pip install -e ".[dev]"
 Useful checks:
 
 ```bash
-python -m pytest tests/opengauss -q -n 0
-python -m pytest tests/opengauss tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py -q -n 0
-python -m opengauss_cli.main --help
-./scripts/install.sh
+python -m pytest tests/epflemma -q -n 0
+python -m pytest tests/epflemma tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py -q -n 0
+python -m epflemma_cli.main --help
+./scripts/install-internal.sh
 ```
 
 ## Main Codepaths
 
-- `opengauss_cli/` for shell UX, workflow orchestration, provider routing, local runtimes, locks, and workflow state
-- `opengauss_skills/` for the curated Lean-first skill core
+- `epflemma_cli/` for shell UX, workflow orchestration, provider routing, local runtimes, locks, and workflow state
+- `epflemma_skills/` for the curated Lean-first skill core
 - `agent/` for prompt assembly, compression, display, and shared agent internals
 - `tools/` for the Lean-kernel tool surface
 - `run_agent.py` for the core conversation loop

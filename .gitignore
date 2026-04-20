@@ -39,6 +39,9 @@ privvy*
 images/
 __pycache__/
 gauss_agent.egg-info/
+epflemma_agent.egg-info/
+.opengauss-venv/
+.epflemma-venv/
 wandb/
 testlogs
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Toolset definitions for the OpenGauss kernel."""
+"""Toolset definitions for the EPFLemma kernel."""
 
 from typing import List, Dict, Any, Set, Optional
 
@@ -12,7 +12,7 @@ _SESSION_TOOLS = ["session_search"]
 _COORDINATION_TOOLS = ["acquire_file_lock", "release_file_lock", "list_file_locks"]
 _DELEGATION_TOOLS = ["delegate_task"]
 
-_OPENGAUSS_CORE_TOOLS = [
+_EPFLEMMA_CORE_TOOLS = [
     *_FILE_TOOLS,
     *_WEB_TOOLS,
     *_TERMINAL_TOOLS,
@@ -68,19 +68,19 @@ TOOLSETS: Dict[str, Dict[str, Any]] = {
         "tools": [],
         "includes": ["file", "web", "terminal", "skills", "session_search", "coordination"],
     },
-    "opengauss-cli": {
-        "description": "OpenGauss kernel CLI toolset",
-        "tools": _OPENGAUSS_CORE_TOOLS,
+    "epflemma-cli": {
+        "description": "EPFLemma kernel CLI toolset",
+        "tools": _EPFLEMMA_CORE_TOOLS,
         "includes": [],
     },
-    "opengauss-native": {
-        "description": "OpenGauss native Lean workflow toolset",
-        "tools": _OPENGAUSS_CORE_TOOLS,
+    "epflemma-native": {
+        "description": "EPFLemma native Lean workflow toolset",
+        "tools": _EPFLEMMA_CORE_TOOLS,
         "includes": [],
     },
-    "opengauss-native-swarm": {
-        "description": "User-approved OpenGauss Lean swarm workflow toolset",
-        "tools": [*_OPENGAUSS_CORE_TOOLS, *_DELEGATION_TOOLS],
+    "epflemma-native-swarm": {
+        "description": "User-approved EPFLemma Lean swarm workflow toolset",
+        "tools": [*_EPFLEMMA_CORE_TOOLS, *_DELEGATION_TOOLS],
         "includes": [],
     },
 }

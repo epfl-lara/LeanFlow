@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Tool-facing wrappers for OpenGauss file reservations."""
+"""Tool-facing wrappers for EPFLemma file reservations."""
 
 from __future__ import annotations
 
 import json
 
-from opengauss_cli.file_locks import (
+from epflemma_cli.file_locks import (
     acquire_file_lock as _acquire_file_lock,
     list_file_locks as _list_file_locks,
     release_all_file_locks as _release_all_file_locks,
@@ -69,7 +69,7 @@ FILE_LOCK_RELEASE_SCHEMA = {
 
 FILE_LOCK_LIST_SCHEMA = {
     "name": "list_file_locks",
-    "description": "List active OpenGauss file reservations so swarm agents can avoid conflicting edits.",
+    "description": "List active EPFLemma file reservations so swarm agents can avoid conflicting edits.",
     "parameters": {"type": "object", "properties": {}},
 }
 

@@ -26,9 +26,9 @@ source .venv/bin/activate
 ## Main Active Codepaths
 
 ```text
-ReallyOpenGauss/
-├── opengauss_cli/        # Shell UX, workflow orchestration, providers, local runtimes, locks, workflow state
-├── opengauss_skills/     # Curated Lean-first skills
+EPFLemma/
+├── epflemma_cli/        # Shell UX, workflow orchestration, providers, local runtimes, locks, workflow state
+├── epflemma_skills/     # Curated Lean-first skills
 ├── agent/                # Prompt assembly, compression, display, auxiliary clients
 ├── tools/                # Lean-kernel tools
 ├── run_agent.py          # Core conversation loop
@@ -42,12 +42,12 @@ Some lower-level support modules still keep `gauss_*` names internally. Treat th
 
 ## Current Architecture
 
-- `opengauss_cli/main.py` is the active `opengauss` CLI entrypoint
-- `opengauss_cli/native_runner.py` is the managed Lean workflow runtime
-- `opengauss_cli/workflow.py` resolves workflow requests and toolset selection
-- `opengauss_cli/workflow_state.py` persists activity, checkpoints, logs, and status
-- `opengauss_cli/file_locks.py` handles cross-agent file reservations
-- `opengauss_cli/skill_core.py` resolves builtin, user, and project skill overlays
+- `epflemma_cli/main.py` is the active `epflemma` CLI entrypoint
+- `epflemma_cli/native_runner.py` is the managed Lean workflow runtime
+- `epflemma_cli/workflow.py` resolves workflow requests and toolset selection
+- `epflemma_cli/workflow_state.py` persists activity, checkpoints, logs, and status
+- `epflemma_cli/file_locks.py` handles cross-agent file reservations
+- `epflemma_cli/skill_core.py` resolves builtin, user, and project skill overlays
 - `agent/prompt_builder.py` injects skill guidance into the agent prompt
 
 ## Contribution Priorities
@@ -86,14 +86,14 @@ Preferred verification commands:
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/opengauss -q -n 0
-python -m pytest tests/opengauss tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py -q -n 0
-python -m opengauss_cli.main --help
-./scripts/install.sh
+python -m pytest tests/epflemma -q -n 0
+python -m pytest tests/epflemma tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py -q -n 0
+python -m epflemma_cli.main --help
+./scripts/install-internal.sh
 ```
 
 When changing workflow UX or runner behavior, also smoke-test the installed wrapper:
 
 ```bash
-/Users/$USER/.local/bin/opengauss --help
+/Users/$USER/.local/bin/epflemma --help
 ```

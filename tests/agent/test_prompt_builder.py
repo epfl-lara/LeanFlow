@@ -231,7 +231,7 @@ class TestPromptBuilderImports:
 
 class TestBuildSkillsSystemPrompt:
     def test_builtin_core_shows_without_overlays(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
         monkeypatch.chdir(tmp_path)
         result = build_skills_system_prompt()
         assert "builtin core" in result
@@ -239,10 +239,10 @@ class TestBuildSkillsSystemPrompt:
         assert "project overrides" not in result
 
     def test_builds_index_with_builtin_and_overlay_skills(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
         monkeypatch.chdir(tmp_path)
-        (tmp_path / ".opengauss" / "skills" / "lean-proof-loop").mkdir(parents=True)
-        (tmp_path / ".opengauss" / "skills" / "lean-proof-loop" / "SKILL.md").write_text(
+        (tmp_path / ".epflemma" / "skills" / "lean-proof-loop").mkdir(parents=True)
+        (tmp_path / ".epflemma" / "skills" / "lean-proof-loop" / "SKILL.md").write_text(
             "---\nname: lean-proof-loop\ndescription: Project-specific proof loop\n---\n"
         )
         result = build_skills_system_prompt()
@@ -253,9 +253,9 @@ class TestBuildSkillsSystemPrompt:
         assert "available_skills" in result
 
     def test_project_override_replaces_builtin_duplicate(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
         monkeypatch.chdir(tmp_path)
-        skill_dir = tmp_path / ".opengauss" / "skills" / "lean-diagnostics"
+        skill_dir = tmp_path / ".epflemma" / "skills" / "lean-diagnostics"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
             "---\nname: lean-diagnostics\ndescription: Project diagnostics overlay\n---\n"
@@ -478,7 +478,7 @@ class TestSkillShouldShow:
 
 class TestBuildSkillsSystemPromptConditional:
     def test_build_skills_prompt_ignores_legacy_tool_filters(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
         monkeypatch.chdir(tmp_path)
         result = build_skills_system_prompt(
             available_tools={"terminal"},
@@ -489,14 +489,14 @@ class TestBuildSkillsSystemPromptConditional:
 
     def test_project_and_user_overlays_both_show_when_distinct(self, monkeypatch, tmp_path):
         home = tmp_path / "home"
-        monkeypatch.setenv("OPENGAUSS_HOME", str(home))
+        monkeypatch.setenv("EPFLEMMA_HOME", str(home))
         monkeypatch.chdir(tmp_path)
         user_dir = home / "skills" / "provider-fallback"
         user_dir.mkdir(parents=True)
         (user_dir / "SKILL.md").write_text(
             "---\nname: provider-fallback\ndescription: User endpoint fallback notes\n---\n"
         )
-        project_dir = tmp_path / ".opengauss" / "skills" / "custom-lean-overlay"
+        project_dir = tmp_path / ".epflemma" / "skills" / "custom-lean-overlay"
         project_dir.mkdir(parents=True)
         (project_dir / "SKILL.md").write_text(
             "---\nname: custom-lean-overlay\ndescription: Project solver overlay\n---\n"

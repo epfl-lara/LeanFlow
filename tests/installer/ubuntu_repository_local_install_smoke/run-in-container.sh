@@ -272,8 +272,8 @@ mv "$GAUSS_HOME/.env.backup" "$GAUSS_HOME/.env"
 
 echo "==> Verifying Lean bootstrap failures surface useful diagnostics"
 BAD_TOOLCHAIN_HOME="/tmp/gauss-home-bad-toolchain"
-BAD_TOOLCHAIN_LOG="/tmp/opengauss-bad-toolchain.log"
-BAD_TOOLCHAIN_VALUE="leanprover/lean4:v0.0.0-opengauss-smoke"
+BAD_TOOLCHAIN_LOG="/tmp/epflemma-bad-toolchain.log"
+BAD_TOOLCHAIN_VALUE="leanprover/lean4:v0.0.0-epflemma-smoke"
 rm -rf "$BAD_TOOLCHAIN_HOME" "$BAD_TOOLCHAIN_LOG"
 if GAUSS_LEAN_TOOLCHAIN="$BAD_TOOLCHAIN_VALUE" ./scripts/install-internal.sh \
     --gauss-home "$BAD_TOOLCHAIN_HOME" \

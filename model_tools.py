@@ -5,7 +5,7 @@ Model Tools Module
 Thin orchestration layer over the tool registry. Each tool file in tools/
 self-registers its schema, handler, and metadata via tools.registry.register().
 This module triggers discovery (by importing the supported Lean-kernel tool
-modules), then provides the public API that run_agent.py and the opengauss
+modules), then provides the public API that run_agent.py and the epflemma
 shell consume.
 
 Public API retained for the Lean-first runtime:

@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "opengauss-agent"
+name = "epflemma-agent"
 version = "0.3.0"
-description = "EPFLemma is a Lean AI for Math shell shipped through the standalone opengauss CLI and native runtime."
+description = "EPFLemma is a Lean AI for Math shell shipped through the standalone epflemma CLI and native runtime."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "EPFLemma contributors" }]
@@ -35,15 +35,15 @@ pty = [
 web = ["firecrawl-py"]
 local-vllm = ["vllm>=0.8.0"]
 all = [
-  "opengauss-agent[dev]",
-  "opengauss-agent[mcp]",
-  "opengauss-agent[pty]",
-  "opengauss-agent[web]",
+  "epflemma-agent[dev]",
+  "epflemma-agent[mcp]",
+  "epflemma-agent[pty]",
+  "epflemma-agent[web]",
 ]
 
 [project.scripts]
-opengauss = "opengauss_cli.main:main"
-opengauss-agent = "opengauss_agent:main"
+epflemma = "epflemma_cli.main:main"
+epflemma-agent = "epflemma_agent:main"
 
 [tool.setuptools]
 py-modules = [
@@ -52,14 +52,14 @@ py-modules = [
   "gauss_time",
   "minisweagent_path",
   "model_tools",
-  "opengauss_agent",
+  "epflemma_agent",
   "run_agent",
   "toolsets",
   "utils",
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "opengauss_cli", "tools", "tools.*"]
+include = ["agent", "agent.*", "epflemma_cli", "tools", "tools.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

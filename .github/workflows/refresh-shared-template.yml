@@ -10,14 +10,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish-opengauss-template:
+  publish-epflemma-template:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     env:
       DEVBOX_TEMPLATE_BASE_URL: https://devbox.svc.cloud.morph.so
-      TEMPLATE_ALIAS: opengauss
-      TEMPLATE_FILE: .github/morph/opengauss-template.yaml
+      TEMPLATE_ALIAS: epflemma
+      TEMPLATE_FILE: .github/morph/epflemma-template.yaml
       PYTHONUNBUFFERED: "1"
       MORPH_API_KEY: ${{ secrets.MORPH_API_KEY }}
     steps:
