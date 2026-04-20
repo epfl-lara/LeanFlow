@@ -37,6 +37,7 @@ from epflemma_cli.config import (
     set_config_value,
 )
 from epflemma_cli.doctor import run_doctor
+from epflemma_cli.env_loader import load_epflemma_dotenv
 from epflemma_cli.local_models import (
     get_local_runtime_status,
     list_local_runtimes,
@@ -85,6 +86,11 @@ def _seed_environment() -> None:
     os.environ.setdefault("EPFLEMMA_HOME", str(home))
     os.environ.setdefault("OPENGAUSS_HOME", str(home))
     os.environ.setdefault("GAUSS_HOME", str(home))
+
+
+def _load_runtime_env(*, cwd: Path | None = None) -> None:
+    project_env = (cwd or Path.cwd()).resolve() / ".env"
+    load_epflemma_dotenv(epflemma_home=get_epflemma_home(), project_env=project_env)
 
 
 def _parse_config_value(raw: str) -> Any:
@@ -769,6 +775,7 @@ class InteractiveShell:
 def main(argv: list[str] | None = None) -> int:
     _seed_environment()
     ensure_epflemma_home()
+    _load_runtime_env()
     parser = _build_parser()
     args = parser.parse_args(argv)
 

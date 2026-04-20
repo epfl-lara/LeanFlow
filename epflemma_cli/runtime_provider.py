@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlparse
 from typing import Any, Mapping, Optional
 
 from epflemma_cli.config import get_env_value, load_config
@@ -11,6 +12,31 @@ from epflemma_cli.local_models import resolve_active_local_runtime
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def _read_provider_env(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+        file_value = str(get_env_value(name, "") or "").strip()
+        if file_value:
+            return file_value
+    return ""
+
+
+def _validate_openai_compatible_base_url(base_url: str) -> str:
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        return normalized
+
+    hostname = (urlparse(normalized).hostname or "").strip().lower()
+    if hostname == "your-rcp-endpoint":
+        raise RuntimeProviderError(
+            "EPFLemma is still configured with the placeholder host `your-rcp-endpoint`. "
+            "Set EPFLEMMA_OPENAI_BASE_URL in ~/.epflemma/.env to your real RCP/OpenAI-compatible endpoint."
+        )
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -168,8 +194,18 @@ def _resolve_openai_compatible_runtime(
     cfg_base_url = str(model_cfg.get("base_url", "") or "").strip()
     cfg_provider = _normalize_provider_name(str(model_cfg.get("provider", "") or ""))
 
-    env_openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
-    env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
+    env_openai_base_url = _read_provider_env(
+        "EPFLEMMA_OPENAI_BASE_URL",
+        "OPENGAUSS_OPENAI_BASE_URL",
+        "GAUSS_OPENAI_BASE_URL",
+        "OPENAI_BASE_URL",
+    )
+    env_openrouter_base_url = _read_provider_env(
+        "EPFLEMMA_OPENROUTER_BASE_URL",
+        "OPENGAUSS_OPENROUTER_BASE_URL",
+        "GAUSS_OPENROUTER_BASE_URL",
+        "OPENROUTER_BASE_URL",
+    )
 
     use_config_base_url = False
     if cfg_base_url and not explicit_base_url and not env_openai_base_url:
@@ -185,13 +221,32 @@ def _resolve_openai_compatible_runtime(
         or (cfg_base_url if use_config_base_url else "")
         or env_openrouter_base_url
         or OPENROUTER_BASE_URL
-    ).rstrip("/")
+    )
+    base_url = _validate_openai_compatible_base_url(base_url)
 
     is_openrouter_url = "openrouter.ai" in base_url.lower()
     if is_openrouter_url:
-        api_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
+        api_key = explicit_api_key or _read_provider_env(
+            "EPFLEMMA_OPENROUTER_API_KEY",
+            "OPENGAUSS_OPENROUTER_API_KEY",
+            "GAUSS_OPENROUTER_API_KEY",
+            "OPENROUTER_API_KEY",
+            "EPFLEMMA_OPENAI_API_KEY",
+            "OPENGAUSS_OPENAI_API_KEY",
+            "GAUSS_OPENAI_API_KEY",
+            "OPENAI_API_KEY",
+        )
     else:
-        api_key = explicit_api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY") or ""
+        api_key = explicit_api_key or _read_provider_env(
+            "EPFLEMMA_OPENAI_API_KEY",
+            "OPENGAUSS_OPENAI_API_KEY",
+            "GAUSS_OPENAI_API_KEY",
+            "OPENAI_API_KEY",
+            "EPFLEMMA_OPENROUTER_API_KEY",
+            "OPENGAUSS_OPENROUTER_API_KEY",
+            "GAUSS_OPENROUTER_API_KEY",
+            "OPENROUTER_API_KEY",
+        )
 
     return {
         "provider": "openrouter" if is_openrouter_url else "custom",
@@ -283,8 +338,13 @@ def resolve_runtime_provider(
         resolved = {
             "provider": "custom",
             "api_mode": "chat_completions",
-            "base_url": (explicit_base_url or custom_provider["base_url"]).rstrip("/"),
-            "api_key": explicit_api_key or custom_provider["api_key"] or os.getenv("OPENAI_API_KEY", "").strip(),
+            "base_url": _validate_openai_compatible_base_url(explicit_base_url or custom_provider["base_url"]),
+            "api_key": explicit_api_key or custom_provider["api_key"] or _read_provider_env(
+                "EPFLEMMA_OPENAI_API_KEY",
+                "OPENGAUSS_OPENAI_API_KEY",
+                "GAUSS_OPENAI_API_KEY",
+                "OPENAI_API_KEY",
+            ),
             "source": f"custom_provider:{custom_provider['name']}",
             "requested_provider": requested_provider,
             "model": str(_get_model_config().get("default", "") or ""),
