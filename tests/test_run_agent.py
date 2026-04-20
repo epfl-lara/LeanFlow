@@ -547,13 +547,13 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert DEFAULT_AGENT_IDENTITY in prompt
 
-    def test_includes_open_gauss_entry_workflow_guidance(self, agent):
+    def test_includes_epflemma_lean_entry_workflow_guidance(self, agent):
         prompt = agent._build_system_prompt()
-        assert "point them to /chat if they want inline orientation or plain-language help" in prompt
-        assert "point them to /managed-chat if they want a managed Claude Code or Codex child session" in prompt
         assert "point them to /project" in prompt
-        assert "/autoprove The de Bruijn - Erdos theorem" in prompt
-        assert "Ctrl-] detaches and returns them to the main Gauss session" in prompt
+        assert "then /prove, /autoprove, /formalize, or /autoformalize" in prompt
+        assert "successful builds" in prompt
+        assert "no `sorry`" in prompt
+        assert "`--agents N`" in prompt
 
     def test_includes_system_message(self, agent):
         prompt = agent._build_system_prompt(system_message="Custom instruction")
@@ -937,6 +937,7 @@ class TestConcurrentToolExecution:
             mock_hfc.assert_called_once_with(
                 "web_search", {"q": "test"}, "task-1",
                 enabled_tools=list(agent.valid_tool_names),
+                owner_id=agent.session_id,
             )
             assert result == "result"
 
@@ -1372,7 +1373,7 @@ class TestNousCredentialRefresh:
             return _RebuiltClient()
 
         monkeypatch.setattr(
-            "gauss_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
+            "opengauss_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
         )
 
         agent.client = _ExistingClient()
@@ -1484,7 +1485,7 @@ class TestSystemPromptStability:
         # Should have built fresh, not queried the DB
         mock_db.get_session.assert_not_called()
         assert agent._cached_system_prompt is not None
-        assert "You are Gauss" in agent._cached_system_prompt
+        assert "You are EPFLemma" in agent._cached_system_prompt
         assert "Gauss Agent" not in agent._cached_system_prompt
 
     def test_fresh_build_when_db_has_no_prompt(self, agent):
@@ -1512,7 +1513,7 @@ class TestSystemPromptStability:
                 agent._cached_system_prompt = agent._build_system_prompt()
 
         # Empty string is falsy, so should fall through to fresh build
-        assert "You are Gauss" in agent._cached_system_prompt
+        assert "You are EPFLemma" in agent._cached_system_prompt
         assert "Gauss Agent" not in agent._cached_system_prompt
 
 # ---------------------------------------------------------------------------

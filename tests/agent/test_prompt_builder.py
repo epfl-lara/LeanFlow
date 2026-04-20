@@ -230,137 +230,39 @@ class TestPromptBuilderImports:
 
 
 class TestBuildSkillsSystemPrompt:
-    def test_empty_when_no_skills_dir(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
+    def test_builtin_core_shows_without_overlays(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
         result = build_skills_system_prompt()
-        assert result == ""
+        assert "builtin core" in result
+        assert "lean-proof-loop" in result
+        assert "project overrides" not in result
 
-    def test_builds_index_with_skills(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        skills_dir = tmp_path / "skills" / "coding" / "python-debug"
-        skills_dir.mkdir(parents=True)
-        (skills_dir / "SKILL.md").write_text(
-            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+    def test_builds_index_with_builtin_and_overlay_skills(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".opengauss" / "skills" / "lean-proof-loop").mkdir(parents=True)
+        (tmp_path / ".opengauss" / "skills" / "lean-proof-loop" / "SKILL.md").write_text(
+            "---\nname: lean-proof-loop\ndescription: Project-specific proof loop\n---\n"
         )
         result = build_skills_system_prompt()
-        assert "python-debug" in result
-        assert "Debug Python scripts" in result
+        assert "lean-proof-loop" in result
+        assert "Project-specific proof loop" in result
+        assert "builtin core" in result
+        assert "project overrides" in result
         assert "available_skills" in result
 
-    def test_deduplicates_skills(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        cat_dir = tmp_path / "skills" / "tools"
-        for subdir in ["search", "search"]:
-            d = cat_dir / subdir
-            d.mkdir(parents=True, exist_ok=True)
-            (d / "SKILL.md").write_text("---\ndescription: Search stuff\n---\n")
+    def test_project_override_replaces_builtin_duplicate(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".opengauss" / "skills" / "lean-diagnostics"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: lean-diagnostics\ndescription: Project diagnostics overlay\n---\n"
+        )
         result = build_skills_system_prompt()
-        # "search" should appear only once per category
-        assert result.count("- search") == 1
-
-    def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
-        """Skills with platforms: [macos] should not appear on Linux."""
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        skills_dir = tmp_path / "skills" / "apple"
-        skills_dir.mkdir(parents=True)
-
-        # macOS-only skill
-        mac_skill = skills_dir / "imessage"
-        mac_skill.mkdir()
-        (mac_skill / "SKILL.md").write_text(
-            "---\nname: imessage\ndescription: Send iMessages\nplatforms: [macos]\n---\n"
-        )
-
-        # Universal skill
-        uni_skill = skills_dir / "web-search"
-        uni_skill.mkdir()
-        (uni_skill / "SKILL.md").write_text(
-            "---\nname: web-search\ndescription: Search the web\n---\n"
-        )
-
-        from unittest.mock import patch
-
-        with patch("tools.skills_tool.sys") as mock_sys:
-            mock_sys.platform = "linux"
-            result = build_skills_system_prompt()
-
-        assert "web-search" in result
-        assert "imessage" not in result
-
-    def test_includes_matching_platform_skills(self, monkeypatch, tmp_path):
-        """Skills with platforms: [macos] should appear on macOS."""
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        skills_dir = tmp_path / "skills" / "apple"
-        mac_skill = skills_dir / "imessage"
-        mac_skill.mkdir(parents=True)
-        (mac_skill / "SKILL.md").write_text(
-            "---\nname: imessage\ndescription: Send iMessages\nplatforms: [macos]\n---\n"
-        )
-
-        from unittest.mock import patch
-
-        with patch("tools.skills_tool.sys") as mock_sys:
-            mock_sys.platform = "darwin"
-            result = build_skills_system_prompt()
-
-        assert "imessage" in result
-        assert "Send iMessages" in result
-
-    def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)
-        skills_dir = tmp_path / "skills" / "media"
-
-        gated = skills_dir / "gated-skill"
-        gated.mkdir(parents=True)
-        (gated / "SKILL.md").write_text(
-            "---\nname: gated-skill\ndescription: Needs a key\n"
-            "prerequisites:\n  env_vars: [MISSING_API_KEY_XYZ]\n---\n"
-        )
-
-        available = skills_dir / "free-skill"
-        available.mkdir(parents=True)
-        (available / "SKILL.md").write_text(
-            "---\nname: free-skill\ndescription: No prereqs\n---\n"
-        )
-
-        result = build_skills_system_prompt()
-        assert "free-skill" in result
-        assert "gated-skill" in result
-
-    def test_includes_skills_with_met_prerequisites(self, monkeypatch, tmp_path):
-        """Skills with satisfied prerequisites should appear normally."""
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        monkeypatch.setenv("MY_API_KEY", "test_value")
-        skills_dir = tmp_path / "skills" / "media"
-
-        skill = skills_dir / "ready-skill"
-        skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text(
-            "---\nname: ready-skill\ndescription: Has key\n"
-            "prerequisites:\n  env_vars: [MY_API_KEY]\n---\n"
-        )
-
-        result = build_skills_system_prompt()
-        assert "ready-skill" in result
-
-    def test_non_local_backend_keeps_skill_visible_without_probe(
-        self, monkeypatch, tmp_path
-    ):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.delenv("BACKEND_ONLY_KEY", raising=False)
-        skills_dir = tmp_path / "skills" / "media"
-
-        skill = skills_dir / "backend-skill"
-        skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text(
-            "---\nname: backend-skill\ndescription: Available in backend\n"
-            "prerequisites:\n  env_vars: [BACKEND_ONLY_KEY]\n---\n"
-        )
-
-        result = build_skills_system_prompt()
-        assert "backend-skill" in result
+        assert result.count("lean-diagnostics") == 1
+        assert "Project diagnostics overlay" in result
 
 
 # =========================================================================
@@ -453,7 +355,7 @@ class TestPromptBuilderConstants:
         assert len(DEFAULT_AGENT_IDENTITY) > 50
         assert "Gauss Agent" not in DEFAULT_AGENT_IDENTITY
         assert "Nous Research" not in DEFAULT_AGENT_IDENTITY
-        assert "You are Gauss" in DEFAULT_AGENT_IDENTITY
+        assert "You are EPFLemma" in DEFAULT_AGENT_IDENTITY
 
     def test_platform_hints_known_platforms(self):
         assert "whatsapp" in PLATFORM_HINTS
@@ -575,78 +477,34 @@ class TestSkillShouldShow:
 
 
 class TestBuildSkillsSystemPromptConditional:
-    def test_fallback_skill_hidden_when_primary_available(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  gauss:\n    fallback_for_toolsets: [web]\n---\n"
-        )
+    def test_build_skills_prompt_ignores_legacy_tool_filters(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
         result = build_skills_system_prompt(
-            available_tools=set(),
-            available_toolsets={"web"},
+            available_tools={"terminal"},
+            available_toolsets={"web", "terminal"},
         )
-        assert "duckduckgo" not in result
+        assert "lean-proof-loop" in result
+        assert "provider-fallback" in result
 
-    def test_fallback_skill_shown_when_primary_unavailable(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  gauss:\n    fallback_for_toolsets: [web]\n---\n"
+    def test_project_and_user_overlays_both_show_when_distinct(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        monkeypatch.setenv("OPENGAUSS_HOME", str(home))
+        monkeypatch.chdir(tmp_path)
+        user_dir = home / "skills" / "provider-fallback"
+        user_dir.mkdir(parents=True)
+        (user_dir / "SKILL.md").write_text(
+            "---\nname: provider-fallback\ndescription: User endpoint fallback notes\n---\n"
         )
-        result = build_skills_system_prompt(
-            available_tools=set(),
-            available_toolsets=set(),
+        project_dir = tmp_path / ".opengauss" / "skills" / "custom-lean-overlay"
+        project_dir.mkdir(parents=True)
+        (project_dir / "SKILL.md").write_text(
+            "---\nname: custom-lean-overlay\ndescription: Project solver overlay\n---\n"
         )
-        assert "duckduckgo" in result
 
-    def test_requires_skill_hidden_when_toolset_missing(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "iot" / "openhue"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  gauss:\n    requires_toolsets: [terminal]\n---\n"
-        )
-        result = build_skills_system_prompt(
-            available_tools=set(),
-            available_toolsets=set(),
-        )
-        assert "openhue" not in result
-
-    def test_requires_skill_shown_when_toolset_available(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "iot" / "openhue"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  gauss:\n    requires_toolsets: [terminal]\n---\n"
-        )
-        result = build_skills_system_prompt(
-            available_tools=set(),
-            available_toolsets={"terminal"},
-        )
-        assert "openhue" in result
-
-    def test_unconditional_skill_always_shown(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "general" / "notes"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: notes\ndescription: Take notes\n---\n"
-        )
-        result = build_skills_system_prompt(
-            available_tools=set(),
-            available_toolsets=set(),
-        )
-        assert "notes" in result
-
-    def test_no_args_shows_all_skills(self, monkeypatch, tmp_path):
-        """Backward compat: calling with no args shows everything."""
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path))
-        skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  gauss:\n    fallback_for_toolsets: [web]\n---\n"
-        )
         result = build_skills_system_prompt()
-        assert "duckduckgo" in result
+
+        assert "user overlays" in result
+        assert "project overrides" in result
+        assert "User endpoint fallback notes" in result
+        assert "Project solver overlay" in result

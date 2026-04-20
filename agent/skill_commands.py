@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from opengauss_cli.skill_core import discover_skill_commands, find_skill, load_skill
+
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
@@ -46,32 +48,17 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         return None
 
     try:
-        from tools.skills_tool import SKILLS_DIR, skill_view
-
-        identifier_path = Path(raw_identifier).expanduser()
-        if identifier_path.is_absolute():
-            try:
-                normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
-            except Exception:
-                normalized = raw_identifier
-        else:
-            normalized = raw_identifier.lstrip("/")
-
-        loaded_skill = json.loads(skill_view(normalized, task_id=task_id))
+        normalized = raw_identifier.lstrip("/")
+        loaded_skill = load_skill(normalized)
     except Exception:
         return None
 
-    if not loaded_skill.get("success"):
+    if not loaded_skill:
         return None
 
     skill_name = str(loaded_skill.get("name") or normalized)
-    skill_path = str(loaded_skill.get("path") or "")
-    skill_dir = None
-    if skill_path:
-        try:
-            skill_dir = SKILLS_DIR / Path(skill_path).parent
-        except Exception:
-            skill_dir = None
+    record = find_skill(normalized)
+    skill_dir = record.skill_dir if record else None
 
     return loaded_skill, skill_dir, skill_name
 
@@ -84,8 +71,6 @@ def _build_skill_message(
     runtime_note: str = "",
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
-    from tools.skills_tool import SKILLS_DIR
-
     content = str(loaded_skill.get("content") or "")
 
     parts = [activation_note, "", content.strip()]
@@ -118,17 +103,8 @@ def _build_skill_message(
         if isinstance(entries, list):
             supporting.extend(entries)
 
-    if not supporting and skill_dir:
-        for subdir in ("references", "templates", "scripts", "assets"):
-            subdir_path = skill_dir / subdir
-            if subdir_path.exists():
-                for f in sorted(subdir_path.rglob("*")):
-                    if f.is_file():
-                        rel = str(f.relative_to(skill_dir))
-                        supporting.append(rel)
-
-    if supporting and skill_dir:
-        skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
+    if supporting:
+        skill_view_target = str(loaded_skill.get("name") or "")
         parts.append("")
         parts.append("[This skill has supporting files you can load with the skill_view tool:]")
         for sf in supporting:
@@ -149,45 +125,14 @@ def _build_skill_message(
 
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Scan ~/.gauss/skills/ and return a mapping of /command -> skill info.
-
-    Returns:
-        Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
-    """
+    """Return the current OpenGauss skill command map."""
     global _skill_commands
-    _skill_commands = {}
+    _skill_commands = dict(discover_skill_commands())
     try:
-        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform
-        if not SKILLS_DIR.exists():
-            return _skill_commands
-        for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-            if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
-                continue
-            try:
-                content = skill_md.read_text(encoding='utf-8')
-                frontmatter, body = _parse_frontmatter(content)
-                # Skip skills incompatible with the current OS platform
-                if not skill_matches_platform(frontmatter):
-                    continue
-                name = frontmatter.get('name', skill_md.parent.name)
-                description = frontmatter.get('description', '')
-                if not description:
-                    for line in body.strip().split('\n'):
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            description = line[:80]
-                            break
-                cmd_name = name.lower().replace(' ', '-').replace('_', '-')
-                _skill_commands[f"/{cmd_name}"] = {
-                    "name": name,
-                    "description": description or f"Invoke the {name} skill",
-                    "skill_md_path": str(skill_md),
-                    "skill_dir": str(skill_md.parent),
-                }
-            except Exception:
-                continue
+        for command, payload in list(_skill_commands.items()):
+            payload.setdefault("description", f"Invoke the {payload.get('name', command.lstrip('/'))} skill")
     except Exception:
-        pass
+        logger.debug("Failed to scan OpenGauss skill commands", exc_info=True)
     return _skill_commands
 
 
@@ -218,7 +163,7 @@ def build_skill_invocation_message(
     if not skill_info:
         return None
 
-    loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
+    loaded = _load_skill_payload(str(skill_info["name"]), task_id=task_id)
     if not loaded:
         return f"[Failed to load skill: {skill_info['name']}]"
 

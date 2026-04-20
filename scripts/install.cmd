@@ -1,13 +1,13 @@
 @echo off
 REM ============================================================================
-REM Open Gauss WSL Installer (CMD wrapper)
+REM EPFLemma WSL Installer (CMD wrapper)
 REM ============================================================================
 REM Windows support is WSL-first. This wrapper forwards to install.ps1, which
 REM bootstraps WSL2 and then runs the standard Linux installer there.
 REM ============================================================================
 
 echo.
-echo  Open Gauss WSL Installer
+echo  EPFLemma WSL Installer
 echo  Launching PowerShell bootstrap...
 echo.
 

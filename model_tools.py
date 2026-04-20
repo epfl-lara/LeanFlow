@@ -4,15 +4,15 @@ Model Tools Module
 
 Thin orchestration layer over the tool registry. Each tool file in tools/
 self-registers its schema, handler, and metadata via tools.registry.register().
-This module triggers discovery (by importing all tool modules), then provides
-the public API that run_agent.py, cli.py, batch_runner.py, and the RL
-environments consume.
+This module triggers discovery (by importing the supported Lean-kernel tool
+modules), then provides the public API that run_agent.py and the opengauss
+shell consume.
 
-Public API (signatures preserved from the original 2,400-line version):
+Public API retained for the Lean-first runtime:
     get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode) -> list
     handle_function_call(function_name, function_args, task_id, user_task) -> str
-    TOOL_TO_TOOLSET_MAP: dict          (for batch_runner.py)
-    TOOLSET_REQUIREMENTS: dict         (for cli.py, doctor.py)
+    TOOL_TO_TOOLSET_MAP: dict
+    TOOLSET_REQUIREMENTS: dict
     get_all_tool_names() -> list
     get_toolset_for_tool(name) -> str
     get_available_toolsets() -> dict
@@ -75,7 +75,11 @@ def _discover_tools():
     _modules = [
         "tools.web_tools",
         "tools.file_tools",
-        "tools.browser_tool",
+        "tools.file_lock_tool",
+        "tools.terminal_tool",
+        "tools.session_search_tool",
+        "tools.skills_tool",
+        "tools.delegate_tool",
     ]
     import importlib
     for mod_name in _modules:
@@ -93,14 +97,6 @@ try:
     discover_mcp_tools()
 except Exception as e:
     logger.debug("MCP tool discovery failed: %s", e)
-
-# Plugin tool discovery (user/project/pip plugins)
-try:
-    from gauss_cli.plugins import discover_plugins
-    discover_plugins()
-except Exception as e:
-    logger.debug("Plugin discovery failed: %s", e)
-
 
 # =============================================================================
 # Backward-compat constants  (built once after discovery)
@@ -121,12 +117,6 @@ _last_resolved_tool_names: List[str] = []
 
 _LEGACY_TOOLSET_MAP = {
     "web_tools": ["web_search"],
-    "browser_tools": [
-        "browser_navigate", "browser_snapshot", "browser_click",
-        "browser_type", "browser_scroll", "browser_back",
-        "browser_press", "browser_close", "browser_get_images",
-        "browser_vision"
-    ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
 }
 
@@ -196,30 +186,8 @@ def get_tool_definitions(
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
-    # Always include plugin-registered tools — they bypass the toolset filter
-    # because their toolsets are dynamic (created at plugin load time).
-    try:
-        from gauss_cli.plugins import get_plugin_tool_names
-        plugin_tools = get_plugin_tool_names()
-        if plugin_tools:
-            tools_to_include.update(plugin_tools)
-    except Exception:
-        pass
-
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
-
-    # Rebuild execute_code schema to only list sandbox tools that are actually
-    # enabled.  Without this, the model sees "web_search is available in
-    # execute_code" even when the user disabled the web toolset (#560-discord).
-    if "execute_code" in tools_to_include:
-        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema
-        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & tools_to_include
-        dynamic_schema = build_execute_code_schema(sandbox_enabled)
-        for i, td in enumerate(filtered_tools):
-            if td.get("function", {}).get("name") == "execute_code":
-                filtered_tools[i] = {"type": "function", "function": dynamic_schema}
-                break
 
     if not quiet_mode:
         if filtered_tools:
@@ -251,6 +219,7 @@ def handle_function_call(
     task_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    owner_id: Optional[str] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -259,11 +228,8 @@ def handle_function_call(
         function_name: Name of the function to call.
         function_args: Arguments for the function.
         task_id: Unique identifier for terminal/browser session isolation.
-        user_task: The user's original task (for browser_snapshot context).
-        enabled_tools: Tool names enabled for this session.  When provided,
-                       execute_code uses this list to determine which sandbox
-                       tools to generate.  Falls back to the process-global
-                       ``_last_resolved_tool_names`` for backward compat.
+        user_task: The user's original task.
+        enabled_tools: Tool names enabled for this session.
 
     Returns:
         Function result as a JSON string.
@@ -282,33 +248,14 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
-        try:
-            from gauss_cli.plugins import invoke_hook
-            invoke_hook("pre_tool_call", tool_name=function_name, args=function_args, task_id=task_id or "")
-        except Exception:
-            pass
-
-        if function_name == "execute_code":
-            # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
-            result = registry.dispatch(
-                function_name, function_args,
-                task_id=task_id,
-                enabled_tools=sandbox_enabled,
-            )
-        else:
-            result = registry.dispatch(
-                function_name, function_args,
-                task_id=task_id,
-                user_task=user_task,
-            )
-
-        try:
-            from gauss_cli.plugins import invoke_hook
-            invoke_hook("post_tool_call", tool_name=function_name, args=function_args, result=result, task_id=task_id or "")
-        except Exception:
-            pass
+        result = registry.dispatch(
+            function_name,
+            function_args,
+            task_id=task_id,
+            user_task=user_task,
+            enabled_tools=enabled_tools or _last_resolved_tool_names,
+            owner_id=owner_id,
+        )
 
         return result
 
