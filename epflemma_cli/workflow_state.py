@@ -85,6 +85,24 @@ def workflow_run_log_path() -> Path:
     return workflow_state_root() / "latest-run.log"
 
 
+def workflow_runs_root() -> Path:
+    return workflow_state_root() / "runs"
+
+
+def _workflow_run_id() -> str:
+    run_id = str(os.getenv("EPFLEMMA_WORKFLOW_RUN_ID", "") or "").strip()
+    if run_id:
+        return run_id
+    started = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = f"{started}-pid{os.getpid()}"
+    os.environ["EPFLEMMA_WORKFLOW_RUN_ID"] = run_id
+    return run_id
+
+
+def workflow_timestamped_run_log_path() -> Path:
+    return workflow_runs_root() / f"{_workflow_run_id()}.log"
+
+
 def read_json_file(path: Path) -> dict[str, Any]:
     try:
         if path.is_file():
@@ -144,7 +162,10 @@ def read_workflow_activity(limit: int = 20) -> list[dict[str, Any]]:
 def reset_workflow_run_log() -> Path:
     path = workflow_run_log_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    workflow_runs_root().mkdir(parents=True, exist_ok=True)
+    os.environ["EPFLEMMA_WORKFLOW_RUN_ID"] = _workflow_run_id()
     path.write_text("", encoding="utf-8")
+    workflow_timestamped_run_log_path().write_text("", encoding="utf-8")
     return path
 
 
@@ -153,7 +174,11 @@ def append_workflow_run_log(text: str) -> None:
         return
     path = workflow_run_log_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    timestamped_path = workflow_timestamped_run_log_path()
+    timestamped_path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
+        handle.write(text)
+    with timestamped_path.open("a", encoding="utf-8") as handle:
         handle.write(text)
 
 

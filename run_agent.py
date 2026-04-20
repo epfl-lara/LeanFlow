@@ -376,6 +376,21 @@ def _format_tool_result_for_log(function_name: str, function_result: str) -> lis
     if len(wrapped) > 12:
         return wrapped[:12] + [f"[output truncated: {len(wrapped) - 12} more wrapped line(s)]"]
     return wrapped
+
+
+def _emit_workflow_event(event_type: str, message: str, **details: Any) -> None:
+    if not (
+        os.getenv("EPFLEMMA_PROJECT_ROOT")
+        or os.getenv("OPENGAUSS_PROJECT_ROOT")
+        or os.getenv("GAUSS_PROJECT_ROOT")
+    ):
+        return
+    try:
+        from epflemma_cli.workflow_state import append_workflow_activity
+
+        append_workflow_activity(event_type, message, **details)
+    except Exception:
+        logger.debug("Failed to append workflow event %s", event_type, exc_info=True)
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
@@ -3708,6 +3723,14 @@ class AIAgent:
                     self.tool_progress_callback(name, preview, args)
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
+            _emit_workflow_event(
+                "tool-call",
+                f"Concurrent tool call: {name}",
+                tool=name,
+                arguments=args,
+                concurrent=True,
+                iteration=api_call_count,
+            )
 
         # ── Concurrent execution ─────────────────────────────────────────
         # Each slot holds (function_name, function_args, function_result, duration, error_flag)
@@ -3775,6 +3798,17 @@ class AIAgent:
                 print(f"{self.log_prefix}│  {i+1}. {name} done in {tool_duration:.2f}s")
                 for line in _format_tool_result_for_log(name, function_result):
                     print(f"{self.log_prefix}│     {line}")
+            _emit_workflow_event(
+                "tool-result",
+                f"Concurrent tool result: {name}",
+                tool=name,
+                arguments=args,
+                result=function_result,
+                duration_seconds=tool_duration,
+                concurrent=True,
+                iteration=api_call_count,
+                is_error=_detect_tool_failure(name, function_result)[0],
+            )
 
             # Truncate oversized results
             MAX_TOOL_RESULT_CHARS = 100_000
@@ -3862,6 +3896,14 @@ class AIAgent:
                     self.tool_progress_callback(function_name, preview, function_args)
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
+            _emit_workflow_event(
+                "tool-call",
+                f"Tool call: {function_name}",
+                tool=function_name,
+                arguments=function_args,
+                concurrent=False,
+                iteration=api_call_count,
+            )
 
             # Checkpoint: snapshot working dir before file-mutating tools
             if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
@@ -4044,6 +4086,17 @@ class AIAgent:
                 for line in _format_tool_result_for_log(function_name, function_result):
                     print(f"{self.log_prefix}│  {line}")
                 print(f"{self.log_prefix}└─")
+            _emit_workflow_event(
+                "tool-result",
+                f"Tool result: {function_name}",
+                tool=function_name,
+                arguments=function_args,
+                result=function_result,
+                duration_seconds=tool_duration,
+                concurrent=False,
+                iteration=api_call_count,
+                is_error=_detect_tool_failure(function_name, function_result)[0],
+            )
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i
@@ -4354,6 +4407,17 @@ class AIAgent:
         
         if not self.quiet_mode:
             print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+        _emit_workflow_event(
+            "conversation-start",
+            "Agent conversation started",
+            user_message=user_message,
+            persist_user_message=persist_user_message,
+            system_message=system_message or "",
+            model=self.model,
+            provider=self.provider or "",
+            api_mode=self.api_mode or "",
+            base_url=self.base_url,
+        )
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
@@ -4573,6 +4637,20 @@ class AIAgent:
                     spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
                     thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
                     thinking_spinner.start()
+            _emit_workflow_event(
+                "api-request",
+                f"API call #{api_call_count}",
+                iteration=api_call_count,
+                message_count=len(api_messages),
+                approx_tokens=approx_tokens,
+                total_chars=total_chars,
+                available_tools=[tool["function"]["name"] for tool in self.tools] if self.tools else [],
+                messages=api_messages,
+                model=self.model,
+                provider=self.provider or "",
+                api_mode=self.api_mode or "",
+                base_url=self.base_url,
+            )
             
             # Log request details if verbose
             if self.verbose_logging:
@@ -5308,6 +5386,26 @@ class AIAgent:
                             self.tool_progress_callback("_thinking", first_line)
                         except Exception:
                             pass
+
+                _emit_workflow_event(
+                    "assistant-response",
+                    "Assistant response received",
+                    iteration=api_call_count,
+                    finish_reason=finish_reason,
+                    content=assistant_message.content or "",
+                    reasoning=getattr(assistant_message, "reasoning", None),
+                    reasoning_content=getattr(assistant_message, "reasoning_content", None),
+                    tool_calls=[
+                        {
+                            "id": getattr(tc, "id", ""),
+                            "name": getattr(getattr(tc, "function", None), "name", ""),
+                            "arguments": getattr(getattr(tc, "function", None), "arguments", ""),
+                        }
+                        for tc in (assistant_message.tool_calls or [])
+                    ],
+                    usage=usage_dict if 'usage_dict' in locals() else {},
+                    response_model=getattr(response, "model", ""),
+                )
                 
                 # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
                 # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
@@ -5389,6 +5487,19 @@ class AIAgent:
                 if assistant_message.tool_calls:
                     if not self.quiet_mode:
                         self._vprint(f"\n{self.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
+                    _emit_workflow_event(
+                        "tool-call-batch",
+                        f"Processing {len(assistant_message.tool_calls)} tool call(s)",
+                        iteration=api_call_count,
+                        tool_calls=[
+                            {
+                                "id": getattr(tc, "id", ""),
+                                "name": getattr(getattr(tc, "function", None), "name", ""),
+                                "arguments": getattr(getattr(tc, "function", None), "arguments", ""),
+                            }
+                            for tc in assistant_message.tool_calls
+                        ],
+                    )
                     
                     if self.verbose_logging:
                         for tc in assistant_message.tool_calls:
@@ -5782,7 +5893,18 @@ class AIAgent:
         # Include interrupt message if one triggered the interrupt
         if interrupted and self._interrupt_message:
             result["interrupt_message"] = self._interrupt_message
-        
+
+        _emit_workflow_event(
+            "conversation-end",
+            "Agent conversation finished",
+            completed=completed,
+            interrupted=interrupted,
+            api_calls=api_call_count,
+            final_response=final_response,
+            response_previewed=getattr(self, "_response_was_previewed", False),
+            message_count=len(messages),
+        )
+
         # Clear interrupt state after handling
         self.clear_interrupt()
 

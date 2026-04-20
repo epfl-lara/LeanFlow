@@ -266,6 +266,24 @@ def test_format_tool_result_for_log_summarizes_large_file_list():
     assert any("./GaussTest/File0.lean" in line for line in lines)
     assert any("more item(s) omitted" in line for line in lines)
 
+
+def test_emit_workflow_event_forwards_full_details(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
+    captured = {}
+
+    def _fake_append(event_type, message, **details):
+        captured["event_type"] = event_type
+        captured["message"] = message
+        captured["details"] = details
+
+    monkeypatch.setattr("epflemma_cli.workflow_state.append_workflow_activity", _fake_append)
+
+    run_agent._emit_workflow_event("assistant-response", "Assistant response received", content="x" * 400)
+
+    assert captured["event_type"] == "assistant-response"
+    assert captured["message"] == "Assistant response received"
+    assert captured["details"]["content"] == "x" * 400
+
     def test_single_block_removed(self, agent):
         result = agent._strip_think_blocks("<think>reasoning</think> answer")
         assert "reasoning" not in result
