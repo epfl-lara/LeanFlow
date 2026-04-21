@@ -8,6 +8,7 @@ from epflemma_cli.workflow_state import (
     append_workflow_activity,
     enqueue_workflow_agent_message,
     load_workflow_live_status,
+    save_workflow_live_status,
     read_workflow_activity,
     read_workflow_agent_inbox,
     read_workflow_run_log,
@@ -436,3 +437,40 @@ def test_enqueue_workflow_agent_message_rejects_dead_agent(monkeypatch, tmp_path
 
     assert result["success"] is False
     assert result["error"] == "Agent process is no longer running."
+
+
+def test_workflow_agent_summary_prefers_live_busy_phase_over_conversation_end(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="agent-main",
+        process_id=24680,
+        workflow_kind="autoprove",
+        active_skill="lean-theorem-queue-worker",
+    )
+    append_workflow_activity(
+        "conversation-end",
+        "Agent conversation finished",
+        agent_session_id="agent-main",
+        process_id=24680,
+        workflow_kind="autoprove",
+        active_skill="lean-theorem-queue-worker",
+        completed=True,
+        api_calls=2,
+    )
+    save_workflow_live_status(
+        {
+            "version": 1,
+            "phase": "busy",
+            "workflow_kind": "autoprove",
+            "active_skill": "lean-theorem-queue-worker",
+        }
+    )
+
+    summaries = summarize_workflow_agents(activity_limit=2)
+
+    assert summaries[0]["agent_id"] == "agent-main"
+    assert summaries[0]["status"] == "active"
+    assert summaries[0]["finished_at"] == ""

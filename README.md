@@ -34,12 +34,21 @@ Built-in skills:
 - `lean-proof-loop`
   - standard proof-repair loop for `prove`
   - emphasizes: inspect diagnostics/goals first, make minimal edits, rebuild, and do not stop until the project is actually verified
+- `lean-theorem-queue-worker`
+  - single-declaration worker used during file-scoped autonomous proving when the runner has assigned a concrete theorem/lemma queue item
+  - emphasizes: stay on the assigned target, use target-scoped failed-attempt history, and hand control back after the declaration is solved or concretely blocked
 - `lean-diagnostics`
   - focused diagnostic mode for `review` and `checkpoint`
   - emphasizes: current blockers, open goals, verification state, and project-wide remaining `sorry`
 - `lean-formalization`
   - formalization and declaration-building skill for `formalize` and `draft`
   - emphasizes: small verifiable steps, dependency order, and zero build errors / zero `sorry`
+- `lean-project-search`
+  - local project search helper used before editing proofs
+  - emphasizes: nearby declarations, imports, naming/style reuse, and file-local context
+- `lean-mathlib-search`
+  - Mathlib search helper used when a proof likely depends on an existing library lemma
+  - emphasizes: theorem-name discovery, statement inspection, and reducing proof guessing
 - `lean-refactor-golf`
   - refactor / golfing skill for `refactor` and `golf`
   - emphasizes: simplifying proof structure without breaking verification
@@ -62,6 +71,7 @@ There are three ways a skill gets into the agent:
    - `review`, `checkpoint` -> `lean-diagnostics`
    - `refactor`, `golf` -> `lean-refactor-golf`
    - `--agents N` on autonomous workflows switches to `lean-autonomous-swarm`
+   - for file-scoped autonomous proving with an assigned declaration queue item, the runner temporarily switches from `lean-proof-loop` to `lean-theorem-queue-worker`
 
 2. Manual shell activation
    - `/skill lean-proof-loop`
@@ -257,6 +267,7 @@ Run a workflow:
 ```bash
 epflemma workflow prove Main.lean
 epflemma workflow prove Main.lean --agents 3
+epflemma workflow prove Main.lean --no-parallel
 epflemma workflow formalize "Define the object and prove the first lemma"
 ```
 
@@ -289,6 +300,7 @@ Inside the shell:
 /project create DemoProject --template-source https://github.com/example/lean-template.git
 /prove Main.lean
 /prove Main.lean --agents 3
+/prove Main.lean --no-parallel
 /formalize "state the theorem"
 /doctor
 /config get model.default
@@ -300,6 +312,7 @@ Workflow commands also accept forgiving forms without the leading slash:
 ```text
 prove Main.lean
 prove Main.lean --agents 3
+prove Main.lean --no-parallel
 formalize "formalize this statement"
 ```
 
@@ -358,6 +371,84 @@ The inspection split is intentional:
 
 - `/workflow activity` is the structured step feed: API calls, assistant plans, tool starts, resumes, checkpoints, and autonomous follow-ups
 - `/workflow log 120` is the raw saved runner transcript when you want the exact command/tool chronology that scrolled by during execution
+
+## Theorem-By-Theorem Proving Loop
+
+For file-scoped autonomous workflows (`prove` / `formalize` with an active Lean file), EPFLemma drives the agent one declaration at a time instead of letting it roam the whole file. The runner owns the queue; the agent only owns the current assignment.
+
+What the runner does each cycle:
+
+- scan the active file, build a queue of declarations that still have `sorry`, theorem-level errors, warnings, or diagnostics/build output pointing at them
+- pick the current queue item and inject an "Assigned queue item" block into the agent prompt, with the declaration name, current file prefix through that declaration, current blocker, and the last N failed attempts for that exact target
+- auto-select the `lean-theorem-queue-worker` skill while an item is assigned, and fall back to `lean-proof-loop` when the queue is empty
+- after the agent's first `patch` or `write_file`, yield control back to the runner so diagnostics can be refreshed before the next edit
+- if the same `(target, file)` is still blocked after a cycle, record the attempt's proof-shape delta and failure reason into the target-scoped history
+- when the queue empties but the file is not verified, switch to a whole-file sweep prompt for one pass
+
+Flow:
+
+```text
+  +------------------------------------------+
+  | runner: scan file, build queue           |
+  +------------------------------------------+
+                    |
+                    v
+  +------------------------------------------+
+  | queue empty?                             |
+  +------------------------------------------+
+         |                          |
+     no  |                          | yes
+         v                          v
+  +----------------+       +----------------------+
+  | pick current   |       | file verified?       |
+  | queue item     |       +----------------------+
+  +----------------+           |             |
+         |                 yes |             | no
+         v                     v             v
+  +-----------------+   +----------+  +----------------+
+  | prompt agent:   |   | DONE     |  | final file     |
+  | - target decl   |   +----------+  | sweep (one     |
+  | - slice+prefix  |                 | whole-file     |
+  | - blocker       |                 | pass)          |
+  | - prev attempts |                 +----------------+
+  +-----------------+
+         |
+         v
+  +-----------------------+
+  | agent edits (patch /  |
+  | write_file)           |
+  +-----------------------+
+         |
+         v  (yield after first theorem-sized edit)
+  +-----------------------+
+  | runner refreshes      |
+  | diagnostics + queue   |
+  +-----------------------+
+         |
+         v
+  +-----------------------+
+  | same target still     |
+  | blocked?              |
+  +-----------------------+
+       |               |
+   yes |               | no
+       v               v
+  record failed    advance to next
+  attempt          queue item
+       \_______________/
+              |
+              v
+          next cycle
+```
+
+Why this shape:
+
+- one declaration at a time keeps the agent from declaring victory after fixing only the first theorem
+- the yield-after-edit boundary forces fresh diagnostics between edits instead of speculative chained patches
+- target-scoped failed-attempt memory gives the next cycle real negative guidance without leaking across unrelated theorems
+- the final file sweep handles residual warnings or malformed partial proofs that do not map to a single declaration
+
+This mode is automatic for autonomous workflows with an `ACTIVE_FILE`. For project-wide autonomous runs the queue is per-file instead of per-declaration, and swarm mode (`--agents N`) is the path for parallel per-file work.
 
 ## User-Approved Swarm Mode
 
