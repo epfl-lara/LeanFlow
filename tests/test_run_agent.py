@@ -720,6 +720,32 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
 
+    def test_reasoning_sent_for_rcp_route(self, agent):
+        agent.base_url = "https://inference.rcp.epfl.ch/v1"
+        agent.model = "Qwen/Qwen3-30B-A3B"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+        assert kwargs["extra_body"]["reasoning_effort"] == "medium"
+
+    def test_reasoning_disabled_for_rcp_route(self, agent):
+        agent.base_url = "https://inference.rcp.epfl.ch/v1"
+        agent.model = "Qwen/Qwen3-30B-A3B"
+        agent.reasoning_config = {"enabled": False}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+        assert "reasoning_effort" not in kwargs["extra_body"]
+
+    def test_reasoning_effort_mapped_for_rcp_route(self, agent):
+        agent.base_url = "https://inference.rcp.epfl.ch/v1"
+        agent.model = "Qwen/Qwen3-30B-A3B"
+        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+        assert kwargs["extra_body"]["reasoning_effort"] == "high"
+
     def test_max_tokens_injected(self, agent):
         agent.max_tokens = 4096
         messages = [{"role": "user", "content": "hi"}]
@@ -778,6 +804,23 @@ class TestBuildAssistantMessage:
         msg = _mock_assistant_msg(content="", tool_calls=[tc])
         result = agent._build_assistant_message(msg, "tool_calls")
         assert "extra_content" not in result["tool_calls"][0]
+
+
+class TestReasoningPreviewLines:
+    def test_empty_reasoning_returns_no_preview(self):
+        assert AIAgent._reasoning_preview_lines(None) == []
+
+    def test_preview_truncates_line_count(self):
+        reasoning = "step 1\nstep 2\nstep 3\nstep 4"
+        result = AIAgent._reasoning_preview_lines(reasoning, max_lines=3, max_chars=200)
+        assert result == ["step 1", "step 2", "step 3 ..."]
+
+    def test_preview_truncates_chars(self):
+        reasoning = "a" * 400
+        result = AIAgent._reasoning_preview_lines(reasoning, max_lines=3, max_chars=50)
+        assert len(result) == 1
+        assert result[0].endswith("...")
+        assert len(result[0]) == 50
 
 
 class TestFormatToolsForSystemMessage:
