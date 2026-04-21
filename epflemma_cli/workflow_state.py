@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from epflemma_cli.config import load_config
+
 PROJECT_STATE_DIRNAME = ".epflemma"
 LEGACY_PROJECT_DIRNAMES = (".opengauss", ".gauss")
 WORKFLOW_TASK_LABELS = {
@@ -23,6 +25,20 @@ WORKFLOW_TASK_LABELS = {
     "refactor": "refactor",
     "golf": "golf",
 }
+
+
+def _activity_preview_limit(default: int = 280) -> int:
+    try:
+        logging_cfg = load_config().get("logging", {})
+    except Exception:
+        return default
+    if not isinstance(logging_cfg, dict):
+        return default
+    try:
+        value = int(logging_cfg.get("activity_preview_chars", default))
+    except Exception:
+        return default
+    return value if value > 0 else default
 
 
 def _epflemma_home() -> Path:
@@ -407,17 +423,18 @@ def _agent_event_preview(event: Mapping[str, Any]) -> str:
     details = event.get("details")
     details = details if isinstance(details, dict) else {}
     event_type = str(event.get("type", "") or "")
+    activity_limit = _activity_preview_limit()
     if event_type == "assistant-response":
         content = str(details.get("content", "") or "")
         if content.strip():
-            return _shorten_text(content, limit=280)
+            return _shorten_text(content, limit=activity_limit)
         reasoning = str(
             details.get("reasoning_content", "")
             or details.get("reasoning", "")
             or ""
         )
         if reasoning.strip():
-            return "Reasoning: " + _shorten_text(reasoning, limit=260)
+            return "Reasoning: " + _shorten_text(reasoning, limit=max(activity_limit - 20, 40))
         tool_calls = details.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
             normalized = [dict(call) for call in tool_calls if isinstance(call, dict)]
@@ -438,43 +455,45 @@ def _agent_event_preview(event: Mapping[str, Any]) -> str:
         if iteration is not None:
             return f"API call #{iteration}"
     if event_type == "conversation-start":
-        return _shorten_text(details.get("user_message", ""), limit=220) or str(event.get("message", "") or "")
+        return _shorten_text(details.get("user_message", ""), limit=max(activity_limit - 60, 40)) or str(event.get("message", "") or "")
     if event_type == "conversation-end":
         if details.get("interrupted"):
             return "Interrupted"
         if details.get("completed"):
             return "Completed"
     if event_type == "agent-input-queued":
-        return f"Queued prompt: {_shorten_text(details.get('text', ''), limit=220)}"
+        return f"Queued prompt: {_shorten_text(details.get('text', ''), limit=max(activity_limit - 60, 40))}"
     if event_type == "agent-awaiting-input":
         status = str(details.get("status", "") or "paused")
         return f"Waiting for input ({status})"
     if event_type == "agent-resume":
-        return _shorten_text(details.get("text", ""), limit=220) or "Processing queued prompt"
+        return _shorten_text(details.get("text", ""), limit=max(activity_limit - 60, 40)) or "Processing queued prompt"
     if event_type == "runner-exit":
-        return _shorten_text(event.get("message", ""), limit=220) or "Runner exited"
-    return _shorten_text(event.get("message", ""), limit=220)
+        return _shorten_text(event.get("message", ""), limit=max(activity_limit - 60, 40)) or "Runner exited"
+    return _shorten_text(event.get("message", ""), limit=max(activity_limit - 60, 40))
 
 
 def _tool_call_preview(tool_name: str, arguments: Any) -> str:
+    activity_limit = _activity_preview_limit()
     args = _coerce_tool_arguments(arguments)
     if tool_name == "terminal":
         command = str(args.get("command", "") or "").strip()
-        return _shorten_text(command or "Call terminal", limit=260)
+        return _shorten_text(command or "Call terminal", limit=max(activity_limit - 20, 40))
     if tool_name in {"patch", "read_file", "write_file"}:
         path = str(args.get("path", "") or "").strip()
         mode = str(args.get("mode", "") or "").strip()
         if path and mode:
-            return _shorten_text(f"{path} ({mode})", limit=260)
+            return _shorten_text(f"{path} ({mode})", limit=max(activity_limit - 20, 40))
         if path:
-            return _shorten_text(path, limit=260)
+            return _shorten_text(path, limit=max(activity_limit - 20, 40))
     path = str(args.get("path", "") or "").strip()
     if path:
-        return _shorten_text(f"{tool_name}: {path}", limit=260)
+        return _shorten_text(f"{tool_name}: {path}", limit=max(activity_limit - 20, 40))
     return f"Call {tool_name}"
 
 
 def _tool_result_preview(tool_name: str, result: Any, *, is_error: bool) -> str:
+    activity_limit = _activity_preview_limit()
     raw = str(result or "")
     try:
         payload = json.loads(raw)
@@ -484,13 +503,13 @@ def _tool_result_preview(tool_name: str, result: Any, *, is_error: bool) -> str:
     if isinstance(payload, dict):
         if tool_name == "terminal":
             exit_code = payload.get("exit_code")
-            output = _shorten_text(payload.get("output", ""), limit=320)
+            output = _shorten_text(payload.get("output", ""), limit=activity_limit + 40)
             if output:
                 return f"exit {exit_code}: {output}" if exit_code is not None else output
             return f"{tool_name} {'failed' if is_error else 'completed'}"
         if tool_name == "patch":
             success = payload.get("success")
-            error = _shorten_text(payload.get("error", ""), limit=180)
+            error = _shorten_text(payload.get("error", ""), limit=max(activity_limit - 100, 40))
             files_modified = payload.get("files_modified")
             modified_list = files_modified if isinstance(files_modified, list) else []
             first_file = str(modified_list[0] or "") if modified_list else ""

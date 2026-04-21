@@ -278,6 +278,14 @@ def _truncate_log_lines(
     return kept
 
 
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        return default
+    return parsed if parsed > 0 else default
+
+
 def _summarize_arg_value(key: str, value: Any) -> str:
     if value is None:
         return "null"
@@ -340,6 +348,31 @@ def _format_tool_args_for_log(function_name: str, function_args: dict[str, Any])
 
 
 def _format_tool_result_for_log(function_name: str, function_result: str) -> list[str]:
+    return _format_tool_result_for_log_with_limits(
+        function_name,
+        function_result,
+        multiline_head=20,
+        multiline_tail=8,
+        wrapped_head=10,
+        wrapped_tail=4,
+        plain_head=18,
+        plain_tail=6,
+        string_char_threshold=600,
+    )
+
+
+def _format_tool_result_for_log_with_limits(
+    function_name: str,
+    function_result: str,
+    *,
+    multiline_head: int,
+    multiline_tail: int,
+    wrapped_head: int,
+    wrapped_tail: int,
+    plain_head: int,
+    plain_tail: int,
+    string_char_threshold: int,
+) -> list[str]:
     try:
         parsed = json.loads(function_result)
     except Exception:
@@ -375,12 +408,12 @@ def _format_tool_result_for_log(function_name: str, function_result: str) -> lis
                 wrapped_lines: list[str] = []
                 for raw_line in value_lines:
                     wrapped_lines.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=104)])
-                lines.extend(_truncate_log_lines(wrapped_lines, head=20, tail=8))
+                lines.extend(_truncate_log_lines(wrapped_lines, head=multiline_head, tail=multiline_tail))
                 continue
-            if isinstance(value, str) and len(value) > 600:
+            if isinstance(value, str) and len(value) > string_char_threshold:
                 wrapped = _wrap_log_text(value, width=104)
                 lines.append(f"{key}:")
-                for part in _truncate_log_lines(wrapped, head=10, tail=4):
+                for part in _truncate_log_lines(wrapped, head=wrapped_head, tail=wrapped_tail):
                     lines.append(f"  {part}")
                 continue
             if isinstance(value, (dict, list)):
@@ -393,8 +426,8 @@ def _format_tool_result_for_log(function_name: str, function_result: str) -> lis
                 lines.extend(
                     _truncate_log_lines(
                         wrapped_pretty,
-                        head=16,
-                        tail=6,
+                        head=max(multiline_head - 4, 1),
+                        tail=max(multiline_tail - 2, 0),
                         truncated_label="structured output truncated",
                     )
                 )
@@ -411,7 +444,7 @@ def _format_tool_result_for_log(function_name: str, function_result: str) -> lis
         return lines
 
     wrapped = _wrap_log_text(function_result, width=106)
-    return _truncate_log_lines(wrapped, head=18, tail=6)
+    return _truncate_log_lines(wrapped, head=plain_head, tail=plain_tail)
 
 
 def _emit_workflow_event(event_type: str, message: str, **details: Any) -> None:
@@ -486,6 +519,10 @@ class AIAgent:
         ephemeral_system_prompt: str = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
+        log_preview_lines: int = 6,
+        log_preview_chars: int = 900,
+        tool_output_head_lines: int = 20,
+        tool_output_tail_lines: int = 8,
         providers_allowed: List[str] = None,
         providers_ignored: List[str] = None,
         providers_order: List[str] = None,
@@ -531,6 +568,10 @@ class AIAgent:
             ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
             log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 100)
             log_prefix (str): Prefix to add to all log messages for identification in parallel processing (default: "")
+            log_preview_lines (int): Number of lines to show in assistant/reasoning previews.
+            log_preview_chars (int): Maximum characters to show in assistant/reasoning previews.
+            tool_output_head_lines (int): Number of lines to keep from the start of long tool outputs.
+            tool_output_tail_lines (int): Number of lines to keep from the end of long tool outputs.
             providers_allowed (List[str]): OpenRouter providers to allow (optional)
             providers_ignored (List[str]): OpenRouter providers to ignore (optional)
             providers_order (List[str]): OpenRouter providers to try in order (optional)
@@ -571,6 +612,10 @@ class AIAgent:
         self.pass_session_id = pass_session_id
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
+        self.log_preview_lines = _positive_int(log_preview_lines, 6)
+        self.log_preview_chars = _positive_int(log_preview_chars, 900)
+        self.tool_output_head_lines = _positive_int(tool_output_head_lines, 20)
+        self.tool_output_tail_lines = _positive_int(tool_output_tail_lines, 8)
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
         self.base_url = base_url or OPENROUTER_BASE_URL
@@ -4216,7 +4261,17 @@ class AIAgent:
 
             if not self.quiet_mode:
                 print(f"{self.log_prefix}│  done in {tool_duration:.2f}s")
-                for line in _format_tool_result_for_log(function_name, function_result):
+                for line in _format_tool_result_for_log_with_limits(
+                    function_name,
+                    function_result,
+                    multiline_head=self.tool_output_head_lines,
+                    multiline_tail=self.tool_output_tail_lines,
+                    wrapped_head=max(self.tool_output_head_lines // 2, 1),
+                    wrapped_tail=max(self.tool_output_tail_lines // 2, 0),
+                    plain_head=max(self.tool_output_head_lines - 2, 1),
+                    plain_tail=max(self.tool_output_tail_lines - 2, 0),
+                    string_char_threshold=self.log_preview_chars,
+                ):
                     print(f"{self.log_prefix}│  {line}")
                 print(f"{self.log_prefix}└─")
             _emit_workflow_event(
@@ -5492,7 +5547,11 @@ class AIAgent:
 
                 reasoning_preview_lines = self._reasoning_preview_lines(
                     self._extract_reasoning(assistant_message),
-                    max_lines=5 if self.verbose_logging else 3,
+                    max_lines=max(
+                        self.log_preview_lines if self.verbose_logging else min(self.log_preview_lines, 3),
+                        1,
+                    ),
+                    max_chars=self.log_preview_chars,
                 )
 
                 # Handle assistant response
@@ -5511,9 +5570,9 @@ class AIAgent:
                         preview_lines = [line.strip() for line in (assistant_message.content or "").splitlines() if line.strip()]
                         if not preview_lines:
                             preview_lines = [""]
-                        preview_text = "\n".join(preview_lines[:6])
-                        if len(preview_text) > 900:
-                            preview_text = preview_text[:897] + "..."
+                        preview_text = "\n".join(preview_lines[: self.log_preview_lines])
+                        if len(preview_text) > self.log_preview_chars:
+                            preview_text = preview_text[: self.log_preview_chars - 3] + "..."
                         self._vprint(f"\n{self.log_prefix}┌─ Agent")
                         for line in preview_text.splitlines():
                             self._vprint(f"{self.log_prefix}│  {line}")
