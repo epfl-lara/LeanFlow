@@ -7,6 +7,7 @@ from epflemma_cli.workflow_state import (
     append_workflow_run_log,
     append_workflow_activity,
     enqueue_workflow_agent_message,
+    _agent_event_preview,
     load_workflow_live_status,
     save_workflow_live_status,
     read_workflow_activity,
@@ -141,6 +142,22 @@ def test_workflow_activity_preserves_full_payload(monkeypatch, tmp_path):
     assert events[0]["timestamp"]
     assert events[0]["task_label"] == "prove"
     assert events[0]["details"]["content"] == full_text
+
+
+def test_workflow_activity_preview_uses_reasoning_when_content_empty(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+
+    append_workflow_activity(
+        "assistant-response",
+        "Assistant response received",
+        content="",
+        reasoning_content="Plan: inspect diagnostics, patch theorem, rerun lake env lean.",
+    )
+
+    events = read_workflow_activity(limit=1)
+    preview = _agent_event_preview(events[0])
+    assert preview.startswith("Reasoning: ")
+    assert "inspect diagnostics" in preview
 
 
 def test_workflow_activity_writes_run_and_agent_jsonl_streams(monkeypatch, tmp_path):

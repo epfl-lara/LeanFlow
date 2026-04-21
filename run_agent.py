@@ -260,6 +260,24 @@ def _wrap_log_text(text: str, width: int = 96) -> list[str]:
     return lines or [""]
 
 
+def _truncate_log_lines(
+    lines: list[str],
+    *,
+    head: int,
+    tail: int = 0,
+    truncated_label: str = "output truncated",
+) -> list[str]:
+    """Keep the start and optional end of long log blocks."""
+    if len(lines) <= head + tail:
+        return lines
+    kept = list(lines[:head])
+    omitted = len(lines) - head - tail
+    kept.append(f"  [{truncated_label}: {omitted} more line(s)]")
+    if tail:
+        kept.extend(lines[-tail:])
+    return kept
+
+
 def _summarize_arg_value(key: str, value: Any) -> str:
     if value is None:
         return "null"
@@ -305,19 +323,19 @@ def _format_tool_args_for_log(function_name: str, function_args: dict[str, Any])
         value = function_args[key]
         if isinstance(value, list) and value and all(not isinstance(item, (dict, list)) for item in value):
             lines.append(f"{key}: {len(value)} item(s)")
-            for item in value[:8]:
-                lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=90)])
-            if len(value) > 8:
-                lines.append(f"  [{len(value) - 8} more item(s) omitted]")
+            for item in value[:12]:
+                lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=104)])
+            if len(value) > 12:
+                lines.append(f"  [{len(value) - 12} more item(s) omitted]")
             continue
         if isinstance(value, dict):
             lines.append(f"{key}:")
             for sub_key, sub_value in value.items():
                 summary = _summarize_arg_value(sub_key, sub_value)
-                lines.extend([f"  {part}" for part in _wrap_log_text(f"{sub_key}: {summary}", width=90)])
+                lines.extend([f"  {part}" for part in _wrap_log_text(f"{sub_key}: {summary}", width=104)])
             continue
         summary = _summarize_arg_value(key, value)
-        lines.extend(_wrap_log_text(f"{key}: {summary}", width=92))
+        lines.extend(_wrap_log_text(f"{key}: {summary}", width=106))
     return lines
 
 
@@ -346,51 +364,54 @@ def _format_tool_result_for_log(function_name: str, function_result: str) -> lis
             value = parsed[key]
             if isinstance(value, list) and value and all(not isinstance(item, (dict, list)) for item in value):
                 lines.append(f"{key}: {len(value)} item(s)")
-                for item in value[:10]:
-                    lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=88)])
-                if len(value) > 10:
-                    lines.append(f"  [{len(value) - 10} more item(s) omitted]")
+                for item in value[:14]:
+                    lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=104)])
+                if len(value) > 14:
+                    lines.append(f"  [{len(value) - 14} more item(s) omitted]")
                 continue
             if isinstance(value, str) and "\n" in value:
                 value_lines = value.splitlines()
                 lines.append(f"{key}:")
-                for raw_line in value_lines[:14]:
-                    lines.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=88)])
-                if len(value_lines) > 14:
-                    lines.append(f"  [output truncated: {len(value_lines) - 14} more line(s)]")
+                wrapped_lines: list[str] = []
+                for raw_line in value_lines:
+                    wrapped_lines.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=104)])
+                lines.extend(_truncate_log_lines(wrapped_lines, head=20, tail=8))
                 continue
-            if isinstance(value, str) and len(value) > 220:
-                wrapped = _wrap_log_text(value, width=88)
+            if isinstance(value, str) and len(value) > 600:
+                wrapped = _wrap_log_text(value, width=104)
                 lines.append(f"{key}:")
-                for part in wrapped[:8]:
+                for part in _truncate_log_lines(wrapped, head=10, tail=4):
                     lines.append(f"  {part}")
-                if len(wrapped) > 8:
-                    lines.append(f"  [output truncated: {len(wrapped) - 8} more wrapped line(s)]")
                 continue
             if isinstance(value, (dict, list)):
                 pretty = json.dumps(value, indent=2, ensure_ascii=False)
                 pretty_lines = pretty.splitlines()
                 lines.append(f"{key}:")
-                for raw_line in pretty_lines[:12]:
-                    lines.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=88)])
-                if len(pretty_lines) > 12:
-                    lines.append(f"  [structured output truncated: {len(pretty_lines) - 12} more line(s)]")
+                wrapped_pretty: list[str] = []
+                for raw_line in pretty_lines:
+                    wrapped_pretty.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=104)])
+                lines.extend(
+                    _truncate_log_lines(
+                        wrapped_pretty,
+                        head=16,
+                        tail=6,
+                        truncated_label="structured output truncated",
+                    )
+                )
                 continue
-            lines.extend(_wrap_log_text(f"{key}: {value}", width=92))
+            lines.extend(_wrap_log_text(f"{key}: {value}", width=106))
         return lines
 
     if isinstance(parsed, list):
         lines = [f"items: {len(parsed)}"]
-        for item in parsed[:10]:
-            lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=88)])
-        if len(parsed) > 10:
-            lines.append(f"  [{len(parsed) - 10} more item(s) omitted]")
+        for item in parsed[:14]:
+            lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=104)])
+        if len(parsed) > 14:
+            lines.append(f"  [{len(parsed) - 14} more item(s) omitted]")
         return lines
 
-    wrapped = _wrap_log_text(function_result, width=92)
-    if len(wrapped) > 12:
-        return wrapped[:12] + [f"[output truncated: {len(wrapped) - 12} more wrapped line(s)]"]
-    return wrapped
+    wrapped = _wrap_log_text(function_result, width=106)
+    return _truncate_log_lines(wrapped, head=18, tail=6)
 
 
 def _emit_workflow_event(event_type: str, message: str, **details: Any) -> None:
@@ -3393,8 +3414,8 @@ class AIAgent:
     def _reasoning_preview_lines(
         reasoning_text: str | None,
         *,
-        max_lines: int = 3,
-        max_chars: int = 320,
+        max_lines: int = 6,
+        max_chars: int = 900,
     ) -> list[str]:
         """Build a compact reasoning preview suitable for managed runner logs."""
         if not reasoning_text:
@@ -5490,9 +5511,9 @@ class AIAgent:
                         preview_lines = [line.strip() for line in (assistant_message.content or "").splitlines() if line.strip()]
                         if not preview_lines:
                             preview_lines = [""]
-                        preview_text = "\n".join(preview_lines[:3])
-                        if len(preview_text) > 320:
-                            preview_text = preview_text[:317] + "..."
+                        preview_text = "\n".join(preview_lines[:6])
+                        if len(preview_text) > 900:
+                            preview_text = preview_text[:897] + "..."
                         self._vprint(f"\n{self.log_prefix}┌─ Agent")
                         for line in preview_text.splitlines():
                             self._vprint(f"{self.log_prefix}│  {line}")
