@@ -675,6 +675,9 @@ def test_queue_assignment_block_mentions_only_assigned_theorem():
     assert "current blocker: type mismatch in `simpa using h`" in text
     assert "local helper lemmas or intermediate facts are allowed" in text
     assert "do not start solving unrelated later queue items" in text
+    assert "Verification for this queue item:" in text
+    assert "`lake env lean GaussTest/RealTheorems-homework.lean`" in text
+    assert "do not treat `lake build`, `grep`, `head`, or truncated output" in text
     assert "Current file prefix ending at `absLipschitz1`" in text
     assert "PREVIOUS ATTEMPTS:" in text
     assert "attempt: 1" in text
@@ -726,6 +729,21 @@ def test_live_state_is_not_verified_when_project_still_has_sorries():
     }
 
     assert runner._live_state_is_verified(live_state) is False
+
+
+def test_live_state_is_verified_for_file_scope_even_if_project_has_other_sorries():
+    live_state = {
+        "active_file": "/tmp/project/Main.lean",
+        "declaration_scope": "file",
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake env lean Demo/Main.lean succeeded",
+        "verification_ok": True,
+        "sorry_count": 0,
+        "project_sorry_count": 2,
+    }
+
+    assert runner._live_state_is_verified(live_state) is True
 
 
 def test_live_state_is_not_verified_without_explicit_verification_result():
@@ -806,6 +824,35 @@ def test_promote_live_state_does_not_mark_non_module_file_verified_from_project_
     assert "reported errors" in promoted["build_status"]
 
 
+def test_promote_live_state_file_scope_does_not_block_on_other_project_sorries(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (3, ["Other.lean (3)"]))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake build Demo.Main succeeded"),
+    )
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        }
+    )
+
+    assert promoted["verification_ok"] is True
+    assert promoted["blocker_summary"] == ""
+
+
 def test_normalize_blocker_summary_clears_resolved_text():
     assert runner._normalize_blocker_summary("None. All blockers resolved.") == ""
     assert runner._normalize_blocker_summary("type mismatch in `simpa`") == "type mismatch in `simpa`"
@@ -824,17 +871,37 @@ def test_extract_blocker_summary_does_not_fall_back_to_unrelated_trailing_line()
     assert runner._extract_blocker_summary(text) == ""
 
 
-def test_recommended_verification_command_prefers_module_build(tmp_path, monkeypatch):
+def test_recommended_verification_command_prefers_module_build_outside_single_item_turn(tmp_path, monkeypatch):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
     module_dir.mkdir(parents=True)
     active = module_dir / "Main.lean"
     active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.delenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", raising=False)
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
 
     command = runner._recommended_verification_command(str(active))
 
-    assert command == "lake build Demo.Main"
+    assert command == "lean-lsp diagnostics/goals first, then `lake build Demo.Main` when the file is close to clean"
+
+
+def test_recommended_verification_command_requires_canonical_file_check_for_single_item_turn(tmp_path, monkeypatch):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
+
+    command = runner._recommended_verification_command(str(active))
+
+    assert command == (
+        "lean-lsp diagnostics/goals on Demo/Main.lean, then the required acceptance check "
+        "`lake env lean Demo/Main.lean` for this file-scoped theorem turn"
+    )
 
 
 def test_recommended_verification_command_falls_back_to_lake_env_lean_for_non_module_file(tmp_path, monkeypatch):
