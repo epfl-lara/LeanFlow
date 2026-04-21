@@ -3194,6 +3194,7 @@ class AIAgent:
             extra_body["provider"] = provider_preferences
         _is_nous = "nousresearch" in self.base_url.lower()
 
+        reasoning_enabled, reasoning_effort = self._reasoning_effort_state()
         if self._supports_reasoning_extra_body():
             if self.reasoning_config is not None:
                 rc = dict(self.reasoning_config)
@@ -3208,6 +3209,17 @@ class AIAgent:
                     "enabled": True,
                     "effort": "medium"
                 }
+        elif self._is_rcp_route():
+            # EPFL AIaaS forwards extra_body to LiteLLM/vLLM. Qwen hybrid
+            # reasoning models use chat_template kwargs while OpenAI-style
+            # reasoning models honor reasoning_effort.
+            template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+            template_kwargs["enable_thinking"] = reasoning_enabled
+            extra_body["chat_template_kwargs"] = template_kwargs
+            if reasoning_enabled:
+                extra_body["reasoning_effort"] = self._map_rcp_reasoning_effort(
+                    reasoning_effort
+                )
 
         # Nous Portal product attribution
         if _is_nous:
@@ -3243,6 +3255,34 @@ class AIAgent:
             "qwen/qwen3",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
+
+    def _is_rcp_route(self) -> bool:
+        """Return True for EPFL AIaaS / RCP OpenAI-compatible endpoints."""
+        base_url = (self.base_url or "").lower()
+        return "inference.rcp.epfl.ch" in base_url or "inference-rcp.epfl.ch" in base_url
+
+    def _reasoning_effort_state(self) -> tuple[bool, str]:
+        """Resolve whether reasoning is enabled and the requested effort."""
+        reasoning_enabled = True
+        reasoning_effort = "medium"
+        if self.reasoning_config and isinstance(self.reasoning_config, dict):
+            if self.reasoning_config.get("enabled") is False:
+                reasoning_enabled = False
+            elif self.reasoning_config.get("effort"):
+                reasoning_effort = str(self.reasoning_config["effort"]).lower()
+        return reasoning_enabled, reasoning_effort
+
+    @staticmethod
+    def _map_rcp_reasoning_effort(effort: str) -> str:
+        """Map EPFLemma effort names onto AIaaS/vLLM-compatible values."""
+        normalized = str(effort or "medium").lower()
+        if normalized in {"low", "medium", "high"}:
+            return normalized
+        if normalized == "minimal":
+            return "low"
+        if normalized == "xhigh":
+            return "high"
+        return "medium"
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Build a normalized assistant message dict from an API response message.
@@ -3348,6 +3388,32 @@ class AIAgent:
             msg["tool_calls"] = tool_calls
 
         return msg
+
+    @staticmethod
+    def _reasoning_preview_lines(
+        reasoning_text: str | None,
+        *,
+        max_lines: int = 3,
+        max_chars: int = 320,
+    ) -> list[str]:
+        """Build a compact reasoning preview suitable for managed runner logs."""
+        if not reasoning_text:
+            return []
+        lines = [line.strip() for line in str(reasoning_text).splitlines() if line.strip()]
+        if not lines:
+            stripped = str(reasoning_text).strip()
+            lines = [stripped] if stripped else []
+        if not lines:
+            return []
+
+        preview_lines = lines[:max_lines]
+        preview_text = "\n".join(preview_lines)
+        if len(preview_text) > max_chars:
+            preview_text = preview_text[: max_chars - 3] + "..."
+            return preview_text.splitlines() or [preview_text]
+        if len(lines) > max_lines:
+            preview_lines[-1] = preview_lines[-1] + " ..."
+        return preview_lines
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
@@ -5403,12 +5469,22 @@ class AIAgent:
                     else:
                         assistant_message.content = str(raw)
 
+                reasoning_preview_lines = self._reasoning_preview_lines(
+                    self._extract_reasoning(assistant_message),
+                    max_lines=5 if self.verbose_logging else 3,
+                )
+
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     if self.verbose_logging:
                         self._vprint(f"\n{self.log_prefix}┌─ Agent")
                         for line in (assistant_message.content or "").splitlines() or [""]:
                             self._vprint(f"{self.log_prefix}│  {line}")
+                        if reasoning_preview_lines:
+                            self._vprint(f"{self.log_prefix}│  ")
+                            self._vprint(f"{self.log_prefix}│  Reasoning preview:")
+                            for line in reasoning_preview_lines:
+                                self._vprint(f"{self.log_prefix}│    {line}")
                         self._vprint(f"{self.log_prefix}└─")
                     else:
                         preview_lines = [line.strip() for line in (assistant_message.content or "").splitlines() if line.strip()]
@@ -5420,7 +5496,18 @@ class AIAgent:
                         self._vprint(f"\n{self.log_prefix}┌─ Agent")
                         for line in preview_text.splitlines():
                             self._vprint(f"{self.log_prefix}│  {line}")
+                        if reasoning_preview_lines:
+                            self._vprint(f"{self.log_prefix}│  ")
+                            self._vprint(f"{self.log_prefix}│  Reasoning preview:")
+                            for line in reasoning_preview_lines:
+                                self._vprint(f"{self.log_prefix}│    {line}")
                         self._vprint(f"{self.log_prefix}└─")
+                elif reasoning_preview_lines and not self.quiet_mode:
+                    self._vprint(f"\n{self.log_prefix}┌─ Agent")
+                    self._vprint(f"{self.log_prefix}│  Reasoning preview:")
+                    for line in reasoning_preview_lines:
+                        self._vprint(f"{self.log_prefix}│    {line}")
+                    self._vprint(f"{self.log_prefix}└─")
 
                 # Notify progress callback of model's thinking (used by subagent
                 # delegation to relay the child's reasoning to the parent display).
