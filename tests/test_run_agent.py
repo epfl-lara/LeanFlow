@@ -267,6 +267,18 @@ def test_format_tool_result_for_log_summarizes_large_file_list():
     assert any("more item(s) omitted" in line for line in lines)
 
 
+def test_format_tool_result_for_log_keeps_tail_for_multiline_output():
+    output = "\n".join(f"line {i}" for i in range(40))
+    payload = json.dumps({"output": output, "exit_code": 1, "error": None})
+
+    lines = run_agent._format_tool_result_for_log("terminal", payload)
+
+    assert "output:" in lines
+    assert any("line 0" in line for line in lines)
+    assert any("output truncated" in line for line in lines)
+    assert any("line 39" in line for line in lines)
+
+
 def test_emit_workflow_event_forwards_full_details(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
     captured = {}

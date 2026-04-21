@@ -413,7 +413,7 @@ def _record_queue_assignment(
 _CURRENT_AGENT_ACTIVITY_DETAILS: dict[str, Any] = {}
 
 
-def _single_line(text: Any, limit: int = 220) -> str:
+def _single_line(text: Any, limit: int = 420) -> str:
     collapsed = " ".join(str(text or "").split())
     if len(collapsed) <= limit:
         return collapsed
