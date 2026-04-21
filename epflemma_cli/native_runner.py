@@ -524,7 +524,7 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
         ),
         "autoprove": (
             "autonomous proving session",
-            "Drive the proving loop end-to-end. First identify the declarations in scope that still have `sorry`, Lean errors, or warnings. Then work through them one by one, fixing and re-checking after each meaningful edit. continue iterating until the requested file is clean if a file was given, or the project is clean if no file was given. Avoid repeated `lake env lean <file>` checks; prefer lean-lsp for iteration and a focused `lake build <Module>` or final `lake build` near milestones.",
+            "Drive the proving loop end-to-end. First identify the declarations in scope that still have `sorry`, Lean errors, or warnings. Then work through them one by one, fixing and re-checking after each meaningful edit. continue iterating until the requested file is clean if a file was given, or the project is clean if no file was given. For file-scoped theorem turns, use Lean diagnostics/goals for iteration but only accept progress after the canonical `lake env lean <file>` check for that exact file. Do not treat `lake build`, `grep`, `head`, or truncated output as sufficient acceptance for a theorem-sized repair.",
         ),
         "formalize": (
             "interactive formalization session",
@@ -532,7 +532,7 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
         ),
         "autoformalize": (
             "autonomous formalization session",
-            "Handle drafting plus proving as one workflow. Identify declarations in scope that still have `sorry`, Lean errors, or warnings, then clear them one by one and continue iterating until the requested file is clean if a file was given, or the project is clean if no file was given. Avoid repeated `lake env lean <file>` checks; prefer lean-lsp for iteration and a focused `lake build <Module>` or final `lake build` near milestones.",
+            "Handle drafting plus proving as one workflow. Identify declarations in scope that still have `sorry`, Lean errors, or warnings, then clear them one by one and continue iterating until the requested file is clean if a file was given, or the project is clean if no file was given. For file-scoped theorem turns, use Lean diagnostics/goals for iteration but only accept progress after the canonical `lake env lean <file>` check for that exact file. Do not treat `lake build`, `grep`, `head`, or truncated output as sufficient acceptance for a theorem-sized repair.",
         ),
     }
     label, detail = guidance_map.get(
@@ -1266,7 +1266,7 @@ def _queue_assignment_block(
         return ""
     label = str(item.get("label", "") or "[unknown]")
     reasons = ", ".join(item.get("reasons", []) or []) or "pending"
-    active_file = str(live_state.get("active_file", "") or "")
+    active_file = str(live_state.get("active_file", "") or live_state.get("active_file_label", "") or "")
     current_status = _current_queue_status(live_state)
     current_blocker = str(live_state.get("current_blocker", "") or reasons or "[none]").strip()
     parts = [
@@ -1281,7 +1281,11 @@ def _queue_assignment_block(
         "- local helper lemmas or intermediate facts are allowed if they directly help this theorem",
         "- do not start solving unrelated later queue items",
         "- after a meaningful edit, stop and let the manager re-check the queue",
+        "- for this file-scoped theorem turn, the only acceptable final verification command is the canonical file check shown below",
     ]
+    verification_hint = _queue_item_verification_hint(active_file)
+    if verification_hint:
+        parts.extend(["", "Verification for this queue item:", verification_hint])
     prefix_text = str(live_state.get("current_queue_item_prefix", "") or "").strip()
     if prefix_text:
         parts.extend(["", prefix_text])
@@ -1379,12 +1383,18 @@ def _queue_needs_final_file_sweep(live_state: Mapping[str, Any] | None) -> bool:
 def _final_file_sweep_block(live_state: Mapping[str, Any]) -> str:
     active_file = str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or "[unknown]")
     blocker = str(live_state.get("current_blocker", "") or live_state.get("diagnostics", "") or "unknown remaining issue").strip()
+    verification_hint = _queue_item_verification_hint(str(live_state.get("active_file", "") or ""))
     return "\n".join(
         [
             "Queue status:",
             "- declaration queue is empty",
             f"- file: {active_file}",
             f"- current blocker: {blocker}",
+            (
+                f"- canonical file verification: {verification_hint}"
+                if verification_hint
+                else "- canonical file verification: [unknown]"
+            ),
             "",
             "Final file sweep:",
             f"- inspect the full file `{active_file}` now",
@@ -1680,6 +1690,7 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     diagnostics = str(live_state.get("diagnostics", "") or "")
     goals = str(live_state.get("goals", "") or "")
     build_status = str(live_state.get("build_status", "") or "")
+    declaration_scope = str(live_state.get("declaration_scope", "") or _declaration_queue_scope())
     sorry_count = live_state.get("sorry_count")
     project_sorry_count = live_state.get("project_sorry_count")
     verification_ok = live_state.get("verification_ok")
@@ -1688,7 +1699,7 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
         return False
     if isinstance(sorry_count, int) and sorry_count > 0:
         return False
-    if isinstance(project_sorry_count, int) and project_sorry_count > 0:
+    if declaration_scope != "file" and isinstance(project_sorry_count, int) and project_sorry_count > 0:
         return False
     if _diagnostics_indicate_failure(diagnostics):
         return False
@@ -1715,15 +1726,44 @@ def _module_name_for_file(active_file: str) -> str:
     return ".".join(parts)
 
 
+def _relative_file_label(active_file: str) -> str:
+    if not active_file:
+        return ""
+    try:
+        return str(Path(active_file).resolve().relative_to(Path(_project_root()).resolve()))
+    except Exception:
+        return active_file
+
+
+def _canonical_file_verification_command(active_file: str) -> str:
+    relative_label = _relative_file_label(active_file)
+    if not relative_label:
+        return ""
+    return f"lake env lean {relative_label}"
+
+
+def _queue_item_verification_hint(active_file: str) -> str:
+    command = _canonical_file_verification_command(active_file)
+    if not command:
+        return ""
+    return (
+        f"- canonical check: `{command}`\n"
+        "- use Lean diagnostics/goals for iteration, but do not accept the theorem as solved until this command succeeds for the active file\n"
+        "- do not treat `lake build`, `grep`, `head`, or truncated output as proof that this theorem-sized repair is clean"
+    )
+
+
 def _recommended_verification_command(active_file: str) -> str:
+    relative_label = _relative_file_label(active_file)
+    if _single_queue_item_turn_enabled() and active_file:
+        command = _canonical_file_verification_command(active_file)
+        return (
+            f"lean-lsp diagnostics/goals on {relative_label}, then the required acceptance check "
+            f"`{command}` for this file-scoped theorem turn"
+        )
     module_name = _module_name_for_file(active_file)
     if module_name:
-        return f"lake build {module_name}"
-    relative_label = ""
-    try:
-        relative_label = str(Path(active_file).resolve().relative_to(Path(_project_root()).resolve()))
-    except Exception:
-        relative_label = active_file
+        return f"lean-lsp diagnostics/goals first, then `lake build {module_name}` when the file is close to clean"
     return f"lean-lsp diagnostics/goals on {relative_label}, then final `lake env lean {relative_label}` when close to clean"
 
 
@@ -1766,6 +1806,7 @@ def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dic
     if not normalized or not normalized.get("active_file"):
         return normalized
     normalized["verification_ok"] = False
+    declaration_scope = str(normalized.get("declaration_scope", "") or _declaration_queue_scope())
     if _diagnostics_indicate_failure(str(normalized.get("diagnostics", "") or "")):
         return normalized
     if _goals_still_open(str(normalized.get("goals", "") or "")):
@@ -1790,7 +1831,7 @@ def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dic
         verification_ok, build_status = _run_explicit_verification_build(active_file, full_project=True)
     normalized["build_status"] = build_status
     normalized["verification_ok"] = bool(verification_ok)
-    if isinstance(project_sorry_count, int) and project_sorry_count > 0:
+    if declaration_scope != "file" and isinstance(project_sorry_count, int) and project_sorry_count > 0:
         normalized["blocker_summary"] = (
             f"project still contains {project_sorry_count} sorry placeholder(s): "
             + ", ".join(project_sorry_files[:4])
@@ -2762,7 +2803,9 @@ def _managed_system_prompt() -> str:
         "Work inside the active Lean project only.",
         "Treat `/lean4:*` entries as workflow labels and instructions, not shell commands.",
         "Prefer Lean/LSP-first workflows and use the staged `lean-lsp` MCP server for navigation, diagnostics, and proof goals.",
-        "Do not repeatedly call `lake env lean <file>` as an iteration loop. It is too slow on large imports. Use lean-lsp diagnostics/goals for most cycles, then a focused `lake build <Module>` or final `lake build` only when the file looks close to clean.",
+        "Use lean-lsp diagnostics/goals for most iterations.",
+        "For file-scoped autonomous theorem turns, the only acceptable final verification command is `lake env lean <file>` for the active file. Do not treat `lake build`, `grep`, `head`, or truncated output as sufficient acceptance for a theorem-sized repair.",
+        "Outside theorem-scoped file turns, avoid repeated `lake env lean <file>` loops on large imports and prefer a focused `lake build <Module>` or final `lake build` near milestones.",
         "For `prove` and `formalize`, first enumerate the declarations in scope that still contain `sorry`, Lean errors, or warnings, then clear them one by one as a real queue.",
         "If the workflow request names a Lean file, keep the work pinned to that file and do not drift to unrelated helper files or declarations discovered later.",
         "For file-scoped autonomous proving, finish at most one declaration-sized edit before yielding back to the runner so diagnostics and the queue can be refreshed.",
@@ -2881,6 +2924,26 @@ def _autonomous_continuation_prompt(
     cycle_number: int,
     autonomy_state: Mapping[str, Any] | None = None,
 ) -> str:
+    declaration_scope = str(live_state.get("declaration_scope", "") or _declaration_queue_scope())
+    if declaration_scope == "file":
+        verification_lines = (
+            "- explicit successful file verification\n"
+            "- clean Lean diagnostics in the active file\n"
+            "- no warnings in the requested file\n"
+            "- no open goals for the active work\n"
+            "- no remaining `sorry` in the active file\n\n"
+        )
+        conclusion = "make the next strongest move, and re-check the active file before concluding."
+    else:
+        verification_lines = (
+            "- explicit successful `lake build`\n"
+            "- clean Lean diagnostics\n"
+            "- no warnings in the requested scope\n"
+            "- no open goals\n"
+            "- no remaining `sorry` in the active file\n"
+            "- no remaining `sorry` anywhere else in the project outside dependencies\n\n"
+        )
+        conclusion = "make the next strongest move, and re-check the whole project before concluding."
     prompt = (
         "Continue the autonomous workflow. Do not stop yet unless the workflow is truly verified or "
         "you have a concrete blocker that still remains after another attempt.\n\n"
@@ -2892,14 +2955,9 @@ def _autonomous_continuation_prompt(
         "- fix it, re-check it, then hand control back to the runner\n"
         "- do not declare success after clearing only the first theorem in the file\n\n"
         "Verification requires all of the following:\n"
-        "- explicit successful `lake build`\n"
-        "- clean Lean diagnostics\n"
-        "- no warnings in the requested scope\n"
-        "- no open goals\n"
-        "- no remaining `sorry` in the active file\n"
-        "- no remaining `sorry` anywhere else in the project outside dependencies\n\n"
+        f"{verification_lines}"
         f"This is autonomous continuation cycle {cycle_number}. Use the refreshed live proof state below, "
-        "make the next strongest move, and re-check the whole project before concluding."
+        f"{conclusion}"
     )
     if _queue_needs_final_file_sweep(live_state):
         prompt += f"\n\n{_final_file_sweep_block(live_state)}"
@@ -2910,6 +2968,15 @@ def _autonomous_continuation_prompt(
         queue_text = _queue_assignment_block(live_state, autonomy_state)
         if queue_text:
             prompt += f"\n\n{queue_text}"
+            active_file = str(live_state.get("active_file", "") or "")
+            command = _canonical_file_verification_command(active_file)
+            if command:
+                prompt += (
+                    "\n\n"
+                    "For this assigned file-scoped queue item, use Lean diagnostics/goals for iteration, "
+                    f"but only accept the theorem as solved after `{command}` succeeds. "
+                    "Do not use `lake build`, `grep`, `head`, or truncated output as the acceptance check for this theorem."
+                )
     if _swarm_enabled():
         prompt += (
             "\n\nSwarm remains user-approved for this continuation. "
