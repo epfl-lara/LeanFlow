@@ -363,7 +363,9 @@ EPFLemma writes managed workflow status, activity, checkpoints, file locks, and 
 The verification loop is intentionally Lean-LSP-first:
 
 - use diagnostics and proof goals for most iterations
-- avoid repeated `lake env lean <file>` checks because they are slow on large imports
+- for file-scoped theorem-queue turns, only accept success after the canonical `lake env lean <file>` check for that file
+- do not treat `lake build`, `grep`, `head`, or truncated output as proof that an assigned theorem is clean
+- outside those theorem-scoped turns, avoid repeated `lake env lean <file>` checks because they are slow on large imports
 - prefer a focused `lake build <Module>` when the active file is close to clean
 - reserve full-project `lake build` for milestone verification and final success checks
 
