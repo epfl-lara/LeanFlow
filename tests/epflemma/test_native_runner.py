@@ -1230,6 +1230,106 @@ def test_recent_failed_attempts_summary_does_not_leak_other_theorem_attempts():
     assert summary == ""
 
 
+def test_summarize_theorem_transition_outcome_marks_reverted_to_sorry():
+    outcome = runner._summarize_theorem_transition_outcome(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "amc12a_2021_p19",
+                "active_file": "GaussTest/MiniF2F.lean",
+                "slice": "theorem amc12a_2021_p19 : True := by\n  sorry",
+            }
+        },
+        {
+            "active_file_label": "GaussTest/MiniF2F.lean",
+            "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+            "declaration_queue_summary": (
+                "- amc12a_2021_p19 [GaussTest/MiniF2F.lean] — contains sorry\n"
+                "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry"
+            ),
+            "current_blocker": "amc12a_2021_p19 remains pending after being reverted to `sorry`.",
+            "build_status": "lake env lean GaussTest/MiniF2F.lean exits 0",
+        },
+        [{"role": "assistant", "content": "amc12a_2021_p19 was reverted to `sorry` to unblock file compilation."}],
+    )
+
+    assert outcome["status"] == "reverted-to-sorry"
+    assert "reverted" in outcome["note"]
+
+
+def test_rebuild_history_for_theorem_transition_uses_compact_handoff():
+    rebuilt, transition = runner._rebuild_history_for_theorem_transition(
+        [
+            {"role": "assistant", "content": "Detailed search transcript for amc12a_2021_p19"},
+            {"role": "tool", "content": "Very long raw tool output for the previous theorem"},
+        ],
+        {"snapshot_text": "Compact workflow snapshot"},
+        {
+            "current_queue_assignment": {
+                "target_symbol": "amc12a_2021_p19",
+                "active_file": "GaussTest/MiniF2F.lean",
+                "slice": "theorem amc12a_2021_p19 : True := by\n  sorry",
+            }
+        },
+        {
+            "active_file_label": "GaussTest/MiniF2F.lean",
+            "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+            "declaration_queue_summary": "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry",
+            "build_status": "lake env lean GaussTest/MiniF2F.lean exits 0",
+            "current_blocker": "",
+        },
+    )
+
+    assert transition == {
+        "previous_target": "amc12a_2021_p19",
+        "previous_file": "GaussTest/MiniF2F.lean",
+        "current_target": "algebra_amgm_sumasqdivbgeqsuma",
+        "current_file": "GaussTest/MiniF2F.lean",
+    }
+    assert len(rebuilt) == 2
+    assert rebuilt[0]["content"] == "Compact workflow snapshot"
+    assert "Previous theorem outcome:" in rebuilt[1]["content"]
+    assert "final status: solved" in rebuilt[1]["content"]
+    joined = "\n".join(msg["content"] for msg in rebuilt)
+    assert "Detailed search transcript" not in joined
+    assert "Very long raw tool output" not in joined
+
+
+def test_summarize_theorem_transition_outcome_prefers_previous_theorem_failed_attempt_reason():
+    outcome = runner._summarize_theorem_transition_outcome(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "blocked_demo",
+                "active_file": "Demo/Main.lean",
+                "slice": "theorem blocked_demo : True := by\n  sorry",
+            },
+            "failed_attempts": [
+                {
+                    "attempt": 2,
+                    "cycle": 3,
+                    "target_symbol": "blocked_demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "intro x; simp",
+                    "reason": "nonlinear arithmetic blocker",
+                }
+            ],
+        },
+        {
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+            "declaration_queue_summary": (
+                "- blocked_demo [Demo/Main.lean] — contains sorry\n"
+                "- next_demo [Demo/Main.lean] — contains sorry"
+            ),
+            "current_blocker": "next_demo still pending",
+            "build_status": "unknown",
+        },
+        [{"role": "assistant", "content": "Moving on to another theorem for now."}],
+    )
+
+    assert outcome["status"] == "blocked"
+    assert outcome["note"] == "nonlinear arithmetic blocker"
+
+
 def test_same_queue_assignment_still_blocked_requires_same_theorem_and_real_blocker():
     assert runner._same_queue_assignment_still_blocked(
         {
@@ -1264,3 +1364,270 @@ def test_same_queue_assignment_still_blocked_requires_same_theorem_and_real_bloc
             "build_status": "unknown",
         },
     ) is False
+
+
+def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
+
+    class _LoopAgent(_FakeAgent):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+            self.calls.append(
+                {
+                    "user_message": user_message,
+                    "persist_user_message": persist_user_message,
+                    "conversation_history": list(conversation_history or []),
+                }
+            )
+            return {
+                "messages": list(conversation_history or [])
+                + [{"role": "assistant", "content": "next theorem continuation"}]
+            }
+
+    live_states = chain(
+        [
+            {
+                "active_file": "/tmp/project/GaussTest/MiniF2F.lean",
+                "active_file_label": "GaussTest/MiniF2F.lean",
+                "target_symbol": "algebra_amgm_sumasqdivbgeqsuma",
+                "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+                "declaration_queue_summary": "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry",
+                "diagnostics": "warning: declaration uses sorry",
+                "goals": "no goals",
+                "build_status": "lake env lean GaussTest/MiniF2F.lean exits 0",
+                "current_blocker": "",
+                "message": "live-next-theorem",
+                "sorry_count": 1,
+            },
+            {
+                "active_file": "/tmp/project/GaussTest/MiniF2F.lean",
+                "active_file_label": "GaussTest/MiniF2F.lean",
+                "target_symbol": "algebra_amgm_sumasqdivbgeqsuma",
+                "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+                "declaration_queue_summary": "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry",
+                "diagnostics": "no errors found",
+                "goals": "no goals",
+                "build_status": "lake env lean GaussTest/MiniF2F.lean exits 0",
+                "current_blocker": "",
+                "message": "live-next-theorem-verified",
+                "sorry_count": 0,
+                "verification_ok": True,
+            },
+        ],
+        repeat(
+            {
+                "active_file": "/tmp/project/GaussTest/MiniF2F.lean",
+                "active_file_label": "GaussTest/MiniF2F.lean",
+                "target_symbol": "algebra_amgm_sumasqdivbgeqsuma",
+                "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+                "declaration_queue_summary": "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry",
+                "diagnostics": "no errors found",
+                "goals": "no goals",
+                "build_status": "lake env lean GaussTest/MiniF2F.lean exits 0",
+                "current_blocker": "",
+                "message": "live-next-theorem-verified",
+                "sorry_count": 0,
+                "verification_ok": True,
+            }
+        ),
+    )
+
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"}))
+    monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
+
+    agent = _LoopAgent()
+    history, _, _, _ = runner._drive_autonomous_followups(
+        agent,
+        "system",
+        [
+            {"role": "assistant", "content": "Detailed search transcript for amc12a_2021_p19"},
+            {"role": "tool", "content": "Very long raw tool output for amc12a_2021_p19"},
+        ],
+        {"snapshot_text": "Compact workflow snapshot", "reason": "[none]"},
+        {},
+        {
+            "current_queue_assignment": {
+                "target_symbol": "amc12a_2021_p19",
+                "active_file": "GaussTest/MiniF2F.lean",
+                "slice": "theorem amc12a_2021_p19 : True := by\n  sorry",
+            }
+        },
+    )
+
+    assert len(agent.calls) == 1
+    rebuilt_history = agent.calls[0]["conversation_history"]
+    assert len(rebuilt_history) == 2
+    joined = "\n".join(msg["content"] for msg in rebuilt_history)
+    assert "Compact workflow snapshot" in joined
+    assert "amc12a_2021_p19" in joined
+    assert "algebra_amgm_sumasqdivbgeqsuma" in joined
+    assert "Detailed search transcript for amc12a_2021_p19" not in joined
+    assert "Very long raw tool output for amc12a_2021_p19" not in joined
+    assert history[-1]["content"] == "next theorem continuation"
+
+
+def test_drive_autonomous_followups_keeps_history_when_theorem_does_not_change(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
+
+    class _LoopAgent(_FakeAgent):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+            self.calls.append(list(conversation_history or []))
+            return {
+                "messages": list(conversation_history or [])
+                + [{"role": "assistant", "content": "same theorem continuation"}]
+            }
+
+    stable_live_state = {
+        "active_file": "/tmp/project/Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "target_symbol": "demo",
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "declaration_queue_summary": "- demo [Demo/Main.lean] — contains sorry",
+        "diagnostics": "warning: declaration uses sorry",
+        "goals": "no goals",
+        "build_status": "unknown",
+        "current_blocker": "warning: declaration uses sorry",
+        "message": "live-demo",
+        "sorry_count": 1,
+    }
+    verified_live_state = {
+        **stable_live_state,
+        "diagnostics": "no errors found",
+        "build_status": "lake env lean Demo/Main.lean exits 0",
+        "current_blocker": "",
+        "sorry_count": 0,
+        "verification_ok": True,
+    }
+    live_states = chain([stable_live_state, verified_live_state], repeat(verified_live_state))
+
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"}))
+    monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
+
+    original_history = [
+        {"role": "assistant", "content": "existing theorem-local transcript"},
+        {"role": "tool", "content": "existing tool output"},
+    ]
+    agent = _LoopAgent()
+    runner._drive_autonomous_followups(
+        agent,
+        "system",
+        original_history,
+        {"snapshot_text": "Compact workflow snapshot", "reason": "[none]"},
+        {},
+        {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": "Demo/Main.lean",
+                "slice": "theorem demo : True := by\n  sorry",
+            }
+        },
+    )
+
+    assert len(agent.calls) == 1
+    assert agent.calls[0] == original_history
+
+
+def test_drive_autonomous_followups_records_transition_events(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
+
+    class _LoopAgent(_FakeAgent):
+        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+            return {
+                "messages": list(conversation_history or [])
+                + [{"role": "assistant", "content": "transitioned"}]
+            }
+
+    live_states = chain(
+        [
+            {
+                "active_file": "/tmp/project/Demo/Main.lean",
+                "active_file_label": "Demo/Main.lean",
+                "target_symbol": "next_demo",
+                "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+                "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
+                "diagnostics": "warning: declaration uses sorry",
+                "goals": "no goals",
+                "build_status": "unknown",
+                "current_blocker": "",
+                "message": "live-next",
+                "sorry_count": 1,
+            },
+            {
+                "active_file": "/tmp/project/Demo/Main.lean",
+                "active_file_label": "Demo/Main.lean",
+                "target_symbol": "next_demo",
+                "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+                "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
+                "diagnostics": "no errors found",
+                "goals": "no goals",
+                "build_status": "lake env lean Demo/Main.lean exits 0",
+                "current_blocker": "",
+                "message": "live-next-verified",
+                "sorry_count": 0,
+                "verification_ok": True,
+            },
+        ],
+        repeat(
+            {
+                "active_file": "/tmp/project/Demo/Main.lean",
+                "active_file_label": "Demo/Main.lean",
+                "target_symbol": "next_demo",
+                "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+                "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
+                "diagnostics": "no errors found",
+                "goals": "no goals",
+                "build_status": "lake env lean Demo/Main.lean exits 0",
+                "current_blocker": "",
+                "message": "live-next-verified",
+                "sorry_count": 0,
+                "verification_ok": True,
+            }
+        ),
+    )
+
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"}))
+    monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
+
+    runner._drive_autonomous_followups(
+        _LoopAgent(),
+        "system",
+        [{"role": "assistant", "content": "Detailed theorem A transcript"}],
+        {"snapshot_text": "Compact workflow snapshot", "reason": "[none]"},
+        {},
+        {
+            "current_queue_assignment": {
+                "target_symbol": "prev_demo",
+                "active_file": "Demo/Main.lean",
+                "slice": "theorem prev_demo : True := by\n  sorry",
+            }
+        },
+    )
+
+    events = read_workflow_activity(limit=20)
+    event_types = [event["type"] for event in events]
+    assert "theorem-transition" in event_types
+    assert "theorem-context-cleared" in event_types
+    assert "theorem-handoff-rebuilt" in event_types
