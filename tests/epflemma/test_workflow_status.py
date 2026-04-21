@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from epflemma_cli import native_runner as runner
+from epflemma_cli.config import save_config
 from epflemma_cli.workflow_state import (
     append_workflow_run_log,
     append_workflow_activity,
@@ -158,6 +159,28 @@ def test_workflow_activity_preview_uses_reasoning_when_content_empty(monkeypatch
     preview = _agent_event_preview(events[0])
     assert preview.startswith("Reasoning: ")
     assert "inspect diagnostics" in preview
+
+
+def test_workflow_activity_preview_uses_configured_limit(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    save_config(
+        {
+            "logging": {
+                "activity_preview_chars": 80,
+            }
+        }
+    )
+
+    append_workflow_activity(
+        "assistant-response",
+        "Assistant response received",
+        content="This is a deliberately long assistant response that should be truncated much earlier once the configured activity preview limit is applied.",
+    )
+
+    events = read_workflow_activity(limit=1)
+    preview = _agent_event_preview(events[0])
+    assert len(preview) <= 80
+    assert preview.endswith("...")
 
 
 def test_workflow_activity_writes_run_and_agent_jsonl_streams(monkeypatch, tmp_path):

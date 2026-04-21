@@ -39,6 +39,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "agent": {
         "max_turns": 90,
     },
+    "logging": {
+        "preview_lines": 6,
+        "preview_chars": 900,
+        "tool_output_head_lines": 20,
+        "tool_output_tail_lines": 8,
+        "activity_preview_chars": 280,
+    },
     "compression": {
         "enabled": True,
         "threshold": 0.50,
@@ -172,7 +179,7 @@ def _transform_legacy_config(payload: Mapping[str, Any]) -> dict[str, Any]:
         ).strip()
         merged["epflemma"]["workflow"]["managed_state_dir"] = workflow_state_dir
 
-    for key in ("model", "toolsets", "agent", "compression", "custom_providers", "local_models"):
+    for key in ("model", "toolsets", "agent", "logging", "compression", "custom_providers", "local_models"):
         value = payload.get(key)
         if isinstance(value, Mapping) and isinstance(merged.get(key), dict):
             merged[key] = _deep_merge(merged[key], value)

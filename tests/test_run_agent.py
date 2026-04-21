@@ -279,6 +279,29 @@ def test_format_tool_result_for_log_keeps_tail_for_multiline_output():
     assert any("line 39" in line for line in lines)
 
 
+def test_format_tool_result_for_log_with_limits_respects_custom_head_tail():
+    output = "\n".join(f"line {i}" for i in range(12))
+    payload = json.dumps({"output": output, "exit_code": 1, "error": None})
+
+    lines = run_agent._format_tool_result_for_log_with_limits(
+        "terminal",
+        payload,
+        multiline_head=2,
+        multiline_tail=1,
+        wrapped_head=1,
+        wrapped_tail=1,
+        plain_head=2,
+        plain_tail=1,
+        string_char_threshold=80,
+    )
+
+    assert any("line 0" in line for line in lines)
+    assert any("line 1" in line for line in lines)
+    assert any("output truncated" in line for line in lines)
+    assert any("line 11" in line for line in lines)
+    assert not any("line 5" in line for line in lines)
+
+
 def test_emit_workflow_event_forwards_full_details(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
     captured = {}

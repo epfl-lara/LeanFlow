@@ -26,6 +26,7 @@ from agent.model_metadata import estimate_messages_tokens_rough
 from model_tools import handle_function_call
 from epflemma_cli.file_locks import list_file_locks, release_all_file_locks
 from epflemma_cli.skill_core import build_skill_prompt
+from epflemma_cli.config import load_config
 from epflemma_cli.workflow_state import (
     append_workflow_activity,
     append_workflow_run_log,
@@ -413,11 +414,29 @@ def _record_queue_assignment(
 _CURRENT_AGENT_ACTIVITY_DETAILS: dict[str, Any] = {}
 
 
-def _single_line(text: Any, limit: int = 420) -> str:
+def _logging_config() -> Mapping[str, Any]:
+    try:
+        config = load_config()
+    except Exception:
+        return {}
+    logging_cfg = config.get("logging", {})
+    return logging_cfg if isinstance(logging_cfg, dict) else {}
+
+
+def _positive_int_config(name: str, default: int) -> int:
+    try:
+        value = int(_logging_config().get(name, default))
+    except Exception:
+        return default
+    return value if value > 0 else default
+
+
+def _single_line(text: Any, limit: int | None = None) -> str:
+    effective_limit = limit if limit is not None else max(_positive_int_config("activity_preview_chars", 280) + 140, 420)
     collapsed = " ".join(str(text or "").split())
-    if len(collapsed) <= limit:
+    if len(collapsed) <= effective_limit:
         return collapsed
-    return collapsed[: limit - 3] + "..."
+    return collapsed[: effective_limit - 3] + "..."
 
 
 class _WorkflowLogTee:
@@ -453,20 +472,21 @@ def _install_workflow_run_log_capture() -> None:
 
 
 def _tool_progress_callback(name: str, preview: str, args: Mapping[str, Any] | None = None) -> None:
+    activity_limit = _positive_int_config("activity_preview_chars", 280)
     if name == "_thinking":
-        _record_activity("assistant-plan", _single_line(preview, 280))
+        _record_activity("assistant-plan", _single_line(preview, activity_limit))
         return
     arguments = dict(args or {})
     payload = dict(_CURRENT_AGENT_ACTIVITY_DETAILS)
     payload.update(
         {
             "tool": name,
-            "args_preview": _single_line(json.dumps(arguments, ensure_ascii=False), 320) if arguments else "",
+            "args_preview": _single_line(json.dumps(arguments, ensure_ascii=False), activity_limit + 40) if arguments else "",
         }
     )
     _record_activity(
         "tool-start",
-        _single_line(preview or name, 280),
+        _single_line(preview or name, activity_limit),
         **payload,
     )
 
@@ -2260,6 +2280,7 @@ def _build_agent() -> AIAgent:
         raise SystemExit("epflemma-native: provider credentials are incomplete")
 
     toolset_name = _read_native_env("TOOLSET", "epflemma-native") or "epflemma-native"
+    logging_cfg = _logging_config()
     agent = AIAgent(
         model=model,
         base_url=base_url,
@@ -2275,6 +2296,10 @@ def _build_agent() -> AIAgent:
         checkpoint_max_snapshots=50,
         tool_progress_callback=_tool_progress_callback,
         step_callback=_step_callback,
+        log_preview_lines=logging_cfg.get("preview_lines", 6),
+        log_preview_chars=logging_cfg.get("preview_chars", 900),
+        tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 20),
+        tool_output_tail_lines=logging_cfg.get("tool_output_tail_lines", 8),
     )
     def _post_tool_result_callback(function_name: str, _args: Mapping[str, Any], _result: str) -> None:
         if not _single_queue_item_turn_enabled():
