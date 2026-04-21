@@ -473,6 +473,7 @@ class AIAgent:
         provider_data_collection: str = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
+        post_tool_result_callback: callable = None,
         thinking_callback: callable = None,
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
@@ -515,6 +516,9 @@ class AIAgent:
             provider_sort (str): Sort providers by price/throughput/latency (optional)
             session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
+            post_tool_result_callback (callable): Callback function(tool_name, args_dict, result_text)
+                invoked after each tool finishes. Can request an interrupt to stop after a
+                workflow boundary such as the first file edit.
             clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
                 Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
@@ -565,6 +569,7 @@ class AIAgent:
             self.api_mode = "chat_completions"
 
         self.tool_progress_callback = tool_progress_callback
+        self.post_tool_result_callback = post_tool_result_callback
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
         self.clarify_callback = clarify_callback
@@ -4141,6 +4146,12 @@ class AIAgent:
                     is_error=_detect_tool_failure(function_name, function_result)[0],
                 ),
             )
+
+            if self.post_tool_result_callback:
+                try:
+                    self.post_tool_result_callback(function_name, function_args, function_result)
+                except Exception as cb_err:
+                    logger.debug("post_tool_result_callback error: %s", cb_err)
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i

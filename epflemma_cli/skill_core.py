@@ -16,6 +16,9 @@ CURATED_BUILTIN_SKILLS = {
     "lean-formalization",
     "lean-refactor-golf",
     "lean-autonomous-swarm",
+    "lean-mathlib-search",
+    "lean-project-search",
+    "lean-theorem-queue-worker",
     "provider-fallback",
     "long-session-resume",
 }

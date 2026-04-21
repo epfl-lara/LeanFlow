@@ -204,11 +204,16 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         raise ValueError(f"unsupported workflow command: {command_name}")
     remaining = parts[1:]
     parallel_agents = 1
+    no_parallel = False
     explicit_goal = ""
     workflow_tokens: list[str] = []
     idx = 0
     while idx < len(remaining):
         token = remaining[idx]
+        if token in {"--no-parallel", "-no-parallel"}:
+            no_parallel = True
+            idx += 1
+            continue
         if token == "--agents":
             if idx + 1 >= len(remaining):
                 raise ValueError("--agents requires a value")
@@ -226,6 +231,8 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             continue
         workflow_tokens.append(token)
         idx += 1
+    if no_parallel:
+        parallel_agents = 1
     workflow_args = " ".join(workflow_tokens).strip()
     workflow_kind, canonical_command, backend_command = WORKFLOW_ALIAS_MAP[command_name]
     return NativeWorkflowSpec(
@@ -267,11 +274,13 @@ def resolve_workflow_request(
             if not normalized_workflow_args
             else f"{WORKFLOW_ALIAS_MAP[workflow.frontend_command][2]} {normalized_workflow_args}",
         )
+    normalized_active_file = _normalize_requested_active_file(project.root, cwd, workflow.workflow_args)
+    if normalized_active_file and workflow.parallel_agents > 1:
+        workflow = replace(workflow, parallel_agents=1)
     selected_skill = (active_skill or "").strip() or default_workflow_skill(workflow.workflow_kind)
     if workflow.parallel_agents > 1 and not active_skill:
         selected_skill = "lean-autonomous-swarm"
     toolset_name = "epflemma-native-swarm" if workflow.parallel_agents > 1 else "epflemma-native"
-    normalized_active_file = _normalize_requested_active_file(project.root, cwd, workflow.workflow_args)
 
     child_env = dict(os.environ)
     child_env.update(
