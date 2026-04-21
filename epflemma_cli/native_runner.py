@@ -1256,6 +1256,34 @@ def _prepare_queue_assignment_state(
     }
 
 
+def _queue_assignment_identity(live_state: Mapping[str, Any] | None) -> tuple[str, str]:
+    current = dict(live_state or {})
+    item = dict(current.get("current_queue_item") or {})
+    label = str(item.get("label", "") or current.get("target_symbol", "") or "").strip()
+    active_file = str(current.get("active_file_label", "") or current.get("active_file", "") or "").strip()
+    return label, active_file
+
+
+def _queue_assignment_transition(
+    autonomy_state: Mapping[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> dict[str, str] | None:
+    baseline = dict(autonomy_state.get("current_queue_assignment") or {})
+    previous_target = str(baseline.get("target_symbol", "") or "").strip()
+    previous_file = str(baseline.get("active_file", "") or "").strip()
+    current_target, current_file = _queue_assignment_identity(live_state)
+    if not previous_target or not previous_file or not current_target or not current_file:
+        return None
+    if previous_target == current_target and previous_file == current_file:
+        return None
+    return {
+        "previous_target": previous_target,
+        "previous_file": previous_file,
+        "current_target": current_target,
+        "current_file": current_file,
+    }
+
+
 def _attempt_proof_shape_from_delta(
     autonomy_state: Mapping[str, Any],
     live_state: Mapping[str, Any] | None,
@@ -1387,6 +1415,156 @@ def _recent_failed_attempts_summary(
         lines.append(f"  proof shape: {item.get('proof_shape', '[no proof shape recorded]')}")
         lines.append(f"  why it failed: {item.get('reason', '[no reason recorded]')}")
     return "\n".join(lines)
+
+
+def _latest_failed_attempt_for_theorem(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> dict[str, Any] | None:
+    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
+    if not attempts or not target_symbol or not active_file:
+        return None
+    scoped = [
+        attempt
+        for attempt in attempts
+        if str(attempt.get("target_symbol", "") or "").strip() == str(target_symbol).strip()
+        and str(attempt.get("active_file", "") or "").strip() == str(active_file).strip()
+    ]
+    if not scoped:
+        return None
+    return scoped[-1]
+
+
+def _theorem_is_still_pending(live_state: Mapping[str, Any] | None, target_symbol: str) -> bool:
+    target = str(target_symbol or "").strip()
+    if not target:
+        return False
+    current = dict(live_state or {})
+    item = dict(current.get("current_queue_item") or {})
+    if str(item.get("label", "") or "").strip() == target:
+        return True
+    summary = str(current.get("declaration_queue_summary", "") or "")
+    return target in summary
+
+
+def _summarize_theorem_transition_outcome(
+    autonomy_state: Mapping[str, Any],
+    live_state: Mapping[str, Any] | None,
+    history: list[dict[str, Any]],
+) -> dict[str, str]:
+    transition = _queue_assignment_transition(autonomy_state, live_state) or {}
+    previous_target = str(transition.get("previous_target", "") or "").strip()
+    previous_file = str(transition.get("previous_file", "") or "").strip()
+    recent_text = _collect_message_text(history[-12:])
+    lowered = recent_text.lower()
+    latest_failed_attempt = _latest_failed_attempt_for_theorem(
+        autonomy_state,
+        target_symbol=previous_target,
+        active_file=previous_file,
+    )
+    previous_reason = _single_line(str((latest_failed_attempt or {}).get("reason", "") or ""), 240)
+    blocker = _single_line(
+        str((live_state or {}).get("current_blocker", "") or (live_state or {}).get("blocker_summary", "") or ""),
+        240,
+    )
+    pending = _theorem_is_still_pending(live_state, previous_target)
+    if pending and ("reverted to `sorry`" in recent_text or "reverted to sorry" in lowered):
+        status = "reverted-to-sorry"
+        note = previous_reason or blocker or f"{previous_target} remains pending after being reverted to `sorry`."
+    elif pending and (previous_reason or blocker):
+        status = "blocked"
+        note = previous_reason or blocker
+    elif pending:
+        status = "skipped"
+        note = f"{previous_target} remains pending in the declaration queue."
+    else:
+        status = "solved"
+        note = f"{previous_target} no longer appears in the pending declaration queue."
+    return {
+        "target_symbol": previous_target,
+        "active_file": previous_file,
+        "status": status,
+        "note": note,
+        "build_status": _single_line(str((live_state or {}).get("build_status", "") or "unknown"), 220),
+    }
+
+
+def _workflow_transition_snapshot(
+    compaction_state: Mapping[str, Any] | None,
+    live_state: Mapping[str, Any] | None,
+) -> str:
+    snapshot_text = str((compaction_state or {}).get("snapshot_text", "") or "").strip()
+    if snapshot_text:
+        return snapshot_text
+    current = dict(live_state or {})
+    return "\n".join(
+        [
+            MANAGED_SNAPSHOT_PREFIX,
+            "",
+            f"Workflow: {_workflow_kind()}",
+            f"Active file: {str(current.get('active_file_label', '') or '[unknown]')}",
+            "Current queue summary:",
+            str(current.get("declaration_queue_summary", "") or "[none]"),
+            "",
+            "Latest verification/build status:",
+            str(current.get("build_status", "") or "unknown"),
+            "",
+            "Current blocker:",
+            str(current.get("current_blocker", "") or "[none]"),
+        ]
+    ).strip()
+
+
+def _theorem_transition_handoff_message(
+    outcome: Mapping[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> str:
+    current_target, current_file = _queue_assignment_identity(live_state)
+    current = dict(live_state or {})
+    return "\n".join(
+        [
+            "[EPFLEMMA-NATIVE THEOREM TRANSITION HANDOFF]",
+            "",
+            "Previous theorem outcome:",
+            f"- declaration: {str(outcome.get('target_symbol', '') or '[unknown]')}",
+            f"- file: {str(outcome.get('active_file', '') or '[unknown]')}",
+            f"- final status: {str(outcome.get('status', '') or 'unknown')}",
+            f"- note: {str(outcome.get('note', '') or '[none]')}",
+            "",
+            "Current queue focus:",
+            f"- declaration: {current_target or '[unknown]'}",
+            f"- file: {current_file or '[unknown]'}",
+            "",
+            "Queue summary:",
+            str(current.get("declaration_queue_summary", "") or "[none]"),
+            "",
+            "Latest verification/build status:",
+            str(outcome.get("build_status", "") or str(current.get("build_status", "") or "unknown")),
+        ]
+    ).strip()
+
+
+def _rebuild_history_for_theorem_transition(
+    history: list[dict[str, Any]],
+    compaction_state: Mapping[str, Any] | None,
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, str]] | tuple[None, None]:
+    transition = _queue_assignment_transition(autonomy_state, live_state)
+    if not transition:
+        return None, None
+    outcome = _summarize_theorem_transition_outcome(autonomy_state, live_state, history)
+    rebuilt_history = [
+        {"role": "assistant", "content": _workflow_transition_snapshot(compaction_state, live_state)},
+        {"role": "assistant", "content": _theorem_transition_handoff_message(outcome, live_state)},
+    ]
+    autonomy_state["last_theorem_outcome"] = outcome
+    autonomy_state["continuation_blocked_runs"] = 0
+    autonomy_state["continuation_stable_cycles"] = 0
+    autonomy_state["continuation_live_state_signature"] = None
+    return rebuilt_history, transition
 
 
 def _queue_needs_final_file_sweep(live_state: Mapping[str, Any] | None) -> bool:
@@ -3026,6 +3204,38 @@ def _drive_autonomous_followups(
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state(history, checkpoint_state)
         live_state = _promote_live_state_to_verified(live_state)
+        rebuilt_history, transition = _rebuild_history_for_theorem_transition(
+            history,
+            compaction_state,
+            autonomy_state,
+            live_state,
+        )
+        if rebuilt_history is not None and transition is not None:
+            previous_outcome = dict(autonomy_state.get("last_theorem_outcome") or {})
+            history = rebuilt_history
+            _record_activity(
+                "theorem-transition",
+                "Theorem transition detected",
+                previous_theorem=transition["previous_target"],
+                current_theorem=transition["current_target"],
+                previous_file=transition["previous_file"],
+                current_file=transition["current_file"],
+                previous_status=str(previous_outcome.get("status", "") or "unknown"),
+            )
+            _record_activity(
+                "theorem-context-cleared",
+                f"Cleared theorem-local context for {transition['previous_target']}",
+                previous_theorem=transition["previous_target"],
+                current_theorem=transition["current_target"],
+            )
+            _record_activity(
+                "theorem-handoff-rebuilt",
+                f"Rebuilt compact handoff for {transition['current_target']}",
+                previous_theorem=transition["previous_target"],
+                current_theorem=transition["current_target"],
+                previous_status=str(previous_outcome.get("status", "") or "unknown"),
+                previous_note=str(previous_outcome.get("note", "") or ""),
+            )
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="verifying")
         stop_reason = _autonomous_stop_reason(history, live_state, autonomy_state)
         if stop_reason != "continue":
