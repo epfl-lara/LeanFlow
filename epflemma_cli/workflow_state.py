@@ -513,6 +513,21 @@ def _tool_result_preview(tool_name: str, result: Any, *, is_error: bool) -> str:
     return f"{tool_name} {'failed' if is_error else 'completed'}"
 
 
+def _agent_status_from_live_phase(phase: str) -> str:
+    normalized = str(phase or "").strip().lower()
+    if normalized in {"busy", "verifying", "in-progress", "compacted"}:
+        return "active"
+    if normalized == "blocked":
+        return "blocked"
+    if normalized == "paused":
+        return "paused"
+    if normalized == "exited":
+        return "exited"
+    if normalized == "verified":
+        return "completed"
+    return ""
+
+
 def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]]:
     events = _read_all_workflow_activity()
     by_agent: dict[str, dict[str, Any]] = {}
@@ -630,6 +645,23 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
         key=lambda item: (str(item.get("last_event_at", "") or ""), str(item.get("agent_id", "") or "")),
         reverse=True,
     )
+    live_status = load_workflow_live_status()
+    live_phase = _agent_status_from_live_phase(str(live_status.get("phase", "") or ""))
+    live_task_label = _workflow_task_label(
+        str(live_status.get("workflow_kind", "") or ""),
+        str(live_status.get("active_skill", "") or ""),
+        0,
+    )
+    if live_phase:
+        for summary in ordered:
+            if int(summary.get("delegate_depth", 0) or 0) != 0:
+                continue
+            if live_task_label and str(summary.get("task_label", "") or "") != live_task_label:
+                continue
+            summary["status"] = live_phase
+            if live_phase in {"active", "blocked", "paused"}:
+                summary["finished_at"] = ""
+            break
     for summary in ordered:
         summary["recent_activity"] = summary.pop("_recent_activity")
     return ordered
