@@ -1,17 +1,27 @@
 from __future__ import annotations
 
+import json
+
 from epflemma_cli import native_runner as runner
+from epflemma_cli.config import save_config
 from epflemma_cli.workflow_state import (
     append_workflow_run_log,
     append_workflow_activity,
     enqueue_workflow_agent_message,
+    _agent_event_preview,
     load_workflow_live_status,
+    save_workflow_live_status,
     read_workflow_activity,
     read_workflow_agent_inbox,
     read_workflow_run_log,
     resolve_workflow_agent_id,
     reset_workflow_run_log,
     summarize_workflow_agents,
+    workflow_agent_activity_path,
+    workflow_latest_run_activity_path,
+    workflow_run_activity_path,
+    terminate_project_workflow_agents,
+    terminate_all_workflow_agents,
     terminate_workflow_agent,
     terminate_workflow_agent_descendants,
     workflow_agent_transcript,
@@ -107,23 +117,102 @@ def test_workflow_run_log_round_trip(monkeypatch, tmp_path):
 
 def test_workflow_run_log_creates_timestamped_copy(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.delenv("EPFLEMMA_WORKFLOW_RUN_ID", raising=False)
 
     reset_workflow_run_log()
     append_workflow_run_log("alpha\nbeta\n")
 
     run_logs = list(workflow_runs_root().glob("*.log"))
     assert len(run_logs) == 1
+    assert run_logs[0].name.startswith("prove-")
     assert run_logs[0].read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 
 def test_workflow_activity_preserves_full_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
     full_text = "x" * 500
 
     append_workflow_activity("assistant-response", "Assistant response received", content=full_text)
 
     events = read_workflow_activity(limit=1)
+    assert events[0]["event_id"]
+    assert events[0]["run_id"]
+    assert events[0]["timestamp"]
+    assert events[0]["task_label"] == "prove"
     assert events[0]["details"]["content"] == full_text
+
+
+def test_workflow_activity_preview_uses_reasoning_when_content_empty(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+
+    append_workflow_activity(
+        "assistant-response",
+        "Assistant response received",
+        content="",
+        reasoning_content="Plan: inspect diagnostics, patch theorem, rerun lake env lean.",
+    )
+
+    events = read_workflow_activity(limit=1)
+    preview = _agent_event_preview(events[0])
+    assert preview.startswith("Reasoning: ")
+    assert "inspect diagnostics" in preview
+
+
+def test_workflow_activity_preview_uses_configured_limit(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    save_config(
+        {
+            "logging": {
+                "activity_preview_chars": 80,
+            }
+        }
+    )
+
+    append_workflow_activity(
+        "assistant-response",
+        "Assistant response received",
+        content="This is a deliberately long assistant response that should be truncated much earlier once the configured activity preview limit is applied.",
+    )
+
+    events = read_workflow_activity(limit=1)
+    preview = _agent_event_preview(events[0])
+    assert len(preview) <= 80
+    assert preview.endswith("...")
+
+
+def test_workflow_activity_writes_run_and_agent_jsonl_streams(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.delenv("EPFLEMMA_WORKFLOW_RUN_ID", raising=False)
+
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="12345",
+        workflow_kind="autoprove",
+        active_skill="lean-proof-loop",
+    )
+
+    latest_run_path = workflow_latest_run_activity_path()
+    assert latest_run_path is not None
+    root_events = latest_run_path.read_text(encoding="utf-8").splitlines()
+    root_event = json.loads(root_events[0])
+    run_path = workflow_run_activity_path(root_event["run_id"])
+    agent_path = workflow_agent_activity_path("12345", "prove")
+
+    assert run_path.is_file()
+    assert agent_path.is_file()
+    assert not (tmp_path / "home" / "workflow-state" / "activity.jsonl").exists()
+
+    run_event = json.loads(run_path.read_text(encoding="utf-8").splitlines()[0])
+    agent_event = json.loads(agent_path.read_text(encoding="utf-8").splitlines()[0])
+
+    assert run_event["event_id"] == root_event["event_id"]
+    assert agent_event["agent_id"] == "12345"
+    assert agent_event["task_label"] == "prove"
 
 
 def test_workflow_agent_summary_groups_events(monkeypatch, tmp_path):
@@ -167,10 +256,28 @@ def test_workflow_agent_summary_groups_events(monkeypatch, tmp_path):
     assert summaries[0]["api_calls"] == 1
     assert summaries[0]["model"] == "google/gemma-4-31B-it"
     assert summaries[0]["process_id"] == 12345
+    assert summaries[0]["task_label"] == "agent"
 
     detail = workflow_agent_detail("agent-main", activity_limit=2)
     assert detail["agent_id"] == "agent-main"
     assert len(detail["recent_activity"]) == 2
+
+
+def test_workflow_agent_summary_uses_workflow_task_label(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="12345",
+        process_id=24680,
+        workflow_kind="autoprove",
+        active_skill="lean-proof-loop",
+    )
+
+    summaries = summarize_workflow_agents(activity_limit=1)
+
+    assert summaries[0]["task_label"] == "prove"
 
 
 def test_workflow_agent_resolution_and_termination(monkeypatch, tmp_path):
@@ -217,6 +324,49 @@ def test_workflow_agent_descendant_termination(monkeypatch, tmp_path):
     assert result["count"] == 2
     assert set(result["terminated"]) == {"22222", "33333"}
     assert killed == [303, 202] or killed == [202, 303]
+
+
+def test_terminate_all_workflow_agents_excludes_current(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    append_workflow_activity("conversation-start", "start", agent_session_id="11111", process_id=101)
+    append_workflow_activity("conversation-start", "start", agent_session_id="22222", process_id=202)
+    append_workflow_activity("conversation-start", "start", agent_session_id="33333", process_id=303)
+
+    killed: list[int] = []
+
+    def _fake_killpg(pid: int, sig: int) -> None:
+        killed.append(pid)
+
+    monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
+
+    result = terminate_all_workflow_agents(exclude_agent_id="22222", exclude_process_id=303)
+
+    assert result["success"] is True
+    assert result["count"] == 1
+    assert result["terminated"] == ["11111"]
+    assert killed == [101]
+
+
+def test_terminate_project_workflow_agents_filters_by_project_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    project_a = str(tmp_path / "A")
+    project_b = str(tmp_path / "B")
+    append_workflow_activity("conversation-start", "start", agent_session_id="11111", process_id=101, project_root=project_a)
+    append_workflow_activity("conversation-start", "start", agent_session_id="22222", process_id=202, project_root=project_b)
+
+    killed: list[int] = []
+
+    def _fake_killpg(pid: int, sig: int) -> None:
+        killed.append(pid)
+
+    monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
+
+    result = terminate_project_workflow_agents(project_a)
+
+    assert result["success"] is True
+    assert result["count"] == 1
+    assert result["terminated"] == ["11111"]
+    assert killed == [101]
 
 
 def test_workflow_agent_transcript_collects_recent_interactions(monkeypatch, tmp_path):
@@ -297,6 +447,7 @@ def test_workflow_agent_queue_and_waiting_state(monkeypatch, tmp_path):
         process_id=24680,
         status="verified",
     )
+    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
 
     result = enqueue_workflow_agent_message("12345", "Try a different proof strategy.")
 
@@ -310,3 +461,56 @@ def test_workflow_agent_queue_and_waiting_state(monkeypatch, tmp_path):
     transcript = workflow_agent_transcript("12345", limit=6)
     assert transcript[-1]["role"] == "user"
     assert "different proof strategy" in transcript[-1]["content"]
+
+
+def test_enqueue_workflow_agent_message_rejects_dead_agent(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="12345",
+        process_id=24680,
+    )
+    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: False)
+
+    result = enqueue_workflow_agent_message("12345", "Try again")
+
+    assert result["success"] is False
+    assert result["error"] == "Agent process is no longer running."
+
+
+def test_workflow_agent_summary_prefers_live_busy_phase_over_conversation_end(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="agent-main",
+        process_id=24680,
+        workflow_kind="autoprove",
+        active_skill="lean-theorem-queue-worker",
+    )
+    append_workflow_activity(
+        "conversation-end",
+        "Agent conversation finished",
+        agent_session_id="agent-main",
+        process_id=24680,
+        workflow_kind="autoprove",
+        active_skill="lean-theorem-queue-worker",
+        completed=True,
+        api_calls=2,
+    )
+    save_workflow_live_status(
+        {
+            "version": 1,
+            "phase": "busy",
+            "workflow_kind": "autoprove",
+            "active_skill": "lean-theorem-queue-worker",
+        }
+    )
+
+    summaries = summarize_workflow_agents(activity_limit=2)
+
+    assert summaries[0]["agent_id"] == "agent-main"
+    assert summaries[0]["status"] == "active"
+    assert summaries[0]["finished_at"] == ""

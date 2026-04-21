@@ -75,6 +75,7 @@ from epflemma_cli.workflow_state import (
     read_workflow_run_log,
     save_workflow_live_status,
     summarize_workflow_agents,
+    terminate_project_workflow_agents,
     terminate_workflow_agent,
     resolve_workflow_agent_id,
     workflow_agent_transcript_all,
@@ -333,7 +334,10 @@ class InteractiveShell:
 
     def _target_label(self) -> str:
         workflow_status = self._workflow_status_payload()
-        return str(workflow_status.get("target_symbol", "") or "-")
+        value = str(workflow_status.get("target_symbol", "") or "").strip()
+        if value in {"", "-", "[unknown]", "[launching]"}:
+            return "-"
+        return value
 
     def _phase_label(self) -> str:
         workflow_status = self._workflow_status_payload()
@@ -360,10 +364,23 @@ class InteractiveShell:
             return text
         return f"{text[:max_len - 3]}..."
 
+    def _prompt_focus_label(self) -> str:
+        theorem = self._target_label()
+        if theorem != "-":
+            return theorem
+        workflow_status = self._workflow_status_payload()
+        file_label = str(workflow_status.get("active_file_label", "") or "").strip()
+        if file_label not in {"", "-", "[unknown]", "[launching]"}:
+            return Path(file_label).name
+        build = str(workflow_status.get("build_status", "") or "").strip()
+        if build not in {"", "-", "unknown", "workflow launching"}:
+            return build
+        return "-"
+
     def _prompt_message(self) -> FormattedText:
         project = self._toolbar_piece(self._project_name(), 28)
         phase = self._toolbar_piece(self._phase_label(), 18)
-        theorem = self._target_label()
+        theorem = self._prompt_focus_label()
         status_suffix = phase
         if theorem and theorem != "-":
             status_suffix = f"{status_suffix} · {self._toolbar_piece(theorem, 28)}"
@@ -497,6 +514,9 @@ class InteractiveShell:
             except KeyboardInterrupt:
                 self.console.print("\n[dim]Stopped following live output. Agent remains available in swarm mode.[/]")
             state = str(agent.get("status", "") or "[unknown]")
+            if state in {"exited", "completed", "stopped", "interrupted"}:
+                self.console.print(f"[dim]Agent {agent.get('agent_id')} is {state}. Returning to the main shell.[/]")
+                return 0
             self.console.print(
                 f"[dim]Agent {agent.get('agent_id')} is {state}. "
                 "Enter a follow-up prompt, `/status`, `/kill`, or `/exit`.[/]"
@@ -836,6 +856,23 @@ class InteractiveShell:
             render_workflow_status_panel(self.console, status=workflow_status, activities=self._workflow_activity(limit=6))
         return 0
 
+    def _shutdown_project_workflows(self) -> None:
+        project_root = ""
+        try:
+            project = discover_epflemma_project(self.cwd)
+            project_root = str(project.root)
+        except Exception:
+            status = self._workflow_status_payload()
+            project_root = str(status.get("project_root", "") or "")
+        if not project_root:
+            return
+        result = terminate_project_workflow_agents(project_root)
+        count = int(result.get("count", 0) or 0)
+        if count:
+            self.console.print(
+                f"[dim]Interrupted {count} workflow agent(s) for {project_root} before exiting the shell.[/]"
+            )
+
     def _handle_command(self, raw: str) -> bool:
         stripped = raw.strip()
         if not stripped:
@@ -847,6 +884,7 @@ class InteractiveShell:
             return True
 
         if stripped in {"/exit", "/quit", "exit", "quit"}:
+            self._shutdown_project_workflows()
             return False
         if stripped in {"/help", "help"}:
             self.show_help()
@@ -985,6 +1023,7 @@ class InteractiveShell:
                     refresh_interval=0.5,
                 )
             except EOFError:
+                self._shutdown_project_workflows()
                 print()
                 return 0
             except KeyboardInterrupt:

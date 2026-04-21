@@ -395,6 +395,25 @@ agent:
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
+
+# =============================================================================
+# Logging
+# =============================================================================
+logging:
+  # Number of lines to show for assistant/reasoning previews in workflow logs.
+  preview_lines: 6
+
+  # Maximum characters to show for assistant/reasoning previews before truncating.
+  preview_chars: 900
+
+  # For long multiline tool outputs, keep this many lines from the start.
+  tool_output_head_lines: 20
+
+  # For long multiline tool outputs, also keep this many lines from the end.
+  tool_output_tail_lines: 8
+
+  # Maximum characters used by workflow activity/status previews.
+  activity_preview_chars: 280
   
   # Predefined personalities (use with /personality command)
   personalities:

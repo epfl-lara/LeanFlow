@@ -6,7 +6,8 @@ import os
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from difflib import SequenceMatcher
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -67,6 +68,98 @@ class NativeLaunchPlan:
     toolset_name: str
 
 
+def _project_lean_files(project_root: Path) -> list[Path]:
+    if not project_root.is_dir():
+        return []
+    skipped = {".lake", ".git", ".epflemma", "build"}
+    return [
+        path
+        for path in project_root.rglob("*.lean")
+        if not any(part in skipped for part in path.parts)
+    ]
+
+
+def _candidate_path_strings(candidate: Path, project_root: Path) -> list[str]:
+    values: list[str] = []
+    try:
+        relative = str(candidate.resolve().relative_to(project_root.resolve()))
+        values.append(relative)
+    except Exception:
+        pass
+    values.append(candidate.name)
+    values.append(str(candidate))
+    deduped: list[str] = []
+    for value in values:
+        if value and value not in deduped:
+            deduped.append(value)
+    return deduped
+
+
+def _recover_similar_project_file(project_root: Path, raw: str) -> str:
+    raw = str(raw or "").strip()
+    if not raw:
+        return ""
+    target_name = Path(raw).name
+    target_suffix = raw.lstrip("./")
+    best_score = 0.0
+    best_match = ""
+    for candidate in _project_lean_files(project_root):
+        strings = _candidate_path_strings(candidate, project_root)
+        score = max(SequenceMatcher(None, target_suffix, value).ratio() for value in strings)
+        if target_name and candidate.name == target_name:
+            score += 0.35
+        if target_suffix and any(value.endswith(target_suffix) for value in strings):
+            score += 0.2
+        if score <= best_score:
+            continue
+        try:
+            best_match = str(candidate.resolve().relative_to(project_root.resolve()))
+        except Exception:
+            best_match = str(candidate.resolve())
+        best_score = score
+    return best_match if best_score >= 0.72 else ""
+
+
+def _normalize_requested_active_file(project_root: Path, cwd: Path, workflow_args: str) -> str:
+    raw = str(workflow_args or "").strip()
+    if not raw or not raw.endswith(".lean"):
+        return ""
+    candidates = [
+        Path(raw).expanduser(),
+        cwd / raw,
+        project_root / raw,
+    ]
+    project_name = project_root.name
+    trimmed = raw
+    for prefix in (f"./{project_name}/", f"{project_name}/"):
+        if trimmed.startswith(prefix):
+            trimmed = trimmed[len(prefix):]
+            break
+    if trimmed != raw:
+        candidates.extend([cwd / trimmed, project_root / trimmed, Path(trimmed).expanduser()])
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            continue
+        if resolved.is_file():
+            try:
+                return str(resolved.relative_to(project_root.resolve()))
+            except Exception:
+                return str(resolved)
+    return _recover_similar_project_file(project_root, trimmed if trimmed != raw else raw)
+
+
+def _normalize_workflow_args(project_root: Path, cwd: Path, workflow_args: str) -> str:
+    raw = str(workflow_args or "").strip()
+    if not raw:
+        return raw
+    normalized_active_file = _normalize_requested_active_file(project_root, cwd, raw)
+    if normalized_active_file:
+        return normalized_active_file
+    return raw
+
+
 def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
     runtime_model = str(plan.runtime.get("model") or plan.child_env.get("EPFLEMMA_NATIVE_MODEL", "") or "")
     runtime_name = str(plan.runtime.get("runtime", "") or "")
@@ -111,11 +204,16 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         raise ValueError(f"unsupported workflow command: {command_name}")
     remaining = parts[1:]
     parallel_agents = 1
+    no_parallel = False
     explicit_goal = ""
     workflow_tokens: list[str] = []
     idx = 0
     while idx < len(remaining):
         token = remaining[idx]
+        if token in {"--no-parallel", "-no-parallel"}:
+            no_parallel = True
+            idx += 1
+            continue
         if token == "--agents":
             if idx + 1 >= len(remaining):
                 raise ValueError("--agents requires a value")
@@ -133,6 +231,8 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             continue
         workflow_tokens.append(token)
         idx += 1
+    if no_parallel:
+        parallel_agents = 1
     workflow_args = " ".join(workflow_tokens).strip()
     workflow_kind, canonical_command, backend_command = WORKFLOW_ALIAS_MAP[command_name]
     return NativeWorkflowSpec(
@@ -161,6 +261,22 @@ def resolve_workflow_request(
     cwd = Path(active_cwd or os.getcwd()).expanduser().resolve()
     project = discover_epflemma_project(cwd)
     runtime = resolve_runtime_provider(requested=requested_provider)
+    normalized_workflow_args = _normalize_workflow_args(project.root, cwd, workflow.workflow_args)
+    if normalized_workflow_args != workflow.workflow_args:
+        workflow = replace(
+            workflow,
+            workflow_args=normalized_workflow_args,
+            backend_command=(
+                workflow.backend_command.rsplit(" ", 1)[0]
+                if workflow.workflow_args
+                else workflow.backend_command
+            )
+            if not normalized_workflow_args
+            else f"{WORKFLOW_ALIAS_MAP[workflow.frontend_command][2]} {normalized_workflow_args}",
+        )
+    normalized_active_file = _normalize_requested_active_file(project.root, cwd, workflow.workflow_args)
+    if normalized_active_file and workflow.parallel_agents > 1:
+        workflow = replace(workflow, parallel_agents=1)
     selected_skill = (active_skill or "").strip() or default_workflow_skill(workflow.workflow_kind)
     if workflow.parallel_agents > 1 and not active_skill:
         selected_skill = "lean-autonomous-swarm"
@@ -195,6 +311,8 @@ def resolve_workflow_request(
             "OPENGAUSS_NATIVE_EXPLICIT_GOAL": workflow.explicit_goal,
             "EPFLEMMA_NATIVE_TOOLSET": toolset_name,
             "OPENGAUSS_NATIVE_TOOLSET": toolset_name,
+            "EPFLEMMA_NATIVE_ACTIVE_FILE": normalized_active_file,
+            "OPENGAUSS_NATIVE_ACTIVE_FILE": normalized_active_file,
         }
     )
     argv = [sys.executable, "-m", _native_runner_module()]

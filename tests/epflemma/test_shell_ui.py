@@ -4,9 +4,9 @@ from rich.console import Console
 
 from epflemma_cli.banner import render_help
 from epflemma_cli.main import InteractiveShell, main
-from epflemma_cli.workflow_state import append_workflow_activity, append_workflow_run_log, load_workflow_live_status, reset_workflow_run_log
+from epflemma_cli.workflow_state import append_workflow_activity, append_workflow_run_log, load_workflow_live_status, reset_workflow_run_log, save_workflow_live_status
 from epflemma_cli.runtime_provider import list_runtime_provider_targets
-from epflemma_cli.workflow import NativeLaunchPlan, NativeWorkflowSpec, describe_launch_plan
+from epflemma_cli.workflow import NativeLaunchPlan, NativeWorkflowSpec, describe_launch_plan, resolve_workflow_request
 
 
 def test_render_help_mentions_forgiving_workflow_commands():
@@ -61,6 +61,56 @@ def test_describe_launch_plan_formats_provider_and_model(tmp_path):
     assert summary["command"] == "/prove Main.lean"
     assert summary["skill"] == "lean-proof-loop"
     assert summary["agents"] == "1"
+
+
+def test_resolve_workflow_request_normalizes_requested_active_file(tmp_path):
+    root = tmp_path / "GaussTest"
+    (root / ".epflemma").mkdir(parents=True)
+    (root / ".epflemma" / "project.yaml").write_text(
+        "schema_version: 1\nname: GaussTest\nkind: lean4\nlean_root: .\ncreated_at: now\npaths:\n  runtime: .epflemma/runtime\n  cache: .epflemma/cache\n  workflows: .epflemma/workflows\nsource:\n  mode: init\n  template_source: ''\nblueprint:\n  markers: []\n",
+        encoding="utf-8",
+    )
+    (root / ".epflemma" / "runtime").mkdir()
+    (root / ".epflemma" / "cache").mkdir()
+    (root / ".epflemma" / "workflows").mkdir()
+    (root / "lakefile.toml").write_text("name = 'GaussTest'\n", encoding="utf-8")
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+    (root / "GaussTest").mkdir()
+    (root / "GaussTest" / "RealTheorems-homework.lean").write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    plan = resolve_workflow_request(
+        "/prove ./GaussTest/GaussTest/RealTheorems-homework.lean",
+        active_cwd=root,
+    )
+
+    assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "GaussTest/RealTheorems-homework.lean"
+    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/lean4:autoprove GaussTest/RealTheorems-homework.lean"
+    assert plan.workflow.workflow_args == "GaussTest/RealTheorems-homework.lean"
+
+
+def test_resolve_workflow_request_recovers_similar_requested_active_file(tmp_path):
+    root = tmp_path / "GaussTest"
+    (root / ".epflemma").mkdir(parents=True)
+    (root / ".epflemma" / "project.yaml").write_text(
+        "schema_version: 1\nname: GaussTest\nkind: lean4\nlean_root: .\ncreated_at: now\npaths:\n  runtime: .epflemma/runtime\n  cache: .epflemma/cache\n  workflows: .epflemma/workflows\nsource:\n  mode: init\n  template_source: ''\nblueprint:\n  markers: []\n",
+        encoding="utf-8",
+    )
+    (root / ".epflemma" / "runtime").mkdir()
+    (root / ".epflemma" / "cache").mkdir()
+    (root / ".epflemma" / "workflows").mkdir()
+    (root / "lakefile.toml").write_text("name = 'GaussTest'\n", encoding="utf-8")
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+    (root / "GaussTest").mkdir()
+    (root / "GaussTest" / "RealTheorems-homework.lean").write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    plan = resolve_workflow_request(
+        "/prove ./wrong/subdir/RealTheorems-homework.lean",
+        active_cwd=root,
+    )
+
+    assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "GaussTest/RealTheorems-homework.lean"
+    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/lean4:autoprove GaussTest/RealTheorems-homework.lean"
+    assert plan.workflow.workflow_args == "GaussTest/RealTheorems-homework.lean"
 
 
 def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_path, capsys):
@@ -173,6 +223,35 @@ def test_top_level_kill_command_interrupts_agent(monkeypatch, tmp_path, capsys):
     assert "12345" in output
 
 
+def test_shell_exit_interrupts_current_project_workflows(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    root = tmp_path / "Demo"
+    root.mkdir()
+    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+    (root / ".epflemma").mkdir()
+    (root / ".epflemma" / "project.yaml").write_text(
+        "schema_version: 1\nname: Demo\nkind: lean4\nlean_root: .\ncreated_at: now\npaths:\n  runtime: .epflemma/runtime\n  cache: .epflemma/cache\n  workflows: .epflemma/workflows\nsource:\n  mode: init\n  template_source: ''\nblueprint:\n  markers: []\n",
+        encoding="utf-8",
+    )
+    (root / ".epflemma" / "runtime").mkdir()
+    (root / ".epflemma" / "cache").mkdir()
+    (root / ".epflemma" / "workflows").mkdir()
+
+    shell = InteractiveShell()
+    shell.cwd = root
+
+    monkeypatch.setattr(
+        "epflemma_cli.main.terminate_project_workflow_agents",
+        lambda project_root: {"success": True, "count": 1, "terminated": ["12345"], "failed": []},
+    )
+
+    assert shell._handle_command("/exit") is False
+    output = capsys.readouterr().out
+    assert "Interrupted 1 workflow agent(s)" in output
+    assert "Demo before exiting the shell" in output
+
+
 def test_swarm_agent_view_renders_transcript_not_status_panel(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     append_workflow_activity(
@@ -221,7 +300,8 @@ def test_swarm_agent_view_renders_transcript_not_status_panel(monkeypatch, tmp_p
     assert "Following agent output" in output
     assert "lake env lean Demo/RealTheorems-homework.lean" in output
     assert "exit 1: error: type mismatch" in output
-    assert "Enter a follow-up prompt" in output
+    assert "Returning to the main shell" in output
+    assert "Enter a follow-up prompt" not in output
 
 
 def test_swarm_agent_view_can_queue_follow_up_prompt(monkeypatch, tmp_path, capsys):
@@ -307,6 +387,38 @@ def test_prompt_message_includes_project_and_phase(monkeypatch, tmp_path):
     assert "Demo" in text
     assert "idle" in text
     assert text.endswith("\n› ")
+
+
+def test_prompt_message_hides_unknown_theorem_placeholder(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    root = tmp_path / "Demo"
+    root.mkdir()
+    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+    (root / ".epflemma").mkdir()
+    (root / ".epflemma" / "project.yaml").write_text(
+        "schema_version: 1\nname: Demo\nkind: lean4\nlean_root: .\ncreated_at: now\npaths:\n  runtime: .epflemma/runtime\n  cache: .epflemma/cache\n  workflows: .epflemma/workflows\nsource:\n  mode: init\n  template_source: ''\nblueprint:\n  markers: []\n",
+        encoding="utf-8",
+    )
+    (root / ".epflemma" / "runtime").mkdir()
+    (root / ".epflemma" / "cache").mkdir()
+    (root / ".epflemma" / "workflows").mkdir()
+    save_workflow_live_status(
+        {
+            "phase": "busy",
+            "target_symbol": "[unknown]",
+            "active_file_label": "GaussTest/RealTheorems-homework.lean",
+            "build_status": "unknown",
+        }
+    )
+
+    shell = InteractiveShell()
+    shell.cwd = root
+
+    fragments = shell._prompt_message()
+    text = "".join(fragment for _, fragment in fragments)
+    assert "[unknown]" not in text
+    assert "RealTheorems-homework.lean" in text
 
 
 def test_project_command_without_args_shows_current_project(monkeypatch, tmp_path, capsys):

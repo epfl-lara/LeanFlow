@@ -5,12 +5,40 @@ from __future__ import annotations
 import json
 import os
 import signal
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from epflemma_cli.config import load_config
+
 PROJECT_STATE_DIRNAME = ".epflemma"
 LEGACY_PROJECT_DIRNAMES = (".opengauss", ".gauss")
+WORKFLOW_TASK_LABELS = {
+    "autoprove": "prove",
+    "autoformalize": "formalize",
+    "prove": "prove",
+    "formalize": "formalize",
+    "draft": "draft",
+    "review": "review",
+    "checkpoint": "checkpoint",
+    "refactor": "refactor",
+    "golf": "golf",
+}
+
+
+def _activity_preview_limit(default: int = 280) -> int:
+    try:
+        logging_cfg = load_config().get("logging", {})
+    except Exception:
+        return default
+    if not isinstance(logging_cfg, dict):
+        return default
+    try:
+        value = int(logging_cfg.get("activity_preview_chars", default))
+    except Exception:
+        return default
+    return value if value > 0 else default
 
 
 def _epflemma_home() -> Path:
@@ -78,8 +106,16 @@ def workflow_live_status_path() -> Path:
     return workflow_state_root() / "live_status.json"
 
 
-def workflow_activity_path() -> Path:
-    return workflow_state_root() / "activity.jsonl"
+def workflow_activity_root() -> Path:
+    return workflow_state_root() / "activity"
+
+
+def workflow_run_activity_root() -> Path:
+    return workflow_activity_root() / "runs"
+
+
+def workflow_agent_activity_root() -> Path:
+    return workflow_activity_root() / "agents"
 
 
 def workflow_run_log_path() -> Path:
@@ -99,12 +135,54 @@ def workflow_agent_inbox_path(agent_id: str) -> Path:
     return workflow_agent_inbox_root() / f"{safe_agent_id or 'unknown'}.jsonl"
 
 
+def workflow_run_activity_path(run_id: str) -> Path:
+    safe_run_id = "".join(ch for ch in str(run_id or "").strip() if ch.isalnum() or ch in {"-", "_"})
+    return workflow_run_activity_root() / f"{safe_run_id or 'unknown'}.jsonl"
+
+
+def workflow_agent_activity_path(agent_id: str, task_label: str = "") -> Path:
+    safe_agent_id = "".join(ch for ch in str(agent_id or "").strip() if ch.isalnum() or ch in {"-", "_"})
+    safe_task = "".join(ch for ch in str(task_label or "").strip() if ch.isalnum() or ch in {"-", "_"}).strip() or "agent"
+    return workflow_agent_activity_root() / f"{safe_task}-{safe_agent_id or 'unknown'}.jsonl"
+
+
+def workflow_latest_run_activity_path() -> Path | None:
+    current_run_id = str(os.getenv("EPFLEMMA_WORKFLOW_RUN_ID", "") or "").strip()
+    if current_run_id:
+        path = workflow_run_activity_path(current_run_id)
+        if path.is_file():
+            return path
+    root = workflow_run_activity_root()
+    if not root.is_dir():
+        return None
+    candidates = sorted(root.glob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _workflow_task_label(kind: str, active_skill: str = "", delegate_depth: int = 0) -> str:
+    normalized_kind = str(kind or "").strip().lower()
+    if normalized_kind in WORKFLOW_TASK_LABELS:
+        return WORKFLOW_TASK_LABELS[normalized_kind]
+    if delegate_depth > 0:
+        return "swarm"
+    skill = str(active_skill or "").strip()
+    if skill:
+        return skill
+    return "agent"
+
+
 def _workflow_run_id() -> str:
     run_id = str(os.getenv("EPFLEMMA_WORKFLOW_RUN_ID", "") or "").strip()
     if run_id:
         return run_id
     started = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_id = f"{started}-pid{os.getpid()}"
+    task = _workflow_task_label(
+        str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_KIND", "")),
+        str(os.getenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "") or os.getenv("OPENGAUSS_NATIVE_ACTIVE_SKILL", "")),
+        0,
+    )
+    safe_task = "".join(ch for ch in task if ch.isalnum() or ch in {"-", "_"}).strip() or "agent"
+    run_id = f"{safe_task}-{started}-pid{os.getpid()}"
     os.environ["EPFLEMMA_WORKFLOW_RUN_ID"] = run_id
     return run_id
 
@@ -139,19 +217,46 @@ def save_workflow_live_status(payload: Mapping[str, Any]) -> None:
 
 def append_workflow_activity(event_type: str, message: str, **details: Any) -> None:
     ensure_workflow_state_root()
+    normalized_details = dict(details)
+    normalized_details.setdefault("workflow_kind", str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_KIND", "")))
+    normalized_details.setdefault("workflow_command", str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")))
+    normalized_details.setdefault("active_skill", str(os.getenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "") or os.getenv("OPENGAUSS_NATIVE_ACTIVE_SKILL", "")))
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    run_id = _workflow_run_id()
+    agent_id = str(normalized_details.get("agent_session_id", "") or "")
+    try:
+        delegate_depth = int(normalized_details.get("delegate_depth", 0) or 0)
+    except Exception:
+        delegate_depth = 0
+    task_label = _workflow_task_label(
+        str(normalized_details.get("workflow_kind", "") or ""),
+        str(normalized_details.get("active_skill", "") or ""),
+        delegate_depth,
+    )
     event = {
-        "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "event_id": uuid.uuid4().hex[:12],
+        "timestamp": timestamp,
         "type": event_type,
+        "run_id": run_id,
+        "agent_id": agent_id,
+        "task_label": task_label,
         "message": message,
-        "details": details,
+        "details": normalized_details,
     }
-    with workflow_activity_path().open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, sort_keys=True))
-        handle.write("\n")
+    serialized = json.dumps(event, sort_keys=True)
+    paths = [workflow_run_activity_path(run_id)]
+    if agent_id:
+        paths.append(workflow_agent_activity_path(agent_id, task_label))
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(serialized)
+            handle.write("\n")
 
 
-def _read_all_workflow_activity() -> list[dict[str, Any]]:
-    path = workflow_activity_path()
+def _read_activity_file(path: Path | None) -> list[dict[str, Any]]:
+    if path is None:
+        return []
     if not path.is_file():
         return []
     try:
@@ -167,6 +272,10 @@ def _read_all_workflow_activity() -> list[dict[str, Any]]:
         if isinstance(payload, dict):
             events.append(payload)
     return events
+
+
+def _read_all_workflow_activity() -> list[dict[str, Any]]:
+    return _read_activity_file(workflow_latest_run_activity_path())
 
 
 def read_workflow_agent_inbox(agent_id: str) -> list[dict[str, Any]]:
@@ -190,10 +299,31 @@ def read_workflow_agent_inbox(agent_id: str) -> list[dict[str, Any]]:
     return commands
 
 
+def _process_seems_alive(process_id: int) -> bool:
+    if process_id <= 0:
+        return False
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+    return True
+
+
 def enqueue_workflow_agent_message(agent_ref: str, text: str, *, kind: str = "message") -> dict[str, Any]:
     agent_id = resolve_workflow_agent_id(agent_ref)
     if not agent_id:
         return {"success": False, "error": "Agent not found or ambiguous."}
+    detail = workflow_agent_detail(agent_id, activity_limit=1)
+    process_id = int(detail.get("process_id", 0) or 0)
+    status = str(detail.get("status", "") or "")
+    if process_id <= 0 or not _process_seems_alive(process_id):
+        return {"success": False, "error": "Agent process is no longer running.", "agent_id": agent_id}
+    if status in {"exited", "stopped", "interrupted"}:
+        return {"success": False, "error": f"Agent is no longer accepting input ({status}).", "agent_id": agent_id}
     message = str(text or "").strip()
     if not message:
         return {"success": False, "error": "Message is empty.", "agent_id": agent_id}
@@ -242,7 +372,7 @@ def read_workflow_activity(
     return events[-max(1, limit):]
 
 
-def _shorten_text(text: Any, limit: int = 120) -> str:
+def _shorten_text(text: Any, limit: int = 240) -> str:
     collapsed = " ".join(str(text or "").split())
     if len(collapsed) <= limit:
         return collapsed
@@ -293,10 +423,18 @@ def _agent_event_preview(event: Mapping[str, Any]) -> str:
     details = event.get("details")
     details = details if isinstance(details, dict) else {}
     event_type = str(event.get("type", "") or "")
+    activity_limit = _activity_preview_limit()
     if event_type == "assistant-response":
         content = str(details.get("content", "") or "")
         if content.strip():
-            return _shorten_text(content, limit=140)
+            return _shorten_text(content, limit=activity_limit)
+        reasoning = str(
+            details.get("reasoning_content", "")
+            or details.get("reasoning", "")
+            or ""
+        )
+        if reasoning.strip():
+            return "Reasoning: " + _shorten_text(reasoning, limit=max(activity_limit - 20, 40))
         tool_calls = details.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
             normalized = [dict(call) for call in tool_calls if isinstance(call, dict)]
@@ -317,43 +455,45 @@ def _agent_event_preview(event: Mapping[str, Any]) -> str:
         if iteration is not None:
             return f"API call #{iteration}"
     if event_type == "conversation-start":
-        return _shorten_text(details.get("user_message", ""), limit=140) or str(event.get("message", "") or "")
+        return _shorten_text(details.get("user_message", ""), limit=max(activity_limit - 60, 40)) or str(event.get("message", "") or "")
     if event_type == "conversation-end":
         if details.get("interrupted"):
             return "Interrupted"
         if details.get("completed"):
             return "Completed"
     if event_type == "agent-input-queued":
-        return f"Queued prompt: {_shorten_text(details.get('text', ''), limit=140)}"
+        return f"Queued prompt: {_shorten_text(details.get('text', ''), limit=max(activity_limit - 60, 40))}"
     if event_type == "agent-awaiting-input":
         status = str(details.get("status", "") or "paused")
         return f"Waiting for input ({status})"
     if event_type == "agent-resume":
-        return _shorten_text(details.get("text", ""), limit=140) or "Processing queued prompt"
+        return _shorten_text(details.get("text", ""), limit=max(activity_limit - 60, 40)) or "Processing queued prompt"
     if event_type == "runner-exit":
-        return _shorten_text(event.get("message", ""), limit=140) or "Runner exited"
-    return _shorten_text(event.get("message", ""), limit=140)
+        return _shorten_text(event.get("message", ""), limit=max(activity_limit - 60, 40)) or "Runner exited"
+    return _shorten_text(event.get("message", ""), limit=max(activity_limit - 60, 40))
 
 
 def _tool_call_preview(tool_name: str, arguments: Any) -> str:
+    activity_limit = _activity_preview_limit()
     args = _coerce_tool_arguments(arguments)
     if tool_name == "terminal":
         command = str(args.get("command", "") or "").strip()
-        return _shorten_text(command or "Call terminal", limit=180)
+        return _shorten_text(command or "Call terminal", limit=max(activity_limit - 20, 40))
     if tool_name in {"patch", "read_file", "write_file"}:
         path = str(args.get("path", "") or "").strip()
         mode = str(args.get("mode", "") or "").strip()
         if path and mode:
-            return _shorten_text(f"{path} ({mode})", limit=180)
+            return _shorten_text(f"{path} ({mode})", limit=max(activity_limit - 20, 40))
         if path:
-            return _shorten_text(path, limit=180)
+            return _shorten_text(path, limit=max(activity_limit - 20, 40))
     path = str(args.get("path", "") or "").strip()
     if path:
-        return _shorten_text(f"{tool_name}: {path}", limit=180)
+        return _shorten_text(f"{tool_name}: {path}", limit=max(activity_limit - 20, 40))
     return f"Call {tool_name}"
 
 
 def _tool_result_preview(tool_name: str, result: Any, *, is_error: bool) -> str:
+    activity_limit = _activity_preview_limit()
     raw = str(result or "")
     try:
         payload = json.loads(raw)
@@ -363,13 +503,13 @@ def _tool_result_preview(tool_name: str, result: Any, *, is_error: bool) -> str:
     if isinstance(payload, dict):
         if tool_name == "terminal":
             exit_code = payload.get("exit_code")
-            output = _shorten_text(payload.get("output", ""), limit=180)
+            output = _shorten_text(payload.get("output", ""), limit=activity_limit + 40)
             if output:
                 return f"exit {exit_code}: {output}" if exit_code is not None else output
             return f"{tool_name} {'failed' if is_error else 'completed'}"
         if tool_name == "patch":
             success = payload.get("success")
-            error = _shorten_text(payload.get("error", ""), limit=180)
+            error = _shorten_text(payload.get("error", ""), limit=max(activity_limit - 100, 40))
             files_modified = payload.get("files_modified")
             modified_list = files_modified if isinstance(files_modified, list) else []
             first_file = str(modified_list[0] or "") if modified_list else ""
@@ -399,6 +539,21 @@ def _tool_result_preview(tool_name: str, result: Any, *, is_error: bool) -> str:
     return f"{tool_name} {'failed' if is_error else 'completed'}"
 
 
+def _agent_status_from_live_phase(phase: str) -> str:
+    normalized = str(phase or "").strip().lower()
+    if normalized in {"busy", "verifying", "in-progress", "compacted"}:
+        return "active"
+    if normalized == "blocked":
+        return "blocked"
+    if normalized == "paused":
+        return "paused"
+    if normalized == "exited":
+        return "exited"
+    if normalized == "verified":
+        return "completed"
+    return ""
+
+
 def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]]:
     events = _read_all_workflow_activity()
     by_agent: dict[str, dict[str, Any]] = {}
@@ -414,6 +569,10 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
             {
                 "agent_id": agent_id,
                 "parent_agent_id": "",
+                "project_root": "",
+                "task_label": "",
+                "workflow_kind": "",
+                "active_skill": "",
                 "delegate_depth": 0,
                 "model": "",
                 "provider": "",
@@ -431,10 +590,24 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
             },
         )
         summary["parent_agent_id"] = str(details.get("parent_agent_session_id", "") or summary["parent_agent_id"])
+        project_root = str(details.get("project_root", "") or "")
+        if project_root:
+            summary["project_root"] = project_root
+        workflow_kind = str(details.get("workflow_kind", "") or "")
+        if workflow_kind:
+            summary["workflow_kind"] = workflow_kind
+        active_skill = str(details.get("active_skill", "") or "")
+        if active_skill:
+            summary["active_skill"] = active_skill
         try:
             summary["delegate_depth"] = int(details.get("delegate_depth", summary["delegate_depth"]) or 0)
         except Exception:
             pass
+        summary["task_label"] = _workflow_task_label(
+            str(summary.get("workflow_kind", "") or ""),
+            str(summary.get("active_skill", "") or ""),
+            int(summary.get("delegate_depth", 0) or 0),
+        )
         for key in ("model", "provider", "base_url"):
             value = str(details.get(key, "") or "")
             if value:
@@ -498,6 +671,23 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
         key=lambda item: (str(item.get("last_event_at", "") or ""), str(item.get("agent_id", "") or "")),
         reverse=True,
     )
+    live_status = load_workflow_live_status()
+    live_phase = _agent_status_from_live_phase(str(live_status.get("phase", "") or ""))
+    live_task_label = _workflow_task_label(
+        str(live_status.get("workflow_kind", "") or ""),
+        str(live_status.get("active_skill", "") or ""),
+        0,
+    )
+    if live_phase:
+        for summary in ordered:
+            if int(summary.get("delegate_depth", 0) or 0) != 0:
+                continue
+            if live_task_label and str(summary.get("task_label", "") or "") != live_task_label:
+                continue
+            summary["status"] = live_phase
+            if live_phase in {"active", "blocked", "paused"}:
+                summary["finished_at"] = ""
+            break
     for summary in ordered:
         summary["recent_activity"] = summary.pop("_recent_activity")
     return ordered
@@ -641,6 +831,63 @@ def terminate_workflow_agent_descendants(agent_ref: str) -> dict[str, Any]:
     return {
         "success": not failed,
         "agent_id": agent_id,
+        "terminated": [item.get("agent_id") for item in results if item.get("success")],
+        "failed": failed,
+        "count": success_count,
+    }
+
+
+def terminate_all_workflow_agents(*, exclude_agent_id: str = "", exclude_process_id: int = 0) -> dict[str, Any]:
+    summaries = summarize_workflow_agents(activity_limit=1)
+    results: list[dict[str, Any]] = []
+    for summary in summaries:
+        agent_id = str(summary.get("agent_id", "") or "")
+        process_id = int(summary.get("process_id", 0) or 0)
+        if not agent_id or process_id <= 0:
+            continue
+        if exclude_agent_id and agent_id == exclude_agent_id:
+            continue
+        if exclude_process_id and process_id == exclude_process_id:
+            continue
+        results.append(terminate_workflow_agent(agent_id))
+
+    success_count = sum(1 for item in results if item.get("success"))
+    failed = [item for item in results if not item.get("success")]
+    return {
+        "success": not failed,
+        "terminated": [item.get("agent_id") for item in results if item.get("success")],
+        "failed": failed,
+        "count": success_count,
+    }
+
+
+def terminate_project_workflow_agents(
+    project_root: str,
+    *,
+    exclude_agent_id: str = "",
+    exclude_process_id: int = 0,
+) -> dict[str, Any]:
+    normalized_root = str(project_root or "").strip()
+    summaries = summarize_workflow_agents(activity_limit=1)
+    results: list[dict[str, Any]] = []
+    for summary in summaries:
+        agent_id = str(summary.get("agent_id", "") or "")
+        process_id = int(summary.get("process_id", 0) or 0)
+        agent_root = str(summary.get("project_root", "") or "")
+        if not agent_id or process_id <= 0:
+            continue
+        if normalized_root and agent_root and agent_root != normalized_root:
+            continue
+        if exclude_agent_id and agent_id == exclude_agent_id:
+            continue
+        if exclude_process_id and process_id == exclude_process_id:
+            continue
+        results.append(terminate_workflow_agent(agent_id))
+
+    success_count = sum(1 for item in results if item.get("success"))
+    failed = [item for item in results if not item.get("success")]
+    return {
+        "success": not failed,
         "terminated": [item.get("agent_id") for item in results if item.get("success")],
         "failed": failed,
         "count": success_count,

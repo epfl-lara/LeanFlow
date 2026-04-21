@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from difflib import unified_diff
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -25,6 +26,7 @@ from agent.model_metadata import estimate_messages_tokens_rough
 from model_tools import handle_function_call
 from epflemma_cli.file_locks import list_file_locks, release_all_file_locks
 from epflemma_cli.skill_core import build_skill_prompt
+from epflemma_cli.config import load_config
 from epflemma_cli.workflow_state import (
     append_workflow_activity,
     append_workflow_run_log,
@@ -32,6 +34,7 @@ from epflemma_cli.workflow_state import (
     reset_workflow_run_log,
     save_workflow_live_status,
     summarize_workflow_agents,
+    terminate_all_workflow_agents,
     terminate_workflow_agent_descendants,
     workflow_agent_detail,
 )
@@ -55,6 +58,7 @@ LIVE_PROOF_STATE_PREFIX = (
 )
 AUTONOMOUS_WORKFLOW_KINDS = {"autoprove", "autoformalize"}
 PROJECT_SCAN_SKIP_DIRS = {".git", ".lake", ".epflemma", ".opengauss", ".gauss", "build"}
+WORKFLOW_STEP_BOUNDARY_INTERRUPT = "[epflemma-native workflow step boundary]"
 
 
 def _utc_now_isoformat() -> str:
@@ -118,6 +122,38 @@ def _parallel_agents() -> int:
         return 1
 
 
+def _single_queue_item_turn_enabled() -> bool:
+    return _is_autonomous_workflow() and bool(_read_native_env("ACTIVE_FILE", "").strip())
+
+
+def _base_active_skill() -> str:
+    return _read_native_env("ACTIVE_SKILL", "").strip()
+
+
+def _effective_skill_name(live_state: Mapping[str, Any] | None = None) -> str:
+    configured = _base_active_skill()
+    if not _single_queue_item_turn_enabled():
+        return configured
+    if configured and configured not in {"lean-proof-loop", "lean-theorem-queue-worker"}:
+        return configured
+    state = dict(live_state or {})
+    if state and not state.get("current_queue_item"):
+        return "lean-proof-loop"
+    return "lean-theorem-queue-worker"
+
+
+def _set_runtime_active_skill(skill_name: str) -> None:
+    normalized = str(skill_name or "").strip()
+    if normalized:
+        os.environ["EPFLEMMA_NATIVE_ACTIVE_SKILL"] = normalized
+
+
+def _is_step_boundary_interrupt(result: Mapping[str, Any] | None) -> bool:
+    if not result:
+        return False
+    return str(result.get("interrupt_message", "") or "").strip() == WORKFLOW_STEP_BOUNDARY_INTERRUPT
+
+
 def _swarm_enabled() -> bool:
     return _parallel_agents() > 1 and _read_native_env("USER_APPROVED_SWARM", "0") == "1"
 
@@ -166,7 +202,7 @@ def _workflow_state_current_path() -> Path:
 
 
 def _active_skill() -> str:
-    return _read_native_env("ACTIVE_SKILL", "").strip()
+    return _effective_skill_name()
 
 
 def _ensure_workflow_state_root() -> Path:
@@ -296,6 +332,14 @@ def _persist_live_status(
         "active_file": str(live_state.get("active_file", "") or ""),
         "active_file_label": str(live_state.get("active_file_label", "") or "[unknown]"),
         "target_symbol": str(live_state.get("target_symbol", "") or "[unknown]"),
+        "declaration_scope": str(live_state.get("declaration_scope", "") or _declaration_queue_scope()),
+        "declaration_queue_total": int(live_state.get("declaration_queue_total", 0) or 0),
+        "declaration_queue_preview": list(live_state.get("declaration_queue_preview", []) or []),
+        "declaration_queue_summary": str(live_state.get("declaration_queue_summary", "") or "[none]"),
+        "current_queue_item": dict(live_state.get("current_queue_item", {}) or {}),
+        "current_queue_item_prefix": str(live_state.get("current_queue_item_prefix", "") or ""),
+        "current_queue_item_slice": str(live_state.get("current_queue_item_slice", "") or ""),
+        "current_blocker": str(live_state.get("current_blocker", "") or ""),
         "diagnostics": str(live_state.get("diagnostics", "") or "unavailable"),
         "goals": str(live_state.get("goals", "") or "unavailable"),
         "build_status": str(live_state.get("build_status", "") or "unknown"),
@@ -313,12 +357,13 @@ def _persist_live_status(
 
 
 def _record_activity(event_type: str, message: str, **details: Any) -> None:
+    active_skill = str(details.pop("active_skill", "") or _active_skill())
     append_workflow_activity(
         event_type,
         message,
         workflow_kind=_workflow_kind(),
         workflow_command=_read_native_env("WORKFLOW_COMMAND", "[unset]"),
-        active_skill=_active_skill(),
+        active_skill=active_skill,
         **details,
     )
 
@@ -342,11 +387,56 @@ def _record_agent_activity(agent: Any, event_type: str, message: str, **details:
     _record_activity(event_type, message, **payload)
 
 
-def _single_line(text: Any, limit: int = 220) -> str:
+def _record_queue_assignment(
+    live_state: Mapping[str, Any],
+    *,
+    cycle: int | None = None,
+    phase: str = "",
+) -> None:
+    item = dict(live_state.get("current_queue_item") or {})
+    if not item:
+        return
+    label = str(item.get("label", "") or live_state.get("target_symbol", "") or "[unknown]")
+    payload: dict[str, Any] = {
+        "queue_item": item,
+        "target_symbol": label,
+        "active_file": str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or ""),
+        "reasons": list(item.get("reasons", []) or []),
+    }
+    if cycle is not None:
+        payload["cycle"] = cycle
+    if phase:
+        payload["phase"] = phase
+    payload["active_skill"] = _effective_skill_name(live_state)
+    _record_activity("queue-item-assigned", f"Queue assigned theorem {label}", **payload)
+
+
+_CURRENT_AGENT_ACTIVITY_DETAILS: dict[str, Any] = {}
+
+
+def _logging_config() -> Mapping[str, Any]:
+    try:
+        config = load_config()
+    except Exception:
+        return {}
+    logging_cfg = config.get("logging", {})
+    return logging_cfg if isinstance(logging_cfg, dict) else {}
+
+
+def _positive_int_config(name: str, default: int) -> int:
+    try:
+        value = int(_logging_config().get(name, default))
+    except Exception:
+        return default
+    return value if value > 0 else default
+
+
+def _single_line(text: Any, limit: int | None = None) -> str:
+    effective_limit = limit if limit is not None else max(_positive_int_config("activity_preview_chars", 280) + 140, 420)
     collapsed = " ".join(str(text or "").split())
-    if len(collapsed) <= limit:
+    if len(collapsed) <= effective_limit:
         return collapsed
-    return collapsed[: limit - 3] + "..."
+    return collapsed[: effective_limit - 3] + "..."
 
 
 class _WorkflowLogTee:
@@ -382,15 +472,22 @@ def _install_workflow_run_log_capture() -> None:
 
 
 def _tool_progress_callback(name: str, preview: str, args: Mapping[str, Any] | None = None) -> None:
+    activity_limit = _positive_int_config("activity_preview_chars", 280)
     if name == "_thinking":
-        _record_activity("assistant-plan", _single_line(preview, 280))
+        _record_activity("assistant-plan", _single_line(preview, activity_limit))
         return
     arguments = dict(args or {})
+    payload = dict(_CURRENT_AGENT_ACTIVITY_DETAILS)
+    payload.update(
+        {
+            "tool": name,
+            "args_preview": _single_line(json.dumps(arguments, ensure_ascii=False), activity_limit + 40) if arguments else "",
+        }
+    )
     _record_activity(
         "tool-start",
-        _single_line(preview or name, 280),
-        tool=name,
-        args_preview=_single_line(json.dumps(arguments, ensure_ascii=False), 320) if arguments else "",
+        _single_line(preview or name, activity_limit),
+        **payload,
     )
 
 
@@ -398,11 +495,17 @@ def _step_callback(iteration: int, previous_tools: list[str]) -> None:
     label = f"API call #{iteration}"
     if previous_tools:
         label += f" after {', '.join(previous_tools[:4])}"
+    payload = dict(_CURRENT_AGENT_ACTIVITY_DETAILS)
+    payload.update(
+        {
+            "iteration": iteration,
+            "previous_tools": list(previous_tools or []),
+        }
+    )
     _record_activity(
         "api-call",
         label,
-        iteration=iteration,
-        previous_tools=list(previous_tools or []),
+        **payload,
     )
 
 
@@ -441,7 +544,7 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
         ),
         "autoprove": (
             "autonomous proving session",
-            "Drive the proving loop end-to-end, use Lean diagnostics and proof goals aggressively, and continue iterating until the target is verified and the project has no remaining build errors or `sorry`, or a concrete blocker remains. Avoid repeated `lake env lean <file>` checks; prefer lean-lsp for iteration and a focused `lake build <Module>` or final `lake build` near milestones.",
+            "Drive the proving loop end-to-end. First identify the declarations in scope that still have `sorry`, Lean errors, or warnings. Then work through them one by one, fixing and re-checking after each meaningful edit. continue iterating until the requested file is clean if a file was given, or the project is clean if no file was given. For file-scoped theorem turns, use Lean diagnostics/goals for iteration but only accept progress after the canonical `lake env lean <file>` check for that exact file. Do not treat `lake build`, `grep`, `head`, or truncated output as sufficient acceptance for a theorem-sized repair.",
         ),
         "formalize": (
             "interactive formalization session",
@@ -449,7 +552,7 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
         ),
         "autoformalize": (
             "autonomous formalization session",
-            "Handle drafting plus proving as one workflow, iterating on declarations and proofs until the formalization is verified and the project has no remaining build errors or `sorry`, or a concrete blocker remains. Avoid repeated `lake env lean <file>` checks; prefer lean-lsp for iteration and a focused `lake build <Module>` or final `lake build` near milestones.",
+            "Handle drafting plus proving as one workflow. Identify declarations in scope that still have `sorry`, Lean errors, or warnings, then clear them one by one and continue iterating until the requested file is clean if a file was given, or the project is clean if no file was given. For file-scoped theorem turns, use Lean diagnostics/goals for iteration but only accept progress after the canonical `lake env lean <file>` check for that exact file. Do not treat `lake build`, `grep`, `head`, or truncated output as sufficient acceptance for a theorem-sized repair.",
         ),
     }
     label, detail = guidance_map.get(
@@ -595,7 +698,7 @@ def _extract_target_symbol(text: str) -> str:
         r"\blemma\s+([A-Za-z_][A-Za-z0-9_']*)",
         r"\bdef\s+([A-Za-z_][A-Za-z0-9_']*)",
     ]
-    combined = f"{_read_native_env('WORKFLOW_COMMAND')} {text}"
+    combined = str(text or "")
     for pattern in patterns:
         match = re.search(pattern, combined)
         if match:
@@ -631,9 +734,29 @@ def _extract_blocker_summary(text: str) -> str:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     for line in reversed(lines[-8:]):
         lowered_line = line.lower()
+        if lowered_line.startswith("## "):
+            continue
+        if "no blocker declared" in lowered_line or "all blockers resolved" in lowered_line:
+            continue
         if any(token in lowered_line for token in blocker_tokens):
             return line[:280]
-    return lines[-1][:280] if lines else ""
+    return ""
+
+
+def _normalize_blocker_summary(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    lowered = normalized.lower()
+    cleared_tokens = (
+        "all blockers resolved",
+        "none. all blockers resolved",
+        "no blocker declared",
+        "no blockers remain",
+    )
+    if any(token in lowered for token in cleared_tokens):
+        return ""
+    return normalized
 
 
 def _extract_next_steps(summary_text: str) -> str:
@@ -656,6 +779,15 @@ def _extract_recent_build_status(history: list[dict[str, Any]]) -> str:
 
 
 def _resolve_active_file(history: list[dict[str, Any]], checkpoint_state: Mapping[str, Any] | None = None) -> str:
+    configured_active_file = _read_native_env("ACTIVE_FILE")
+    if configured_active_file:
+        configured_path = Path(configured_active_file)
+        if configured_path.is_file():
+            return str(configured_path.resolve())
+        candidate = Path(_project_root()) / configured_active_file
+        if candidate.is_file():
+            return str(candidate.resolve())
+
     workflow_command = _read_native_env("WORKFLOW_COMMAND")
     command_files = _extract_active_files(workflow_command)
     if command_files:
@@ -686,7 +818,7 @@ def _resolve_target_symbol(history: list[dict[str, Any]], checkpoint_state: Mapp
     target = str(current.get("target_symbol", "") or "").strip()
     if target:
         return target
-    return _extract_target_symbol(_collect_message_text(history[-16:]))
+    return _extract_target_symbol(_read_native_env("WORKFLOW_COMMAND"))
 
 
 def _find_symbol_line(active_file: str, target_symbol: str) -> int | None:
@@ -804,6 +936,522 @@ def _count_project_sorries(project_root: str) -> tuple[int | None, list[str]]:
     return total, files[:8]
 
 
+def _failed_attempt_history_limit() -> int:
+    raw = _read_native_env("FAILED_ATTEMPT_HISTORY", "10")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 10
+
+
+def _declaration_queue_scope() -> str:
+    active_file = _read_native_env("ACTIVE_FILE", "")
+    return "file" if active_file else "project"
+
+
+def _declaration_line_index(active_file: str) -> list[dict[str, Any]]:
+    if not active_file:
+        return []
+    path = Path(active_file)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+
+    entries: list[dict[str, Any]] = []
+    pattern = re.compile(
+        r"^\s*(?:@[A-Za-z0-9_.]+\s+)*(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
+    )
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        match = pattern.match(line)
+        if not match:
+            continue
+        decl_kind = match.group(1)
+        decl_name = (match.group(2) or "").strip()
+        if not decl_name:
+            decl_name = f"[anonymous {decl_kind} @ line {line_number}]"
+        entries.append(
+            {
+                "name": decl_name,
+                "kind": decl_kind,
+                "line": line_number,
+            }
+        )
+
+    if not entries:
+        return []
+
+    for idx, entry in enumerate(entries):
+        start = int(entry["line"])
+        end = len(lines)
+        if idx + 1 < len(entries):
+            end = int(entries[idx + 1]["line"]) - 1
+        region = "\n".join(lines[start - 1:end]).strip()
+        entry["end_line"] = end
+        entry["text"] = region
+        entry["has_sorry"] = bool(re.search(r"\bsorry\b", _strip_lean_comments_and_strings(region)))
+    return entries
+
+
+def _find_declaration_entry(active_file: str, label: str) -> dict[str, Any] | None:
+    wanted = str(label or "").strip()
+    if not active_file or not wanted:
+        return None
+    for entry in _declaration_line_index(active_file):
+        if str(entry.get("name", "") or "").strip() == wanted:
+            return entry
+    return None
+
+
+def _declaration_prefix_text(active_file: str, label: str, *, max_lines: int = 160) -> str:
+    entry = _find_declaration_entry(active_file, label)
+    if not entry:
+        return ""
+    cutoff = int(entry.get("end_line", 0) or 0)
+    if cutoff <= 0:
+        return ""
+    path = Path(active_file)
+    try:
+        all_lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return ""
+    start = 1
+    end = min(cutoff, len(all_lines))
+    text = "\n".join(all_lines[:end]).strip()
+    if not text:
+        return ""
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        text = "\n".join(lines[-max_lines:])
+        start = end - max_lines + 1
+    return f"Current file prefix ending at `{label}` ({start}-{end}):\n{text}"
+
+
+def _declaration_slice_text(active_file: str, label: str, *, max_lines: int = 40) -> str:
+    entry = _find_declaration_entry(active_file, label)
+    if not entry:
+        return ""
+    start = int(entry.get("line", 0) or 0)
+    end = int(entry.get("end_line", 0) or 0)
+    text = str(entry.get("text", "") or "").strip()
+    if not text:
+        return ""
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        text = "\n".join(lines[:max_lines]) + "\n-- [truncated declaration slice]"
+    return f"Assigned declaration slice ({start}-{end}):\n{text}"
+
+
+def _nearest_declaration_name(active_file: str, line_number: int | None) -> str:
+    if not active_file or not isinstance(line_number, int) or line_number <= 0:
+        return ""
+    entries = _declaration_line_index(active_file)
+    current = ""
+    for entry in entries:
+        if int(entry.get("line", 0) or 0) > line_number:
+            break
+        current = str(entry.get("name", "") or "")
+    return current
+
+
+def _extract_diagnostic_line_numbers(text: str) -> list[int]:
+    values: list[int] = []
+    patterns = (
+        r":(\d+):\d+",
+        r"\bline\s+(\d+)\b",
+        r"\((\d+),\s*\d+\)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text or "", flags=re.IGNORECASE):
+            try:
+                value = int(match.group(1))
+            except Exception:
+                continue
+            if value > 0 and value not in values:
+                values.append(value)
+    return values
+
+
+def _is_anonymous_declaration_label(label: str) -> bool:
+    normalized = str(label or "").strip().lower()
+    return normalized.startswith("[anonymous ")
+
+
+def _declaration_name_safe_for_diagnostic_match(name: str) -> bool:
+    normalized = str(name or "").strip()
+    if not normalized or _is_anonymous_declaration_label(normalized):
+        return False
+    if len(normalized) >= 4:
+        return True
+    return bool(re.search(r"[^A-Za-z]", normalized))
+
+
+def _declaration_work_queue(
+    active_file: str,
+    issue_text: str,
+    *,
+    project_root: str = "",
+    scope: str = "",
+) -> list[dict[str, Any]]:
+    requested_scope = scope or _declaration_queue_scope()
+    queue: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    diagnostic_lines = _extract_diagnostic_line_numbers(issue_text)
+
+    def _append(file_path: str, label: str, reasons: list[str], *, kind: str = "") -> None:
+        key = (file_path, label)
+        normalized_reasons = [reason for reason in reasons if reason]
+        if key in seen:
+            for item in queue:
+                if item["file"] == file_path and item["label"] == label:
+                    merged = list(item.get("reasons", []) or [])
+                    for reason in normalized_reasons:
+                        if reason not in merged:
+                            merged.append(reason)
+                    item["reasons"] = merged
+                    return
+            return
+        seen.add(key)
+        queue.append(
+            {
+                "file": file_path,
+                "label": label,
+                "kind": kind,
+                "reasons": normalized_reasons,
+            }
+        )
+
+    if requested_scope == "file" and active_file:
+        for entry in _declaration_line_index(active_file):
+            reasons: list[str] = []
+            if entry.get("has_sorry"):
+                reasons.append("contains sorry")
+            name = str(entry.get("name", "") or "")
+            line_number = int(entry.get("line", 0) or 0)
+            anonymous = _is_anonymous_declaration_label(name)
+            if _declaration_name_safe_for_diagnostic_match(name):
+                if re.search(rf"\b{re.escape(name)}\b", issue_text or ""):
+                    reasons.append("referenced in diagnostics")
+            if line_number and line_number in diagnostic_lines:
+                reasons.append(f"diagnostic near line {line_number}")
+            if anonymous and reasons and not entry.get("has_sorry") and not any(
+                reason.startswith("diagnostic near line ") for reason in reasons
+            ):
+                continue
+            if reasons:
+                _append(
+                    active_file,
+                    name,
+                    reasons,
+                    kind=str(entry.get("kind", "") or ""),
+                )
+        if not queue and _diagnostics_indicate_failure(issue_text):
+            fallback = _nearest_declaration_name(active_file, next(iter(_extract_diagnostic_line_numbers(issue_text)), None))
+            _append(active_file, fallback or "[file-level blocker]", ["diagnostics unresolved"])
+        return queue
+
+    root = project_root or _project_root()
+    for path in _project_lean_files(root):
+        count = _count_sorries(str(path))
+        if not isinstance(count, int) or count <= 0:
+            continue
+        try:
+            label = str(path.resolve().relative_to(Path(root).resolve()))
+        except Exception:
+            label = str(path)
+        _append(str(path.resolve()), label, [f"{count} sorry placeholder(s)"])
+    if not queue and active_file and _diagnostics_indicate_failure(issue_text):
+        try:
+            active_label = str(Path(active_file).resolve().relative_to(Path(root).resolve()))
+        except Exception:
+            active_label = active_file
+        _append(active_file, active_label, ["diagnostics unresolved"])
+    return queue
+
+
+def _format_declaration_queue(queue: list[dict[str, Any]], *, limit: int = 8) -> str:
+    if not queue:
+        return "[none]"
+    lines: list[str] = []
+    for item in queue[:limit]:
+        label = str(item.get("label", "") or "[unnamed]")
+        reasons = ", ".join(item.get("reasons", []) or [])
+        file_path = str(item.get("file", "") or "")
+        try:
+            file_label = str(Path(file_path).resolve().relative_to(Path(_project_root()).resolve())) if file_path else ""
+        except Exception:
+            file_label = file_path
+        if file_label and label != file_label:
+            lines.append(f"- {label} [{file_label}] — {reasons or 'pending'}")
+        else:
+            lines.append(f"- {label} — {reasons or 'pending'}")
+    remaining = len(queue) - min(len(queue), limit)
+    if remaining > 0:
+        lines.append(f"- ... plus {remaining} more pending item(s)")
+    return "\n".join(lines)
+
+
+def _current_queue_item(queue: list[dict[str, Any]], active_file: str) -> dict[str, Any] | None:
+    if not queue:
+        return None
+    if not active_file:
+        return dict(queue[0])
+    for item in queue:
+        label = str(item.get("label", "") or "")
+        reasons = list(item.get("reasons", []) or [])
+        if _find_declaration_entry(active_file, label) and "contains sorry" in reasons:
+            return dict(item)
+    for item in queue:
+        label = str(item.get("label", "") or "")
+        if _find_declaration_entry(active_file, label):
+            return dict(item)
+    return dict(queue[0])
+
+
+def _current_queue_status(live_state: Mapping[str, Any]) -> str:
+    blocker = str(live_state.get("current_blocker", "") or "").strip()
+    if blocker:
+        return "blocked"
+    item = dict(live_state.get("current_queue_item") or {})
+    reasons = ", ".join(item.get("reasons", []) or []).strip()
+    if "sorry" in reasons:
+        return "pending"
+    return "in-progress"
+
+
+def _attempt_proof_shape(live_state: Mapping[str, Any] | None) -> str:
+    item = dict((live_state or {}).get("current_queue_item") or {})
+    active_file = str((live_state or {}).get("active_file", "") or "")
+    label = str(item.get("label", "") or (live_state or {}).get("target_symbol", "") or "").strip()
+    slice_text = _declaration_slice_text(active_file, label) if active_file and label else ""
+    if not slice_text:
+        slice_text = str((live_state or {}).get("current_queue_item_slice", "") or "").strip()
+    if not slice_text:
+        return "[no attempted proof shape recorded]"
+    _, _, body = slice_text.partition(":\n")
+    snippet = body.strip() or slice_text
+    lines = [line.rstrip() for line in snippet.splitlines() if line.strip()]
+    if len(lines) > 6:
+        lines = lines[:6]
+    text = " ".join(lines)
+    return _single_line(text, 240)
+
+
+def _prepare_queue_assignment_state(
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> None:
+    current = dict(live_state or {})
+    item = dict(current.get("current_queue_item") or {})
+    label = str(item.get("label", "") or current.get("target_symbol", "") or "").strip()
+    active_file = str(current.get("active_file_label", "") or current.get("active_file", "") or "").strip()
+    slice_text = str(current.get("current_queue_item_slice", "") or "").strip()
+    autonomy_state["current_queue_assignment"] = {
+        "target_symbol": label,
+        "active_file": active_file,
+        "slice": slice_text,
+    }
+
+
+def _attempt_proof_shape_from_delta(
+    autonomy_state: Mapping[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> str:
+    current = dict(live_state or {})
+    current_slice = str(current.get("current_queue_item_slice", "") or "").strip()
+    baseline = dict(autonomy_state.get("current_queue_assignment") or {})
+    previous_slice = str(baseline.get("slice", "") or "").strip()
+    if previous_slice and current_slice and previous_slice != current_slice:
+        prev_lines = previous_slice.splitlines()
+        curr_lines = current_slice.splitlines()
+        diff_lines = [
+            line
+            for line in unified_diff(prev_lines, curr_lines, n=0, lineterm="")
+            if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+        ]
+        if diff_lines:
+            return _single_line(" ".join(diff_lines[:8]), 240)
+    return _attempt_proof_shape(live_state)
+
+
+def _queue_assignment_block(
+    live_state: Mapping[str, Any],
+    autonomy_state: Mapping[str, Any] | None = None,
+) -> str:
+    item = dict(live_state.get("current_queue_item") or {})
+    if not item:
+        return ""
+    label = str(item.get("label", "") or "[unknown]")
+    reasons = ", ".join(item.get("reasons", []) or []) or "pending"
+    active_file = str(live_state.get("active_file", "") or live_state.get("active_file_label", "") or "")
+    current_status = _current_queue_status(live_state)
+    current_blocker = str(live_state.get("current_blocker", "") or reasons or "[none]").strip()
+    parts = [
+        "Assigned queue item:",
+        f"- declaration: {label}",
+        f"- file: {str(live_state.get('active_file_label', '') or active_file or '[unknown]')}",
+        f"- current status: {current_status}",
+        f"- current blocker: {current_blocker}",
+        "",
+        "Focus:",
+        f"- solve `{label}`",
+        "- local helper lemmas or intermediate facts are allowed if they directly help this theorem",
+        "- do not start solving unrelated later queue items",
+        "- after a meaningful edit, stop and let the manager re-check the queue",
+        "- for this file-scoped theorem turn, the only acceptable final verification command is the canonical file check shown below",
+    ]
+    verification_hint = _queue_item_verification_hint(active_file)
+    if verification_hint:
+        parts.extend(["", "Verification for this queue item:", verification_hint])
+    prefix_text = str(live_state.get("current_queue_item_prefix", "") or "").strip()
+    if prefix_text:
+        parts.extend(["", prefix_text])
+    slice_text = str(live_state.get("current_queue_item_slice", "") or "").strip()
+    if slice_text and not prefix_text:
+        parts.extend(["", slice_text])
+    failed = _recent_failed_attempts_summary(dict(autonomy_state or {}), live_state)
+    if failed:
+        parts.extend(["", failed])
+    parts.extend(["", "Task:", f"Repair `{label}` from its current state."])
+    return "\n".join(parts)
+
+
+def _remember_failed_attempt(
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+    *,
+    cycle_number: int,
+) -> None:
+    if not live_state:
+        return
+    item = dict(live_state.get("current_queue_item") or {})
+    target_symbol = str(item.get("label", "") or live_state.get("target_symbol", "") or "").strip()
+    active_file = str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return
+    reason = str(
+        live_state.get("blocker_summary", "")
+        or live_state.get("diagnostics", "")
+        or live_state.get("goals", "")
+        or live_state.get("build_status", "")
+        or ""
+    ).strip()
+    if not reason:
+        return
+    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
+    scoped = [
+        item for item in attempts
+        if str(item.get("target_symbol", "") or "").strip() == target_symbol
+        and str(item.get("active_file", "") or "").strip() == active_file
+    ]
+    entry = {
+        "attempt": len(scoped) + 1,
+        "cycle": cycle_number,
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "proof_shape": _attempt_proof_shape_from_delta(autonomy_state, live_state),
+        "reason": _single_line(reason, 240),
+    }
+    if attempts and attempts[-1] == entry:
+        return
+    attempts.append(entry)
+    autonomy_state["failed_attempts"] = attempts[-_failed_attempt_history_limit():]
+
+
+def _recent_failed_attempts_summary(
+    autonomy_state: Mapping[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> str:
+    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
+    if not attempts:
+        return ""
+    item = dict((live_state or {}).get("current_queue_item") or {})
+    target_symbol = str(item.get("label", "") or (live_state or {}).get("target_symbol", "") or "").strip()
+    active_file = str((live_state or {}).get("active_file_label", "") or (live_state or {}).get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return ""
+    scoped = [
+        attempt
+        for attempt in attempts
+        if str(attempt.get("target_symbol", "") or "").strip() == target_symbol
+        and str(attempt.get("active_file", "") or "").strip() == active_file
+    ]
+    if not scoped:
+        return ""
+    lines = ["PREVIOUS ATTEMPTS:"]
+    for item in scoped[-_failed_attempt_history_limit():]:
+        lines.append(f"- attempt: {item.get('attempt', '?')}")
+        lines.append(f"  proof shape: {item.get('proof_shape', '[no proof shape recorded]')}")
+        lines.append(f"  why it failed: {item.get('reason', '[no reason recorded]')}")
+    return "\n".join(lines)
+
+
+def _queue_needs_final_file_sweep(live_state: Mapping[str, Any] | None) -> bool:
+    current = dict(live_state or {})
+    return (
+        _single_queue_item_turn_enabled()
+        and str(current.get("declaration_scope", "") or "") == "file"
+        and bool(str(current.get("active_file", "") or "").strip())
+        and int(current.get("declaration_queue_total", 0) or 0) == 0
+        and not _live_state_is_verified(current)
+    )
+
+
+def _final_file_sweep_block(live_state: Mapping[str, Any]) -> str:
+    active_file = str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or "[unknown]")
+    blocker = str(live_state.get("current_blocker", "") or live_state.get("diagnostics", "") or "unknown remaining issue").strip()
+    verification_hint = _queue_item_verification_hint(str(live_state.get("active_file", "") or ""))
+    return "\n".join(
+        [
+            "Queue status:",
+            "- declaration queue is empty",
+            f"- file: {active_file}",
+            f"- current blocker: {blocker}",
+            (
+                f"- canonical file verification: {verification_hint}"
+                if verification_hint
+                else "- canonical file verification: [unknown]"
+            ),
+            "",
+            "Final file sweep:",
+            f"- inspect the full file `{active_file}` now",
+            "- do one final whole-file pass for any remaining errors, warnings, malformed partial proofs, or missed declarations",
+            "- you are no longer restricted to a single assigned theorem for this pass",
+            "- if you make a meaningful edit, stop and let the manager re-check the file",
+        ]
+    )
+
+
+def _same_queue_assignment_still_blocked(
+    autonomy_state: Mapping[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> bool:
+    baseline = dict(autonomy_state.get("current_queue_assignment") or {})
+    current = dict(live_state or {})
+    item = dict(current.get("current_queue_item") or {})
+    baseline_target = str(baseline.get("target_symbol", "") or "").strip()
+    baseline_file = str(baseline.get("active_file", "") or "").strip()
+    current_target = str(item.get("label", "") or current.get("target_symbol", "") or "").strip()
+    current_file = str(current.get("active_file_label", "") or current.get("active_file", "") or "").strip()
+    if not baseline_target or not baseline_file:
+        return False
+    if baseline_target != current_target or baseline_file != current_file:
+        return False
+    blocker_summary = str(current.get("blocker_summary", "") or "").strip()
+    diagnostics = str(current.get("diagnostics", "") or "")
+    goals = str(current.get("goals", "") or "")
+    build_status = str(current.get("build_status", "") or "")
+    return bool(
+        blocker_summary
+        or _diagnostics_indicate_failure(diagnostics)
+        or _goals_still_open(goals)
+        or ("error" in build_status.lower())
+    )
+
+
 def _flatten_text_fragments(value: Any) -> list[str]:
     if value is None:
         return []
@@ -887,7 +1535,29 @@ def _build_live_proof_state(
     sorry_count = _count_sorries(active_file)
     project_sorry_count, project_sorry_files = _count_project_sorries(_project_root())
     build_status = _extract_recent_build_status(history)
-    blocker_summary = _extract_blocker_summary(_collect_message_text(history[-10:]))
+    recent_issue_text = _collect_message_text(history[-10:])
+    blocker_summary = _normalize_blocker_summary(_extract_blocker_summary(recent_issue_text))
+    declaration_scope = _declaration_queue_scope()
+    queue_issue_text = "\n".join(part for part in (diagnostics, recent_issue_text) if part).strip()
+    declaration_queue = _declaration_work_queue(
+        active_file,
+        queue_issue_text,
+        project_root=_project_root(),
+        scope=declaration_scope,
+    )
+    current_queue_item = _current_queue_item(declaration_queue, active_file)
+    current_queue_label = str((current_queue_item or {}).get("label", "") or "").strip()
+    queue_needs_final_file_sweep = declaration_scope == "file" and bool(active_file) and not declaration_queue
+    if declaration_scope == "file" and current_queue_label and (
+        not target_symbol or target_symbol == "[unknown]"
+    ):
+        target_symbol = current_queue_label
+    elif queue_needs_final_file_sweep:
+        target_symbol = ""
+    current_queue_prefix = _declaration_prefix_text(active_file, current_queue_label) if current_queue_label else ""
+    current_queue_slice = _declaration_slice_text(active_file, current_queue_label) if current_queue_label else ""
+    declaration_queue_summary = _format_declaration_queue(declaration_queue)
+    current_blocker = blocker_summary or ", ".join((current_queue_item or {}).get("reasons", []) or [])
     active_file_label = ""
     verification_hint = _recommended_verification_command(active_file)
     if active_file:
@@ -901,7 +1571,7 @@ def _build_live_proof_state(
             "",
             f"Workflow: {_workflow_kind()}",
             f"Active file: {active_file_label or '[unknown]'}",
-            f"Target theorem: {target_symbol or '[unknown]'}",
+            f"Target theorem: {target_symbol or ('[full-file verification sweep]' if queue_needs_final_file_sweep else '[unknown]')}",
             "",
             "Diagnostics:",
             diagnostics,
@@ -911,6 +1581,9 @@ def _build_live_proof_state(
             "",
             "Build:",
             build_status,
+            "",
+            f"Pending {declaration_scope} queue:",
+            declaration_queue_summary,
             "",
             "Recommended verification path:",
             verification_hint or "lean-lsp diagnostics/goals first, then `lake build` when close to clean",
@@ -932,6 +1605,15 @@ def _build_live_proof_state(
         "diagnostics": diagnostics,
         "goals": goals,
         "build_status": build_status,
+        "declaration_scope": declaration_scope,
+        "declaration_queue_total": len(declaration_queue),
+        "declaration_queue_preview": list(declaration_queue[:8]),
+        "declaration_queue_summary": declaration_queue_summary,
+        "current_queue_item": dict(current_queue_item or {}),
+        "current_queue_item_prefix": current_queue_prefix,
+        "current_queue_item_slice": current_queue_slice,
+        "current_blocker": current_blocker,
+        "queue_needs_final_file_sweep": queue_needs_final_file_sweep,
         "sorry_count": sorry_count,
         "project_sorry_count": project_sorry_count,
         "project_sorry_files": list(project_sorry_files),
@@ -957,6 +1639,9 @@ def _build_live_proof_state(
                 "",
                 "Build:",
                 str(live_state.get("build_status", "") or "unknown"),
+                "",
+                f"Pending {live_state.get('declaration_scope', declaration_scope)} queue:",
+                str(live_state.get("declaration_queue_summary", "") or "[none]"),
                 "",
                 "Recommended verification path:",
                 str(live_state.get("verification_hint", "") or "lean-lsp diagnostics/goals first, then `lake build` when close to clean"),
@@ -993,6 +1678,8 @@ def _diagnostics_indicate_failure(diagnostics: str) -> bool:
     failure_patterns = (
         r"\berror\b",
         r"\berrors\b",
+        r"\bwarning\b",
+        r"\bwarnings\b",
         r"\bsorry\b",
         r"\bunsolved\b",
         r"\bfailed\b",
@@ -1019,25 +1706,28 @@ def _goals_still_open(goals: str) -> bool:
 def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     if not live_state:
         return False
+    active_file = str(live_state.get("active_file", "") or "")
     diagnostics = str(live_state.get("diagnostics", "") or "")
     goals = str(live_state.get("goals", "") or "")
     build_status = str(live_state.get("build_status", "") or "")
+    declaration_scope = str(live_state.get("declaration_scope", "") or _declaration_queue_scope())
     sorry_count = live_state.get("sorry_count")
     project_sorry_count = live_state.get("project_sorry_count")
+    verification_ok = live_state.get("verification_ok")
 
+    if not active_file:
+        return False
     if isinstance(sorry_count, int) and sorry_count > 0:
         return False
-    if isinstance(project_sorry_count, int) and project_sorry_count > 0:
+    if declaration_scope != "file" and isinstance(project_sorry_count, int) and project_sorry_count > 0:
         return False
     if _diagnostics_indicate_failure(diagnostics):
         return False
-    if build_status == "build reported errors":
+    if "reported errors" in build_status:
         return False
-    if build_status == "lake build succeeded":
-        return True
     if _goals_still_open(goals):
         return False
-    return False
+    return bool(verification_ok)
 
 
 def _module_name_for_file(active_file: str) -> str:
@@ -1056,15 +1746,44 @@ def _module_name_for_file(active_file: str) -> str:
     return ".".join(parts)
 
 
+def _relative_file_label(active_file: str) -> str:
+    if not active_file:
+        return ""
+    try:
+        return str(Path(active_file).resolve().relative_to(Path(_project_root()).resolve()))
+    except Exception:
+        return active_file
+
+
+def _canonical_file_verification_command(active_file: str) -> str:
+    relative_label = _relative_file_label(active_file)
+    if not relative_label:
+        return ""
+    return f"lake env lean {relative_label}"
+
+
+def _queue_item_verification_hint(active_file: str) -> str:
+    command = _canonical_file_verification_command(active_file)
+    if not command:
+        return ""
+    return (
+        f"- canonical check: `{command}`\n"
+        "- use Lean diagnostics/goals for iteration, but do not accept the theorem as solved until this command succeeds for the active file\n"
+        "- do not treat `lake build`, `grep`, `head`, or truncated output as proof that this theorem-sized repair is clean"
+    )
+
+
 def _recommended_verification_command(active_file: str) -> str:
+    relative_label = _relative_file_label(active_file)
+    if _single_queue_item_turn_enabled() and active_file:
+        command = _canonical_file_verification_command(active_file)
+        return (
+            f"lean-lsp diagnostics/goals on {relative_label}, then the required acceptance check "
+            f"`{command}` for this file-scoped theorem turn"
+        )
     module_name = _module_name_for_file(active_file)
     if module_name:
-        return f"lake build {module_name}"
-    relative_label = ""
-    try:
-        relative_label = str(Path(active_file).resolve().relative_to(Path(_project_root()).resolve()))
-    except Exception:
-        relative_label = active_file
+        return f"lean-lsp diagnostics/goals first, then `lake build {module_name}` when the file is close to clean"
     return f"lean-lsp diagnostics/goals on {relative_label}, then final `lake env lean {relative_label}` when close to clean"
 
 
@@ -1106,6 +1825,8 @@ def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dic
     normalized = dict(live_state or {})
     if not normalized or not normalized.get("active_file"):
         return normalized
+    normalized["verification_ok"] = False
+    declaration_scope = str(normalized.get("declaration_scope", "") or _declaration_queue_scope())
     if _diagnostics_indicate_failure(str(normalized.get("diagnostics", "") or "")):
         return normalized
     if _goals_still_open(str(normalized.get("goals", "") or "")):
@@ -1117,19 +1838,28 @@ def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dic
     project_sorry_count, project_sorry_files = _count_project_sorries(_project_root())
     normalized["project_sorry_count"] = project_sorry_count
     normalized["project_sorry_files"] = project_sorry_files
-    needs_full_project_build = isinstance(project_sorry_count, int) and project_sorry_count == 0
-    ok, build_status = _run_explicit_verification_build(
-        str(normalized.get("active_file", "") or ""),
-        full_project=needs_full_project_build,
+    active_file = str(normalized.get("active_file", "") or "")
+    ok, build_status = _run_explicit_verification_build(active_file, full_project=False)
+    verification_ok = bool(ok)
+    needs_full_project_build = (
+        verification_ok
+        and isinstance(project_sorry_count, int)
+        and project_sorry_count == 0
+        and bool(_module_name_for_file(active_file))
     )
+    if needs_full_project_build:
+        verification_ok, build_status = _run_explicit_verification_build(active_file, full_project=True)
     normalized["build_status"] = build_status
-    if isinstance(project_sorry_count, int) and project_sorry_count > 0:
+    normalized["verification_ok"] = bool(verification_ok)
+    if declaration_scope != "file" and isinstance(project_sorry_count, int) and project_sorry_count > 0:
         normalized["blocker_summary"] = (
             f"project still contains {project_sorry_count} sorry placeholder(s): "
             + ", ".join(project_sorry_files[:4])
         )
-    elif not ok:
+    elif not verification_ok:
         normalized["blocker_summary"] = build_status
+    else:
+        normalized["blocker_summary"] = ""
     return normalized
 
 
@@ -1550,6 +2280,7 @@ def _build_agent() -> AIAgent:
         raise SystemExit("epflemma-native: provider credentials are incomplete")
 
     toolset_name = _read_native_env("TOOLSET", "epflemma-native") or "epflemma-native"
+    logging_cfg = _logging_config()
     agent = AIAgent(
         model=model,
         base_url=base_url,
@@ -1565,10 +2296,37 @@ def _build_agent() -> AIAgent:
         checkpoint_max_snapshots=50,
         tool_progress_callback=_tool_progress_callback,
         step_callback=_step_callback,
+        log_preview_lines=logging_cfg.get("preview_lines", 6),
+        log_preview_chars=logging_cfg.get("preview_chars", 900),
+        tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 20),
+        tool_output_tail_lines=logging_cfg.get("tool_output_tail_lines", 8),
     )
+    def _post_tool_result_callback(function_name: str, _args: Mapping[str, Any], _result: str) -> None:
+        if not _single_queue_item_turn_enabled():
+            return
+        if function_name not in {"patch", "write_file"}:
+            return
+        if agent.is_interrupted():
+            return
+        live_state = _build_live_proof_state(list(getattr(agent, "_session_messages", []) or []))
+        item = dict(live_state.get("current_queue_item") or {})
+        label = str(item.get("label", "") or live_state.get("target_symbol", "") or "[unknown]")
+        _record_activity(
+            "queue-step-boundary",
+            f"Yielding after theorem-sized edit for {label}",
+            queue_item=item,
+            target_symbol=label,
+            active_file=str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or ""),
+            reasons=list(item.get("reasons", []) or []),
+        )
+        agent.interrupt(WORKFLOW_STEP_BOUNDARY_INTERRUPT)
+
+    agent.post_tool_result_callback = _post_tool_result_callback
     owner_id = str(getattr(agent, "session_id", "") or "")
     if owner_id:
         os.environ["EPFLEMMA_NATIVE_RUNNER_OWNER"] = owner_id
+    global _CURRENT_AGENT_ACTIVITY_DETAILS
+    _CURRENT_AGENT_ACTIVITY_DETAILS = _agent_activity_details(agent)
     return agent
 
 
@@ -1664,7 +2422,7 @@ def _run_managed_conversation(
     if not isinstance(result, dict):
         raise RuntimeError("Managed conversation did not return a result payload")
 
-    if result.get("interrupted"):
+    if result.get("interrupted") and not _is_step_boundary_interrupt(result):
         print("Returned to prover-agent mode after interrupt.")
     return result
 
@@ -1816,6 +2574,27 @@ def _terminate_descendant_agents(agent: Any) -> None:
         )
 
 
+def _terminate_other_agents(agent: Any) -> None:
+    agent_id = str(getattr(agent, "session_id", "") or "")
+    result = terminate_all_workflow_agents(exclude_agent_id=agent_id, exclude_process_id=os.getpid())
+    count = int(result.get("count", 0) or 0)
+    failed = result.get("failed")
+    if count:
+        _record_agent_activity(
+            agent,
+            "agents-terminated",
+            f"Interrupted {count} other workflow agent(s) during runner exit",
+            terminated=result.get("terminated", []),
+        )
+    if failed:
+        _record_agent_activity(
+            agent,
+            "agents-termination-failed",
+            "Some workflow agents could not be interrupted during runner exit",
+            failed=failed,
+        )
+
+
 def _run_background_control_loop(
     agent: Any,
     system_prompt: str,
@@ -1854,6 +2633,7 @@ def _run_background_control_loop(
                 continue
             if kind == "exit":
                 _terminate_descendant_agents(agent)
+                _terminate_other_agents(agent)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
                 _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited by remote command")
                 return 0
@@ -1868,7 +2648,10 @@ def _run_background_control_loop(
             live_state = _build_live_proof_state(history, checkpoint_state)
             live_state = _promote_live_state_to_verified(live_state)
             _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
+            _record_queue_assignment(live_state, phase="background")
+            _prepare_queue_assignment_state(autonomy_state, live_state)
             augmented_text = _attach_live_proof_state(text, live_state)
+            _set_runtime_active_skill(_effective_skill_name(live_state))
             result = _run_managed_conversation(
                 agent,
                 on_interrupt=lambda: _persist_live_status(
@@ -1892,7 +2675,7 @@ def _run_background_control_loop(
             live_state = _build_live_proof_state(history, checkpoint_state)
             live_state = _promote_live_state_to_verified(live_state)
             _persist_live_status(history, compaction_state, checkpoint_state, live_state)
-            if result.get("interrupted"):
+            if result.get("interrupted") and not _is_step_boundary_interrupt(result):
                 _record_activity("interactive-interrupted", "Interactive agent turn interrupted by user")
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="paused")
             else:
@@ -1984,13 +2767,24 @@ def _print_history(entries: list[dict[str, Any]]) -> None:
             print(f"   blocker: {blocker}")
 
 
-def _startup_user_message(resumed_checkpoint: Mapping[str, Any] | None = None) -> str:
+def _startup_user_message(
+    resumed_checkpoint: Mapping[str, Any] | None = None,
+    *,
+    live_state: Mapping[str, Any] | None = None,
+    autonomy_state: Mapping[str, Any] | None = None,
+) -> str:
     startup_prompt = _read_native_env("STARTUP_PROMPT")
     workflow_command = _read_native_env("WORKFLOW_COMMAND")
     workflow_kind = _workflow_kind()
-    skill_prompt = build_skill_prompt(_active_skill(), _project_root()) if _active_skill() else ""
+    selected_skill = _effective_skill_name(live_state)
+    skill_prompt = build_skill_prompt(selected_skill, _project_root()) if selected_skill else ""
     explicit_goal = _read_native_env("EXPLICIT_GOAL", "")
     goal_block = f"\n\nUser goal: {explicit_goal}" if explicit_goal else ""
+    queue_block = ""
+    if _single_queue_item_turn_enabled():
+        queue_text = _queue_assignment_block(dict(live_state or {}), autonomy_state)
+        if queue_text:
+            queue_block = f"\n\n{queue_text}"
     swarm_block = ""
     if _swarm_enabled():
         swarm_block = (
@@ -2005,17 +2799,17 @@ def _startup_user_message(resumed_checkpoint: Mapping[str, Any] | None = None) -
         label = str(resumed_checkpoint.get("label", "") or "checkpoint")
         resume_text = f"Resume this managed workflow from persisted {label} and continue carefully from the checkpoint handoff."
         if startup_prompt:
-            body = f"{resume_text}\n\n{startup_prompt}{goal_block}{swarm_block}"
+            body = f"{resume_text}\n\n{startup_prompt}{goal_block}{queue_block}{swarm_block}"
             return f"{body}\n\n{skill_prompt}".strip() if skill_prompt else body
         if workflow_command:
-            body = f"{resume_text}\n\n{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{swarm_block}"
+            body = f"{resume_text}\n\n{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{queue_block}{swarm_block}"
             return f"{body}\n\n{skill_prompt}".strip() if skill_prompt else body
         return resume_text
     if startup_prompt:
-        body = f"{startup_prompt}{goal_block}{swarm_block}"
+        body = f"{startup_prompt}{goal_block}{queue_block}{swarm_block}"
         return f"{body}\n\n{skill_prompt}".strip() if skill_prompt else body
     if workflow_command:
-        body = f"{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{swarm_block}"
+        body = f"{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{queue_block}{swarm_block}"
         return f"{body}\n\n{skill_prompt}".strip() if skill_prompt else body
     return f"Begin the requested managed Lean workflow now.\n\n{skill_prompt}".strip() if skill_prompt else "Begin the requested managed Lean workflow now."
 
@@ -2034,10 +2828,17 @@ def _managed_system_prompt() -> str:
         "Work inside the active Lean project only.",
         "Treat `/lean4:*` entries as workflow labels and instructions, not shell commands.",
         "Prefer Lean/LSP-first workflows and use the staged `lean-lsp` MCP server for navigation, diagnostics, and proof goals.",
-        "Do not repeatedly call `lake env lean <file>` as an iteration loop. It is too slow on large imports. Use lean-lsp diagnostics/goals for most cycles, then a focused `lake build <Module>` or final `lake build` only when the file looks close to clean.",
+        "Use lean-lsp diagnostics/goals for most iterations.",
+        "For file-scoped autonomous theorem turns, the only acceptable final verification command is `lake env lean <file>` for the active file. Do not treat `lake build`, `grep`, `head`, or truncated output as sufficient acceptance for a theorem-sized repair.",
+        "Outside theorem-scoped file turns, avoid repeated `lake env lean <file>` loops on large imports and prefer a focused `lake build <Module>` or final `lake build` near milestones.",
+        "For `prove` and `formalize`, first enumerate the declarations in scope that still contain `sorry`, Lean errors, or warnings, then clear them one by one as a real queue.",
+        "If the workflow request names a Lean file, keep the work pinned to that file and do not drift to unrelated helper files or declarations discovered later.",
+        "For file-scoped autonomous proving, finish at most one declaration-sized edit before yielding back to the runner so diagnostics and the queue can be refreshed.",
+        "If the workflow request is project-wide, prefer independent per-file work items; only split them across child agents when swarm mode is explicitly enabled.",
+        "Use the `lean-project-search` skill to find relevant local declarations and imports before editing, and use `lean-mathlib-search` when the proof likely depends on an existing Mathlib lemma.",
         "Use tools aggressively, keep changes reproducible, and explain blockers clearly when a proof or formalization fails.",
-        "A proof is not verified merely because `sorry` disappeared or style warnings remain. Treat a workflow as verified only after an explicit successful Lean build plus clean diagnostics and no remaining proof goals.",
-        "For autonomous workflows, use project-wide verification: do not stop while the Lean project still contains build errors or any remaining `sorry` placeholders outside dependencies.",
+        "A proof is not verified merely because `sorry` disappeared or style warnings remain. Treat a workflow as verified only after an explicit successful Lean build plus clean diagnostics, no warnings in scope, and no remaining proof goals.",
+        "For autonomous workflows, do not stop while the requested scope still contains build errors, warnings, open goals, or any remaining `sorry` placeholders outside dependencies.",
         "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff instead of reconstructing the full transcript from memory.",
         "Do not use multi-agent delegation unless the user explicitly enabled swarm mode for this workflow.",
     ]
@@ -2143,19 +2944,64 @@ def _autonomous_stop_reason(
     return "continue"
 
 
-def _autonomous_continuation_prompt(live_state: Mapping[str, Any], cycle_number: int) -> str:
+def _autonomous_continuation_prompt(
+    live_state: Mapping[str, Any],
+    cycle_number: int,
+    autonomy_state: Mapping[str, Any] | None = None,
+) -> str:
+    declaration_scope = str(live_state.get("declaration_scope", "") or _declaration_queue_scope())
+    if declaration_scope == "file":
+        verification_lines = (
+            "- explicit successful file verification\n"
+            "- clean Lean diagnostics in the active file\n"
+            "- no warnings in the requested file\n"
+            "- no open goals for the active work\n"
+            "- no remaining `sorry` in the active file\n\n"
+        )
+        conclusion = "make the next strongest move, and re-check the active file before concluding."
+    else:
+        verification_lines = (
+            "- explicit successful `lake build`\n"
+            "- clean Lean diagnostics\n"
+            "- no warnings in the requested scope\n"
+            "- no open goals\n"
+            "- no remaining `sorry` in the active file\n"
+            "- no remaining `sorry` anywhere else in the project outside dependencies\n\n"
+        )
+        conclusion = "make the next strongest move, and re-check the whole project before concluding."
     prompt = (
         "Continue the autonomous workflow. Do not stop yet unless the workflow is truly verified or "
         "you have a concrete blocker that still remains after another attempt.\n\n"
+        "Required working style:\n"
+        "- identify the remaining declarations in scope with `sorry`, Lean errors, or warnings\n"
+        "- pick one declaration at a time\n"
+        "- if an assigned queue item is given, work only on that theorem or lemma\n"
+        "- do not touch the next declaration until the assigned one is solved or blocked\n"
+        "- fix it, re-check it, then hand control back to the runner\n"
+        "- do not declare success after clearing only the first theorem in the file\n\n"
         "Verification requires all of the following:\n"
-        "- explicit successful `lake build`\n"
-        "- clean Lean diagnostics\n"
-        "- no open goals\n"
-        "- no remaining `sorry` in the active file\n"
-        "- no remaining `sorry` anywhere else in the project outside dependencies\n\n"
+        f"{verification_lines}"
         f"This is autonomous continuation cycle {cycle_number}. Use the refreshed live proof state below, "
-        "make the next strongest move, and re-check the whole project before concluding."
+        f"{conclusion}"
     )
+    if _queue_needs_final_file_sweep(live_state):
+        prompt += f"\n\n{_final_file_sweep_block(live_state)}"
+    else:
+        recent_failures = _recent_failed_attempts_summary(dict(autonomy_state or {}), live_state)
+        if recent_failures:
+            prompt += f"\n\n{recent_failures}"
+        queue_text = _queue_assignment_block(live_state, autonomy_state)
+        if queue_text:
+            prompt += f"\n\n{queue_text}"
+            active_file = str(live_state.get("active_file", "") or "")
+            command = _canonical_file_verification_command(active_file)
+            if command:
+                prompt += (
+                    "\n\n"
+                    "For this assigned file-scoped queue item, use Lean diagnostics/goals for iteration, "
+                    f"but only accept the theorem as solved after `{command}` succeeds. "
+                    "Do not use `lake build`, `grep`, `head`, or truncated output as the acceptance check for this theorem."
+                )
     if _swarm_enabled():
         prompt += (
             "\n\nSwarm remains user-approved for this continuation. "
@@ -2194,10 +3040,13 @@ def _drive_autonomous_followups(
         previous_history = history[:]
         _record_activity("autonomous-followup", f"Autonomous continuation #{cycle}", cycle=cycle)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
+        _record_queue_assignment(live_state, cycle=cycle, phase="autonomous")
+        _prepare_queue_assignment_state(autonomy_state, live_state)
         augmented_text = _attach_live_proof_state(
-            _autonomous_continuation_prompt(live_state, cycle),
+            _autonomous_continuation_prompt(live_state, cycle, autonomy_state),
             live_state,
         )
+        _set_runtime_active_skill(_effective_skill_name(live_state))
         result = _run_managed_conversation(
             agent,
             on_interrupt=lambda: _persist_live_status(
@@ -2216,10 +3065,12 @@ def _drive_autonomous_followups(
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state(history, checkpoint_state)
         live_state = _promote_live_state_to_verified(live_state)
+        if _same_queue_assignment_still_blocked(autonomy_state, live_state):
+            _remember_failed_attempt(autonomy_state, live_state, cycle_number=cycle)
         _record_turn_activity(previous_history, history, phase="autonomous")
         _maybe_write_milestone_checkpoint(previous_history, history, agent, autonomy_state, live_state=live_state)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state)
-        if result.get("interrupted"):
+        if result.get("interrupted") and not _is_step_boundary_interrupt(result):
             _record_activity("autonomy-interrupted", f"Autonomous continuation #{cycle} interrupted by user", cycle=cycle)
             _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="paused")
             return history, compaction_state, checkpoint_state, live_state
@@ -2296,8 +3147,18 @@ def main() -> int:
             print(f"Loaded persisted checkpoint: {resumed_checkpoint.get('label', '[unknown]')}")
             print("")
 
-        initial_message = _attach_live_proof_state(_startup_user_message(resumed_checkpoint), live_state)
+        initial_message = _attach_live_proof_state(
+            _startup_user_message(
+                resumed_checkpoint,
+                live_state=live_state,
+                autonomy_state=autonomy_state,
+            ),
+            live_state,
+        )
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
+        _record_queue_assignment(live_state, phase="startup")
+        _prepare_queue_assignment_state(autonomy_state, live_state)
+        _set_runtime_active_skill(_effective_skill_name(live_state))
         result = _run_managed_conversation(
             agent,
             on_interrupt=lambda: _persist_live_status(
@@ -2319,7 +3180,7 @@ def main() -> int:
         live_state = _promote_live_state_to_verified(live_state)
         _record_turn_activity(previous_history, history, phase="startup")
         _persist_live_status(history, compaction_state, checkpoint_state, live_state)
-        if result.get("interrupted"):
+        if result.get("interrupted") and not _is_step_boundary_interrupt(result):
             _record_activity("startup-interrupted", "Startup agent turn interrupted by user")
             _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="paused")
         else:
@@ -2332,6 +3193,12 @@ def main() -> int:
                 autonomy_state,
             )
         if not _native_interactive_enabled():
+            if _live_state_is_verified(live_state):
+                _terminate_descendant_agents(agent)
+                _terminate_other_agents(agent)
+                _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
+                _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited after verified completion")
+                return 0
             return _run_background_control_loop(
                 agent,
                 system_prompt,
@@ -2357,6 +3224,7 @@ def main() -> int:
                         force_filesystem_checkpoint=True,
                     )
                 _terminate_descendant_agents(agent)
+                _terminate_other_agents(agent)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
                 _record_activity("runner-exit", "Managed workflow runner exited via EOF")
                 return 0
@@ -2380,6 +3248,7 @@ def main() -> int:
                         live_state=live_state,
                     )
                 _terminate_descendant_agents(agent)
+                _terminate_other_agents(agent)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
                 _record_activity("runner-exit", "Managed workflow runner exited by command")
                 _print_header()
@@ -2535,6 +3404,7 @@ def main() -> int:
             live_state = _promote_live_state_to_verified(live_state)
             _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
             augmented_text = _attach_live_proof_state(text, live_state)
+            _set_runtime_active_skill(_effective_skill_name(live_state))
             result = _run_managed_conversation(
                 agent,
                 on_interrupt=lambda: _persist_live_status(
@@ -2558,7 +3428,7 @@ def main() -> int:
             live_state = _build_live_proof_state(history, checkpoint_state)
             live_state = _promote_live_state_to_verified(live_state)
             _persist_live_status(history, compaction_state, checkpoint_state, live_state)
-            if result.get("interrupted"):
+            if result.get("interrupted") and not _is_step_boundary_interrupt(result):
                 _record_activity("interactive-interrupted", "Interactive agent turn interrupted by user")
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="paused")
             else:

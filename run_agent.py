@@ -260,6 +260,32 @@ def _wrap_log_text(text: str, width: int = 96) -> list[str]:
     return lines or [""]
 
 
+def _truncate_log_lines(
+    lines: list[str],
+    *,
+    head: int,
+    tail: int = 0,
+    truncated_label: str = "output truncated",
+) -> list[str]:
+    """Keep the start and optional end of long log blocks."""
+    if len(lines) <= head + tail:
+        return lines
+    kept = list(lines[:head])
+    omitted = len(lines) - head - tail
+    kept.append(f"  [{truncated_label}: {omitted} more line(s)]")
+    if tail:
+        kept.extend(lines[-tail:])
+    return kept
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        return default
+    return parsed if parsed > 0 else default
+
+
 def _summarize_arg_value(key: str, value: Any) -> str:
     if value is None:
         return "null"
@@ -305,23 +331,48 @@ def _format_tool_args_for_log(function_name: str, function_args: dict[str, Any])
         value = function_args[key]
         if isinstance(value, list) and value and all(not isinstance(item, (dict, list)) for item in value):
             lines.append(f"{key}: {len(value)} item(s)")
-            for item in value[:8]:
-                lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=90)])
-            if len(value) > 8:
-                lines.append(f"  [{len(value) - 8} more item(s) omitted]")
+            for item in value[:12]:
+                lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=104)])
+            if len(value) > 12:
+                lines.append(f"  [{len(value) - 12} more item(s) omitted]")
             continue
         if isinstance(value, dict):
             lines.append(f"{key}:")
             for sub_key, sub_value in value.items():
                 summary = _summarize_arg_value(sub_key, sub_value)
-                lines.extend([f"  {part}" for part in _wrap_log_text(f"{sub_key}: {summary}", width=90)])
+                lines.extend([f"  {part}" for part in _wrap_log_text(f"{sub_key}: {summary}", width=104)])
             continue
         summary = _summarize_arg_value(key, value)
-        lines.extend(_wrap_log_text(f"{key}: {summary}", width=92))
+        lines.extend(_wrap_log_text(f"{key}: {summary}", width=106))
     return lines
 
 
 def _format_tool_result_for_log(function_name: str, function_result: str) -> list[str]:
+    return _format_tool_result_for_log_with_limits(
+        function_name,
+        function_result,
+        multiline_head=20,
+        multiline_tail=8,
+        wrapped_head=10,
+        wrapped_tail=4,
+        plain_head=18,
+        plain_tail=6,
+        string_char_threshold=600,
+    )
+
+
+def _format_tool_result_for_log_with_limits(
+    function_name: str,
+    function_result: str,
+    *,
+    multiline_head: int,
+    multiline_tail: int,
+    wrapped_head: int,
+    wrapped_tail: int,
+    plain_head: int,
+    plain_tail: int,
+    string_char_threshold: int,
+) -> list[str]:
     try:
         parsed = json.loads(function_result)
     except Exception:
@@ -346,51 +397,54 @@ def _format_tool_result_for_log(function_name: str, function_result: str) -> lis
             value = parsed[key]
             if isinstance(value, list) and value and all(not isinstance(item, (dict, list)) for item in value):
                 lines.append(f"{key}: {len(value)} item(s)")
-                for item in value[:10]:
-                    lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=88)])
-                if len(value) > 10:
-                    lines.append(f"  [{len(value) - 10} more item(s) omitted]")
+                for item in value[:14]:
+                    lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=104)])
+                if len(value) > 14:
+                    lines.append(f"  [{len(value) - 14} more item(s) omitted]")
                 continue
             if isinstance(value, str) and "\n" in value:
                 value_lines = value.splitlines()
                 lines.append(f"{key}:")
-                for raw_line in value_lines[:14]:
-                    lines.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=88)])
-                if len(value_lines) > 14:
-                    lines.append(f"  [output truncated: {len(value_lines) - 14} more line(s)]")
+                wrapped_lines: list[str] = []
+                for raw_line in value_lines:
+                    wrapped_lines.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=104)])
+                lines.extend(_truncate_log_lines(wrapped_lines, head=multiline_head, tail=multiline_tail))
                 continue
-            if isinstance(value, str) and len(value) > 220:
-                wrapped = _wrap_log_text(value, width=88)
+            if isinstance(value, str) and len(value) > string_char_threshold:
+                wrapped = _wrap_log_text(value, width=104)
                 lines.append(f"{key}:")
-                for part in wrapped[:8]:
+                for part in _truncate_log_lines(wrapped, head=wrapped_head, tail=wrapped_tail):
                     lines.append(f"  {part}")
-                if len(wrapped) > 8:
-                    lines.append(f"  [output truncated: {len(wrapped) - 8} more wrapped line(s)]")
                 continue
             if isinstance(value, (dict, list)):
                 pretty = json.dumps(value, indent=2, ensure_ascii=False)
                 pretty_lines = pretty.splitlines()
                 lines.append(f"{key}:")
-                for raw_line in pretty_lines[:12]:
-                    lines.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=88)])
-                if len(pretty_lines) > 12:
-                    lines.append(f"  [structured output truncated: {len(pretty_lines) - 12} more line(s)]")
+                wrapped_pretty: list[str] = []
+                for raw_line in pretty_lines:
+                    wrapped_pretty.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=104)])
+                lines.extend(
+                    _truncate_log_lines(
+                        wrapped_pretty,
+                        head=max(multiline_head - 4, 1),
+                        tail=max(multiline_tail - 2, 0),
+                        truncated_label="structured output truncated",
+                    )
+                )
                 continue
-            lines.extend(_wrap_log_text(f"{key}: {value}", width=92))
+            lines.extend(_wrap_log_text(f"{key}: {value}", width=106))
         return lines
 
     if isinstance(parsed, list):
         lines = [f"items: {len(parsed)}"]
-        for item in parsed[:10]:
-            lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=88)])
-        if len(parsed) > 10:
-            lines.append(f"  [{len(parsed) - 10} more item(s) omitted]")
+        for item in parsed[:14]:
+            lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=104)])
+        if len(parsed) > 14:
+            lines.append(f"  [{len(parsed) - 14} more item(s) omitted]")
         return lines
 
-    wrapped = _wrap_log_text(function_result, width=92)
-    if len(wrapped) > 12:
-        return wrapped[:12] + [f"[output truncated: {len(wrapped) - 12} more wrapped line(s)]"]
-    return wrapped
+    wrapped = _wrap_log_text(function_result, width=106)
+    return _truncate_log_lines(wrapped, head=plain_head, tail=plain_tail)
 
 
 def _emit_workflow_event(event_type: str, message: str, **details: Any) -> None:
@@ -465,6 +519,10 @@ class AIAgent:
         ephemeral_system_prompt: str = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
+        log_preview_lines: int = 6,
+        log_preview_chars: int = 900,
+        tool_output_head_lines: int = 20,
+        tool_output_tail_lines: int = 8,
         providers_allowed: List[str] = None,
         providers_ignored: List[str] = None,
         providers_order: List[str] = None,
@@ -473,6 +531,7 @@ class AIAgent:
         provider_data_collection: str = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
+        post_tool_result_callback: callable = None,
         thinking_callback: callable = None,
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
@@ -509,12 +568,19 @@ class AIAgent:
             ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
             log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 100)
             log_prefix (str): Prefix to add to all log messages for identification in parallel processing (default: "")
+            log_preview_lines (int): Number of lines to show in assistant/reasoning previews.
+            log_preview_chars (int): Maximum characters to show in assistant/reasoning previews.
+            tool_output_head_lines (int): Number of lines to keep from the start of long tool outputs.
+            tool_output_tail_lines (int): Number of lines to keep from the end of long tool outputs.
             providers_allowed (List[str]): OpenRouter providers to allow (optional)
             providers_ignored (List[str]): OpenRouter providers to ignore (optional)
             providers_order (List[str]): OpenRouter providers to try in order (optional)
             provider_sort (str): Sort providers by price/throughput/latency (optional)
             session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
+            post_tool_result_callback (callable): Callback function(tool_name, args_dict, result_text)
+                invoked after each tool finishes. Can request an interrupt to stop after a
+                workflow boundary such as the first file edit.
             clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
                 Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
@@ -546,6 +612,10 @@ class AIAgent:
         self.pass_session_id = pass_session_id
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
+        self.log_preview_lines = _positive_int(log_preview_lines, 6)
+        self.log_preview_chars = _positive_int(log_preview_chars, 900)
+        self.tool_output_head_lines = _positive_int(tool_output_head_lines, 20)
+        self.tool_output_tail_lines = _positive_int(tool_output_tail_lines, 8)
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
         self.base_url = base_url or OPENROUTER_BASE_URL
@@ -565,6 +635,7 @@ class AIAgent:
             self.api_mode = "chat_completions"
 
         self.tool_progress_callback = tool_progress_callback
+        self.post_tool_result_callback = post_tool_result_callback
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
         self.clarify_callback = clarify_callback
@@ -3189,6 +3260,7 @@ class AIAgent:
             extra_body["provider"] = provider_preferences
         _is_nous = "nousresearch" in self.base_url.lower()
 
+        reasoning_enabled, reasoning_effort = self._reasoning_effort_state()
         if self._supports_reasoning_extra_body():
             if self.reasoning_config is not None:
                 rc = dict(self.reasoning_config)
@@ -3203,6 +3275,17 @@ class AIAgent:
                     "enabled": True,
                     "effort": "medium"
                 }
+        elif self._is_rcp_route():
+            # EPFL AIaaS forwards extra_body to LiteLLM/vLLM. Qwen hybrid
+            # reasoning models use chat_template kwargs while OpenAI-style
+            # reasoning models honor reasoning_effort.
+            template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+            template_kwargs["enable_thinking"] = reasoning_enabled
+            extra_body["chat_template_kwargs"] = template_kwargs
+            if reasoning_enabled:
+                extra_body["reasoning_effort"] = self._map_rcp_reasoning_effort(
+                    reasoning_effort
+                )
 
         # Nous Portal product attribution
         if _is_nous:
@@ -3238,6 +3321,34 @@ class AIAgent:
             "qwen/qwen3",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
+
+    def _is_rcp_route(self) -> bool:
+        """Return True for EPFL AIaaS / RCP OpenAI-compatible endpoints."""
+        base_url = (self.base_url or "").lower()
+        return "inference.rcp.epfl.ch" in base_url or "inference-rcp.epfl.ch" in base_url
+
+    def _reasoning_effort_state(self) -> tuple[bool, str]:
+        """Resolve whether reasoning is enabled and the requested effort."""
+        reasoning_enabled = True
+        reasoning_effort = "medium"
+        if self.reasoning_config and isinstance(self.reasoning_config, dict):
+            if self.reasoning_config.get("enabled") is False:
+                reasoning_enabled = False
+            elif self.reasoning_config.get("effort"):
+                reasoning_effort = str(self.reasoning_config["effort"]).lower()
+        return reasoning_enabled, reasoning_effort
+
+    @staticmethod
+    def _map_rcp_reasoning_effort(effort: str) -> str:
+        """Map EPFLemma effort names onto AIaaS/vLLM-compatible values."""
+        normalized = str(effort or "medium").lower()
+        if normalized in {"low", "medium", "high"}:
+            return normalized
+        if normalized == "minimal":
+            return "low"
+        if normalized == "xhigh":
+            return "high"
+        return "medium"
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Build a normalized assistant message dict from an API response message.
@@ -3343,6 +3454,32 @@ class AIAgent:
             msg["tool_calls"] = tool_calls
 
         return msg
+
+    @staticmethod
+    def _reasoning_preview_lines(
+        reasoning_text: str | None,
+        *,
+        max_lines: int = 6,
+        max_chars: int = 900,
+    ) -> list[str]:
+        """Build a compact reasoning preview suitable for managed runner logs."""
+        if not reasoning_text:
+            return []
+        lines = [line.strip() for line in str(reasoning_text).splitlines() if line.strip()]
+        if not lines:
+            stripped = str(reasoning_text).strip()
+            lines = [stripped] if stripped else []
+        if not lines:
+            return []
+
+        preview_lines = lines[:max_lines]
+        preview_text = "\n".join(preview_lines)
+        if len(preview_text) > max_chars:
+            preview_text = preview_text[: max_chars - 3] + "..."
+            return preview_text.splitlines() or [preview_text]
+        if len(lines) > max_lines:
+            preview_lines[-1] = preview_lines[-1] + " ..."
+        return preview_lines
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
@@ -4124,7 +4261,17 @@ class AIAgent:
 
             if not self.quiet_mode:
                 print(f"{self.log_prefix}│  done in {tool_duration:.2f}s")
-                for line in _format_tool_result_for_log(function_name, function_result):
+                for line in _format_tool_result_for_log_with_limits(
+                    function_name,
+                    function_result,
+                    multiline_head=self.tool_output_head_lines,
+                    multiline_tail=self.tool_output_tail_lines,
+                    wrapped_head=max(self.tool_output_head_lines // 2, 1),
+                    wrapped_tail=max(self.tool_output_tail_lines // 2, 0),
+                    plain_head=max(self.tool_output_head_lines - 2, 1),
+                    plain_tail=max(self.tool_output_tail_lines - 2, 0),
+                    string_char_threshold=self.log_preview_chars,
+                ):
                     print(f"{self.log_prefix}│  {line}")
                 print(f"{self.log_prefix}└─")
             _emit_workflow_event(
@@ -4141,6 +4288,12 @@ class AIAgent:
                     is_error=_detect_tool_failure(function_name, function_result)[0],
                 ),
             )
+
+            if self.post_tool_result_callback:
+                try:
+                    self.post_tool_result_callback(function_name, function_args, function_result)
+                except Exception as cb_err:
+                    logger.debug("post_tool_result_callback error: %s", cb_err)
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i
@@ -5392,24 +5545,49 @@ class AIAgent:
                     else:
                         assistant_message.content = str(raw)
 
+                reasoning_preview_lines = self._reasoning_preview_lines(
+                    self._extract_reasoning(assistant_message),
+                    max_lines=max(
+                        self.log_preview_lines if self.verbose_logging else min(self.log_preview_lines, 3),
+                        1,
+                    ),
+                    max_chars=self.log_preview_chars,
+                )
+
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     if self.verbose_logging:
                         self._vprint(f"\n{self.log_prefix}┌─ Agent")
                         for line in (assistant_message.content or "").splitlines() or [""]:
                             self._vprint(f"{self.log_prefix}│  {line}")
+                        if reasoning_preview_lines:
+                            self._vprint(f"{self.log_prefix}│  ")
+                            self._vprint(f"{self.log_prefix}│  Reasoning preview:")
+                            for line in reasoning_preview_lines:
+                                self._vprint(f"{self.log_prefix}│    {line}")
                         self._vprint(f"{self.log_prefix}└─")
                     else:
                         preview_lines = [line.strip() for line in (assistant_message.content or "").splitlines() if line.strip()]
                         if not preview_lines:
                             preview_lines = [""]
-                        preview_text = "\n".join(preview_lines[:3])
-                        if len(preview_text) > 320:
-                            preview_text = preview_text[:317] + "..."
+                        preview_text = "\n".join(preview_lines[: self.log_preview_lines])
+                        if len(preview_text) > self.log_preview_chars:
+                            preview_text = preview_text[: self.log_preview_chars - 3] + "..."
                         self._vprint(f"\n{self.log_prefix}┌─ Agent")
                         for line in preview_text.splitlines():
                             self._vprint(f"{self.log_prefix}│  {line}")
+                        if reasoning_preview_lines:
+                            self._vprint(f"{self.log_prefix}│  ")
+                            self._vprint(f"{self.log_prefix}│  Reasoning preview:")
+                            for line in reasoning_preview_lines:
+                                self._vprint(f"{self.log_prefix}│    {line}")
                         self._vprint(f"{self.log_prefix}└─")
+                elif reasoning_preview_lines and not self.quiet_mode:
+                    self._vprint(f"\n{self.log_prefix}┌─ Agent")
+                    self._vprint(f"{self.log_prefix}│  Reasoning preview:")
+                    for line in reasoning_preview_lines:
+                        self._vprint(f"{self.log_prefix}│    {line}")
+                    self._vprint(f"{self.log_prefix}└─")
 
                 # Notify progress callback of model's thinking (used by subagent
                 # delegation to relay the child's reasoning to the parent display).

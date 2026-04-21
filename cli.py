@@ -216,6 +216,13 @@ def load_cli_config() -> Dict[str, Any]:
             "threshold": 0.50,    # Compress at 50% of model's context limit
             "summary_model": "google/gemini-3-flash-preview",  # Fast/cheap model for summaries
         },
+        "logging": {
+            "preview_lines": 6,
+            "preview_chars": 900,
+            "tool_output_head_lines": 20,
+            "tool_output_tail_lines": 8,
+            "activity_preview_chars": 280,
+        },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,
@@ -1836,6 +1843,7 @@ class GaussCLI:
                 pass
         
         try:
+            logging_cfg = CLI_CONFIG.get("logging", {})
             self.agent = AIAgent(
                 model=self.model,
                 api_key=self.api_key,
@@ -1866,6 +1874,10 @@ class GaussCLI:
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
                 tool_progress_callback=self._on_tool_progress,
+                log_preview_lines=logging_cfg.get("preview_lines", 6),
+                log_preview_chars=logging_cfg.get("preview_chars", 900),
+                tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 20),
+                tool_output_tail_lines=logging_cfg.get("tool_output_tail_lines", 8),
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:
@@ -4597,6 +4609,7 @@ class GaussCLI:
 
         def run_background():
             try:
+                logging_cfg = CLI_CONFIG.get("logging", {})
                 bg_agent = AIAgent(
                     model=self.model,
                     api_key=self.api_key,
@@ -4618,6 +4631,10 @@ class GaussCLI:
                     provider_require_parameters=self._provider_require_params,
                     provider_data_collection=self._provider_data_collection,
                     fallback_model=self._fallback_model,
+                    log_preview_lines=logging_cfg.get("preview_lines", 6),
+                    log_preview_chars=logging_cfg.get("preview_chars", 900),
+                    tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 20),
+                    tool_output_tail_lines=logging_cfg.get("tool_output_tail_lines", 8),
                 )
 
                 result = bg_agent.run_conversation(
