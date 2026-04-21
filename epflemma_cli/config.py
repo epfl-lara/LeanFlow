@@ -38,6 +38,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "toolsets": ["epflemma-cli"],
     "agent": {
         "max_turns": 90,
+        "reasoning_effort": "auto",
     },
     "logging": {
         "preview_lines": 6,

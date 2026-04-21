@@ -763,6 +763,15 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
         assert kwargs["extra_body"]["reasoning_effort"] == "medium"
 
+    def test_auto_reasoning_defaults_to_medium_for_rcp_route(self, agent):
+        agent.base_url = "https://inference.rcp.epfl.ch/v1"
+        agent.model = "Qwen/Qwen3-30B-A3B"
+        agent.reasoning_config = {"mode": "auto"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+        assert kwargs["extra_body"]["reasoning_effort"] == "medium"
+
     def test_reasoning_disabled_for_rcp_route(self, agent):
         agent.base_url = "https://inference.rcp.epfl.ch/v1"
         agent.model = "Qwen/Qwen3-30B-A3B"

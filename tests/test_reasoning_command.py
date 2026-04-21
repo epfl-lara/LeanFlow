@@ -28,6 +28,10 @@ class TestParseReasoningConfig(unittest.TestCase):
         result = self._parse("none")
         self.assertEqual(result, {"enabled": False})
 
+    def test_auto_mode(self):
+        result = self._parse("auto")
+        self.assertEqual(result, {"mode": "auto"})
+
     def test_valid_levels(self):
         for level in ("low", "medium", "high", "xhigh", "minimal"):
             result = self._parse(level)
@@ -114,6 +118,13 @@ class TestHandleReasoningCommand(unittest.TestCase):
         stub.reasoning_config = parsed
         self.assertEqual(stub.reasoning_config, {"enabled": False})
 
+    def test_effort_auto_sets_dynamic_mode(self):
+        from cli import _parse_reasoning_config
+        stub = self._make_cli()
+        parsed = _parse_reasoning_config("auto")
+        stub.reasoning_config = parsed
+        self.assertEqual(stub.reasoning_config, {"mode": "auto"})
+
     def test_invalid_argument_rejected(self):
         """Invalid arguments should be rejected (parsed returns None)."""
         from cli import _parse_reasoning_config
@@ -153,6 +164,32 @@ class TestHandleReasoningCommand(unittest.TestCase):
         rc = stub.reasoning_config
         level = rc.get("effort", "medium")
         self.assertEqual(level, "xhigh")
+
+    def test_status_with_auto_reasoning(self):
+        stub = self._make_cli(reasoning_config={"mode": "auto"}, show_reasoning=False)
+        rc = stub.reasoning_config
+        if rc is None:
+            level = "medium (default)"
+        elif rc.get("mode") == "auto":
+            level = "auto (dynamic)"
+        elif rc.get("enabled") is False:
+            level = "none (disabled)"
+        else:
+            level = rc.get("effort", "medium")
+        self.assertEqual(level, "auto (dynamic)")
+
+
+class TestReasoningDefaults(unittest.TestCase):
+    def test_load_cli_config_defaults_to_auto_reasoning(self):
+        from cli import load_cli_config
+
+        with (
+            patch("pathlib.Path.exists", return_value=False),
+            patch.dict("os.environ", {"LLM_MODEL": ""}, clear=False),
+        ):
+            config = load_cli_config()
+
+        self.assertEqual(config.get("agent", {}).get("reasoning_effort"), "auto")
 
 
 # ---------------------------------------------------------------------------

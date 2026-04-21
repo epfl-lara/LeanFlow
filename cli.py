@@ -146,12 +146,14 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
 def _parse_reasoning_config(effort: str) -> dict | None:
     """Parse a reasoning effort level into an OpenRouter reasoning config dict.
     
-    Valid levels: "xhigh", "high", "medium", "low", "minimal", "none".
+    Valid levels: "auto", "xhigh", "high", "medium", "low", "minimal", "none".
     Returns None to use the default (medium), or a config dict to override.
     """
     if not effort or not effort.strip():
         return None
     effort = effort.strip().lower()
+    if effort == "auto":
+        return {"mode": "auto"}
     if effort == "none":
         return {"enabled": False}
     valid = ("xhigh", "high", "medium", "low", "minimal")
@@ -228,7 +230,7 @@ def load_cli_config() -> Dict[str, Any]:
             "verbose": False,
             "system_prompt": "",
             "prefill_messages_file": "",
-            "reasoning_effort": "",
+            "reasoning_effort": "auto",
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",
                 "concise": "You are a concise assistant. Keep responses brief and to the point.",
@@ -4969,7 +4971,7 @@ class GaussCLI:
 
         Usage:
             /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, low, medium, high, xhigh)
+            /reasoning <level>      Set reasoning effort (auto, none, low, minimal, medium, high, xhigh)
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
         """
@@ -4980,6 +4982,8 @@ class GaussCLI:
             rc = self.reasoning_config
             if rc is None:
                 level = "medium (default)"
+            elif rc.get("mode") == "auto":
+                level = "auto (dynamic)"
             elif rc.get("enabled") is False:
                 level = "none (disabled)"
             else:
@@ -4987,7 +4991,7 @@ class GaussCLI:
             display_state = "on ✓" if self.show_reasoning else "off"
             _cprint(f"  {_GOLD}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_GOLD}Reasoning display: {display_state}{_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|low|medium|high|xhigh|show|hide>{_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <auto|none|low|minimal|medium|high|xhigh|show|hide>{_RST}")
             return
 
         arg = parts[1].strip().lower()
@@ -5013,7 +5017,7 @@ class GaussCLI:
         parsed = _parse_reasoning_config(arg)
         if parsed is None:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Valid levels: none, low, minimal, medium, high, xhigh{_RST}")
+            _cprint(f"  {_DIM}Valid levels: auto, none, low, minimal, medium, high, xhigh{_RST}")
             _cprint(f"  {_DIM}Display:      show, hide{_RST}")
             return
 

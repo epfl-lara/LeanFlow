@@ -391,10 +391,12 @@ agent:
   # Enable verbose logging
   verbose: false
   
-  # Reasoning effort level (OpenRouter and Nous Portal)
-  # Controls how much "thinking" the model does before responding.
-  # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
-  reasoning_effort: "medium"
+  # Reasoning effort level.
+  # "auto" is the default and is theorem-aware in managed queue workflows:
+  # it starts at medium, escalates to high after repeated failed attempts on
+  # the same theorem, and resets on theorem transitions.
+  # Other options: "xhigh", "high", "medium", "low", "minimal", "none" (disable)
+  reasoning_effort: "auto"
 
 # =============================================================================
 # Logging
