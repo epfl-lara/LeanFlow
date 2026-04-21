@@ -191,6 +191,27 @@ def test_build_skill_prompt_uses_project_override_source(monkeypatch, tmp_path):
     assert "Project Proof Loop" in prompt
 
 
+def test_builtin_search_skills_are_loadable(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+
+    mathlib_prompt = build_skill_prompt("lean-mathlib-search", tmp_path)
+    project_prompt = build_skill_prompt("lean-project-search", tmp_path)
+
+    assert "Mathlib" in mathlib_prompt
+    assert "local Lean project" in project_prompt
+
+
+def test_theorem_queue_worker_skill_is_loadable(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+
+    prompt = build_skill_prompt("lean-theorem-queue-worker", tmp_path)
+
+    assert "external workflow manager" in prompt
+    assert "Focus only on the assigned declaration" in prompt
+
+
 def test_all_curated_builtin_skills_are_discoverable(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)

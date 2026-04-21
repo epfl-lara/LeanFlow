@@ -294,7 +294,7 @@ def test_background_runner_exits_immediately_after_verified_completion(monkeypat
     monkeypatch.setattr(runner, "_managed_system_prompt", lambda: "system")
     monkeypatch.setattr(runner, "_journal_status", lambda: {})
     monkeypatch.setattr(runner, "_print_header", lambda: None)
-    monkeypatch.setattr(runner, "_startup_user_message", lambda resumed: "start")
+    monkeypatch.setattr(runner, "_startup_user_message", lambda resumed, **kwargs: "start")
     monkeypatch.setattr(runner, "_attach_live_proof_state", lambda text, live_state: text)
     monkeypatch.setattr(runner, "_run_managed_conversation", lambda *args, **kwargs: {"messages": [{"role": "assistant", "content": "done"}], "interrupted": False})
     monkeypatch.setattr(runner, "_record_turn_activity", lambda *args, **kwargs: None)
@@ -481,6 +481,239 @@ def test_count_project_sorries_ignores_dependencies_and_build_dirs(tmp_path):
     assert files == ["Demo/Main.lean (1)"]
 
 
+def test_declaration_work_queue_lists_pending_theorems_in_active_file(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem first : True := by",
+                "  sorry",
+                "",
+                "lemma second : True := by",
+                "  trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    queue = runner._declaration_work_queue(
+        str(active),
+        "Main.lean:1:3: warning: declaration uses sorry",
+        scope="file",
+    )
+
+    assert len(queue) == 1
+    assert queue[0]["label"] == "first"
+    assert "contains sorry" in queue[0]["reasons"]
+
+
+def test_declaration_work_queue_scans_project_when_scope_is_project(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    first = module_dir / "A.lean"
+    second = module_dir / "B.lean"
+    first.write_text("theorem a : True := by\n  sorry\n", encoding="utf-8")
+    second.write_text("theorem b : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+
+    queue = runner._declaration_work_queue("", "", project_root=str(project), scope="project")
+
+    assert len(queue) == 1
+    assert queue[0]["label"] == "Demo/A.lean"
+    assert queue[0]["reasons"] == ["1 sorry placeholder(s)"]
+
+
+def test_build_live_proof_state_assigns_current_queue_head_as_target(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem first : True := by",
+                "  sorry",
+                "",
+                "theorem second : True := by",
+                "  trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
+    monkeypatch.setattr(runner, "_query_live_diagnostics", lambda path: "lean-lsp diagnostics tool unavailable.")
+    monkeypatch.setattr(runner, "_query_live_goals", lambda path, symbol: "lean-lsp goals tool unavailable.")
+    monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
+
+    live_state = runner._build_live_proof_state([])
+
+    assert live_state["target_symbol"] == "first"
+    assert live_state["current_queue_item"]["label"] == "first"
+    assert "Current file prefix ending at `first`" in live_state["current_queue_item_prefix"]
+    assert "theorem first" in live_state["current_queue_item_prefix"]
+    assert "theorem first" in live_state["current_queue_item_slice"]
+
+
+def test_declaration_work_queue_prefers_named_sorry_over_anonymous_diagnostic_noise(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "example : True := by",
+                "  trivial",
+                "",
+                "theorem first : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+
+    queue = runner._declaration_work_queue(
+        str(active),
+        "lean-lsp diagnostics tool unavailable.",
+        project_root=str(project),
+        scope="file",
+    )
+
+    assert queue
+    assert queue[0]["label"] == "first"
+    assert queue[0]["reasons"] == ["contains sorry"]
+
+
+def test_declaration_work_queue_keeps_named_theorem_with_build_error_without_sorry(tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem first : True := by",
+                "  trivial",
+                "",
+                "theorem second : True := by",
+                "  exact False.elim ?h",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    queue = runner._declaration_work_queue(
+        str(active),
+        "Demo/Main.lean:4:10: error: unsolved goals in theorem second",
+        project_root=str(project),
+        scope="file",
+    )
+
+    assert queue
+    assert queue[0]["label"] == "second"
+    assert "diagnostic near line 4" in queue[0]["reasons"] or "referenced in diagnostics" in queue[0]["reasons"]
+
+
+def test_declaration_work_queue_does_not_match_very_short_names_from_text_alone(tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem h : True := by",
+                "  trivial",
+                "",
+                "theorem long_name : True := by",
+                "  trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    queue = runner._declaration_work_queue(
+        str(active),
+        "type mismatch while rewriting with h in a later proof",
+        project_root=str(project),
+        scope="file",
+    )
+
+    assert queue == []
+
+
+def test_queue_assignment_block_mentions_only_assigned_theorem():
+    text = runner._queue_assignment_block(
+        {
+            "target_symbol": "absLipschitz1",
+            "active_file_label": "GaussTest/RealTheorems-homework.lean",
+            "current_blocker": "type mismatch in `simpa using h`",
+            "current_queue_item": {"label": "absLipschitz1", "reasons": ["contains sorry"]},
+            "current_queue_item_prefix": "Current file prefix ending at `absLipschitz1`:\n...\ntheorem absLipschitz1 : isLipschitz abs 1 := by\n  sorry",
+            "current_queue_item_slice": "Assigned declaration slice (97-99):\ntheorem absLipschitz1 : isLipschitz abs 1 := by\n  sorry",
+        },
+        {
+            "failed_attempts": [
+                {
+                    "attempt": 1,
+                    "cycle": 1,
+                    "target_symbol": "absLipschitz1",
+                    "active_file": "GaussTest/RealTheorems-homework.lean",
+                    "proof_shape": "direct `simpa [isLipschitz] using abs_abs_sub_abs_le`",
+                    "reason": "type mismatch",
+                }
+            ]
+        },
+    )
+
+    assert "declaration: absLipschitz1" in text
+    assert "current status: blocked" in text
+    assert "current blocker: type mismatch in `simpa using h`" in text
+    assert "local helper lemmas or intermediate facts are allowed" in text
+    assert "do not start solving unrelated later queue items" in text
+    assert "Current file prefix ending at `absLipschitz1`" in text
+    assert "PREVIOUS ATTEMPTS:" in text
+    assert "attempt: 1" in text
+    assert "proof shape: direct `simpa [isLipschitz] using abs_abs_sub_abs_le`" in text
+    assert "why it failed: type mismatch" in text
+    assert "Task:" in text
+    assert "Repair `absLipschitz1` from its current state." in text
+
+
+def test_effective_skill_name_uses_queue_worker_for_file_scoped_queue_turn(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
+
+    selected = runner._effective_skill_name(
+        {
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+            "declaration_queue_total": 1,
+        }
+    )
+
+    assert selected == "lean-theorem-queue-worker"
+
+
+def test_effective_skill_name_returns_proof_loop_for_final_file_sweep(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
+
+    selected = runner._effective_skill_name(
+        {
+            "current_queue_item": {},
+            "declaration_queue_total": 0,
+        }
+    )
+
+    assert selected == "lean-proof-loop"
+
+
 def test_live_state_is_not_verified_when_project_still_has_sorries():
     live_state = {
         "active_file": "/tmp/project/Main.lean",
@@ -535,10 +768,60 @@ def test_promote_live_state_uses_focused_build_before_full_project_build(monkeyp
         }
     )
 
-    assert calls == [(str(active), True)]
+    assert calls == [(str(active), False)]
     assert promoted["build_status"] == "lake build Main reported errors: unresolved import"
     assert promoted["verification_ok"] is False
     assert runner._live_state_is_verified(promoted) is False
+
+
+def test_promote_live_state_does_not_mark_non_module_file_verified_from_project_build(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "RealTheorems-homework.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+
+    calls = []
+
+    def _fake_build(active_file="", *, full_project=False):
+        calls.append((active_file, full_project))
+        return False, "lake env lean Demo/RealTheorems-homework.lean reported errors: type mismatch"
+
+    monkeypatch.setattr(runner, "_run_explicit_verification_build", _fake_build)
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        }
+    )
+
+    assert calls == [(str(active), False)]
+    assert promoted["verification_ok"] is False
+    assert "reported errors" in promoted["build_status"]
+
+
+def test_normalize_blocker_summary_clears_resolved_text():
+    assert runner._normalize_blocker_summary("None. All blockers resolved.") == ""
+    assert runner._normalize_blocker_summary("type mismatch in `simpa`") == "type mismatch in `simpa`"
+
+
+def test_extract_blocker_summary_does_not_fall_back_to_unrelated_trailing_line():
+    text = "\n".join(
+        [
+            "## Blockers",
+            "No blocker declared at this checkpoint.",
+            "## Next steps",
+            "- Exploring uniform continuity results building on these foundations",
+        ]
+    )
+
+    assert runner._extract_blocker_summary(text) == ""
 
 
 def test_recommended_verification_command_prefers_module_build(tmp_path, monkeypatch):
@@ -756,3 +1039,161 @@ def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeyp
     assert "Verification requires all of the following" in agent.calls[0]["user_message"]
     assert history[-1]["content"] == "continuation 1"
     assert runner._live_state_is_verified(live_state) is True
+
+
+def test_autonomous_continuation_prompt_includes_recent_failed_attempts():
+    prompt = runner._autonomous_continuation_prompt(
+        {
+            "target_symbol": "demo",
+            "active_file_label": "Demo/Main.lean",
+            "current_blocker": "warning: declaration uses sorry",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        },
+        3,
+        {
+            "failed_attempts": [
+                {
+                    "attempt": 1,
+                    "cycle": 1,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "intro x y; simp",
+                    "reason": "warning: declaration uses sorry",
+                }
+            ]
+        },
+    )
+
+    assert "PREVIOUS ATTEMPTS:" in prompt
+    assert "attempt: 1" in prompt
+    assert "proof shape: intro x y; simp" in prompt
+    assert "why it failed: warning: declaration uses sorry" in prompt
+
+
+def test_autonomous_continuation_prompt_switches_to_final_file_sweep_when_queue_empty(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
+
+    prompt = runner._autonomous_continuation_prompt(
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": "warning: malformed declaration body",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "current_blocker": "warning: malformed declaration body",
+            "verification_ok": False,
+        },
+        2,
+        {
+            "failed_attempts": [
+                {
+                    "attempt": 1,
+                    "cycle": 1,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "intro x; simp",
+                    "reason": "type mismatch",
+                }
+            ]
+        },
+    )
+
+    assert "Queue status:" in prompt
+    assert "declaration queue is empty" in prompt
+    assert "inspect the full file `Demo/Main.lean` now" in prompt
+    assert "you are no longer restricted to a single assigned theorem for this pass" in prompt
+    assert "PREVIOUS ATTEMPTS:" not in prompt
+
+
+def test_remember_failed_attempt_uses_theorem_delta_for_proof_shape():
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": "Demo/Main.lean",
+            "slice": "Assigned declaration slice (10-12):\ntheorem demo : True := by\n  sorry",
+        }
+    }
+
+    runner._remember_failed_attempt(
+        autonomy_state,
+        {
+            "target_symbol": "demo",
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item_slice": (
+                "Assigned declaration slice (10-13):\n"
+                "theorem demo : True := by\n"
+                "  intro x\n"
+                "  simp\n"
+            ),
+            "blocker_summary": "type mismatch",
+        },
+        cycle_number=2,
+    )
+
+    attempt = autonomy_state["failed_attempts"][0]
+    assert attempt["attempt"] == 1
+    assert "+ intro x" in attempt["proof_shape"] or "- sorry" in attempt["proof_shape"]
+    assert attempt["reason"] == "type mismatch"
+
+
+def test_recent_failed_attempts_summary_does_not_leak_other_theorem_attempts():
+    summary = runner._recent_failed_attempts_summary(
+        {
+            "failed_attempts": [
+                {
+                    "attempt": 1,
+                    "cycle": 1,
+                    "target_symbol": "first",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "intro x",
+                    "reason": "type mismatch",
+                }
+            ]
+        },
+        {
+            "target_symbol": "second",
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "second", "reasons": ["contains sorry"]},
+        },
+    )
+
+    assert summary == ""
+
+
+def test_same_queue_assignment_still_blocked_requires_same_theorem_and_real_blocker():
+    assert runner._same_queue_assignment_still_blocked(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": "Demo/Main.lean",
+                "slice": "theorem demo : True := by\n  sorry",
+            }
+        },
+        {
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+            "diagnostics": "error: unsolved goals",
+            "goals": "x : Nat\n⊢ False",
+            "build_status": "unknown",
+        },
+    ) is True
+
+    assert runner._same_queue_assignment_still_blocked(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": "Demo/Main.lean",
+                "slice": "theorem demo : True := by\n  sorry",
+            }
+        },
+        {
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "next", "reasons": ["contains sorry"]},
+            "diagnostics": "warning: declaration uses sorry",
+            "goals": "no goals",
+            "build_status": "unknown",
+        },
+    ) is False

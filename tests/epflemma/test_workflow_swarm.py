@@ -57,6 +57,36 @@ def test_resolve_workflow_request_uses_swarm_toolset_only_when_user_requests_age
     assert swarm.child_env["EPFLEMMA_NATIVE_USER_APPROVED_SWARM"] == "1"
 
 
+def test_resolve_workflow_request_forces_single_agent_for_file_scoped_prove(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    (module_dir / "Main.lean").write_text("theorem t : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_epflemma_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": project})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "local",
+            "api_mode": "responses",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "sk-test",
+            "model": "google/gemma-4-31B-it",
+        },
+    )
+
+    plan = resolve_workflow_request("/autoprove Demo/Main.lean --agents 3", active_cwd=project)
+
+    assert plan.workflow.parallel_agents == 1
+    assert plan.toolset_name == "epflemma-native"
+    assert plan.active_skill == "lean-proof-loop"
+    assert plan.child_env["EPFLEMMA_NATIVE_USER_APPROVED_SWARM"] == "0"
+
+
 # --- workflow kind mapping ---
 
 @pytest.mark.parametrize(
@@ -141,6 +171,16 @@ def test_rewrite_forgiving_workflow_command_passthrough_for_unknown():
 
 def test_parse_workflow_command_agents_clamped_to_minimum_1():
     spec = parse_workflow_command("/prove Main.lean --agents 0")
+    assert spec.parallel_agents == 1
+
+
+def test_parse_workflow_command_no_parallel_forces_single_agent():
+    spec = parse_workflow_command("/prove Main.lean --agents 4 --no-parallel")
+    assert spec.parallel_agents == 1
+
+
+def test_parse_workflow_command_legacy_no_parallel_alias_forces_single_agent():
+    spec = parse_workflow_command("/prove Main.lean --agents 4 -no-parallel")
     assert spec.parallel_agents == 1
 
 
