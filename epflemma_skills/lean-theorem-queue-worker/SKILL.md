@@ -26,7 +26,9 @@ The manager should provide all of the following in the prompt:
    - explain when a new attempt differs materially from earlier failures
 4. You may introduce local helper lemmas or intermediate proof steps when needed, but only if they directly unblock the assigned declaration.
 5. After each meaningful edit, re-check the assigned declaration with Lean diagnostics/goals before making another large change.
-6. If the declaration becomes clean, stop and hand control back to the manager rather than continuing to the next theorem on your own.
+6. For a file-scoped assigned theorem, the only acceptable final verification command is `lake env lean <file>` for that exact file.
+7. Do not treat `lake build`, `grep`, `head`, or truncated output as proof that the assigned theorem is clean.
+8. If the declaration becomes clean, stop and hand control back to the manager rather than continuing to the next theorem on your own.
 
 ## Search Strategy
 
@@ -42,6 +44,7 @@ The assigned declaration is successful only when:
 - diagnostics for that declaration are clean
 - there are no remaining goals for that declaration
 - the attempted fix does not introduce a new local blocker around it
+- and the manager-requested file check succeeds when one is provided
 
 ## Failure Condition
 

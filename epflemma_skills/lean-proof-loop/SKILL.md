@@ -26,7 +26,9 @@ Use this skill for guided proof work in Lean.
 
 - Prefer local proof repair over broad refactors.
 - Use `lean-lsp` diagnostics/goals for most iterations.
-- Avoid repeated `lake env lean <file>` loops. Prefer a focused `lake build <Module>` when the file is close to clean, and reserve full-project `lake build` for milestone verification.
+- For file-scoped queue-manager turns, use `lean-lsp` diagnostics/goals for iteration but only accept the assigned declaration after the canonical `lake env lean <file>` check succeeds for that file.
+- Outside those theorem-scoped file turns, avoid repeated `lake env lean <file>` loops. Prefer a focused `lake build <Module>` when the file is close to clean, and reserve full-project `lake build` for milestone verification.
+- Do not treat `lake build`, `grep`, `head`, or truncated output as sufficient proof that a theorem-sized repair is clean when the manager assigned a specific file/declaration.
 - Keep the active file pinned to the requested workflow target. Do not drift to unrelated declarations discovered later in chat history or helper files.
 - When a queue manager hands you a specific declaration, stop after that declaration is resolved or blocked and hand control back instead of continuing to the next theorem automatically.
 - Do not remove important theorem structure just to silence errors.
