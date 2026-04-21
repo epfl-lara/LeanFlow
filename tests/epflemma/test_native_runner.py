@@ -362,8 +362,10 @@ def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
     class DummyAgent:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+            self.reasoning_config = kwargs.get("reasoning_config")
 
     monkeypatch.setattr(runner, "AIAgent", DummyAgent)
+    monkeypatch.setattr(runner, "_agent_config", lambda: {"reasoning_effort": "auto"})
     monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_KEY", "sk-test")
@@ -377,6 +379,7 @@ def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
     assert captured["provider"] == "zai"
     assert captured["api_mode"] == "responses"
     assert captured["max_iterations"] == 77
+    assert captured["reasoning_config"] == {"mode": "auto"}
     assert callable(captured["tool_progress_callback"])
     assert callable(captured["step_callback"])
 
@@ -401,6 +404,112 @@ def test_build_agent_uses_swarm_toolset_when_user_enabled_swarm(monkeypatch):
 
     assert captured["enabled_toolsets"] == ["epflemma-native-swarm"]
     assert os.getenv("EPFLEMMA_NATIVE_RUNNER_OWNER", "") == "runner-session"
+
+
+def test_resolve_managed_reasoning_config_auto_defaults_to_medium_for_new_theorem():
+    resolved = runner._resolve_managed_reasoning_config(
+        {"mode": "auto"},
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "demo",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        },
+        {"failed_attempts": []},
+    )
+
+    assert resolved == {"enabled": True, "effort": "medium"}
+
+
+def test_resolve_managed_reasoning_config_auto_escalates_after_five_failed_attempts():
+    resolved = runner._resolve_managed_reasoning_config(
+        {"mode": "auto"},
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "demo",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        },
+        {
+            "failed_attempts": [
+                {
+                    "attempt": i + 1,
+                    "cycle": i + 1,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "intro x",
+                    "reason": "blocked",
+                }
+                for i in range(5)
+            ]
+        },
+    )
+
+    assert resolved == {"enabled": True, "effort": "high"}
+
+
+def test_resolve_managed_reasoning_config_auto_uses_high_for_final_file_sweep(monkeypatch):
+    monkeypatch.setattr(runner, "_queue_needs_final_file_sweep", lambda live_state: True)
+
+    resolved = runner._resolve_managed_reasoning_config(
+        {"mode": "auto"},
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "",
+            "current_queue_item": {},
+        },
+        {"failed_attempts": []},
+    )
+
+    assert resolved == {"enabled": True, "effort": "high"}
+
+
+def test_apply_managed_reasoning_policy_resets_to_medium_on_theorem_transition():
+    class _Agent:
+        def __init__(self):
+            self._managed_base_reasoning_config = {"mode": "auto"}
+            self.reasoning_config = None
+
+    agent = _Agent()
+    autonomy_state = {
+        "failed_attempts": [
+            {
+                "attempt": i + 1,
+                "cycle": i + 1,
+                "target_symbol": "first_demo",
+                "active_file": "Demo/Main.lean",
+                "proof_shape": "intro x",
+                "reason": "blocked",
+            }
+            for i in range(5)
+        ]
+    }
+
+    first = runner._apply_managed_reasoning_policy(
+        agent,
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "first_demo",
+            "current_queue_item": {"label": "first_demo", "reasons": ["contains sorry"]},
+        },
+        autonomy_state,
+    )
+    second = runner._apply_managed_reasoning_policy(
+        agent,
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "second_demo",
+            "current_queue_item": {"label": "second_demo", "reasons": ["contains sorry"]},
+        },
+        autonomy_state,
+    )
+
+    assert first == {"enabled": True, "effort": "high"}
+    assert second == {"enabled": True, "effort": "medium"}
+    assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
 
 
 def test_tool_progress_callback_persists_structured_events(monkeypatch, tmp_path):
@@ -1542,6 +1651,84 @@ def test_drive_autonomous_followups_keeps_history_when_theorem_does_not_change(m
 
     assert len(agent.calls) == 1
     assert agent.calls[0] == original_history
+
+
+def test_drive_autonomous_followups_applies_auto_reasoning_to_current_theorem(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
+
+    class _LoopAgent(_FakeAgent):
+        def __init__(self):
+            super().__init__()
+            self._managed_base_reasoning_config = {"mode": "auto"}
+            self.reasoning_config = None
+            self.calls = []
+
+        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+            self.calls.append(dict(self.reasoning_config or {}))
+            return {
+                "messages": list(conversation_history or [])
+                + [{"role": "assistant", "content": "same theorem continuation"}]
+            }
+
+    stable_live_state = {
+        "active_file": "/tmp/project/Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "target_symbol": "demo",
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "declaration_queue_summary": "- demo [Demo/Main.lean] — contains sorry",
+        "diagnostics": "warning: declaration uses sorry",
+        "goals": "no goals",
+        "build_status": "unknown",
+        "current_blocker": "warning: declaration uses sorry",
+        "message": "live-demo",
+        "sorry_count": 1,
+    }
+    verified_live_state = {
+        **stable_live_state,
+        "diagnostics": "no errors found",
+        "build_status": "lake env lean Demo/Main.lean exits 0",
+        "current_blocker": "",
+        "sorry_count": 0,
+        "verification_ok": True,
+    }
+    live_states = chain([stable_live_state, verified_live_state], repeat(verified_live_state))
+
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"}))
+    monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
+
+    agent = _LoopAgent()
+    runner._drive_autonomous_followups(
+        agent,
+        "system",
+        [{"role": "assistant", "content": "existing theorem-local transcript"}],
+        {"snapshot_text": "Compact workflow snapshot", "reason": "[none]"},
+        {},
+        {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": "Demo/Main.lean",
+                "slice": "theorem demo : True := by\n  sorry",
+            },
+            "failed_attempts": [
+                {
+                    "attempt": i + 1,
+                    "cycle": i + 1,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "intro x",
+                    "reason": "blocked",
+                }
+                for i in range(5)
+            ],
+        },
+    )
+
+    assert agent.calls == [{"enabled": True, "effort": "high"}]
 
 
 def test_drive_autonomous_followups_records_transition_events(monkeypatch, tmp_path):

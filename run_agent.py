@@ -3334,8 +3334,11 @@ class AIAgent:
         if self.reasoning_config and isinstance(self.reasoning_config, dict):
             if self.reasoning_config.get("enabled") is False:
                 reasoning_enabled = False
+            elif self.reasoning_config.get("mode") == "auto":
+                reasoning_effort = "medium"
             elif self.reasoning_config.get("effort"):
-                reasoning_effort = str(self.reasoning_config["effort"]).lower()
+                requested = str(self.reasoning_config["effort"]).lower()
+                reasoning_effort = "medium" if requested == "auto" else requested
         return reasoning_enabled, reasoning_effort
 
     @staticmethod

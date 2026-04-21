@@ -423,6 +423,28 @@ def _logging_config() -> Mapping[str, Any]:
     return logging_cfg if isinstance(logging_cfg, dict) else {}
 
 
+def _agent_config() -> Mapping[str, Any]:
+    try:
+        config = load_config()
+    except Exception:
+        return {}
+    agent_cfg = config.get("agent", {})
+    return agent_cfg if isinstance(agent_cfg, dict) else {}
+
+
+def _parse_managed_reasoning_config(effort: str) -> dict[str, Any] | None:
+    normalized = str(effort or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized == "auto":
+        return {"mode": "auto"}
+    if normalized == "none":
+        return {"enabled": False}
+    if normalized in {"low", "minimal", "medium", "high", "xhigh"}:
+        return {"enabled": True, "effort": normalized}
+    return None
+
+
 def _positive_int_config(name: str, default: int) -> int:
     try:
         value = int(_logging_config().get(name, default))
@@ -437,6 +459,65 @@ def _single_line(text: Any, limit: int | None = None) -> str:
     if len(collapsed) <= effective_limit:
         return collapsed
     return collapsed[: effective_limit - 3] + "..."
+
+
+def _failed_attempt_count_for_theorem(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> int:
+    if not target_symbol or not active_file:
+        return 0
+    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
+    return sum(
+        1
+        for attempt in attempts
+        if str(attempt.get("target_symbol", "") or "").strip() == str(target_symbol).strip()
+        and str(attempt.get("active_file", "") or "").strip() == str(active_file).strip()
+    )
+
+
+def _resolve_managed_reasoning_config(
+    base_reasoning_config: Mapping[str, Any] | None,
+    live_state: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    base = dict(base_reasoning_config or {})
+    if not base:
+        return None
+    if base.get("enabled") is False:
+        return {"enabled": False}
+    if base.get("mode") != "auto":
+        return base
+
+    current = dict(live_state or {})
+    autonomy = dict(autonomy_state or {})
+    if _queue_needs_final_file_sweep(current):
+        return {"enabled": True, "effort": "high"}
+
+    target_symbol, active_file = _queue_assignment_identity(current)
+    if target_symbol and active_file:
+        attempts = _failed_attempt_count_for_theorem(
+            autonomy,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+        effort = "high" if attempts >= 5 else "medium"
+        return {"enabled": True, "effort": effort}
+
+    return {"enabled": True, "effort": "high"}
+
+
+def _apply_managed_reasoning_policy(
+    agent: AIAgent,
+    live_state: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    base_reasoning = getattr(agent, "_managed_base_reasoning_config", None)
+    effective = _resolve_managed_reasoning_config(base_reasoning, live_state, autonomy_state)
+    agent.reasoning_config = effective
+    return effective
 
 
 class _WorkflowLogTee:
@@ -2459,6 +2540,7 @@ def _build_agent() -> AIAgent:
 
     toolset_name = _read_native_env("TOOLSET", "epflemma-native") or "epflemma-native"
     logging_cfg = _logging_config()
+    reasoning_cfg = _parse_managed_reasoning_config(str(_agent_config().get("reasoning_effort", "auto")))
     agent = AIAgent(
         model=model,
         base_url=base_url,
@@ -2474,11 +2556,14 @@ def _build_agent() -> AIAgent:
         checkpoint_max_snapshots=50,
         tool_progress_callback=_tool_progress_callback,
         step_callback=_step_callback,
+        reasoning_config=reasoning_cfg,
         log_preview_lines=logging_cfg.get("preview_lines", 6),
         log_preview_chars=logging_cfg.get("preview_chars", 900),
         tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 20),
         tool_output_tail_lines=logging_cfg.get("tool_output_tail_lines", 8),
     )
+    agent._managed_base_reasoning_config = dict(reasoning_cfg or {}) if reasoning_cfg else None
+
     def _post_tool_result_callback(function_name: str, _args: Mapping[str, Any], _result: str) -> None:
         if not _single_queue_item_turn_enabled():
             return
@@ -2830,6 +2915,7 @@ def _run_background_control_loop(
             _prepare_queue_assignment_state(autonomy_state, live_state)
             augmented_text = _attach_live_proof_state(text, live_state)
             _set_runtime_active_skill(_effective_skill_name(live_state))
+            _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
             result = _run_managed_conversation(
                 agent,
                 on_interrupt=lambda: _persist_live_status(
@@ -3257,6 +3343,7 @@ def _drive_autonomous_followups(
             live_state,
         )
         _set_runtime_active_skill(_effective_skill_name(live_state))
+        _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
         result = _run_managed_conversation(
             agent,
             on_interrupt=lambda: _persist_live_status(
@@ -3369,6 +3456,7 @@ def main() -> int:
         _record_queue_assignment(live_state, phase="startup")
         _prepare_queue_assignment_state(autonomy_state, live_state)
         _set_runtime_active_skill(_effective_skill_name(live_state))
+        _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
         result = _run_managed_conversation(
             agent,
             on_interrupt=lambda: _persist_live_status(
@@ -3615,6 +3703,7 @@ def main() -> int:
             _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
             augmented_text = _attach_live_proof_state(text, live_state)
             _set_runtime_active_skill(_effective_skill_name(live_state))
+            _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
             result = _run_managed_conversation(
                 agent,
                 on_interrupt=lambda: _persist_live_status(

@@ -373,6 +373,8 @@ The inspection split is intentional:
 
 - `/workflow activity` is the structured step feed: API calls, assistant plans, tool starts, resumes, checkpoints, and autonomous follow-ups
 - `/workflow log 120` is the raw saved runner transcript when you want the exact command/tool chronology that scrolled by during execution
+- workflow logs now include bounded assistant and reasoning previews; long multiline tool outputs keep both the head and tail instead of only the start
+- those preview limits are configurable through `logging.preview_lines`, `logging.preview_chars`, `logging.tool_output_head_lines`, `logging.tool_output_tail_lines`, and `logging.activity_preview_chars`
 
 ## Theorem-By-Theorem Proving Loop
 
@@ -386,6 +388,7 @@ What the runner does each cycle:
 - after the agent's first `patch` or `write_file`, yield control back to the runner so diagnostics can be refreshed before the next edit
 - if the same `(target, file)` is still blocked after a cycle, record the attempt's proof-shape delta and failure reason into the target-scoped history
 - when the queue empties but the file is not verified, switch to a whole-file sweep prompt for one pass
+- when the assigned theorem changes, rebuild the next prompt from a compact queue-aware handoff instead of reusing the full prior theorem transcript
 
 Flow:
 
@@ -448,7 +451,43 @@ Why this shape:
 - one declaration at a time keeps the agent from declaring victory after fixing only the first theorem
 - the yield-after-edit boundary forces fresh diagnostics between edits instead of speculative chained patches
 - target-scoped failed-attempt memory gives the next cycle real negative guidance without leaking across unrelated theorems
+- theorem transitions always clear raw search logs, long tool output, and previous-theorem reasoning from the live prompt; only a compact workflow snapshot and short previous-theorem outcome summary survive
 - the final file sweep handles residual warnings or malformed partial proofs that do not map to a single declaration
+
+## Reasoning / Thinking Policy
+
+EPFLemma now defaults to:
+
+```yaml
+agent:
+  reasoning_effort: "auto"
+```
+
+`auto` is Lean-specific rather than a generic chat setting:
+
+- managed theorem-queue turns start at `medium`
+- after `5` failed attempts on the same `(theorem, file)` pair, the runner raises that theorem's reasoning intensity to `high`
+- when the queue moves to a different theorem, the new theorem resets back to `medium`
+- when the declaration queue is empty but the file still needs a final cleanup pass, the whole-file sweep uses `high`
+- failed-attempt memory is scoped per theorem, so previous theorems do not drag old blocker history into unrelated prompts
+
+You can still override it explicitly:
+
+```bash
+/reasoning auto
+/reasoning none
+/reasoning low
+/reasoning minimal
+/reasoning medium
+/reasoning high
+/reasoning xhigh
+```
+
+On routes that only support `low|medium|high`, EPFLemma maps automatically:
+
+- `minimal -> low`
+- `xhigh -> high`
+- `none` disables model thinking entirely
 
 This mode is automatic for autonomous workflows with an `ACTIVE_FILE`. For project-wide autonomous runs the queue is per-file instead of per-declaration, and swarm mode (`--agents N`) is the path for parallel per-file work.
 
@@ -642,6 +681,13 @@ export OPENAI_API_KEY="..."
 epflemma provider --requested custom
 ```
 
+For RCP / vLLM-style endpoints, EPFLemma enables model thinking through provider-compatible request fields instead of only the OpenRouter-style `reasoning` payload:
+
+- `extra_body.chat_template_kwargs.enable_thinking`
+- `extra_body.reasoning_effort`
+
+That matches AIaaS/RCP-style models such as Qwen hybrid reasoning checkpoints and GLM routes that expose reasoning content on the OpenAI-compatible API.
+
 If GLM is down, the tested fallback model on that endpoint is:
 
 ```text
@@ -717,6 +763,9 @@ model:
   base_url: "https://inference.rcp.epfl.ch/v1"
   api_key: ""
 
+agent:
+  reasoning_effort: "auto"
+
 compression:
   enabled: true
   threshold: 0.5
@@ -743,6 +792,13 @@ local_models:
       host: 127.0.0.1
       port: 8080
       extra_args: []
+
+logging:
+  preview_lines: 6
+  preview_chars: 900
+  tool_output_head_lines: 20
+  tool_output_tail_lines: 8
+  activity_preview_chars: 280
 ```
 
 Useful commands:
@@ -752,6 +808,7 @@ epflemma config get model.default
 epflemma config set model.default '"zai-org/GLM-5"'
 epflemma config set model.provider '"zai"'
 epflemma config set model.base_url '"https://inference.rcp.epfl.ch/v1"'
+epflemma config set agent.reasoning_effort '"auto"'
 ```
 
 Compression defaults are tuned for long Lean sessions:
