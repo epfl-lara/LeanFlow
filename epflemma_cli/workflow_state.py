@@ -25,6 +25,8 @@ WORKFLOW_TASK_LABELS = {
     "refactor": "refactor",
     "golf": "golf",
 }
+WORKFLOW_RUN_SCOPE_TOP_LEVEL = "top-level"
+WORKFLOW_RUN_SCOPE_BACKGROUND = "background-session"
 
 
 def _activity_preview_limit(default: int = 280) -> int:
@@ -114,6 +116,10 @@ def workflow_run_activity_root() -> Path:
     return workflow_activity_root() / "runs"
 
 
+def workflow_run_metadata_root() -> Path:
+    return workflow_activity_root() / "run-metadata"
+
+
 def workflow_agent_activity_root() -> Path:
     return workflow_activity_root() / "agents"
 
@@ -135,9 +141,18 @@ def workflow_agent_inbox_path(agent_id: str) -> Path:
     return workflow_agent_inbox_root() / f"{safe_agent_id or 'unknown'}.jsonl"
 
 
+def workflow_outcomes_path() -> Path:
+    return workflow_state_root() / "outcomes.jsonl"
+
+
 def workflow_run_activity_path(run_id: str) -> Path:
     safe_run_id = "".join(ch for ch in str(run_id or "").strip() if ch.isalnum() or ch in {"-", "_"})
     return workflow_run_activity_root() / f"{safe_run_id or 'unknown'}.jsonl"
+
+
+def workflow_run_metadata_path(run_id: str) -> Path:
+    safe_run_id = "".join(ch for ch in str(run_id or "").strip() if ch.isalnum() or ch in {"-", "_"})
+    return workflow_run_metadata_root() / f"{safe_run_id or 'unknown'}.json"
 
 
 def workflow_agent_activity_path(agent_id: str, task_label: str = "") -> Path:
@@ -146,7 +161,59 @@ def workflow_agent_activity_path(agent_id: str, task_label: str = "") -> Path:
     return workflow_agent_activity_root() / f"{safe_task}-{safe_agent_id or 'unknown'}.jsonl"
 
 
-def workflow_latest_run_activity_path() -> Path | None:
+def _read_workflow_run_metadata(run_id: str) -> dict[str, Any]:
+    return read_json_file(workflow_run_metadata_path(run_id))
+
+
+def _workflow_run_scope_from_event(event_type: str, details: Mapping[str, Any] | None = None) -> str:
+    if event_type == "runner-start":
+        return WORKFLOW_RUN_SCOPE_TOP_LEVEL
+    normalized_details = details if isinstance(details, Mapping) else {}
+    explicit = str(normalized_details.get("run_scope", "") or os.getenv("EPFLEMMA_WORKFLOW_RUN_SCOPE", "") or "").strip()
+    if explicit:
+        return explicit
+    return WORKFLOW_RUN_SCOPE_BACKGROUND
+
+
+def _persist_workflow_run_metadata(
+    run_id: str,
+    *,
+    run_scope: str,
+    parent_run_id: str = "",
+    task_label: str = "",
+    workflow_kind: str = "",
+    workflow_command: str = "",
+    active_skill: str = "",
+    process_id: int = 0,
+) -> None:
+    if not run_id:
+        return
+    path = workflow_run_metadata_path(run_id)
+    existing = read_json_file(path)
+    payload = dict(existing) if isinstance(existing, dict) else {}
+    payload.setdefault("run_id", run_id)
+    payload["run_scope"] = str(run_scope or payload.get("run_scope", "") or WORKFLOW_RUN_SCOPE_BACKGROUND)
+    if parent_run_id:
+        payload["parent_run_id"] = parent_run_id
+    elif "parent_run_id" not in payload:
+        payload["parent_run_id"] = ""
+    if task_label:
+        payload["task_label"] = task_label
+    if workflow_kind:
+        payload["workflow_kind"] = workflow_kind
+    if workflow_command:
+        payload["workflow_command"] = workflow_command
+    if active_skill:
+        payload["active_skill"] = active_skill
+    if process_id > 0:
+        payload["process_id"] = process_id
+    payload["updated_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    if "created_at" not in payload:
+        payload["created_at"] = payload["updated_at"]
+    write_json_file(path, payload)
+
+
+def workflow_latest_run_activity_path(*, prefer_top_level: bool = True) -> Path | None:
     current_run_id = str(os.getenv("EPFLEMMA_WORKFLOW_RUN_ID", "") or "").strip()
     if current_run_id:
         path = workflow_run_activity_path(current_run_id)
@@ -156,6 +223,15 @@ def workflow_latest_run_activity_path() -> Path | None:
     if not root.is_dir():
         return None
     candidates = sorted(root.glob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not prefer_top_level:
+        return candidates[0] if candidates else None
+    top_level_candidates: list[Path] = []
+    for path in candidates:
+        metadata = _read_workflow_run_metadata(path.stem)
+        if str(metadata.get("run_scope", "") or "") == WORKFLOW_RUN_SCOPE_TOP_LEVEL:
+            top_level_candidates.append(path)
+    if top_level_candidates:
+        return top_level_candidates[0]
     return candidates[0] if candidates else None
 
 
@@ -233,6 +309,28 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
         str(normalized_details.get("active_skill", "") or ""),
         delegate_depth,
     )
+    run_scope = _workflow_run_scope_from_event(event_type, normalized_details)
+    normalized_details.setdefault("run_scope", run_scope)
+    parent_run_id = str(
+        normalized_details.get("parent_run_id", "")
+        or os.getenv("EPFLEMMA_WORKFLOW_PARENT_RUN_ID", "")
+        or ""
+    ).strip()
+    normalized_details.setdefault("parent_run_id", parent_run_id)
+    try:
+        process_id = int(normalized_details.get("process_id", 0) or 0)
+    except Exception:
+        process_id = 0
+    _persist_workflow_run_metadata(
+        run_id,
+        run_scope=run_scope,
+        parent_run_id=parent_run_id,
+        task_label=task_label,
+        workflow_kind=str(normalized_details.get("workflow_kind", "") or ""),
+        workflow_command=str(normalized_details.get("workflow_command", "") or ""),
+        active_skill=str(normalized_details.get("active_skill", "") or ""),
+        process_id=process_id,
+    )
     event = {
         "event_id": uuid.uuid4().hex[:12],
         "timestamp": timestamp,
@@ -240,6 +338,7 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
         "run_id": run_id,
         "agent_id": agent_id,
         "task_label": task_label,
+        "run_scope": run_scope,
         "message": message,
         "details": normalized_details,
     }
@@ -252,6 +351,22 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
         with path.open("a", encoding="utf-8") as handle:
             handle.write(serialized)
             handle.write("\n")
+
+
+def append_workflow_outcome(kind: str, payload: Mapping[str, Any]) -> None:
+    ensure_workflow_state_root()
+    entry = {
+        "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "kind": str(kind or "").strip() or "outcome",
+        "workflow_kind": str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_KIND", "")),
+        "workflow_command": str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")),
+        "payload": dict(payload or {}),
+    }
+    path = workflow_outcomes_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, sort_keys=True))
+        handle.write("\n")
 
 
 def _read_activity_file(path: Path | None) -> list[dict[str, Any]]:

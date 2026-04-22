@@ -101,6 +101,52 @@ def test_run_managed_conversation_interrupts_on_ctrl_c(monkeypatch, capsys):
     assert "Returned to prover-agent mode after interrupt." in output
 
 
+def test_run_managed_conversation_returns_interrupted_result_when_no_payload_arrives_after_interrupt(monkeypatch, capsys):
+    class _Agent:
+        def __init__(self):
+            self.interrupt_calls = 0
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+
+        def interrupt(self):
+            self.interrupt_calls += 1
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(self, **kwargs):
+            return None
+
+    agent = _Agent()
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+            self._alive = True
+            self._raised = False
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            if not self._raised:
+                self._raised = True
+                raise KeyboardInterrupt
+            self._alive = False
+
+    monkeypatch.setattr(runner.threading, "Thread", _FakeThread)
+
+    result = runner._run_managed_conversation(agent, user_message="hello")
+
+    assert agent.interrupt_calls == 1
+    assert result["interrupted"] is True
+    assert result["messages"] == [{"role": "assistant", "content": "partial"}]
+    output = capsys.readouterr().out
+    assert "Returned to prover-agent mode after interrupt." in output
+
+
 def test_run_managed_conversation_converts_worker_interrupted_error(monkeypatch, capsys):
     class _Agent:
         def __init__(self):
@@ -184,7 +230,7 @@ def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeyp
         ]
     )
 
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
@@ -232,7 +278,7 @@ def test_terminate_descendant_agents_records_shutdown_activity(monkeypatch):
         _delegate_depth = 0
 
     recorded: list[tuple[str, str, dict[str, object]]] = []
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
@@ -259,7 +305,7 @@ def test_terminate_other_agents_records_shutdown_activity(monkeypatch):
         _delegate_depth = 0
 
     recorded: list[tuple[str, str, dict[str, object]]] = []
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
@@ -317,27 +363,192 @@ def test_background_runner_exits_immediately_after_verified_completion(monkeypat
 
 
 def test_workflow_startup_guidance_mentions_autonomous_loop():
-    text = runner._workflow_startup_guidance("autoprove", "/lean4:autoprove Main.lean")
+    text = runner._workflow_startup_guidance("prove", "/prove Main.lean")
 
     assert "autonomous proving session" in text
-    assert "/lean4:autoprove Main.lean" in text
-    assert "continue iterating" in text
+    assert "/prove Main.lean" in text
+    assert "lean_capabilities" in text
+    assert "lean_worker_dispatch" in text
 
 
 def test_workflow_startup_guidance_mentions_user_approved_swarm(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_NATIVE_PARALLEL_AGENTS", "3")
     monkeypatch.setenv("EPFLEMMA_NATIVE_USER_APPROVED_SWARM", "1")
 
-    text = runner._workflow_startup_guidance("autoprove", "/lean4:autoprove Main.lean")
+    text = runner._workflow_startup_guidance("prove", "/prove Main.lean")
 
     assert "User-approved swarm mode" in text
     assert "3 agents total" in text
 
 
+def test_record_managed_reasoning_policy_emits_auditable_fields(monkeypatch):
+    recorded = []
+
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
+
+    runner._record_managed_reasoning_policy(
+        {
+            "current_queue_item": {"label": "demo_theorem"},
+            "active_file": "/tmp/project/Main.lean",
+        },
+        {
+            "failed_attempts": [
+                {"target_symbol": "demo_theorem", "active_file": "/tmp/project/Main.lean"},
+                {"target_symbol": "demo_theorem", "active_file": "/tmp/project/Main.lean"},
+                {"target_symbol": "other_theorem", "active_file": "/tmp/project/Main.lean"},
+            ]
+        },
+        {"enabled": True, "effort": "high"},
+        phase="autonomous",
+        cycle=3,
+    )
+
+    assert recorded == [
+        (
+            "managed-reasoning-policy",
+            "Managed reasoning policy applied: high",
+            {
+                "phase": "autonomous",
+                "target_symbol": "demo_theorem",
+                "active_file": "/tmp/project/Main.lean",
+                "failed_attempt_count": 2,
+                "effective_reasoning_effort": "high",
+                "reasoning_enabled": True,
+                "cycle": 3,
+            },
+        )
+    ]
+
+
+def test_startup_user_message_snapshot_with_runner_lean_prompt(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_RUNNER_LEAN_PROMPT", "1")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "/tmp/project/Main.lean")
+    monkeypatch.setattr(runner, "_project_root", lambda: "/tmp/project")
+    monkeypatch.setattr(
+        runner,
+        "build_skill_prompt",
+        lambda name, cwd=None: "[SKILL]\n[WORKFLOW SPEC: prove]\npolicy body",
+    )
+    monkeypatch.setattr(
+        runner,
+        "route_workflow_step",
+        lambda *args, **kwargs: type(
+            "_Route",
+            (),
+            {
+                "to_dict": lambda self: {
+                    "skill_name": "lean-theorem-queue-worker",
+                    "route_action": "queue-worker",
+                    "blocker_kind": "compiler",
+                    "recommended_worker": "proof-repair",
+                    "reason": "queue item active",
+                }
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_queue_assignment_block",
+        lambda live_state, autonomy_state=None: "Assigned queue item:\n- declaration: foo",
+    )
+
+    text = runner._startup_user_message(
+        live_state={"current_queue_item": {"label": "foo"}},
+        autonomy_state={},
+    )
+
+    assert text == (
+        "Begin the requested autonomous proving session now.\n\n"
+        "Workflow request: /prove Main.lean\n"
+        "Execution guidance: Load the native proving contract from the active skill/spec, begin with `lean_capabilities` and `lean_inspect`, "
+        "use `lean_search` before guessing, and use `lean_worker_dispatch` only when the route recommends it; the live queue, route decision, "
+        "and verification gate below are the state for this turn.\n\n"
+        "Route decision:\n"
+        "- skill: lean-theorem-queue-worker\n"
+        "- action: queue-worker\n"
+        "- blocker kind: compiler\n"
+        "- reason: queue item active\n"
+        "- recommended worker: proof-repair\n"
+        "- use `lean_worker_dispatch` if the next attempt confirms this route\n\n"
+        "Assigned queue item:\n"
+        "- declaration: foo\n\n"
+        "[SKILL]\n"
+        "[WORKFLOW SPEC: prove]\n"
+        "policy body"
+    )
+
+
+def test_autonomous_continuation_prompt_snapshot_with_runner_lean_prompt(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_RUNNER_LEAN_PROMPT", "1")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_project_root", lambda: "/tmp/project")
+    monkeypatch.setattr(
+        runner,
+        "route_workflow_step",
+        lambda *args, **kwargs: type(
+            "_Route",
+            (),
+            {
+                "to_dict": lambda self: {
+                    "skill_name": "lean-theorem-queue-worker",
+                    "route_action": "queue-worker",
+                    "blocker_kind": "compiler",
+                    "recommended_worker": "proof-repair",
+                    "reason": "queue item active",
+                }
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_queue_assignment_block",
+        lambda live_state, autonomy_state=None: "Assigned queue item:\n- declaration: foo",
+    )
+    monkeypatch.setattr(runner, "_queue_needs_final_file_sweep", lambda live_state: False)
+    monkeypatch.setattr(runner, "_recent_failed_attempts_summary", lambda *args, **kwargs: "Recent failed attempts:\n- same blocker twice")
+
+    text = runner._autonomous_continuation_prompt(
+        {
+            "declaration_scope": "file",
+            "active_file": "/tmp/project/Main.lean",
+            "verification_hint": "`lean_inspect` on Main.lean, then `lake env lean Main.lean`",
+            "current_queue_item": {"label": "foo"},
+        },
+        3,
+        autonomy_state={},
+    )
+
+    assert text == (
+        "Continue the autonomous workflow.\n\n"
+        "Follow the loaded native workflow spec as the policy manual. "
+        "Use the refreshed live proof state below as the current turn state.\n\n"
+        "This is autonomous continuation cycle 3.\n"
+        "Current verification gate: `lean_inspect` on Main.lean, then `lake env lean Main.lean`\n"
+        "Do not stop until that gate is satisfied or you have a concrete blocker to report.\n\n"
+        "Route decision:\n"
+        "- skill: lean-theorem-queue-worker\n"
+        "- action: queue-worker\n"
+        "- blocker kind: compiler\n"
+        "- reason: queue item active\n"
+        "- recommended worker: proof-repair\n"
+        "- use `lean_worker_dispatch` if the blocker still fits this route after the next focused attempt\n\n"
+        "Recent failed attempts:\n"
+        "- same blocker twice\n\n"
+        "Assigned queue item:\n"
+        "- declaration: foo"
+    )
+
+
 def test_history_status_lines_summarize_message_counts(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove Main.lean")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
 
     lines = runner._history_status_lines(
@@ -362,9 +573,22 @@ def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
     class DummyAgent:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+            self.reasoning_config = kwargs.get("reasoning_config")
 
     monkeypatch.setattr(runner, "AIAgent", DummyAgent)
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setattr(
+        runner,
+        "_agent_config",
+        lambda: {
+            "reasoning_effort": "auto",
+            "seed": 42,
+            "temperature": 0.3,
+            "top_p": None,
+            "top_k": None,
+            "min_p": None,
+        },
+    )
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_KEY", "sk-test")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "zai")
@@ -377,6 +601,12 @@ def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
     assert captured["provider"] == "zai"
     assert captured["api_mode"] == "responses"
     assert captured["max_iterations"] == 77
+    assert captured["reasoning_config"] == {"mode": "auto"}
+    assert captured["seed"] == 42
+    assert captured["temperature"] == 0.3
+    assert captured["top_p"] is None
+    assert captured["top_k"] is None
+    assert captured["min_p"] is None
     assert callable(captured["tool_progress_callback"])
     assert callable(captured["step_callback"])
 
@@ -390,7 +620,7 @@ def test_build_agent_uses_swarm_toolset_when_user_enabled_swarm(monkeypatch):
             self.session_id = "runner-session"
 
     monkeypatch.setattr(runner, "AIAgent", DummyAgent)
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_KEY", "sk-test")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "zai")
@@ -403,10 +633,116 @@ def test_build_agent_uses_swarm_toolset_when_user_enabled_swarm(monkeypatch):
     assert os.getenv("EPFLEMMA_NATIVE_RUNNER_OWNER", "") == "runner-session"
 
 
+def test_resolve_managed_reasoning_config_auto_defaults_to_medium_for_new_theorem():
+    resolved = runner._resolve_managed_reasoning_config(
+        {"mode": "auto"},
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "demo",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        },
+        {"failed_attempts": []},
+    )
+
+    assert resolved == {"enabled": True, "effort": "medium"}
+
+
+def test_resolve_managed_reasoning_config_auto_escalates_after_five_failed_attempts():
+    resolved = runner._resolve_managed_reasoning_config(
+        {"mode": "auto"},
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "demo",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        },
+        {
+            "failed_attempts": [
+                {
+                    "attempt": i + 1,
+                    "cycle": i + 1,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "intro x",
+                    "reason": "blocked",
+                }
+                for i in range(5)
+            ]
+        },
+    )
+
+    assert resolved == {"enabled": True, "effort": "high"}
+
+
+def test_resolve_managed_reasoning_config_auto_uses_high_for_final_file_sweep(monkeypatch):
+    monkeypatch.setattr(runner, "_queue_needs_final_file_sweep", lambda live_state: True)
+
+    resolved = runner._resolve_managed_reasoning_config(
+        {"mode": "auto"},
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "",
+            "current_queue_item": {},
+        },
+        {"failed_attempts": []},
+    )
+
+    assert resolved == {"enabled": True, "effort": "high"}
+
+
+def test_apply_managed_reasoning_policy_resets_to_medium_on_theorem_transition():
+    class _Agent:
+        def __init__(self):
+            self._managed_base_reasoning_config = {"mode": "auto"}
+            self.reasoning_config = None
+
+    agent = _Agent()
+    autonomy_state = {
+        "failed_attempts": [
+            {
+                "attempt": i + 1,
+                "cycle": i + 1,
+                "target_symbol": "first_demo",
+                "active_file": "Demo/Main.lean",
+                "proof_shape": "intro x",
+                "reason": "blocked",
+            }
+            for i in range(5)
+        ]
+    }
+
+    first = runner._apply_managed_reasoning_policy(
+        agent,
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "first_demo",
+            "current_queue_item": {"label": "first_demo", "reasons": ["contains sorry"]},
+        },
+        autonomy_state,
+    )
+    second = runner._apply_managed_reasoning_policy(
+        agent,
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "second_demo",
+            "current_queue_item": {"label": "second_demo", "reasons": ["contains sorry"]},
+        },
+        autonomy_state,
+    )
+
+    assert first == {"enabled": True, "effort": "high"}
+    assert second == {"enabled": True, "effort": "medium"}
+    assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
+
+
 def test_tool_progress_callback_persists_structured_events(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
     runner._CURRENT_AGENT_ACTIVITY_DETAILS = {"agent_session_id": "12345", "delegate_depth": 0}
 
@@ -543,7 +879,7 @@ def test_build_live_proof_state_assigns_current_queue_head_as_target(monkeypatch
     )
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
-    monkeypatch.setattr(runner, "_query_live_diagnostics", lambda path: "lean-lsp diagnostics tool unavailable.")
+    monkeypatch.setattr(runner, "_query_live_diagnostics", lambda path, symbol="": "lean-lsp diagnostics tool unavailable.")
     monkeypatch.setattr(runner, "_query_live_goals", lambda path, symbol: "lean-lsp goals tool unavailable.")
     monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
     monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
@@ -688,7 +1024,7 @@ def test_queue_assignment_block_mentions_only_assigned_theorem():
 
 
 def test_effective_skill_name_uses_queue_worker_for_file_scoped_queue_turn(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
 
@@ -703,7 +1039,7 @@ def test_effective_skill_name_uses_queue_worker_for_file_scoped_queue_turn(monke
 
 
 def test_effective_skill_name_returns_proof_loop_for_final_file_sweep(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
 
@@ -883,7 +1219,7 @@ def test_recommended_verification_command_prefers_module_build_outside_single_it
 
     command = runner._recommended_verification_command(str(active))
 
-    assert command == "lean-lsp diagnostics/goals first, then `lake build Demo.Main` when the file is close to clean"
+    assert command == "`lean_inspect` first, then `lake build Demo.Main` when the file is close to clean"
 
 
 def test_recommended_verification_command_requires_canonical_file_check_for_single_item_turn(tmp_path, monkeypatch):
@@ -893,13 +1229,13 @@ def test_recommended_verification_command_requires_canonical_file_check_for_sing
     active = module_dir / "Main.lean"
     active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
 
     command = runner._recommended_verification_command(str(active))
 
     assert command == (
-        "lean-lsp diagnostics/goals on Demo/Main.lean, then the required acceptance check "
+        "`lean_inspect` on Demo/Main.lean, then the required acceptance check "
         "`lake env lean Demo/Main.lean` for this file-scoped theorem turn"
     )
 
@@ -915,7 +1251,7 @@ def test_recommended_verification_command_falls_back_to_lake_env_lean_for_non_mo
     command = runner._recommended_verification_command(str(active))
 
     assert command == (
-        "lean-lsp diagnostics/goals on Demo/RealTheorems-homework.lean, "
+        "`lean_inspect` on Demo/RealTheorems-homework.lean, "
         "then final `lake env lean Demo/RealTheorems-homework.lean` when close to clean"
     )
 
@@ -934,7 +1270,7 @@ def test_resolve_active_file_prefers_configured_active_file(monkeypatch, tmp_pat
 
 
 def test_resolve_target_symbol_does_not_drift_from_history(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove ./GaussTest/RealTheorems-homework.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove ./GaussTest/RealTheorems-homework.lean")
 
     symbol = runner._resolve_target_symbol(
         [
@@ -956,32 +1292,37 @@ def test_explicit_verification_build_uses_lake_env_lean_for_non_module_file(monk
 
     captured: dict[str, object] = {}
 
-    class _Result:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def _fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
-        captured["cmd"] = cmd
-        captured["cwd"] = cwd
-        return _Result()
-
-    monkeypatch.setattr(runner.subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        runner,
+        "lean_verify",
+        lambda target="", cwd="", mode="project": captured.update(
+            {"target": target, "cwd": cwd, "mode": mode}
+        ) or type(
+            "_Result",
+            (),
+            {
+                "ok": True,
+                "command": "lake build Demo.RealTheorems-homework",
+                "output": "",
+            },
+        )(),
+    )
 
     ok, status = runner._run_explicit_verification_build(str(active), full_project=False)
 
     assert ok is True
-    assert captured["cmd"] == ["lake", "env", "lean", "Demo/RealTheorems-homework.lean"]
+    assert captured["target"] == str(active)
     assert captured["cwd"] == str(project)
-    assert status == "lake env lean Demo/RealTheorems-homework.lean succeeded"
+    assert captured["mode"] == "file_exact"
+    assert status == "lake build Demo.RealTheorems-homework succeeded"
 
 
 def test_write_workflow_checkpoint_persists_index_and_current(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setattr(runner, "_generate_checkpoint_summary", lambda *args, **kwargs: "## Goal\nResume proof")
     monkeypatch.setattr(runner, "_latest_filesystem_checkpoint_hash", lambda *args, **kwargs: "abc123def456")
 
@@ -1002,7 +1343,7 @@ def test_write_workflow_checkpoint_persists_index_and_current(monkeypatch, tmp_p
 
 
 def test_maybe_checkpoint_before_compaction_emits_pre_compaction_checkpoint(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setattr(runner, "estimate_messages_tokens_rough", lambda messages: 500)
     created = {}
 
@@ -1022,7 +1363,7 @@ def test_maybe_checkpoint_before_compaction_emits_pre_compaction_checkpoint(monk
 
 
 def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "3")
 
     class _LoopAgent(_FakeAgent):
@@ -1138,7 +1479,7 @@ def test_autonomous_continuation_prompt_includes_recent_failed_attempts():
 
 
 def test_autonomous_continuation_prompt_switches_to_final_file_sweep_when_queue_empty(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
 
     prompt = runner._autonomous_continuation_prompt(
@@ -1230,6 +1571,106 @@ def test_recent_failed_attempts_summary_does_not_leak_other_theorem_attempts():
     assert summary == ""
 
 
+def test_summarize_theorem_transition_outcome_marks_reverted_to_sorry():
+    outcome = runner._summarize_theorem_transition_outcome(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "amc12a_2021_p19",
+                "active_file": "GaussTest/MiniF2F.lean",
+                "slice": "theorem amc12a_2021_p19 : True := by\n  sorry",
+            }
+        },
+        {
+            "active_file_label": "GaussTest/MiniF2F.lean",
+            "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+            "declaration_queue_summary": (
+                "- amc12a_2021_p19 [GaussTest/MiniF2F.lean] — contains sorry\n"
+                "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry"
+            ),
+            "current_blocker": "amc12a_2021_p19 remains pending after being reverted to `sorry`.",
+            "build_status": "lake env lean GaussTest/MiniF2F.lean exits 0",
+        },
+        [{"role": "assistant", "content": "amc12a_2021_p19 was reverted to `sorry` to unblock file compilation."}],
+    )
+
+    assert outcome["status"] == "reverted-to-sorry"
+    assert "reverted" in outcome["note"]
+
+
+def test_rebuild_history_for_theorem_transition_uses_compact_handoff():
+    rebuilt, transition = runner._rebuild_history_for_theorem_transition(
+        [
+            {"role": "assistant", "content": "Detailed search transcript for amc12a_2021_p19"},
+            {"role": "tool", "content": "Very long raw tool output for the previous theorem"},
+        ],
+        {"snapshot_text": "Compact workflow snapshot"},
+        {
+            "current_queue_assignment": {
+                "target_symbol": "amc12a_2021_p19",
+                "active_file": "GaussTest/MiniF2F.lean",
+                "slice": "theorem amc12a_2021_p19 : True := by\n  sorry",
+            }
+        },
+        {
+            "active_file_label": "GaussTest/MiniF2F.lean",
+            "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+            "declaration_queue_summary": "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry",
+            "build_status": "lake env lean GaussTest/MiniF2F.lean exits 0",
+            "current_blocker": "",
+        },
+    )
+
+    assert transition == {
+        "previous_target": "amc12a_2021_p19",
+        "previous_file": "GaussTest/MiniF2F.lean",
+        "current_target": "algebra_amgm_sumasqdivbgeqsuma",
+        "current_file": "GaussTest/MiniF2F.lean",
+    }
+    assert len(rebuilt) == 2
+    assert rebuilt[0]["content"] == "Compact workflow snapshot"
+    assert "Previous theorem outcome:" in rebuilt[1]["content"]
+    assert "final status: solved" in rebuilt[1]["content"]
+    joined = "\n".join(msg["content"] for msg in rebuilt)
+    assert "Detailed search transcript" not in joined
+    assert "Very long raw tool output" not in joined
+
+
+def test_summarize_theorem_transition_outcome_prefers_previous_theorem_failed_attempt_reason():
+    outcome = runner._summarize_theorem_transition_outcome(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "blocked_demo",
+                "active_file": "Demo/Main.lean",
+                "slice": "theorem blocked_demo : True := by\n  sorry",
+            },
+            "failed_attempts": [
+                {
+                    "attempt": 2,
+                    "cycle": 3,
+                    "target_symbol": "blocked_demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "intro x; simp",
+                    "reason": "nonlinear arithmetic blocker",
+                }
+            ],
+        },
+        {
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+            "declaration_queue_summary": (
+                "- blocked_demo [Demo/Main.lean] — contains sorry\n"
+                "- next_demo [Demo/Main.lean] — contains sorry"
+            ),
+            "current_blocker": "next_demo still pending",
+            "build_status": "unknown",
+        },
+        [{"role": "assistant", "content": "Moving on to another theorem for now."}],
+    )
+
+    assert outcome["status"] == "blocked"
+    assert outcome["note"] == "nonlinear arithmetic blocker"
+
+
 def test_same_queue_assignment_still_blocked_requires_same_theorem_and_real_blocker():
     assert runner._same_queue_assignment_still_blocked(
         {
@@ -1264,3 +1705,481 @@ def test_same_queue_assignment_still_blocked_requires_same_theorem_and_real_bloc
             "build_status": "unknown",
         },
     ) is False
+
+
+def test_rebuild_history_for_theorem_transition_records_blocked_outcome_and_failed_attempt():
+    autonomy_state = {
+        "current_cycle": 3,
+        "current_queue_assignment": {
+            "target_symbol": "blocked_demo",
+            "active_file": "Demo/Main.lean",
+            "slice": "theorem blocked_demo : True := by\n  sorry",
+        },
+    }
+    live_state = {
+        "active_file_label": "Demo/Main.lean",
+        "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+        "declaration_queue_summary": (
+            "- blocked_demo [Demo/Main.lean] — contains sorry\n"
+            "- next_demo [Demo/Main.lean] — contains sorry"
+        ),
+        "current_blocker": "blocked_demo still has unresolved goals",
+        "build_status": "unknown",
+    }
+
+    rebuilt_history, transition = runner._rebuild_history_for_theorem_transition(
+        [{"role": "assistant", "content": "Moving on to another theorem for now."}],
+        {"snapshot_text": "Compact workflow snapshot"},
+        autonomy_state,
+        live_state,
+    )
+
+    assert rebuilt_history is not None
+    assert transition == {
+        "previous_target": "blocked_demo",
+        "previous_file": "Demo/Main.lean",
+        "current_target": "next_demo",
+        "current_file": "Demo/Main.lean",
+    }
+    attempts = autonomy_state["failed_attempts"]
+    assert attempts[-1]["target_symbol"] == "blocked_demo"
+    assert attempts[-1]["active_file"] == "Demo/Main.lean"
+    assert attempts[-1]["cycle"] == 3
+    assert attempts[-1]["proof_shape"] == "[transitioned away before theorem was solved]"
+    outcomes = autonomy_state["theorem_outcomes"]
+    assert outcomes["Demo/Main.lean::blocked_demo"]["status"] == "blocked"
+
+
+def test_autonomous_stop_reason_blocks_verified_exit_when_prior_theorem_is_unresolved():
+    live_state = {
+        "active_file": "/tmp/project/Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "target_symbol": "next_demo",
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake build Demo.Main succeeded",
+        "sorry_count": 0,
+        "verification_ok": True,
+    }
+    autonomy_state = {
+        "theorem_outcomes": {
+            "Demo/Main.lean::blocked_demo": {
+                "target_symbol": "blocked_demo",
+                "active_file": "Demo/Main.lean",
+                "status": "blocked",
+                "note": "still unresolved",
+            }
+        }
+    }
+
+    assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "blocked"
+
+
+def test_build_live_proof_state_surfaces_search_exhaustion(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
+    monkeypatch.setattr(runner, "_resolve_active_file", lambda history, checkpoint_state=None: str(active))
+    monkeypatch.setattr(runner, "_resolve_target_symbol", lambda history, checkpoint_state=None: "demo")
+    monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
+    monkeypatch.setattr(runner, "_collect_message_text", lambda history: "")
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (1, ["Demo/Main.lean (1)"]))
+    monkeypatch.setattr(runner, "recent_empty_search_streak", lambda workflow_command: 3)
+    monkeypatch.setattr(
+        runner,
+        "probe_capabilities",
+        lambda cwd=None: type(
+            "_Capabilities",
+            (),
+            {
+                "to_dict": lambda self: {
+                    "cwd": str(project),
+                    "project_root": str(project),
+                    "degraded_reasons": [],
+                }
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "lean_inspect",
+        lambda *args, **kwargs: type(
+            "_Inspection",
+            (),
+            {
+                "diagnostics": "warning: declaration uses sorry",
+                "goals": "Lean goals unavailable.",
+                "sorry_count": 1,
+                "project_sorry_count": 1,
+                "blocker_kind": "open_goals",
+                "queue_items": [
+                    {
+                        "label": "demo",
+                        "kind": "theorem",
+                        "line": 1,
+                        "reasons": ["contains sorry"],
+                    }
+                ],
+                "capability_report": {
+                    "cwd": str(project),
+                    "project_root": str(project),
+                    "degraded_reasons": [],
+                },
+            },
+        )(),
+    )
+
+    live_state = runner._build_live_proof_state([])
+
+    assert live_state["search_exhausted"] is True
+    assert live_state["recent_empty_search_streak"] == 3
+    assert "search exhausted for this theorem" in live_state["message"]
+
+
+def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
+
+    class _LoopAgent(_FakeAgent):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+            self.calls.append(
+                {
+                    "user_message": user_message,
+                    "persist_user_message": persist_user_message,
+                    "conversation_history": list(conversation_history or []),
+                }
+            )
+            return {
+                "messages": list(conversation_history or [])
+                + [{"role": "assistant", "content": "next theorem continuation"}]
+            }
+
+    live_states = chain(
+        [
+            {
+                "active_file": "/tmp/project/GaussTest/MiniF2F.lean",
+                "active_file_label": "GaussTest/MiniF2F.lean",
+                "target_symbol": "algebra_amgm_sumasqdivbgeqsuma",
+                "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+                "declaration_queue_summary": "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry",
+                "diagnostics": "warning: declaration uses sorry",
+                "goals": "no goals",
+                "build_status": "lake env lean GaussTest/MiniF2F.lean exits 0",
+                "current_blocker": "",
+                "message": "live-next-theorem",
+                "sorry_count": 1,
+            },
+            {
+                "active_file": "/tmp/project/GaussTest/MiniF2F.lean",
+                "active_file_label": "GaussTest/MiniF2F.lean",
+                "target_symbol": "algebra_amgm_sumasqdivbgeqsuma",
+                "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+                "declaration_queue_summary": "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry",
+                "diagnostics": "no errors found",
+                "goals": "no goals",
+                "build_status": "lake env lean GaussTest/MiniF2F.lean exits 0",
+                "current_blocker": "",
+                "message": "live-next-theorem-verified",
+                "sorry_count": 0,
+                "verification_ok": True,
+            },
+        ],
+        repeat(
+            {
+                "active_file": "/tmp/project/GaussTest/MiniF2F.lean",
+                "active_file_label": "GaussTest/MiniF2F.lean",
+                "target_symbol": "algebra_amgm_sumasqdivbgeqsuma",
+                "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+                "declaration_queue_summary": "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry",
+                "diagnostics": "no errors found",
+                "goals": "no goals",
+                "build_status": "lake env lean GaussTest/MiniF2F.lean exits 0",
+                "current_blocker": "",
+                "message": "live-next-theorem-verified",
+                "sorry_count": 0,
+                "verification_ok": True,
+            }
+        ),
+    )
+
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"}))
+    monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
+
+    agent = _LoopAgent()
+    history, _, _, _ = runner._drive_autonomous_followups(
+        agent,
+        "system",
+        [
+            {"role": "assistant", "content": "Detailed search transcript for amc12a_2021_p19"},
+            {"role": "tool", "content": "Very long raw tool output for amc12a_2021_p19"},
+        ],
+        {"snapshot_text": "Compact workflow snapshot", "reason": "[none]"},
+        {},
+        {
+            "current_queue_assignment": {
+                "target_symbol": "amc12a_2021_p19",
+                "active_file": "GaussTest/MiniF2F.lean",
+                "slice": "theorem amc12a_2021_p19 : True := by\n  sorry",
+            }
+        },
+    )
+
+    assert len(agent.calls) == 1
+    rebuilt_history = agent.calls[0]["conversation_history"]
+    assert len(rebuilt_history) == 2
+    joined = "\n".join(msg["content"] for msg in rebuilt_history)
+    assert "Compact workflow snapshot" in joined
+    assert "amc12a_2021_p19" in joined
+    assert "algebra_amgm_sumasqdivbgeqsuma" in joined
+    assert "Detailed search transcript for amc12a_2021_p19" not in joined
+    assert "Very long raw tool output for amc12a_2021_p19" not in joined
+    assert history[-1]["content"] == "next theorem continuation"
+
+
+def test_drive_autonomous_followups_keeps_history_when_theorem_does_not_change(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
+
+    class _LoopAgent(_FakeAgent):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+            self.calls.append(list(conversation_history or []))
+            return {
+                "messages": list(conversation_history or [])
+                + [{"role": "assistant", "content": "same theorem continuation"}]
+            }
+
+    stable_live_state = {
+        "active_file": "/tmp/project/Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "target_symbol": "demo",
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "declaration_queue_summary": "- demo [Demo/Main.lean] — contains sorry",
+        "diagnostics": "warning: declaration uses sorry",
+        "goals": "no goals",
+        "build_status": "unknown",
+        "current_blocker": "warning: declaration uses sorry",
+        "message": "live-demo",
+        "sorry_count": 1,
+    }
+    verified_live_state = {
+        **stable_live_state,
+        "diagnostics": "no errors found",
+        "build_status": "lake env lean Demo/Main.lean exits 0",
+        "current_blocker": "",
+        "sorry_count": 0,
+        "verification_ok": True,
+    }
+    live_states = chain([stable_live_state, verified_live_state], repeat(verified_live_state))
+
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"}))
+    monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
+
+    original_history = [
+        {"role": "assistant", "content": "existing theorem-local transcript"},
+        {"role": "tool", "content": "existing tool output"},
+    ]
+    agent = _LoopAgent()
+    runner._drive_autonomous_followups(
+        agent,
+        "system",
+        original_history,
+        {"snapshot_text": "Compact workflow snapshot", "reason": "[none]"},
+        {},
+        {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": "Demo/Main.lean",
+                "slice": "theorem demo : True := by\n  sorry",
+            }
+        },
+    )
+
+    assert len(agent.calls) == 1
+    assert agent.calls[0] == original_history
+
+
+def test_drive_autonomous_followups_applies_auto_reasoning_to_current_theorem(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
+
+    class _LoopAgent(_FakeAgent):
+        def __init__(self):
+            super().__init__()
+            self._managed_base_reasoning_config = {"mode": "auto"}
+            self.reasoning_config = None
+            self.calls = []
+
+        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+            self.calls.append(dict(self.reasoning_config or {}))
+            return {
+                "messages": list(conversation_history or [])
+                + [{"role": "assistant", "content": "same theorem continuation"}]
+            }
+
+    stable_live_state = {
+        "active_file": "/tmp/project/Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "target_symbol": "demo",
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "declaration_queue_summary": "- demo [Demo/Main.lean] — contains sorry",
+        "diagnostics": "warning: declaration uses sorry",
+        "goals": "no goals",
+        "build_status": "unknown",
+        "current_blocker": "warning: declaration uses sorry",
+        "message": "live-demo",
+        "sorry_count": 1,
+    }
+    verified_live_state = {
+        **stable_live_state,
+        "diagnostics": "no errors found",
+        "build_status": "lake env lean Demo/Main.lean exits 0",
+        "current_blocker": "",
+        "sorry_count": 0,
+        "verification_ok": True,
+    }
+    live_states = chain([stable_live_state, verified_live_state], repeat(verified_live_state))
+
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"}))
+    monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
+
+    agent = _LoopAgent()
+    runner._drive_autonomous_followups(
+        agent,
+        "system",
+        [{"role": "assistant", "content": "existing theorem-local transcript"}],
+        {"snapshot_text": "Compact workflow snapshot", "reason": "[none]"},
+        {},
+        {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": "Demo/Main.lean",
+                "slice": "theorem demo : True := by\n  sorry",
+            },
+            "failed_attempts": [
+                {
+                    "attempt": i + 1,
+                    "cycle": i + 1,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "intro x",
+                    "reason": "blocked",
+                }
+                for i in range(5)
+            ],
+        },
+    )
+
+    assert agent.calls == [{"enabled": True, "effort": "high"}]
+
+
+def test_drive_autonomous_followups_records_transition_events(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
+
+    class _LoopAgent(_FakeAgent):
+        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+            return {
+                "messages": list(conversation_history or [])
+                + [{"role": "assistant", "content": "transitioned"}]
+            }
+
+    live_states = chain(
+        [
+            {
+                "active_file": "/tmp/project/Demo/Main.lean",
+                "active_file_label": "Demo/Main.lean",
+                "target_symbol": "next_demo",
+                "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+                "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
+                "diagnostics": "warning: declaration uses sorry",
+                "goals": "no goals",
+                "build_status": "unknown",
+                "current_blocker": "",
+                "message": "live-next",
+                "sorry_count": 1,
+            },
+            {
+                "active_file": "/tmp/project/Demo/Main.lean",
+                "active_file_label": "Demo/Main.lean",
+                "target_symbol": "next_demo",
+                "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+                "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
+                "diagnostics": "no errors found",
+                "goals": "no goals",
+                "build_status": "lake env lean Demo/Main.lean exits 0",
+                "current_blocker": "",
+                "message": "live-next-verified",
+                "sorry_count": 0,
+                "verification_ok": True,
+            },
+        ],
+        repeat(
+            {
+                "active_file": "/tmp/project/Demo/Main.lean",
+                "active_file_label": "Demo/Main.lean",
+                "target_symbol": "next_demo",
+                "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+                "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
+                "diagnostics": "no errors found",
+                "goals": "no goals",
+                "build_status": "lake env lean Demo/Main.lean exits 0",
+                "current_blocker": "",
+                "message": "live-next-verified",
+                "sorry_count": 0,
+                "verification_ok": True,
+            }
+        ),
+    )
+
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"}))
+    monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
+
+    runner._drive_autonomous_followups(
+        _LoopAgent(),
+        "system",
+        [{"role": "assistant", "content": "Detailed theorem A transcript"}],
+        {"snapshot_text": "Compact workflow snapshot", "reason": "[none]"},
+        {},
+        {
+            "current_queue_assignment": {
+                "target_symbol": "prev_demo",
+                "active_file": "Demo/Main.lean",
+                "slice": "theorem prev_demo : True := by\n  sorry",
+            }
+        },
+    )
+
+    events = read_workflow_activity(limit=20)
+    event_types = [event["type"] for event in events]
+    assert "theorem-transition" in event_types
+    assert "theorem-context-cleared" in event_types
+    assert "theorem-handoff-rebuilt" in event_types

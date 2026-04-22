@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 from copy import deepcopy
 from pathlib import Path
@@ -17,6 +18,12 @@ LEGACY_HOME_ENV = "GAUSS_HOME"
 LEGACY_BRANDED_HOME_DEFAULT = Path.home() / ".opengauss"
 LEGACY_HOME_DEFAULT = Path.home() / ".gauss"
 EPFLEMMA_HOME_DEFAULT = Path.home() / ".epflemma"
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Legacy config carried a large registry of optional env vars for removed
+# gateway/browser/voice surfaces. The Lean-first kernel no longer needs that
+# catalog, but terminal env sanitization still expects this mapping to exist.
+OPTIONAL_ENV_VARS: dict[str, dict[str, Any]] = {}
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -30,7 +37,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "model": {
-        "default": "zai-org/GLM-5",
+        "default": "zai-org/GLM-5.1",
         "provider": "auto",
         "base_url": "",
         "api_key": "",
@@ -38,6 +45,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "toolsets": ["epflemma-cli"],
     "agent": {
         "max_turns": 90,
+        "reasoning_effort": "auto",
+        "seed": 42,
+        "temperature": 0.3,
+        "top_p": None,
+        "top_k": None,
+        "min_p": None,
     },
     "logging": {
         "preview_lines": 6,
@@ -49,7 +62,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "compression": {
         "enabled": True,
         "threshold": 0.50,
-        "summary_model": "zai-org/GLM-5",
+        "summary_model": "zai-org/GLM-5.1",
         "reserved_output_tokens": 20000,
         "prune_tool_output": True,
         "prune_keep_recent_user_turns": 2,
@@ -78,6 +91,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "custom_providers": [],
 }
+
+DEFAULT_SOUL_MD = """# EPFLemma
+
+You are EPFLemma, a Lean-first automation kernel.
+
+Prioritize Lean proving, formalization, verification, and clear workflow state.
+Do not optimize for generic assistant breadth when it conflicts with finishing
+the current Lean task cleanly.
+"""
 
 
 def get_epflemma_home() -> Path:
@@ -144,6 +166,14 @@ def _secure_file(path: Path) -> None:
             path.chmod(0o600)
     except OSError:
         pass
+
+
+def _ensure_default_soul_md(home: Path) -> None:
+    soul_path = home / "SOUL.md"
+    if soul_path.exists():
+        return
+    soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    _secure_file(soul_path)
 
 
 def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
@@ -236,6 +266,7 @@ def ensure_epflemma_home(import_legacy: bool = True) -> Path:
         _import_legacy_home(home)
     home.mkdir(parents=True, exist_ok=True)
     _secure_dir(home)
+    _ensure_default_soul_md(home)
     for subdir in ("sessions", "logs", "memories", "workflow-state", "local-models"):
         target = home / subdir
         target.mkdir(parents=True, exist_ok=True)
@@ -318,6 +349,11 @@ def load_env_file() -> dict[str, str]:
         key, value = line.split("=", 1)
         result[key.strip()] = value
     return result
+
+
+def load_env() -> dict[str, str]:
+    """Compatibility helper for modules that need a snapshot of env-file values."""
+    return load_env_file()
 
 
 def save_env_value(key: str, value: str) -> None:

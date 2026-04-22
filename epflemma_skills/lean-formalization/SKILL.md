@@ -1,25 +1,30 @@
 ---
 name: lean-formalization
-description: Translate mathematical intent into Lean declarations and proofs in small verifiable steps.
+description: Native formalization workflow entry. Follow the formalize/draft specs, typed Lean tools, and queue-driven verification ladder.
 ---
 
-# Lean Formalization
+# Native Lean Formalization
 
-Use this skill for `formalize`, `autoformalize`, and declaration drafting work.
+Primary specs:
 
-## Procedure
+- `epflemma_specs/workflows/formalize.md`
+- `epflemma_specs/workflows/draft.md` when available through routing
+- `epflemma_specs/workflows/search.md`
 
-1. Extract the mathematical target and required objects.
-2. Choose a Lean representation that matches the local codebase style.
-3. Draft declarations, imports, and signatures before attempting the full proof.
-4. Verify each step with diagnostics and a build instead of writing a large speculative block.
-5. If the formalization needs multiple lemmas, leave a clear dependency order and drive the project toward zero build errors and zero `sorry`.
+## Tool Order
+
+1. `lean_capabilities`
+2. `lean_inspect`
+3. `lean_search`
+4. draft the declaration or helper lemma
+5. `lean_verify`
+6. `lean_worker_dispatch` when the router recommends `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
 
 ## Guardrails
 
 - Keep names readable and codebase-consistent.
-- Prefer `lean-lsp` diagnostics/goals for iteration and avoid repeated `lake env lean <file>` checks.
-- Use focused `lake build <Module>` checks when close to clean; reserve full-project `lake build` for milestone verification.
+- Start from structured Lean state, not guessed missing imports or guessed theorem names.
+- Prefer focused `lean_verify` module checks when close to clean; reserve full-project verification for milestone checks.
 - Prefer explicit intermediate lemmas over brittle proof scripts.
-- Do not declare success while other Lean files in the project still fail to build or still contain `sorry`.
+- Do not declare success while the requested scope still has diagnostics, open goals, warnings, or `sorry`.
 - Surface missing assumptions or ambiguous math instead of hiding them.

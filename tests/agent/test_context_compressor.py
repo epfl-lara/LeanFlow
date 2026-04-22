@@ -92,7 +92,8 @@ class TestCompress:
     def test_truncation_fallback_no_client(self, compressor):
         # compressor has client=None, so should use truncation fallback
         msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(10)
-        result = compressor.compress(msgs)
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("No provider")):
+            result = compressor.compress(msgs)
         assert len(result) < len(msgs)
         # Should keep system message and last N
         assert result[0]["role"] == "system"
@@ -100,14 +101,17 @@ class TestCompress:
 
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)
-        compressor.compress(msgs)
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("No provider")):
+            compressor.compress(msgs)
         assert compressor.compression_count == 1
-        compressor.compress(msgs)
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("No provider")):
+            compressor.compress(msgs)
         assert compressor.compression_count == 2
 
     def test_protects_first_and_last(self, compressor):
         msgs = self._make_messages(10)
-        result = compressor.compress(msgs)
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("No provider")):
+            result = compressor.compress(msgs)
         # First 2 messages should be preserved (protect_first_n=2)
         # Last 2 messages should be preserved (protect_last_n=2)
         assert result[-1]["content"] == msgs[-1]["content"]
@@ -174,7 +178,8 @@ class TestGenerateSummaryNoneContent:
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
             for i in range(10)
         ]
-        result = c.compress(msgs)
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("No provider")):
+            result = c.compress(msgs)
         assert len(result) < len(msgs)
 
 

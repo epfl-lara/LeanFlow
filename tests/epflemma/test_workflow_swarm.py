@@ -16,8 +16,8 @@ from epflemma_cli.workflow import (
 def test_parse_workflow_command_extracts_swarm_options():
     spec = parse_workflow_command("/autoprove Main.lean --agents 3 --goal finish theorem Foo")
 
-    assert spec.workflow_kind == "autoprove"
-    assert spec.backend_command == "/lean4:autoprove Main.lean"
+    assert spec.workflow_kind == "prove"
+    assert spec.backend_command == "/prove Main.lean"
     assert spec.parallel_agents == 3
     assert spec.explicit_goal == "finish theorem Foo"
 
@@ -92,14 +92,14 @@ def test_resolve_workflow_request_forces_single_agent_for_file_scoped_prove(monk
 @pytest.mark.parametrize(
     "command,expected_kind",
     [
-        ("/prove Main.lean", "autoprove"),
-        ("/autoprove Main.lean", "autoprove"),
-        ("autoprove Main.lean", "autoprove"),
-        ("prove Main.lean", "autoprove"),
-        ("/formalize \"theorem\"", "autoformalize"),
-        ("/autoformalize \"theorem\"", "autoformalize"),
-        ("autoformalize \"theorem\"", "autoformalize"),
-        ("formalize \"theorem\"", "autoformalize"),
+        ("/prove Main.lean", "prove"),
+        ("/autoprove Main.lean", "prove"),
+        ("autoprove Main.lean", "prove"),
+        ("prove Main.lean", "prove"),
+        ("/formalize \"theorem\"", "formalize"),
+        ("/autoformalize \"theorem\"", "formalize"),
+        ("autoformalize \"theorem\"", "formalize"),
+        ("formalize \"theorem\"", "formalize"),
         ("/draft Main.lean", "draft"),
         ("draft Main.lean", "draft"),
         ("/review Main.lean", "review"),
@@ -120,15 +120,15 @@ def test_parse_workflow_command_maps_all_aliases_to_correct_kind(command, expect
 @pytest.mark.parametrize(
     "command,expected_backend",
     [
-        ("/prove", "/lean4:autoprove"),
-        ("/autoprove", "/lean4:autoprove"),
-        ("/formalize", "/lean4:autoformalize"),
-        ("/autoformalize", "/lean4:autoformalize"),
-        ("/draft", "/lean4:draft"),
-        ("/review", "/lean4:review"),
-        ("/checkpoint", "/lean4:checkpoint"),
-        ("/refactor", "/lean4:refactor"),
-        ("/golf", "/lean4:golf"),
+        ("/prove", "/prove"),
+        ("/autoprove", "/prove"),
+        ("/formalize", "/formalize"),
+        ("/autoformalize", "/formalize"),
+        ("/draft", "/draft"),
+        ("/review", "/review"),
+        ("/checkpoint", "/checkpoint"),
+        ("/refactor", "/refactor"),
+        ("/golf", "/golf"),
     ],
 )
 def test_parse_workflow_command_sets_correct_backend_command(command, expected_backend):
@@ -264,6 +264,6 @@ def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(mo
 
 
 def test_all_workflow_aliases_are_covered_by_alias_map():
-    forgiving_kinds = {"autoprove", "autoformalize", "draft", "review", "checkpoint", "refactor", "golf"}
+    forgiving_kinds = {"prove", "formalize", "draft", "review", "checkpoint", "refactor", "golf"}
     mapped_kinds = {v[0] for v in WORKFLOW_ALIAS_MAP.values()}
     assert forgiving_kinds == mapped_kinds

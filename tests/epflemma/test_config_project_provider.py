@@ -20,7 +20,7 @@ def test_load_config_imports_legacy_gauss_payload(monkeypatch, tmp_path):
                     "project": {"template_source": "legacy-template"},
                     "autoformalize": {"managed_state_dir": ".gauss/workflow-state"},
                 },
-                "model": {"provider": "zai", "default": "zai-org/GLM-5"},
+                "model": {"provider": "zai", "default": "zai-org/GLM-5.1"},
                 "toolsets": ["gauss-native"],
             },
             sort_keys=False,

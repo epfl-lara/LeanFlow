@@ -46,10 +46,7 @@ from pathlib import Path
 
 # Load .env from the active EPFLemma home first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-try:
-    from epflemma_cli.env_loader import load_epflemma_dotenv as load_gauss_dotenv
-except Exception:  # pragma: no cover - legacy fallback for older installs
-    from gauss_cli.env_loader import load_gauss_dotenv
+from epflemma_cli.env_loader import load_epflemma_dotenv
 
 _gauss_home = Path(
     os.getenv("EPFLEMMA_HOME")
@@ -58,7 +55,7 @@ _gauss_home = Path(
     or (Path.home() / ".epflemma")
 )
 _project_env = Path(__file__).parent / '.env'
-_loaded_env_paths = load_gauss_dotenv(gauss_home=_gauss_home, project_env=_project_env)
+_loaded_env_paths = load_epflemma_dotenv(gauss_home=_gauss_home, project_env=_project_env)
 if _loaded_env_paths:
     for _env_path in _loaded_env_paths:
         logger.info("Loaded environment variables from %s", _env_path)
@@ -106,15 +103,8 @@ from utils import atomic_json_write
 
 
 def _cleanup_optional_browser_state(task_id: str) -> None:
-    """Best-effort browser cleanup for legacy local state."""
-    try:
-        from tools.browser_tool import cleanup_browser
-    except Exception:
-        return
-    try:
-        cleanup_browser(task_id)
-    except Exception:
-        logger.debug("Optional browser cleanup failed", exc_info=True)
+    """Browser session cleanup was removed with the legacy browser surface."""
+    del task_id
 
 
 _issued_session_ids: set[str] = set()
@@ -538,6 +528,11 @@ class AIAgent:
         step_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
+        seed: int = 42,
+        temperature: float = 0.3,
+        top_p: float = None,
+        top_k: int = None,
+        min_p: float = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         skip_context_files: bool = False,
@@ -586,6 +581,11 @@ class AIAgent:
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
                 If None, defaults to {"enabled": True, "effort": "medium"} for OpenRouter. Set to disable/customize reasoning.
+            seed (int): Optional generation seed for reproducible sampling on compatible routes.
+            temperature (float): Optional sampling temperature override.
+            top_p (float): Optional nucleus sampling override for compatible routes.
+            top_k (int): Optional top-k sampling override for compatible vLLM-style routes.
+            min_p (float): Optional min-p sampling override for compatible vLLM-style routes.
             prefill_messages (List[Dict]): Messages to prepend to conversation history as prefilled context.
                 Useful for injecting a few-shot example or priming the model's response style.
                 Example: [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello!"}]
@@ -666,6 +666,11 @@ class AIAgent:
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
+        self.seed = seed
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.min_p = min_p
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
@@ -753,11 +758,10 @@ class AIAgent:
                 # noise. The TUI has its own rich display for status; logger
                 # INFO/WARNING messages just clutter it.
                 for quiet_logger in [
-                    'tools',               # all tools.* (terminal, browser, web, file, etc.)
+                    'tools',               # all tools.* (terminal, web, file, etc.)
                     'minisweagent',         # mini-swe-agent execution backend
                     'run_agent',            # agent runner internals
-                    'cron',                 # scheduler (only relevant in daemon mode)
-                    'gauss_cli',           # CLI helpers
+                    'cron',                 # legacy scheduler logger if present
                 ]:
                     logging.getLogger(quiet_logger).setLevel(logging.ERROR)
         
@@ -891,6 +895,13 @@ class AIAgent:
         if self.tools and not self.quiet_mode:
             requirements = check_toolset_requirements()
             missing_reqs = [name for name, available in requirements.items() if not available]
+            enabled_toolset_names = {str(name) for name in (enabled_toolsets or [])}
+            native_lean_only = (
+                bool(enabled_toolset_names.intersection({"epflemma-native", "epflemma-native-swarm"}))
+                and not enabled_toolset_names.intersection({"web", "search"})
+            )
+            if native_lean_only:
+                missing_reqs = [name for name in missing_reqs if name != "web"]
             if missing_reqs:
                 print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
         
@@ -967,10 +978,7 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         if not skip_memory:
             try:
-                try:
-                    from epflemma_cli.config import load_config as _load_mem_config
-                except Exception:  # pragma: no cover - legacy fallback
-                    from gauss_cli.config import load_config as _load_mem_config
+                from epflemma_cli.config import load_config as _load_mem_config
                 mem_config = _load_mem_config().get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
@@ -989,10 +997,7 @@ class AIAgent:
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
         try:
-            try:
-                from epflemma_cli.config import load_config as _load_skills_config
-            except Exception:  # pragma: no cover - legacy fallback
-                from gauss_cli.config import load_config as _load_skills_config
+            from epflemma_cli.config import load_config as _load_skills_config
             skills_config = _load_skills_config().get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 15))
         except Exception:
@@ -1001,10 +1006,7 @@ class AIAgent:
         # Initialize context compressor for automatic context management.
         compression_cfg = {}
         try:
-            try:
-                from epflemma_cli.config import load_config as _load_runtime_config
-            except Exception:  # pragma: no cover - legacy fallback
-                from gauss_cli.config import load_config as _load_runtime_config
+            from epflemma_cli.config import load_config as _load_runtime_config
             loaded_cfg = _load_runtime_config()
             if isinstance(loaded_cfg.get("compression"), dict):
                 compression_cfg = dict(loaded_cfg.get("compression") or {})
@@ -2601,10 +2603,7 @@ class AIAgent:
             return False
 
         try:
-            try:
-                from epflemma_cli.auth import resolve_codex_runtime_credentials
-            except Exception:  # pragma: no cover - legacy fallback
-                from gauss_cli.auth import resolve_codex_runtime_credentials
+            from epflemma_cli.auth import resolve_codex_runtime_credentials
 
             creds = resolve_codex_runtime_credentials(force_refresh=force)
         except Exception as exc:
@@ -2633,10 +2632,7 @@ class AIAgent:
             return False
 
         try:
-            try:
-                from epflemma_cli.auth import resolve_nous_runtime_credentials
-            except Exception:  # pragma: no cover - legacy fallback
-                from gauss_cli.auth import resolve_nous_runtime_credentials
+            from epflemma_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, int(os.getenv("GAUSS_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
@@ -3247,6 +3243,12 @@ class AIAgent:
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
+        if isinstance(self.temperature, (int, float)):
+            api_kwargs["temperature"] = float(self.temperature)
+        if isinstance(self.top_p, (int, float)):
+            api_kwargs["top_p"] = float(self.top_p)
+        if isinstance(self.seed, int) and not isinstance(self.seed, bool):
+            api_kwargs["seed"] = self.seed
 
         extra_body = {}
 
@@ -3286,6 +3288,10 @@ class AIAgent:
                 extra_body["reasoning_effort"] = self._map_rcp_reasoning_effort(
                     reasoning_effort
                 )
+            if isinstance(self.top_k, int) and not isinstance(self.top_k, bool):
+                extra_body["top_k"] = self.top_k
+            if isinstance(self.min_p, (int, float)):
+                extra_body["min_p"] = float(self.min_p)
 
         # Nous Portal product attribution
         if _is_nous:
@@ -3334,8 +3340,11 @@ class AIAgent:
         if self.reasoning_config and isinstance(self.reasoning_config, dict):
             if self.reasoning_config.get("enabled") is False:
                 reasoning_enabled = False
+            elif self.reasoning_config.get("mode") == "auto":
+                reasoning_effort = "medium"
             elif self.reasoning_config.get("effort"):
-                reasoning_effort = str(self.reasoning_config["effort"]).lower()
+                requested = str(self.reasoning_config["effort"]).lower()
+                reasoning_effort = "medium" if requested == "auto" else requested
         return reasoning_enabled, reasoning_effort
 
     @staticmethod
@@ -3807,6 +3816,7 @@ class AIAgent:
                 function_name, function_args, effective_task_id,
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 owner_id=self.session_id,
+                parent_agent=self,
             )
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -4204,6 +4214,7 @@ class AIAgent:
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         owner_id=self.session_id,
+                        parent_agent=self,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -4219,6 +4230,7 @@ class AIAgent:
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         owner_id=self.session_id,
+                        parent_agent=self,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"

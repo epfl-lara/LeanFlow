@@ -39,8 +39,7 @@ logger = logging.getLogger(__name__)
 def _run_async(coro):
     """Run an async coroutine from a sync context.
 
-    If the current thread already has a running event loop (e.g., inside
-    the gateway's async stack or Atropos's event loop), we spin up a
+    If the current thread already has a running event loop, we spin up a
     disposable thread so asyncio.run() can create its own loop without
     conflicting.
 
@@ -79,6 +78,7 @@ def _discover_tools():
         "tools.terminal_tool",
         "tools.session_search_tool",
         "tools.skills_tool",
+        "tools.lean_tool",
         "tools.delegate_tool",
     ]
     import importlib
@@ -107,7 +107,7 @@ TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
 TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 
 # Resolved tool names from the last get_tool_definitions() call.
-# Used by code_execution_tool to know which tools are available in this session.
+# Used by the active runtime to track which tools are available in this session.
 _last_resolved_tool_names: List[str] = []
 
 
@@ -220,6 +220,7 @@ def handle_function_call(
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     owner_id: Optional[str] = None,
+    parent_agent: Optional[Any] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -255,6 +256,7 @@ def handle_function_call(
             user_task=user_task,
             enabled_tools=enabled_tools or _last_resolved_tool_names,
             owner_id=owner_id,
+            parent_agent=parent_agent,
         )
 
         return result

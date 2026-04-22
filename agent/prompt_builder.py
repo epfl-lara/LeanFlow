@@ -106,63 +106,6 @@ SKILLS_GUIDANCE = (
 )
 
 PLATFORM_HINTS = {
-    "whatsapp": (
-        "You are on a text messaging communication platform, WhatsApp. "
-        "Please do not use markdown as it does not render. "
-        "You can send media files natively: to deliver a file to the user, "
-        "include MEDIA:/absolute/path/to/file in your response. The file "
-        "will be sent as a native WhatsApp attachment — images (.jpg, .png, "
-        ".webp) appear as photos, videos (.mp4, .mov) play inline, and other "
-        "files arrive as downloadable documents. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as photos."
-    ),
-    "telegram": (
-        "You are on a text messaging communication platform, Telegram. "
-        "Please do not use markdown as it does not render. "
-        "You can send media files natively: to deliver a file to the user, "
-        "include MEDIA:/absolute/path/to/file in your response. Images "
-        "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
-        "bubbles, and videos (.mp4) play inline. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as native photos."
-    ),
-    "discord": (
-        "You are in a Discord server or group chat communicating with your user. "
-        "You can send media files natively: include MEDIA:/absolute/path/to/file "
-        "in your response. Images (.png, .jpg, .webp) are sent as photo "
-        "attachments, audio as file attachments. You can also include image URLs "
-        "in markdown format ![alt](url) and they will be sent as attachments."
-    ),
-    "slack": (
-        "You are in a Slack workspace communicating with your user. "
-        "You can send media files natively: include MEDIA:/absolute/path/to/file "
-        "in your response. Images (.png, .jpg, .webp) are uploaded as photo "
-        "attachments, audio as file attachments. You can also include image URLs "
-        "in markdown format ![alt](url) and they will be uploaded as attachments."
-    ),
-    "signal": (
-        "You are on a text messaging communication platform, Signal. "
-        "Please do not use markdown as it does not render. "
-        "You can send media files natively: to deliver a file to the user, "
-        "include MEDIA:/absolute/path/to/file in your response. Images "
-        "(.png, .jpg, .webp) appear as photos, audio as attachments, and other "
-        "files arrive as downloadable documents. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as photos."
-    ),
-    "email": (
-        "You are communicating via email. Write clear, well-structured responses "
-        "suitable for email. Use plain text formatting (no markdown). "
-        "Keep responses concise but complete. You can send file attachments — "
-        "include MEDIA:/absolute/path/to/file in your response. The subject line "
-        "is preserved for threading. Do not include greetings or sign-offs unless "
-        "contextually appropriate."
-    ),
-    "cron": (
-        "You are running as a scheduled cron job. Your final response is automatically "
-        "delivered to the job's configured destination, so do not use send_message to "
-        "send to that same target again. If you want the user to receive something in "
-        "the scheduled destination, put it directly in your final response. Use "
-        "send_message only for additional or different targets."
-    ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
         "renderable inside a terminal."
@@ -262,6 +205,7 @@ def build_skills_system_prompt(
     """Build a compact EPFLemma skill index for the system prompt."""
     try:
         from epflemma_cli.skill_core import discover_skills
+        from epflemma_cli.lean_workflow_specs import specs_for_skill
 
         skills = discover_skills()
     except Exception as exc:
@@ -291,15 +235,23 @@ def build_skills_system_prompt(
             if name in seen:
                 continue
             seen.add(name)
+            try:
+                spec_records = specs_for_skill(name)
+            except Exception:
+                spec_records = []
+            spec_suffix = ""
+            if spec_records:
+                spec_suffix = " [" + ", ".join(record.spec_id for record in spec_records) + "]"
             if desc:
-                index_lines.append(f"    - {name}: {desc}")
+                index_lines.append(f"    - {name}{spec_suffix}: {desc}")
             else:
-                index_lines.append(f"    - {name}")
+                index_lines.append(f"    - {name}{spec_suffix}")
 
     return (
         "## EPFLemma Skills\n"
         "Before replying, scan the skills below. Load a skill with `skill_view(name)` when it clearly matches the task. "
-        "Prefer Lean workflow skills and any project-local override over the builtin default.\n"
+        "Prefer Lean workflow skills and any project-local override over the builtin default. "
+        "When a skill exposes native workflow specs, treat those specs as the operational contract.\n"
         "\n"
         "<available_skills>\n"
         + "\n".join(index_lines)
@@ -329,7 +281,7 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
     """Discover and load context files for the system prompt.
 
     Discovery: AGENTS.md (recursive), .cursorrules / .cursor/rules/*.mdc,
-    and SOUL.md from GAUSS_HOME only. Each capped at 20,000 chars.
+    and SOUL.md from EPFLEMMA_HOME only. Each capped at 20,000 chars.
     """
     if cwd is None:
         cwd = os.getcwd()
@@ -397,14 +349,14 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
         cursorrules_content = _truncate_content(cursorrules_content, ".cursorrules")
         sections.append(cursorrules_content)
 
-    # SOUL.md from GAUSS_HOME only
+    # SOUL.md from EPFLEMMA_HOME only
     try:
-        from gauss_cli.config import ensure_gauss_home
-        ensure_gauss_home()
+        from epflemma_cli.config import ensure_epflemma_home
+        ensure_epflemma_home()
     except Exception as e:
-        logger.debug("Could not ensure GAUSS_HOME before loading SOUL.md: %s", e)
+        logger.debug("Could not ensure EPFLEMMA_HOME before loading SOUL.md: %s", e)
 
-    soul_path = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss")) / "SOUL.md"
+    soul_path = Path(os.getenv("EPFLEMMA_HOME", Path.home() / ".epflemma")) / "SOUL.md"
     if soul_path.exists():
         try:
             content = soul_path.read_text(encoding="utf-8").strip()

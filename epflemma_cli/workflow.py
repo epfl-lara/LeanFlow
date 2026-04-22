@@ -21,15 +21,15 @@ from epflemma_cli.runtime_provider import resolve_runtime_provider
 
 
 WORKFLOW_ALIAS_MAP = {
-    "/draft": ("draft", "/draft", "/lean4:draft"),
-    "/review": ("review", "/review", "/lean4:review"),
-    "/checkpoint": ("checkpoint", "/checkpoint", "/lean4:checkpoint"),
-    "/refactor": ("refactor", "/refactor", "/lean4:refactor"),
-    "/golf": ("golf", "/golf", "/lean4:golf"),
-    "/prove": ("autoprove", "/prove", "/lean4:autoprove"),
-    "/formalize": ("autoformalize", "/formalize", "/lean4:autoformalize"),
-    "/autoprove": ("autoprove", "/prove", "/lean4:autoprove"),
-    "/autoformalize": ("autoformalize", "/formalize", "/lean4:autoformalize"),
+    "/draft": ("draft", "/draft", "/draft"),
+    "/review": ("review", "/review", "/review"),
+    "/checkpoint": ("checkpoint", "/checkpoint", "/checkpoint"),
+    "/refactor": ("refactor", "/refactor", "/refactor"),
+    "/golf": ("golf", "/golf", "/golf"),
+    "/prove": ("prove", "/prove", "/prove"),
+    "/formalize": ("formalize", "/formalize", "/formalize"),
+    "/autoprove": ("prove", "/prove", "/prove"),
+    "/autoformalize": ("formalize", "/formalize", "/formalize"),
 }
 
 
@@ -40,8 +40,8 @@ FORGIVING_WORKFLOW_ALIAS_MAP = {
     "refactor": "/refactor",
     "golf": "/golf",
     "prove": "/prove",
-    "formalize": "/formalize",
     "autoprove": "/prove",
+    "formalize": "/formalize",
     "autoformalize": "/formalize",
 }
 
@@ -333,10 +333,10 @@ def load_default_model() -> str:
     config = load_config()
     model_cfg = config.get("model")
     if isinstance(model_cfg, Mapping):
-        return str(model_cfg.get("default", "zai-org/GLM-5") or "zai-org/GLM-5")
+        return str(model_cfg.get("default", "zai-org/GLM-5.1") or "zai-org/GLM-5.1")
     if isinstance(model_cfg, str) and model_cfg.strip():
         return model_cfg.strip()
-    return "zai-org/GLM-5"
+    return "zai-org/GLM-5.1"
 
 
 def spawn_workflow(

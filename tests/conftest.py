@@ -1,4 +1,4 @@
-"""Shared fixtures for the gauss-agent test suite."""
+"""Shared fixtures for the EPFLemma test suite."""
 
 import asyncio
 import os
@@ -34,12 +34,6 @@ def _isolate_gauss_home(tmp_path, monkeypatch):
     (fake_epflemma_home / "local-models").mkdir()
     monkeypatch.setenv("GAUSS_HOME", str(fake_home))
     monkeypatch.setenv("EPFLEMMA_HOME", str(fake_epflemma_home))
-    # Reset plugin singleton so tests don't leak plugins from ~/.gauss/plugins/
-    try:
-        import gauss_cli.plugins as _plugins_mod
-        monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
-    except Exception:
-        pass
     # Tests should not inherit the agent's current gateway/messaging surface.
     # Individual tests that need gateway behavior set these explicitly.
     monkeypatch.delenv("GAUSS_SESSION_PLATFORM", raising=False)

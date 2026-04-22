@@ -31,12 +31,44 @@ def test_list_runtime_provider_targets_includes_local_and_zai():
     assert "custom" in names
 
 
+def test_main_mcp_status_json(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "epflemma_cli.main.get_mcp_status",
+        lambda: [{"name": "lean-lsp", "transport": "stdio", "tools": 3, "connected": True}],
+    )
+
+    assert main(["mcp", "status", "--json"]) == 0
+    output = capsys.readouterr().out
+    assert "\"name\": \"lean-lsp\"" in output
+
+
+def test_interactive_mcp_status_prints_sampling_metrics(monkeypatch, capsys):
+    shell = InteractiveShell()
+    monkeypatch.setattr(
+        "epflemma_cli.main.get_mcp_status",
+        lambda: [
+            {
+                "name": "lean-lsp",
+                "transport": "stdio",
+                "tools": 3,
+                "connected": True,
+                "sampling": {"requests": 2, "errors": 1},
+            }
+        ],
+    )
+
+    assert shell._run_mcp_command("/mcp status") == 0
+    output = capsys.readouterr().out
+    assert "lean-lsp" in output
+    assert "sampling requests=2" in output
+
+
 def test_describe_launch_plan_formats_provider_and_model(tmp_path):
     spec = NativeWorkflowSpec(
-        workflow_kind="autoprove",
+        workflow_kind="prove",
         frontend_command="/prove",
         canonical_command="/prove",
-        backend_command="/lean4:autoprove Main.lean",
+        backend_command="/prove Main.lean",
         workflow_args="Main.lean",
     )
     plan = NativeLaunchPlan(
@@ -84,7 +116,7 @@ def test_resolve_workflow_request_normalizes_requested_active_file(tmp_path):
     )
 
     assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "GaussTest/RealTheorems-homework.lean"
-    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/lean4:autoprove GaussTest/RealTheorems-homework.lean"
+    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/prove GaussTest/RealTheorems-homework.lean"
     assert plan.workflow.workflow_args == "GaussTest/RealTheorems-homework.lean"
 
 
@@ -109,7 +141,7 @@ def test_resolve_workflow_request_recovers_similar_requested_active_file(tmp_pat
     )
 
     assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "GaussTest/RealTheorems-homework.lean"
-    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/lean4:autoprove GaussTest/RealTheorems-homework.lean"
+    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/prove GaussTest/RealTheorems-homework.lean"
     assert plan.workflow.workflow_args == "GaussTest/RealTheorems-homework.lean"
 
 
@@ -121,13 +153,13 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
     fake_plan = NativeLaunchPlan(
         project=type("Project", (), {"label": "Demo", "root": tmp_path})(),
         workflow=NativeWorkflowSpec(
-            workflow_kind="autoprove",
+            workflow_kind="prove",
             frontend_command="/prove",
             canonical_command="/prove",
-            backend_command="/lean4:autoprove Main.lean",
+            backend_command="/prove Main.lean",
             workflow_args="Main.lean",
         ),
-        runtime={"provider": "custom", "model": "zai-org/GLM-5", "base_url": "https://inference.rcp.epfl.ch/v1"},
+        runtime={"provider": "custom", "model": "zai-org/GLM-5.1", "base_url": "https://inference.rcp.epfl.ch/v1"},
         child_env={},
         argv=["python", "-m", "epflemma_cli.native_runner"],
         active_skill="lean-proof-loop",
@@ -135,7 +167,7 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
     )
 
     monkeypatch.setattr("epflemma_cli.main.resolve_workflow_request", lambda *args, **kwargs: fake_plan)
-    monkeypatch.setattr("epflemma_cli.main.describe_launch_plan", lambda plan: {"workflow": "prove", "command": "/prove Main.lean", "project": "Demo", "project_root": str(tmp_path), "provider": "custom", "base_url": "https://inference.rcp.epfl.ch/v1", "model": "zai-org/GLM-5", "skill": "lean-proof-loop", "agents": "1"})
+    monkeypatch.setattr("epflemma_cli.main.describe_launch_plan", lambda plan: {"workflow": "prove", "command": "/prove Main.lean", "project": "Demo", "project_root": str(tmp_path), "provider": "custom", "base_url": "https://inference.rcp.epfl.ch/v1", "model": "zai-org/GLM-5.1", "skill": "lean-proof-loop", "agents": "1"})
 
     class _FakeProcess:
         pid = 43210
@@ -259,7 +291,7 @@ def test_swarm_agent_view_renders_transcript_not_status_panel(monkeypatch, tmp_p
         "Agent conversation started",
         agent_session_id="12345",
         user_message="Prove theorem foo",
-        model="zai-org/GLM-5",
+        model="zai-org/GLM-5.1",
     )
     append_workflow_activity(
         "assistant-response",
@@ -311,7 +343,7 @@ def test_swarm_agent_view_can_queue_follow_up_prompt(monkeypatch, tmp_path, caps
     agent = {
         "agent_id": "12345",
         "status": "verified",
-        "model": "zai-org/GLM-5",
+        "model": "zai-org/GLM-5.1",
         "parent_agent_id": "",
     }
     transcript = [
@@ -345,7 +377,7 @@ def test_status_agent_detail_renders_recent_activity(monkeypatch, tmp_path, caps
         agent_session_id="agent-child",
         parent_agent_session_id="agent-main",
         delegate_depth=1,
-        model="zai-org/GLM-5",
+        model="zai-org/GLM-5.1",
     )
     append_workflow_activity(
         "tool-result",

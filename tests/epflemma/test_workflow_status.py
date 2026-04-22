@@ -20,6 +20,7 @@ from epflemma_cli.workflow_state import (
     workflow_agent_activity_path,
     workflow_latest_run_activity_path,
     workflow_run_activity_path,
+    workflow_run_metadata_path,
     terminate_project_workflow_agents,
     terminate_all_workflow_agents,
     terminate_workflow_agent,
@@ -32,8 +33,8 @@ from epflemma_cli.workflow_state import (
 
 def test_persist_live_status_writes_shell_visible_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
     monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "google/gemma-4-31B-it")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
@@ -67,7 +68,7 @@ def test_persist_live_status_writes_shell_visible_payload(monkeypatch, tmp_path)
     payload = load_workflow_live_status()
 
     assert payload["phase"] == "busy"
-    assert payload["workflow_kind"] == "autoprove"
+    assert payload["workflow_kind"] == "prove"
     assert payload["active_skill"] == "lean-proof-loop"
     assert payload["latest_checkpoint_label"] == "proof milestone"
     assert payload["snapshot_present"] is True
@@ -90,7 +91,7 @@ def test_workflow_state_prefers_project_local_state(monkeypatch, tmp_path):
 def test_record_activity_captures_workflow_and_skill_context(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "review")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:review Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/review Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-diagnostics")
 
     runner._record_activity("resume", "Loaded workflow checkpoint", checkpoint_label="milestone")
@@ -117,7 +118,7 @@ def test_workflow_run_log_round_trip(monkeypatch, tmp_path):
 
 def test_workflow_run_log_creates_timestamped_copy(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.delenv("EPFLEMMA_WORKFLOW_RUN_ID", raising=False)
 
     reset_workflow_run_log()
@@ -131,7 +132,7 @@ def test_workflow_run_log_creates_timestamped_copy(monkeypatch, tmp_path):
 
 def test_workflow_activity_preserves_full_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
     full_text = "x" * 500
 
@@ -185,14 +186,14 @@ def test_workflow_activity_preview_uses_configured_limit(monkeypatch, tmp_path):
 
 def test_workflow_activity_writes_run_and_agent_jsonl_streams(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.delenv("EPFLEMMA_WORKFLOW_RUN_ID", raising=False)
 
     append_workflow_activity(
         "conversation-start",
         "Agent conversation started",
         agent_session_id="12345",
-        workflow_kind="autoprove",
+        workflow_kind="prove",
         active_skill="lean-proof-loop",
     )
 
@@ -213,6 +214,48 @@ def test_workflow_activity_writes_run_and_agent_jsonl_streams(monkeypatch, tmp_p
     assert run_event["event_id"] == root_event["event_id"]
     assert agent_event["agent_id"] == "12345"
     assert agent_event["task_label"] == "prove"
+
+
+def test_workflow_activity_marks_runner_start_as_top_level(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.delenv("EPFLEMMA_WORKFLOW_RUN_ID", raising=False)
+
+    append_workflow_activity("runner-start", "Managed workflow runner started")
+
+    latest_run_path = workflow_latest_run_activity_path()
+    assert latest_run_path is not None
+    event = json.loads(latest_run_path.read_text(encoding="utf-8").splitlines()[0])
+    metadata = json.loads(workflow_run_metadata_path(event["run_id"]).read_text(encoding="utf-8"))
+
+    assert event["run_scope"] == "top-level"
+    assert event["details"]["run_scope"] == "top-level"
+    assert metadata["run_scope"] == "top-level"
+
+
+def test_workflow_latest_run_activity_path_prefers_top_level_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_WORKFLOW_RUN_ID", "prove-background-test")
+
+    append_workflow_activity(
+        "agent-awaiting-input",
+        "Background workflow agent is waiting for input",
+        agent_session_id="12345",
+        process_id=24680,
+    )
+    background_run_id = json.loads(workflow_latest_run_activity_path(prefer_top_level=False).read_text(encoding="utf-8").splitlines()[0])["run_id"]
+
+    monkeypatch.setenv("EPFLEMMA_WORKFLOW_RUN_ID", "prove-top-level-test")
+    append_workflow_activity("runner-start", "Managed workflow runner started")
+
+    latest_top_level = workflow_latest_run_activity_path()
+    assert latest_top_level is not None
+    latest_event = json.loads(latest_top_level.read_text(encoding="utf-8").splitlines()[0])
+
+    assert latest_event["type"] == "runner-start"
+    assert latest_event["run_id"] != background_run_id
+    assert latest_event["run_scope"] == "top-level"
 
 
 def test_workflow_agent_summary_groups_events(monkeypatch, tmp_path):
@@ -271,7 +314,7 @@ def test_workflow_agent_summary_uses_workflow_task_label(monkeypatch, tmp_path):
         "Agent conversation started",
         agent_session_id="12345",
         process_id=24680,
-        workflow_kind="autoprove",
+        workflow_kind="prove",
         active_skill="lean-proof-loop",
     )
 
@@ -438,7 +481,7 @@ def test_workflow_agent_queue_and_waiting_state(monkeypatch, tmp_path):
         "Agent conversation started",
         agent_session_id="12345",
         process_id=24680,
-        model="zai-org/GLM-5",
+        model="zai-org/GLM-5.1",
     )
     append_workflow_activity(
         "agent-awaiting-input",
@@ -487,7 +530,7 @@ def test_workflow_agent_summary_prefers_live_busy_phase_over_conversation_end(mo
         "Agent conversation started",
         agent_session_id="agent-main",
         process_id=24680,
-        workflow_kind="autoprove",
+        workflow_kind="prove",
         active_skill="lean-theorem-queue-worker",
     )
     append_workflow_activity(
@@ -495,7 +538,7 @@ def test_workflow_agent_summary_prefers_live_busy_phase_over_conversation_end(mo
         "Agent conversation finished",
         agent_session_id="agent-main",
         process_id=24680,
-        workflow_kind="autoprove",
+        workflow_kind="prove",
         active_skill="lean-theorem-queue-worker",
         completed=True,
         api_calls=2,
@@ -504,7 +547,7 @@ def test_workflow_agent_summary_prefers_live_busy_phase_over_conversation_end(mo
         {
             "version": 1,
             "phase": "busy",
-            "workflow_kind": "autoprove",
+            "workflow_kind": "prove",
             "active_skill": "lean-theorem-queue-worker",
         }
     )

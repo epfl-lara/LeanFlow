@@ -45,10 +45,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
-try:
-    from epflemma_cli.config import get_epflemma_home as get_gauss_home
-except Exception:  # pragma: no cover - legacy fallback
-    from gauss_cli.config import get_gauss_home
+from epflemma_cli.auth import (
+    PROVIDER_REGISTRY,
+    _read_codex_tokens,
+    _resolve_kimi_base_url,
+)
+from epflemma_cli.config import get_epflemma_home, load_config
+from epflemma_cli.runtime_provider import resolve_runtime_provider
 from gauss_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -82,7 +85,7 @@ _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "gemini-3-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
-_AUTH_JSON_PATH = get_gauss_home() / "auth.json"
+_AUTH_JSON_PATH = get_epflemma_home() / "auth.json"
 
 # Codex fallback: uses the Responses API (the only endpoint the Codex
 # OAuth token can access) with a fast model for auxiliary tasks.
@@ -463,10 +466,6 @@ def _nous_base_url() -> str:
 def _read_codex_access_token() -> Optional[str]:
     """Read a valid Codex OAuth access token from Gauss auth store (~/.gauss/auth.json)."""
     try:
-        try:
-            from epflemma_cli.auth import _read_codex_tokens
-        except Exception:  # pragma: no cover - legacy fallback
-            from gauss_cli.auth import _read_codex_tokens
         data = _read_codex_tokens()
         tokens = data.get("tokens", {})
         access_token = tokens.get("access_token")
@@ -484,15 +483,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
     Returns (client, model) for the first provider whose env var is set,
     or (None, None) if none are configured.
     """
-    try:
-        try:
-            from epflemma_cli.auth import PROVIDER_REGISTRY
-        except Exception:  # pragma: no cover
-            from gauss_cli.auth import PROVIDER_REGISTRY
-    except ImportError:
-        logger.debug("Could not import PROVIDER_REGISTRY for API-key fallback")
-        return None, None
-
     for provider_id, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
             continue
@@ -590,10 +580,6 @@ def _read_main_model() -> str:
     if from_env:
         return from_env.strip()
     try:
-        try:
-            from epflemma_cli.config import load_config
-        except Exception:  # pragma: no cover
-            from gauss_cli.config import load_config
         cfg = load_config()
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str) and model_cfg.strip():
@@ -615,11 +601,6 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     environment.
     """
     try:
-        try:
-            from epflemma_cli.runtime_provider import resolve_runtime_provider
-        except Exception:  # pragma: no cover
-            from gauss_cli.runtime_provider import resolve_runtime_provider
-
         runtime = resolve_runtime_provider(requested="custom")
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
@@ -892,15 +873,6 @@ def resolve_provider_client(
         return None, None
 
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
-    try:
-        try:
-            from epflemma_cli.auth import PROVIDER_REGISTRY, _resolve_kimi_base_url
-        except Exception:  # pragma: no cover
-            from gauss_cli.auth import PROVIDER_REGISTRY, _resolve_kimi_base_url
-    except ImportError:
-        logger.debug("provider registry not available for provider %s", provider)
-        return None, None
-
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig is None:
         logger.warning("resolve_provider_client: unknown provider %r", provider)
@@ -1044,11 +1016,6 @@ def _strict_vision_backend_available(provider: str) -> bool:
 def _preferred_main_vision_provider() -> Optional[str]:
     """Return the selected main provider when it is also a supported vision backend."""
     try:
-        try:
-            from epflemma_cli.config import load_config
-        except Exception:  # pragma: no cover
-            from gauss_cli.config import load_config
-
         config = load_config()
         model_cfg = config.get("model", {})
         if isinstance(model_cfg, dict):
@@ -1241,12 +1208,8 @@ def _resolve_task_provider_model(
 
     if task:
         try:
-            try:
-                from epflemma_cli.config import load_config
-            except Exception:  # pragma: no cover
-                from gauss_cli.config import load_config
             config = load_config()
-        except ImportError:
+        except Exception:
             config = {}
 
         aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
@@ -1359,7 +1322,7 @@ def call_llm(
 
     Args:
         task: Auxiliary task name ("compression", "vision", "web_extract",
-              "session_search", "skills_hub", "mcp", "flush_memories").
+              "session_search", "mcp", "flush_memories").
               Reads provider:model from config/env. Ignored if provider is set.
         provider: Explicit provider override.
         model: Explicit model override.

@@ -23,8 +23,14 @@ if str(REPO_ROOT) not in sys.path:
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import ContextCompressor
 from agent.model_metadata import estimate_messages_tokens_rough
-from model_tools import handle_function_call
 from epflemma_cli.file_locks import list_file_locks, release_all_file_locks
+from epflemma_cli.lean_services import (
+    lean_inspect,
+    recent_empty_search_streak,
+    lean_verify,
+    probe_capabilities,
+    route_workflow_step,
+)
 from epflemma_cli.skill_core import build_skill_prompt
 from epflemma_cli.config import load_config
 from epflemma_cli.workflow_state import (
@@ -39,8 +45,6 @@ from epflemma_cli.workflow_state import (
     workflow_agent_detail,
 )
 from run_agent import AIAgent
-from tools.mcp_tool import discover_mcp_tools
-from tools.registry import registry
 
 MANAGED_SNAPSHOT_PREFIX = (
     "[EPFLEMMA-NATIVE MANAGED SNAPSHOT] Earlier managed workflow turns were compacted "
@@ -56,7 +60,7 @@ LIVE_PROOF_STATE_PREFIX = (
     "[EPFLEMMA-NATIVE LIVE PROOF STATE] This is the latest runner-refreshed Lean state "
     "for the active workflow. Treat it as current unless newer tool results contradict it."
 )
-AUTONOMOUS_WORKFLOW_KINDS = {"autoprove", "autoformalize"}
+AUTONOMOUS_WORKFLOW_KINDS = {"prove", "formalize"}
 PROJECT_SCAN_SKIP_DIRS = {".git", ".lake", ".epflemma", ".opengauss", ".gauss", "build"}
 WORKFLOW_STEP_BOUNDARY_INTERRUPT = "[epflemma-native workflow step boundary]"
 
@@ -97,12 +101,7 @@ def _workflow_kind() -> str:
 
 
 def _workflow_display_name(workflow_kind: str | None = None) -> str:
-    kind = str(workflow_kind or _workflow_kind() or "")
-    if kind == "autoprove":
-        return "prove"
-    if kind == "autoformalize":
-        return "formalize"
-    return kind
+    return str(workflow_kind or _workflow_kind() or "")
 
 
 def _native_interactive_enabled() -> bool:
@@ -132,11 +131,14 @@ def _base_active_skill() -> str:
 
 def _effective_skill_name(live_state: Mapping[str, Any] | None = None) -> str:
     configured = _base_active_skill()
+    state = dict(live_state or {})
+    route = dict(state.get("route_decision") or {})
+    if route.get("skill_name"):
+        return str(route.get("skill_name") or "")
     if not _single_queue_item_turn_enabled():
         return configured
     if configured and configured not in {"lean-proof-loop", "lean-theorem-queue-worker"}:
         return configured
-    state = dict(live_state or {})
     if state and not state.get("current_queue_item"):
         return "lean-proof-loop"
     return "lean-theorem-queue-worker"
@@ -156,6 +158,11 @@ def _is_step_boundary_interrupt(result: Mapping[str, Any] | None) -> bool:
 
 def _swarm_enabled() -> bool:
     return _parallel_agents() > 1 and _read_native_env("USER_APPROVED_SWARM", "0") == "1"
+
+
+def _runner_lean_prompt_enabled() -> bool:
+    raw = _read_text_env("EPFLEMMA_RUNNER_LEAN_PROMPT", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _runner_owner_id() -> str:
@@ -327,7 +334,7 @@ def _persist_live_status(
         "provider": _read_native_env("PROVIDER"),
         "model": _read_native_env("MODEL"),
         "base_url": _read_native_env("BASE_URL"),
-        "active_skill": _active_skill(),
+        "active_skill": _effective_skill_name(live_state),
         "parallel_agents": _parallel_agents(),
         "active_file": str(live_state.get("active_file", "") or ""),
         "active_file_label": str(live_state.get("active_file_label", "") or "[unknown]"),
@@ -346,6 +353,8 @@ def _persist_live_status(
         "proof_state_message": str(live_state.get("message", "") or ""),
         "sorry_count": live_state.get("sorry_count"),
         "project_sorry_count": live_state.get("project_sorry_count"),
+        "capability_report": dict(live_state.get("capability_report", {}) or {}),
+        "route_decision": dict(live_state.get("route_decision", {}) or {}),
         "checkpoint_count": int(checkpoint_state.get("count", 0) or 0),
         "latest_checkpoint_label": str(current_checkpoint.get("label", "") or "[none]"),
         "latest_filesystem_checkpoint": str(current_checkpoint.get("linked_filesystem_checkpoint", "") or "[none]"),
@@ -402,6 +411,14 @@ def _record_queue_assignment(
         "target_symbol": label,
         "active_file": str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or ""),
         "reasons": list(item.get("reasons", []) or []),
+        "blocker_signature": str(item.get("blocker_signature", "") or ""),
+        "search_hints": list(item.get("search_hints", []) or []),
+        "verification_gate": str(item.get("verification_gate", "") or ""),
+        "recommended_worker": str(
+            item.get("recommended_worker", "")
+            or dict(live_state.get("route_decision", {}) or {}).get("recommended_worker", "")
+            or ""
+        ),
     }
     if cycle is not None:
         payload["cycle"] = cycle
@@ -423,6 +440,28 @@ def _logging_config() -> Mapping[str, Any]:
     return logging_cfg if isinstance(logging_cfg, dict) else {}
 
 
+def _agent_config() -> Mapping[str, Any]:
+    try:
+        config = load_config()
+    except Exception:
+        return {}
+    agent_cfg = config.get("agent", {})
+    return agent_cfg if isinstance(agent_cfg, dict) else {}
+
+
+def _parse_managed_reasoning_config(effort: str) -> dict[str, Any] | None:
+    normalized = str(effort or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized == "auto":
+        return {"mode": "auto"}
+    if normalized == "none":
+        return {"enabled": False}
+    if normalized in {"low", "minimal", "medium", "high", "xhigh"}:
+        return {"enabled": True, "effort": normalized}
+    return None
+
+
 def _positive_int_config(name: str, default: int) -> int:
     try:
         value = int(_logging_config().get(name, default))
@@ -437,6 +476,128 @@ def _single_line(text: Any, limit: int | None = None) -> str:
     if len(collapsed) <= effective_limit:
         return collapsed
     return collapsed[: effective_limit - 3] + "..."
+
+
+def _failed_attempt_count_for_theorem(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> int:
+    if not target_symbol or not active_file:
+        return 0
+    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
+    return sum(
+        1
+        for attempt in attempts
+        if str(attempt.get("target_symbol", "") or "").strip() == str(target_symbol).strip()
+        and str(attempt.get("active_file", "") or "").strip() == str(active_file).strip()
+    )
+
+
+def _resolve_managed_reasoning_config(
+    base_reasoning_config: Mapping[str, Any] | None,
+    live_state: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    base = dict(base_reasoning_config or {})
+    if not base:
+        return None
+    if base.get("enabled") is False:
+        return {"enabled": False}
+    if base.get("mode") != "auto":
+        return base
+
+    current = dict(live_state or {})
+    autonomy = dict(autonomy_state or {})
+    if _queue_needs_final_file_sweep(current):
+        return {"enabled": True, "effort": "high"}
+
+    target_symbol, active_file = _queue_assignment_identity(current)
+    if target_symbol and active_file:
+        attempts = _failed_attempt_count_for_theorem(
+            autonomy,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+        effort = "high" if attempts >= 5 else "medium"
+        return {"enabled": True, "effort": effort}
+
+    return {"enabled": True, "effort": "high"}
+
+
+def _apply_managed_reasoning_policy(
+    agent: AIAgent,
+    live_state: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    base_reasoning = getattr(agent, "_managed_base_reasoning_config", None)
+    effective = _resolve_managed_reasoning_config(base_reasoning, live_state, autonomy_state)
+    agent.reasoning_config = effective
+    return effective
+
+
+def _record_managed_reasoning_policy(
+    live_state: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any] | None,
+    effective: Mapping[str, Any] | None,
+    *,
+    phase: str,
+    cycle: int | None = None,
+) -> None:
+    current = dict(live_state or {})
+    autonomy = dict(autonomy_state or {})
+    target_symbol, active_file = _queue_assignment_identity(current)
+    failed_attempt_count = 0
+    if target_symbol and active_file:
+        failed_attempt_count = _failed_attempt_count_for_theorem(
+            autonomy,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+    effort = ""
+    enabled = True
+    if effective:
+        enabled = bool(effective.get("enabled", True))
+        effort = str(effective.get("effort", "") or "")
+    message = "Managed reasoning policy applied"
+    if effort:
+        message += f": {effort}"
+    elif not enabled:
+        message += ": disabled"
+    details = {
+        "phase": phase,
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "failed_attempt_count": failed_attempt_count,
+        "effective_reasoning_effort": effort,
+        "reasoning_enabled": enabled,
+    }
+    if cycle is not None:
+        details["cycle"] = cycle
+    _record_activity("managed-reasoning-policy", message, **details)
+
+
+def _managed_agent_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _managed_agent_seed(value: Any) -> int | None:
+    return _managed_agent_int(value)
+
+
+def _managed_agent_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class _WorkflowLogTee:
@@ -519,47 +680,39 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
     workflow_kind = workflow_kind.strip().lower()
     guidance_map = {
         "prove": (
-            "guided proof session",
-            "Locate the target declaration or file, inspect goals with `lean-lsp`, make the smallest proof edit that compiles, and verify the result before finishing.",
+            "autonomous proving session",
+            "Load the native proving contract from the active skill/spec, begin with `lean_capabilities` and `lean_inspect`, use `lean_search` before guessing, and use `lean_worker_dispatch` only when the route recommends it; the live queue, route decision, and verification gate below are the state for this turn.",
         ),
         "review": (
             "proof review session",
-            "Inspect the current proof state, identify correctness or style issues, and propose or apply targeted fixes only when the review clearly justifies them.",
+            "Use the native review/checkpoint contract from the active skill/spec and the live Lean state below.",
         ),
         "checkpoint": (
             "proof checkpoint session",
-            "Summarize the current proof state, stabilize the file so it builds cleanly, and leave a clear handoff for the next proving step.",
+            "Use the native review/checkpoint contract from the active skill/spec and the live Lean state below.",
         ),
         "refactor": (
             "proof refactor session",
-            "Improve the proof structure without changing theorem meaning, then re-check diagnostics and rebuild to avoid regressions.",
+            "Use the native refactor/golf contract from the active skill/spec and the live Lean state below.",
         ),
         "golf": (
             "proof golfing session",
-            "Shorten or simplify the proof while preserving readability enough for future maintenance, then verify that the reduced proof still compiles.",
+            "Use the native refactor/golf contract from the active skill/spec and the live Lean state below.",
         ),
         "draft": (
             "declaration drafting session",
-            "Create or refine Lean declaration skeletons, imports, and signatures so the target is ready for proving work.",
-        ),
-        "autoprove": (
-            "autonomous proving session",
-            "Drive the proving loop end-to-end. First identify the declarations in scope that still have `sorry`, Lean errors, or warnings. Then work through them one by one, fixing and re-checking after each meaningful edit. continue iterating until the requested file is clean if a file was given, or the project is clean if no file was given. For file-scoped theorem turns, use Lean diagnostics/goals for iteration but only accept progress after the canonical `lake env lean <file>` check for that exact file. Do not treat `lake build`, `grep`, `head`, or truncated output as sufficient acceptance for a theorem-sized repair.",
+            "Use the native drafting/formalization contract from the active skill/spec and the live Lean state below.",
         ),
         "formalize": (
-            "interactive formalization session",
-            "Translate the requested mathematics into Lean declarations step by step, check the generated code frequently, and keep the user-oriented structure readable.",
-        ),
-        "autoformalize": (
             "autonomous formalization session",
-            "Handle drafting plus proving as one workflow. Identify declarations in scope that still have `sorry`, Lean errors, or warnings, then clear them one by one and continue iterating until the requested file is clean if a file was given, or the project is clean if no file was given. For file-scoped theorem turns, use Lean diagnostics/goals for iteration but only accept progress after the canonical `lake env lean <file>` check for that exact file. Do not treat `lake build`, `grep`, `head`, or truncated output as sufficient acceptance for a theorem-sized repair.",
+            "Load the native formalization contract from the active skill/spec, begin with `lean_capabilities` and `lean_inspect`, use `lean_search` before redrafting blindly, and use `lean_worker_dispatch` only when the route recommends it; the live queue, route decision, and verification gate below are the state for this turn.",
         ),
     }
     label, detail = guidance_map.get(
         workflow_kind,
         (
             "managed Lean workflow session",
-            "Use the staged Lean tools to complete the requested workflow and verify your work before finishing.",
+            "Use the active native workflow spec plus the live state below.",
         ),
     )
     guidance = (
@@ -617,49 +770,12 @@ def _resolve_checkpoint_ref(ref: str) -> dict[str, Any] | None:
 
 
 def _discover_lean_mcp_tool_names() -> dict[str, str]:
-    try:
-        discover_mcp_tools()
-    except Exception:
-        pass
-
-    discovered = {"diagnostics": "", "goals": ""}
-    for tool_name in registry.get_all_tool_names():
-        lowered = tool_name.lower()
-        if "lean" not in lowered:
-            continue
-        if not discovered["diagnostics"] and any(token in lowered for token in ("diagnostic", "message")):
-            discovered["diagnostics"] = tool_name
-        if not discovered["goals"] and any(token in lowered for token in ("goal", "proof")):
-            discovered["goals"] = tool_name
-    return discovered
-
-
-def _tool_parameter_names(tool_name: str) -> set[str]:
-    entry = registry._tools.get(tool_name)  # type: ignore[attr-defined]
-    if entry is None:
-        return set()
-    schema = getattr(entry, "schema", {}) or {}
-    parameters = schema.get("parameters", {}) if isinstance(schema, Mapping) else {}
-    properties = parameters.get("properties", {}) if isinstance(parameters, Mapping) else {}
-    if isinstance(properties, Mapping):
-        return {str(key) for key in properties.keys()}
-    return set()
-
-
-def _invoke_json_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    accepted = _tool_parameter_names(tool_name)
-    if accepted:
-        filtered = {key: value for key, value in arguments.items() if key in accepted and value not in (None, "")}
-    else:
-        filtered = {key: value for key, value in arguments.items() if value not in (None, "")}
-    raw = handle_function_call(tool_name, filtered)
-    try:
-        payload = json.loads(raw)
-        if isinstance(payload, dict):
-            return payload
-    except Exception:
-        pass
-    return {"raw": raw}
+    capability = probe_capabilities(_project_root()).to_dict()
+    mcp_tools = dict(capability.get("mcp_tools", {}) or {})
+    return {
+        "diagnostics": str(mcp_tools.get("diagnostics", "") or ""),
+        "goals": str(mcp_tools.get("goals", "") or ""),
+    }
 
 
 def _message_text(content: Any) -> str:
@@ -1256,6 +1372,34 @@ def _prepare_queue_assignment_state(
     }
 
 
+def _queue_assignment_identity(live_state: Mapping[str, Any] | None) -> tuple[str, str]:
+    current = dict(live_state or {})
+    item = dict(current.get("current_queue_item") or {})
+    label = str(item.get("label", "") or current.get("target_symbol", "") or "").strip()
+    active_file = str(current.get("active_file_label", "") or current.get("active_file", "") or "").strip()
+    return label, active_file
+
+
+def _queue_assignment_transition(
+    autonomy_state: Mapping[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> dict[str, str] | None:
+    baseline = dict(autonomy_state.get("current_queue_assignment") or {})
+    previous_target = str(baseline.get("target_symbol", "") or "").strip()
+    previous_file = str(baseline.get("active_file", "") or "").strip()
+    current_target, current_file = _queue_assignment_identity(live_state)
+    if not previous_target or not previous_file or not current_target or not current_file:
+        return None
+    if previous_target == current_target and previous_file == current_file:
+        return None
+    return {
+        "previous_target": previous_target,
+        "previous_file": previous_file,
+        "current_target": current_target,
+        "current_file": current_file,
+    }
+
+
 def _attempt_proof_shape_from_delta(
     autonomy_state: Mapping[str, Any],
     live_state: Mapping[str, Any] | None,
@@ -1289,6 +1433,13 @@ def _queue_assignment_block(
     active_file = str(live_state.get("active_file", "") or live_state.get("active_file_label", "") or "")
     current_status = _current_queue_status(live_state)
     current_blocker = str(live_state.get("current_blocker", "") or reasons or "[none]").strip()
+    route_decision = dict(live_state.get("route_decision", {}) or {})
+    recommended_worker = str(
+        item.get("recommended_worker", "")
+        or route_decision.get("recommended_worker", "")
+        or ""
+    ).strip()
+    search_hints = [str(value) for value in item.get("search_hints", []) or [] if str(value).strip()]
     parts = [
         "Assigned queue item:",
         f"- declaration: {label}",
@@ -1315,6 +1466,27 @@ def _queue_assignment_block(
     failed = _recent_failed_attempts_summary(dict(autonomy_state or {}), live_state)
     if failed:
         parts.extend(["", failed])
+    if search_hints:
+        parts.extend(["", "Search hints:", f"- {', '.join(search_hints[:4])}"])
+    if recommended_worker:
+        parts.extend(
+            [
+                "",
+                "Recommended worker:",
+                f"- `{recommended_worker}`",
+                f"- dispatch with `lean_worker_dispatch` if the blocker persists after the next focused attempt",
+            ]
+        )
+    if bool(live_state.get("search_exhausted")):
+        parts.extend(
+            [
+                "",
+                "Search exhaustion:",
+                "- repeated search attempts have already failed for this theorem",
+                "- do not call `lean_search` again in this turn unless you are changing the query strategy materially",
+                "- your next move should be an edit, `lean_verify`, `lean_worker_dispatch`, or a concrete blocker report",
+            ]
+        )
     parts.extend(["", "Task:", f"Repair `{label}` from its current state."])
     return "\n".join(parts)
 
@@ -1361,6 +1533,69 @@ def _remember_failed_attempt(
     autonomy_state["failed_attempts"] = attempts[-_failed_attempt_history_limit():]
 
 
+def _record_theorem_outcome(autonomy_state: dict[str, Any], outcome: Mapping[str, Any]) -> None:
+    target_symbol = str(outcome.get("target_symbol", "") or "").strip()
+    active_file = str(outcome.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return
+    outcome_map = {
+        str(key): dict(value)
+        for key, value in dict(autonomy_state.get("theorem_outcomes", {}) or {}).items()
+        if isinstance(value, Mapping)
+    }
+    outcome_map[f"{active_file}::{target_symbol}"] = {
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "status": str(outcome.get("status", "") or "unknown"),
+        "note": str(outcome.get("note", "") or ""),
+        "build_status": str(outcome.get("build_status", "") or ""),
+    }
+    autonomy_state["theorem_outcomes"] = outcome_map
+
+
+def _remember_transition_failed_attempt(
+    autonomy_state: dict[str, Any],
+    outcome: Mapping[str, Any],
+) -> None:
+    status = str(outcome.get("status", "") or "").strip().lower()
+    if status not in {"blocked", "reverted-to-sorry", "skipped"}:
+        return
+    target_symbol = str(outcome.get("target_symbol", "") or "").strip()
+    active_file = str(outcome.get("active_file", "") or "").strip()
+    reason = str(outcome.get("note", "") or outcome.get("build_status", "") or "").strip()
+    if not target_symbol or not active_file or not reason:
+        return
+    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
+    scoped = [
+        item for item in attempts
+        if str(item.get("target_symbol", "") or "").strip() == target_symbol
+        and str(item.get("active_file", "") or "").strip() == active_file
+    ]
+    entry = {
+        "attempt": len(scoped) + 1,
+        "cycle": int(autonomy_state.get("current_cycle", 0) or 0),
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "proof_shape": "[transitioned away before theorem was solved]",
+        "reason": _single_line(reason, 240),
+    }
+    if attempts and attempts[-1] == entry:
+        return
+    attempts.append(entry)
+    autonomy_state["failed_attempts"] = attempts[-_failed_attempt_history_limit():]
+
+
+def _has_unresolved_theorem_outcomes(autonomy_state: Mapping[str, Any]) -> bool:
+    outcome_map = dict(autonomy_state.get("theorem_outcomes", {}) or {})
+    for value in outcome_map.values():
+        if not isinstance(value, Mapping):
+            continue
+        status = str(value.get("status", "") or "").strip().lower()
+        if status and status != "solved":
+            return True
+    return False
+
+
 def _recent_failed_attempts_summary(
     autonomy_state: Mapping[str, Any],
     live_state: Mapping[str, Any] | None,
@@ -1387,6 +1622,158 @@ def _recent_failed_attempts_summary(
         lines.append(f"  proof shape: {item.get('proof_shape', '[no proof shape recorded]')}")
         lines.append(f"  why it failed: {item.get('reason', '[no reason recorded]')}")
     return "\n".join(lines)
+
+
+def _latest_failed_attempt_for_theorem(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> dict[str, Any] | None:
+    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
+    if not attempts or not target_symbol or not active_file:
+        return None
+    scoped = [
+        attempt
+        for attempt in attempts
+        if str(attempt.get("target_symbol", "") or "").strip() == str(target_symbol).strip()
+        and str(attempt.get("active_file", "") or "").strip() == str(active_file).strip()
+    ]
+    if not scoped:
+        return None
+    return scoped[-1]
+
+
+def _theorem_is_still_pending(live_state: Mapping[str, Any] | None, target_symbol: str) -> bool:
+    target = str(target_symbol or "").strip()
+    if not target:
+        return False
+    current = dict(live_state or {})
+    item = dict(current.get("current_queue_item") or {})
+    if str(item.get("label", "") or "").strip() == target:
+        return True
+    summary = str(current.get("declaration_queue_summary", "") or "")
+    return target in summary
+
+
+def _summarize_theorem_transition_outcome(
+    autonomy_state: Mapping[str, Any],
+    live_state: Mapping[str, Any] | None,
+    history: list[dict[str, Any]],
+) -> dict[str, str]:
+    transition = _queue_assignment_transition(autonomy_state, live_state) or {}
+    previous_target = str(transition.get("previous_target", "") or "").strip()
+    previous_file = str(transition.get("previous_file", "") or "").strip()
+    recent_text = _collect_message_text(history[-12:])
+    lowered = recent_text.lower()
+    latest_failed_attempt = _latest_failed_attempt_for_theorem(
+        autonomy_state,
+        target_symbol=previous_target,
+        active_file=previous_file,
+    )
+    previous_reason = _single_line(str((latest_failed_attempt or {}).get("reason", "") or ""), 240)
+    blocker = _single_line(
+        str((live_state or {}).get("current_blocker", "") or (live_state or {}).get("blocker_summary", "") or ""),
+        240,
+    )
+    pending = _theorem_is_still_pending(live_state, previous_target)
+    if pending and ("reverted to `sorry`" in recent_text or "reverted to sorry" in lowered):
+        status = "reverted-to-sorry"
+        note = previous_reason or blocker or f"{previous_target} remains pending after being reverted to `sorry`."
+    elif pending and (previous_reason or blocker):
+        status = "blocked"
+        note = previous_reason or blocker
+    elif pending:
+        status = "skipped"
+        note = f"{previous_target} remains pending in the declaration queue."
+    else:
+        status = "solved"
+        note = f"{previous_target} no longer appears in the pending declaration queue."
+    return {
+        "target_symbol": previous_target,
+        "active_file": previous_file,
+        "status": status,
+        "note": note,
+        "build_status": _single_line(str((live_state or {}).get("build_status", "") or "unknown"), 220),
+    }
+
+
+def _workflow_transition_snapshot(
+    compaction_state: Mapping[str, Any] | None,
+    live_state: Mapping[str, Any] | None,
+) -> str:
+    snapshot_text = str((compaction_state or {}).get("snapshot_text", "") or "").strip()
+    if snapshot_text:
+        return snapshot_text
+    current = dict(live_state or {})
+    return "\n".join(
+        [
+            MANAGED_SNAPSHOT_PREFIX,
+            "",
+            f"Workflow: {_workflow_kind()}",
+            f"Active file: {str(current.get('active_file_label', '') or '[unknown]')}",
+            "Current queue summary:",
+            str(current.get("declaration_queue_summary", "") or "[none]"),
+            "",
+            "Latest verification/build status:",
+            str(current.get("build_status", "") or "unknown"),
+            "",
+            "Current blocker:",
+            str(current.get("current_blocker", "") or "[none]"),
+        ]
+    ).strip()
+
+
+def _theorem_transition_handoff_message(
+    outcome: Mapping[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> str:
+    current_target, current_file = _queue_assignment_identity(live_state)
+    current = dict(live_state or {})
+    return "\n".join(
+        [
+            "[EPFLEMMA-NATIVE THEOREM TRANSITION HANDOFF]",
+            "",
+            "Previous theorem outcome:",
+            f"- declaration: {str(outcome.get('target_symbol', '') or '[unknown]')}",
+            f"- file: {str(outcome.get('active_file', '') or '[unknown]')}",
+            f"- final status: {str(outcome.get('status', '') or 'unknown')}",
+            f"- note: {str(outcome.get('note', '') or '[none]')}",
+            "",
+            "Current queue focus:",
+            f"- declaration: {current_target or '[unknown]'}",
+            f"- file: {current_file or '[unknown]'}",
+            "",
+            "Queue summary:",
+            str(current.get("declaration_queue_summary", "") or "[none]"),
+            "",
+            "Latest verification/build status:",
+            str(outcome.get("build_status", "") or str(current.get("build_status", "") or "unknown")),
+        ]
+    ).strip()
+
+
+def _rebuild_history_for_theorem_transition(
+    history: list[dict[str, Any]],
+    compaction_state: Mapping[str, Any] | None,
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, str]] | tuple[None, None]:
+    transition = _queue_assignment_transition(autonomy_state, live_state)
+    if not transition:
+        return None, None
+    outcome = _summarize_theorem_transition_outcome(autonomy_state, live_state, history)
+    _record_theorem_outcome(autonomy_state, outcome)
+    _remember_transition_failed_attempt(autonomy_state, outcome)
+    rebuilt_history = [
+        {"role": "assistant", "content": _workflow_transition_snapshot(compaction_state, live_state)},
+        {"role": "assistant", "content": _theorem_transition_handoff_message(outcome, live_state)},
+    ]
+    autonomy_state["last_theorem_outcome"] = outcome
+    autonomy_state["continuation_blocked_runs"] = 0
+    autonomy_state["continuation_stable_cycles"] = 0
+    autonomy_state["continuation_live_state_signature"] = None
+    return rebuilt_history, transition
 
 
 def _queue_needs_final_file_sweep(live_state: Mapping[str, Any] | None) -> bool:
@@ -1488,40 +1875,22 @@ def _summarize_tool_payload(payload: Mapping[str, Any], *, limit: int = 6) -> st
     return "\n".join(deduped[:limit]) if deduped else "unavailable"
 
 
-def _query_live_diagnostics(active_file: str) -> str:
+def _query_live_diagnostics(active_file: str, target_symbol: str = "") -> str:
     if not active_file:
         return "No active Lean file identified."
-    tool_names = _discover_lean_mcp_tool_names()
-    diagnostics_tool = tool_names.get("diagnostics", "")
-    if not diagnostics_tool:
-        return "lean-lsp diagnostics tool unavailable."
-    payload = _invoke_json_tool(
-        diagnostics_tool,
-        {
-            "file_path": active_file,
-            "path": active_file,
-        },
-    )
-    return _summarize_tool_payload(payload)
+    try:
+        return lean_inspect(active_file, cwd=_project_root(), symbol=target_symbol or None).diagnostics
+    except Exception as exc:
+        return f"Lean diagnostics unavailable: {exc}"
 
 
 def _query_live_goals(active_file: str, target_symbol: str) -> str:
     if not active_file:
         return "No active Lean file identified."
-    tool_names = _discover_lean_mcp_tool_names()
-    goals_tool = tool_names.get("goals", "")
-    if not goals_tool:
-        return "lean-lsp goals tool unavailable."
-    line = _find_symbol_line(active_file, target_symbol) if target_symbol else None
-    payload = _invoke_json_tool(
-        goals_tool,
-        {
-            "file_path": active_file,
-            "path": active_file,
-            "line": line or 1,
-        },
-    )
-    return _summarize_tool_payload(payload)
+    try:
+        return lean_inspect(active_file, cwd=_project_root(), symbol=target_symbol or None).goals
+    except Exception as exc:
+        return f"Lean goals unavailable: {exc}"
 
 
 def _build_live_proof_state(
@@ -1530,10 +1899,25 @@ def _build_live_proof_state(
 ) -> dict[str, Any]:
     active_file = _resolve_active_file(history, checkpoint_state)
     target_symbol = _resolve_target_symbol(history, checkpoint_state)
-    diagnostics = _query_live_diagnostics(active_file)
-    goals = _query_live_goals(active_file, target_symbol)
-    sorry_count = _count_sorries(active_file)
+    capability_report = probe_capabilities(_project_root()).to_dict()
+    inspection = None
+    if active_file:
+        try:
+            inspection = lean_inspect(
+                active_file,
+                cwd=_project_root(),
+                symbol=target_symbol or None,
+            )
+        except Exception:
+            inspection = None
+    diagnostics = inspection.diagnostics if inspection else _query_live_diagnostics(active_file, target_symbol)
+    goals = inspection.goals if inspection else _query_live_goals(active_file, target_symbol)
+    sorry_count = inspection.sorry_count if inspection else _count_sorries(active_file)
+    if inspection and inspection.capability_report:
+        capability_report = dict(inspection.capability_report)
     project_sorry_count, project_sorry_files = _count_project_sorries(_project_root())
+    if inspection and inspection.project_sorry_count is not None:
+        project_sorry_count = inspection.project_sorry_count
     build_status = _extract_recent_build_status(history)
     recent_issue_text = _collect_message_text(history[-10:])
     blocker_summary = _normalize_blocker_summary(_extract_blocker_summary(recent_issue_text))
@@ -1545,6 +1929,44 @@ def _build_live_proof_state(
         project_root=_project_root(),
         scope=declaration_scope,
     )
+    inspection_queue_items: dict[str, dict[str, Any]] = {}
+    if inspection:
+        for item in inspection.queue_items:
+            if not isinstance(item, Mapping):
+                continue
+            label = str(item.get("label", "") or "").strip()
+            if label:
+                inspection_queue_items[label] = dict(item)
+    if inspection_queue_items:
+        enriched_queue: list[dict[str, Any]] = []
+        seen_labels: set[str] = set()
+        for item in declaration_queue:
+            merged = dict(item)
+            label = str(merged.get("label", "") or "").strip()
+            extra = inspection_queue_items.get(label, {})
+            if extra:
+                seen_labels.add(label)
+                for key, value in extra.items():
+                    if key not in merged or merged.get(key) in (None, "", [], {}):
+                        merged[key] = value
+            if not merged.get("search_hints"):
+                merged["search_hints"] = [label, str(merged.get("kind", "") or "").strip()]
+            if not merged.get("verification_gate"):
+                merged["verification_gate"] = _canonical_file_verification_command(active_file)
+            if not merged.get("blocker_signature"):
+                merged["blocker_signature"] = f"{label or 'queue'}:{merged.get('line', '?')}"
+            enriched_queue.append(merged)
+        for label, extra in inspection_queue_items.items():
+            if label not in seen_labels:
+                merged = dict(extra)
+                if not merged.get("search_hints"):
+                    merged["search_hints"] = [label, str(merged.get("kind", "") or "").strip()]
+                if not merged.get("verification_gate"):
+                    merged["verification_gate"] = _canonical_file_verification_command(active_file)
+                if not merged.get("blocker_signature"):
+                    merged["blocker_signature"] = f"{label or 'queue'}:{merged.get('line', '?')}"
+                enriched_queue.append(merged)
+        declaration_queue = enriched_queue
     current_queue_item = _current_queue_item(declaration_queue, active_file)
     current_queue_label = str((current_queue_item or {}).get("label", "") or "").strip()
     queue_needs_final_file_sweep = declaration_scope == "file" and bool(active_file) and not declaration_queue
@@ -1565,6 +1987,52 @@ def _build_live_proof_state(
             active_file_label = str(Path(active_file).resolve().relative_to(Path(_project_root()).resolve()))
         except Exception:
             active_file_label = active_file
+    workflow_command = str(
+        _read_native_env("WORKFLOW_COMMAND", "")
+        or _read_text_env("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")
+    ).strip()
+    empty_search_streak = recent_empty_search_streak(workflow_command=workflow_command) if workflow_command else 0
+    search_exhausted = empty_search_streak >= 3
+    provisional_state = {
+        "active_file": active_file,
+        "active_file_label": active_file_label,
+        "target_symbol": target_symbol,
+        "diagnostics": diagnostics,
+        "goals": goals,
+        "build_status": build_status,
+        "declaration_scope": declaration_scope,
+        "declaration_queue_total": len(declaration_queue),
+        "declaration_queue_preview": list(declaration_queue[:8]),
+        "declaration_queue_summary": declaration_queue_summary,
+        "current_queue_item": dict(current_queue_item or {}),
+        "current_queue_item_prefix": current_queue_prefix,
+        "current_queue_item_slice": current_queue_slice,
+        "current_blocker": current_blocker,
+        "queue_needs_final_file_sweep": queue_needs_final_file_sweep,
+        "sorry_count": sorry_count,
+        "project_sorry_count": project_sorry_count,
+        "project_sorry_files": list(project_sorry_files),
+        "blocker_summary": blocker_summary,
+        "verification_hint": verification_hint,
+        "capability_report": capability_report,
+        "recent_empty_search_streak": empty_search_streak,
+        "search_exhausted": search_exhausted,
+    }
+    route_decision = route_workflow_step(
+        _workflow_kind(),
+        provisional_state,
+        configured_skill=_base_active_skill(),
+        cwd=_project_root(),
+    ).to_dict()
+    if current_queue_item and route_decision.get("recommended_worker"):
+        current_queue_item = dict(current_queue_item)
+        current_queue_item.setdefault(
+            "recommended_worker",
+            str(route_decision.get("recommended_worker", "") or ""),
+        )
+    degraded_summary = ", ".join(capability_report.get("degraded_reasons", []) or []) or "[none]"
+    route_summary = str(route_decision.get("reason", "") or "[none]")
+    route_action = str(route_decision.get("route_action", "") or "[none]")
     body = "\n".join(
         [
             LIVE_PROOF_STATE_PREFIX,
@@ -1585,8 +2053,22 @@ def _build_live_proof_state(
             f"Pending {declaration_scope} queue:",
             declaration_queue_summary,
             "",
+            "Route:",
+            f"{route_action} via {route_decision.get('skill_name', '[unknown]')}",
+            route_summary,
+            "",
             "Recommended verification path:",
-            verification_hint or "lean-lsp diagnostics/goals first, then `lake build` when close to clean",
+            verification_hint or "`lean_inspect` first, then `lean_verify` when close to clean",
+            "",
+            "Search state:",
+            (
+                f"empty search streak: {empty_search_streak} (search exhausted for this theorem)"
+                if search_exhausted
+                else f"empty search streak: {empty_search_streak}"
+            ),
+            "",
+            "Capabilities:",
+            f"degraded reasons: {degraded_summary}",
             "",
             "Proof status:",
             f"sorry count: {sorry_count if sorry_count is not None else '[unknown]'}",
@@ -1619,6 +2101,10 @@ def _build_live_proof_state(
         "project_sorry_files": list(project_sorry_files),
         "blocker_summary": blocker_summary,
         "verification_hint": verification_hint,
+        "capability_report": capability_report,
+        "route_decision": route_decision,
+        "recent_empty_search_streak": empty_search_streak,
+        "search_exhausted": search_exhausted,
         "message": body,
     }
     if _workflow_kind() in AUTONOMOUS_WORKFLOW_KINDS:
@@ -1643,8 +2129,22 @@ def _build_live_proof_state(
                 f"Pending {live_state.get('declaration_scope', declaration_scope)} queue:",
                 str(live_state.get("declaration_queue_summary", "") or "[none]"),
                 "",
+                "Route:",
+                (
+                    f"{dict(live_state.get('route_decision', {}) or {}).get('route_action', '[none]')} "
+                    f"via {dict(live_state.get('route_decision', {}) or {}).get('skill_name', '[unknown]')}"
+                ),
+                str(dict(live_state.get("route_decision", {}) or {}).get("reason", "") or "[none]"),
+                "",
                 "Recommended verification path:",
-                str(live_state.get("verification_hint", "") or "lean-lsp diagnostics/goals first, then `lake build` when close to clean"),
+                str(live_state.get("verification_hint", "") or "`lean_inspect` first, then `lean_verify` when close to clean"),
+                "",
+                "Capabilities:",
+                "degraded reasons: "
+                + (
+                    ", ".join(dict(live_state.get("capability_report", {}) or {}).get("degraded_reasons", []) or [])
+                    or "[none]"
+                ),
                 "",
                 "Proof status:",
                 f"sorry count: {live_state.get('sorry_count', '[unknown]')}",
@@ -1768,7 +2268,7 @@ def _queue_item_verification_hint(active_file: str) -> str:
         return ""
     return (
         f"- canonical check: `{command}`\n"
-        "- use Lean diagnostics/goals for iteration, but do not accept the theorem as solved until this command succeeds for the active file\n"
+        "- use `lean_inspect` for iteration, but do not accept the theorem as solved until this command succeeds for the active file\n"
         "- do not treat `lake build`, `grep`, `head`, or truncated output as proof that this theorem-sized repair is clean"
     )
 
@@ -1778,47 +2278,24 @@ def _recommended_verification_command(active_file: str) -> str:
     if _single_queue_item_turn_enabled() and active_file:
         command = _canonical_file_verification_command(active_file)
         return (
-            f"lean-lsp diagnostics/goals on {relative_label}, then the required acceptance check "
+            f"`lean_inspect` on {relative_label}, then the required acceptance check "
             f"`{command}` for this file-scoped theorem turn"
         )
     module_name = _module_name_for_file(active_file)
     if module_name:
-        return f"lean-lsp diagnostics/goals first, then `lake build {module_name}` when the file is close to clean"
-    return f"lean-lsp diagnostics/goals on {relative_label}, then final `lake env lean {relative_label}` when close to clean"
+        return f"`lean_inspect` first, then `lake build {module_name}` when the file is close to clean"
+    return f"`lean_inspect` on {relative_label}, then final `lake env lean {relative_label}` when close to clean"
 
 
 def _run_explicit_verification_build(active_file: str = "", *, full_project: bool = False) -> tuple[bool, str]:
-    module_name = _module_name_for_file(active_file)
-    build_cmd = ["lake", "build"]
-    build_label = "lake build"
-    if not full_project and module_name:
-        build_cmd = ["lake", "build", module_name]
-        build_label = f"lake build {module_name}"
-    elif not full_project and active_file:
-        try:
-            relative_file = str(Path(active_file).resolve().relative_to(Path(_project_root()).resolve()))
-        except Exception:
-            relative_file = active_file
-        build_cmd = ["lake", "env", "lean", relative_file]
-        build_label = f"lake env lean {relative_file}"
-    try:
-        result = subprocess.run(
-            build_cmd,
-            cwd=_project_root(),
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except Exception as exc:
-        return False, f"build invocation failed: {type(exc).__name__}: {exc}"
-
-    if result.returncode == 0:
-        return True, f"{build_label} succeeded"
-
-    stderr = (result.stderr or "").strip()
-    stdout = (result.stdout or "").strip()
-    detail = stderr or stdout or f"exit {result.returncode}"
-    return False, f"{build_label} reported errors: {detail[:280]}"
+    mode = "project"
+    if not full_project and active_file:
+        mode = "module" if _module_name_for_file(active_file) else "file_exact"
+    result = lean_verify(target=active_file, cwd=_project_root(), mode=mode)
+    if result.ok:
+        return True, f"{result.command} succeeded"
+    detail = str(result.output or "").strip() or "verification failed"
+    return False, f"{result.command} reported errors: {detail[:280]}"
 
 
 def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -2281,6 +2758,8 @@ def _build_agent() -> AIAgent:
 
     toolset_name = _read_native_env("TOOLSET", "epflemma-native") or "epflemma-native"
     logging_cfg = _logging_config()
+    agent_cfg = _agent_config()
+    reasoning_cfg = _parse_managed_reasoning_config(str(agent_cfg.get("reasoning_effort", "auto")))
     agent = AIAgent(
         model=model,
         base_url=base_url,
@@ -2296,11 +2775,19 @@ def _build_agent() -> AIAgent:
         checkpoint_max_snapshots=50,
         tool_progress_callback=_tool_progress_callback,
         step_callback=_step_callback,
+        reasoning_config=reasoning_cfg,
+        seed=_managed_agent_seed(agent_cfg.get("seed")),
+        temperature=_managed_agent_float(agent_cfg.get("temperature")),
+        top_p=_managed_agent_float(agent_cfg.get("top_p")),
+        top_k=_managed_agent_int(agent_cfg.get("top_k")),
+        min_p=_managed_agent_float(agent_cfg.get("min_p")),
         log_preview_lines=logging_cfg.get("preview_lines", 6),
         log_preview_chars=logging_cfg.get("preview_chars", 900),
         tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 20),
         tool_output_tail_lines=logging_cfg.get("tool_output_tail_lines", 8),
     )
+    agent._managed_base_reasoning_config = dict(reasoning_cfg or {}) if reasoning_cfg else None
+
     def _post_tool_result_callback(function_name: str, _args: Mapping[str, Any], _result: str) -> None:
         if not _single_queue_item_turn_enabled():
             return
@@ -2419,6 +2906,20 @@ def _run_managed_conversation(
         raise error
 
     result = result_holder.get("result")
+    if interrupt_requested and not isinstance(result, dict):
+        try:
+            agent.clear_interrupt()
+        except Exception:
+            pass
+        result = {
+            "messages": list(getattr(agent, "_session_messages", []) or kwargs.get("conversation_history") or []),
+            "api_calls": 0,
+            "completed": False,
+            "interrupted": True,
+            "final_response": "Operation interrupted by user.",
+        }
+        print("Returned to prover-agent mode after interrupt.")
+        return result
     if not isinstance(result, dict):
         raise RuntimeError("Managed conversation did not return a result payload")
 
@@ -2652,6 +3153,13 @@ def _run_background_control_loop(
             _prepare_queue_assignment_state(autonomy_state, live_state)
             augmented_text = _attach_live_proof_state(text, live_state)
             _set_runtime_active_skill(_effective_skill_name(live_state))
+            effective_reasoning = _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+            _record_managed_reasoning_policy(
+                live_state,
+                autonomy_state,
+                effective_reasoning,
+                phase="background",
+            )
             result = _run_managed_conversation(
                 agent,
                 on_interrupt=lambda: _persist_live_status(
@@ -2714,9 +3222,9 @@ def _milestone_label_for_delta(
 
     if _live_state_is_verified(live_state):
         autonomy_state["blocked_runs"] = 0
-        if workflow_kind == "autoprove":
+        if workflow_kind == "prove":
             return "verified proof milestone", "verified-progress"
-        if workflow_kind == "autoformalize":
+        if workflow_kind == "formalize":
             return "verified formalization milestone", "verified-progress"
         return "verified milestone", "verified-progress"
 
@@ -2733,8 +3241,8 @@ def _milestone_label_for_delta(
         if mutated:
             break
 
-    if mutated and any(token in lowered for token in ("lake build", "lean-lsp", "diagnostic", "typecheck")):
-        if workflow_kind == "autoformalize":
+    if mutated and any(token in lowered for token in ("lake build", "lean_inspect", "diagnostic", "typecheck")):
+        if workflow_kind == "formalize":
             return "formalization draft stabilized", "draft-stabilized"
         return "successful build/typecheck after edits", "build-verified"
 
@@ -2780,6 +3288,26 @@ def _startup_user_message(
     skill_prompt = build_skill_prompt(selected_skill, _project_root()) if selected_skill else ""
     explicit_goal = _read_native_env("EXPLICIT_GOAL", "")
     goal_block = f"\n\nUser goal: {explicit_goal}" if explicit_goal else ""
+    route_block = ""
+    route_decision = route_workflow_step(
+        workflow_kind,
+        live_state,
+        configured_skill=selected_skill,
+        autonomy_state=autonomy_state,
+        cwd=_project_root(),
+    ).to_dict()
+    if route_decision:
+        route_lines = [
+            "Route decision:",
+            f"- skill: {route_decision.get('skill_name') or '[unknown]'}",
+            f"- action: {route_decision.get('route_action') or '[none]'}",
+            f"- blocker kind: {route_decision.get('blocker_kind') or '[none]'}",
+            f"- reason: {route_decision.get('reason') or '[none]'}",
+        ]
+        if route_decision.get("recommended_worker"):
+            route_lines.append(f"- recommended worker: {route_decision.get('recommended_worker')}")
+            route_lines.append("- use `lean_worker_dispatch` if the next attempt confirms this route")
+        route_block = f"\n\n{chr(10).join(route_lines)}"
     queue_block = ""
     if _single_queue_item_turn_enabled():
         queue_text = _queue_assignment_block(dict(live_state or {}), autonomy_state)
@@ -2799,17 +3327,17 @@ def _startup_user_message(
         label = str(resumed_checkpoint.get("label", "") or "checkpoint")
         resume_text = f"Resume this managed workflow from persisted {label} and continue carefully from the checkpoint handoff."
         if startup_prompt:
-            body = f"{resume_text}\n\n{startup_prompt}{goal_block}{queue_block}{swarm_block}"
+            body = f"{resume_text}\n\n{startup_prompt}{goal_block}{route_block}{queue_block}{swarm_block}"
             return f"{body}\n\n{skill_prompt}".strip() if skill_prompt else body
         if workflow_command:
-            body = f"{resume_text}\n\n{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{queue_block}{swarm_block}"
+            body = f"{resume_text}\n\n{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{route_block}{queue_block}{swarm_block}"
             return f"{body}\n\n{skill_prompt}".strip() if skill_prompt else body
         return resume_text
     if startup_prompt:
-        body = f"{startup_prompt}{goal_block}{queue_block}{swarm_block}"
+        body = f"{startup_prompt}{goal_block}{route_block}{queue_block}{swarm_block}"
         return f"{body}\n\n{skill_prompt}".strip() if skill_prompt else body
     if workflow_command:
-        body = f"{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{queue_block}{swarm_block}"
+        body = f"{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{route_block}{queue_block}{swarm_block}"
         return f"{body}\n\n{skill_prompt}".strip() if skill_prompt else body
     return f"Begin the requested managed Lean workflow now.\n\n{skill_prompt}".strip() if skill_prompt else "Begin the requested managed Lean workflow now."
 
@@ -2823,25 +3351,27 @@ def _managed_system_prompt() -> str:
         except OSError:
             context_text = ""
 
-    sections = [
-        "You are the epflemma-native managed Lean workflow backend.",
-        "Work inside the active Lean project only.",
-        "Treat `/lean4:*` entries as workflow labels and instructions, not shell commands.",
-        "Prefer Lean/LSP-first workflows and use the staged `lean-lsp` MCP server for navigation, diagnostics, and proof goals.",
-        "Use lean-lsp diagnostics/goals for most iterations.",
-        "For file-scoped autonomous theorem turns, the only acceptable final verification command is `lake env lean <file>` for the active file. Do not treat `lake build`, `grep`, `head`, or truncated output as sufficient acceptance for a theorem-sized repair.",
-        "Outside theorem-scoped file turns, avoid repeated `lake env lean <file>` loops on large imports and prefer a focused `lake build <Module>` or final `lake build` near milestones.",
-        "For `prove` and `formalize`, first enumerate the declarations in scope that still contain `sorry`, Lean errors, or warnings, then clear them one by one as a real queue.",
-        "If the workflow request names a Lean file, keep the work pinned to that file and do not drift to unrelated helper files or declarations discovered later.",
-        "For file-scoped autonomous proving, finish at most one declaration-sized edit before yielding back to the runner so diagnostics and the queue can be refreshed.",
-        "If the workflow request is project-wide, prefer independent per-file work items; only split them across child agents when swarm mode is explicitly enabled.",
-        "Use the `lean-project-search` skill to find relevant local declarations and imports before editing, and use `lean-mathlib-search` when the proof likely depends on an existing Mathlib lemma.",
-        "Use tools aggressively, keep changes reproducible, and explain blockers clearly when a proof or formalization fails.",
-        "A proof is not verified merely because `sorry` disappeared or style warnings remain. Treat a workflow as verified only after an explicit successful Lean build plus clean diagnostics, no warnings in scope, and no remaining proof goals.",
-        "For autonomous workflows, do not stop while the requested scope still contains build errors, warnings, open goals, or any remaining `sorry` placeholders outside dependencies.",
-        "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff instead of reconstructing the full transcript from memory.",
-        "Do not use multi-agent delegation unless the user explicitly enabled swarm mode for this workflow.",
-    ]
+    if _runner_lean_prompt_enabled():
+        sections = [
+            "You are the epflemma-native managed Lean workflow backend.",
+            "Work inside the active Lean project only.",
+            "Treat `/prove`, `/formalize`, `/review`, `/checkpoint`, `/refactor`, and `/golf` as native workflow labels and instructions, not shell commands.",
+            "The loaded workflow and worker specs are the policy manuals; runner-injected blocks below are turn-local state only.",
+            "Use `lean_capabilities` and `lean_inspect` to refresh state first, then follow the active spec.",
+            "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff.",
+            "Do not use multi-agent delegation unless the user explicitly enabled swarm mode for this workflow.",
+        ]
+    else:
+        sections = [
+            "You are the epflemma-native managed Lean workflow backend.",
+            "Work inside the active Lean project only.",
+            "Treat `/prove`, `/formalize`, `/review`, `/checkpoint`, `/refactor`, and `/golf` as native workflow labels and instructions, not shell commands.",
+            "The loaded workflow and worker specs are the policy manuals for tool order, verification ladders, escalation rules, and stop conditions.",
+            "Runner-injected blocks below are turn-local state only: queue assignment, route decision, attempt history, blockers, and verification hints.",
+            "Use `lean_capabilities` and `lean_inspect` to refresh state first, then follow the active spec rather than inventing a parallel process.",
+            "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff instead of reconstructing the full transcript from memory.",
+            "Do not use multi-agent delegation unless the user explicitly enabled swarm mode for this workflow.",
+        ]
     if _swarm_enabled():
         sections.extend(
             [
@@ -2924,6 +3454,10 @@ def _autonomous_stop_reason(
     autonomy_state["continuation_stable_cycles"] = stable_cycles
 
     if _live_state_is_verified(live_state):
+        if _has_unresolved_theorem_outcomes(autonomy_state):
+            autonomy_state["continuation_blocked_runs"] = 0
+            autonomy_state["continuation_stable_cycles"] = 0
+            return "blocked"
         autonomy_state["continuation_blocked_runs"] = 0
         autonomy_state["continuation_stable_cycles"] = 0
         return "verified"
@@ -2950,40 +3484,73 @@ def _autonomous_continuation_prompt(
     autonomy_state: Mapping[str, Any] | None = None,
 ) -> str:
     declaration_scope = str(live_state.get("declaration_scope", "") or _declaration_queue_scope())
-    if declaration_scope == "file":
-        verification_lines = (
-            "- explicit successful file verification\n"
-            "- clean Lean diagnostics in the active file\n"
-            "- no warnings in the requested file\n"
-            "- no open goals for the active work\n"
-            "- no remaining `sorry` in the active file\n\n"
+    if _runner_lean_prompt_enabled():
+        if declaration_scope == "file":
+            verification_gate = str(
+                live_state.get("verification_hint", "") or "`lean_inspect` on the active file, then the canonical file verification gate"
+            )
+        else:
+            verification_gate = str(
+                live_state.get("verification_hint", "") or "`lean_inspect` first, then the project/module verification gate for the requested scope"
+            )
+        prompt = (
+            "Continue the autonomous workflow.\n\n"
+            "Follow the loaded native workflow spec as the policy manual. "
+            "Use the refreshed live proof state below as the current turn state.\n\n"
+            f"This is autonomous continuation cycle {cycle_number}.\n"
+            f"Current verification gate: {verification_gate}\n"
+            "Do not stop until that gate is satisfied or you have a concrete blocker to report."
         )
-        conclusion = "make the next strongest move, and re-check the active file before concluding."
     else:
-        verification_lines = (
-            "- explicit successful `lake build`\n"
-            "- clean Lean diagnostics\n"
-            "- no warnings in the requested scope\n"
-            "- no open goals\n"
-            "- no remaining `sorry` in the active file\n"
-            "- no remaining `sorry` anywhere else in the project outside dependencies\n\n"
+        if declaration_scope == "file":
+            verification_lines = (
+                "- explicit successful file verification\n"
+                "- clean Lean diagnostics in the active file\n"
+                "- no warnings in the requested file\n"
+                "- no open goals for the active work\n"
+                "- no remaining `sorry` in the active file\n\n"
+            )
+            conclusion = "make the next strongest move, and re-check the active file before concluding."
+        else:
+            verification_lines = (
+                "- explicit successful `lake build`\n"
+                "- clean Lean diagnostics\n"
+                "- no warnings in the requested scope\n"
+                "- no open goals\n"
+                "- no remaining `sorry` in the active file\n"
+                "- no remaining `sorry` anywhere else in the project outside dependencies\n\n"
+            )
+            conclusion = "make the next strongest move, and re-check the whole project before concluding."
+        prompt = (
+            "Continue the autonomous workflow. Do not stop yet unless the workflow is truly verified or "
+            "you have a concrete blocker that still remains after another attempt.\n\n"
+            "Follow the loaded native workflow spec as the policy manual. "
+            "Use the refreshed live proof state below as the current turn state.\n\n"
+            "Verification requires all of the following:\n"
+            f"{verification_lines}"
+            f"This is autonomous continuation cycle {cycle_number}. Use the refreshed live proof state below, "
+            f"{conclusion}"
         )
-        conclusion = "make the next strongest move, and re-check the whole project before concluding."
-    prompt = (
-        "Continue the autonomous workflow. Do not stop yet unless the workflow is truly verified or "
-        "you have a concrete blocker that still remains after another attempt.\n\n"
-        "Required working style:\n"
-        "- identify the remaining declarations in scope with `sorry`, Lean errors, or warnings\n"
-        "- pick one declaration at a time\n"
-        "- if an assigned queue item is given, work only on that theorem or lemma\n"
-        "- do not touch the next declaration until the assigned one is solved or blocked\n"
-        "- fix it, re-check it, then hand control back to the runner\n"
-        "- do not declare success after clearing only the first theorem in the file\n\n"
-        "Verification requires all of the following:\n"
-        f"{verification_lines}"
-        f"This is autonomous continuation cycle {cycle_number}. Use the refreshed live proof state below, "
-        f"{conclusion}"
-    )
+    route_decision = route_workflow_step(
+        _workflow_kind(),
+        live_state,
+        configured_skill=_effective_skill_name(live_state),
+        autonomy_state=autonomy_state,
+        cwd=_project_root(),
+    ).to_dict()
+    if route_decision:
+        prompt += (
+            "\n\nRoute decision:\n"
+            f"- skill: {route_decision.get('skill_name') or '[unknown]'}\n"
+            f"- action: {route_decision.get('route_action') or '[none]'}\n"
+            f"- blocker kind: {route_decision.get('blocker_kind') or '[none]'}\n"
+            f"- reason: {route_decision.get('reason') or '[none]'}"
+        )
+        if route_decision.get("recommended_worker"):
+            prompt += (
+                f"\n- recommended worker: {route_decision.get('recommended_worker')}\n"
+                "- use `lean_worker_dispatch` if the blocker still fits this route after the next focused attempt"
+            )
     if _queue_needs_final_file_sweep(live_state):
         prompt += f"\n\n{_final_file_sweep_block(live_state)}"
     else:
@@ -2995,10 +3562,10 @@ def _autonomous_continuation_prompt(
             prompt += f"\n\n{queue_text}"
             active_file = str(live_state.get("active_file", "") or "")
             command = _canonical_file_verification_command(active_file)
-            if command:
+            if command and not _runner_lean_prompt_enabled():
                 prompt += (
                     "\n\n"
-                    "For this assigned file-scoped queue item, use Lean diagnostics/goals for iteration, "
+                    "For this assigned file-scoped queue item, use `lean_inspect` for iteration, "
                     f"but only accept the theorem as solved after `{command}` succeeds. "
                     "Do not use `lake build`, `grep`, `head`, or truncated output as the acceptance check for this theorem."
                 )
@@ -3023,9 +3590,42 @@ def _drive_autonomous_followups(
         return history, compaction_state, checkpoint_state, live_state
 
     for cycle in range(1, _autonomous_followup_limit() + 1):
+        autonomy_state["current_cycle"] = cycle
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state(history, checkpoint_state)
         live_state = _promote_live_state_to_verified(live_state)
+        rebuilt_history, transition = _rebuild_history_for_theorem_transition(
+            history,
+            compaction_state,
+            autonomy_state,
+            live_state,
+        )
+        if rebuilt_history is not None and transition is not None:
+            previous_outcome = dict(autonomy_state.get("last_theorem_outcome") or {})
+            history = rebuilt_history
+            _record_activity(
+                "theorem-transition",
+                "Theorem transition detected",
+                previous_theorem=transition["previous_target"],
+                current_theorem=transition["current_target"],
+                previous_file=transition["previous_file"],
+                current_file=transition["current_file"],
+                previous_status=str(previous_outcome.get("status", "") or "unknown"),
+            )
+            _record_activity(
+                "theorem-context-cleared",
+                f"Cleared theorem-local context for {transition['previous_target']}",
+                previous_theorem=transition["previous_target"],
+                current_theorem=transition["current_target"],
+            )
+            _record_activity(
+                "theorem-handoff-rebuilt",
+                f"Rebuilt compact handoff for {transition['current_target']}",
+                previous_theorem=transition["previous_target"],
+                current_theorem=transition["current_target"],
+                previous_status=str(previous_outcome.get("status", "") or "unknown"),
+                previous_note=str(previous_outcome.get("note", "") or ""),
+            )
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="verifying")
         stop_reason = _autonomous_stop_reason(history, live_state, autonomy_state)
         if stop_reason != "continue":
@@ -3047,6 +3647,14 @@ def _drive_autonomous_followups(
             live_state,
         )
         _set_runtime_active_skill(_effective_skill_name(live_state))
+        effective_reasoning = _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+        _record_managed_reasoning_policy(
+            live_state,
+            autonomy_state,
+            effective_reasoning,
+            phase="autonomous",
+            cycle=cycle,
+        )
         result = _run_managed_conversation(
             agent,
             on_interrupt=lambda: _persist_live_status(
@@ -3159,6 +3767,13 @@ def main() -> int:
         _record_queue_assignment(live_state, phase="startup")
         _prepare_queue_assignment_state(autonomy_state, live_state)
         _set_runtime_active_skill(_effective_skill_name(live_state))
+        effective_reasoning = _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+        _record_managed_reasoning_policy(
+            live_state,
+            autonomy_state,
+            effective_reasoning,
+            phase="startup",
+        )
         result = _run_managed_conversation(
             agent,
             on_interrupt=lambda: _persist_live_status(
@@ -3405,6 +4020,13 @@ def main() -> int:
             _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
             augmented_text = _attach_live_proof_state(text, live_state)
             _set_runtime_active_skill(_effective_skill_name(live_state))
+            effective_reasoning = _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+            _record_managed_reasoning_policy(
+                live_state,
+                autonomy_state,
+                effective_reasoning,
+                phase="interactive",
+            )
             result = _run_managed_conversation(
                 agent,
                 on_interrupt=lambda: _persist_live_status(

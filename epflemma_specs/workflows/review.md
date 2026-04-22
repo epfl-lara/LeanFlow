@@ -1,0 +1,101 @@
+---
+id: review
+kind: workflow
+title: Review
+summary: Read-only Lean review workflow for correctness, blockers, style risks, and readiness for the next proving cycle.
+skills: [lean-diagnostics]
+tools: [lean_capabilities, lean_inspect, lean_search, lean_axioms]
+review_actions: [continue, deep, repair, redraft, golf, stop]
+stop_conditions: [review-complete]
+route_actions: [diagnostics]
+---
+
+# Native Review Spec
+
+Review is read-only by default. Prioritize behavioural and proof-correctness findings over style commentary.
+
+## When To Use
+
+Use this workflow when the goal is to classify the current Lean state without becoming the main editing workflow:
+
+- triaging why a proving run is stuck
+- auditing correctness/style/axiom risks
+- deciding whether the next command should be prove, refactor, golf, or stop
+- leaving a clean handoff for the next cycle
+
+## What Not To Use This Workflow For
+
+Do not use this workflow for:
+
+- primary proof repair
+- declaration drafting or formalization
+- checkpoint/commit creation
+- broad code rewriting disguised as “review”
+
+If the task is to change code until it verifies, use `prove`, `formalize`, `refactor`, or `golf` instead.
+
+## Tool Order
+
+1. `lean_capabilities`
+   - read capability and degraded-mode state first so the review does not assume tools that are unavailable
+2. `lean_inspect`
+   - primary source for diagnostics, goals, blocker kind, queue items, and current verification state
+3. `lean_search`
+   - use when the blocker appears to be missing knowledge rather than wrong code
+4. `lean_axioms`
+   - use when the target compiles but proof acceptability is unclear because of axioms
+
+Review is read-only by default. The job is classification and recommendation, not mainline editing.
+
+## Output Contract
+
+A useful review should answer:
+
+- what is blocked
+- why it is blocked
+- what the next workflow should be
+- what not to try again
+
+Prioritize:
+
+- correctness and build blockers
+- open goals and `sorry`
+- axiom risks
+- only then style or golfing opportunities
+
+## Next-Action Vocabulary
+
+Use one of these `next_action` labels in the review output:
+
+- `continue`
+  - current proving path still looks viable
+- `deep`
+  - bounded deeper restructuring is justified
+- `repair`
+  - compiler-guided repair is the right next move
+- `redraft`
+  - the statement/declaration shape is the blocker
+- `golf`
+  - the proof is correct and the remaining work is simplification/cleanup
+- `stop`
+  - no credible next path from the current scope without user intervention
+
+Do not invent alternate action labels. The review vocabulary should stay stable across sessions.
+
+## Stop Conditions
+
+The review is complete when it has produced:
+
+- the current blocker classification
+- the best next action
+- the key evidence supporting that action
+
+## Handoff Format
+
+A concise review handoff should include:
+
+- scope reviewed
+- top blockers
+- supporting evidence
+- `next_action`
+- concrete next command or worker recommendation

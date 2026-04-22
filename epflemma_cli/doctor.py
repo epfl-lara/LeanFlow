@@ -1,49 +1,259 @@
-"""Local setup checks for the EPFLemma shell."""
+"""Native Lean workflow diagnostics for the EPFLemma shell."""
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
+from typing import Any
 
 from epflemma_cli.branding import get_cli_command_name, get_product_name
 from epflemma_cli.config import ensure_epflemma_home, get_epflemma_home, load_config
-from epflemma_cli.project import ProjectNotFoundError, discover_epflemma_project
-from epflemma_cli.runtime_provider import format_runtime_provider_error, resolve_runtime_provider
+from epflemma_cli.lean_services import probe_capabilities
+from epflemma_cli.runtime_provider import (
+    format_runtime_provider_error,
+    resolve_runtime_provider,
+)
+from tools.mcp_tool import get_mcp_status
 
 
-def run_doctor(active_cwd: str | Path | None = None) -> tuple[list[str], str]:
-    ensure_epflemma_home()
-    cwd = Path(active_cwd or Path.cwd()).expanduser().resolve()
+DOCTOR_MODES = {"all", "env", "mcp", "search", "migrate", "cleanup"}
+
+
+def _normalize_mode(mode: str) -> str:
+    normalized = str(mode or "all").strip().lower() or "all"
+    return normalized if normalized in DOCTOR_MODES else "all"
+
+
+def _default_model(config: dict[str, Any]) -> str:
+    model_cfg = config.get("model", {})
+    if isinstance(model_cfg, dict):
+        return str(model_cfg.get("default", "") or "")
+    if isinstance(model_cfg, str):
+        return model_cfg.strip()
+    return ""
+
+
+def _provider_payload() -> tuple[dict[str, Any], list[str]]:
     issues: list[str] = []
-    cli_name = get_cli_command_name()
-    lines = [
-        f"{get_product_name()} Doctor",
-        f"Home: {get_epflemma_home()}",
-        f"Config: {get_epflemma_home() / 'config.yaml'}",
-    ]
-
-    for binary in ("git", "rg", "lake"):
-        if shutil.which(binary):
-            lines.append(f"{binary}: OK")
-        else:
-            lines.append(f"{binary}: missing")
-            issues.append(f"Install `{binary}`.")
-
-    config = load_config()
-    lines.append(f"Default model: {config.get('model', {}).get('default', '')}")
-
-    try:
-        project = discover_epflemma_project(cwd)
-        lines.append(f"Project: {project.label} ({project.root})")
-    except ProjectNotFoundError:
-        lines.append("Project: none")
-        issues.append(f"Initialize a Lean project with `{cli_name} project init`.")
-
     try:
         runtime = resolve_runtime_provider()
-        lines.append(f"Provider: {runtime['provider']} @ {runtime['base_url']}")
+        return {
+            "available": True,
+            "provider": str(runtime.get("provider", "") or ""),
+            "base_url": str(runtime.get("base_url", "") or ""),
+            "api_mode": str(runtime.get("api_mode", "") or ""),
+            "model": str(runtime.get("model", "") or ""),
+        }, issues
     except Exception as exc:
-        lines.append(f"Provider: unavailable ({format_runtime_provider_error(exc)})")
-        issues.append(format_runtime_provider_error(exc))
+        message = format_runtime_provider_error(exc)
+        issues.append(message)
+        return {
+            "available": False,
+            "error": message,
+        }, issues
 
-    return issues, "\n".join(lines)
+
+def _legacy_reference_payload() -> dict[str, Any]:
+    home = Path.home()
+    plugin_root = home / ".claude" / "plugins" / "cache" / "lean4-skills" / "lean4" / "4.4.8"
+    legacy_roots = [
+        home / ".opengauss",
+        home / ".gauss",
+    ]
+    return {
+        "plugin_reference_path": str(plugin_root),
+        "plugin_reference_present": plugin_root.is_dir(),
+        "legacy_homes": [
+            {"path": str(path), "present": path.exists()}
+            for path in legacy_roots
+        ],
+    }
+
+
+def _cleanup_payload(cwd: Path) -> dict[str, Any]:
+    candidates = []
+    for relative in (".gauss", ".opengauss", ".claude"):
+        path = cwd / relative
+        if path.exists():
+            candidates.append(str(path))
+    return {
+        "candidate_paths": candidates,
+        "apply_supported": False,
+        "note": "Cleanup mode is advisory only; no files are removed automatically.",
+    }
+
+
+def _doctor_payload(active_cwd: str | Path | None = None, *, mode: str = "all") -> tuple[dict[str, Any], list[str]]:
+    ensure_epflemma_home()
+    cwd = Path(active_cwd or Path.cwd()).expanduser().resolve()
+    normalized_mode = _normalize_mode(mode)
+    config = load_config()
+    capability = probe_capabilities(cwd).to_dict()
+    cli_name = get_cli_command_name()
+
+    issues: list[str] = []
+    issues.extend(str(reason) for reason in capability.get("degraded_reasons", []) if str(reason).strip())
+    if not capability.get("project_valid"):
+        project_error = str(capability.get("project_error", "") or "").strip()
+        if project_error:
+            issues.append(project_error)
+        else:
+            issues.append(f"Initialize a Lean project with `{cli_name} project init`.")
+
+    provider, provider_issues = _provider_payload()
+    issues.extend(provider_issues)
+
+    mcp_status = get_mcp_status()
+    if normalized_mode in {"all", "mcp"} and not mcp_status:
+        issues.append("No MCP servers configured.")
+
+    search_providers = [str(item) for item in capability.get("search_providers", []) if str(item).strip()]
+    if normalized_mode in {"all", "search"} and not search_providers:
+        issues.append("No Lean search providers available.")
+
+    payload: dict[str, Any] = {
+        "product": get_product_name(),
+        "command": cli_name,
+        "mode": normalized_mode,
+        "cwd": str(cwd),
+        "home": str(get_epflemma_home()),
+        "config_path": str(get_epflemma_home() / "config.yaml"),
+        "default_model": _default_model(config),
+        "capability_report": capability,
+        "provider": provider,
+        "issues": list(dict.fromkeys(issues)),
+    }
+
+    if normalized_mode in {"all", "mcp"}:
+        payload["mcp_status"] = mcp_status
+    if normalized_mode in {"all", "search"}:
+        payload["search"] = {
+            "providers": search_providers,
+            "helper_tools": dict(capability.get("helper_tools", {}) or {}),
+        }
+    if normalized_mode in {"all", "migrate"}:
+        payload["migrate"] = _legacy_reference_payload()
+    if normalized_mode in {"all", "cleanup"}:
+        payload["cleanup"] = _cleanup_payload(cwd)
+
+    return payload, payload["issues"]
+
+
+def _format_doctor_report(payload: dict[str, Any]) -> str:
+    capability = dict(payload.get("capability_report", {}) or {})
+    provider = dict(payload.get("provider", {}) or {})
+    lines = [
+        f"{payload.get('product', 'EPFLemma')} Doctor",
+        f"Mode: {payload.get('mode', 'all')}",
+        f"CWD: {payload.get('cwd', '')}",
+        f"Home: {payload.get('home', '')}",
+        f"Config: {payload.get('config_path', '')}",
+        f"Default model: {payload.get('default_model', '') or '[unset]'}",
+        "",
+        "Environment:",
+        f"- project root: {capability.get('project_root') or '[none]'}",
+        f"- project valid: {'yes' if capability.get('project_valid') else 'no'}",
+        f"- project error: {capability.get('project_error') or '[none]'}",
+    ]
+    binaries = dict(capability.get("binaries", {}) or {})
+    for name in ("lean", "lake", "elan", "git", "rg"):
+        lines.append(f"- {name}: {'OK' if binaries.get(name) else 'missing'}")
+
+    if provider.get("available"):
+        lines.extend(
+            [
+                "",
+                "Runtime provider:",
+                f"- provider: {provider.get('provider') or '[unset]'}",
+                f"- base URL: {provider.get('base_url') or '[unset]'}",
+                f"- API mode: {provider.get('api_mode') or '[unset]'}",
+                f"- model: {provider.get('model') or '[unset]'}",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "Runtime provider:",
+                f"- unavailable: {provider.get('error') or '[unknown error]'}",
+            ]
+        )
+
+    mcp_status = payload.get("mcp_status")
+    if isinstance(mcp_status, list):
+        lines.extend(["", "MCP:"])
+        if not mcp_status:
+            lines.append("- no configured servers")
+        for entry in mcp_status:
+            name = str(entry.get("name", "") or "[unknown]")
+            transport = str(entry.get("transport", "") or "stdio")
+            connected = "connected" if entry.get("connected") else "down"
+            tools = int(entry.get("tools", 0) or 0)
+            lines.append(f"- {name}: {connected} ({transport}, {tools} tools)")
+
+    search = payload.get("search")
+    if isinstance(search, dict):
+        lines.extend(["", "Search:"])
+        providers = list(search.get("providers", []) or [])
+        lines.append(
+            f"- providers: {', '.join(str(item) for item in providers) if providers else '[none]'}"
+        )
+        helpers = dict(search.get("helper_tools", {}) or {})
+        helper_summary = ", ".join(
+            f"{name}={'yes' if enabled else 'no'}" for name, enabled in sorted(helpers.items())
+        )
+        lines.append(f"- helpers: {helper_summary or '[none]'}")
+
+    lines.extend(
+        [
+            "",
+            "Workers:",
+            f"- available: {', '.join(capability.get('workers', []) or []) or '[none]'}",
+        ]
+    )
+
+    migrate = payload.get("migrate")
+    if isinstance(migrate, dict):
+        lines.extend(
+            [
+                "",
+                "Migration reference:",
+                f"- plugin cache: {migrate.get('plugin_reference_path')}",
+                f"- plugin present: {'yes' if migrate.get('plugin_reference_present') else 'no'}",
+            ]
+        )
+        for legacy in migrate.get("legacy_homes", []) or []:
+            lines.append(
+                f"- legacy home {legacy.get('path')}: {'present' if legacy.get('present') else 'absent'}"
+            )
+
+    cleanup = payload.get("cleanup")
+    if isinstance(cleanup, dict):
+        candidates = list(cleanup.get("candidate_paths", []) or [])
+        lines.extend(
+            [
+                "",
+                "Cleanup:",
+                f"- candidate paths: {', '.join(candidates) if candidates else '[none]'}",
+                f"- note: {cleanup.get('note') or '[none]'}",
+            ]
+        )
+
+    issues = list(payload.get("issues", []) or [])
+    lines.extend(["", "Issues:"])
+    if issues:
+        lines.extend(f"- {issue}" for issue in issues)
+    else:
+        lines.append("- none")
+    return "\n".join(lines)
+
+
+def run_doctor(
+    active_cwd: str | Path | None = None,
+    *,
+    mode: str = "all",
+    json_output: bool = False,
+) -> tuple[list[str], str | dict[str, Any]]:
+    payload, issues = _doctor_payload(active_cwd, mode=mode)
+    if json_output:
+        return issues, payload
+    return issues, _format_doctor_report(payload)

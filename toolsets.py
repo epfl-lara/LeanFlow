@@ -11,6 +11,15 @@ _SKILL_TOOLS = ["skills_list", "skill_view"]
 _SESSION_TOOLS = ["session_search"]
 _COORDINATION_TOOLS = ["acquire_file_lock", "release_file_lock", "list_file_locks"]
 _DELEGATION_TOOLS = ["delegate_task"]
+_LEAN_TOOLS = [
+    "lean_capabilities",
+    "lean_inspect",
+    "lean_verify",
+    "lean_search",
+    "lean_sorries",
+    "lean_axioms",
+    "lean_worker_dispatch",
+]
 
 _EPFLEMMA_CORE_TOOLS = [
     *_FILE_TOOLS,
@@ -19,6 +28,7 @@ _EPFLEMMA_CORE_TOOLS = [
     *_SKILL_TOOLS,
     *_SESSION_TOOLS,
     *_COORDINATION_TOOLS,
+    *_LEAN_TOOLS,
 ]
 
 
@@ -56,6 +66,11 @@ TOOLSETS: Dict[str, Dict[str, Any]] = {
     "coordination": {
         "description": "File reservation and coordination tools for Lean workflows",
         "tools": _COORDINATION_TOOLS,
+        "includes": [],
+    },
+    "lean": {
+        "description": "Native Lean workflow tools",
+        "tools": _LEAN_TOOLS,
         "includes": [],
     },
     "delegation": {

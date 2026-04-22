@@ -33,7 +33,6 @@ DELEGATE_BLOCKED_TOOLS = frozenset([
     "delegate_task",   # no recursive delegation
     "clarify",         # no user interaction
     "memory",          # no writes to shared MEMORY.md
-    "send_message",    # no cross-platform side effects
     "execute_code",    # children should reason step-by-step, not write scripts
 ])
 
@@ -218,6 +217,11 @@ def _run_single_child(
             max_iterations=max_iterations,
             max_tokens=getattr(parent_agent, "max_tokens", None),
             reasoning_config=getattr(parent_agent, "reasoning_config", None),
+            seed=getattr(parent_agent, "seed", None),
+            temperature=getattr(parent_agent, "temperature", None),
+            top_p=getattr(parent_agent, "top_p", None),
+            top_k=getattr(parent_agent, "top_k", None),
+            min_p=getattr(parent_agent, "min_p", None),
             prefill_messages=getattr(parent_agent, "prefill_messages", None),
             enabled_toolsets=child_toolsets,
             quiet_mode=True,
@@ -600,7 +604,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     # Provider is configured — resolve full credentials
     try:
-        from gauss_cli.runtime_provider import resolve_runtime_provider
+        from epflemma_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider(requested=configured_provider)
     except Exception as exc:
         raise ValueError(
@@ -627,22 +631,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
-
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (gauss_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
-    """
+    """Load delegation config from the EPFLemma persistent config."""
     try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
-    except Exception:
-        pass
-    try:
-        from gauss_cli.config import load_config
+        from epflemma_cli.config import load_config
         full = load_config()
         return full.get("delegation", {})
     except Exception:
@@ -675,8 +666,7 @@ DELEGATE_TASK_SCHEMA = {
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
-        "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, "
-        "execute_code.\n"
+        "- Subagents CANNOT call: delegate_task, clarify, memory, or execute_code.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     ),

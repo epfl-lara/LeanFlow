@@ -130,7 +130,7 @@ class TestSpawnClaude:
                 cwd="/tmp",
                 env={},
                 workflow_kind="prove",
-                workflow_command="/lean4:prove File.lean",
+                workflow_command="/prove File.lean",
                 project_name="Demo Project",
                 project_root="/tmp/project",
                 backend_name="codex",
@@ -140,7 +140,7 @@ class TestSpawnClaude:
         assert task.task_id == "af-001"
         assert task.session_id is not None
         assert task.workflow_kind == "prove"
-        assert task.workflow_command == "/lean4:prove File.lean"
+        assert task.workflow_command == "/prove File.lean"
         assert task.project_name == "Demo Project"
         assert task.project_root == "/tmp/project"
         assert task.backend_name == "codex"
@@ -433,8 +433,8 @@ class TestRenderDetail:
         task = mgr.spawn(
             theorem="Fermat",
             description="FLT n=5",
-            workflow_kind="autoprove",
-            workflow_command="/lean4:autoprove Fermat.lean",
+            workflow_kind="prove",
+            workflow_command="/prove Fermat.lean",
             project_name="Fermat",
             project_root="/tmp/fermat",
             backend_name="claude-code",
@@ -503,7 +503,7 @@ class TestSpawnInteractive:
                 cwd="/tmp",
                 env={},
                 workflow_kind="prove",
-                workflow_command="/lean4:prove Add.lean",
+                workflow_command="/prove Add.lean",
                 project_name="Algebra",
                 project_root="/tmp/algebra",
                 backend_name="claude-code",
@@ -511,7 +511,7 @@ class TestSpawnInteractive:
         assert task.task_id == "af-001"
         assert task.description == "commutativity test"
         assert task.workflow_kind == "prove"
-        assert task.workflow_command == "/lean4:prove Add.lean"
+        assert task.workflow_command == "/prove Add.lean"
         assert task.project_name == "Algebra"
         assert task.project_root == "/tmp/algebra"
         assert task.backend_name == "claude-code"

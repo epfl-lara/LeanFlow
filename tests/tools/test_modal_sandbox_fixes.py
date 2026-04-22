@@ -30,7 +30,7 @@ except ImportError:
 
 
 # =========================================================================
-# Test 1: Tool resolution includes the minimal Gauss toolsets
+# Test 1: Tool resolution includes the Lean workflow toolsets
 # =========================================================================
 
 class TestToolResolution:
@@ -47,15 +47,15 @@ class TestToolResolution:
         expected = {"read_file", "write_file", "search_files", "patch"}
         assert expected == names, f"Expected {expected}, got {names}"
 
-    def test_autoformalize_toolset_keeps_browser_and_web_access(self):
-        """The autoformalize toolset should keep the approved research surface."""
+    def test_autoformalize_toolset_keeps_web_access(self):
+        """The autoformalize toolset should keep the approved Lean research surface."""
         from model_tools import get_tool_definitions
         tools = get_tool_definitions(
             enabled_toolsets=["autoformalize"],
             quiet_mode=True,
         )
         names = {t["function"]["name"] for t in tools}
-        assert {"read_file", "browser_navigate"}.issubset(names)
+        assert {"read_file", "web_search"}.issubset(names)
 
 
 # =========================================================================
