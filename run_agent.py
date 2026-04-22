@@ -1045,6 +1045,7 @@ class AIAgent:
             summary_model_override=compression_summary_model,
             quiet_mode=self.quiet_mode,
             base_url=self.base_url,
+            api_key=self.api_key,
             reserved_output_tokens=compression_reserved_output,
             prune_tool_output=compression_prune_tool_output,
             prune_keep_recent_user_turns=compression_prune_keep_recent_user_turns,
