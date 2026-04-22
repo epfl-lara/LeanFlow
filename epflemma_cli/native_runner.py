@@ -41,6 +41,7 @@ from epflemma_cli.workflow_state import (
     save_workflow_live_status,
     summarize_workflow_agents,
     terminate_all_workflow_agents,
+    terminate_project_workflow_agents,
     terminate_workflow_agent_descendants,
     workflow_agent_detail,
 )
@@ -63,6 +64,9 @@ LIVE_PROOF_STATE_PREFIX = (
 AUTONOMOUS_WORKFLOW_KINDS = {"prove", "formalize"}
 PROJECT_SCAN_SKIP_DIRS = {".git", ".lake", ".epflemma", ".opengauss", ".gauss", "build"}
 WORKFLOW_STEP_BOUNDARY_INTERRUPT = "[epflemma-native workflow step boundary]"
+ACTIVE_AGENT_STATUSES = {"active"}
+LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
+DEAD_AGENT_STATUSES = {"dead"}
 
 
 def _utc_now_isoformat() -> str:
@@ -334,6 +338,7 @@ def _persist_live_status(
         "provider": _read_native_env("PROVIDER"),
         "model": _read_native_env("MODEL"),
         "base_url": _read_native_env("BASE_URL"),
+        "process_id": os.getpid(),
         "active_skill": _effective_skill_name(live_state),
         "parallel_agents": _parallel_agents(),
         "active_file": str(live_state.get("active_file", "") or ""),
@@ -382,6 +387,7 @@ def _agent_activity_details(agent: Any) -> dict[str, Any]:
         "agent_session_id": str(getattr(agent, "session_id", "") or ""),
         "parent_agent_session_id": str(getattr(agent, "_parent_session_id", "") or ""),
         "delegate_depth": int(getattr(agent, "_delegate_depth", 0) or 0),
+        "project_root": _project_root(),
         "model": _read_native_env("MODEL"),
         "provider": _read_native_env("PROVIDER"),
         "base_url": _read_native_env("BASE_URL"),
@@ -2952,7 +2958,9 @@ def _history_status_lines(
     snapshot_exists = bool(compaction_state.get("snapshot_text"))
     current_checkpoint = checkpoint_state.get("current") or {}
     agents = summarize_workflow_agents(activity_limit=1)
-    active_agents = sum(1 for agent in agents if str(agent.get("status", "") or "") == "active")
+    active_agents = sum(1 for agent in agents if str(agent.get("status", "") or "") in ACTIVE_AGENT_STATUSES)
+    live_agents = sum(1 for agent in agents if str(agent.get("status", "") or "") in LIVE_AGENT_STATUSES)
+    dead_agents = sum(1 for agent in agents if str(agent.get("status", "") or "") in DEAD_AGENT_STATUSES)
     return [
         f"Messages: {len(history)}",
         f"Users: {user_messages}",
@@ -2971,7 +2979,7 @@ def _history_status_lines(
         f"Active file: {str(live_state.get('active_file_label', '') or '[unknown]')}",
         f"Target theorem: {str(live_state.get('target_symbol', '') or '[unknown]')}",
         f"Project sorries: {str(live_state.get('project_sorry_count', '') or '[unknown]')}",
-        f"Agents: {len(agents)} total / {active_agents} active",
+        f"Agents: {len(agents)} total / {live_agents} live / {active_agents} active / {dead_agents} dead",
     ]
 
 
@@ -3077,7 +3085,11 @@ def _terminate_descendant_agents(agent: Any) -> None:
 
 def _terminate_other_agents(agent: Any) -> None:
     agent_id = str(getattr(agent, "session_id", "") or "")
-    result = terminate_all_workflow_agents(exclude_agent_id=agent_id, exclude_process_id=os.getpid())
+    result = terminate_project_workflow_agents(
+        _project_root(),
+        exclude_agent_id=agent_id,
+        exclude_process_id=os.getpid(),
+    )
     count = int(result.get("count", 0) or 0)
     failed = result.get("failed")
     if count:
@@ -3109,92 +3121,105 @@ def _run_background_control_loop(
     last_seq = 0
     announced_waiting = False
 
-    while True:
-        waiting_phase = "verified" if _live_state_is_verified(live_state) else "paused"
-        _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase=waiting_phase)
-        if not announced_waiting:
-            _record_agent_activity(
-                agent,
-                "agent-awaiting-input",
-                "Background workflow agent is waiting for input",
-                status=waiting_phase,
-            )
-            announced_waiting = True
-
-        pending = [entry for entry in read_workflow_agent_inbox(agent_id) if int(entry.get("seq", 0) or 0) > last_seq]
-        if not pending:
-            time.sleep(0.5)
-            continue
-
-        for command in pending:
-            last_seq = int(command.get("seq", 0) or last_seq)
-            kind = str(command.get("kind", "message") or "message")
-            text = str(command.get("text", "") or "").strip()
-            if not text:
-                continue
-            if kind == "exit":
-                _terminate_descendant_agents(agent)
-                _terminate_other_agents(agent)
-                _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
-                _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited by remote command")
-                return 0
-
-            announced_waiting = False
-            _record_agent_activity(agent, "agent-resume", "Processing queued prompt", text=text)
-            live_state = _build_live_proof_state(history, checkpoint_state)
-            live_state = _promote_live_state_to_verified(live_state)
-            _maybe_checkpoint_before_compaction(history, agent, live_state=live_state)
-            history, compaction_state = _auto_compact_history(history, agent)
-            previous_history = history[:]
-            live_state = _build_live_proof_state(history, checkpoint_state)
-            live_state = _promote_live_state_to_verified(live_state)
-            _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
-            _record_queue_assignment(live_state, phase="background")
-            _prepare_queue_assignment_state(autonomy_state, live_state)
-            augmented_text = _attach_live_proof_state(text, live_state)
-            _set_runtime_active_skill(_effective_skill_name(live_state))
-            effective_reasoning = _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
-            _record_managed_reasoning_policy(
-                live_state,
-                autonomy_state,
-                effective_reasoning,
-                phase="background",
-            )
-            result = _run_managed_conversation(
-                agent,
-                on_interrupt=lambda: _persist_live_status(
-                    history,
-                    compaction_state,
-                    checkpoint_state,
-                    live_state,
-                    phase="paused",
-                ),
-                user_message=augmented_text,
-                system_message=system_prompt,
-                conversation_history=history,
-                persist_user_message=text,
-            )
-            history = result["messages"]
-            live_state = _build_live_proof_state(history, checkpoint_state)
-            live_state = _promote_live_state_to_verified(live_state)
-            _record_turn_activity(previous_history, history, phase="interactive")
-            _maybe_write_milestone_checkpoint(previous_history, history, agent, autonomy_state, live_state=live_state)
-            checkpoint_state = _journal_status()
-            live_state = _build_live_proof_state(history, checkpoint_state)
-            live_state = _promote_live_state_to_verified(live_state)
-            _persist_live_status(history, compaction_state, checkpoint_state, live_state)
-            if result.get("interrupted") and not _is_step_boundary_interrupt(result):
-                _record_activity("interactive-interrupted", "Interactive agent turn interrupted by user")
-                _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="paused")
-            else:
-                history, compaction_state, checkpoint_state, live_state = _drive_autonomous_followups(
+    try:
+        while True:
+            waiting_phase = "verified" if _live_state_is_verified(live_state) else "paused"
+            _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase=waiting_phase)
+            if not announced_waiting:
+                _record_agent_activity(
                     agent,
-                    system_prompt,
-                    history,
-                    compaction_state,
-                    checkpoint_state,
-                    autonomy_state,
+                    "agent-awaiting-input",
+                    "Background workflow agent is waiting for input",
+                    status=waiting_phase,
                 )
+                announced_waiting = True
+
+            pending = [entry for entry in read_workflow_agent_inbox(agent_id) if int(entry.get("seq", 0) or 0) > last_seq]
+            if not pending:
+                time.sleep(0.5)
+                continue
+
+            for command in pending:
+                last_seq = int(command.get("seq", 0) or last_seq)
+                kind = str(command.get("kind", "message") or "message")
+                text = str(command.get("text", "") or "").strip()
+                if not text:
+                    continue
+                if kind == "exit":
+                    _terminate_descendant_agents(agent)
+                    _terminate_other_agents(agent)
+                    _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
+                    _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited by remote command")
+                    return 0
+
+                announced_waiting = False
+                _record_agent_activity(agent, "agent-resume", "Processing queued prompt", text=text)
+                live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
+                _maybe_checkpoint_before_compaction(history, agent, live_state=live_state)
+                history, compaction_state = _auto_compact_history(history, agent)
+                previous_history = history[:]
+                live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
+                _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
+                _record_queue_assignment(live_state, phase="background")
+                _prepare_queue_assignment_state(autonomy_state, live_state)
+                augmented_text = _attach_live_proof_state(text, live_state)
+                _set_runtime_active_skill(_effective_skill_name(live_state))
+                effective_reasoning = _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+                _record_managed_reasoning_policy(
+                    live_state,
+                    autonomy_state,
+                    effective_reasoning,
+                    phase="background",
+                )
+                result = _run_managed_conversation(
+                    agent,
+                    on_interrupt=lambda: _persist_live_status(
+                        history,
+                        compaction_state,
+                        checkpoint_state,
+                        live_state,
+                        phase="paused",
+                    ),
+                    user_message=augmented_text,
+                    system_message=system_prompt,
+                    conversation_history=history,
+                    persist_user_message=text,
+                )
+                history = result["messages"]
+                live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
+                _record_turn_activity(previous_history, history, phase="interactive")
+                _maybe_write_milestone_checkpoint(previous_history, history, agent, autonomy_state, live_state=live_state)
+                checkpoint_state = _journal_status()
+                live_state = _build_live_proof_state(history, checkpoint_state)
+                live_state = _promote_live_state_to_verified(live_state)
+                _persist_live_status(history, compaction_state, checkpoint_state, live_state)
+                if result.get("interrupted") and not _is_step_boundary_interrupt(result):
+                    _record_activity("interactive-interrupted", "Interactive agent turn interrupted by user")
+                    _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="paused")
+                else:
+                    history, compaction_state, checkpoint_state, live_state = _drive_autonomous_followups(
+                        agent,
+                        system_prompt,
+                        history,
+                        compaction_state,
+                        checkpoint_state,
+                        autonomy_state,
+                    )
+                    if _live_state_is_verified(live_state):
+                        _terminate_descendant_agents(agent)
+                        _terminate_other_agents(agent)
+                        _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
+                        _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited after verified completion")
+                        return 0
+    except KeyboardInterrupt:
+        _terminate_descendant_agents(agent)
+        _terminate_other_agents(agent)
+        _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
+        _record_agent_activity(agent, "runner-exit", "Managed workflow runner interrupted by signal")
+        return 0
 
 
 def _milestone_label_for_delta(
@@ -3748,7 +3773,7 @@ def main() -> int:
             history = _checkpoint_replay_history(resumed_checkpoint)
         live_state = _build_live_proof_state(history, checkpoint_state)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="resumed" if resumed_checkpoint else "ready")
-        _record_activity("runner-start", "Managed workflow runner started", resumed=bool(resumed_checkpoint))
+        _record_agent_activity(agent, "runner-start", "Managed workflow runner started", resumed=bool(resumed_checkpoint))
 
         _print_header()
         if resumed_checkpoint:
@@ -3841,7 +3866,7 @@ def main() -> int:
                 _terminate_descendant_agents(agent)
                 _terminate_other_agents(agent)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
-                _record_activity("runner-exit", "Managed workflow runner exited via EOF")
+                _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited via EOF")
                 return 0
             except KeyboardInterrupt:
                 print("\nInterrupted. Use /exit to leave prover-agent mode.")
@@ -3865,7 +3890,7 @@ def main() -> int:
                 _terminate_descendant_agents(agent)
                 _terminate_other_agents(agent)
                 _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
-                _record_activity("runner-exit", "Managed workflow runner exited by command")
+                _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited by command")
                 _print_header()
                 return 0
             if text == "/help":
