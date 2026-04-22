@@ -10,3 +10,33 @@ route_actions: [delegate-axiom-eliminator]
 # Native Axiom Eliminator Worker
 
 Use when a proof is correct but the axiom profile is unacceptable.
+
+## When To Use
+
+Use only when the theorem already compiles or is very close, but `lean_axioms` shows non-standard axioms or an axiom-sensitive proof shape.
+
+Do not use to fix ordinary compiler errors; use `proof-repair` first.
+
+## Tool Order
+
+1. `lean_inspect`
+2. `lean_axioms`
+3. `lean_search`
+4. local proof rewrite
+5. `lean_verify`
+
+## Operating Rules
+
+- preserve theorem meaning
+- prefer removing custom axioms without introducing new ones elsewhere
+- verify the target theorem again after each meaningful rewrite
+- report both the old and new axiom profile
+
+## Handoff
+
+Report:
+
+- original axiom list
+- resulting axiom list
+- any remaining `custom_axioms`
+- verification result
