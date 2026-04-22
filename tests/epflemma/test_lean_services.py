@@ -61,3 +61,42 @@ def test_lean_axioms_reports_custom_axioms(monkeypatch, tmp_path):
     assert report.custom_axioms == ["My.customAxiom"]
     assert "Classical.choice" in report.axioms
     assert report.ok is False
+
+
+def test_lean_search_marks_repeated_empty_search_loop(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: LeanCapabilityReport(
+            cwd=str(project),
+            project_root=str(project),
+            project_valid=True,
+            project_error="",
+            binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+            mcp_tools={},
+            search_providers=["project-rg"],
+            helper_tools={"search_fallback": True},
+            workers=[],
+            degraded_reasons=[],
+        ),
+    )
+    monkeypatch.setattr(lean_services, "_rg_search", lambda root, query, *, limit=10: [])
+    outcomes = project / ".epflemma-outcomes.jsonl"
+    outcomes.write_text(
+        "\n".join(
+            [
+                '{"kind":"lean-search","workflow_command":"/prove Demo/Main.lean","payload":{"results":[]}}',
+                '{"kind":"lean-search","workflow_command":"/prove Demo/Main.lean","payload":{"results":[]}}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(lean_services, "workflow_outcomes_path", lambda: outcomes)
+
+    result = lean_services.lean_search("hard theorem name", cwd=project)
+
+    assert "repeated empty search loop detected; stop searching and change tactic" in result.degraded_reasons

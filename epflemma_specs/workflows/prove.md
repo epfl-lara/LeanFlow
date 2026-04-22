@@ -52,6 +52,8 @@ Use `review`, `checkpoint`, `draft`, `refactor`, or `golf` for those cases.
      - `semantic` or `natural-language` for library discovery
      - `type-pattern` when the goal shape matters most
    - do not loop on compiler failures caused by missing lemmas before searching
+   - if 3 search attempts in a row return no usable result, stop searching and either make the best concrete proof/edit attempt you have or escalate the blocker
+   - treat `repeated empty search loop detected` in `degraded_reasons` as a hard signal to stop searching in this turn
 4. edit the current target minimally
    - queue-driven runs should change one declaration-sized unit at a time
    - local helper lemmas are allowed when they directly unblock the assigned declaration
@@ -117,6 +119,7 @@ Use the blocker kind from `lean_inspect` and the route decision from the runner 
 - search blocker
   - missing lemma or unknown proof shape
   - default route: `lean_search` before rewriting the proof blindly
+  - after repeated empty searches, stop theorem-name fishing and either try the most plausible local step or escalate as stuck
 - axiom-risk blocker
   - proof compiles but the axiom profile is unacceptable or unknown
   - default route: `lean_axioms`, then `axiom-eliminator` if needed

@@ -26,6 +26,7 @@ from agent.model_metadata import estimate_messages_tokens_rough
 from epflemma_cli.file_locks import list_file_locks, release_all_file_locks
 from epflemma_cli.lean_services import (
     lean_inspect,
+    lean_verify,
     probe_capabilities,
     route_workflow_step,
 )
@@ -1521,6 +1522,69 @@ def _remember_failed_attempt(
     autonomy_state["failed_attempts"] = attempts[-_failed_attempt_history_limit():]
 
 
+def _record_theorem_outcome(autonomy_state: dict[str, Any], outcome: Mapping[str, Any]) -> None:
+    target_symbol = str(outcome.get("target_symbol", "") or "").strip()
+    active_file = str(outcome.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return
+    outcome_map = {
+        str(key): dict(value)
+        for key, value in dict(autonomy_state.get("theorem_outcomes", {}) or {}).items()
+        if isinstance(value, Mapping)
+    }
+    outcome_map[f"{active_file}::{target_symbol}"] = {
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "status": str(outcome.get("status", "") or "unknown"),
+        "note": str(outcome.get("note", "") or ""),
+        "build_status": str(outcome.get("build_status", "") or ""),
+    }
+    autonomy_state["theorem_outcomes"] = outcome_map
+
+
+def _remember_transition_failed_attempt(
+    autonomy_state: dict[str, Any],
+    outcome: Mapping[str, Any],
+) -> None:
+    status = str(outcome.get("status", "") or "").strip().lower()
+    if status not in {"blocked", "reverted-to-sorry", "skipped"}:
+        return
+    target_symbol = str(outcome.get("target_symbol", "") or "").strip()
+    active_file = str(outcome.get("active_file", "") or "").strip()
+    reason = str(outcome.get("note", "") or outcome.get("build_status", "") or "").strip()
+    if not target_symbol or not active_file or not reason:
+        return
+    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
+    scoped = [
+        item for item in attempts
+        if str(item.get("target_symbol", "") or "").strip() == target_symbol
+        and str(item.get("active_file", "") or "").strip() == active_file
+    ]
+    entry = {
+        "attempt": len(scoped) + 1,
+        "cycle": int(autonomy_state.get("current_cycle", 0) or 0),
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "proof_shape": "[transitioned away before theorem was solved]",
+        "reason": _single_line(reason, 240),
+    }
+    if attempts and attempts[-1] == entry:
+        return
+    attempts.append(entry)
+    autonomy_state["failed_attempts"] = attempts[-_failed_attempt_history_limit():]
+
+
+def _has_unresolved_theorem_outcomes(autonomy_state: Mapping[str, Any]) -> bool:
+    outcome_map = dict(autonomy_state.get("theorem_outcomes", {}) or {})
+    for value in outcome_map.values():
+        if not isinstance(value, Mapping):
+            continue
+        status = str(value.get("status", "") or "").strip().lower()
+        if status and status != "solved":
+            return True
+    return False
+
+
 def _recent_failed_attempts_summary(
     autonomy_state: Mapping[str, Any],
     live_state: Mapping[str, Any] | None,
@@ -1688,6 +1752,8 @@ def _rebuild_history_for_theorem_transition(
     if not transition:
         return None, None
     outcome = _summarize_theorem_transition_outcome(autonomy_state, live_state, history)
+    _record_theorem_outcome(autonomy_state, outcome)
+    _remember_transition_failed_attempt(autonomy_state, outcome)
     rebuilt_history = [
         {"role": "assistant", "content": _workflow_transition_snapshot(compaction_state, live_state)},
         {"role": "assistant", "content": _theorem_transition_handoff_message(outcome, live_state)},
@@ -2194,37 +2260,14 @@ def _recommended_verification_command(active_file: str) -> str:
 
 
 def _run_explicit_verification_build(active_file: str = "", *, full_project: bool = False) -> tuple[bool, str]:
-    module_name = _module_name_for_file(active_file)
-    build_cmd = ["lake", "build"]
-    build_label = "lake build"
-    if not full_project and module_name:
-        build_cmd = ["lake", "build", module_name]
-        build_label = f"lake build {module_name}"
-    elif not full_project and active_file:
-        try:
-            relative_file = str(Path(active_file).resolve().relative_to(Path(_project_root()).resolve()))
-        except Exception:
-            relative_file = active_file
-        build_cmd = ["lake", "env", "lean", relative_file]
-        build_label = f"lake env lean {relative_file}"
-    try:
-        result = subprocess.run(
-            build_cmd,
-            cwd=_project_root(),
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except Exception as exc:
-        return False, f"build invocation failed: {type(exc).__name__}: {exc}"
-
-    if result.returncode == 0:
-        return True, f"{build_label} succeeded"
-
-    stderr = (result.stderr or "").strip()
-    stdout = (result.stdout or "").strip()
-    detail = stderr or stdout or f"exit {result.returncode}"
-    return False, f"{build_label} reported errors: {detail[:280]}"
+    mode = "project"
+    if not full_project and active_file:
+        mode = "module" if _module_name_for_file(active_file) else "file_exact"
+    result = lean_verify(target=active_file, cwd=_project_root(), mode=mode)
+    if result.ok:
+        return True, f"{result.command} succeeded"
+    detail = str(result.output or "").strip() or "verification failed"
+    return False, f"{result.command} reported errors: {detail[:280]}"
 
 
 def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -2835,6 +2878,20 @@ def _run_managed_conversation(
         raise error
 
     result = result_holder.get("result")
+    if interrupt_requested and not isinstance(result, dict):
+        try:
+            agent.clear_interrupt()
+        except Exception:
+            pass
+        result = {
+            "messages": list(getattr(agent, "_session_messages", []) or kwargs.get("conversation_history") or []),
+            "api_calls": 0,
+            "completed": False,
+            "interrupted": True,
+            "final_response": "Operation interrupted by user.",
+        }
+        print("Returned to prover-agent mode after interrupt.")
+        return result
     if not isinstance(result, dict):
         raise RuntimeError("Managed conversation did not return a result payload")
 
@@ -3369,6 +3426,10 @@ def _autonomous_stop_reason(
     autonomy_state["continuation_stable_cycles"] = stable_cycles
 
     if _live_state_is_verified(live_state):
+        if _has_unresolved_theorem_outcomes(autonomy_state):
+            autonomy_state["continuation_blocked_runs"] = 0
+            autonomy_state["continuation_stable_cycles"] = 0
+            return "blocked"
         autonomy_state["continuation_blocked_runs"] = 0
         autonomy_state["continuation_stable_cycles"] = 0
         return "verified"
@@ -3501,6 +3562,7 @@ def _drive_autonomous_followups(
         return history, compaction_state, checkpoint_state, live_state
 
     for cycle in range(1, _autonomous_followup_limit() + 1):
+        autonomy_state["current_cycle"] = cycle
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state(history, checkpoint_state)
         live_state = _promote_live_state_to_verified(live_state)

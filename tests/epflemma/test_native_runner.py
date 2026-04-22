@@ -101,6 +101,52 @@ def test_run_managed_conversation_interrupts_on_ctrl_c(monkeypatch, capsys):
     assert "Returned to prover-agent mode after interrupt." in output
 
 
+def test_run_managed_conversation_returns_interrupted_result_when_no_payload_arrives_after_interrupt(monkeypatch, capsys):
+    class _Agent:
+        def __init__(self):
+            self.interrupt_calls = 0
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+
+        def interrupt(self):
+            self.interrupt_calls += 1
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(self, **kwargs):
+            return None
+
+    agent = _Agent()
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+            self._alive = True
+            self._raised = False
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            if not self._raised:
+                self._raised = True
+                raise KeyboardInterrupt
+            self._alive = False
+
+    monkeypatch.setattr(runner.threading, "Thread", _FakeThread)
+
+    result = runner._run_managed_conversation(agent, user_message="hello")
+
+    assert agent.interrupt_calls == 1
+    assert result["interrupted"] is True
+    assert result["messages"] == [{"role": "assistant", "content": "partial"}]
+    output = capsys.readouterr().out
+    assert "Returned to prover-agent mode after interrupt." in output
+
+
 def test_run_managed_conversation_converts_worker_interrupted_error(monkeypatch, capsys):
     class _Agent:
         def __init__(self):
@@ -1246,24 +1292,29 @@ def test_explicit_verification_build_uses_lake_env_lean_for_non_module_file(monk
 
     captured: dict[str, object] = {}
 
-    class _Result:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def _fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
-        captured["cmd"] = cmd
-        captured["cwd"] = cwd
-        return _Result()
-
-    monkeypatch.setattr(runner.subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        runner,
+        "lean_verify",
+        lambda target="", cwd="", mode="project": captured.update(
+            {"target": target, "cwd": cwd, "mode": mode}
+        ) or type(
+            "_Result",
+            (),
+            {
+                "ok": True,
+                "command": "lake build Demo.RealTheorems-homework",
+                "output": "",
+            },
+        )(),
+    )
 
     ok, status = runner._run_explicit_verification_build(str(active), full_project=False)
 
     assert ok is True
-    assert captured["cmd"] == ["lake", "env", "lean", "Demo/RealTheorems-homework.lean"]
+    assert captured["target"] == str(active)
     assert captured["cwd"] == str(project)
-    assert status == "lake env lean Demo/RealTheorems-homework.lean succeeded"
+    assert captured["mode"] == "file_exact"
+    assert status == "lake build Demo.RealTheorems-homework succeeded"
 
 
 def test_write_workflow_checkpoint_persists_index_and_current(monkeypatch, tmp_path):
@@ -1654,6 +1705,74 @@ def test_same_queue_assignment_still_blocked_requires_same_theorem_and_real_bloc
             "build_status": "unknown",
         },
     ) is False
+
+
+def test_rebuild_history_for_theorem_transition_records_blocked_outcome_and_failed_attempt():
+    autonomy_state = {
+        "current_cycle": 3,
+        "current_queue_assignment": {
+            "target_symbol": "blocked_demo",
+            "active_file": "Demo/Main.lean",
+            "slice": "theorem blocked_demo : True := by\n  sorry",
+        },
+    }
+    live_state = {
+        "active_file_label": "Demo/Main.lean",
+        "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+        "declaration_queue_summary": (
+            "- blocked_demo [Demo/Main.lean] — contains sorry\n"
+            "- next_demo [Demo/Main.lean] — contains sorry"
+        ),
+        "current_blocker": "blocked_demo still has unresolved goals",
+        "build_status": "unknown",
+    }
+
+    rebuilt_history, transition = runner._rebuild_history_for_theorem_transition(
+        [{"role": "assistant", "content": "Moving on to another theorem for now."}],
+        {"snapshot_text": "Compact workflow snapshot"},
+        autonomy_state,
+        live_state,
+    )
+
+    assert rebuilt_history is not None
+    assert transition == {
+        "previous_target": "blocked_demo",
+        "previous_file": "Demo/Main.lean",
+        "current_target": "next_demo",
+        "current_file": "Demo/Main.lean",
+    }
+    attempts = autonomy_state["failed_attempts"]
+    assert attempts[-1]["target_symbol"] == "blocked_demo"
+    assert attempts[-1]["active_file"] == "Demo/Main.lean"
+    assert attempts[-1]["cycle"] == 3
+    assert attempts[-1]["proof_shape"] == "[transitioned away before theorem was solved]"
+    outcomes = autonomy_state["theorem_outcomes"]
+    assert outcomes["Demo/Main.lean::blocked_demo"]["status"] == "blocked"
+
+
+def test_autonomous_stop_reason_blocks_verified_exit_when_prior_theorem_is_unresolved():
+    live_state = {
+        "active_file": "/tmp/project/Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "target_symbol": "next_demo",
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake build Demo.Main succeeded",
+        "sorry_count": 0,
+        "verification_ok": True,
+    }
+    autonomy_state = {
+        "theorem_outcomes": {
+            "Demo/Main.lean::blocked_demo": {
+                "target_symbol": "blocked_demo",
+                "active_file": "Demo/Main.lean",
+                "status": "blocked",
+                "note": "still unresolved",
+            }
+        }
+    }
+
+    assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "blocked"
 
 
 def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkeypatch):

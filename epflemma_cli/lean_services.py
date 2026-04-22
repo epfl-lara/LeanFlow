@@ -21,7 +21,7 @@ from epflemma_cli.project import (
     discover_epflemma_project,
     find_lean_project_root,
 )
-from epflemma_cli.workflow_state import append_workflow_outcome
+from epflemma_cli.workflow_state import append_workflow_outcome, workflow_outcomes_path
 from epflemma_cli.lean_workflow_specs import get_lean_spec, list_specs
 
 
@@ -34,6 +34,41 @@ SEARCH_PROVIDER_LABELS = {
     "project_rg": "project-rg",
     "mathlib_rg": "mathlib-rg",
 }
+
+
+def _recent_empty_search_streak(*, workflow_command: str, limit: int = 6) -> int:
+    path = workflow_outcomes_path()
+    if not path.is_file():
+        return 0
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return 0
+    streak = 0
+    for line in reversed(lines):
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        if str(payload.get("workflow_command", "") or "") != workflow_command:
+            continue
+        if str(payload.get("kind", "") or "") != "lean-search":
+            if streak:
+                break
+            continue
+        result_payload = payload.get("payload", {})
+        if not isinstance(result_payload, Mapping):
+            break
+        results = result_payload.get("results", [])
+        if isinstance(results, list) and not results:
+            streak += 1
+            if streak >= limit:
+                break
+            continue
+        break
+    return streak
 
 
 @dataclass(frozen=True)
@@ -689,6 +724,11 @@ def lean_search(
             degraded.append("semantic providers skipped; falling back to rg")
     if not results:
         degraded.append("search returned no results")
+        workflow_command = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", ""))
+        if workflow_command:
+            empty_streak = _recent_empty_search_streak(workflow_command=workflow_command)
+            if empty_streak >= 2:
+                degraded.append("repeated empty search loop detected; stop searching and change tactic")
     result = LeanSearchResult(
         query=query,
         mode=normalized_mode,
