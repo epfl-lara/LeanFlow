@@ -1580,6 +1580,47 @@ def test_autonomous_continuation_prompt_includes_recent_failed_attempts():
     assert "why it failed: warning: declaration uses sorry" in prompt
 
 
+def test_queue_assignment_block_includes_exact_tool_path():
+    block = runner._queue_assignment_block(
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "demo",
+            "current_queue_item": {
+                "label": "demo",
+                "reasons": ["contains sorry"],
+            },
+            "current_blocker": "contains sorry",
+        }
+    )
+
+    assert "- file: Demo/Main.lean" in block
+    assert "- exact tool path: /tmp/project/Demo/Main.lean" in block
+
+
+def test_theorem_transition_handoff_includes_exact_tool_path():
+    message = runner._theorem_transition_handoff_message(
+        {
+            "target_symbol": "previous_demo",
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "status": "solved",
+            "note": "done",
+            "build_status": "ok",
+        },
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "next_demo",
+            "current_queue_item": {"label": "next_demo"},
+            "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
+            "build_status": "unknown",
+        },
+    )
+
+    assert "- file: Demo/Main.lean" in message
+    assert "- exact tool path: /tmp/project/Demo/Main.lean" in message
+
+
 def test_autonomous_continuation_prompt_switches_to_final_file_sweep_when_queue_empty(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
