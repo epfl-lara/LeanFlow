@@ -46,6 +46,7 @@ class ContextCompressor:
         quiet_mode: bool = False,
         summary_model_override: str = None,
         base_url: str = "",
+        api_key: str = "",
         reserved_output_tokens: int = 0,
         prune_tool_output: bool = False,
         prune_keep_recent_user_turns: int = 2,
@@ -61,7 +62,7 @@ class ContextCompressor:
         self.prune_tool_output = bool(prune_tool_output)
         self.prune_keep_recent_user_turns = max(1, int(prune_keep_recent_user_turns or 2))
 
-        self.context_length = get_model_context_length(model, base_url=base_url)
+        self.context_length = get_model_context_length(model, base_url=base_url, api_key=api_key)
         percent_threshold = int(self.context_length * threshold_percent)
         reserved_threshold = (
             max(0, self.context_length - self.reserved_output_tokens)
