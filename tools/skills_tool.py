@@ -439,6 +439,12 @@ def _spec_summary(record: Any) -> Dict[str, Any]:
     }
 
 
+def _spec_detail(record: Any) -> Dict[str, Any]:
+    payload = _spec_summary(record)
+    payload["content"] = str(getattr(record, "content", "") or "")
+    return payload
+
+
 def check_skills_requirements() -> bool:
     """EPFLemma curated skills are always available."""
     return True
@@ -994,7 +1000,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 },
                 ensure_ascii=False,
             )
-        workflow_specs = [_spec_summary(record) for record in specs_for_skill(str(payload.get("name", "") or name))]
+        workflow_specs = [_spec_detail(record) for record in specs_for_skill(str(payload.get("name", "") or name))]
         if workflow_specs:
             linked = dict(payload.get("linked_files") or {})
             linked.setdefault("workflow_specs", [record["path"] for record in workflow_specs])

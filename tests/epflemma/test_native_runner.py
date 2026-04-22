@@ -335,6 +335,170 @@ def test_workflow_startup_guidance_mentions_user_approved_swarm(monkeypatch):
     assert "3 agents total" in text
 
 
+def test_record_managed_reasoning_policy_emits_auditable_fields(monkeypatch):
+    recorded = []
+
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
+
+    runner._record_managed_reasoning_policy(
+        {
+            "current_queue_item": {"label": "demo_theorem"},
+            "active_file": "/tmp/project/Main.lean",
+        },
+        {
+            "failed_attempts": [
+                {"target_symbol": "demo_theorem", "active_file": "/tmp/project/Main.lean"},
+                {"target_symbol": "demo_theorem", "active_file": "/tmp/project/Main.lean"},
+                {"target_symbol": "other_theorem", "active_file": "/tmp/project/Main.lean"},
+            ]
+        },
+        {"enabled": True, "effort": "high"},
+        phase="autonomous",
+        cycle=3,
+    )
+
+    assert recorded == [
+        (
+            "managed-reasoning-policy",
+            "Managed reasoning policy applied: high",
+            {
+                "phase": "autonomous",
+                "target_symbol": "demo_theorem",
+                "active_file": "/tmp/project/Main.lean",
+                "failed_attempt_count": 2,
+                "effective_reasoning_effort": "high",
+                "reasoning_enabled": True,
+                "cycle": 3,
+            },
+        )
+    ]
+
+
+def test_startup_user_message_snapshot_with_runner_lean_prompt(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_RUNNER_LEAN_PROMPT", "1")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "/tmp/project/Main.lean")
+    monkeypatch.setattr(runner, "_project_root", lambda: "/tmp/project")
+    monkeypatch.setattr(
+        runner,
+        "build_skill_prompt",
+        lambda name, cwd=None: "[SKILL]\n[WORKFLOW SPEC: prove]\npolicy body",
+    )
+    monkeypatch.setattr(
+        runner,
+        "route_workflow_step",
+        lambda *args, **kwargs: type(
+            "_Route",
+            (),
+            {
+                "to_dict": lambda self: {
+                    "skill_name": "lean-theorem-queue-worker",
+                    "route_action": "queue-worker",
+                    "blocker_kind": "compiler",
+                    "recommended_worker": "proof-repair",
+                    "reason": "queue item active",
+                }
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_queue_assignment_block",
+        lambda live_state, autonomy_state=None: "Assigned queue item:\n- declaration: foo",
+    )
+
+    text = runner._startup_user_message(
+        live_state={"current_queue_item": {"label": "foo"}},
+        autonomy_state={},
+    )
+
+    assert text == (
+        "Begin the requested autonomous proving session now.\n\n"
+        "Workflow request: /prove Main.lean\n"
+        "Execution guidance: Load the native proving contract from the active skill/spec, begin with `lean_capabilities` and `lean_inspect`, "
+        "use `lean_search` before guessing, and use `lean_worker_dispatch` only when the route recommends it; the live queue, route decision, "
+        "and verification gate below are the state for this turn.\n\n"
+        "Route decision:\n"
+        "- skill: lean-theorem-queue-worker\n"
+        "- action: queue-worker\n"
+        "- blocker kind: compiler\n"
+        "- reason: queue item active\n"
+        "- recommended worker: proof-repair\n"
+        "- use `lean_worker_dispatch` if the next attempt confirms this route\n\n"
+        "Assigned queue item:\n"
+        "- declaration: foo\n\n"
+        "[SKILL]\n"
+        "[WORKFLOW SPEC: prove]\n"
+        "policy body"
+    )
+
+
+def test_autonomous_continuation_prompt_snapshot_with_runner_lean_prompt(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_RUNNER_LEAN_PROMPT", "1")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_project_root", lambda: "/tmp/project")
+    monkeypatch.setattr(
+        runner,
+        "route_workflow_step",
+        lambda *args, **kwargs: type(
+            "_Route",
+            (),
+            {
+                "to_dict": lambda self: {
+                    "skill_name": "lean-theorem-queue-worker",
+                    "route_action": "queue-worker",
+                    "blocker_kind": "compiler",
+                    "recommended_worker": "proof-repair",
+                    "reason": "queue item active",
+                }
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_queue_assignment_block",
+        lambda live_state, autonomy_state=None: "Assigned queue item:\n- declaration: foo",
+    )
+    monkeypatch.setattr(runner, "_queue_needs_final_file_sweep", lambda live_state: False)
+    monkeypatch.setattr(runner, "_recent_failed_attempts_summary", lambda *args, **kwargs: "Recent failed attempts:\n- same blocker twice")
+
+    text = runner._autonomous_continuation_prompt(
+        {
+            "declaration_scope": "file",
+            "active_file": "/tmp/project/Main.lean",
+            "verification_hint": "`lean_inspect` on Main.lean, then `lake env lean Main.lean`",
+            "current_queue_item": {"label": "foo"},
+        },
+        3,
+        autonomy_state={},
+    )
+
+    assert text == (
+        "Continue the autonomous workflow.\n\n"
+        "Follow the loaded native workflow spec as the policy manual. "
+        "Use the refreshed live proof state below as the current turn state.\n\n"
+        "This is autonomous continuation cycle 3.\n"
+        "Current verification gate: `lean_inspect` on Main.lean, then `lake env lean Main.lean`\n"
+        "Do not stop until that gate is satisfied or you have a concrete blocker to report.\n\n"
+        "Route decision:\n"
+        "- skill: lean-theorem-queue-worker\n"
+        "- action: queue-worker\n"
+        "- blocker kind: compiler\n"
+        "- reason: queue item active\n"
+        "- recommended worker: proof-repair\n"
+        "- use `lean_worker_dispatch` if the blocker still fits this route after the next focused attempt\n\n"
+        "Recent failed attempts:\n"
+        "- same blocker twice\n\n"
+        "Assigned queue item:\n"
+        "- declaration: foo"
+    )
+
+
 def test_history_status_lines_summarize_message_counts(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")

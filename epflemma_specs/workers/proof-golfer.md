@@ -10,3 +10,31 @@ route_actions: [delegate-proof-golfer]
 # Native Proof Golfer Worker
 
 Operate only on compiling proofs and preserve theorem meaning.
+
+## When To Use
+
+Use only when the target theorem already compiles and the goal is simplification, shortening, or cleanup.
+
+Do not use while the theorem still has active compiler blockers or `sorry`; prove correctness first.
+
+## Tool Order
+
+1. `lean_inspect`
+2. `lean_search` for nearby proof shapes or standard shorter idioms
+3. local proof simplification
+4. `lean_verify`
+5. `lean_axioms` only if the shorter proof might worsen the axiom profile
+
+## Operating Rules
+
+- preserve theorem statement and meaning
+- avoid making the proof shorter at the cost of unreadability when maintenance would clearly suffer
+- leave the proof compiling after every meaningful change
+
+## Handoff
+
+Report:
+
+- before/after proof shape in one sentence
+- verification result
+- any readability tradeoff introduced

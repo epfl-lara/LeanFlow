@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from epflemma_cli.lean_workflow_specs import specs_for_skill
 
 
 CURATED_BUILTIN_SKILLS = {
@@ -249,6 +250,21 @@ def build_skill_prompt(name: str, cwd: str | os.PathLike[str] | None = None) -> 
         "",
         str(payload.get("content", "") or "").strip(),
     ]
+    spec_records = specs_for_skill(str(payload.get("name", "") or name))
+    if spec_records:
+        parts.append("")
+        parts.append("[Linked workflow specs follow. Treat them as the policy manuals for this skill.]")
+        for record in spec_records:
+            spec_content = str(record.content or "").strip()
+            if not spec_content:
+                continue
+            parts.extend(
+                [
+                    "",
+                    f"[{record.kind.upper()} SPEC: {record.spec_id}]",
+                    spec_content,
+                ]
+            )
     linked_files = payload.get("linked_files") or {}
     if linked_files:
         parts.append("")

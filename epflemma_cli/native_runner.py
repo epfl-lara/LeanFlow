@@ -158,6 +158,11 @@ def _swarm_enabled() -> bool:
     return _parallel_agents() > 1 and _read_native_env("USER_APPROVED_SWARM", "0") == "1"
 
 
+def _runner_lean_prompt_enabled() -> bool:
+    raw = _read_text_env("EPFLEMMA_RUNNER_LEAN_PROMPT", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _runner_owner_id() -> str:
     return _read_native_env("RUNNER_OWNER", "")
 
@@ -530,6 +535,47 @@ def _apply_managed_reasoning_policy(
     return effective
 
 
+def _record_managed_reasoning_policy(
+    live_state: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any] | None,
+    effective: Mapping[str, Any] | None,
+    *,
+    phase: str,
+    cycle: int | None = None,
+) -> None:
+    current = dict(live_state or {})
+    autonomy = dict(autonomy_state or {})
+    target_symbol, active_file = _queue_assignment_identity(current)
+    failed_attempt_count = 0
+    if target_symbol and active_file:
+        failed_attempt_count = _failed_attempt_count_for_theorem(
+            autonomy,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+    effort = ""
+    enabled = True
+    if effective:
+        enabled = bool(effective.get("enabled", True))
+        effort = str(effective.get("effort", "") or "")
+    message = "Managed reasoning policy applied"
+    if effort:
+        message += f": {effort}"
+    elif not enabled:
+        message += ": disabled"
+    details = {
+        "phase": phase,
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "failed_attempt_count": failed_attempt_count,
+        "effective_reasoning_effort": effort,
+        "reasoning_enabled": enabled,
+    }
+    if cycle is not None:
+        details["cycle"] = cycle
+    _record_activity("managed-reasoning-policy", message, **details)
+
+
 def _managed_agent_int(value: Any) -> int | None:
     if value is None or isinstance(value, bool):
         return None
@@ -633,38 +679,38 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
     guidance_map = {
         "prove": (
             "autonomous proving session",
-            "Start with `lean_capabilities` and `lean_inspect`, build the declaration queue in scope, then clear the blockers one declaration at a time. Use `lean_search` before guessing theorem names, use `lean_worker_dispatch` when the route recommends a specialist worker, and only accept file-scoped theorem work after the canonical `lake env lean <file>` check succeeds.",
+            "Load the native proving contract from the active skill/spec, begin with `lean_capabilities` and `lean_inspect`, use `lean_search` before guessing, and use `lean_worker_dispatch` only when the route recommends it; the live queue, route decision, and verification gate below are the state for this turn.",
         ),
         "review": (
             "proof review session",
-            "Inspect the structured Lean state first, identify correctness or style issues, and apply targeted fixes only when the review clearly justifies them.",
+            "Use the native review/checkpoint contract from the active skill/spec and the live Lean state below.",
         ),
         "checkpoint": (
             "proof checkpoint session",
-            "Summarize the current Lean state, stabilize the file so it builds cleanly, and leave a queue-aware handoff for the next proving step.",
+            "Use the native review/checkpoint contract from the active skill/spec and the live Lean state below.",
         ),
         "refactor": (
             "proof refactor session",
-            "Improve the proof structure without changing theorem meaning, then re-check with `lean_inspect` and `lean_verify` to avoid regressions.",
+            "Use the native refactor/golf contract from the active skill/spec and the live Lean state below.",
         ),
         "golf": (
             "proof golfing session",
-            "Shorten or simplify the proof while preserving readability enough for future maintenance, and escalate to `proof-golfer` through `lean_worker_dispatch` when the route recommends it.",
+            "Use the native refactor/golf contract from the active skill/spec and the live Lean state below.",
         ),
         "draft": (
             "declaration drafting session",
-            "Create or refine Lean declaration skeletons, imports, and signatures so the target is ready for proving work, using the same native Lean inspection and verification tools as the proving workflows.",
+            "Use the native drafting/formalization contract from the active skill/spec and the live Lean state below.",
         ),
         "formalize": (
             "autonomous formalization session",
-            "Translate the requested mathematics into Lean declarations step by step, then keep the queue moving until the requested scope is actually clean. Start with `lean_capabilities`, `lean_inspect`, and `lean_search`; use `lean_worker_dispatch` when the route recommends `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`; and finish only after the canonical verification path succeeds.",
+            "Load the native formalization contract from the active skill/spec, begin with `lean_capabilities` and `lean_inspect`, use `lean_search` before redrafting blindly, and use `lean_worker_dispatch` only when the route recommends it; the live queue, route decision, and verification gate below are the state for this turn.",
         ),
     }
     label, detail = guidance_map.get(
         workflow_kind,
         (
             "managed Lean workflow session",
-            "Use the staged Lean tools to complete the requested workflow and verify your work before finishing.",
+            "Use the active native workflow spec plus the live state below.",
         ),
     )
     guidance = (
@@ -3022,7 +3068,13 @@ def _run_background_control_loop(
             _prepare_queue_assignment_state(autonomy_state, live_state)
             augmented_text = _attach_live_proof_state(text, live_state)
             _set_runtime_active_skill(_effective_skill_name(live_state))
-            _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+            effective_reasoning = _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+            _record_managed_reasoning_policy(
+                live_state,
+                autonomy_state,
+                effective_reasoning,
+                phase="background",
+            )
             result = _run_managed_conversation(
                 agent,
                 on_interrupt=lambda: _persist_live_status(
@@ -3214,25 +3266,27 @@ def _managed_system_prompt() -> str:
         except OSError:
             context_text = ""
 
-    sections = [
-        "You are the epflemma-native managed Lean workflow backend.",
-        "Work inside the active Lean project only.",
-        "Treat `/prove`, `/formalize`, `/review`, `/checkpoint`, `/refactor`, and `/golf` as native workflow labels and instructions, not shell commands.",
-        "Start Lean work with `lean_capabilities` and `lean_inspect` so your view of the project is structured and current.",
-        "Use `lean_search` before guessing lemma names or proof shapes, and use `lean_worker_dispatch` when the route recommends a specialist worker.",
-        "For file-scoped autonomous theorem turns, the only acceptable final verification command is `lake env lean <file>` for the active file. Do not treat `lake build`, `grep`, `head`, or truncated output as sufficient acceptance for a theorem-sized repair.",
-        "Outside theorem-scoped file turns, avoid repeated `lake env lean <file>` loops on large imports and prefer a focused `lake build <Module>` or final `lake build` near milestones.",
-        "For `prove` and `formalize`, first enumerate the declarations in scope that still contain `sorry`, Lean errors, or warnings, then clear them one by one as a real queue.",
-        "If the workflow request names a Lean file, keep the work pinned to that file and do not drift to unrelated helper files or declarations discovered later.",
-        "For file-scoped autonomous proving, finish at most one declaration-sized edit before yielding back to the runner so diagnostics and the queue can be refreshed.",
-        "If the workflow request is project-wide, prefer independent per-file work items; only split them across child agents when swarm mode is explicitly enabled.",
-        "Use the `lean-project-search` skill to find relevant local declarations and imports before editing, and use `lean-mathlib-search` when the proof likely depends on an existing Mathlib lemma.",
-        "Use tools aggressively, keep changes reproducible, and explain blockers clearly when a proof or formalization fails.",
-        "A proof is not verified merely because `sorry` disappeared or style warnings remain. Treat a workflow as verified only after an explicit successful Lean build plus clean diagnostics, no warnings in scope, and no remaining proof goals.",
-        "For autonomous workflows, do not stop while the requested scope still contains build errors, warnings, open goals, or any remaining `sorry` placeholders outside dependencies.",
-        "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff instead of reconstructing the full transcript from memory.",
-        "Do not use multi-agent delegation unless the user explicitly enabled swarm mode for this workflow.",
-    ]
+    if _runner_lean_prompt_enabled():
+        sections = [
+            "You are the epflemma-native managed Lean workflow backend.",
+            "Work inside the active Lean project only.",
+            "Treat `/prove`, `/formalize`, `/review`, `/checkpoint`, `/refactor`, and `/golf` as native workflow labels and instructions, not shell commands.",
+            "The loaded workflow and worker specs are the policy manuals; runner-injected blocks below are turn-local state only.",
+            "Use `lean_capabilities` and `lean_inspect` to refresh state first, then follow the active spec.",
+            "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff.",
+            "Do not use multi-agent delegation unless the user explicitly enabled swarm mode for this workflow.",
+        ]
+    else:
+        sections = [
+            "You are the epflemma-native managed Lean workflow backend.",
+            "Work inside the active Lean project only.",
+            "Treat `/prove`, `/formalize`, `/review`, `/checkpoint`, `/refactor`, and `/golf` as native workflow labels and instructions, not shell commands.",
+            "The loaded workflow and worker specs are the policy manuals for tool order, verification ladders, escalation rules, and stop conditions.",
+            "Runner-injected blocks below are turn-local state only: queue assignment, route decision, attempt history, blockers, and verification hints.",
+            "Use `lean_capabilities` and `lean_inspect` to refresh state first, then follow the active spec rather than inventing a parallel process.",
+            "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff instead of reconstructing the full transcript from memory.",
+            "Do not use multi-agent delegation unless the user explicitly enabled swarm mode for this workflow.",
+        ]
     if _swarm_enabled():
         sections.extend(
             [
@@ -3341,40 +3395,53 @@ def _autonomous_continuation_prompt(
     autonomy_state: Mapping[str, Any] | None = None,
 ) -> str:
     declaration_scope = str(live_state.get("declaration_scope", "") or _declaration_queue_scope())
-    if declaration_scope == "file":
-        verification_lines = (
-            "- explicit successful file verification\n"
-            "- clean Lean diagnostics in the active file\n"
-            "- no warnings in the requested file\n"
-            "- no open goals for the active work\n"
-            "- no remaining `sorry` in the active file\n\n"
+    if _runner_lean_prompt_enabled():
+        if declaration_scope == "file":
+            verification_gate = str(
+                live_state.get("verification_hint", "") or "`lean_inspect` on the active file, then the canonical file verification gate"
+            )
+        else:
+            verification_gate = str(
+                live_state.get("verification_hint", "") or "`lean_inspect` first, then the project/module verification gate for the requested scope"
+            )
+        prompt = (
+            "Continue the autonomous workflow.\n\n"
+            "Follow the loaded native workflow spec as the policy manual. "
+            "Use the refreshed live proof state below as the current turn state.\n\n"
+            f"This is autonomous continuation cycle {cycle_number}.\n"
+            f"Current verification gate: {verification_gate}\n"
+            "Do not stop until that gate is satisfied or you have a concrete blocker to report."
         )
-        conclusion = "make the next strongest move, and re-check the active file before concluding."
     else:
-        verification_lines = (
-            "- explicit successful `lake build`\n"
-            "- clean Lean diagnostics\n"
-            "- no warnings in the requested scope\n"
-            "- no open goals\n"
-            "- no remaining `sorry` in the active file\n"
-            "- no remaining `sorry` anywhere else in the project outside dependencies\n\n"
+        if declaration_scope == "file":
+            verification_lines = (
+                "- explicit successful file verification\n"
+                "- clean Lean diagnostics in the active file\n"
+                "- no warnings in the requested file\n"
+                "- no open goals for the active work\n"
+                "- no remaining `sorry` in the active file\n\n"
+            )
+            conclusion = "make the next strongest move, and re-check the active file before concluding."
+        else:
+            verification_lines = (
+                "- explicit successful `lake build`\n"
+                "- clean Lean diagnostics\n"
+                "- no warnings in the requested scope\n"
+                "- no open goals\n"
+                "- no remaining `sorry` in the active file\n"
+                "- no remaining `sorry` anywhere else in the project outside dependencies\n\n"
+            )
+            conclusion = "make the next strongest move, and re-check the whole project before concluding."
+        prompt = (
+            "Continue the autonomous workflow. Do not stop yet unless the workflow is truly verified or "
+            "you have a concrete blocker that still remains after another attempt.\n\n"
+            "Follow the loaded native workflow spec as the policy manual. "
+            "Use the refreshed live proof state below as the current turn state.\n\n"
+            "Verification requires all of the following:\n"
+            f"{verification_lines}"
+            f"This is autonomous continuation cycle {cycle_number}. Use the refreshed live proof state below, "
+            f"{conclusion}"
         )
-        conclusion = "make the next strongest move, and re-check the whole project before concluding."
-    prompt = (
-        "Continue the autonomous workflow. Do not stop yet unless the workflow is truly verified or "
-        "you have a concrete blocker that still remains after another attempt.\n\n"
-        "Required working style:\n"
-        "- identify the remaining declarations in scope with `sorry`, Lean errors, or warnings\n"
-        "- pick one declaration at a time\n"
-        "- if an assigned queue item is given, work only on that theorem or lemma\n"
-        "- do not touch the next declaration until the assigned one is solved or blocked\n"
-        "- fix it, re-check it, then hand control back to the runner\n"
-        "- do not declare success after clearing only the first theorem in the file\n\n"
-        "Verification requires all of the following:\n"
-        f"{verification_lines}"
-        f"This is autonomous continuation cycle {cycle_number}. Use the refreshed live proof state below, "
-        f"{conclusion}"
-    )
     route_decision = route_workflow_step(
         _workflow_kind(),
         live_state,
@@ -3406,7 +3473,7 @@ def _autonomous_continuation_prompt(
             prompt += f"\n\n{queue_text}"
             active_file = str(live_state.get("active_file", "") or "")
             command = _canonical_file_verification_command(active_file)
-            if command:
+            if command and not _runner_lean_prompt_enabled():
                 prompt += (
                     "\n\n"
                     "For this assigned file-scoped queue item, use `lean_inspect` for iteration, "
@@ -3490,7 +3557,14 @@ def _drive_autonomous_followups(
             live_state,
         )
         _set_runtime_active_skill(_effective_skill_name(live_state))
-        _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+        effective_reasoning = _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+        _record_managed_reasoning_policy(
+            live_state,
+            autonomy_state,
+            effective_reasoning,
+            phase="autonomous",
+            cycle=cycle,
+        )
         result = _run_managed_conversation(
             agent,
             on_interrupt=lambda: _persist_live_status(
@@ -3603,7 +3677,13 @@ def main() -> int:
         _record_queue_assignment(live_state, phase="startup")
         _prepare_queue_assignment_state(autonomy_state, live_state)
         _set_runtime_active_skill(_effective_skill_name(live_state))
-        _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+        effective_reasoning = _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+        _record_managed_reasoning_policy(
+            live_state,
+            autonomy_state,
+            effective_reasoning,
+            phase="startup",
+        )
         result = _run_managed_conversation(
             agent,
             on_interrupt=lambda: _persist_live_status(
@@ -3850,7 +3930,13 @@ def main() -> int:
             _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
             augmented_text = _attach_live_proof_state(text, live_state)
             _set_runtime_active_skill(_effective_skill_name(live_state))
-            _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+            effective_reasoning = _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
+            _record_managed_reasoning_policy(
+                live_state,
+                autonomy_state,
+                effective_reasoning,
+                phase="interactive",
+            )
             result = _run_managed_conversation(
                 agent,
                 on_interrupt=lambda: _persist_live_status(

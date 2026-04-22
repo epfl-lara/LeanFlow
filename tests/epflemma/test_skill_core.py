@@ -165,6 +165,17 @@ def test_build_skill_prompt_includes_skill_content(monkeypatch, tmp_path):
     assert len(prompt) > 50, "Prompt should contain meaningful skill content"
 
 
+def test_build_skill_prompt_includes_linked_workflow_spec_bodies(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+
+    prompt = build_skill_prompt("lean-proof-loop", tmp_path)
+
+    assert "[LINKED WORKFLOW SPECS FOLLOW." in prompt.upper()
+    assert "[WORKFLOW SPEC: prove]".upper() in prompt.upper()
+    assert "## Tool Order" in prompt
+
+
 def test_build_skill_prompt_returns_empty_for_unknown_skill(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
