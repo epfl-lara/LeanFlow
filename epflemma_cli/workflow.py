@@ -333,10 +333,10 @@ def load_default_model() -> str:
     config = load_config()
     model_cfg = config.get("model")
     if isinstance(model_cfg, Mapping):
-        return str(model_cfg.get("default", "zai-org/GLM-5") or "zai-org/GLM-5")
+        return str(model_cfg.get("default", "zai-org/GLM-5.1") or "zai-org/GLM-5.1")
     if isinstance(model_cfg, str) and model_cfg.strip():
         return model_cfg.strip()
-    return "zai-org/GLM-5"
+    return "zai-org/GLM-5.1"
 
 
 def spawn_workflow(

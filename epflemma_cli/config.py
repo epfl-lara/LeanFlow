@@ -37,7 +37,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "model": {
-        "default": "zai-org/GLM-5",
+        "default": "zai-org/GLM-5.1",
         "provider": "auto",
         "base_url": "",
         "api_key": "",
@@ -62,7 +62,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "compression": {
         "enabled": True,
         "threshold": 0.50,
-        "summary_model": "zai-org/GLM-5",
+        "summary_model": "zai-org/GLM-5.1",
         "reserved_output_tokens": 20000,
         "prune_tool_output": True,
         "prune_keep_recent_user_turns": 2,
