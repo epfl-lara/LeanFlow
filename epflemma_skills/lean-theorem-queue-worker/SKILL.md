@@ -42,6 +42,7 @@ Primary specs:
 1. Search the local project first with `lean_search mode=local`.
 2. Search Mathlib next with `lean_search mode=semantic|type-pattern|natural-language` when the needed fact looks standard.
 3. Only invent a new sublemma after those searches fail to produce the required statement.
+4. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, proof attempt, or blocker report you have.
 
 ## Success Condition
 
