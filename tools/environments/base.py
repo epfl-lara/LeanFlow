@@ -1,30 +1,30 @@
-"""Base class for all Gauss execution environment backends."""
+"""Base class for all EPFLemma execution environment backends."""
 
 from abc import ABC, abstractmethod
 import os
 import subprocess
 from pathlib import Path
 
-from gauss_cli.config import get_gauss_home
+from epflemma_cli.config import get_epflemma_home
 
 
 def get_sandbox_dir() -> Path:
     """Return the host-side root for all sandbox storage (Docker workspaces,
     Singularity overlays/SIF cache, etc.).
 
-    Configurable via TERMINAL_SANDBOX_DIR. Defaults to {GAUSS_HOME}/sandboxes/.
+    Configurable via TERMINAL_SANDBOX_DIR. Defaults to {EPFLEMMA_HOME}/sandboxes/.
     """
     custom = os.getenv("TERMINAL_SANDBOX_DIR")
     if custom:
         p = Path(custom)
     else:
-        p = get_gauss_home() / "sandboxes"
+        p = get_epflemma_home() / "sandboxes"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 class BaseEnvironment(ABC):
-    """Common interface for all Gauss execution backends.
+    """Common interface for all EPFLemma execution backends.
 
     Subclasses implement execute() and cleanup(). Shared helpers eliminate
     duplicated subprocess boilerplate across backends.

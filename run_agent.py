@@ -46,10 +46,7 @@ from pathlib import Path
 
 # Load .env from the active EPFLemma home first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-try:
-    from epflemma_cli.env_loader import load_epflemma_dotenv as load_gauss_dotenv
-except Exception:  # pragma: no cover - legacy fallback for older installs
-    from gauss_cli.env_loader import load_gauss_dotenv
+from epflemma_cli.env_loader import load_epflemma_dotenv
 
 _gauss_home = Path(
     os.getenv("EPFLEMMA_HOME")
@@ -58,7 +55,7 @@ _gauss_home = Path(
     or (Path.home() / ".epflemma")
 )
 _project_env = Path(__file__).parent / '.env'
-_loaded_env_paths = load_gauss_dotenv(gauss_home=_gauss_home, project_env=_project_env)
+_loaded_env_paths = load_epflemma_dotenv(gauss_home=_gauss_home, project_env=_project_env)
 if _loaded_env_paths:
     for _env_path in _loaded_env_paths:
         logger.info("Loaded environment variables from %s", _env_path)
@@ -106,15 +103,8 @@ from utils import atomic_json_write
 
 
 def _cleanup_optional_browser_state(task_id: str) -> None:
-    """Best-effort browser cleanup for legacy local state."""
-    try:
-        from tools.browser_tool import cleanup_browser
-    except Exception:
-        return
-    try:
-        cleanup_browser(task_id)
-    except Exception:
-        logger.debug("Optional browser cleanup failed", exc_info=True)
+    """Browser session cleanup was removed with the legacy browser surface."""
+    del task_id
 
 
 _issued_session_ids: set[str] = set()
@@ -753,11 +743,10 @@ class AIAgent:
                 # noise. The TUI has its own rich display for status; logger
                 # INFO/WARNING messages just clutter it.
                 for quiet_logger in [
-                    'tools',               # all tools.* (terminal, browser, web, file, etc.)
+                    'tools',               # all tools.* (terminal, web, file, etc.)
                     'minisweagent',         # mini-swe-agent execution backend
                     'run_agent',            # agent runner internals
-                    'cron',                 # scheduler (only relevant in daemon mode)
-                    'gauss_cli',           # CLI helpers
+                    'cron',                 # legacy scheduler logger if present
                 ]:
                     logging.getLogger(quiet_logger).setLevel(logging.ERROR)
         
@@ -967,10 +956,7 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         if not skip_memory:
             try:
-                try:
-                    from epflemma_cli.config import load_config as _load_mem_config
-                except Exception:  # pragma: no cover - legacy fallback
-                    from gauss_cli.config import load_config as _load_mem_config
+                from epflemma_cli.config import load_config as _load_mem_config
                 mem_config = _load_mem_config().get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
@@ -989,10 +975,7 @@ class AIAgent:
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
         try:
-            try:
-                from epflemma_cli.config import load_config as _load_skills_config
-            except Exception:  # pragma: no cover - legacy fallback
-                from gauss_cli.config import load_config as _load_skills_config
+            from epflemma_cli.config import load_config as _load_skills_config
             skills_config = _load_skills_config().get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 15))
         except Exception:
@@ -1001,10 +984,7 @@ class AIAgent:
         # Initialize context compressor for automatic context management.
         compression_cfg = {}
         try:
-            try:
-                from epflemma_cli.config import load_config as _load_runtime_config
-            except Exception:  # pragma: no cover - legacy fallback
-                from gauss_cli.config import load_config as _load_runtime_config
+            from epflemma_cli.config import load_config as _load_runtime_config
             loaded_cfg = _load_runtime_config()
             if isinstance(loaded_cfg.get("compression"), dict):
                 compression_cfg = dict(loaded_cfg.get("compression") or {})
@@ -2601,10 +2581,7 @@ class AIAgent:
             return False
 
         try:
-            try:
-                from epflemma_cli.auth import resolve_codex_runtime_credentials
-            except Exception:  # pragma: no cover - legacy fallback
-                from gauss_cli.auth import resolve_codex_runtime_credentials
+            from epflemma_cli.auth import resolve_codex_runtime_credentials
 
             creds = resolve_codex_runtime_credentials(force_refresh=force)
         except Exception as exc:
@@ -2633,10 +2610,7 @@ class AIAgent:
             return False
 
         try:
-            try:
-                from epflemma_cli.auth import resolve_nous_runtime_credentials
-            except Exception:  # pragma: no cover - legacy fallback
-                from gauss_cli.auth import resolve_nous_runtime_credentials
+            from epflemma_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, int(os.getenv("GAUSS_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),

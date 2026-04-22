@@ -33,11 +33,21 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from rich.table import Table
 
-from gauss_cli.skin_engine import get_active_skin
-
 logger = logging.getLogger(__name__)
 
 _RECENT_OUTPUT_LIMIT = 256 * 1024
+
+
+class _StaticSkin:
+    """Lean-native fallback palette after skin-engine removal."""
+
+    @staticmethod
+    def get_color(_key: str, default: str) -> str:
+        return default
+
+
+def get_active_skin() -> _StaticSkin:
+    return _StaticSkin()
 
 
 def _is_effective_root() -> bool:
@@ -932,7 +942,7 @@ class SwarmManager:
         dim = skin.get_color("banner_dim", "#6B6B60")
 
         table = Table(
-            title=f"[bold {title_color}]Gauss Workflow Swarm[/]",
+            title=f"[bold {title_color}]EPFLemma Workflow Swarm[/]",
             border_style=border,
             show_lines=False,
             pad_edge=True,

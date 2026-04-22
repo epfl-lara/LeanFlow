@@ -3,10 +3,10 @@
 MCP (Model Context Protocol) Client Support
 
 Connects to external MCP servers via stdio or HTTP/StreamableHTTP transport,
-discovers their tools, and registers them into the gauss-agent tool registry
+discovers their tools, and registers them into the EPFLemma tool registry
 so the agent can call them like any built-in tool.
 
-Configuration is read from ~/.gauss/config.yaml under the ``mcp_servers`` key.
+Configuration is read from ~/.epflemma/config.yaml under the ``mcp_servers`` key.
 The ``mcp`` Python package is optional -- if not installed, this module is a
 no-op and logs a debug message.
 
@@ -206,13 +206,17 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         if which_hit:
             resolved_command = which_hit
         elif resolved_command in {"npx", "npm", "node"}:
-            gauss_home = os.path.expanduser(
+            epflemma_home = os.path.expanduser(
                 os.getenv(
-                    "GAUSS_HOME", os.path.join(os.path.expanduser("~"), ".gauss")
+                    "EPFLEMMA_HOME",
+                    os.getenv(
+                        "OPENGAUSS_HOME",
+                        os.getenv("GAUSS_HOME", os.path.join(os.path.expanduser("~"), ".epflemma")),
+                    ),
                 )
             )
             candidates = [
-                os.path.join(gauss_home, "node", "bin", resolved_command),
+                os.path.join(epflemma_home, "node", "bin", resolved_command),
                 os.path.join(os.path.expanduser("~"), ".local", "bin", resolved_command),
             ]
             for candidate in candidates:
@@ -927,7 +931,7 @@ def _load_mcp_config() -> Dict[str, dict]:
     ``timeout`` and ``connect_timeout`` overrides.
     """
     try:
-        from gauss_cli.config import load_config
+        from epflemma_cli.config import load_config
         config = load_config()
         servers = config.get("mcp_servers")
         if not servers or not isinstance(servers, dict):
@@ -1563,10 +1567,10 @@ def discover_mcp_tools() -> List[str]:
     _run_on_mcp_loop(_discover_all(), timeout=120)
 
     if all_tools:
-        # Dynamically inject into all gauss-* platform toolsets
+        # Dynamically inject into the Lean-first EPFLemma runtime toolsets.
         from toolsets import TOOLSETS
         for ts_name, ts in TOOLSETS.items():
-            if ts_name.startswith("gauss-"):
+            if ts_name.startswith("epflemma-") or ts_name == "autoformalize":
                 for tool_name in all_tools:
                     if tool_name not in ts["tools"]:
                         ts["tools"].append(tool_name)
