@@ -528,6 +528,11 @@ class AIAgent:
         step_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
+        seed: int = 42,
+        temperature: float = 0.3,
+        top_p: float = None,
+        top_k: int = None,
+        min_p: float = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         skip_context_files: bool = False,
@@ -576,6 +581,11 @@ class AIAgent:
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
                 If None, defaults to {"enabled": True, "effort": "medium"} for OpenRouter. Set to disable/customize reasoning.
+            seed (int): Optional generation seed for reproducible sampling on compatible routes.
+            temperature (float): Optional sampling temperature override.
+            top_p (float): Optional nucleus sampling override for compatible routes.
+            top_k (int): Optional top-k sampling override for compatible vLLM-style routes.
+            min_p (float): Optional min-p sampling override for compatible vLLM-style routes.
             prefill_messages (List[Dict]): Messages to prepend to conversation history as prefilled context.
                 Useful for injecting a few-shot example or priming the model's response style.
                 Example: [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello!"}]
@@ -656,6 +666,11 @@ class AIAgent:
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
+        self.seed = seed
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.min_p = min_p
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
@@ -3221,6 +3236,12 @@ class AIAgent:
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
+        if isinstance(self.temperature, (int, float)):
+            api_kwargs["temperature"] = float(self.temperature)
+        if isinstance(self.top_p, (int, float)):
+            api_kwargs["top_p"] = float(self.top_p)
+        if isinstance(self.seed, int) and not isinstance(self.seed, bool):
+            api_kwargs["seed"] = self.seed
 
         extra_body = {}
 
@@ -3260,6 +3281,10 @@ class AIAgent:
                 extra_body["reasoning_effort"] = self._map_rcp_reasoning_effort(
                     reasoning_effort
                 )
+            if isinstance(self.top_k, int) and not isinstance(self.top_k, bool):
+                extra_body["top_k"] = self.top_k
+            if isinstance(self.min_p, (int, float)):
+                extra_body["min_p"] = float(self.min_p)
 
         # Nous Portal product attribution
         if _is_nous:

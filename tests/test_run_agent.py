@@ -790,6 +790,25 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
         assert kwargs["extra_body"]["reasoning_effort"] == "high"
 
+    def test_sampling_defaults_injected(self, agent):
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["temperature"] == 0.3
+        assert kwargs["seed"] == 42
+        assert "top_p" not in kwargs
+
+    def test_rcp_sampling_extras_injected(self, agent):
+        agent.base_url = "https://inference.rcp.epfl.ch/v1"
+        agent.model = "Qwen/Qwen3-30B-A3B"
+        agent.top_p = 0.92
+        agent.top_k = 40
+        agent.min_p = 0.05
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["top_p"] == 0.92
+        assert kwargs["extra_body"]["top_k"] == 40
+        assert kwargs["extra_body"]["min_p"] == 0.05
+
     def test_max_tokens_injected(self, agent):
         agent.max_tokens = 4096
         messages = [{"role": "user", "content": "hi"}]
