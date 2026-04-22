@@ -205,6 +205,7 @@ def build_skills_system_prompt(
     """Build a compact EPFLemma skill index for the system prompt."""
     try:
         from epflemma_cli.skill_core import discover_skills
+        from epflemma_cli.lean_workflow_specs import specs_for_skill
 
         skills = discover_skills()
     except Exception as exc:
@@ -234,15 +235,23 @@ def build_skills_system_prompt(
             if name in seen:
                 continue
             seen.add(name)
+            try:
+                spec_records = specs_for_skill(name)
+            except Exception:
+                spec_records = []
+            spec_suffix = ""
+            if spec_records:
+                spec_suffix = " [" + ", ".join(record.spec_id for record in spec_records) + "]"
             if desc:
-                index_lines.append(f"    - {name}: {desc}")
+                index_lines.append(f"    - {name}{spec_suffix}: {desc}")
             else:
-                index_lines.append(f"    - {name}")
+                index_lines.append(f"    - {name}{spec_suffix}")
 
     return (
         "## EPFLemma Skills\n"
         "Before replying, scan the skills below. Load a skill with `skill_view(name)` when it clearly matches the task. "
-        "Prefer Lean workflow skills and any project-local override over the builtin default.\n"
+        "Prefer Lean workflow skills and any project-local override over the builtin default. "
+        "When a skill exposes native workflow specs, treat those specs as the operational contract.\n"
         "\n"
         "<available_skills>\n"
         + "\n".join(index_lines)

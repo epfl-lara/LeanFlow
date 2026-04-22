@@ -77,6 +77,7 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 
 import yaml
 from epflemma_cli.config import _ENV_VAR_NAME_RE, get_epflemma_home, load_config, load_env
+from epflemma_cli.lean_workflow_specs import specs_for_skill
 from epflemma_cli.skill_core import discover_skills as _og_discover_skills
 from epflemma_cli.skill_core import load_skill as _og_load_skill
 from epflemma_cli.skill_core import load_skill_file as _og_load_skill_file
@@ -414,6 +415,30 @@ def _build_setup_note(
     return None
 
 
+def _backend_setup_help(backend: str) -> str | None:
+    normalized = str(backend or "").strip().lower()
+    if normalized in {"ssh", "daytona"}:
+        return "This skill runs in a remote environment."
+    if normalized == "docker":
+        return "This skill runs through docker-backed skills."
+    if normalized == "singularity":
+        return "This skill runs through singularity-backed skills."
+    if normalized == "modal":
+        return "This skill runs through modal-backed skills."
+    return None
+
+
+def _spec_summary(record: Any) -> Dict[str, Any]:
+    if hasattr(record, "to_summary_dict"):
+        return dict(record.to_summary_dict())
+    return {
+        "id": str(getattr(record, "spec_id", "") or ""),
+        "kind": str(getattr(record, "kind", "") or ""),
+        "summary": str(getattr(record, "summary", "") or ""),
+        "path": str(getattr(record, "path", "") or ""),
+    }
+
+
 def check_skills_requirements() -> bool:
     """EPFLemma curated skills are always available."""
     return True
@@ -620,6 +645,155 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     return skills
 
 
+def _iter_local_skill_files() -> List[Path]:
+    if not SKILLS_DIR.exists():
+        return []
+    files: list[Path] = []
+    for skill_md in SKILLS_DIR.rglob("SKILL.md"):
+        if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+            continue
+        files.append(skill_md)
+    for flat_md in SKILLS_DIR.glob("*.md"):
+        if flat_md.name in {"DESCRIPTION.md"}:
+            continue
+        files.append(flat_md)
+    deduped: list[Path] = []
+    for path in files:
+        if path not in deduped:
+            deduped.append(path)
+    return deduped
+
+
+def _local_skill_identity(path: Path, frontmatter: Dict[str, Any]) -> tuple[str, str]:
+    skill_name = str(frontmatter.get("name") or "").strip()
+    if not skill_name:
+        skill_name = path.parent.name if path.name == "SKILL.md" else path.stem
+    if path.name == "SKILL.md":
+        rel_name = str(path.parent.relative_to(SKILLS_DIR))
+    else:
+        rel_name = path.stem
+    return skill_name, rel_name
+
+
+def _resolve_local_skill(name: str) -> tuple[Path, Dict[str, Any], str] | None:
+    wanted = str(name or "").strip()
+    if not wanted or not SKILLS_DIR.exists():
+        return None
+    direct_dir = SKILLS_DIR / wanted / "SKILL.md"
+    direct_flat = SKILLS_DIR / f"{wanted}.md"
+    for candidate in (direct_dir, direct_flat):
+        if candidate.is_file():
+            try:
+                raw = candidate.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, PermissionError) as exc:
+                raise ValueError(f"Failed to read skill '{wanted}': {exc}") from exc
+            frontmatter, _body = _parse_frontmatter(raw)
+            skill_name, _rel_name = _local_skill_identity(candidate, frontmatter)
+            return candidate, frontmatter, skill_name
+    for candidate in _iter_local_skill_files():
+        try:
+            raw = candidate.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, PermissionError) as exc:
+            candidate_name = candidate.parent.name if candidate.name == "SKILL.md" else candidate.stem
+            if candidate_name == wanted:
+                raise ValueError(f"Failed to read skill '{wanted}': {exc}") from exc
+            continue
+        frontmatter, _body = _parse_frontmatter(raw)
+        skill_name, rel_name = _local_skill_identity(candidate, frontmatter)
+        if wanted in {skill_name, rel_name, candidate.parent.name if candidate.name == "SKILL.md" else candidate.stem}:
+            return candidate, frontmatter, skill_name
+    return None
+
+
+def _linked_files_for_local_skill(path: Path) -> Dict[str, List[str]]:
+    root = path.parent if path.name == "SKILL.md" else path.parent
+    linked: Dict[str, List[str]] = {}
+    for subdir in ("references", "templates", "assets", "scripts"):
+        base = root / subdir
+        if not base.is_dir():
+            continue
+        linked[subdir] = [
+            str(file.relative_to(root))
+            for file in sorted(base.rglob("*"))
+            if file.is_file()
+        ]
+    return linked
+
+
+def _first_body_line(body: str) -> str:
+    for line in str(body or "").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped
+    return ""
+
+
+def _local_skill_payload(name: str, file_path: str | None = None) -> Dict[str, Any] | None:
+    resolved = _resolve_local_skill(name)
+    if resolved is None:
+        return None
+    path, frontmatter, skill_name = resolved
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, PermissionError) as exc:
+        raise ValueError(f"Failed to read skill '{name}': {exc}") from exc
+    frontmatter, body = _parse_frontmatter(raw)
+    base_dir = path.parent if path.name == "SKILL.md" else path.parent
+
+    if file_path:
+        requested = (base_dir / file_path).resolve()
+        if not requested.is_file() or base_dir.resolve() not in requested.parents:
+            return {
+                "success": False,
+                "error": f"File '{file_path}' not found for skill '{name}'.",
+            }
+        return {
+            "success": True,
+            "name": skill_name,
+            "file": str(requested),
+            "content": requested.read_text(encoding="utf-8"),
+            "linked_files": _linked_files_for_local_skill(path),
+        }
+
+    required_env_vars = _get_required_environment_variables(frontmatter)
+    env_snapshot = load_env()
+    missing_entries = [
+        entry for entry in required_env_vars
+        if not _is_env_var_persisted(entry["name"], env_snapshot)
+    ]
+    capture_result = _capture_required_environment_variables(skill_name, missing_entries)
+    env_snapshot = load_env()
+    backend = _get_terminal_backend_name()
+    remaining = _remaining_required_environment_names(
+        required_env_vars,
+        capture_result,
+        env_snapshot=env_snapshot,
+        backend=backend,
+    )
+    readiness_status = (
+        SkillReadinessStatus.SETUP_NEEDED
+        if remaining
+        else SkillReadinessStatus.AVAILABLE
+    )
+    setup_help = _backend_setup_help(backend)
+    payload: Dict[str, Any] = {
+        "name": skill_name,
+        "description": str(frontmatter.get("description") or _first_body_line(body) or ""),
+        "content": raw,
+        "file": str(path),
+        "linked_files": _linked_files_for_local_skill(path),
+        "tags": _parse_tags(((frontmatter.get("metadata") or {}).get("gauss") or {}).get("tags")),
+        "required_environment_variables": required_env_vars,
+        "missing_required_environment_variables": remaining,
+        "setup_needed": bool(remaining),
+        "setup_skipped": bool(capture_result.get("setup_skipped")),
+        "gateway_setup_hint": capture_result.get("gateway_setup_hint"),
+        "readiness_status": readiness_status.value,
+        "setup_note": _build_setup_note(readiness_status, remaining, setup_help),
+    }
+    return payload
+
+
 def _load_category_description(category_dir: Path) -> Optional[str]:
     """
     Load category description from DESCRIPTION.md if it exists.
@@ -749,22 +923,39 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
-        all_skills = [
-            {
-                "name": skill.name,
-                "description": skill.description,
-                "category": "epflemma",
-                "source": skill.source,
-            }
-            for skill in _og_discover_skills()
-        ]
-        if category and category != "epflemma":
-            all_skills = []
+        SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        local_skills = _find_all_skills()
+        default_skills_dir = GAUSS_HOME / "skills"
+        if local_skills or SKILLS_DIR != default_skills_dir:
+            all_skills = [
+                {
+                    **skill,
+                    "source": "local",
+                    "workflow_specs": [_spec_summary(record) for record in specs_for_skill(skill["name"])],
+                }
+                for skill in local_skills
+                if not category or skill.get("category") == category
+            ]
+            categories = sorted({skill.get("category") for skill in all_skills if skill.get("category")})
+        else:
+            all_skills = [
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "category": "epflemma",
+                    "source": skill.source,
+                    "workflow_specs": [_spec_summary(record) for record in specs_for_skill(skill.name)],
+                }
+                for skill in _og_discover_skills()
+            ]
+            if category and category != "epflemma":
+                all_skills = []
+            categories = ["epflemma"] if all_skills else []
         return json.dumps(
             {
                 "success": True,
                 "skills": all_skills,
-                "categories": ["epflemma"] if all_skills else [],
+                "categories": categories,
                 "count": len(all_skills),
                 "hint": "Use skill_view(name) to see the full skill content or linked files.",
             },
@@ -787,9 +978,13 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         JSON string with skill content or error message
     """
     try:
-        payload = _og_load_skill_file(name, file_path) if file_path else _og_load_skill(name)
+        payload = _local_skill_payload(name, file_path)
+        if payload and not payload.get("success", True):
+            return json.dumps(payload, ensure_ascii=False)
+        if payload is None:
+            payload = _og_load_skill_file(name, file_path) if file_path else _og_load_skill(name)
         if not payload:
-            available = [skill.name for skill in _og_discover_skills()[:20]]
+            available = [skill["name"] for skill in _find_all_skills()] or [skill.name for skill in _og_discover_skills()[:20]]
             return json.dumps(
                 {
                     "success": False,
@@ -799,7 +994,12 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 },
                 ensure_ascii=False,
             )
-        return json.dumps({"success": True, **payload}, ensure_ascii=False)
+        workflow_specs = [_spec_summary(record) for record in specs_for_skill(str(payload.get("name", "") or name))]
+        if workflow_specs:
+            linked = dict(payload.get("linked_files") or {})
+            linked.setdefault("workflow_specs", [record["path"] for record in workflow_specs])
+            payload["linked_files"] = linked
+        return json.dumps({"success": True, **payload, "workflow_specs": workflow_specs}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
@@ -883,7 +1083,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. The first call returns SKILL.md content plus linked files and any native workflow-spec metadata attached to that skill.",
     "parameters": {
         "type": "object",
         "properties": {

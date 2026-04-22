@@ -135,6 +135,10 @@ def workflow_agent_inbox_path(agent_id: str) -> Path:
     return workflow_agent_inbox_root() / f"{safe_agent_id or 'unknown'}.jsonl"
 
 
+def workflow_outcomes_path() -> Path:
+    return workflow_state_root() / "outcomes.jsonl"
+
+
 def workflow_run_activity_path(run_id: str) -> Path:
     safe_run_id = "".join(ch for ch in str(run_id or "").strip() if ch.isalnum() or ch in {"-", "_"})
     return workflow_run_activity_root() / f"{safe_run_id or 'unknown'}.jsonl"
@@ -252,6 +256,22 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
         with path.open("a", encoding="utf-8") as handle:
             handle.write(serialized)
             handle.write("\n")
+
+
+def append_workflow_outcome(kind: str, payload: Mapping[str, Any]) -> None:
+    ensure_workflow_state_root()
+    entry = {
+        "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "kind": str(kind or "").strip() or "outcome",
+        "workflow_kind": str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_KIND", "")),
+        "workflow_command": str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")),
+        "payload": dict(payload or {}),
+    }
+    path = workflow_outcomes_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, sort_keys=True))
+        handle.write("\n")
 
 
 def _read_activity_file(path: Path | None) -> list[dict[str, Any]]:

@@ -1,19 +1,24 @@
 ---
 name: lean-diagnostics
-description: Focus on Lean diagnostics, goal inspection, blocker explanation, and verification state.
+description: Native diagnostics/review/doctor entry. Use structured capability, inspection, and verification state instead of ad hoc summaries.
 ---
 
-# Lean Diagnostics
+# Native Lean Diagnostics
 
-Use this skill when the main job is understanding the current Lean state rather than making large edits.
+Primary specs:
 
-## Procedure
+- `epflemma_specs/workflows/review.md`
+- `epflemma_specs/workflows/checkpoint.md`
+- `epflemma_specs/workflows/doctor.md`
+- `epflemma_specs/workflows/search.md`
 
-1. Inspect diagnostics for the active file.
-2. Inspect goals for the current declaration when available.
-3. Distinguish between hard blockers, open proof goals, and non-blocking warnings.
-4. Summarize the current verification state in concrete terms, including whether the wider project still has build failures or `sorry`.
-5. When proposing the next verification step, prefer `lean-lsp` diagnostics/goals first and avoid repeated `lake env lean <file>` loops unless there is no focused alternative.
+## Tool Order
+
+1. `lean_capabilities`
+2. `lean_inspect`
+3. `lean_sorries`
+4. `lean_axioms` when axiom risk is relevant
+5. `lean_verify` only when an explicit verification check is needed
 
 ## Output
 
@@ -21,5 +26,7 @@ Use this skill when the main job is understanding the current Lean state rather 
 - Target declaration
 - Blocking diagnostics
 - Open goals
+- Capability degradations
+- Route action / recommended worker when present
 - Project-wide remaining `sorry` or build blockers
 - Whether the session is verified, in progress, or blocked

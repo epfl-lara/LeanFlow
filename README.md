@@ -7,6 +7,8 @@ The product is optimized for two main jobs:
 - `prove`: drive Lean proof repair and completion until the code compiles cleanly
 - `formalize`: translate mathematical intent into Lean declarations and verified proofs
 
+Internally, `/prove` and `/autoprove` normalize to the same native workflow, and `/formalize` and `/autoformalize` normalize to the same native workflow. The auto-prefixed forms are compatibility aliases, not separate product surfaces.
+
 It installs as `epflemma`, uses `~/.epflemma` for user-level config, keeps project-owned workflow state in `.epflemma/`, and can live alongside an existing `gauss` install without overwriting it.
 
 This fork removes the old managed `claude-code` and `codex` backend flow. EPFLemma now runs Lean workflows through its own internal `epflemma-native` runtime and routes inference through direct provider APIs, OpenAI-compatible endpoints such as RCP, or local runtimes such as `vllm`, `ollama`, and `llama.cpp`.
@@ -28,6 +30,8 @@ EPFLemma is intentionally Lean-first and automation-first.
 ## Skills
 
 EPFLemma ships with a small curated skill core for Lean workflows. Skills are not a side feature here; they are part of how the agent is steered toward proving, diagnostics, formalization, resume, and user-approved swarm behavior.
+
+Skills are now the routing/index layer over native workflow and worker specs in `epflemma_specs/`. The canonical Lean contract lives in those markdown-backed specs; skills point the agent at the right spec and tool order for the current workflow state.
 
 Built-in skills:
 
@@ -66,8 +70,8 @@ Built-in skills:
 There are three ways a skill gets into the agent:
 
 1. Automatic workflow assignment
-   - `prove` -> `lean-proof-loop`
-   - `formalize`, `draft` -> `lean-formalization`
+   - `prove`, `autoprove` -> `lean-proof-loop`
+   - `formalize`, `autoformalize`, `draft` -> `lean-formalization`
    - `review`, `checkpoint` -> `lean-diagnostics`
    - `refactor`, `golf` -> `lean-refactor-golf`
    - `--agents N` on autonomous workflows switches to `lean-autonomous-swarm`
@@ -82,7 +86,7 @@ There are three ways a skill gets into the agent:
 3. Resume/continuation context
    - the managed runner can carry the active skill through checkpoints, compaction, and autonomous continuation cycles
 
-When a skill is active, its `SKILL.md` content is inserted into the agent prompt as explicit workflow guidance.
+When a skill is active, its `SKILL.md` content is inserted into the agent prompt as explicit workflow guidance. The prompt builder and `/skills` surface also expose linked workflow-spec metadata, so the agent sees both the routing skill and the underlying spec contract it should follow.
 
 ### Skill Install And Override Paths
 
@@ -126,6 +130,46 @@ The agent does not install skills as code plugins. It loads them as prompt-time 
 
 Use `/skills` to see what the agent can currently load and where each skill came from.
 
+## Native Workflow Contract
+
+EPFLemma now treats native markdown specs as the canonical Lean workflow contract.
+
+Spec roots:
+
+- `epflemma_specs/workflows/`
+- `epflemma_specs/workers/`
+
+Workflow specs shipped in the repo:
+
+- `prove`
+- `formalize`
+- `draft`
+- `review`
+- `refactor`
+- `golf`
+- `checkpoint`
+- `doctor`
+- `search`
+
+Worker specs shipped in the repo:
+
+- `proof-repair`
+- `proof-golfer`
+- `axiom-eliminator`
+- `sorry-filler-deep`
+
+These specs are the source of truth for:
+
+- prompt assembly
+- native Lean tool ordering and fallbacks
+- doctor/capability reporting
+- route decisions and worker recommendations
+- contract validation in tests
+
+Skills remain important, but they are now the routing layer that points to these specs instead of carrying the whole operational contract alone.
+
+For a developer-oriented summary of the native workflow/tool surface, see [docs/native-lean-workflow-surface.md](docs/native-lean-workflow-surface.md).
+
 ## What Ships
 
 - `epflemma` CLI with EPFLemma shell branding
@@ -138,6 +182,8 @@ Use `/skills` to see what the agent can currently load and where each skill came
   - `/golf`
   - `/prove`
   - `/formalize`
+  - `/autoprove` -> alias of `/prove`
+  - `/autoformalize` -> alias of `/formalize`
 - Local runtime commands:
   - `epflemma models local list`
   - `epflemma models local start`
@@ -251,6 +297,8 @@ Check the install:
 ```bash
 epflemma --help
 epflemma doctor
+epflemma doctor env --json
+epflemma mcp status --json
 epflemma config show
 ```
 
@@ -303,6 +351,9 @@ Inside the shell:
 /prove Main.lean --no-parallel
 /formalize "state the theorem"
 /doctor
+/doctor search --json
+/mcp status
+/mcp status --json
 /config get model.default
 /quit
 ```
@@ -360,6 +411,8 @@ Autonomous workflows are intentionally stricter than a local file-only loop. `pr
 
 EPFLemma writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.epflemma/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
 
+That state now also includes structured capability snapshots, route decisions, and workflow/worker outcomes in `.epflemma/workflow-state/outcomes.jsonl`, so resumed runs can reuse prior blocker classification and worker history instead of starting blind.
+
 The verification loop is intentionally Lean-LSP-first:
 
 - use diagnostics and proof goals for most iterations
@@ -375,6 +428,27 @@ The inspection split is intentional:
 - `/workflow log 120` is the raw saved runner transcript when you want the exact command/tool chronology that scrolled by during execution
 - workflow logs now include bounded assistant and reasoning previews; long multiline tool outputs keep both the head and tail instead of only the start
 - those preview limits are configurable through `logging.preview_lines`, `logging.preview_chars`, `logging.tool_output_head_lines`, `logging.tool_output_tail_lines`, and `logging.activity_preview_chars`
+
+## Native Lean Tool Surface
+
+The agent now has a repo-owned Lean tool surface instead of relying on prompt text and shell heuristics alone. These tools are available through the `lean`, `epflemma-native`, and `epflemma-native-swarm` toolsets.
+
+- `lean_capabilities`
+  - probe project validity, Lean/Lake/Elan binaries, MCP/LSP tools, search providers, helper availability, worker availability, and degraded-mode reasons
+- `lean_inspect`
+  - return structured Lean state for a file: diagnostics, goals, `sorry` counts, blocker classification, queue candidates, and the current capability snapshot
+- `lean_verify`
+  - run the canonical verification ladder in `file_exact`, `module`, or `project` mode
+  - file-scoped theorem acceptance still requires the exact-file `lake env lean <file>` path
+- `lean_search`
+  - search in `auto`, `local`, `semantic`, `type-pattern`, or `natural-language` mode
+  - prefers MCP/LSP-backed providers first and falls back to local `rg`/Mathlib search with explicit provider provenance and degraded reasons
+- `lean_sorries`
+  - list remaining `sorry` findings across a project or a single file with declaration names and line numbers
+- `lean_axioms`
+  - run a best-effort `#print axioms` check for one declaration and report `axioms`, `custom_axioms`, `classical`, and `choice`
+- `lean_worker_dispatch`
+  - dispatch or describe a native specialist worker with file-lock-aware execution when delegation is available
 
 ## Theorem-By-Theorem Proving Loop
 
@@ -453,6 +527,36 @@ Why this shape:
 - target-scoped failed-attempt memory gives the next cycle real negative guidance without leaking across unrelated theorems
 - theorem transitions always clear raw search logs, long tool output, and previous-theorem reasoning from the live prompt; only a compact workflow snapshot and short previous-theorem outcome summary survive
 - the final file sweep handles residual warnings or malformed partial proofs that do not map to a single declaration
+
+## Routing And Specialist Workers
+
+The queue remains the center of autonomous Lean execution, but the runner now makes route decisions from structured workflow state instead of a single hard-coded skill switch.
+
+The router currently consumes:
+
+- workflow kind
+- active queue item
+- blocker kind
+- failed-attempt count
+- search exhaustion
+- capability/degraded-mode state
+
+Queue items are enriched with:
+
+- target line numbers
+- blocker signatures
+- search hints
+- verification gates
+- recommended specialist workers
+
+Current worker recommendations:
+
+- `proof-repair` for repeated compiler-style blockers
+- `proof-golfer` for explicit `golf` routes
+- `axiom-eliminator` for axiom-risk cleanup
+- `sorry-filler-deep` when a queue item stays stuck or search has been exhausted
+
+Route decisions and worker outcomes are persisted into workflow state so later cycles can reuse them.
 
 ## Reasoning / Thinking Policy
 
@@ -592,8 +696,11 @@ Supported shell commands:
 Current curated builtin skills:
 
 - `lean-proof-loop`
+- `lean-theorem-queue-worker`
 - `lean-diagnostics`
 - `lean-formalization`
+- `lean-project-search`
+- `lean-mathlib-search`
 - `lean-refactor-golf`
 - `lean-autonomous-swarm`
 - `provider-fallback`
@@ -738,15 +845,19 @@ Other supported runtimes:
 
 ## Workflow Tool Surfaces
 
-There are now two important internal workflow surfaces:
+There are now three important internal workflow surfaces:
+
+- `lean`
+  - shared typed Lean capability surface
+  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_search`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
 
 - `epflemma-native`
   - default single-agent Lean workflow runtime
-  - includes file, terminal, web, session search, skills, and file-lock coordination
+  - includes the shared `lean` toolset plus file, terminal, web, session search, skills, and file-lock coordination
   - does not include delegation
 - `epflemma-native-swarm`
   - enabled only for user-approved `--agents N` workflows
-  - adds delegation to the native Lean tool surface
+  - adds delegation on top of the same native Lean tool surface
   - intended for bounded multi-agent Lean runs with file ownership rules
 
 ## Configuration
@@ -842,22 +953,57 @@ Compression defaults are tuned for long Lean sessions:
 - `prune_tool_output` replaces stale old tool result bodies with a fixed marker.
 - `prune_keep_recent_user_turns` keeps the newest user turns and their nearby tool output intact.
 
-## Doctor
+## Doctor And MCP Status
 
 Run:
 
 ```bash
 epflemma doctor
+epflemma doctor env
+epflemma doctor mcp --json
+epflemma doctor search --json
+epflemma mcp status
+epflemma mcp status --json
 ```
 
-It checks:
+Supported doctor modes:
+
+- `all`
+- `env`
+- `mcp`
+- `search`
+- `migrate`
+- `cleanup`
+
+`doctor` is now non-throwing and uses the same capability layer as the Lean workflows. It reports:
 
 - `git`
 - `rg`
 - `lake`
+- `elan`
 - current EPFLemma home and config
 - active project discovery
 - current provider resolution
+- MCP/LSP tool availability
+- search-provider availability
+- helper-tool availability
+- available native workers
+- degraded-mode reasons
+
+`epflemma mcp status` shows configured MCP servers, connection state, last error, registered tools, and sampling counters. The same surfaces are available in the interactive shell through `/doctor ...` and `/mcp status [--json]`.
+
+To persist MCP sampling audit events to disk, enable it per server in `~/.epflemma/config.yaml`:
+
+```yaml
+mcp_servers:
+  some_server:
+    sampling:
+      enabled: true
+      audit_jsonl: true
+      audit_jsonl_path: "~/.epflemma/logs/mcp-sampling.jsonl"  # optional override
+```
+
+If `audit_jsonl_path` is omitted, EPFLemma writes to `~/.epflemma/logs/mcp-sampling.jsonl`.
 
 ## Packaging
 
