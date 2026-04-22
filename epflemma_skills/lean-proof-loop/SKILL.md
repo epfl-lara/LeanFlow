@@ -1,38 +1,37 @@
 ---
 name: lean-proof-loop
-description: Run the standard EPFLemma Lean proof loop: inspect, diagnose, edit minimally, rebuild, and verify.
+description: Native proving workflow entry. Follow the prove/formalize specs, structured Lean tools, queue state, and router decisions instead of free-form proof guessing.
 ---
 
-# Lean Proof Loop
+# Native Lean Proof Loop
 
-Use this skill for guided proof work in Lean.
+Primary specs:
 
-## Procedure
+- `epflemma_specs/workflows/prove.md`
+- `epflemma_specs/workflows/formalize.md`
+- `epflemma_specs/workflows/search.md`
 
-1. Identify the active Lean file and target declaration before editing.
-2. Query diagnostics and goals first. Do not start by guessing a patch.
-3. Build a concrete todo list from real blockers in the requested scope: declarations with `sorry`, declarations with Lean errors, then declarations with warnings that still need cleanup.
-4. When a queue manager assigns one declaration, treat that declaration as the entire task until it is solved or a concrete blocker is recorded.
-5. If failed attempts for the current declaration are provided, use them as negative guidance and avoid repeating the same proof shape without a clear reason.
-6. Work through blockers one declaration at a time. Do not jump around or declare the file done after fixing only the first theorem.
-7. Make the smallest proof change that addresses the current blocker.
-8. Re-run diagnostics or a build after each meaningful edit.
-9. Treat the workflow as verified only when the requested scope is clean:
-   - if the user gave one Lean file, that file has no remaining `sorry`, errors, open goals, or warnings
-   - if the user did not give a file, the project has no remaining `sorry`, errors, open goals, or warnings outside dependencies
-   - the explicit verification build succeeds
+Treat the native workflow specs as the contract. This skill is the routing layer that points to them.
 
-## Guardrails
+## Tool Order
 
-- Prefer local proof repair over broad refactors.
-- Use `lean-lsp` diagnostics/goals for most iterations.
-- For file-scoped queue-manager turns, use `lean-lsp` diagnostics/goals for iteration but only accept the assigned declaration after the canonical `lake env lean <file>` check succeeds for that file.
-- Outside those theorem-scoped file turns, avoid repeated `lake env lean <file>` loops. Prefer a focused `lake build <Module>` when the file is close to clean, and reserve full-project `lake build` for milestone verification.
-- Do not treat `lake build`, `grep`, `head`, or truncated output as sufficient proof that a theorem-sized repair is clean when the manager assigned a specific file/declaration.
-- Keep the active file pinned to the requested workflow target. Do not drift to unrelated declarations discovered later in chat history or helper files.
-- When a queue manager hands you a specific declaration, stop after that declaration is resolved or blocked and hand control back instead of continuing to the next theorem automatically.
-- Do not remove important theorem structure just to silence errors.
-- Do not stop just because the current theorem looks clean if later theorems in the same requested file still fail.
-- Do not stop just because `sorry` disappeared if errors or warnings still remain.
-- If proof goals move or split, describe the new state before continuing.
-- If the session is compacted or resumed, trust the persisted handoff plus current Lean state over memory.
+1. `lean_capabilities`
+2. `lean_inspect`
+3. `lean_search` with the smallest relevant search mode
+4. edit minimally
+5. `lean_verify`
+6. `lean_worker_dispatch` when the route recommends a specialist worker
+
+## Operating Rules
+
+1. Trust the queue manager and `route_decision` over free-form exploration.
+2. Use one declaration at a time when a queue item is assigned.
+3. Treat failed-attempt history as negative guidance.
+4. Keep work pinned to the requested file or project scope.
+5. Finish only after explicit verification of the requested scope.
+
+## Verification Rules
+
+- File-scoped theorem turns: iterate with `lean_inspect`, but accept success only after the canonical `lake env lean <file>` check succeeds.
+- Module/project turns: prefer focused `lean_verify` module checks before a final project build.
+- Do not treat `grep`, truncated terminal output, or a disappearing `sorry` as success.

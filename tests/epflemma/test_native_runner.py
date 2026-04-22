@@ -317,26 +317,27 @@ def test_background_runner_exits_immediately_after_verified_completion(monkeypat
 
 
 def test_workflow_startup_guidance_mentions_autonomous_loop():
-    text = runner._workflow_startup_guidance("autoprove", "/lean4:autoprove Main.lean")
+    text = runner._workflow_startup_guidance("prove", "/prove Main.lean")
 
     assert "autonomous proving session" in text
-    assert "/lean4:autoprove Main.lean" in text
-    assert "continue iterating" in text
+    assert "/prove Main.lean" in text
+    assert "lean_capabilities" in text
+    assert "lean_worker_dispatch" in text
 
 
 def test_workflow_startup_guidance_mentions_user_approved_swarm(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_NATIVE_PARALLEL_AGENTS", "3")
     monkeypatch.setenv("EPFLEMMA_NATIVE_USER_APPROVED_SWARM", "1")
 
-    text = runner._workflow_startup_guidance("autoprove", "/lean4:autoprove Main.lean")
+    text = runner._workflow_startup_guidance("prove", "/prove Main.lean")
 
     assert "User-approved swarm mode" in text
     assert "3 agents total" in text
 
 
 def test_history_status_lines_summarize_message_counts(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
 
@@ -530,8 +531,8 @@ def test_apply_managed_reasoning_policy_resets_to_medium_on_theorem_transition()
 
 def test_tool_progress_callback_persists_structured_events(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
     runner._CURRENT_AGENT_ACTIVITY_DETAILS = {"agent_session_id": "12345", "delegate_depth": 0}
 
@@ -668,7 +669,7 @@ def test_build_live_proof_state_assigns_current_queue_head_as_target(monkeypatch
     )
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
-    monkeypatch.setattr(runner, "_query_live_diagnostics", lambda path: "lean-lsp diagnostics tool unavailable.")
+    monkeypatch.setattr(runner, "_query_live_diagnostics", lambda path, symbol="": "lean-lsp diagnostics tool unavailable.")
     monkeypatch.setattr(runner, "_query_live_goals", lambda path, symbol: "lean-lsp goals tool unavailable.")
     monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
     monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
@@ -813,7 +814,7 @@ def test_queue_assignment_block_mentions_only_assigned_theorem():
 
 
 def test_effective_skill_name_uses_queue_worker_for_file_scoped_queue_turn(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
 
@@ -828,7 +829,7 @@ def test_effective_skill_name_uses_queue_worker_for_file_scoped_queue_turn(monke
 
 
 def test_effective_skill_name_returns_proof_loop_for_final_file_sweep(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
 
@@ -1008,7 +1009,7 @@ def test_recommended_verification_command_prefers_module_build_outside_single_it
 
     command = runner._recommended_verification_command(str(active))
 
-    assert command == "lean-lsp diagnostics/goals first, then `lake build Demo.Main` when the file is close to clean"
+    assert command == "`lean_inspect` first, then `lake build Demo.Main` when the file is close to clean"
 
 
 def test_recommended_verification_command_requires_canonical_file_check_for_single_item_turn(tmp_path, monkeypatch):
@@ -1018,13 +1019,13 @@ def test_recommended_verification_command_requires_canonical_file_check_for_sing
     active = module_dir / "Main.lean"
     active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
 
     command = runner._recommended_verification_command(str(active))
 
     assert command == (
-        "lean-lsp diagnostics/goals on Demo/Main.lean, then the required acceptance check "
+        "`lean_inspect` on Demo/Main.lean, then the required acceptance check "
         "`lake env lean Demo/Main.lean` for this file-scoped theorem turn"
     )
 
@@ -1040,7 +1041,7 @@ def test_recommended_verification_command_falls_back_to_lake_env_lean_for_non_mo
     command = runner._recommended_verification_command(str(active))
 
     assert command == (
-        "lean-lsp diagnostics/goals on Demo/RealTheorems-homework.lean, "
+        "`lean_inspect` on Demo/RealTheorems-homework.lean, "
         "then final `lake env lean Demo/RealTheorems-homework.lean` when close to clean"
     )
 
@@ -1059,7 +1060,7 @@ def test_resolve_active_file_prefers_configured_active_file(monkeypatch, tmp_pat
 
 
 def test_resolve_target_symbol_does_not_drift_from_history(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove ./GaussTest/RealTheorems-homework.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove ./GaussTest/RealTheorems-homework.lean")
 
     symbol = runner._resolve_target_symbol(
         [
@@ -1103,8 +1104,8 @@ def test_explicit_verification_build_uses_lake_env_lean_for_non_module_file(monk
 
 def test_write_workflow_checkpoint_persists_index_and_current(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
     monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setattr(runner, "_generate_checkpoint_summary", lambda *args, **kwargs: "## Goal\nResume proof")
@@ -1127,7 +1128,7 @@ def test_write_workflow_checkpoint_persists_index_and_current(monkeypatch, tmp_p
 
 
 def test_maybe_checkpoint_before_compaction_emits_pre_compaction_checkpoint(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setattr(runner, "estimate_messages_tokens_rough", lambda messages: 500)
     created = {}
 
@@ -1147,7 +1148,7 @@ def test_maybe_checkpoint_before_compaction_emits_pre_compaction_checkpoint(monk
 
 
 def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "3")
 
     class _LoopAgent(_FakeAgent):
@@ -1263,7 +1264,7 @@ def test_autonomous_continuation_prompt_includes_recent_failed_attempts():
 
 
 def test_autonomous_continuation_prompt_switches_to_final_file_sweep_when_queue_empty(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
 
     prompt = runner._autonomous_continuation_prompt(
@@ -1492,7 +1493,7 @@ def test_same_queue_assignment_still_blocked_requires_same_theorem_and_real_bloc
 
 
 def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
 
     class _LoopAgent(_FakeAgent):
@@ -1600,7 +1601,7 @@ def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkey
 
 
 def test_drive_autonomous_followups_keeps_history_when_theorem_does_not_change(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
 
     class _LoopAgent(_FakeAgent):
@@ -1670,7 +1671,7 @@ def test_drive_autonomous_followups_keeps_history_when_theorem_does_not_change(m
 
 
 def test_drive_autonomous_followups_applies_auto_reasoning_to_current_theorem(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
 
     class _LoopAgent(_FakeAgent):
@@ -1749,7 +1750,7 @@ def test_drive_autonomous_followups_applies_auto_reasoning_to_current_theorem(mo
 
 def test_drive_autonomous_followups_records_transition_events(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
 
     class _LoopAgent(_FakeAgent):

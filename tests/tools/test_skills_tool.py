@@ -302,6 +302,24 @@ class TestSkillsList:
         assert result["count"] == 1
         assert result["skills"][0]["name"] == "skill-a"
 
+    def test_lists_workflow_specs_when_available(self, tmp_path, monkeypatch):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "alpha")
+            fake_record = type(
+                "FakeSpec",
+                (),
+                {
+                    "spec_id": "prove",
+                    "kind": "workflow",
+                    "summary": "autonomous proving",
+                    "path": Path("/tmp/prove.md"),
+                },
+            )()
+            monkeypatch.setattr(skills_tool_module, "specs_for_skill", lambda name: [fake_record] if name == "alpha" else [])
+            raw = skills_list()
+        result = json.loads(raw)
+        assert result["skills"][0]["workflow_specs"][0]["id"] == "prove"
+
 
 # ---------------------------------------------------------------------------
 # skill_view
@@ -317,6 +335,25 @@ class TestSkillView:
         assert result["success"] is True
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
+
+    def test_view_existing_skill_includes_workflow_specs(self, tmp_path, monkeypatch):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "my-skill")
+            fake_record = type(
+                "FakeSpec",
+                (),
+                {
+                    "spec_id": "formalize",
+                    "kind": "workflow",
+                    "summary": "autonomous formalization",
+                    "path": Path("/tmp/formalize.md"),
+                },
+            )()
+            monkeypatch.setattr(skills_tool_module, "specs_for_skill", lambda name: [fake_record] if name == "my-skill" else [])
+            raw = skill_view("my-skill")
+        result = json.loads(raw)
+        assert result["workflow_specs"][0]["id"] == "formalize"
+        assert "/tmp/formalize.md" in result["linked_files"]["workflow_specs"][0]
 
     def test_view_nonexistent_skill(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

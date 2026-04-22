@@ -1,20 +1,25 @@
 ---
 name: lean-refactor-golf
-description: Simplify, refactor, or golf Lean proofs while preserving meaning and verifiability.
+description: Native refactor/golf entry. Preserve theorem meaning, use structured verification, and escalate to `proof-golfer` only when the router calls for it.
 ---
 
-# Lean Refactor Golf
+# Native Lean Refactor / Golf
 
-Use this skill for `refactor`, `golf`, and proof cleanup tasks.
+Primary specs:
 
-## Procedure
+- `epflemma_specs/workflows/refactor.md`
+- `epflemma_specs/workflows/golf.md`
 
-1. Confirm the proof currently builds or identify the exact failure first.
-2. Preserve theorem meaning and public interfaces.
-3. Reduce duplication and unnecessary tactic noise before chasing terseness.
-4. Rebuild after each simplification pass.
+## Tool Order
+
+1. `lean_inspect`
+2. `lean_search` for nearby proof shapes
+3. minimal cleanup or simplification edit
+4. `lean_verify`
+5. `lean_worker_dispatch` with `proof-golfer` only when the route explicitly recommends it
 
 ## Guardrails
 
 - Do not trade maintainability for tiny cosmetic wins unless the user explicitly wants golfing.
 - Stop if the shorter proof becomes materially harder to understand or debug.
+- Do not change theorem statements or public interfaces unless the task explicitly requires it.

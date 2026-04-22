@@ -1,19 +1,22 @@
 ---
 name: lean-project-search
-description: Search the local Lean project for relevant files, lemmas, imports, and style before editing proofs.
+description: Native local-project search entry. Use `lean_search` local mode and the queue context to stay inside the relevant dependency cone.
 ---
 
-# Lean Project Search
+# Native Lean Project Search
 
-Use this skill when the next step depends on local project context rather than generic Mathlib knowledge.
+Use this skill when the next step depends on the local Lean project rather than generic Mathlib knowledge.
 
-## Procedure
+Primary spec:
 
-1. Identify the active file and the target declaration before searching broadly.
-2. Search the local project for related theorem names, namespaces, imports, notation, and helper lemmas.
-3. Reuse nearby project conventions for names, proof style, and module boundaries.
-4. If a missing fact appears reusable, prefer adding a local helper near the consuming theorem instead of scattering ad hoc lemmas.
-5. Keep the search scoped to the requested file or dependency cone unless the workflow is project-wide.
+- `epflemma_specs/workflows/search.md`
+
+## Tool Order
+
+1. read the assigned file / declaration context
+2. `lean_search mode=local`
+3. inspect nearby modules only if the local search or queue hints point there
+4. return the smallest set of relevant matches with provenance
 
 ## Search Targets
 

@@ -31,12 +31,44 @@ def test_list_runtime_provider_targets_includes_local_and_zai():
     assert "custom" in names
 
 
+def test_main_mcp_status_json(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "epflemma_cli.main.get_mcp_status",
+        lambda: [{"name": "lean-lsp", "transport": "stdio", "tools": 3, "connected": True}],
+    )
+
+    assert main(["mcp", "status", "--json"]) == 0
+    output = capsys.readouterr().out
+    assert "\"name\": \"lean-lsp\"" in output
+
+
+def test_interactive_mcp_status_prints_sampling_metrics(monkeypatch, capsys):
+    shell = InteractiveShell()
+    monkeypatch.setattr(
+        "epflemma_cli.main.get_mcp_status",
+        lambda: [
+            {
+                "name": "lean-lsp",
+                "transport": "stdio",
+                "tools": 3,
+                "connected": True,
+                "sampling": {"requests": 2, "errors": 1},
+            }
+        ],
+    )
+
+    assert shell._run_mcp_command("/mcp status") == 0
+    output = capsys.readouterr().out
+    assert "lean-lsp" in output
+    assert "sampling requests=2" in output
+
+
 def test_describe_launch_plan_formats_provider_and_model(tmp_path):
     spec = NativeWorkflowSpec(
-        workflow_kind="autoprove",
+        workflow_kind="prove",
         frontend_command="/prove",
         canonical_command="/prove",
-        backend_command="/lean4:autoprove Main.lean",
+        backend_command="/prove Main.lean",
         workflow_args="Main.lean",
     )
     plan = NativeLaunchPlan(
@@ -84,7 +116,7 @@ def test_resolve_workflow_request_normalizes_requested_active_file(tmp_path):
     )
 
     assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "GaussTest/RealTheorems-homework.lean"
-    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/lean4:autoprove GaussTest/RealTheorems-homework.lean"
+    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/prove GaussTest/RealTheorems-homework.lean"
     assert plan.workflow.workflow_args == "GaussTest/RealTheorems-homework.lean"
 
 
@@ -109,7 +141,7 @@ def test_resolve_workflow_request_recovers_similar_requested_active_file(tmp_pat
     )
 
     assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "GaussTest/RealTheorems-homework.lean"
-    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/lean4:autoprove GaussTest/RealTheorems-homework.lean"
+    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/prove GaussTest/RealTheorems-homework.lean"
     assert plan.workflow.workflow_args == "GaussTest/RealTheorems-homework.lean"
 
 
@@ -121,10 +153,10 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
     fake_plan = NativeLaunchPlan(
         project=type("Project", (), {"label": "Demo", "root": tmp_path})(),
         workflow=NativeWorkflowSpec(
-            workflow_kind="autoprove",
+            workflow_kind="prove",
             frontend_command="/prove",
             canonical_command="/prove",
-            backend_command="/lean4:autoprove Main.lean",
+            backend_command="/prove Main.lean",
             workflow_args="Main.lean",
         ),
         runtime={"provider": "custom", "model": "zai-org/GLM-5.1", "base_url": "https://inference.rcp.epfl.ch/v1"},

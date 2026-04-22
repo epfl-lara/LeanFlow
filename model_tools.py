@@ -78,6 +78,7 @@ def _discover_tools():
         "tools.terminal_tool",
         "tools.session_search_tool",
         "tools.skills_tool",
+        "tools.lean_tool",
         "tools.delegate_tool",
     ]
     import importlib
@@ -219,6 +220,7 @@ def handle_function_call(
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     owner_id: Optional[str] = None,
+    parent_agent: Optional[Any] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -254,6 +256,7 @@ def handle_function_call(
             user_task=user_task,
             enabled_tools=enabled_tools or _last_resolved_tool_names,
             owner_id=owner_id,
+            parent_agent=parent_agent,
         )
 
         return result

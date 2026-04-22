@@ -9,7 +9,7 @@ import shlex
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
@@ -82,6 +82,7 @@ from epflemma_cli.workflow_state import (
     workflow_agent_transcript,
     workflow_agent_detail,
 )
+from tools.mcp_tool import get_mcp_status
 
 
 WORKFLOW_COMMANDS = {
@@ -137,7 +138,14 @@ def _build_parser() -> argparse.ArgumentParser:
     config_set.add_argument("value")
 
     doctor_parser = subparsers.add_parser("doctor", help="Check local setup")
+    doctor_parser.add_argument("mode", nargs="?", default="all")
     doctor_parser.add_argument("--cwd", default=".")
+    doctor_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    mcp_parser = subparsers.add_parser("mcp", help="Inspect configured MCP servers")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
+    mcp_status = mcp_sub.add_parser("status", help="Show MCP server status")
+    mcp_status.add_argument("--json", action="store_true", dest="json_output")
 
     project_parser = subparsers.add_parser("project", help="Manage EPFLemma projects")
     project_sub = project_parser.add_subparsers(dest="project_command")
@@ -260,6 +268,47 @@ def _handle_config(args: argparse.Namespace) -> int:
         set_config_value(args.key, _parse_config_value(args.value))
         return 0
     raise SystemExit("Unknown config command")
+
+
+def _mcp_status_payload() -> dict[str, Any]:
+    servers = list(get_mcp_status())
+    return {
+        "servers": servers,
+        "count": len(servers),
+    }
+
+
+def _print_mcp_status(payload: Mapping[str, Any]) -> None:
+    servers = list(payload.get("servers", []) or [])
+    if not servers:
+        print("No MCP servers configured.")
+        return
+    print("MCP Status")
+    for entry in servers:
+        name = str(entry.get("name", "") or "[unknown]")
+        transport = str(entry.get("transport", "") or "stdio")
+        connected = "connected" if entry.get("connected") else "down"
+        tools = int(entry.get("tools", 0) or 0)
+        line = f"- {name}: {connected} ({transport}, {tools} tools)"
+        sampling = dict(entry.get("sampling", {}) or {})
+        if sampling:
+            line += (
+                f", sampling requests={int(sampling.get('requests', 0) or 0)}"
+                f", errors={int(sampling.get('errors', 0) or 0)}"
+            )
+        print(line)
+
+
+def _handle_mcp(args: argparse.Namespace) -> int:
+    command = getattr(args, "mcp_command", None) or "status"
+    if command != "status":
+        raise SystemExit("Unknown MCP command")
+    payload = _mcp_status_payload()
+    if getattr(args, "json_output", False):
+        _print_json(payload)
+    else:
+        _print_mcp_status(payload)
+    return 0
 
 
 class InteractiveShell:
@@ -796,6 +845,21 @@ class InteractiveShell:
         )
         return 0
 
+    def _run_mcp_command(self, raw: str) -> int:
+        parts = shlex.split(raw)
+        args = parts[1:]
+        json_output = "--json" in args
+        subcmd = next((arg for arg in args if not arg.startswith("-")), "status")
+        if subcmd != "status":
+            self.console.print("[dim]Usage: /mcp status [--json][/]")
+            return 1
+        payload = _mcp_status_payload()
+        if json_output:
+            _print_json(payload)
+        else:
+            _print_mcp_status(payload)
+        return 0
+
     def _run_workflow_command(self, raw: str) -> int:
         try:
             plan = resolve_workflow_request(raw, active_cwd=self.cwd, active_skill=self.active_skill or None)
@@ -941,14 +1005,28 @@ class InteractiveShell:
             self.cwd = resolved
             self.show_status()
             return True
-        if stripped == "/doctor":
-            issues, output = run_doctor(self.cwd)
-            print(output)
+        if stripped.startswith("/doctor"):
+            try:
+                tokens = shlex.split(stripped)
+            except ValueError as exc:
+                self.console.print(f"[bold red]{exc}[/]")
+                return True
+            args = tokens[1:]
+            json_output = "--json" in args
+            mode = next((token for token in args if not token.startswith("-")), "all")
+            issues, output = run_doctor(self.cwd, mode=mode, json_output=json_output)
+            if json_output:
+                _print_json(output)
+            else:
+                print(output)
             if issues:
                 self.console.print(f"[dim]{len(issues)} issue(s) found.[/]")
             return True
         if stripped.startswith("/provider"):
             self._run_provider_command(stripped)
+            return True
+        if stripped.startswith("/mcp"):
+            self._run_mcp_command(stripped)
             return True
         if stripped.startswith("/workflow"):
             try:
@@ -1048,8 +1126,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "config":
         return _handle_config(args)
     if args.command == "doctor":
-        issues, output = run_doctor(args.cwd)
-        print(output)
+        issues, output = run_doctor(args.cwd, mode=args.mode, json_output=args.json_output)
+        if args.json_output:
+            _print_json(output)
+        else:
+            print(output)
         return 0 if not issues else 1
     if args.command == "project":
         return _handle_project(args)
@@ -1111,6 +1192,8 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(format_runtime_provider_error(exc), file=sys.stderr)
             return 1
+    if args.command == "mcp":
+        return _handle_mcp(args)
 
     parser.print_help()
     return 0

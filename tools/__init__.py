@@ -41,6 +41,16 @@ _MODULE_EXPORTS = {
         "check_skills_requirements",
         "SKILLS_TOOL_DESCRIPTION",
     ),
+    "tools.lean_tool": (
+        "lean_capabilities",
+        "lean_inspect_tool",
+        "lean_verify_tool",
+        "lean_search_tool",
+        "lean_sorries_tool",
+        "lean_axioms_tool",
+        "lean_worker_dispatch_tool",
+        "check_lean_requirements",
+    ),
     "tools.file_tools": (
         "read_file_tool",
         "write_file_tool",

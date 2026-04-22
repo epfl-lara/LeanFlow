@@ -70,10 +70,12 @@ Thread safety:
 """
 
 import asyncio
+from datetime import datetime, timezone
 import json
 import logging
 import math
 import os
+from pathlib import Path
 import re
 import shutil
 import threading
@@ -175,6 +177,17 @@ def _sanitize_error(text: str) -> str:
     accidental credential exposure in tool error responses.
     """
     return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+
+
+def _epflemma_home() -> Path:
+    explicit = str(os.getenv("EPFLEMMA_HOME", "") or os.getenv("OPENGAUSS_HOME", "") or os.getenv("GAUSS_HOME", "")).strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return Path.home() / ".epflemma"
+
+
+def _default_sampling_audit_path() -> Path:
+    return _epflemma_home() / "logs" / "mcp-sampling.jsonl"
 
 
 def _prepend_path(env: dict, directory: str) -> dict:
@@ -340,11 +353,31 @@ class SamplingHandler:
         self.audit_level = _log_levels.get(
             str(config.get("log_level", "info")).lower(), logging.INFO,
         )
+        self.audit_jsonl_enabled = bool(config.get("audit_jsonl", False))
+        configured_path = str(config.get("audit_jsonl_path", "") or "").strip()
+        self.audit_jsonl_path = Path(configured_path).expanduser() if configured_path else _default_sampling_audit_path()
 
         # Per-instance state
         self._rate_timestamps: List[float] = []
         self._tool_loop_count = 0
         self.metrics = {"requests": 0, "errors": 0, "tokens_used": 0, "tool_use_count": 0}
+
+    def _append_audit_event(self, event: str, **payload) -> None:
+        if not self.audit_jsonl_enabled:
+            return
+        entry = {
+            "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "server": self.server_name,
+            "event": event,
+            "payload": payload,
+        }
+        try:
+            self.audit_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.audit_jsonl_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, sort_keys=True))
+                handle.write("\n")
+        except Exception:
+            logger.debug("Failed to write MCP sampling audit log for %s", self.server_name, exc_info=True)
 
     # -- Rate limiting -------------------------------------------------------
 
@@ -467,6 +500,7 @@ class SamplingHandler:
         # Tool loop governance
         if self.max_tool_rounds == 0:
             self._tool_loop_count = 0
+            self._append_audit_event("error", kind="tool-loop-disabled")
             return self._error(
                 f"Tool loops disabled for server '{self.server_name}' (max_tool_rounds=0)"
             )
@@ -474,6 +508,11 @@ class SamplingHandler:
         self._tool_loop_count += 1
         if self._tool_loop_count > self.max_tool_rounds:
             self._tool_loop_count = 0
+            self._append_audit_event(
+                "error",
+                kind="tool-loop-limit",
+                max_tool_rounds=self.max_tool_rounds,
+            )
             return self._error(
                 f"Tool loop limit exceeded for server '{self.server_name}' "
                 f"(max {self.max_tool_rounds} rounds)"
@@ -509,6 +548,13 @@ class SamplingHandler:
             getattr(getattr(response, "usage", None), "total_tokens", "?"),
             len(content_blocks),
         )
+        self._append_audit_event(
+            "response",
+            kind="tool_use",
+            model=str(response.model or ""),
+            total_tokens=int(getattr(getattr(response, "usage", None), "total_tokens", 0) or 0),
+            tool_calls=len(content_blocks),
+        )
 
         return CreateMessageResultWithTools(
             role="assistant",
@@ -527,6 +573,13 @@ class SamplingHandler:
             "MCP server '%s' sampling response: model=%s, tokens=%s",
             self.server_name, response.model,
             getattr(getattr(response, "usage", None), "total_tokens", "?"),
+        )
+        self._append_audit_event(
+            "response",
+            kind="text",
+            model=str(response.model or ""),
+            total_tokens=int(getattr(getattr(response, "usage", None), "total_tokens", 0) or 0),
+            finish_reason=str(choice.finish_reason or ""),
         )
 
         return CreateMessageResult(
@@ -563,6 +616,7 @@ class SamplingHandler:
                 self.server_name, self.max_rpm,
             )
             self.metrics["errors"] += 1
+            self._append_audit_event("error", kind="rate-limit", max_rpm=self.max_rpm)
             return self._error(
                 f"Sampling rate limit exceeded for server '{self.server_name}' "
                 f"({self.max_rpm} requests/minute)"
@@ -583,6 +637,11 @@ class SamplingHandler:
                 self.server_name, resolved_model,
             )
             self.metrics["errors"] += 1
+            self._append_audit_event(
+                "error",
+                kind="model-not-allowed",
+                model=str(resolved_model or ""),
+            )
             return self._error(
                 f"Model '{resolved_model}' not allowed for server "
                 f"'{self.server_name}'. Allowed: {', '.join(self.allowed_models)}"
@@ -620,6 +679,13 @@ class SamplingHandler:
             "MCP server '%s' sampling request: model=%s, max_tokens=%d, messages=%d",
             self.server_name, resolved_model, max_tokens, len(messages),
         )
+        self._append_audit_event(
+            "request",
+            model=str(resolved_model or ""),
+            max_tokens=max_tokens,
+            message_count=len(messages),
+            tool_count=len(call_tools or []),
+        )
 
         # Offload sync LLM call to thread (non-blocking)
         def _sync_call():
@@ -639,12 +705,14 @@ class SamplingHandler:
             )
         except asyncio.TimeoutError:
             self.metrics["errors"] += 1
+            self._append_audit_event("error", kind="timeout", timeout=self.timeout)
             return self._error(
                 f"Sampling LLM call timed out after {self.timeout}s "
                 f"for server '{self.server_name}'"
             )
         except Exception as exc:
             self.metrics["errors"] += 1
+            self._append_audit_event("error", kind="exception", message=_sanitize_error(str(exc)))
             return self._error(
                 f"Sampling LLM call failed: {_sanitize_error(str(exc))}"
             )
@@ -652,6 +720,7 @@ class SamplingHandler:
         # Guard against empty choices (content filtering, provider errors)
         if not getattr(response, "choices", None):
             self.metrics["errors"] += 1
+            self._append_audit_event("error", kind="empty-response")
             return self._error(
                 f"LLM returned empty response (no choices) for server "
                 f"'{self.server_name}'"
