@@ -484,6 +484,47 @@ def _single_line(text: Any, limit: int | None = None) -> str:
     return collapsed[: effective_limit - 3] + "..."
 
 
+def _active_file_candidates(active_file: str) -> set[str]:
+    normalized = str(active_file or "").strip()
+    if not normalized:
+        return set()
+    candidates = {normalized}
+    try:
+        path = Path(normalized)
+        if path.is_absolute():
+            candidates.add(str(path.resolve()))
+            try:
+                candidates.add(str(path.resolve().relative_to(Path(_project_root()).resolve())))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return {value for value in candidates if value}
+
+
+def _same_active_file(left: str, right: str) -> bool:
+    left_value = str(left or "").strip()
+    right_value = str(right or "").strip()
+    if not left_value or not right_value:
+        return False
+    left_candidates = _active_file_candidates(left_value)
+    right_candidates = _active_file_candidates(right_value)
+    if not left_candidates.isdisjoint(right_candidates):
+        return True
+
+    try:
+        left_parts = Path(left_value).parts
+        right_parts = Path(right_value).parts
+    except Exception:
+        return False
+    if left_parts and right_parts:
+        if len(left_parts) >= len(right_parts) and left_parts[-len(right_parts):] == right_parts:
+            return True
+        if len(right_parts) >= len(left_parts) and right_parts[-len(left_parts):] == left_parts:
+            return True
+    return False
+
+
 def _failed_attempt_count_for_theorem(
     autonomy_state: Mapping[str, Any],
     *,
@@ -497,7 +538,7 @@ def _failed_attempt_count_for_theorem(
         1
         for attempt in attempts
         if str(attempt.get("target_symbol", "") or "").strip() == str(target_symbol).strip()
-        and str(attempt.get("active_file", "") or "").strip() == str(active_file).strip()
+        and _same_active_file(str(attempt.get("active_file", "") or ""), active_file)
     )
 
 
@@ -1369,7 +1410,7 @@ def _prepare_queue_assignment_state(
     current = dict(live_state or {})
     item = dict(current.get("current_queue_item") or {})
     label = str(item.get("label", "") or current.get("target_symbol", "") or "").strip()
-    active_file = str(current.get("active_file_label", "") or current.get("active_file", "") or "").strip()
+    active_file = str(current.get("active_file", "") or current.get("active_file_label", "") or "").strip()
     slice_text = str(current.get("current_queue_item_slice", "") or "").strip()
     autonomy_state["current_queue_assignment"] = {
         "target_symbol": label,
@@ -1382,8 +1423,13 @@ def _queue_assignment_identity(live_state: Mapping[str, Any] | None) -> tuple[st
     current = dict(live_state or {})
     item = dict(current.get("current_queue_item") or {})
     label = str(item.get("label", "") or current.get("target_symbol", "") or "").strip()
-    active_file = str(current.get("active_file_label", "") or current.get("active_file", "") or "").strip()
+    active_file = str(current.get("active_file", "") or current.get("active_file_label", "") or "").strip()
     return label, active_file
+
+
+def _display_file_label(live_state: Mapping[str, Any] | None) -> str:
+    current = dict(live_state or {})
+    return str(current.get("active_file_label", "") or current.get("active_file", "") or "").strip()
 
 
 def _queue_assignment_transition(
@@ -1396,7 +1442,7 @@ def _queue_assignment_transition(
     current_target, current_file = _queue_assignment_identity(live_state)
     if not previous_target or not previous_file or not current_target or not current_file:
         return None
-    if previous_target == current_target and previous_file == current_file:
+    if previous_target == current_target and _same_active_file(previous_file, current_file):
         return None
     return {
         "previous_target": previous_target,
@@ -1437,6 +1483,7 @@ def _queue_assignment_block(
     label = str(item.get("label", "") or "[unknown]")
     reasons = ", ".join(item.get("reasons", []) or []) or "pending"
     active_file = str(live_state.get("active_file", "") or live_state.get("active_file_label", "") or "")
+    file_label = _display_file_label(live_state) or active_file or "[unknown]"
     current_status = _current_queue_status(live_state)
     current_blocker = str(live_state.get("current_blocker", "") or reasons or "[none]").strip()
     route_decision = dict(live_state.get("route_decision", {}) or {})
@@ -1449,7 +1496,8 @@ def _queue_assignment_block(
     parts = [
         "Assigned queue item:",
         f"- declaration: {label}",
-        f"- file: {str(live_state.get('active_file_label', '') or active_file or '[unknown]')}",
+        f"- file: {file_label}",
+        f"- exact tool path: {active_file or '[unknown]'}",
         f"- current status: {current_status}",
         f"- current blocker: {current_blocker}",
         "",
@@ -1507,7 +1555,7 @@ def _remember_failed_attempt(
         return
     item = dict(live_state.get("current_queue_item") or {})
     target_symbol = str(item.get("label", "") or live_state.get("target_symbol", "") or "").strip()
-    active_file = str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or "").strip()
+    active_file = str(live_state.get("active_file", "") or live_state.get("active_file_label", "") or "").strip()
     if not target_symbol or not active_file:
         return
     reason = str(
@@ -1523,7 +1571,7 @@ def _remember_failed_attempt(
     scoped = [
         item for item in attempts
         if str(item.get("target_symbol", "") or "").strip() == target_symbol
-        and str(item.get("active_file", "") or "").strip() == active_file
+        and _same_active_file(str(item.get("active_file", "") or ""), active_file)
     ]
     entry = {
         "attempt": len(scoped) + 1,
@@ -1575,7 +1623,7 @@ def _remember_transition_failed_attempt(
     scoped = [
         item for item in attempts
         if str(item.get("target_symbol", "") or "").strip() == target_symbol
-        and str(item.get("active_file", "") or "").strip() == active_file
+        and _same_active_file(str(item.get("active_file", "") or ""), active_file)
     ]
     entry = {
         "attempt": len(scoped) + 1,
@@ -1611,14 +1659,14 @@ def _recent_failed_attempts_summary(
         return ""
     item = dict((live_state or {}).get("current_queue_item") or {})
     target_symbol = str(item.get("label", "") or (live_state or {}).get("target_symbol", "") or "").strip()
-    active_file = str((live_state or {}).get("active_file_label", "") or (live_state or {}).get("active_file", "") or "").strip()
+    active_file = str((live_state or {}).get("active_file", "") or (live_state or {}).get("active_file_label", "") or "").strip()
     if not target_symbol or not active_file:
         return ""
     scoped = [
         attempt
         for attempt in attempts
         if str(attempt.get("target_symbol", "") or "").strip() == target_symbol
-        and str(attempt.get("active_file", "") or "").strip() == active_file
+        and _same_active_file(str(attempt.get("active_file", "") or ""), active_file)
     ]
     if not scoped:
         return ""
@@ -1643,7 +1691,7 @@ def _latest_failed_attempt_for_theorem(
         attempt
         for attempt in attempts
         if str(attempt.get("target_symbol", "") or "").strip() == str(target_symbol).strip()
-        and str(attempt.get("active_file", "") or "").strip() == str(active_file).strip()
+        and _same_active_file(str(attempt.get("active_file", "") or ""), active_file)
     ]
     if not scoped:
         return None
@@ -1717,7 +1765,8 @@ def _workflow_transition_snapshot(
             MANAGED_SNAPSHOT_PREFIX,
             "",
             f"Workflow: {_workflow_kind()}",
-            f"Active file: {str(current.get('active_file_label', '') or '[unknown]')}",
+            f"Active file: {_display_file_label(current) or '[unknown]'}",
+            f"Active file path: {str(current.get('active_file', '') or '[unknown]')}",
             "Current queue summary:",
             str(current.get("declaration_queue_summary", "") or "[none]"),
             "",
@@ -1736,6 +1785,7 @@ def _theorem_transition_handoff_message(
 ) -> str:
     current_target, current_file = _queue_assignment_identity(live_state)
     current = dict(live_state or {})
+    current_file_label = _display_file_label(current) or current_file or "[unknown]"
     return "\n".join(
         [
             "[EPFLEMMA-NATIVE THEOREM TRANSITION HANDOFF]",
@@ -1748,7 +1798,8 @@ def _theorem_transition_handoff_message(
             "",
             "Current queue focus:",
             f"- declaration: {current_target or '[unknown]'}",
-            f"- file: {current_file or '[unknown]'}",
+            f"- file: {current_file_label}",
+            f"- exact tool path: {current_file or '[unknown]'}",
             "",
             "Queue summary:",
             str(current.get("declaration_queue_summary", "") or "[none]"),
@@ -1794,14 +1845,16 @@ def _queue_needs_final_file_sweep(live_state: Mapping[str, Any] | None) -> bool:
 
 
 def _final_file_sweep_block(live_state: Mapping[str, Any]) -> str:
-    active_file = str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or "[unknown]")
+    active_file = str(live_state.get("active_file", "") or live_state.get("active_file_label", "") or "[unknown]")
+    active_file_label = _display_file_label(live_state) or active_file
     blocker = str(live_state.get("current_blocker", "") or live_state.get("diagnostics", "") or "unknown remaining issue").strip()
     verification_hint = _queue_item_verification_hint(str(live_state.get("active_file", "") or ""))
     return "\n".join(
         [
             "Queue status:",
             "- declaration queue is empty",
-            f"- file: {active_file}",
+            f"- file: {active_file_label}",
+            f"- exact tool path: {active_file}",
             f"- current blocker: {blocker}",
             (
                 f"- canonical file verification: {verification_hint}"
@@ -1810,7 +1863,7 @@ def _final_file_sweep_block(live_state: Mapping[str, Any]) -> str:
             ),
             "",
             "Final file sweep:",
-            f"- inspect the full file `{active_file}` now",
+            f"- inspect the full file `{active_file_label}` now",
             "- do one final whole-file pass for any remaining errors, warnings, malformed partial proofs, or missed declarations",
             "- you are no longer restricted to a single assigned theorem for this pass",
             "- if you make a meaningful edit, stop and let the manager re-check the file",
@@ -1828,10 +1881,10 @@ def _same_queue_assignment_still_blocked(
     baseline_target = str(baseline.get("target_symbol", "") or "").strip()
     baseline_file = str(baseline.get("active_file", "") or "").strip()
     current_target = str(item.get("label", "") or current.get("target_symbol", "") or "").strip()
-    current_file = str(current.get("active_file_label", "") or current.get("active_file", "") or "").strip()
+    current_file = str(current.get("active_file", "") or current.get("active_file_label", "") or "").strip()
     if not baseline_target or not baseline_file:
         return False
-    if baseline_target != current_target or baseline_file != current_file:
+    if baseline_target != current_target or not _same_active_file(baseline_file, current_file):
         return False
     blocker_summary = str(current.get("blocker_summary", "") or "").strip()
     diagnostics = str(current.get("diagnostics", "") or "")
@@ -2045,6 +2098,7 @@ def _build_live_proof_state(
             "",
             f"Workflow: {_workflow_kind()}",
             f"Active file: {active_file_label or '[unknown]'}",
+            f"Active file path: {active_file or '[unknown]'}",
             f"Target theorem: {target_symbol or ('[full-file verification sweep]' if queue_needs_final_file_sweep else '[unknown]')}",
             "",
             "Diagnostics:",
@@ -2121,6 +2175,7 @@ def _build_live_proof_state(
                 "",
                 f"Workflow: {_workflow_kind()}",
                 f"Active file: {live_state.get('active_file_label') or '[unknown]'}",
+                f"Active file path: {live_state.get('active_file') or '[unknown]'}",
                 f"Target theorem: {live_state.get('target_symbol') or '[unknown]'}",
                 "",
                 "Diagnostics:",
