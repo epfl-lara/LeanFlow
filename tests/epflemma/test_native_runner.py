@@ -184,7 +184,7 @@ def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeyp
         ]
     )
 
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
@@ -232,7 +232,7 @@ def test_terminate_descendant_agents_records_shutdown_activity(monkeypatch):
         _delegate_depth = 0
 
     recorded: list[tuple[str, str, dict[str, object]]] = []
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
@@ -259,7 +259,7 @@ def test_terminate_other_agents_records_shutdown_activity(monkeypatch):
         _delegate_depth = 0
 
     recorded: list[tuple[str, str, dict[str, object]]] = []
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
@@ -337,7 +337,7 @@ def test_workflow_startup_guidance_mentions_user_approved_swarm(monkeypatch):
 def test_history_status_lines_summarize_message_counts(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove Main.lean")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
 
     lines = runner._history_status_lines(
@@ -377,7 +377,7 @@ def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
             "min_p": None,
         },
     )
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_KEY", "sk-test")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "zai")
@@ -409,7 +409,7 @@ def test_build_agent_uses_swarm_toolset_when_user_enabled_swarm(monkeypatch):
             self.session_id = "runner-session"
 
     monkeypatch.setattr(runner, "AIAgent", DummyAgent)
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_KEY", "sk-test")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "zai")
@@ -1106,7 +1106,7 @@ def test_write_workflow_checkpoint_persists_index_and_current(monkeypatch, tmp_p
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "autoprove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/lean4:autoprove Main.lean")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setattr(runner, "_generate_checkpoint_summary", lambda *args, **kwargs: "## Goal\nResume proof")
     monkeypatch.setattr(runner, "_latest_filesystem_checkpoint_hash", lambda *args, **kwargs: "abc123def456")
 

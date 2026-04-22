@@ -687,10 +687,15 @@ epflemma provider --requested zai
 RCP-style endpoints work through the `custom` path:
 
 ```bash
-export OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
-export OPENAI_API_KEY="..."
+export EPFLEMMA_OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
+export EPFLEMMA_OPENAI_API_KEY="..."
 epflemma provider --requested custom
 ```
+
+Preferred env var names for EPFLemma are `EPFLEMMA_OPENAI_BASE_URL` and `EPFLEMMA_OPENAI_API_KEY`.
+Legacy/generic names such as `OPENAI_BASE_URL` and `OPENAI_API_KEY` are still accepted, but the EPFLemma-prefixed names are the stable user-facing ones.
+
+The `EPFLEMMA_NATIVE_*` variables are internal workflow-launcher plumbing. The CLI sets those automatically when it starts `epflemma-native`; you should not need to export them manually.
 
 For RCP / vLLM-style endpoints, EPFLemma enables model thinking through provider-compatible request fields instead of only the OpenRouter-style `reasoning` payload:
 
@@ -769,9 +774,9 @@ epflemma:
     autonomous_followups: 6
 
 model:
-  default: zai-org/GLM-5
-  provider: zai
-  base_url: "https://inference.rcp.epfl.ch/v1"
+  default: zai-org/GLM-5.1
+  provider: auto
+  base_url: ""
   api_key: ""
 
 agent:
@@ -785,8 +790,7 @@ agent:
 compression:
   enabled: true
   threshold: 0.5
-  summary_model: zai-org/GLM-5
-  summary_provider: zai
+  summary_model: zai-org/GLM-5.1
   reserved_output_tokens: 20000
   prune_tool_output: true
   prune_keep_recent_user_turns: 2
@@ -821,8 +825,8 @@ Useful commands:
 
 ```bash
 epflemma config get model.default
-epflemma config set model.default '"zai-org/GLM-5"'
-epflemma config set model.provider '"zai"'
+epflemma config set model.default '"zai-org/GLM-5.1"'
+epflemma config set model.provider '"auto"'
 epflemma config set model.base_url '"https://inference.rcp.epfl.ch/v1"'
 epflemma config set agent.reasoning_effort '"auto"'
 epflemma config set agent.seed '42'

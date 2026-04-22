@@ -127,7 +127,7 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
             backend_command="/lean4:autoprove Main.lean",
             workflow_args="Main.lean",
         ),
-        runtime={"provider": "custom", "model": "zai-org/GLM-5", "base_url": "https://inference.rcp.epfl.ch/v1"},
+        runtime={"provider": "custom", "model": "zai-org/GLM-5.1", "base_url": "https://inference.rcp.epfl.ch/v1"},
         child_env={},
         argv=["python", "-m", "epflemma_cli.native_runner"],
         active_skill="lean-proof-loop",
@@ -135,7 +135,7 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
     )
 
     monkeypatch.setattr("epflemma_cli.main.resolve_workflow_request", lambda *args, **kwargs: fake_plan)
-    monkeypatch.setattr("epflemma_cli.main.describe_launch_plan", lambda plan: {"workflow": "prove", "command": "/prove Main.lean", "project": "Demo", "project_root": str(tmp_path), "provider": "custom", "base_url": "https://inference.rcp.epfl.ch/v1", "model": "zai-org/GLM-5", "skill": "lean-proof-loop", "agents": "1"})
+    monkeypatch.setattr("epflemma_cli.main.describe_launch_plan", lambda plan: {"workflow": "prove", "command": "/prove Main.lean", "project": "Demo", "project_root": str(tmp_path), "provider": "custom", "base_url": "https://inference.rcp.epfl.ch/v1", "model": "zai-org/GLM-5.1", "skill": "lean-proof-loop", "agents": "1"})
 
     class _FakeProcess:
         pid = 43210
@@ -259,7 +259,7 @@ def test_swarm_agent_view_renders_transcript_not_status_panel(monkeypatch, tmp_p
         "Agent conversation started",
         agent_session_id="12345",
         user_message="Prove theorem foo",
-        model="zai-org/GLM-5",
+        model="zai-org/GLM-5.1",
     )
     append_workflow_activity(
         "assistant-response",
@@ -311,7 +311,7 @@ def test_swarm_agent_view_can_queue_follow_up_prompt(monkeypatch, tmp_path, caps
     agent = {
         "agent_id": "12345",
         "status": "verified",
-        "model": "zai-org/GLM-5",
+        "model": "zai-org/GLM-5.1",
         "parent_agent_id": "",
     }
     transcript = [
@@ -345,7 +345,7 @@ def test_status_agent_detail_renders_recent_activity(monkeypatch, tmp_path, caps
         agent_session_id="agent-child",
         parent_agent_session_id="agent-main",
         delegate_depth=1,
-        model="zai-org/GLM-5",
+        model="zai-org/GLM-5.1",
     )
     append_workflow_activity(
         "tool-result",

@@ -438,7 +438,7 @@ def test_workflow_agent_queue_and_waiting_state(monkeypatch, tmp_path):
         "Agent conversation started",
         agent_session_id="12345",
         process_id=24680,
-        model="zai-org/GLM-5",
+        model="zai-org/GLM-5.1",
     )
     append_workflow_activity(
         "agent-awaiting-input",
