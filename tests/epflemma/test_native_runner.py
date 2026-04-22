@@ -239,8 +239,8 @@ def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeyp
     monkeypatch.setattr(runner, "_record_activity", lambda event_type, message, **details: recorded.append((event_type, message, details)))
     monkeypatch.setattr(runner, "read_workflow_agent_inbox", lambda agent_id: next(queue_reads))
     monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state: {"message": "ok"})
-    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: dict(live_state, verified=True))
-    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: True)
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: dict(live_state, verified=False))
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: False)
     monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent, force=False: (history, {"compacted": False}))
     monkeypatch.setattr(
@@ -251,7 +251,7 @@ def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeyp
     monkeypatch.setattr(runner, "_record_turn_activity", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_journal_status", lambda: {"count": 0, "current": {}})
-    monkeypatch.setattr(runner, "_drive_autonomous_followups", lambda *args, **kwargs: (args[2], {"compacted": False}, {"count": 0, "current": {}}, {"verified": True}))
+    monkeypatch.setattr(runner, "_drive_autonomous_followups", lambda *args, **kwargs: (args[2], {"compacted": False}, {"count": 0, "current": {}}, {"verified": False}))
     monkeypatch.setattr(runner.time, "sleep", lambda *_args, **_kwargs: None)
 
     result = runner._run_background_control_loop(
@@ -267,6 +267,60 @@ def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeyp
     assert result == 0
     assert any(event_type == "agent-resume" and details.get("text") == "Try another proof." for event_type, _, details in recorded)
     assert any(event_type == "runner-exit" for event_type, _, _ in recorded)
+    assert "busy" in persisted
+    assert "exited" in persisted
+
+
+def test_background_control_loop_exits_after_verified_completion(monkeypatch):
+    class _Agent:
+        session_id = "12345"
+        _parent_session_id = ""
+        _delegate_depth = 0
+
+    agent = _Agent()
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    persisted: list[str] = []
+
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
+
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")))
+    monkeypatch.setattr(runner, "_record_activity", lambda event_type, message, **details: recorded.append((event_type, message, details)))
+    monkeypatch.setattr(runner, "read_workflow_agent_inbox", lambda agent_id: [{"seq": 1, "kind": "message", "text": "Finish the proof."}])
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state: {"message": "ok"})
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: dict(live_state, verified=bool(live_state.get("verified"))))
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: bool(live_state.get("verified")))
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent, force=False: (history, {"compacted": False}))
+    monkeypatch.setattr(
+        runner,
+        "_run_managed_conversation",
+        lambda *args, **kwargs: {"messages": [{"role": "assistant", "content": "done"}], "interrupted": False},
+    )
+    monkeypatch.setattr(runner, "_record_turn_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {"count": 0, "current": {}})
+    monkeypatch.setattr(
+        runner,
+        "_drive_autonomous_followups",
+        lambda *args, **kwargs: (args[2], {"compacted": False}, {"count": 0, "current": {}}, {"verified": True}),
+    )
+
+    result = runner._run_background_control_loop(
+        agent,
+        "system",
+        [{"role": "assistant", "content": "start"}],
+        {"compacted": False},
+        {"count": 0, "current": {}},
+        {"verified": False},
+        {},
+    )
+
+    assert result == 0
+    assert any(event_type == "agent-resume" and details.get("text") == "Finish the proof." for event_type, _, details in recorded)
+    assert any(event_type == "runner-exit" and "verified completion" in message for event_type, message, _ in recorded)
     assert "busy" in persisted
     assert "exited" in persisted
 
@@ -316,8 +370,8 @@ def test_terminate_other_agents_records_shutdown_activity(monkeypatch):
     )
     monkeypatch.setattr(
         runner,
-        "terminate_all_workflow_agents",
-        lambda **kwargs: {"success": True, "count": 2, "terminated": ["22222", "33333"], "failed": []},
+        "terminate_project_workflow_agents",
+        lambda project_root, **kwargs: {"success": True, "count": 2, "terminated": ["22222", "33333"], "failed": []},
     )
 
     runner._terminate_other_agents(_Agent())
@@ -360,6 +414,43 @@ def test_background_runner_exits_immediately_after_verified_completion(monkeypat
     assert "exited" in persisted
     assert any(event_type == "terminate" for event_type, _, _ in recorded)
     assert any(event_type == "runner-exit" and "verified completion" in message for event_type, message, _ in recorded)
+    assert any(
+        event_type == "runner-start" and details.get("agent_session_id") == "12345" and details.get("process_id")
+        for event_type, _, details in recorded
+    )
+
+
+def test_background_control_loop_handles_keyboard_interrupt_cleanly(monkeypatch):
+    class _Agent:
+        session_id = "12345"
+        _parent_session_id = ""
+        _delegate_depth = 0
+
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    persisted: list[str] = []
+
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")))
+    monkeypatch.setattr(runner, "_record_activity", lambda event_type, message, **details: recorded.append((event_type, message, details)))
+    monkeypatch.setattr(runner, "read_workflow_agent_inbox", lambda agent_id: [])
+    monkeypatch.setattr(runner.time, "sleep", lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+    result = runner._run_background_control_loop(
+        _Agent(),
+        "system",
+        [{"role": "assistant", "content": "start"}],
+        {"compacted": False},
+        {"count": 0, "current": {}},
+        {"verified": False},
+        {},
+    )
+
+    assert result == 0
+    assert any(event_type == "runner-exit" and "interrupted by signal" in message for event_type, message, _ in recorded)
+    assert "exited" in persisted
 
 
 def test_workflow_startup_guidance_mentions_autonomous_loop():
@@ -551,6 +642,16 @@ def test_history_status_lines_summarize_message_counts(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
 
+    monkeypatch.setattr(
+        runner,
+        "summarize_workflow_agents",
+        lambda activity_limit=1: [
+            {"status": "active"},
+            {"status": "paused"},
+            {"status": "dead"},
+        ],
+    )
+
     lines = runner._history_status_lines(
         [
             {"role": "user", "content": "hi"},
@@ -565,6 +666,7 @@ def test_history_status_lines_summarize_message_counts(monkeypatch):
     assert "Assistants: 1" in lines
     assert "Tools: 2" in lines
     assert "Workflow: prove" in lines
+    assert "Agents: 3 total / 2 live / 1 active / 1 dead" in lines
 
 
 def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
