@@ -39,8 +39,7 @@ logger = logging.getLogger(__name__)
 def _run_async(coro):
     """Run an async coroutine from a sync context.
 
-    If the current thread already has a running event loop (e.g., inside
-    the gateway's async stack or Atropos's event loop), we spin up a
+    If the current thread already has a running event loop, we spin up a
     disposable thread so asyncio.run() can create its own loop without
     conflicting.
 
@@ -107,7 +106,7 @@ TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
 TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 
 # Resolved tool names from the last get_tool_definitions() call.
-# Used by code_execution_tool to know which tools are available in this session.
+# Used by the active runtime to track which tools are available in this session.
 _last_resolved_tool_names: List[str] = []
 
 

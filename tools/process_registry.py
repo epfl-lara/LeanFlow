@@ -47,13 +47,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from gauss_cli.config import get_gauss_home
+from epflemma_cli.config import get_epflemma_home
 
 logger = logging.getLogger(__name__)
 
 
 # Checkpoint file for crash recovery (gateway only)
-CHECKPOINT_PATH = get_gauss_home() / "processes.json"
+CHECKPOINT_PATH = get_epflemma_home() / "processes.json"
 
 # Limits
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer

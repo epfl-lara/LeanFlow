@@ -69,7 +69,7 @@ def _load_security_config() -> dict:
         "tirith_fail_open": True,
     }
     try:
-        from gauss_cli.config import load_config
+        from epflemma_cli.config import load_config
         cfg = load_config().get("security", {}) or {}
     except Exception:
         cfg = {}
@@ -101,14 +101,18 @@ _MARKER_TTL = 86400  # 24 hours
 
 
 def _get_gauss_home() -> str:
-    """Return the Gauss home directory, respecting GAUSS_HOME env var.
+    """Return the EPFLemma home directory, respecting legacy env vars.
 
-    Matches the convention used throughout the codebase (gauss_cli.config,
-    cli.py, gateway/run.py, etc.) so tirith state stays inside the active
-    profile and tests get automatic isolation via conftest's GAUSS_HOME
+    Matches the convention used throughout the codebase so tirith state stays
+    inside the active profile and tests get automatic isolation via GAUSS_HOME
     monkeypatch.
     """
-    return os.getenv("GAUSS_HOME") or os.path.join(os.path.expanduser("~"), ".gauss")
+    return (
+        os.getenv("EPFLEMMA_HOME")
+        or os.getenv("OPENGAUSS_HOME")
+        or os.getenv("GAUSS_HOME")
+        or os.path.join(os.path.expanduser("~"), ".epflemma")
+    )
 
 
 def _failure_marker_path() -> str:

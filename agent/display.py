@@ -23,12 +23,8 @@ logger = logging.getLogger(__name__)
 # =========================================================================
 
 def _get_skin():
-    """Get the active skin config, or None if not available."""
-    try:
-        from gauss_cli.skin_engine import get_active_skin
-        return get_active_skin()
-    except Exception:
-        return None
+    """Legacy skins were removed from EPFLemma."""
+    return None
 
 
 def get_skin_faces(key: str, default: list) -> list:
@@ -101,14 +97,10 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str | N
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",
-        "search_files": "pattern", "browser_navigate": "url",
-        "browser_click": "ref", "browser_type": "text",
-        "image_generate": "prompt", "text_to_speech": "text",
-        "vision_analyze": "question", "mixture_of_agents": "user_prompt",
+        "search_files": "pattern",
+        "vision_analyze": "question",
         "skill_view": "name", "skills_list": "category",
-        "cronjob": "action",
-        "execute_code": "code", "delegate_task": "goal",
-        "clarify": "question", "skill_manage": "name",
+        "delegate_task": "goal", "clarify": "question",
     }
 
     if tool_name == "process":
@@ -150,28 +142,6 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str | N
         elif action == "remove":
             return f"-{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
         return action
-
-    if tool_name == "send_message":
-        target = args.get("target", "?")
-        msg = _oneline(args.get("message", ""))
-        if len(msg) > 20:
-            msg = msg[:17] + "..."
-        return f"to {target}: \"{msg}\""
-
-    if tool_name.startswith("rl_"):
-        rl_previews = {
-            "rl_list_environments": "listing envs",
-            "rl_select_environment": args.get("name", ""),
-            "rl_get_current_config": "reading config",
-            "rl_edit_config": f"{args.get('field', '')}={args.get('value', '')}",
-            "rl_start_training": "starting",
-            "rl_check_status": args.get("run_id", "")[:16],
-            "rl_stop_training": f"stopping {args.get('run_id', '')[:16]}",
-            "rl_get_results": args.get("run_id", "")[:16],
-            "rl_list_runs": "listing runs",
-            "rl_test_inference": f"{args.get('num_steps', 3)} steps",
-        }
-        return rl_previews.get(tool_name)
 
     key = primary_args.get(tool_name)
     if not key:
@@ -479,31 +449,6 @@ def get_cute_tool_message(
         target = args.get("target", "content")
         verb = "find" if target == "files" else "grep"
         return _wrap(f"┊ 🔎 {verb:9} {pattern}  {dur}")
-    if tool_name == "browser_navigate":
-        url = args.get("url", "")
-        domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-        return _wrap(f"┊ 🌐 navigate  {_trunc(domain, 35)}  {dur}")
-    if tool_name == "browser_snapshot":
-        mode = "full" if args.get("full") else "compact"
-        return _wrap(f"┊ 📸 snapshot  {mode}  {dur}")
-    if tool_name == "browser_click":
-        return _wrap(f"┊ 👆 click     {args.get('ref', '?')}  {dur}")
-    if tool_name == "browser_type":
-        return _wrap(f"┊ ⌨️  type      \"{_trunc(args.get('text', ''), 30)}\"  {dur}")
-    if tool_name == "browser_scroll":
-        d = args.get("direction", "down")
-        arrow = {"down": "↓", "up": "↑", "right": "→", "left": "←"}.get(d, "↓")
-        return _wrap(f"┊ {arrow}  scroll    {d}  {dur}")
-    if tool_name == "browser_back":
-        return _wrap(f"┊ ◀️  back      {dur}")
-    if tool_name == "browser_press":
-        return _wrap(f"┊ ⌨️  press     {args.get('key', '?')}  {dur}")
-    if tool_name == "browser_close":
-        return _wrap(f"┊ 🚪 close     browser  {dur}")
-    if tool_name == "browser_get_images":
-        return _wrap(f"┊ 🖼️  images    extracting  {dur}")
-    if tool_name == "browser_vision":
-        return _wrap(f"┊ 👁️  vision    analyzing page  {dur}")
     if tool_name == "todo":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
@@ -529,38 +474,8 @@ def get_cute_tool_message(
         return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
     if tool_name == "skill_view":
         return _wrap(f"┊ 📚 skill     {_trunc(args.get('name', ''), 30)}  {dur}")
-    if tool_name == "image_generate":
-        return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
-    if tool_name == "text_to_speech":
-        return _wrap(f"┊ 🔊 speak     {_trunc(args.get('text', ''), 30)}  {dur}")
     if tool_name == "vision_analyze":
         return _wrap(f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}")
-    if tool_name == "mixture_of_agents":
-        return _wrap(f"┊ 🧠 reason    {_trunc(args.get('user_prompt', ''), 30)}  {dur}")
-    if tool_name == "send_message":
-        return _wrap(f"┊ 📨 send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
-    if tool_name == "cronjob":
-        action = args.get("action", "?")
-        if action == "create":
-            skills = args.get("skills") or ([] if not args.get("skill") else [args.get("skill")])
-            label = args.get("name") or (skills[0] if skills else None) or args.get("prompt", "task")
-            return _wrap(f"┊ ⏰ cron      create {_trunc(label, 24)}  {dur}")
-        if action == "list":
-            return _wrap(f"┊ ⏰ cron      listing  {dur}")
-        return _wrap(f"┊ ⏰ cron      {action} {args.get('job_id', '')}  {dur}")
-    if tool_name.startswith("rl_"):
-        rl = {
-            "rl_list_environments": "list envs", "rl_select_environment": f"select {args.get('name', '')}",
-            "rl_get_current_config": "get config", "rl_edit_config": f"set {args.get('field', '?')}",
-            "rl_start_training": "start training", "rl_check_status": f"status {args.get('run_id', '?')[:12]}",
-            "rl_stop_training": f"stop {args.get('run_id', '?')[:12]}", "rl_get_results": f"results {args.get('run_id', '?')[:12]}",
-            "rl_list_runs": "list runs", "rl_test_inference": "test inference",
-        }
-        return _wrap(f"┊ 🧪 rl        {rl.get(tool_name, tool_name.replace('rl_', ''))}  {dur}")
-    if tool_name == "execute_code":
-        code = args.get("code", "")
-        first_line = code.strip().split("\n")[0] if code.strip() else ""
-        return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):

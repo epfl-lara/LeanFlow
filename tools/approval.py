@@ -170,7 +170,7 @@ def load_permanent_allowlist() -> set:
     patterns added via 'always' in a previous session.
     """
     try:
-        from gauss_cli.config import load_config
+        from epflemma_cli.config import load_config
         config = load_config()
         patterns = set(config.get("command_allowlist", []) or [])
         if patterns:
@@ -183,7 +183,7 @@ def load_permanent_allowlist() -> set:
 def save_permanent_allowlist(patterns: set):
     """Save permanently allowed command patterns to config."""
     try:
-        from gauss_cli.config import load_config, save_config
+        from epflemma_cli.config import load_config, save_config
         config = load_config()
         config["command_allowlist"] = list(patterns)
         save_config(config)
@@ -287,7 +287,7 @@ def prompt_dangerous_approval(command: str, description: str,
 def _get_approval_mode() -> str:
     """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
     try:
-        from gauss_cli.config import load_config
+        from epflemma_cli.config import load_config
         config = load_config()
         return config.get("approvals", {}).get("mode", "manual")
     except Exception:

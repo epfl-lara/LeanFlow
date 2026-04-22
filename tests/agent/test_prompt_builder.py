@@ -279,7 +279,7 @@ class TestBuildContextFilesPrompt:
         with patch("pathlib.Path.home", return_value=fake_home):
             result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Project Context" in result
-        assert "# Gauss ∑" in result
+        assert "# EPFLemma" in result
         assert "Nous Research" not in result
 
     def test_loads_agents_md(self, tmp_path):
@@ -293,31 +293,31 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "type hints" in result
 
-    def test_loads_soul_md_from_gauss_home_only(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path / "gauss_home"))
-        gauss_home = tmp_path / "gauss_home"
-        gauss_home.mkdir()
-        (gauss_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
+    def test_loads_soul_md_from_epflemma_home_only(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "epflemma_home"))
+        epflemma_home = tmp_path / "epflemma_home"
+        epflemma_home.mkdir()
+        (epflemma_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
         (tmp_path / "SOUL.md").write_text("cwd soul should be ignored", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Be concise and friendly." in result
         assert "cwd soul should be ignored" not in result
 
     def test_soul_md_has_no_wrapper_text(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path / "gauss_home"))
-        gauss_home = tmp_path / "gauss_home"
-        gauss_home.mkdir()
-        (gauss_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
+        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "epflemma_home"))
+        epflemma_home = tmp_path / "epflemma_home"
+        epflemma_home.mkdir()
+        (epflemma_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Be concise and friendly." in result
         assert "If SOUL.md is present" not in result
         assert "## SOUL.md" not in result
 
     def test_empty_soul_md_adds_nothing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("GAUSS_HOME", str(tmp_path / "gauss_home"))
-        gauss_home = tmp_path / "gauss_home"
-        gauss_home.mkdir()
-        (gauss_home / "SOUL.md").write_text("\n\n", encoding="utf-8")
+        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "epflemma_home"))
+        epflemma_home = tmp_path / "epflemma_home"
+        epflemma_home.mkdir()
+        (epflemma_home / "SOUL.md").write_text("\n\n", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert result == ""
 
@@ -358,10 +358,6 @@ class TestPromptBuilderConstants:
         assert "You are EPFLemma" in DEFAULT_AGENT_IDENTITY
 
     def test_platform_hints_known_platforms(self):
-        assert "whatsapp" in PLATFORM_HINTS
-        assert "telegram" in PLATFORM_HINTS
-        assert "discord" in PLATFORM_HINTS
-        assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
 
 

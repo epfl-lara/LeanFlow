@@ -19,8 +19,8 @@ from tools.interrupt import is_interrupted
 # printf (no trailing newline) keeps the boundaries clean for splitting.
 _OUTPUT_FENCE = "__GAUSS_FENCE_a9f7b3__"
 
-# Gauss-internal env vars that should NOT leak into terminal subprocesses.
-# These are loaded from ~/.gauss/.env for Gauss' own LLM/provider calls
+# EPFLemma-internal env vars that should NOT leak into terminal subprocesses.
+# These are loaded from ~/.epflemma/.env for EPFLemma's own LLM/provider calls
 # but can break external CLIs (e.g. codex) that also honor them.
 # See: https://github.com/NousResearch/gauss-agent/issues/1002
 #
@@ -34,13 +34,13 @@ def _build_provider_env_blocklist() -> frozenset:
 
     Automatically picks up api_key_env_vars and base_url_env_var from
     every registered provider, plus tool/messaging env vars from the
-    optional config registry, so new Gauss-managed secrets are blocked
+    optional config registry, so new EPFLemma-managed secrets are blocked
     in subprocesses without having to maintain multiple static lists.
     """
     blocked: set[str] = set()
 
     try:
-        from gauss_cli.auth import PROVIDER_REGISTRY
+        from epflemma_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
             blocked.update(pconfig.api_key_env_vars)
             if pconfig.base_url_env_var:
@@ -49,7 +49,7 @@ def _build_provider_env_blocklist() -> frozenset:
         pass
 
     try:
-        from gauss_cli.config import OPTIONAL_ENV_VARS
+        from epflemma_cli.config import OPTIONAL_ENV_VARS
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
             if category in {"tool", "messaging"}:

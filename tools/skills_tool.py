@@ -76,7 +76,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Tuple
 
 import yaml
-from gauss_cli.config import load_env, _ENV_VAR_NAME_RE
+from epflemma_cli.config import _ENV_VAR_NAME_RE, get_epflemma_home, load_config, load_env
 from epflemma_cli.skill_core import discover_skills as _og_discover_skills
 from epflemma_cli.skill_core import load_skill as _og_load_skill
 from epflemma_cli.skill_core import load_skill_file as _og_load_skill_file
@@ -85,10 +85,10 @@ from tools.registry import registry
 logger = logging.getLogger(__name__)
 
 
-# All skills live in ~/.gauss/skills/ (seeded from bundled skills/ on install).
+# All skills live in ~/.epflemma/skills/ (seeded from bundled skills/ on install).
 # This is the single source of truth -- agent edits, hub installs, and bundled
 # skills all coexist here without polluting the git repo.
-GAUSS_HOME = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss"))
+GAUSS_HOME = get_epflemma_home()
 SKILLS_DIR = GAUSS_HOME / "skills"
 
 # Anthropic-recommended limits for progressive disclosure efficiency
@@ -524,7 +524,6 @@ def _get_disabled_skill_names() -> Set[str]:
     """
     import os
     try:
-        from gauss_cli.config import load_config
         config = load_config()
         skills_cfg = config.get("skills", {})
         resolved_platform = os.getenv("GAUSS_PLATFORM")
@@ -541,7 +540,6 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
     """Check if a skill is disabled in config."""
     import os
     try:
-        from gauss_cli.config import load_config
         config = load_config()
         skills_cfg = config.get("skills", {})
         resolved_platform = platform or os.getenv("GAUSS_PLATFORM")

@@ -1023,9 +1023,9 @@ def _parse_llm_response(text: str, skill_name: str) -> List[Finding]:
 
 
 def _get_configured_model() -> str:
-    """Load the user's configured model from ~/.gauss/config.yaml."""
+    """Load the user's configured model from ~/.epflemma/config.yaml."""
     try:
-        from gauss_cli.config import load_config
+        from epflemma_cli.config import load_config
         config = load_config()
         return config.get("model", "")
     except Exception:

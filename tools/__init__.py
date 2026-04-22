@@ -3,9 +3,7 @@
 
 Historically this package eagerly imported nearly every tool module at import
 time. That meant a simple ``from tools.registry import registry`` also loaded
-and registered optional toolsets like RL, cron, image generation, and MoA,
-which in turn exposed them in the Gauss startup banner and pulled in heavy
-dependencies before the CLI had selected its actual tool surface.
+and registered optional legacy toolsets that EPFLemma no longer ships.
 
 Keep the public ``from tools import ...`` API, but only import a tool module
 when that specific attribute is requested.
@@ -37,64 +35,11 @@ _MODULE_EXPORTS = {
         "vision_analyze_tool",
         "check_vision_requirements",
     ),
-    "tools.mixture_of_agents_tool": (
-        "mixture_of_agents_tool",
-        "check_moa_requirements",
-    ),
-    "tools.image_generation_tool": (
-        "image_generate_tool",
-        "check_image_generation_requirements",
-    ),
     "tools.skills_tool": (
         "skills_list",
         "skill_view",
         "check_skills_requirements",
         "SKILLS_TOOL_DESCRIPTION",
-    ),
-    "tools.skill_manager_tool": (
-        "skill_manage",
-        "check_skill_manage_requirements",
-        "SKILL_MANAGE_SCHEMA",
-    ),
-    "tools.browser_tool": (
-        "browser_navigate",
-        "browser_snapshot",
-        "browser_click",
-        "browser_type",
-        "browser_scroll",
-        "browser_back",
-        "browser_press",
-        "browser_close",
-        "browser_get_images",
-        "browser_vision",
-        "cleanup_browser",
-        "cleanup_all_browsers",
-        "get_active_browser_sessions",
-        "check_browser_requirements",
-        "BROWSER_TOOL_SCHEMAS",
-    ),
-    "tools.cronjob_tools": (
-        "cronjob",
-        "schedule_cronjob",
-        "list_cronjobs",
-        "remove_cronjob",
-        "check_cronjob_requirements",
-        "get_cronjob_tool_definitions",
-        "CRONJOB_SCHEMA",
-    ),
-    "tools.rl_training_tool": (
-        "rl_list_environments",
-        "rl_select_environment",
-        "rl_get_current_config",
-        "rl_edit_config",
-        "rl_start_training",
-        "rl_check_status",
-        "rl_stop_training",
-        "rl_get_results",
-        "rl_list_runs",
-        "rl_test_inference",
-        "check_rl_api_keys",
-        "get_missing_keys",
     ),
     "tools.file_tools": (
         "read_file_tool",
@@ -103,10 +48,6 @@ _MODULE_EXPORTS = {
         "search_tool",
         "get_file_tools",
         "clear_file_ops_cache",
-    ),
-    "tools.tts_tool": (
-        "text_to_speech_tool",
-        "check_tts_requirements",
     ),
     "tools.todo_tool": (
         "todo_tool",
@@ -118,11 +59,6 @@ _MODULE_EXPORTS = {
         "clarify_tool",
         "check_clarify_requirements",
         "CLARIFY_SCHEMA",
-    ),
-    "tools.code_execution_tool": (
-        "execute_code",
-        "check_sandbox_requirements",
-        "EXECUTE_CODE_SCHEMA",
     ),
     "tools.delegate_tool": (
         "delegate_task",
