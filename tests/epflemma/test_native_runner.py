@@ -214,6 +214,110 @@ def test_run_managed_conversation_calls_interrupt_callback(monkeypatch):
     assert callback_hits["count"] == 1
 
 
+def test_handle_managed_tool_result_records_failed_attempt_after_verification_feedback(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    live_state = {
+        "target_symbol": "demo",
+        "active_file": "Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "current_queue_item_slice": "theorem demo : True := by\n  intro h\n  exact h",
+        "diagnostics": "error: unsolved goals",
+        "goals": "⊢ False",
+        "build_status": "unknown",
+        "blocker_summary": "error: unsolved goals",
+    }
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state))
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+    assert agent._managed_pending_theorem_feedback == {
+        "target_symbol": "demo",
+        "active_file": "Demo/Main.lean",
+    }
+
+    runner._handle_managed_tool_result(agent, "lean_inspect", {}, "")
+
+    attempts = agent._managed_autonomy_state["failed_attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["attempt"] == 1
+    assert attempts[0]["reason"] == "error: unsolved goals"
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_pending_theorem_feedback is None
+
+
+def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "next_demo",
+            "active_file": "Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+            "current_queue_item_slice": "theorem next_demo : True := by\n  sorry",
+            "diagnostics": "warning: declaration uses sorry",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "blocker_summary": "warning: declaration uses sorry",
+        },
+    )
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+
+    assert agent._managed_pending_theorem_feedback == {
+        "target_symbol": "demo",
+        "active_file": "Demo/Main.lean",
+    }
+
+    runner._handle_managed_tool_result(agent, "lean_verify", {}, "")
+
+    assert "failed_attempts" not in agent._managed_autonomy_state
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_pending_theorem_feedback is None
+
+
 def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeypatch):
     class _Agent:
         session_id = "12345"
@@ -507,6 +611,7 @@ def test_record_managed_reasoning_policy_emits_auditable_fields(monkeypatch):
                 "target_symbol": "demo_theorem",
                 "active_file": "/tmp/project/Main.lean",
                 "failed_attempt_count": 2,
+                "failed_attempt_reasoning_threshold": 5,
                 "effective_reasoning_effort": "high",
                 "reasoning_enabled": True,
                 "cycle": 3,
@@ -629,8 +734,6 @@ def test_autonomous_continuation_prompt_snapshot_with_runner_lean_prompt(monkeyp
         "- reason: queue item active\n"
         "- recommended worker: proof-repair\n"
         "- use `lean_worker_dispatch` if the blocker still fits this route after the next focused attempt\n\n"
-        "Recent failed attempts:\n"
-        "- same blocker twice\n\n"
         "Assigned queue item:\n"
         "- declaration: foo"
     )
@@ -770,6 +873,62 @@ def test_resolve_managed_reasoning_config_auto_escalates_after_five_failed_attem
                     "reason": "blocked",
                 }
                 for i in range(5)
+            ]
+        },
+    )
+
+    assert resolved == {"enabled": True, "effort": "high"}
+
+
+def test_resolve_managed_reasoning_config_auto_uses_medium_below_default_threshold():
+    resolved = runner._resolve_managed_reasoning_config(
+        {"mode": "auto"},
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "demo",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        },
+        {
+            "failed_attempts": [
+                {
+                    "attempt": i + 1,
+                    "cycle": i + 1,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "intro x",
+                    "reason": "blocked",
+                }
+                for i in range(4)
+            ]
+        },
+    )
+
+    assert resolved == {"enabled": True, "effort": "medium"}
+
+
+def test_resolve_managed_reasoning_config_auto_uses_configured_threshold(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_FAILED_ATTEMPT_REASONING_THRESHOLD", "3")
+
+    resolved = runner._resolve_managed_reasoning_config(
+        {"mode": "auto"},
+        {
+            "active_file": "/tmp/project/Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "target_symbol": "demo",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        },
+        {
+            "failed_attempts": [
+                {
+                    "attempt": i + 1,
+                    "cycle": i + 1,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "intro x",
+                    "reason": "blocked",
+                }
+                for i in range(3)
             ]
         },
     )
@@ -1117,10 +1276,10 @@ def test_queue_assignment_block_mentions_only_assigned_theorem():
     assert "`lake env lean GaussTest/RealTheorems-homework.lean`" in text
     assert "do not treat `lake build`, `grep`, `head`, or truncated output" in text
     assert "Current file prefix ending at `absLipschitz1`" in text
-    assert "PREVIOUS ATTEMPTS:" in text
-    assert "attempt: 1" in text
-    assert "proof shape: direct `simpa [isLipschitz] using abs_abs_sub_abs_le`" in text
-    assert "why it failed: type mismatch" in text
+    assert "PREVIOUS ATTEMPTS:" not in text
+    assert "attempt: 1" not in text
+    assert "proof shape: direct `simpa [isLipschitz] using abs_abs_sub_abs_le`" not in text
+    assert "why it failed: type mismatch" not in text
     assert "Task:" in text
     assert "Repair `absLipschitz1` from its current state." in text
 
@@ -1569,7 +1728,15 @@ def test_autonomous_continuation_prompt_includes_recent_failed_attempts():
                     "active_file": "Demo/Main.lean",
                     "proof_shape": "intro x y; simp",
                     "reason": "warning: declaration uses sorry",
-                }
+                },
+                {
+                    "attempt": 2,
+                    "cycle": 2,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "have h : True := by trivial",
+                    "reason": "unsolved goals remain",
+                },
             ]
         },
     )
@@ -1578,6 +1745,7 @@ def test_autonomous_continuation_prompt_includes_recent_failed_attempts():
     assert "attempt: 1" in prompt
     assert "proof shape: intro x y; simp" in prompt
     assert "why it failed: warning: declaration uses sorry" in prompt
+    assert "attempt: 2" not in prompt
 
 
 def test_queue_assignment_block_includes_exact_tool_path():
@@ -1688,6 +1856,7 @@ def test_remember_failed_attempt_uses_theorem_delta_for_proof_shape():
     assert attempt["attempt"] == 1
     assert "+ intro x" in attempt["proof_shape"] or "- sorry" in attempt["proof_shape"]
     assert attempt["reason"] == "type mismatch"
+    assert "intro x" in autonomy_state["current_queue_assignment"]["slice"]
 
 
 def test_recent_failed_attempts_summary_does_not_leak_other_theorem_attempts():
@@ -1712,6 +1881,98 @@ def test_recent_failed_attempts_summary_does_not_leak_other_theorem_attempts():
     )
 
     assert summary == ""
+
+
+def test_recent_failed_attempts_summary_excludes_latest_in_file_attempt_and_honors_limit(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_FAILED_ATTEMPT_HISTORY", "2")
+
+    summary = runner._recent_failed_attempts_summary(
+        {
+            "failed_attempts": [
+                {
+                    "attempt": 1,
+                    "cycle": 1,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "attempt one",
+                    "reason": "first failure",
+                },
+                {
+                    "attempt": 2,
+                    "cycle": 2,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "attempt two",
+                    "reason": "second failure",
+                },
+                {
+                    "attempt": 3,
+                    "cycle": 3,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "attempt three",
+                    "reason": "third failure",
+                },
+                {
+                    "attempt": 4,
+                    "cycle": 4,
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "proof_shape": "attempt four",
+                    "reason": "fourth failure",
+                },
+            ]
+        },
+        {
+            "target_symbol": "demo",
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        },
+    )
+
+    assert "attempt: 1" not in summary
+    assert "attempt: 2" in summary
+    assert "attempt: 3" in summary
+    assert "attempt: 4" not in summary
+
+
+def test_failed_attempt_count_uses_latest_attempt_number_even_after_pruning(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_FAILED_ATTEMPT_HISTORY", "2")
+
+    autonomy_state = {
+        "failed_attempts": [
+            {
+                "attempt": 7,
+                "cycle": 7,
+                "target_symbol": "demo",
+                "active_file": "Demo/Main.lean",
+                "proof_shape": "attempt seven",
+                "reason": "failure seven",
+            },
+            {
+                "attempt": 8,
+                "cycle": 8,
+                "target_symbol": "demo",
+                "active_file": "Demo/Main.lean",
+                "proof_shape": "attempt eight",
+                "reason": "failure eight",
+            },
+            {
+                "attempt": 9,
+                "cycle": 9,
+                "target_symbol": "demo",
+                "active_file": "Demo/Main.lean",
+                "proof_shape": "attempt nine",
+                "reason": "failure nine",
+            },
+        ]
+    }
+
+    assert runner._failed_attempt_count_for_theorem(
+        autonomy_state,
+        target_symbol="demo",
+        active_file="Demo/Main.lean",
+    ) == 9
 
 
 def test_summarize_theorem_transition_outcome_marks_reverted_to_sorry():
@@ -1850,7 +2111,7 @@ def test_same_queue_assignment_still_blocked_requires_same_theorem_and_real_bloc
     ) is False
 
 
-def test_rebuild_history_for_theorem_transition_records_blocked_outcome_and_failed_attempt():
+def test_rebuild_history_for_theorem_transition_records_blocked_outcome_without_fake_attempt():
     autonomy_state = {
         "current_cycle": 3,
         "current_queue_assignment": {
@@ -1884,13 +2145,56 @@ def test_rebuild_history_for_theorem_transition_records_blocked_outcome_and_fail
         "current_target": "next_demo",
         "current_file": "Demo/Main.lean",
     }
-    attempts = autonomy_state["failed_attempts"]
-    assert attempts[-1]["target_symbol"] == "blocked_demo"
-    assert attempts[-1]["active_file"] == "Demo/Main.lean"
-    assert attempts[-1]["cycle"] == 3
-    assert attempts[-1]["proof_shape"] == "[transitioned away before theorem was solved]"
+    assert "failed_attempts" not in autonomy_state
     outcomes = autonomy_state["theorem_outcomes"]
     assert outcomes["Demo/Main.lean::blocked_demo"]["status"] == "blocked"
+
+
+def test_rebuild_history_for_theorem_transition_clears_solved_theorem_failed_attempts():
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "solved_demo",
+            "active_file": "Demo/Main.lean",
+            "slice": "theorem solved_demo : True := by\n  exact True.intro",
+        },
+        "failed_attempts": [
+            {
+                "attempt": 1,
+                "cycle": 1,
+                "target_symbol": "solved_demo",
+                "active_file": "Demo/Main.lean",
+                "proof_shape": "attempt one",
+                "reason": "first failure",
+            },
+            {
+                "attempt": 2,
+                "cycle": 2,
+                "target_symbol": "other_demo",
+                "active_file": "Demo/Main.lean",
+                "proof_shape": "other attempt",
+                "reason": "other failure",
+            },
+        ],
+    }
+
+    rebuilt_history, transition = runner._rebuild_history_for_theorem_transition(
+        [{"role": "assistant", "content": "solved theorem, move on"}],
+        {"snapshot_text": "Compact workflow snapshot"},
+        autonomy_state,
+        {
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+            "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
+            "build_status": "lake env lean Demo/Main.lean exits 0",
+            "current_blocker": "",
+        },
+    )
+
+    assert rebuilt_history is not None
+    assert transition is not None
+    attempts = autonomy_state["failed_attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["target_symbol"] == "other_demo"
 
 
 def test_autonomous_stop_reason_blocks_verified_exit_when_prior_theorem_is_unresolved():

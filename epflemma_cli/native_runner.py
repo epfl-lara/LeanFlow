@@ -525,21 +525,42 @@ def _same_active_file(left: str, right: str) -> bool:
     return False
 
 
+def _scoped_failed_attempt_entries(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> list[dict[str, Any]]:
+    normalized_target = str(target_symbol or "").strip()
+    normalized_file = str(active_file or "").strip()
+    if not normalized_target or not normalized_file:
+        return []
+    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
+    return [
+        attempt
+        for attempt in attempts
+        if str(attempt.get("target_symbol", "") or "").strip() == normalized_target
+        and _same_active_file(str(attempt.get("active_file", "") or ""), normalized_file)
+    ]
+
+
 def _failed_attempt_count_for_theorem(
     autonomy_state: Mapping[str, Any],
     *,
     target_symbol: str,
     active_file: str,
 ) -> int:
-    if not target_symbol or not active_file:
-        return 0
-    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
-    return sum(
-        1
-        for attempt in attempts
-        if str(attempt.get("target_symbol", "") or "").strip() == str(target_symbol).strip()
-        and _same_active_file(str(attempt.get("active_file", "") or ""), active_file)
+    scoped = _scoped_failed_attempt_entries(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
     )
+    if not scoped:
+        return 0
+    numbered = [int(attempt.get("attempt", 0) or 0) for attempt in scoped if int(attempt.get("attempt", 0) or 0) > 0]
+    if numbered:
+        return max(numbered)
+    return len(scoped)
 
 
 def _resolve_managed_reasoning_config(
@@ -567,7 +588,7 @@ def _resolve_managed_reasoning_config(
             target_symbol=target_symbol,
             active_file=active_file,
         )
-        effort = "high" if attempts >= 5 else "medium"
+        effort = "high" if attempts >= _failed_attempt_reasoning_threshold() else "medium"
         return {"enabled": True, "effort": effort}
 
     return {"enabled": True, "effort": "high"}
@@ -617,12 +638,113 @@ def _record_managed_reasoning_policy(
         "target_symbol": target_symbol,
         "active_file": active_file,
         "failed_attempt_count": failed_attempt_count,
+        "failed_attempt_reasoning_threshold": _failed_attempt_reasoning_threshold(),
         "effective_reasoning_effort": effort,
         "reasoning_enabled": enabled,
     }
     if cycle is not None:
         details["cycle"] = cycle
     _record_activity("managed-reasoning-policy", message, **details)
+
+
+def _tool_result_counts_as_theorem_feedback(function_name: str, args: Mapping[str, Any] | None = None) -> bool:
+    if function_name in {"lean_inspect", "lean_verify"}:
+        return True
+    if function_name != "terminal":
+        return False
+    arguments = dict(args or {})
+    command = str(arguments.get("command", "") or arguments.get("cmd", "") or "").lower()
+    if not command:
+        return False
+    return any(token in command for token in ("lake env lean", "lake build", " lean", " typecheck"))
+
+
+def _prepare_managed_turn_state(agent: Any, autonomy_state: dict[str, Any]) -> None:
+    agent._managed_autonomy_state = autonomy_state
+    agent._managed_pending_theorem_feedback = None
+
+
+def _handle_managed_tool_result(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+    _result: str,
+) -> None:
+    del _result
+    if not _single_queue_item_turn_enabled() or agent.is_interrupted():
+        return
+
+    if function_name in {"patch", "write_file"}:
+        baseline = dict(getattr(agent, "_managed_autonomy_state", {}) or {}).get("current_queue_assignment", {})
+        target_symbol = str(dict(baseline or {}).get("target_symbol", "") or "").strip()
+        active_file = str(dict(baseline or {}).get("active_file", "") or "").strip()
+        if not target_symbol or not active_file:
+            live_state = _build_live_proof_state(list(getattr(agent, "_session_messages", []) or []))
+            target_symbol, active_file = _queue_assignment_identity(live_state)
+        if target_symbol and active_file:
+            agent._managed_pending_theorem_feedback = {
+                "target_symbol": target_symbol,
+                "active_file": active_file,
+            }
+        return
+
+    pending = dict(getattr(agent, "_managed_pending_theorem_feedback", None) or {})
+    pending_target = str(pending.get("target_symbol", "") or "").strip()
+    pending_file = str(pending.get("active_file", "") or "").strip()
+    if not pending_target or not pending_file:
+        return
+    if not _tool_result_counts_as_theorem_feedback(function_name, args):
+        return
+
+    live_state = _build_live_proof_state(list(getattr(agent, "_session_messages", []) or []))
+    still_blocked = _same_queue_assignment_still_blocked(
+        {
+            "current_queue_assignment": {
+                "target_symbol": pending_target,
+                "active_file": pending_file,
+            }
+        },
+        live_state,
+    )
+    if still_blocked:
+        autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+        if isinstance(autonomy_state, dict):
+            _remember_failed_attempt(
+                autonomy_state,
+                live_state,
+                cycle_number=int(autonomy_state.get("current_cycle", 0) or 0),
+            )
+            attempt_number = _failed_attempt_count_for_theorem(
+                autonomy_state,
+                target_symbol=pending_target,
+                active_file=pending_file,
+            )
+            _record_activity(
+                "failed-attempt-recorded",
+                f"Recorded failed theorem attempt #{attempt_number} for {pending_target}",
+                target_symbol=pending_target,
+                active_file=pending_file,
+                attempt=attempt_number,
+                verification_tool=function_name,
+            )
+
+    item = dict(live_state.get("current_queue_item") or {})
+    _record_activity(
+        "queue-step-boundary",
+        (
+            f"Yielding after failed verification feedback for {pending_target}"
+            if still_blocked
+            else f"Yielding after verification feedback for {pending_target}"
+        ),
+        queue_item=item,
+        target_symbol=pending_target,
+        active_file=pending_file,
+        reasons=list(item.get("reasons", []) or []),
+        verification_tool=function_name,
+        still_blocked=still_blocked,
+    )
+    agent._managed_pending_theorem_feedback = None
+    agent.interrupt(WORKFLOW_STEP_BOUNDARY_INTERRUPT)
 
 
 def _managed_agent_int(value: Any) -> int | None:
@@ -1107,6 +1229,18 @@ def _failed_attempt_history_limit() -> int:
         return 10
 
 
+def _failed_attempt_reasoning_threshold() -> int:
+    raw = _read_native_env("FAILED_ATTEMPT_REASONING_THRESHOLD", "5")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 5
+
+
+def _failed_attempt_entry_limit() -> int:
+    return max(2, _failed_attempt_history_limit() + 1)
+
+
 def _declaration_queue_scope() -> str:
     active_file = _read_native_env("ACTIVE_FILE", "")
     return "file" if active_file else "project"
@@ -1473,6 +1607,69 @@ def _attempt_proof_shape_from_delta(
     return _attempt_proof_shape(live_state)
 
 
+def _prune_failed_attempt_entries(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not attempts:
+        return []
+    limit = _failed_attempt_entry_limit()
+    keep_counts: dict[tuple[str, str], int] = {}
+    keep_indices: set[int] = set()
+    for idx in range(len(attempts) - 1, -1, -1):
+        attempt = dict(attempts[idx] or {})
+        key = (
+            str(attempt.get("target_symbol", "") or "").strip(),
+            str(attempt.get("active_file", "") or "").strip(),
+        )
+        if not key[0] or not key[1]:
+            keep_indices.add(idx)
+            continue
+        count = int(keep_counts.get(key, 0) or 0)
+        if count >= limit:
+            continue
+        keep_counts[key] = count + 1
+        keep_indices.add(idx)
+    return [dict(attempts[idx]) for idx in range(len(attempts)) if idx in keep_indices]
+
+
+def _clear_failed_attempts_for_theorem(
+    autonomy_state: dict[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> None:
+    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
+    if not attempts:
+        return
+    filtered = [
+        attempt
+        for attempt in attempts
+        if not (
+            str(attempt.get("target_symbol", "") or "").strip() == str(target_symbol).strip()
+            and _same_active_file(str(attempt.get("active_file", "") or ""), active_file)
+        )
+    ]
+    if filtered:
+        autonomy_state["failed_attempts"] = filtered
+    else:
+        autonomy_state.pop("failed_attempts", None)
+
+
+def _refresh_failed_attempt_baseline(
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> None:
+    current = dict(live_state or {})
+    item = dict(current.get("current_queue_item") or {})
+    target_symbol = str(item.get("label", "") or current.get("target_symbol", "") or "").strip()
+    active_file = str(current.get("active_file", "") or current.get("active_file_label", "") or "").strip()
+    if not target_symbol or not active_file:
+        return
+    baseline = dict(autonomy_state.get("current_queue_assignment") or {})
+    baseline["target_symbol"] = target_symbol
+    baseline["active_file"] = active_file
+    baseline["slice"] = str(current.get("current_queue_item_slice", "") or "").strip()
+    autonomy_state["current_queue_assignment"] = baseline
+
+
 def _queue_assignment_block(
     live_state: Mapping[str, Any],
     autonomy_state: Mapping[str, Any] | None = None,
@@ -1568,23 +1765,27 @@ def _remember_failed_attempt(
     if not reason:
         return
     attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
-    scoped = [
-        item for item in attempts
-        if str(item.get("target_symbol", "") or "").strip() == target_symbol
-        and _same_active_file(str(item.get("active_file", "") or ""), active_file)
-    ]
+    scoped = _scoped_failed_attempt_entries(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
     entry = {
-        "attempt": len(scoped) + 1,
+        "attempt": _failed_attempt_count_for_theorem(
+            autonomy_state,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+        + 1,
         "cycle": cycle_number,
         "target_symbol": target_symbol,
         "active_file": active_file,
         "proof_shape": _attempt_proof_shape_from_delta(autonomy_state, live_state),
         "reason": _single_line(reason, 240),
     }
-    if attempts and attempts[-1] == entry:
-        return
     attempts.append(entry)
-    autonomy_state["failed_attempts"] = attempts[-_failed_attempt_history_limit():]
+    autonomy_state["failed_attempts"] = _prune_failed_attempt_entries(attempts)
+    _refresh_failed_attempt_baseline(autonomy_state, live_state)
 
 
 def _record_theorem_outcome(autonomy_state: dict[str, Any], outcome: Mapping[str, Any]) -> None:
@@ -1611,32 +1812,8 @@ def _remember_transition_failed_attempt(
     autonomy_state: dict[str, Any],
     outcome: Mapping[str, Any],
 ) -> None:
-    status = str(outcome.get("status", "") or "").strip().lower()
-    if status not in {"blocked", "reverted-to-sorry", "skipped"}:
-        return
-    target_symbol = str(outcome.get("target_symbol", "") or "").strip()
-    active_file = str(outcome.get("active_file", "") or "").strip()
-    reason = str(outcome.get("note", "") or outcome.get("build_status", "") or "").strip()
-    if not target_symbol or not active_file or not reason:
-        return
-    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
-    scoped = [
-        item for item in attempts
-        if str(item.get("target_symbol", "") or "").strip() == target_symbol
-        and _same_active_file(str(item.get("active_file", "") or ""), active_file)
-    ]
-    entry = {
-        "attempt": len(scoped) + 1,
-        "cycle": int(autonomy_state.get("current_cycle", 0) or 0),
-        "target_symbol": target_symbol,
-        "active_file": active_file,
-        "proof_shape": "[transitioned away before theorem was solved]",
-        "reason": _single_line(reason, 240),
-    }
-    if attempts and attempts[-1] == entry:
-        return
-    attempts.append(entry)
-    autonomy_state["failed_attempts"] = attempts[-_failed_attempt_history_limit():]
+    del autonomy_state
+    del outcome
 
 
 def _has_unresolved_theorem_outcomes(autonomy_state: Mapping[str, Any]) -> bool:
@@ -1654,24 +1831,21 @@ def _recent_failed_attempts_summary(
     autonomy_state: Mapping[str, Any],
     live_state: Mapping[str, Any] | None,
 ) -> str:
-    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
-    if not attempts:
-        return ""
     item = dict((live_state or {}).get("current_queue_item") or {})
     target_symbol = str(item.get("label", "") or (live_state or {}).get("target_symbol", "") or "").strip()
     active_file = str((live_state or {}).get("active_file", "") or (live_state or {}).get("active_file_label", "") or "").strip()
     if not target_symbol or not active_file:
         return ""
-    scoped = [
-        attempt
-        for attempt in attempts
-        if str(attempt.get("target_symbol", "") or "").strip() == target_symbol
-        and _same_active_file(str(attempt.get("active_file", "") or ""), active_file)
-    ]
-    if not scoped:
+    scoped = _scoped_failed_attempt_entries(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    previous_attempts = scoped[:-1]
+    if not previous_attempts:
         return ""
     lines = ["PREVIOUS ATTEMPTS:"]
-    for item in scoped[-_failed_attempt_history_limit():]:
+    for item in previous_attempts[-_failed_attempt_history_limit():]:
         lines.append(f"- attempt: {item.get('attempt', '?')}")
         lines.append(f"  proof shape: {item.get('proof_shape', '[no proof shape recorded]')}")
         lines.append(f"  why it failed: {item.get('reason', '[no reason recorded]')}")
@@ -1684,15 +1858,11 @@ def _latest_failed_attempt_for_theorem(
     target_symbol: str,
     active_file: str,
 ) -> dict[str, Any] | None:
-    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
-    if not attempts or not target_symbol or not active_file:
-        return None
-    scoped = [
-        attempt
-        for attempt in attempts
-        if str(attempt.get("target_symbol", "") or "").strip() == str(target_symbol).strip()
-        and _same_active_file(str(attempt.get("active_file", "") or ""), active_file)
-    ]
+    scoped = _scoped_failed_attempt_entries(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
     if not scoped:
         return None
     return scoped[-1]
@@ -1822,6 +1992,12 @@ def _rebuild_history_for_theorem_transition(
     outcome = _summarize_theorem_transition_outcome(autonomy_state, live_state, history)
     _record_theorem_outcome(autonomy_state, outcome)
     _remember_transition_failed_attempt(autonomy_state, outcome)
+    if str(outcome.get("status", "") or "").strip().lower() == "solved":
+        _clear_failed_attempts_for_theorem(
+            autonomy_state,
+            target_symbol=str(outcome.get("target_symbol", "") or ""),
+            active_file=str(outcome.get("active_file", "") or ""),
+        )
     rebuilt_history = [
         {"role": "assistant", "content": _workflow_transition_snapshot(compaction_state, live_state)},
         {"role": "assistant", "content": _theorem_transition_handoff_message(outcome, live_state)},
@@ -2850,24 +3026,7 @@ def _build_agent() -> AIAgent:
     agent._managed_base_reasoning_config = dict(reasoning_cfg or {}) if reasoning_cfg else None
 
     def _post_tool_result_callback(function_name: str, _args: Mapping[str, Any], _result: str) -> None:
-        if not _single_queue_item_turn_enabled():
-            return
-        if function_name not in {"patch", "write_file"}:
-            return
-        if agent.is_interrupted():
-            return
-        live_state = _build_live_proof_state(list(getattr(agent, "_session_messages", []) or []))
-        item = dict(live_state.get("current_queue_item") or {})
-        label = str(item.get("label", "") or live_state.get("target_symbol", "") or "[unknown]")
-        _record_activity(
-            "queue-step-boundary",
-            f"Yielding after theorem-sized edit for {label}",
-            queue_item=item,
-            target_symbol=label,
-            active_file=str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or ""),
-            reasons=list(item.get("reasons", []) or []),
-        )
-        agent.interrupt(WORKFLOW_STEP_BOUNDARY_INTERRUPT)
+        _handle_managed_tool_result(agent, function_name, _args, _result)
 
     agent.post_tool_result_callback = _post_tool_result_callback
     owner_id = str(getattr(agent, "session_id", "") or "")
@@ -3228,6 +3387,7 @@ def _run_background_control_loop(
                     effective_reasoning,
                     phase="background",
                 )
+                _prepare_managed_turn_state(agent, autonomy_state)
                 result = _run_managed_conversation(
                     agent,
                     on_interrupt=lambda: _persist_live_status(
@@ -3634,9 +3794,6 @@ def _autonomous_continuation_prompt(
     if _queue_needs_final_file_sweep(live_state):
         prompt += f"\n\n{_final_file_sweep_block(live_state)}"
     else:
-        recent_failures = _recent_failed_attempts_summary(dict(autonomy_state or {}), live_state)
-        if recent_failures:
-            prompt += f"\n\n{recent_failures}"
         queue_text = _queue_assignment_block(live_state, autonomy_state)
         if queue_text:
             prompt += f"\n\n{queue_text}"
@@ -3735,6 +3892,7 @@ def _drive_autonomous_followups(
             phase="autonomous",
             cycle=cycle,
         )
+        _prepare_managed_turn_state(agent, autonomy_state)
         result = _run_managed_conversation(
             agent,
             on_interrupt=lambda: _persist_live_status(
@@ -3854,6 +4012,7 @@ def main() -> int:
             effective_reasoning,
             phase="startup",
         )
+        _prepare_managed_turn_state(agent, autonomy_state)
         result = _run_managed_conversation(
             agent,
             on_interrupt=lambda: _persist_live_status(
@@ -4107,6 +4266,8 @@ def main() -> int:
                 effective_reasoning,
                 phase="interactive",
             )
+            _prepare_queue_assignment_state(autonomy_state, live_state)
+            _prepare_managed_turn_state(agent, autonomy_state)
             result = _run_managed_conversation(
                 agent,
                 on_interrupt=lambda: _persist_live_status(
