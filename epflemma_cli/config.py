@@ -46,6 +46,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "agent": {
         "max_turns": 90,
         "reasoning_effort": "auto",
+        "seed": 42,
+        "temperature": 0.3,
+        "top_p": None,
+        "top_k": None,
+        "min_p": None,
     },
     "logging": {
         "preview_lines": 6,

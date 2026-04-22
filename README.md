@@ -461,6 +461,11 @@ EPFLemma now defaults to:
 ```yaml
 agent:
   reasoning_effort: "auto"
+  seed: 42
+  temperature: 0.3
+  top_p: null
+  top_k: null
+  min_p: null
 ```
 
 `auto` is Lean-specific rather than a generic chat setting:
@@ -488,6 +493,12 @@ On routes that only support `low|medium|high`, EPFLemma maps automatically:
 - `minimal -> low`
 - `xhigh -> high`
 - `none` disables model thinking entirely
+
+Sampling defaults are Lean-oriented rather than chatty:
+
+- `seed: 42` keeps runs more reproducible on compatible routes
+- `temperature: 0.3` leaves a small amount of exploration for proof search
+- `top_p`, `top_k`, and `min_p` stay unset by default
 
 This mode is automatic for autonomous workflows with an `ACTIVE_FILE`. For project-wide autonomous runs the queue is per-file instead of per-declaration, and swarm mode (`--agents N`) is the path for parallel per-file work.
 
@@ -765,6 +776,11 @@ model:
 
 agent:
   reasoning_effort: "auto"
+  seed: 42
+  temperature: 0.3
+  top_p: null
+  top_k: null
+  min_p: null
 
 compression:
   enabled: true
@@ -809,6 +825,11 @@ epflemma config set model.default '"zai-org/GLM-5"'
 epflemma config set model.provider '"zai"'
 epflemma config set model.base_url '"https://inference.rcp.epfl.ch/v1"'
 epflemma config set agent.reasoning_effort '"auto"'
+epflemma config set agent.seed '42'
+epflemma config set agent.temperature '0.3'
+epflemma config set agent.top_p 'null'
+epflemma config set agent.top_k 'null'
+epflemma config set agent.min_p 'null'
 ```
 
 Compression defaults are tuned for long Lean sessions:

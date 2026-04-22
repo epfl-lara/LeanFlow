@@ -520,6 +520,28 @@ def _apply_managed_reasoning_policy(
     return effective
 
 
+def _managed_agent_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _managed_agent_seed(value: Any) -> int | None:
+    return _managed_agent_int(value)
+
+
+def _managed_agent_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class _WorkflowLogTee:
     def __init__(self, stream: Any) -> None:
         self._stream = stream
@@ -2540,7 +2562,8 @@ def _build_agent() -> AIAgent:
 
     toolset_name = _read_native_env("TOOLSET", "epflemma-native") or "epflemma-native"
     logging_cfg = _logging_config()
-    reasoning_cfg = _parse_managed_reasoning_config(str(_agent_config().get("reasoning_effort", "auto")))
+    agent_cfg = _agent_config()
+    reasoning_cfg = _parse_managed_reasoning_config(str(agent_cfg.get("reasoning_effort", "auto")))
     agent = AIAgent(
         model=model,
         base_url=base_url,
@@ -2557,6 +2580,11 @@ def _build_agent() -> AIAgent:
         tool_progress_callback=_tool_progress_callback,
         step_callback=_step_callback,
         reasoning_config=reasoning_cfg,
+        seed=_managed_agent_seed(agent_cfg.get("seed")),
+        temperature=_managed_agent_float(agent_cfg.get("temperature")),
+        top_p=_managed_agent_float(agent_cfg.get("top_p")),
+        top_k=_managed_agent_int(agent_cfg.get("top_k")),
+        min_p=_managed_agent_float(agent_cfg.get("min_p")),
         log_preview_lines=logging_cfg.get("preview_lines", 6),
         log_preview_chars=logging_cfg.get("preview_chars", 900),
         tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 20),

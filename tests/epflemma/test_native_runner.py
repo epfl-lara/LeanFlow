@@ -365,7 +365,18 @@ def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
             self.reasoning_config = kwargs.get("reasoning_config")
 
     monkeypatch.setattr(runner, "AIAgent", DummyAgent)
-    monkeypatch.setattr(runner, "_agent_config", lambda: {"reasoning_effort": "auto"})
+    monkeypatch.setattr(
+        runner,
+        "_agent_config",
+        lambda: {
+            "reasoning_effort": "auto",
+            "seed": 42,
+            "temperature": 0.3,
+            "top_p": None,
+            "top_k": None,
+            "min_p": None,
+        },
+    )
     monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_KEY", "sk-test")
@@ -380,6 +391,11 @@ def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
     assert captured["api_mode"] == "responses"
     assert captured["max_iterations"] == 77
     assert captured["reasoning_config"] == {"mode": "auto"}
+    assert captured["seed"] == 42
+    assert captured["temperature"] == 0.3
+    assert captured["top_p"] is None
+    assert captured["top_k"] is None
+    assert captured["min_p"] is None
     assert callable(captured["tool_progress_callback"])
     assert callable(captured["step_callback"])
 
