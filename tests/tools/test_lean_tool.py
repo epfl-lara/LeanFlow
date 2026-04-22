@@ -55,6 +55,30 @@ def test_lean_search_tool_preserves_provider_provenance(monkeypatch):
     assert payload["results"][0]["provider"] == "mcp-leanfinder"
 
 
+def test_lean_search_tool_marks_repeated_empty_search_loop_as_action_required(monkeypatch):
+    monkeypatch.setattr(
+        lean_tool,
+        "lean_search",
+        lambda *args, **kwargs: LeanSearchResult(
+            query="hard theorem",
+            mode="auto",
+            attempted_providers=["project-rg", "mathlib-rg"],
+            results=[],
+            degraded_reasons=[
+                "lean diagnostics MCP unavailable",
+                "semantic providers unavailable",
+                "search returned no results",
+                "repeated empty search loop detected; stop searching and change tactic",
+            ],
+        ),
+    )
+
+    payload = json.loads(lean_tool.lean_search_tool("hard theorem"))
+
+    assert payload["success"] is False
+    assert "action_required" in payload
+
+
 def test_handle_function_call_passes_parent_agent_to_lean_worker_dispatch(monkeypatch):
     captured: dict[str, object] = {}
     parent_agent = object()

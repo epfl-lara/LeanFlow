@@ -895,6 +895,13 @@ class AIAgent:
         if self.tools and not self.quiet_mode:
             requirements = check_toolset_requirements()
             missing_reqs = [name for name, available in requirements.items() if not available]
+            enabled_toolset_names = {str(name) for name in (enabled_toolsets or [])}
+            native_lean_only = (
+                bool(enabled_toolset_names.intersection({"epflemma-native", "epflemma-native-swarm"}))
+                and not enabled_toolset_names.intersection({"web", "search"})
+            )
+            if native_lean_only:
+                missing_reqs = [name for name in missing_reqs if name != "web"]
             if missing_reqs:
                 print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
         

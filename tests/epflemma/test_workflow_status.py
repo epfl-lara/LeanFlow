@@ -20,6 +20,7 @@ from epflemma_cli.workflow_state import (
     workflow_agent_activity_path,
     workflow_latest_run_activity_path,
     workflow_run_activity_path,
+    workflow_run_metadata_path,
     terminate_project_workflow_agents,
     terminate_all_workflow_agents,
     terminate_workflow_agent,
@@ -213,6 +214,48 @@ def test_workflow_activity_writes_run_and_agent_jsonl_streams(monkeypatch, tmp_p
     assert run_event["event_id"] == root_event["event_id"]
     assert agent_event["agent_id"] == "12345"
     assert agent_event["task_label"] == "prove"
+
+
+def test_workflow_activity_marks_runner_start_as_top_level(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.delenv("EPFLEMMA_WORKFLOW_RUN_ID", raising=False)
+
+    append_workflow_activity("runner-start", "Managed workflow runner started")
+
+    latest_run_path = workflow_latest_run_activity_path()
+    assert latest_run_path is not None
+    event = json.loads(latest_run_path.read_text(encoding="utf-8").splitlines()[0])
+    metadata = json.loads(workflow_run_metadata_path(event["run_id"]).read_text(encoding="utf-8"))
+
+    assert event["run_scope"] == "top-level"
+    assert event["details"]["run_scope"] == "top-level"
+    assert metadata["run_scope"] == "top-level"
+
+
+def test_workflow_latest_run_activity_path_prefers_top_level_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_WORKFLOW_RUN_ID", "prove-background-test")
+
+    append_workflow_activity(
+        "agent-awaiting-input",
+        "Background workflow agent is waiting for input",
+        agent_session_id="12345",
+        process_id=24680,
+    )
+    background_run_id = json.loads(workflow_latest_run_activity_path(prefer_top_level=False).read_text(encoding="utf-8").splitlines()[0])["run_id"]
+
+    monkeypatch.setenv("EPFLEMMA_WORKFLOW_RUN_ID", "prove-top-level-test")
+    append_workflow_activity("runner-start", "Managed workflow runner started")
+
+    latest_top_level = workflow_latest_run_activity_path()
+    assert latest_top_level is not None
+    latest_event = json.loads(latest_top_level.read_text(encoding="utf-8").splitlines()[0])
+
+    assert latest_event["type"] == "runner-start"
+    assert latest_event["run_id"] != background_run_id
+    assert latest_event["run_scope"] == "top-level"
 
 
 def test_workflow_agent_summary_groups_events(monkeypatch, tmp_path):

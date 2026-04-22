@@ -1775,6 +1775,71 @@ def test_autonomous_stop_reason_blocks_verified_exit_when_prior_theorem_is_unres
     assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "blocked"
 
 
+def test_build_live_proof_state_surfaces_search_exhaustion(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
+    monkeypatch.setattr(runner, "_resolve_active_file", lambda history, checkpoint_state=None: str(active))
+    monkeypatch.setattr(runner, "_resolve_target_symbol", lambda history, checkpoint_state=None: "demo")
+    monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
+    monkeypatch.setattr(runner, "_collect_message_text", lambda history: "")
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (1, ["Demo/Main.lean (1)"]))
+    monkeypatch.setattr(runner, "recent_empty_search_streak", lambda workflow_command: 3)
+    monkeypatch.setattr(
+        runner,
+        "probe_capabilities",
+        lambda cwd=None: type(
+            "_Capabilities",
+            (),
+            {
+                "to_dict": lambda self: {
+                    "cwd": str(project),
+                    "project_root": str(project),
+                    "degraded_reasons": [],
+                }
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "lean_inspect",
+        lambda *args, **kwargs: type(
+            "_Inspection",
+            (),
+            {
+                "diagnostics": "warning: declaration uses sorry",
+                "goals": "Lean goals unavailable.",
+                "sorry_count": 1,
+                "project_sorry_count": 1,
+                "blocker_kind": "open_goals",
+                "queue_items": [
+                    {
+                        "label": "demo",
+                        "kind": "theorem",
+                        "line": 1,
+                        "reasons": ["contains sorry"],
+                    }
+                ],
+                "capability_report": {
+                    "cwd": str(project),
+                    "project_root": str(project),
+                    "degraded_reasons": [],
+                },
+            },
+        )(),
+    )
+
+    live_state = runner._build_live_proof_state([])
+
+    assert live_state["search_exhausted"] is True
+    assert live_state["recent_empty_search_streak"] == 3
+    assert "search exhausted for this theorem" in live_state["message"]
+
+
 def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
