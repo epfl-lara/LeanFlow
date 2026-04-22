@@ -100,3 +100,45 @@ def test_lean_search_marks_repeated_empty_search_loop(monkeypatch, tmp_path):
     result = lean_services.lean_search("hard theorem name", cwd=project)
 
     assert "repeated empty search loop detected; stop searching and change tactic" in result.degraded_reasons
+
+
+def test_route_workflow_step_marks_search_exhausted_from_recent_empty_search_streak(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: LeanCapabilityReport(
+            cwd=str(project),
+            project_root=str(project),
+            project_valid=True,
+            project_error="",
+            binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+            mcp_tools={},
+            search_providers=["project-rg", "mathlib-rg"],
+            helper_tools={"search_fallback": True},
+            workers=["sorry-filler-deep"],
+            degraded_reasons=[],
+        ),
+    )
+    monkeypatch.setattr(lean_services, "recent_empty_search_streak", lambda workflow_command, limit=6: 3)
+
+    decision = lean_services.route_workflow_step(
+        "prove",
+        {
+            "active_file": str(project / "Demo" / "Main.lean"),
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+            "current_blocker": "contains sorry",
+            "diagnostics": "warning: declaration uses sorry",
+            "goals": "Lean goals unavailable.",
+            "build_status": "unknown",
+        },
+        configured_skill="lean-theorem-queue-worker",
+        autonomy_state={},
+        cwd=project,
+    )
+
+    assert decision.search_exhausted is True
+    assert decision.recommended_worker == "sorry-filler-deep"

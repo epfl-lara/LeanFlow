@@ -136,6 +136,24 @@ def test_aiagent_reuses_existing_errors_log_handler():
             root_logger.addHandler(handler)
 
 
+def test_aiagent_suppresses_optional_web_warning_for_native_lean_toolset(capsys):
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("lean_search", "terminal")),
+        patch("run_agent.check_toolset_requirements", return_value={"web": False}),
+        patch("run_agent.OpenAI"),
+    ):
+        AIAgent(
+            api_key="test-k...7890",
+            quiet_mode=False,
+            skip_context_files=True,
+            skip_memory=True,
+            enabled_toolsets=["epflemma-native"],
+        )
+
+    output = capsys.readouterr().out
+    assert "missing requirements: ['web']" not in output
+
+
 # ---------------------------------------------------------------------------
 # Helper to build mock assistant messages (API response objects)
 # ---------------------------------------------------------------------------
@@ -1122,11 +1140,12 @@ class TestConcurrentToolExecution:
         """_invoke_tool should route regular tools through handle_function_call."""
         with patch("run_agent.handle_function_call", return_value="result") as mock_hfc:
             result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
-            mock_hfc.assert_called_once_with(
-                "web_search", {"q": "test"}, "task-1",
-                enabled_tools=list(agent.valid_tool_names),
-                owner_id=agent.session_id,
-            )
+            mock_hfc.assert_called_once()
+            args, kwargs = mock_hfc.call_args
+            assert args == ("web_search", {"q": "test"}, "task-1")
+            assert kwargs["enabled_tools"] == list(agent.valid_tool_names)
+            assert kwargs["owner_id"] == agent.session_id
+            assert kwargs["parent_agent"] is agent
             assert result == "result"
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):

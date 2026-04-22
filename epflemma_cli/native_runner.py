@@ -26,6 +26,7 @@ from agent.model_metadata import estimate_messages_tokens_rough
 from epflemma_cli.file_locks import list_file_locks, release_all_file_locks
 from epflemma_cli.lean_services import (
     lean_inspect,
+    recent_empty_search_streak,
     lean_verify,
     probe_capabilities,
     route_workflow_step,
@@ -1476,6 +1477,16 @@ def _queue_assignment_block(
                 f"- dispatch with `lean_worker_dispatch` if the blocker persists after the next focused attempt",
             ]
         )
+    if bool(live_state.get("search_exhausted")):
+        parts.extend(
+            [
+                "",
+                "Search exhaustion:",
+                "- repeated search attempts have already failed for this theorem",
+                "- do not call `lean_search` again in this turn unless you are changing the query strategy materially",
+                "- your next move should be an edit, `lean_verify`, `lean_worker_dispatch`, or a concrete blocker report",
+            ]
+        )
     parts.extend(["", "Task:", f"Repair `{label}` from its current state."])
     return "\n".join(parts)
 
@@ -1976,6 +1987,12 @@ def _build_live_proof_state(
             active_file_label = str(Path(active_file).resolve().relative_to(Path(_project_root()).resolve()))
         except Exception:
             active_file_label = active_file
+    workflow_command = str(
+        _read_native_env("WORKFLOW_COMMAND", "")
+        or _read_text_env("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")
+    ).strip()
+    empty_search_streak = recent_empty_search_streak(workflow_command=workflow_command) if workflow_command else 0
+    search_exhausted = empty_search_streak >= 3
     provisional_state = {
         "active_file": active_file,
         "active_file_label": active_file_label,
@@ -1998,6 +2015,8 @@ def _build_live_proof_state(
         "blocker_summary": blocker_summary,
         "verification_hint": verification_hint,
         "capability_report": capability_report,
+        "recent_empty_search_streak": empty_search_streak,
+        "search_exhausted": search_exhausted,
     }
     route_decision = route_workflow_step(
         _workflow_kind(),
@@ -2041,6 +2060,13 @@ def _build_live_proof_state(
             "Recommended verification path:",
             verification_hint or "`lean_inspect` first, then `lean_verify` when close to clean",
             "",
+            "Search state:",
+            (
+                f"empty search streak: {empty_search_streak} (search exhausted for this theorem)"
+                if search_exhausted
+                else f"empty search streak: {empty_search_streak}"
+            ),
+            "",
             "Capabilities:",
             f"degraded reasons: {degraded_summary}",
             "",
@@ -2077,6 +2103,8 @@ def _build_live_proof_state(
         "verification_hint": verification_hint,
         "capability_report": capability_report,
         "route_decision": route_decision,
+        "recent_empty_search_streak": empty_search_streak,
+        "search_exhausted": search_exhausted,
         "message": body,
     }
     if _workflow_kind() in AUTONOMOUS_WORKFLOW_KINDS:

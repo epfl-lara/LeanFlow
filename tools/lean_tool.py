@@ -53,11 +53,22 @@ def lean_verify_tool(target: str = "", cwd: str = "", mode: str = "project") -> 
 
 
 def lean_search_tool(query: str, cwd: str = "", mode: str = "auto", limit: int = 10, file_path: str = "") -> str:
+    result = lean_search(query, cwd=cwd or None, mode=mode, limit=limit, file_path=file_path)
+    payload = {
+        "success": True,
+        **result.to_dict(),
+    }
+    if (
+        not result.results
+        and "repeated empty search loop detected; stop searching and change tactic" in result.degraded_reasons
+    ):
+        payload["success"] = False
+        payload["action_required"] = (
+            "Stop searching in this turn and either make the strongest concrete proof/edit attempt, "
+            "run verification, dispatch a worker, or report a blocker."
+        )
     return json.dumps(
-        {
-            "success": True,
-            **lean_search(query, cwd=cwd or None, mode=mode, limit=limit, file_path=file_path).to_dict(),
-        },
+        payload,
         ensure_ascii=False,
     )
 
@@ -159,7 +170,7 @@ LEAN_VERIFY_SCHEMA = {
 
 LEAN_SEARCH_SCHEMA = {
     "name": "lean_search",
-    "description": "Search for Lean declarations and proof hints using MCP/LSP providers first, then native rg/mathlib fallbacks. Returns provider provenance with each result.",
+    "description": "Search for Lean declarations and proof hints using MCP/LSP providers first, then native rg/mathlib fallbacks. Returns provider provenance with each result. If degraded reasons report a repeated empty search loop, stop searching and change tactic.",
     "parameters": {
         "type": "object",
         "properties": {

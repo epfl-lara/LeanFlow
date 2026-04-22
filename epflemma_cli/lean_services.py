@@ -36,7 +36,7 @@ SEARCH_PROVIDER_LABELS = {
 }
 
 
-def _recent_empty_search_streak(*, workflow_command: str, limit: int = 6) -> int:
+def recent_empty_search_streak(*, workflow_command: str, limit: int = 6) -> int:
     path = workflow_outcomes_path()
     if not path.is_file():
         return 0
@@ -726,7 +726,7 @@ def lean_search(
         degraded.append("search returned no results")
         workflow_command = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", ""))
         if workflow_command:
-            empty_streak = _recent_empty_search_streak(workflow_command=workflow_command)
+            empty_streak = recent_empty_search_streak(workflow_command=workflow_command)
             if empty_streak >= 2:
                 degraded.append("repeated empty search loop detected; stop searching and change tactic")
     result = LeanSearchResult(
@@ -861,7 +861,12 @@ def route_workflow_step(
         and str(item.get("active_file", "") or "").strip() in {active_file, str(current.get("active_file_label", "") or "")}
     ]
     attempt_count = len(attempts)
-    search_exhausted = attempt_count >= 2 or not report.search_providers
+    workflow_command = str(
+        os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "")
+        or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")
+    ).strip()
+    empty_search_streak = recent_empty_search_streak(workflow_command=workflow_command) if workflow_command else 0
+    search_exhausted = bool(current.get("search_exhausted")) or attempt_count >= 2 or not report.search_providers or empty_search_streak >= 3
     normalized_workflow = str(workflow_kind or "").strip().lower()
     if normalized_workflow == "autoprove":
         normalized_workflow = "prove"
