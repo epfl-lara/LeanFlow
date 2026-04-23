@@ -13,6 +13,8 @@ It installs as `epflemma`, uses `~/.epflemma` for user-level config, keeps proje
 
 This fork removes the old managed `claude-code` and `codex` backend flow. EPFLemma now runs Lean workflows through its own internal `epflemma-native` runtime and routes inference through direct provider APIs, OpenAI-compatible endpoints such as RCP, or local runtimes such as `vllm`, `ollama`, and `llama.cpp`.
 
+EPFLemma builds on earlier OpenGauss work. The project history traces back to [math-inc/OpenGauss](https://github.com/math-inc/OpenGauss), and this repo carries that lineage forward in a Lean-first direction.
+
 ## Product Direction
 
 EPFLemma is intentionally Lean-first and automation-first.
@@ -232,7 +234,7 @@ The interface is styled around EPFL / Lean / AI-for-math work, but the executabl
 Direct local install from the current repo:
 
 ```bash
-git clone https://github.com/Lemmy00/EPFLemma.git
+git clone https://github.com/epfl-lara/EPFLemma.git
 cd EPFLemma
 ./scripts/install-internal.sh
 ```
@@ -298,6 +300,7 @@ Check the install:
 epflemma --help
 epflemma doctor
 epflemma doctor env --json
+epflemma mcp bootstrap lean
 epflemma mcp status --json
 epflemma config show
 ```
@@ -318,6 +321,12 @@ epflemma workflow prove Main.lean --agents 3
 epflemma workflow prove Main.lean --no-parallel
 epflemma workflow formalize "Define the object and prove the first lemma"
 ```
+
+## Workflow Example Projects
+
+The repo also carries opt-in Lean workflow projects under `testdata/workflow_projects/`.
+
+These are for manual workflow runs and future targeted integration coverage, not for the default pytest or CI path. The current example project is `testdata/workflow_projects/GaussTest`, a small mathlib-based repo with `sorry` targets and extra text examples for proving/formalization workflows.
 
 Interactive mode:
 
@@ -352,9 +361,11 @@ Inside the shell:
 /formalize "state the theorem"
 /doctor
 /doctor search --json
+/mcp bootstrap lean
 /mcp status
 /mcp status --json
 /config get model.default
+/exit
 /quit
 ```
 
@@ -386,6 +397,8 @@ The shell also reads persisted managed-workflow state so these commands work acr
 - `/goals`
 - `/diagnostics`
 - `/proof-state`
+
+`/exit` now asks the current project's managed runner to shut down cleanly first, waits briefly for that exit request to land, and only then escalates to direct interrupts/PID termination if the runner is still alive.
 
 ## Autonomous Lean Behavior
 
@@ -422,6 +435,8 @@ The verification loop is intentionally Lean-LSP-first:
 - prefer a focused `lake build <Module>` when the active file is close to clean
 - reserve full-project `lake build` for milestone verification and final success checks
 
+Managed automation backends are intentionally treated as optional infrastructure behind the native Lean tools, not as authoritative proof state. When an automation backend misses a declaration that the local file queue can already see, EPFLemma records the backend miss in `degraded_reasons`, degrades cleanly, and continues with local source context instead of stalling the run.
+
 The inspection split is intentional:
 
 - `/workflow activity` is the structured step feed: API calls, assistant plans, tool starts, resumes, checkpoints, and autonomous follow-ups
@@ -443,6 +458,20 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
 - `lean_search`
   - search in `auto`, `local`, `semantic`, `type-pattern`, or `natural-language` mode
   - prefers MCP/LSP-backed providers first and falls back to local `rg`/Mathlib search with explicit provider provenance and degraded reasons
+- `lean_proof_context`
+  - theorem-context retrieval from the managed automation backend: theorem statement, original proof text, hypotheses, in-scope names, namespace, and similar proofs
+  - this is not a replacement for `lean_inspect` goals
+  - when the active file already contains the target declaration, EPFLemma first stabilizes lookup from the local declaration range before asking the backend for richer context
+  - if the proof-auto backend reports `theorem_not_found` or another backend-side context failure, EPFLemma falls back to a local declaration-slice context instead of pretending the backend succeeded
+  - repeated proof-auto lookup failures disable the proof-auto backend for the rest of the current workflow run so the agent stops wasting turns on the same blind spot
+- `lean_multi_attempt`
+  - screen 2-6 concrete tactic candidates at one proof location through the MCP backend
+- `lean_auto_probe`
+  - probe theorem-local automation methods such as `aesop`, `aesop?`, and `grind`
+- `lean_auto_search`
+  - ask the managed automation backend for one theorem-local automated proof candidate after context/probe data exists
+- `lean_auto_try`
+  - validate one concrete automated proof candidate before patching it into the file
 - `lean_sorries`
   - list remaining `sorry` findings across a project or a single file with declaration names and line numbers
 - `lean_axioms`
@@ -460,7 +489,8 @@ What the runner does each cycle:
 - pick the current queue item and inject an "Assigned queue item" block into the agent prompt, with the declaration name, current file prefix through that declaration, current blocker, and the last N failed attempts for that exact target
 - auto-select the `lean-theorem-queue-worker` skill while an item is assigned, and fall back to `lean-proof-loop` when the queue is empty
 - after the agent's first `patch` or `write_file`, yield control back to the runner so diagnostics can be refreshed before the next edit
-- if the same `(target, file)` is still blocked after a cycle, record the attempt's proof-shape delta and failure reason into the target-scoped history
+- when a concrete proof edit is verified and the same `(target, file)` is still blocked, record that failed attempt immediately before the next edit overwrites it
+- keep the newest failed proof in the file so the model sees the live state directly; only older failed proofs move into structured `PREVIOUS ATTEMPTS`
 - when the queue empties but the file is not verified, switch to a whole-file sweep prompt for one pass
 - when the assigned theorem changes, rebuild the next prompt from a compact queue-aware handoff instead of reusing the full prior theorem transcript
 
@@ -525,6 +555,7 @@ Why this shape:
 - one declaration at a time keeps the agent from declaring victory after fixing only the first theorem
 - the yield-after-edit boundary forces fresh diagnostics between edits instead of speculative chained patches
 - target-scoped failed-attempt memory gives the next cycle real negative guidance without leaking across unrelated theorems
+- the failed-attempt ledger is theorem-local and is cleared when the queue advances to a different declaration
 - theorem transitions always clear raw search logs, long tool output, and previous-theorem reasoning from the live prompt; only a compact workflow snapshot and short previous-theorem outcome summary survive
 - the final file sweep handles residual warnings or malformed partial proofs that do not map to a single declaration
 
@@ -579,6 +610,12 @@ agent:
 - when the queue moves to a different theorem, the new theorem resets back to `medium`
 - when the declaration queue is empty but the file still needs a final cleanup pass, the whole-file sweep uses `high`
 - failed-attempt memory is scoped per theorem, so previous theorems do not drag old blocker history into unrelated prompts
+
+Operational details:
+
+- the failed-attempt counter increments on each failed `edit -> verification feedback -> still blocked` boundary, not only once per long conversation
+- the default reasoning escalation threshold is configurable with `EPFLEMMA_NATIVE_FAILED_ATTEMPT_REASONING_THRESHOLD`
+- the `PREVIOUS ATTEMPTS` cap is configurable with `EPFLEMMA_NATIVE_FAILED_ATTEMPT_HISTORY` and defaults to `10`
 
 You can still override it explicitly:
 
@@ -849,7 +886,7 @@ There are now three important internal workflow surfaces:
 
 - `lean`
   - shared typed Lean capability surface
-  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_search`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
+  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_probe`, `lean_auto_search`, `lean_auto_try`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
 
 - `epflemma-native`
   - default single-agent Lean workflow runtime
@@ -952,6 +989,7 @@ Compression defaults are tuned for long Lean sessions:
 - `reserved_output_tokens` keeps headroom for the next response instead of filling the full context window.
 - `prune_tool_output` replaces stale old tool result bodies with a fixed marker.
 - `prune_keep_recent_user_turns` keeps the newest user turns and their nearby tool output intact.
+- if provider metadata cannot tell EPFLemma the real context window, EPFLemma now falls back conservatively to `200,000` tokens instead of assuming a multi-million-token window.
 
 ## Doctor And MCP Status
 
@@ -962,6 +1000,7 @@ epflemma doctor
 epflemma doctor env
 epflemma doctor mcp --json
 epflemma doctor search --json
+epflemma mcp bootstrap lean
 epflemma mcp status
 epflemma mcp status --json
 ```
@@ -990,7 +1029,33 @@ Supported doctor modes:
 - available native workers
 - degraded-mode reasons
 
-`epflemma mcp status` shows configured MCP servers, connection state, last error, registered tools, and sampling counters. The same surfaces are available in the interactive shell through `/doctor ...` and `/mcp status [--json]`.
+EPFLemma now treats MCP as default backend infrastructure for native Lean tools, not as a separate user-facing workflow.
+
+Installer/bootstrap-managed default Lean MCP backends:
+
+- `lean-lsp-mcp==0.26.1`
+  - primary state/search backend
+  - diagnostics, goals, local search, semantic search helpers, and `lean_multi_attempt`
+- `lean-proof-auto-mcp@v0.4.0`
+  - secondary automation/context backend
+  - theorem-local context and automation helpers such as `get_proof_context`, `probe`, `search_automated_proof`, and `try_automated_proof`
+  - EPFLemma uses it through native wrappers and now degrades cleanly when backend lookup misses a declaration that exists in the local file
+
+The install script bootstraps both backends by default under `~/.epflemma/mcp/venvs/`. To repair or recreate them later, run:
+
+```bash
+epflemma mcp bootstrap lean
+```
+
+`epflemma mcp status` now shows server role labels, whether a server is EPFLemma-managed, whether it is configured/installed, and whether bootstrap is recommended. The same surfaces are available in the interactive shell through `/doctor ...`, `/mcp bootstrap lean`, and `/mcp status [--json]`.
+
+Raw `mcp_*` tools are still available through explicit `mcp-{server}` toolsets for debugging, but they are not part of the normal native Lean workflow surface. The model should use the native Lean wrappers instead.
+
+For theorem-local automation, the important behavior is:
+
+- `lean_proof_context` prefers backend context when available
+- if proof-auto lookup fails for a declaration that the local file already contains, EPFLemma falls back to a local declaration slice and nearby declarations
+- a proof-auto `theorem_not_found` miss disables the proof-auto backend for the rest of that workflow run so later turns do not keep retrying the same broken backend path
 
 To persist MCP sampling audit events to disk, enable it per server in `~/.epflemma/config.yaml`:
 

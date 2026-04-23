@@ -277,6 +277,26 @@ class TestRestore:
 # =========================================================================
 
 class TestWorkingDirResolution:
+    def test_resolves_lean_project_root_before_parent_repo(self, tmp_path):
+        mgr = CheckpointManager(enabled=True)
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        (repo_root / "pyproject.toml").write_text("[project]\n")
+
+        lean_project = repo_root / "testdata" / "workflow_projects" / "GaussTest"
+        lean_project.mkdir(parents=True)
+        (lean_project / "lakefile.toml").write_text("name = \"GaussTest\"\n")
+        (lean_project / "lean-toolchain").write_text("leanprover/lean4:v4.29.0\n")
+
+        lean_src = lean_project / "GaussTest"
+        lean_src.mkdir()
+        filepath = lean_src / "RealTheorems.lean"
+        filepath.write_text("theorem t : True := by\n  trivial\n")
+
+        result = mgr.get_working_dir_for_path(str(filepath))
+        assert result == str(lean_project)
+
     def test_resolves_git_project_root(self, tmp_path):
         mgr = CheckpointManager(enabled=True)
         project = tmp_path / "myproject"

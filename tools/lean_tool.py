@@ -8,8 +8,13 @@ import json
 from epflemma_cli.lean_services import (
     LeanWorkerRequest,
     dispatch_worker,
+    lean_auto_probe,
+    lean_auto_search,
+    lean_auto_try,
     lean_axioms,
     lean_inspect,
+    lean_multi_attempt,
+    lean_proof_context,
     lean_search,
     lean_sorries,
     lean_verify,
@@ -125,6 +130,106 @@ def lean_worker_dispatch_tool(
     return json.dumps({"success": True, **result.to_dict()}, ensure_ascii=False)
 
 
+def lean_proof_context_tool(
+    file_path: str,
+    theorem_id: str,
+    *,
+    cwd: str = "",
+    include_similar_proofs: bool = True,
+    similarity_threshold: float = 0.7,
+) -> str:
+    return json.dumps(
+        lean_proof_context(
+            file_path,
+            theorem_id,
+            cwd=cwd or None,
+            include_similar_proofs=include_similar_proofs,
+            similarity_threshold=similarity_threshold,
+        ),
+        ensure_ascii=False,
+    )
+
+
+def lean_multi_attempt_tool(
+    file_path: str,
+    line: int,
+    attempts: list[str],
+    *,
+    cwd: str = "",
+    column: int | None = None,
+) -> str:
+    return json.dumps(
+        lean_multi_attempt(
+            file_path,
+            line,
+            attempts,
+            cwd=cwd or None,
+            column=column,
+        ),
+        ensure_ascii=False,
+    )
+
+
+def lean_auto_probe_tool(
+    file_path: str,
+    theorem_id: str,
+    *,
+    cwd: str = "",
+    methods: list[str] | None = None,
+    timeout_s: int = 10,
+) -> str:
+    return json.dumps(
+        lean_auto_probe(
+            file_path,
+            theorem_id,
+            cwd=cwd or None,
+            methods=methods,
+            timeout_s=timeout_s,
+        ),
+        ensure_ascii=False,
+    )
+
+
+def lean_auto_search_tool(
+    file_path: str,
+    theorem_id: str,
+    *,
+    cwd: str = "",
+    timeout_s: int = 10,
+    objective: str = "balanced",
+) -> str:
+    return json.dumps(
+        lean_auto_search(
+            file_path,
+            theorem_id,
+            cwd=cwd or None,
+            timeout_s=timeout_s,
+            objective=objective,
+        ),
+        ensure_ascii=False,
+    )
+
+
+def lean_auto_try_tool(
+    file_path: str,
+    theorem_id: str,
+    proof_attempt: str,
+    *,
+    cwd: str = "",
+    timeout_s: int = 10,
+) -> str:
+    return json.dumps(
+        lean_auto_try(
+            file_path,
+            theorem_id,
+            proof_attempt,
+            cwd=cwd or None,
+            timeout_s=timeout_s,
+        ),
+        ensure_ascii=False,
+    )
+
+
 LEAN_CAPABILITIES_SCHEMA = {
     "name": "lean_capabilities",
     "description": "Inspect the native EPFLemma Lean workflow capability surface: project detection, Lean/Lake/Elan binaries, MCP/LSP tool availability, search providers, helper availability, workers, and degraded-mode reasons.",
@@ -212,6 +317,86 @@ LEAN_AXIOMS_SCHEMA = {
             "cwd": {"type": "string", "description": "Optional working directory"},
         },
         "required": ["target"],
+    },
+}
+
+LEAN_PROOF_CONTEXT_SCHEMA = {
+    "name": "lean_proof_context",
+    "description": "Fetch theorem-local context from the managed Lean automation backend: theorem statement, original proof, hypotheses, in-scope names, namespace, and optional similar proofs.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Lean file containing the theorem"},
+            "theorem_id": {"type": "string", "description": "Declaration name to inspect"},
+            "cwd": {"type": "string", "description": "Optional working directory"},
+            "include_similar_proofs": {"type": "boolean", "default": True},
+            "similarity_threshold": {"type": "number", "default": 0.7},
+        },
+        "required": ["file_path", "theorem_id"],
+    },
+}
+
+LEAN_MULTI_ATTEMPT_SCHEMA = {
+    "name": "lean_multi_attempt",
+    "description": "Screen 2-6 short concrete tactic attempts at one proof location using the Lean MCP backend. Do not pass full proof blocks or candidates containing `sorry`.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Lean file path"},
+            "line": {"type": "integer", "description": "Target line number"},
+            "column": {"type": "integer", "description": "Optional target column"},
+            "attempts": {"type": "array", "items": {"type": "string"}, "description": "Concrete tactic candidates to test"},
+            "cwd": {"type": "string", "description": "Optional working directory"},
+        },
+        "required": ["file_path", "line", "attempts"],
+    },
+}
+
+LEAN_AUTO_PROBE_SCHEMA = {
+    "name": "lean_auto_probe",
+    "description": "Probe theorem-local automation methods such as `aesop`, `aesop?`, and `grind` before broader search.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Lean file path"},
+            "theorem_id": {"type": "string", "description": "Declaration name to probe"},
+            "methods": {"type": "array", "items": {"type": "string"}, "description": "Automation methods to probe"},
+            "timeout_s": {"type": "integer", "default": 10},
+            "cwd": {"type": "string", "description": "Optional working directory"},
+        },
+        "required": ["file_path", "theorem_id"],
+    },
+}
+
+LEAN_AUTO_SEARCH_SCHEMA = {
+    "name": "lean_auto_search",
+    "description": "Ask the managed Lean automation backend to search for one theorem-local automated proof candidate after context/probe data exists.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Lean file path"},
+            "theorem_id": {"type": "string", "description": "Declaration name to search"},
+            "timeout_s": {"type": "integer", "default": 10},
+            "objective": {"type": "string", "default": "balanced"},
+            "cwd": {"type": "string", "description": "Optional working directory"},
+        },
+        "required": ["file_path", "theorem_id"],
+    },
+}
+
+LEAN_AUTO_TRY_SCHEMA = {
+    "name": "lean_auto_try",
+    "description": "Validate one concrete theorem-local automated proof attempt before patching it into the file.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Lean file path"},
+            "theorem_id": {"type": "string", "description": "Declaration name to test"},
+            "proof_attempt": {"type": "string", "description": "Concrete proof candidate to validate"},
+            "timeout_s": {"type": "integer", "default": 10},
+            "cwd": {"type": "string", "description": "Optional working directory"},
+        },
+        "required": ["file_path", "theorem_id", "proof_attempt"],
     },
 }
 
@@ -312,6 +497,76 @@ registry.register(
     ),
     check_fn=check_lean_requirements,
     emoji="📐",
+)
+registry.register(
+    name="lean_proof_context",
+    toolset="lean",
+    schema=LEAN_PROOF_CONTEXT_SCHEMA,
+    handler=lambda args, **kw: lean_proof_context_tool(
+        file_path=args.get("file_path", ""),
+        theorem_id=args.get("theorem_id", ""),
+        cwd=args.get("cwd", ""),
+        include_similar_proofs=bool(args.get("include_similar_proofs", True)),
+        similarity_threshold=float(args.get("similarity_threshold", 0.7)),
+    ),
+    check_fn=check_lean_requirements,
+    emoji="🧾",
+)
+registry.register(
+    name="lean_multi_attempt",
+    toolset="lean",
+    schema=LEAN_MULTI_ATTEMPT_SCHEMA,
+    handler=lambda args, **kw: lean_multi_attempt_tool(
+        file_path=args.get("file_path", ""),
+        line=int(args.get("line", 1) or 1),
+        attempts=list(args.get("attempts", []) or []),
+        cwd=args.get("cwd", ""),
+        column=args.get("column"),
+    ),
+    check_fn=check_lean_requirements,
+    emoji="🎯",
+)
+registry.register(
+    name="lean_auto_probe",
+    toolset="lean",
+    schema=LEAN_AUTO_PROBE_SCHEMA,
+    handler=lambda args, **kw: lean_auto_probe_tool(
+        file_path=args.get("file_path", ""),
+        theorem_id=args.get("theorem_id", ""),
+        cwd=args.get("cwd", ""),
+        methods=list(args.get("methods", []) or []) or None,
+        timeout_s=int(args.get("timeout_s", 10) or 10),
+    ),
+    check_fn=check_lean_requirements,
+    emoji="🧪",
+)
+registry.register(
+    name="lean_auto_search",
+    toolset="lean",
+    schema=LEAN_AUTO_SEARCH_SCHEMA,
+    handler=lambda args, **kw: lean_auto_search_tool(
+        file_path=args.get("file_path", ""),
+        theorem_id=args.get("theorem_id", ""),
+        cwd=args.get("cwd", ""),
+        timeout_s=int(args.get("timeout_s", 10) or 10),
+        objective=args.get("objective", "balanced"),
+    ),
+    check_fn=check_lean_requirements,
+    emoji="🛰️",
+)
+registry.register(
+    name="lean_auto_try",
+    toolset="lean",
+    schema=LEAN_AUTO_TRY_SCHEMA,
+    handler=lambda args, **kw: lean_auto_try_tool(
+        file_path=args.get("file_path", ""),
+        theorem_id=args.get("theorem_id", ""),
+        proof_attempt=args.get("proof_attempt", ""),
+        cwd=args.get("cwd", ""),
+        timeout_s=int(args.get("timeout_s", 10) or 10),
+    ),
+    check_fn=check_lean_requirements,
+    emoji="🛠️",
 )
 registry.register(
     name="lean_worker_dispatch",

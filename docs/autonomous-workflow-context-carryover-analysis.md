@@ -2,7 +2,21 @@
 
 Date: 2026-04-21
 
-This note explains why EPFLemma keeps a large context when it moves from one theorem-sized queue item to the next inside the same autonomous workflow run.
+This note explains the theorem-to-theorem context carryover behavior observed on 2026-04-21.
+
+Historical status:
+
+- the analysis below is useful for understanding the original failure mode
+- it is not a description of the current 2026-04-23 runner behavior
+
+Current behavior summary:
+
+- theorem transitions now rebuild from a compact queue-aware handoff instead of blindly reusing the full prior theorem transcript
+- failed-attempt memory is recorded at each failed `edit -> verification feedback -> still blocked` boundary
+- the latest failed proof stays in the file; older failed attempts are shown through structured `PREVIOUS ATTEMPTS`
+- failed-attempt memory is cleared when the workflow advances to a different theorem
+- model context fallback is now conservative (`200,000` tokens when provider metadata is unknown), so 50% compaction triggers around `100,000`, not `1,000,000`
+- stale runner snapshots in `.epflemma/workflow-state/live_status.json` are normalized to `phase: dead` / `process_id: 0` instead of appearing live forever
 
 Reference run:
 - Activity: `/Users/lmilikic/GaussWorkspace/GaussTest/.epflemma/workflow-state/activity/runs/prove-20260421T134949Z-pid9680.jsonl`
@@ -10,7 +24,7 @@ Reference run:
 
 ## Short Answer
 
-There is currently no theorem-level reset.
+On 2026-04-21 there was no theorem-level reset.
 
 The managed runner keeps one continuous `history` list for the whole file workflow. When a theorem turn ends, the runner:
 
@@ -19,9 +33,9 @@ The managed runner keeps one continuous `history` list for the whole file workfl
 3. appends a new continuation prompt for the next queue item,
 4. only compacts if the global context threshold is exceeded.
 
-For your RCP GLM route, the model context length is treated as `2,000,000` tokens, and the compaction threshold is `50%`, so auto-compaction does not trigger until roughly `1,000,000` tokens. That is far above the size of a typical theorem handoff. So the next theorem inherits most of the prior theorem's search, failed proof attempts, tool output, and assistant reasoning trail.
+For that historical run, the route was treated as having a `2,000,000` token context window and a `50%` compaction threshold, so auto-compaction did not trigger until roughly `1,000,000` tokens. That is why the next theorem inherited most of the prior theorem's search, failed proof attempts, tool output, and assistant reasoning trail.
 
-## What The Code Does Today
+## What The Code Did On 2026-04-21
 
 ### 1. One workflow run uses one long message history
 
@@ -84,11 +98,11 @@ And in `agent/context_compressor.py`, the threshold is:
 self.threshold_tokens = int(self.context_length * threshold_percent)
 ```
 
-For your model route, `get_model_context_length("zai-org/GLM-5.1", base_url="https://inference.rcp.epfl.ch/v1")` resolves to:
+For that historical route, `get_model_context_length("zai-org/GLM-5.1", base_url="https://inference.rcp.epfl.ch/v1")` resolved to:
 
 - `2,000,000`
 
-So auto-compaction waits until roughly:
+So historical auto-compaction waited until roughly:
 
 - `1,000,000` tokens
 
@@ -279,7 +293,7 @@ flowchart TD
     G --> H["Next theorem starts from compact theorem-aware context"]
 ```
 
-## Recommendation
+## Historical Recommendation
 
 The current behavior is working as implemented, but it is not theorem-aware enough.
 

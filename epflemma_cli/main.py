@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import shlex
+import signal
 import sys
 import time
 from pathlib import Path
@@ -66,6 +67,7 @@ from epflemma_cli.runtime_provider import (
     resolve_runtime_provider,
 )
 from epflemma_cli.skill_core import discover_skill_commands, discover_skills, load_skill
+from epflemma_cli.mcp_bootstrap import bootstrap_lean_mcp
 from epflemma_cli.workflow import FORGIVING_WORKFLOW_ALIAS_MAP, describe_launch_plan, resolve_workflow_request, run_workflow, spawn_workflow
 from epflemma_cli.workflow_state import (
     enqueue_workflow_agent_message,
@@ -73,6 +75,7 @@ from epflemma_cli.workflow_state import (
     load_workflow_live_status,
     read_workflow_activity,
     read_workflow_run_log,
+    request_project_workflow_runner_exit,
     save_workflow_live_status,
     summarize_workflow_agents,
     terminate_project_workflow_agents,
@@ -146,6 +149,10 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
     mcp_status = mcp_sub.add_parser("status", help="Show MCP server status")
     mcp_status.add_argument("--json", action="store_true", dest="json_output")
+    mcp_bootstrap = mcp_sub.add_parser("bootstrap", help="Install or repair managed MCP backends")
+    mcp_bootstrap.add_argument("target", nargs="?", default="lean")
+    mcp_bootstrap.add_argument("--json", action="store_true", dest="json_output")
+    mcp_bootstrap.add_argument("--python", default=None)
 
     project_parser = subparsers.add_parser("project", help="Manage EPFLemma projects")
     project_sub = project_parser.add_subparsers(dest="project_command")
@@ -290,25 +297,60 @@ def _print_mcp_status(payload: Mapping[str, Any]) -> None:
         connected = "connected" if entry.get("connected") else "down"
         tools = int(entry.get("tools", 0) or 0)
         line = f"- {name}: {connected} ({transport}, {tools} tools)"
+        role = str(entry.get("role", "") or "").strip()
+        if role:
+            line += f", role={role}"
+        if entry.get("managed"):
+            line += ", managed"
+        if entry.get("configured") is False:
+            line += ", not configured"
+        if entry.get("installed") is False:
+            line += ", not installed"
         sampling = dict(entry.get("sampling", {}) or {})
         if sampling:
             line += (
                 f", sampling requests={int(sampling.get('requests', 0) or 0)}"
                 f", errors={int(sampling.get('errors', 0) or 0)}"
             )
+        if entry.get("bootstrap_recommended"):
+            line += ", bootstrap recommended"
         print(line)
+
+
+def _print_mcp_bootstrap(payload: Mapping[str, Any]) -> None:
+    if not payload.get("success"):
+        print("Managed MCP bootstrap failed.")
+        return
+    print("Managed Lean MCP bootstrap complete")
+    print(f"- home: {payload.get('home', '')}")
+    print(f"- config: {payload.get('config_path', '')}")
+    for entry in list(payload.get("servers", []) or []):
+        print(
+            f"- {entry.get('name', '[unknown]')}: "
+            f"{entry.get('role', '') or '[no role]'} -> {entry.get('command', '')}"
+        )
 
 
 def _handle_mcp(args: argparse.Namespace) -> int:
     command = getattr(args, "mcp_command", None) or "status"
-    if command != "status":
-        raise SystemExit("Unknown MCP command")
-    payload = _mcp_status_payload()
-    if getattr(args, "json_output", False):
-        _print_json(payload)
-    else:
-        _print_mcp_status(payload)
-    return 0
+    if command == "status":
+        payload = _mcp_status_payload()
+        if getattr(args, "json_output", False):
+            _print_json(payload)
+        else:
+            _print_mcp_status(payload)
+        return 0
+    if command == "bootstrap":
+        target = str(getattr(args, "target", "lean") or "lean").strip().lower()
+        if target != "lean":
+            raise SystemExit("Unknown MCP bootstrap target")
+        payload = bootstrap_lean_mcp(python_bin=getattr(args, "python", None))
+        if getattr(args, "json_output", False):
+            _print_json(payload)
+        else:
+            _print_mcp_bootstrap(payload)
+        return 0
+    raise SystemExit("Unknown MCP command")
 
 
 class InteractiveShell:
@@ -850,15 +892,26 @@ class InteractiveShell:
         args = parts[1:]
         json_output = "--json" in args
         subcmd = next((arg for arg in args if not arg.startswith("-")), "status")
-        if subcmd != "status":
-            self.console.print("[dim]Usage: /mcp status [--json][/]")
-            return 1
-        payload = _mcp_status_payload()
-        if json_output:
-            _print_json(payload)
-        else:
-            _print_mcp_status(payload)
-        return 0
+        if subcmd == "status":
+            payload = _mcp_status_payload()
+            if json_output:
+                _print_json(payload)
+            else:
+                _print_mcp_status(payload)
+            return 0
+        if subcmd == "bootstrap":
+            target = next((arg for arg in args if arg not in {"bootstrap", "--json"} and not arg.startswith("--")), "lean")
+            if target != "lean":
+                self.console.print("[dim]Usage: /mcp bootstrap lean [--json][/]")
+                return 1
+            payload = bootstrap_lean_mcp()
+            if json_output:
+                _print_json(payload)
+            else:
+                _print_mcp_bootstrap(payload)
+            return 0
+        self.console.print("[dim]Usage: /mcp status [--json] | /mcp bootstrap lean [--json][/]")
+        return 1
 
     def _run_workflow_command(self, raw: str) -> int:
         try:
@@ -871,44 +924,66 @@ class InteractiveShell:
             self.console.print(f"[bold red]{format_runtime_provider_error(exc)}[/]")
             return 1
 
+        existing = next(
+            (
+                agent for agent in self._workflow_agents(activity_limit=1)
+                if not str(agent.get("parent_agent_id", "") or "")
+                and str(agent.get("project_root", "") or "") == str(plan.project.root)
+                and str(agent.get("workflow_kind", "") or "") == str(plan.workflow.workflow_kind)
+                and str(agent.get("workflow_command", "") or "") == str(plan.workflow.backend_command)
+                and str(agent.get("status", "") or "") in {"active", "blocked", "paused", "queued"}
+            ),
+            None,
+        )
+        if existing:
+            self.console.print(
+                f"[dim]Workflow already running for {plan.project.root}: "
+                f"{existing.get('agent_id')} [{existing.get('status')}]. "
+                "Use `/status`, `/swarm`, or `/kill <agent-id>` instead of launching a duplicate.[/]"
+            )
+            return 0
+
         render_workflow_launch(self.console, launch_summary=describe_launch_plan(plan))
         current_status = self._workflow_status_payload()
-        save_workflow_live_status(
-            {
-                "version": int(current_status.get("version", 1) or 1),
-                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "phase": "busy",
-                "workflow_kind": str(plan.workflow.workflow_kind or "[none]"),
-                "workflow_command": str(plan.workflow.frontend_command or raw),
-                "project_root": str(plan.project.root),
-                "provider": str(plan.runtime.get("provider", "") or "[unknown]"),
-                "model": str(plan.runtime.get("model", "") or "[unknown]"),
-                "base_url": str(plan.runtime.get("base_url", "") or "[unknown]"),
-                "active_skill": str(plan.active_skill or current_status.get("active_skill", "") or "[none]"),
-                "parallel_agents": 1,
-                "active_file": str(current_status.get("active_file", "") or ""),
-                "active_file_label": str(current_status.get("active_file_label", "") or "[launching]"),
-                "target_symbol": str(current_status.get("target_symbol", "") or "[launching]"),
-                "diagnostics": str(current_status.get("diagnostics", "") or "Workflow launching..."),
-                "goals": str(current_status.get("goals", "") or "Workflow launching..."),
-                "build_status": "workflow launching",
-                "proof_state_message": "Workflow launching in background.",
-                "sorry_count": current_status.get("sorry_count"),
-                "project_sorry_count": current_status.get("project_sorry_count"),
-                "checkpoint_count": int(current_status.get("checkpoint_count", 0) or 0),
-                "latest_checkpoint_label": str(current_status.get("latest_checkpoint_label", "") or "[none]"),
-                "latest_filesystem_checkpoint": str(current_status.get("latest_filesystem_checkpoint", "") or "[none]"),
-                "last_compaction_reason": str(current_status.get("last_compaction_reason", "") or "[none]"),
-                "snapshot_present": bool(current_status.get("snapshot_present", False)),
-                "held_locks": int(current_status.get("held_locks", 0) or 0),
-            }
-        )
+        status_payload = {
+            "version": int(current_status.get("version", 1) or 1),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "phase": "busy",
+            "workflow_kind": str(plan.workflow.workflow_kind or "[none]"),
+            "workflow_command": str(plan.workflow.frontend_command or raw),
+            "project_root": str(plan.project.root),
+            "provider": str(plan.runtime.get("provider", "") or "[unknown]"),
+            "model": str(plan.runtime.get("model", "") or "[unknown]"),
+            "base_url": str(plan.runtime.get("base_url", "") or "[unknown]"),
+            "process_id": int(current_status.get("process_id", 0) or 0),
+            "active_skill": str(plan.active_skill or current_status.get("active_skill", "") or "[none]"),
+            "parallel_agents": 1,
+            "active_file": str(current_status.get("active_file", "") or ""),
+            "active_file_label": str(current_status.get("active_file_label", "") or "[launching]"),
+            "target_symbol": str(current_status.get("target_symbol", "") or "[launching]"),
+            "diagnostics": str(current_status.get("diagnostics", "") or "Workflow launching..."),
+            "goals": str(current_status.get("goals", "") or "Workflow launching..."),
+            "build_status": "workflow launching",
+            "proof_state_message": "Workflow launching in background.",
+            "sorry_count": current_status.get("sorry_count"),
+            "project_sorry_count": current_status.get("project_sorry_count"),
+            "checkpoint_count": int(current_status.get("checkpoint_count", 0) or 0),
+            "latest_checkpoint_label": str(current_status.get("latest_checkpoint_label", "") or "[none]"),
+            "latest_filesystem_checkpoint": str(current_status.get("latest_filesystem_checkpoint", "") or "[none]"),
+            "last_compaction_reason": str(current_status.get("last_compaction_reason", "") or "[none]"),
+            "snapshot_present": bool(current_status.get("snapshot_present", False)),
+            "held_locks": int(current_status.get("held_locks", 0) or 0),
+        }
+        save_workflow_live_status(status_payload)
         _, process = spawn_workflow(
             raw,
             active_cwd=self.cwd,
             active_skill=self.active_skill or None,
             interactive=False,
         )
+        status_payload["process_id"] = process.pid
+        status_payload["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        save_workflow_live_status(status_payload)
         self.console.print()
         self.console.print(
             f"[bold #5DB8F5]Workflow running in background[/] (pid {process.pid}). "
@@ -930,12 +1005,72 @@ class InteractiveShell:
             project_root = str(status.get("project_root", "") or "")
         if not project_root:
             return
+        graceful = request_project_workflow_runner_exit(project_root)
+        queued = [str(agent_id or "") for agent_id in graceful.get("queued", []) if str(agent_id or "")]
+        if queued:
+            deadline = time.monotonic() + 1.5
+            remaining = queued
+            while remaining and time.monotonic() < deadline:
+                unresolved: list[str] = []
+                for agent_id in remaining:
+                    detail = workflow_agent_detail(agent_id, activity_limit=1)
+                    status = str(detail.get("status", "") or "")
+                    try:
+                        process_id = int(detail.get("process_id", 0) or 0)
+                    except Exception:
+                        process_id = 0
+                    if status in {"exited", "stopped", "interrupted", "completed"}:
+                        continue
+                    if process_id <= 0:
+                        continue
+                    try:
+                        os.kill(process_id, 0)
+                    except ProcessLookupError:
+                        continue
+                    except Exception:
+                        pass
+                    unresolved.append(agent_id)
+                remaining = unresolved
+                if remaining:
+                    time.sleep(0.1)
+            if not remaining:
+                self.console.print(
+                    f"[dim]Requested clean exit for {len(queued)} workflow runner(s) in {project_root} before exiting the shell.[/]"
+                )
+                return
+
         result = terminate_project_workflow_agents(project_root)
         count = int(result.get("count", 0) or 0)
         if count:
             self.console.print(
                 f"[dim]Interrupted {count} workflow agent(s) for {project_root} before exiting the shell.[/]"
             )
+            return
+
+        status = self._workflow_status_payload()
+        status_root = str(status.get("project_root", "") or "")
+        if project_root and status_root and status_root != project_root:
+            return
+        if str(status.get("phase", "") or "") == "exited":
+            return
+        try:
+            process_id = int(status.get("process_id", 0) or 0)
+        except Exception:
+            process_id = 0
+        if process_id <= 0 or process_id == os.getpid():
+            return
+        try:
+            os.killpg(process_id, signal.SIGINT)
+        except Exception:
+            try:
+                os.kill(process_id, signal.SIGINT)
+            except ProcessLookupError:
+                return
+            except Exception:
+                return
+        self.console.print(
+            f"[dim]Interrupted background workflow runner (pid {process_id}) for {project_root} before exiting the shell.[/]"
+        )
 
     def _handle_command(self, raw: str) -> bool:
         stripped = raw.strip()

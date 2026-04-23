@@ -18,6 +18,11 @@ _LEAN_TOOLS = [
     "lean_search",
     "lean_sorries",
     "lean_axioms",
+    "lean_proof_context",
+    "lean_multi_attempt",
+    "lean_auto_probe",
+    "lean_auto_search",
+    "lean_auto_try",
     "lean_worker_dispatch",
 ]
 

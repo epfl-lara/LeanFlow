@@ -22,6 +22,7 @@ from unittest.mock import patch, MagicMock
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
+    UNKNOWN_CONTEXT_LENGTH_FALLBACK,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
     get_model_context_length,
@@ -30,6 +31,7 @@ from agent.model_metadata import (
     parse_context_limit_from_error,
     save_context_length,
     fetch_model_metadata,
+    fetch_provider_model_metadata,
     _MODEL_CACHE_TTL,
 )
 
@@ -146,9 +148,11 @@ class TestGetModelContextLength:
         assert get_model_context_length("anthropic/claude-sonnet-4") == 200000
 
     @patch("agent.model_metadata.fetch_model_metadata")
-    def test_unknown_model_returns_first_probe_tier(self, mock_fetch):
+    @patch("agent.model_metadata.fetch_provider_model_metadata")
+    def test_unknown_model_returns_conservative_default(self, mock_provider_fetch, mock_fetch):
+        mock_provider_fetch.return_value = {}
         mock_fetch.return_value = {}
-        assert get_model_context_length("unknown/never-heard-of-this") == CONTEXT_PROBE_TIERS[0]
+        assert get_model_context_length("unknown/never-heard-of-this") == UNKNOWN_CONTEXT_LENGTH_FALLBACK
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_partial_match_in_defaults(self, mock_fetch):
@@ -156,10 +160,15 @@ class TestGetModelContextLength:
         assert get_model_context_length("openai/gpt-4o") == 128000
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    def test_case_insensitive_glm_default_match(self, mock_fetch):
+        mock_fetch.return_value = {}
+        assert get_model_context_length("zai-org/GLM-5.1") == 200000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_api_missing_context_length_key(self, mock_fetch):
-        """Model in API but without context_length → defaults to 128000."""
+        """Model in API but without context_length falls through to later tiers."""
         mock_fetch.return_value = {"test/model": {"name": "Test"}}
-        assert get_model_context_length("test/model") == 128000
+        assert get_model_context_length("test/model") == UNKNOWN_CONTEXT_LENGTH_FALLBACK
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_cache_takes_priority_over_api(self, mock_fetch, tmp_path):
@@ -178,9 +187,31 @@ class TestGetModelContextLength:
         cache_file = tmp_path / "cache.yaml"
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length("custom/model", "http://local", 32768)
-            # No base_url → cache skipped → falls to probe tier
+            # No base_url → cache skipped → falls to conservative unknown default
             result = get_model_context_length("custom/model")
-            assert result == CONTEXT_PROBE_TIERS[0]
+            assert result == UNKNOWN_CONTEXT_LENGTH_FALLBACK
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_provider_model_metadata")
+    def test_provider_metadata_takes_priority_over_openrouter(self, mock_provider_fetch, mock_fetch):
+        mock_provider_fetch.return_value = {
+            "test/model": {"context_length": 64000}
+        }
+        mock_fetch.return_value = {
+            "test/model": {"context_length": 128000}
+        }
+        assert get_model_context_length("test/model", base_url="http://local", api_key="secret") == 64000
+        mock_provider_fetch.assert_called_once_with("http://local", api_key="secret")
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_provider_model_metadata")
+    def test_provider_metadata_missing_context_length_falls_back_to_defaults(self, mock_provider_fetch, mock_fetch):
+        mock_provider_fetch.return_value = {
+            "zai-org/GLM-5.1": {"name": "GLM-5.1"}
+        }
+        mock_fetch.return_value = {}
+
+        assert get_model_context_length("zai-org/GLM-5.1", base_url="http://local", api_key="secret") == 200000
 
 
 # =========================================================================
@@ -217,6 +248,37 @@ class TestFetchModelMetadata:
         mock_get.side_effect = Exception("Network error")
         result = fetch_model_metadata(force_refresh=True)
         assert result == {}
+
+
+class TestFetchProviderModelMetadata:
+    def _reset_cache(self):
+        import agent.model_metadata as mm
+        mm._provider_model_metadata_cache = {}
+        mm._provider_model_metadata_cache_time = {}
+
+    @patch("agent.model_metadata.requests.get")
+    def test_fetches_provider_model_metadata_and_parses_context_length(self, mock_get):
+        self._reset_cache()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [{"id": "zai-org/GLM-5.1", "context_length": 200000}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        result = fetch_provider_model_metadata("https://provider.example/v1", api_key="secret", force_refresh=True)
+
+        assert result["zai-org/GLM-5.1"]["context_length"] == 200000
+        assert result["zai-org/glm-5.1"]["context_length"] == 200000
+        mock_get.assert_called_once()
+        _, kwargs = mock_get.call_args
+        assert kwargs["headers"]["Authorization"] == "Bearer secret"
+
+    @patch("agent.model_metadata.requests.get")
+    def test_provider_metadata_failure_returns_empty(self, mock_get):
+        self._reset_cache()
+        mock_get.side_effect = Exception("Network error")
+        assert fetch_provider_model_metadata("https://provider.example/v1", force_refresh=True) == {}
 
     @patch("agent.model_metadata.requests.get")
     def test_api_failure_returns_stale_cache(self, mock_get):

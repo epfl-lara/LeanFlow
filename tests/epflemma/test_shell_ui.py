@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from epflemma_cli.banner import render_help
+from epflemma_cli.banner import render_help, render_workflow_status_panel
 from epflemma_cli.main import InteractiveShell, main
 from epflemma_cli.workflow_state import append_workflow_activity, append_workflow_run_log, load_workflow_live_status, reset_workflow_run_log, save_workflow_live_status
 from epflemma_cli.runtime_provider import list_runtime_provider_targets
@@ -21,6 +21,39 @@ def test_render_help_mentions_forgiving_workflow_commands():
     assert "/skills" in output
     assert "prove Main.lean" in output
     assert "/workflow log 120" in output
+
+
+def test_render_workflow_status_panel_marks_stale_dead_snapshot():
+    console = Console(record=True, width=120)
+
+    render_workflow_status_panel(
+        console,
+        status={
+            "phase": "dead",
+            "workflow_kind": "prove",
+            "workflow_command": "/prove Main.lean",
+            "project_root": "/tmp/project",
+            "provider": "custom",
+            "model": "zai-org/GLM-5.1",
+            "active_skill": "lean-theorem-queue-worker",
+            "parallel_agents": 1,
+            "active_file_label": "Main.lean",
+            "target_symbol": "demo",
+            "build_status": "unknown",
+            "project_sorry_count": 1,
+            "latest_checkpoint_label": "[none]",
+            "held_locks": 0,
+            "updated_at": "2026-04-22T14:33:57+00:00",
+            "stale_snapshot": True,
+            "stale_process_id": 8111,
+        },
+        activities=[],
+    )
+
+    output = console.export_text()
+    assert "dead (stale snapshot)" in output
+    assert "Stale PID" in output
+    assert "8111" in output
 
 
 def test_list_runtime_provider_targets_includes_local_and_zai():
@@ -61,6 +94,41 @@ def test_interactive_mcp_status_prints_sampling_metrics(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "lean-lsp" in output
     assert "sampling requests=2" in output
+
+
+def test_main_mcp_bootstrap_json(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "epflemma_cli.main.bootstrap_lean_mcp",
+        lambda python_bin=None: {
+            "success": True,
+            "home": "/tmp/home",
+            "config_path": "/tmp/home/config.yaml",
+            "servers": [{"name": "lean-lsp", "role": "primary-state-search", "command": "/tmp/lean-lsp-mcp"}],
+        },
+    )
+
+    assert main(["mcp", "bootstrap", "lean", "--json"]) == 0
+    output = capsys.readouterr().out
+    assert "\"success\": true" in output.lower()
+    assert "\"name\": \"lean-lsp\"" in output
+
+
+def test_interactive_mcp_bootstrap_prints_summary(monkeypatch, capsys):
+    shell = InteractiveShell()
+    monkeypatch.setattr(
+        "epflemma_cli.main.bootstrap_lean_mcp",
+        lambda: {
+            "success": True,
+            "home": "/tmp/home",
+            "config_path": "/tmp/home/config.yaml",
+            "servers": [{"name": "lean-proof-auto", "role": "secondary-automation-context", "command": "/tmp/lean-proof-auto-mcp"}],
+        },
+    )
+
+    assert shell._run_mcp_command("/mcp bootstrap lean") == 0
+    output = capsys.readouterr().out
+    assert "Managed Lean MCP bootstrap complete" in output
+    assert "lean-proof-auto" in output
 
 
 def test_describe_launch_plan_formats_provider_and_model(tmp_path):
@@ -168,6 +236,7 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
 
     monkeypatch.setattr("epflemma_cli.main.resolve_workflow_request", lambda *args, **kwargs: fake_plan)
     monkeypatch.setattr("epflemma_cli.main.describe_launch_plan", lambda plan: {"workflow": "prove", "command": "/prove Main.lean", "project": "Demo", "project_root": str(tmp_path), "provider": "custom", "base_url": "https://inference.rcp.epfl.ch/v1", "model": "zai-org/GLM-5.1", "skill": "lean-proof-loop", "agents": "1"})
+    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
 
     class _FakeProcess:
         pid = 43210
@@ -182,6 +251,50 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
     payload = load_workflow_live_status()
     assert payload["phase"] == "busy"
     assert payload["build_status"] == "workflow launching"
+    assert payload["process_id"] == 43210
+
+
+def test_interactive_workflow_launch_reuses_existing_matching_runner(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    shell = InteractiveShell()
+    shell.cwd = tmp_path
+
+    fake_plan = NativeLaunchPlan(
+        project=type("Project", (), {"label": "Demo", "root": tmp_path})(),
+        workflow=NativeWorkflowSpec(
+            workflow_kind="prove",
+            frontend_command="/prove",
+            canonical_command="/prove",
+            backend_command="/prove Main.lean",
+            workflow_args="Main.lean",
+        ),
+        runtime={"provider": "custom", "model": "zai-org/GLM-5.1", "base_url": "https://inference.rcp.epfl.ch/v1"},
+        child_env={},
+        argv=["python", "-m", "epflemma_cli.native_runner"],
+        active_skill="lean-proof-loop",
+        toolset_name="epflemma-native",
+    )
+
+    monkeypatch.setattr("epflemma_cli.main.resolve_workflow_request", lambda *args, **kwargs: fake_plan)
+    monkeypatch.setattr(
+        shell,
+        "_workflow_agents",
+        lambda activity_limit=1: [
+            {
+                "agent_id": "12345",
+                "parent_agent_id": "",
+                "project_root": str(tmp_path),
+                "workflow_kind": "prove",
+                "workflow_command": "/prove Main.lean",
+                "status": "paused",
+            }
+        ],
+    )
+    monkeypatch.setattr("epflemma_cli.main.spawn_workflow", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not spawn duplicate workflow")))
+
+    assert shell._run_workflow_command("/prove Main.lean") == 0
+    output = capsys.readouterr().out
+    assert "Workflow already running" in output
 
 
 def test_interactive_project_init_reports_already_initialized(monkeypatch, tmp_path, capsys):
@@ -282,6 +395,83 @@ def test_shell_exit_interrupts_current_project_workflows(monkeypatch, tmp_path, 
     output = capsys.readouterr().out
     assert "Interrupted 1 workflow agent(s)" in output
     assert "Demo before exiting the shell" in output
+
+
+def test_shell_exit_requests_clean_runner_exit_before_escalating(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    root = tmp_path / "Demo"
+    root.mkdir()
+    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+    (root / ".epflemma").mkdir()
+    (root / ".epflemma" / "project.yaml").write_text(
+        "schema_version: 1\nname: Demo\nkind: lean4\nlean_root: .\ncreated_at: now\npaths:\n  runtime: .epflemma/runtime\n  cache: .epflemma/cache\n  workflows: .epflemma/workflows\nsource:\n  mode: init\n  template_source: ''\nblueprint:\n  markers: []\n",
+        encoding="utf-8",
+    )
+    (root / ".epflemma" / "runtime").mkdir()
+    (root / ".epflemma" / "cache").mkdir()
+    (root / ".epflemma" / "workflows").mkdir()
+
+    shell = InteractiveShell()
+    shell.cwd = root
+    seen: list[str] = []
+
+    monkeypatch.setattr(
+        "epflemma_cli.main.request_project_workflow_runner_exit",
+        lambda project_root: {"success": True, "count": 1, "queued": ["12345"], "failed": []},
+    )
+    monkeypatch.setattr(
+        "epflemma_cli.main.workflow_agent_detail",
+        lambda agent_id, activity_limit=1: {"agent_id": agent_id, "status": "exited", "process_id": 0},
+    )
+    monkeypatch.setattr(
+        "epflemma_cli.main.terminate_project_workflow_agents",
+        lambda project_root: seen.append(project_root) or {"success": True, "count": 1, "terminated": ["12345"], "failed": []},
+    )
+
+    assert shell._handle_command("/exit") is False
+    output = capsys.readouterr().out
+    assert not seen
+    assert "Requested clean exit for 1 workflow runner(s)" in output
+
+
+def test_shell_exit_interrupts_live_runner_when_no_registered_agents(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    root = tmp_path / "Demo"
+    root.mkdir()
+    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+    (root / ".epflemma").mkdir()
+    (root / ".epflemma" / "project.yaml").write_text(
+        "schema_version: 1\nname: Demo\nkind: lean4\nlean_root: .\ncreated_at: now\npaths:\n  runtime: .epflemma/runtime\n  cache: .epflemma/cache\n  workflows: .epflemma/workflows\nsource:\n  mode: init\n  template_source: ''\nblueprint:\n  markers: []\n",
+        encoding="utf-8",
+    )
+    (root / ".epflemma" / "runtime").mkdir()
+    (root / ".epflemma" / "cache").mkdir()
+    (root / ".epflemma" / "workflows").mkdir()
+
+    shell = InteractiveShell()
+    shell.cwd = root
+    signalled: list[tuple[str, int, int]] = []
+
+    monkeypatch.setattr(
+        "epflemma_cli.main.terminate_project_workflow_agents",
+        lambda project_root: {"success": True, "count": 0, "terminated": [], "failed": []},
+    )
+    monkeypatch.setattr(
+        shell,
+        "_workflow_status_payload",
+        lambda: {"project_root": str(root), "phase": "paused", "process_id": 24680},
+    )
+    monkeypatch.setattr(
+        "epflemma_cli.main.os.killpg",
+        lambda process_id, sig: signalled.append(("killpg", process_id, int(sig))),
+    )
+
+    assert shell._handle_command("/exit") is False
+    output = capsys.readouterr().out
+    assert signalled == [("killpg", 24680, 2)]
+    assert "Interrupted background workflow runner (pid 24680)" in output
 
 
 def test_swarm_agent_view_renders_transcript_not_status_panel(monkeypatch, tmp_path, capsys):

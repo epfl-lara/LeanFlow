@@ -61,6 +61,7 @@ def _build_provider_env_blocklist() -> frozenset:
 
     # Vars not covered above but still Gauss-internal / conflict-prone.
     blocked.update({
+        "TELEGRAM_BOT_TOKEN",
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
         "OPENAI_API_BASE",         # legacy alias
@@ -96,6 +97,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "WHATSAPP_ENABLED",
         "WHATSAPP_MODE",
         "WHATSAPP_ALLOWED_USERS",
+        "SLACK_APP_TOKEN",
         "SIGNAL_HTTP_URL",
         "SIGNAL_ACCOUNT",
         "SIGNAL_ALLOWED_USERS",
@@ -111,7 +113,12 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_SMTP_HOST",
         "EMAIL_HOME_ADDRESS",
         "EMAIL_HOME_ADDRESS_NAME",
+        "FIRECRAWL_API_KEY",
+        "BROWSERBASE_PROJECT_ID",
+        "ELEVENLABS_API_KEY",
+        "GITHUB_TOKEN",
         "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
         # Skills Hub / GitHub app auth paths and aliases.
         "GH_TOKEN",
         "GITHUB_APP_ID",

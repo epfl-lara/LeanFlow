@@ -959,19 +959,19 @@ class TestDiskFailureMarker:
 
 class TestGaussHomeIsolation:
     def test_gauss_bin_dir_respects_gauss_home(self):
-        """_gauss_bin_dir must use GAUSS_HOME, not hardcoded ~/.gauss."""
+        """Legacy GAUSS_HOME should still work when EPFLEMMA_HOME is unset."""
         from tools.tirith_security import _gauss_bin_dir
         import tempfile
         tmpdir = tempfile.mkdtemp()
-        with patch.dict(os.environ, {"GAUSS_HOME": tmpdir}):
+        with patch.dict(os.environ, {"GAUSS_HOME": tmpdir}, clear=True):
             result = _gauss_bin_dir()
         assert result == os.path.join(tmpdir, "bin")
         assert os.path.isdir(result)
 
     def test_failure_marker_respects_gauss_home(self):
-        """_failure_marker_path must use GAUSS_HOME, not hardcoded ~/.gauss."""
+        """Legacy GAUSS_HOME should still work when EPFLEMMA_HOME is unset."""
         from tools.tirith_security import _failure_marker_path
-        with patch.dict(os.environ, {"GAUSS_HOME": "/custom/gauss"}):
+        with patch.dict(os.environ, {"GAUSS_HOME": "/custom/gauss"}, clear=True):
             result = _failure_marker_path()
         assert result == "/custom/gauss/.tirith-install-failed"
 
@@ -982,10 +982,10 @@ class TestGaussHomeIsolation:
         assert "gauss_test" in gauss_home, "Should point to test temp dir"
 
     def test_get_gauss_home_fallback(self):
-        """Without GAUSS_HOME set, falls back to ~/.gauss."""
+        """Without explicit homes set, falls back to ~/.epflemma."""
         from tools.tirith_security import _get_gauss_home
         with patch.dict(os.environ, {}, clear=True):
             # Remove GAUSS_HOME entirely
             os.environ.pop("GAUSS_HOME", None)
             result = _get_gauss_home()
-        assert result == os.path.join(os.path.expanduser("~"), ".gauss")
+        assert result == os.path.join(os.path.expanduser("~"), ".epflemma")

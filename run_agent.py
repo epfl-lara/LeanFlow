@@ -619,6 +619,7 @@ class AIAgent:
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
         self.base_url = base_url or OPENROUTER_BASE_URL
+        self.api_key = api_key.strip() if isinstance(api_key, str) else (api_key or "")
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
         self.provider = provider_name or "openrouter"
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
@@ -792,6 +793,9 @@ class AIAgent:
             effective_key = api_key or resolve_anthropic_token() or ""
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url
+            self.api_key = effective_key
+            if isinstance(base_url, str) and base_url.strip():
+                self.base_url = base_url.strip().rstrip("/")
             self._anthropic_client = build_anthropic_client(effective_key, base_url)
             # No OpenAI client needed for Anthropic mode
             self.client = None
@@ -840,8 +844,10 @@ class AIAgent:
                             "X-OpenRouter-Categories": "productivity,cli-agent",
                         },
                     }
-            
+
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+            self.api_key = str(client_kwargs.get("api_key") or "")
+            self.base_url = str(client_kwargs.get("base_url") or self.base_url).rstrip("/")
             try:
                 self.client = self._create_openai_client(client_kwargs, reason="agent_init", shared=True)
                 if not self.quiet_mode:
@@ -1045,6 +1051,7 @@ class AIAgent:
             summary_model_override=compression_summary_model,
             quiet_mode=self.quiet_mode,
             base_url=self.base_url,
+            api_key=self.api_key,
             reserved_output_tokens=compression_reserved_output,
             prune_tool_output=compression_prune_tool_output,
             prune_keep_recent_user_turns=compression_prune_keep_recent_user_turns,

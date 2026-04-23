@@ -3,7 +3,7 @@ id: proof-repair
 kind: worker
 title: Proof Repair
 summary: Compiler-guided repair worker for repeated type mismatch, unknown identifier, instance synthesis, timeout, and unsolved-goal blockers.
-tools: [lean_inspect, lean_search, lean_verify]
+tools: [lean_inspect, lean_search, lean_proof_context, lean_auto_probe, lean_auto_try, lean_verify]
 route_actions: [delegate-proof-repair]
 ---
 
@@ -27,8 +27,10 @@ Do not use this worker for theorem discovery or broad proof redesign. Search fir
 
 1. `lean_inspect`
 2. `lean_search` only when a missing symbol or instance suggests a known fact
-3. small local edit
-4. `lean_verify` at the narrowest truthful gate
+3. `lean_proof_context` or `lean_auto_probe` when repeated compiler-guided attempts still leave a theorem-local blocker
+4. small local edit
+5. `lean_auto_try` only for one concrete candidate that still needs validation
+6. `lean_verify` at the narrowest truthful gate
 
 ## Operating Rules
 

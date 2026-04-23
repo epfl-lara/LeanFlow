@@ -359,10 +359,14 @@ def render_workflow_launch(console: Console, *, launch_summary: dict[str, str]) 
 def render_workflow_status_panel(console: Console, *, status: dict[str, object], activities: list[dict[str, object]] | None = None) -> None:
     workflow_name = str(status.get("workflow_kind", "[none]") or "[none]")
     workflow_name = WORKFLOW_DISPLAY_NAMES.get(workflow_name, workflow_name)
+    phase = str(status.get("phase", "[none]") or "[none]")
+    stale_snapshot = bool(status.get("stale_snapshot"))
+    if stale_snapshot and phase == "dead":
+        phase = "dead (stale snapshot)"
     table = Table.grid(padding=(0, 1))
     table.add_column(style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
     table.add_column(style=BRAND_COLORS["text"])
-    table.add_row("Phase", str(status.get("phase", "[none]")))
+    table.add_row("Phase", phase)
     table.add_row("Workflow", workflow_name)
     table.add_row("Command", str(status.get("workflow_command", "[none]")))
     table.add_row("Project", str(status.get("project_root", "[none]")))
@@ -376,6 +380,8 @@ def render_workflow_status_panel(console: Console, *, status: dict[str, object],
     table.add_row("Project sorries", str(status.get("project_sorry_count", "[unknown]")))
     table.add_row("Checkpoint", str(status.get("latest_checkpoint_label", "[none]")))
     table.add_row("Locks", str(status.get("held_locks", 0)))
+    if stale_snapshot:
+        table.add_row("Stale PID", str(status.get("stale_process_id", "[unknown]")))
     table.add_row("Updated", str(status.get("updated_at", "[unknown]")))
     console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]Managed Workflow Status[/]", subtitle="[dim]live Lean runner state[/]", border_style=BRAND_COLORS["panel"], box=box.SQUARE))
 

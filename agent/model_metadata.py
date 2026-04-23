@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
+_provider_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
+_provider_model_metadata_cache_time: Dict[str, float] = {}
 _MODEL_CACHE_TTL = 3600
+UNKNOWN_CONTEXT_LENGTH_FALLBACK = 200_000
 
 # Descending tiers for context length probing when the model is unknown.
 # We start high and step down on context-length errors until one works.
@@ -60,6 +63,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "qwen/qwen-2.5-72b-instruct": 32768,
     "glm-4.7": 202752,
     "glm-5": 202752,
+    "glm-5.1": 200000,
+    "zai-org/glm-5.1": 200000,
     "glm-4.5": 131072,
     "glm-4.5-flash": 131072,
     "kimi-for-coding": 262144,
@@ -107,6 +112,105 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
     except Exception as e:
         logging.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
         return _model_metadata_cache or {}
+
+
+def _normalize_model_name(model: str) -> str:
+    return str(model or "").strip().lower()
+
+
+def _extract_context_length_from_entry(entry: Dict[str, Any] | None) -> Optional[int]:
+    if not isinstance(entry, dict):
+        return None
+    candidates = [entry]
+    for key in ("metadata", "capabilities", "top_provider"):
+        nested = entry.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    for candidate in candidates:
+        for key in (
+            "context_length",
+            "max_context_length",
+            "input_token_limit",
+            "max_input_tokens",
+            "max_model_len",
+            "n_ctx",
+            "context_window",
+        ):
+            value = candidate.get(key)
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                return parsed
+    return None
+
+
+def _lookup_metadata_context_length(
+    metadata: Dict[str, Dict[str, Any]],
+    model: str,
+) -> tuple[bool, Optional[int]]:
+    if not metadata:
+        return False, None
+    normalized_model = _normalize_model_name(model)
+    if model in metadata:
+        return True, _extract_context_length_from_entry(metadata.get(model))
+    for key, value in metadata.items():
+        if _normalize_model_name(key) == normalized_model:
+            return True, _extract_context_length_from_entry(value)
+    return False, None
+
+
+def fetch_provider_model_metadata(
+    base_url: str,
+    api_key: str = "",
+    force_refresh: bool = False,
+) -> Dict[str, Dict[str, Any]]:
+    normalized_base_url = str(base_url or "").strip().rstrip("/")
+    if not normalized_base_url:
+        return {}
+
+    cached = _provider_model_metadata_cache.get(normalized_base_url, {})
+    cached_time = float(_provider_model_metadata_cache_time.get(normalized_base_url, 0) or 0)
+    if not force_refresh and cached and (time.time() - cached_time) < _MODEL_CACHE_TTL:
+        return cached
+
+    url = f"{normalized_base_url}/models"
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        response = requests.get(url, headers=headers or None, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        models = data.get("data")
+        if not isinstance(models, list):
+            models = data.get("models")
+        if not isinstance(models, list):
+            models = []
+
+        cache: Dict[str, Dict[str, Any]] = {}
+        for entry in models:
+            if not isinstance(entry, dict):
+                continue
+            model_id = str(entry.get("id", "") or entry.get("model", "") or entry.get("name", "") or "").strip()
+            if not model_id:
+                continue
+            context_length = _extract_context_length_from_entry(entry)
+            payload = {"context_length": context_length} if context_length else dict(entry)
+            cache[model_id] = payload
+            normalized = _normalize_model_name(model_id)
+            if normalized and normalized != model_id:
+                cache.setdefault(normalized, payload)
+
+        _provider_model_metadata_cache[normalized_base_url] = cache
+        _provider_model_metadata_cache_time[normalized_base_url] = time.time()
+        return cache
+    except Exception as e:
+        logger.debug("Failed to fetch provider model metadata from %s: %s", url, e)
+        return cached or {}
 
 
 def _get_context_cache_path() -> Path:
@@ -193,14 +297,15 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     return None
 
 
-def get_model_context_length(model: str, base_url: str = "") -> int:
+def get_model_context_length(model: str, base_url: str = "", api_key: str = "") -> int:
     """Get the context length for a model.
 
     Resolution order:
     1. Persistent cache (previously discovered via probing)
-    2. OpenRouter API metadata
-    3. Hardcoded DEFAULT_CONTEXT_LENGTHS (fuzzy match)
-    4. First probe tier (2M) — will be narrowed on first context error
+    2. Provider /models metadata (when base_url is set)
+    3. OpenRouter API metadata
+    4. Hardcoded DEFAULT_CONTEXT_LENGTHS (case-insensitive exact/fuzzy match)
+    5. Conservative unknown-model fallback (200k)
     """
     # 1. Check persistent cache (model+provider)
     if base_url:
@@ -208,18 +313,31 @@ def get_model_context_length(model: str, base_url: str = "") -> int:
         if cached is not None:
             return cached
 
-    # 2. OpenRouter API metadata
-    metadata = fetch_model_metadata()
-    if model in metadata:
-        return metadata[model].get("context_length", 128000)
+    # 2. Provider /models metadata for the active route
+    if base_url:
+        provider_metadata = fetch_provider_model_metadata(base_url, api_key=api_key)
+        matched, provider_length = _lookup_metadata_context_length(provider_metadata, model)
+        if matched and provider_length is not None:
+            return provider_length
 
-    # 3. Hardcoded defaults (fuzzy match)
+    # 3. OpenRouter API metadata
+    metadata = fetch_model_metadata()
+    matched, metadata_length = _lookup_metadata_context_length(metadata, model)
+    if matched and metadata_length is not None:
+        return metadata_length
+
+    # 4. Hardcoded defaults (case-insensitive exact match first, then fuzzy match)
+    normalized_model = _normalize_model_name(model)
     for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
-        if default_model in model or model in default_model:
+        if _normalize_model_name(default_model) == normalized_model:
+            return length
+    for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
+        normalized_default = _normalize_model_name(default_model)
+        if normalized_default in normalized_model or normalized_model in normalized_default:
             return length
 
-    # 4. Unknown model — start at highest probe tier
-    return CONTEXT_PROBE_TIERS[0]
+    # 5. Unknown model — be conservative rather than optimistic
+    return UNKNOWN_CONTEXT_LENGTH_FALLBACK
 
 
 def estimate_tokens_rough(text: str) -> int:

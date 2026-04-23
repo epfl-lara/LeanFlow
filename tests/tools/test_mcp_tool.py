@@ -465,8 +465,8 @@ class TestMCPServerTask:
 # ---------------------------------------------------------------------------
 
 class TestToolsetInjection:
-    def test_mcp_tools_added_to_all_gauss_toolsets(self):
-        """Discovered MCP tools are dynamically injected into all gauss-* toolsets."""
+    def test_mcp_tools_are_not_injected_into_native_toolsets(self):
+        """Discovered MCP tools stay in mcp-{server} toolsets and do not leak into native toolsets."""
         from tools.mcp_tool import MCPServerTask
 
         mock_tools = [_make_mcp_tool("list_files", "List files")]
@@ -497,13 +497,10 @@ class TestToolsetInjection:
             result = discover_mcp_tools()
 
         assert "mcp_fs_list_files" in result
-        # All gauss-* toolsets get injection
-        assert "mcp_fs_list_files" in fake_toolsets["gauss-cli"]["tools"]
-        assert "mcp_fs_list_files" in fake_toolsets["gauss-telegram"]["tools"]
-        assert "mcp_fs_list_files" in fake_toolsets["gauss-gateway"]["tools"]
-        # Non-gauss toolset should NOT get injection
+        assert "mcp_fs_list_files" not in fake_toolsets["gauss-cli"]["tools"]
+        assert "mcp_fs_list_files" not in fake_toolsets["gauss-telegram"]["tools"]
+        assert "mcp_fs_list_files" not in fake_toolsets["gauss-gateway"]["tools"]
         assert "mcp_fs_list_files" not in fake_toolsets["non-gauss"]["tools"]
-        # Original tools preserved
         assert "terminal" in fake_toolsets["gauss-cli"]["tools"]
 
     def test_server_connection_failure_skipped(self):
