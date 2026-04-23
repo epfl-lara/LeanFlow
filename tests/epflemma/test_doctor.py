@@ -50,6 +50,40 @@ def test_run_doctor_supports_mcp_mode(monkeypatch, tmp_path):
     assert payload["mcp_status"][0]["name"] == "lean-lsp"
 
 
+def test_run_doctor_mcp_mode_surfaces_bootstrap_recommendation(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "epflemma_cli.doctor.resolve_runtime_provider",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://example.test/v1",
+            "api_mode": "chat",
+            "model": "demo-model",
+        },
+    )
+    monkeypatch.setattr(
+        "epflemma_cli.doctor.get_mcp_status",
+        lambda: [
+            {
+                "name": "lean-proof-auto",
+                "transport": "stdio",
+                "tools": 0,
+                "connected": False,
+                "role": "secondary-automation-context",
+                "managed": True,
+                "installed": False,
+                "configured": False,
+                "bootstrap_recommended": True,
+            }
+        ],
+    )
+
+    issues, payload = run_doctor(tmp_path, mode="mcp", json_output=True)
+
+    assert payload["mcp_status"][0]["bootstrap_recommended"] is True
+    assert any("bootstrap recommended" in issue.lower() for issue in issues)
+
+
 def test_run_doctor_supported_modes_cover_readme_surface():
     # README advertises these modes; keeping the set in sync prevents silent drift.
     assert DOCTOR_MODES == {"all", "env", "mcp", "search", "migrate", "cleanup"}

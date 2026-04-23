@@ -16,9 +16,10 @@ Primary specs:
 1. `lean_capabilities`
 2. `lean_inspect`
 3. `lean_search`
-4. draft the declaration or helper lemma
-5. `lean_verify`
-6. `lean_worker_dispatch` when the router recommends `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
+4. `lean_proof_context`, `lean_auto_probe`, `lean_auto_search`, or `lean_auto_try` only when a drafted declaration is blocked and theorem-local automation is justified
+5. draft the declaration or helper lemma
+6. `lean_verify`
+7. `lean_worker_dispatch` when the router recommends `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
 
 ## Guardrails
 

@@ -300,6 +300,7 @@ Check the install:
 epflemma --help
 epflemma doctor
 epflemma doctor env --json
+epflemma mcp bootstrap lean
 epflemma mcp status --json
 epflemma config show
 ```
@@ -320,6 +321,12 @@ epflemma workflow prove Main.lean --agents 3
 epflemma workflow prove Main.lean --no-parallel
 epflemma workflow formalize "Define the object and prove the first lemma"
 ```
+
+## Workflow Example Projects
+
+The repo also carries opt-in Lean workflow projects under `testdata/workflow_projects/`.
+
+These are for manual workflow runs and future targeted integration coverage, not for the default pytest or CI path. The current example project is `testdata/workflow_projects/GaussTest`, a small mathlib-based repo with `sorry` targets and extra text examples for proving/formalization workflows.
 
 Interactive mode:
 
@@ -354,6 +361,7 @@ Inside the shell:
 /formalize "state the theorem"
 /doctor
 /doctor search --json
+/mcp bootstrap lean
 /mcp status
 /mcp status --json
 /config get model.default
@@ -448,6 +456,17 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
 - `lean_search`
   - search in `auto`, `local`, `semantic`, `type-pattern`, or `natural-language` mode
   - prefers MCP/LSP-backed providers first and falls back to local `rg`/Mathlib search with explicit provider provenance and degraded reasons
+- `lean_proof_context`
+  - theorem-context retrieval from the managed automation backend: theorem statement, original proof text, hypotheses, in-scope names, namespace, and similar proofs
+  - this is not a replacement for `lean_inspect` goals
+- `lean_multi_attempt`
+  - screen 2-6 concrete tactic candidates at one proof location through the MCP backend
+- `lean_auto_probe`
+  - probe theorem-local automation methods such as `aesop`, `aesop?`, and `grind`
+- `lean_auto_search`
+  - ask the managed automation backend for one theorem-local automated proof candidate after context/probe data exists
+- `lean_auto_try`
+  - validate one concrete automated proof candidate before patching it into the file
 - `lean_sorries`
   - list remaining `sorry` findings across a project or a single file with declaration names and line numbers
 - `lean_axioms`
@@ -862,7 +881,7 @@ There are now three important internal workflow surfaces:
 
 - `lean`
   - shared typed Lean capability surface
-  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_search`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
+  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_probe`, `lean_auto_search`, `lean_auto_try`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
 
 - `epflemma-native`
   - default single-agent Lean workflow runtime
@@ -976,6 +995,7 @@ epflemma doctor
 epflemma doctor env
 epflemma doctor mcp --json
 epflemma doctor search --json
+epflemma mcp bootstrap lean
 epflemma mcp status
 epflemma mcp status --json
 ```
@@ -1004,7 +1024,26 @@ Supported doctor modes:
 - available native workers
 - degraded-mode reasons
 
-`epflemma mcp status` shows configured MCP servers, connection state, last error, registered tools, and sampling counters. The same surfaces are available in the interactive shell through `/doctor ...` and `/mcp status [--json]`.
+EPFLemma now treats MCP as default backend infrastructure for native Lean tools, not as a separate user-facing workflow.
+
+Installer/bootstrap-managed default Lean MCP backends:
+
+- `lean-lsp-mcp==0.26.1`
+  - primary state/search backend
+  - diagnostics, goals, local search, semantic search helpers, and `lean_multi_attempt`
+- `lean-proof-auto-mcp@v0.4.0`
+  - secondary automation/context backend
+  - theorem-local context and automation helpers such as `get_proof_context`, `probe`, `search_automated_proof`, and `try_automated_proof`
+
+The install script bootstraps both backends by default under `~/.epflemma/mcp/venvs/`. To repair or recreate them later, run:
+
+```bash
+epflemma mcp bootstrap lean
+```
+
+`epflemma mcp status` now shows server role labels, whether a server is EPFLemma-managed, whether it is configured/installed, and whether bootstrap is recommended. The same surfaces are available in the interactive shell through `/doctor ...`, `/mcp bootstrap lean`, and `/mcp status [--json]`.
+
+Raw `mcp_*` tools are still available through explicit `mcp-{server}` toolsets for debugging, but they are not part of the normal native Lean workflow surface. The model should use the native Lean wrappers instead.
 
 To persist MCP sampling audit events to disk, enable it per server in `~/.epflemma/config.yaml`:
 

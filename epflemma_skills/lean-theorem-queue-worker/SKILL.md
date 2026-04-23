@@ -41,8 +41,11 @@ Primary specs:
 
 1. Search the local project first with `lean_search mode=local`.
 2. Search Mathlib next with `lean_search mode=semantic|type-pattern|natural-language` when the needed fact looks standard.
-3. Only invent a new sublemma after those searches fail to produce the required statement.
-4. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, proof attempt, or blocker report you have.
+3. If search is exhausted or the blocker still looks automation-suited, call `lean_proof_context` before deeper automation.
+4. Use `lean_auto_probe` first, then `lean_auto_search`, then `lean_auto_try` for one concrete candidate when theorem-local automation is justified.
+5. Use `lean_multi_attempt` only when you have 2-6 specific tactic candidates at one proof location.
+6. Only invent a new sublemma after those searches and theorem-local automation steps fail to produce the required statement.
+7. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, verification, worker dispatch, or blocker report you have.
 
 ## Success Condition
 

@@ -1635,19 +1635,6 @@ def discover_mcp_tools() -> List[str]:
     # The outer timeout is generous: 120s total for parallel discovery.
     _run_on_mcp_loop(_discover_all(), timeout=120)
 
-    if all_tools:
-        # Dynamically inject into the Lean-first EPFLemma runtime toolsets.
-        from toolsets import TOOLSETS
-        for ts_name, ts in TOOLSETS.items():
-            if (
-                ts_name.startswith("epflemma-")
-                or ts_name.startswith("gauss-")
-                or ts_name == "autoformalize"
-            ):
-                for tool_name in all_tools:
-                    if tool_name not in ts["tools"]:
-                        ts["tools"].append(tool_name)
-
     # Print summary
     total_servers = len(new_servers)
     ok_servers = total_servers - failed_count
@@ -1667,17 +1654,23 @@ def get_mcp_status() -> List[dict]:
     Returns a list of dicts with keys: name, transport, tools, connected.
     Includes both successfully connected servers and configured-but-failed ones.
     """
-    result: List[dict] = []
-
-    # Get configured servers from config
     configured = _load_mcp_config()
-    if not configured:
-        return result
+    try:
+        from epflemma_cli.mcp_bootstrap import managed_mcp_server_status
+
+        managed_status = managed_mcp_server_status()
+    except Exception:
+        managed_status = {}
 
     with _lock:
         active_servers = dict(_servers)
 
-    for name, cfg in configured.items():
+    result: List[dict] = []
+    all_names = list(dict.fromkeys([*configured.keys(), *managed_status.keys()]))
+    for name in all_names:
+        cfg = configured.get(name, {})
+        cfg = cfg if isinstance(cfg, dict) else {}
+        managed = managed_status.get(name, {})
         transport = "http" if "url" in cfg else "stdio"
         server = active_servers.get(name)
         if server and server.session is not None:
@@ -1689,14 +1682,27 @@ def get_mcp_status() -> List[dict]:
             }
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
-            result.append(entry)
         else:
-            result.append({
+            entry = {
                 "name": name,
                 "transport": transport,
                 "tools": 0,
                 "connected": False,
-            })
+            }
+        role = str(cfg.get("role", "") or managed.get("role", "") or "")
+        if role:
+            entry["role"] = role
+        if managed:
+            entry["managed"] = bool(managed.get("managed", True))
+            entry["installed"] = bool(managed.get("installed", False))
+            entry["configured"] = bool(managed.get("configured", bool(cfg)))
+            entry["healthy"] = bool(entry["connected"])
+            entry["bootstrap_recommended"] = bool(managed.get("bootstrap_recommended", False))
+        else:
+            entry["managed"] = bool(cfg.get("managed", False))
+            entry["configured"] = bool(cfg)
+            entry["healthy"] = bool(entry["connected"])
+        result.append(entry)
 
     return result
 

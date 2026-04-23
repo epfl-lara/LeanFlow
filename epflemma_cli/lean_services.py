@@ -83,6 +83,8 @@ class LeanCapabilityReport:
     helper_tools: dict[str, bool]
     workers: list[str]
     degraded_reasons: list[str]
+    mcp_server_roles: dict[str, str] = field(default_factory=dict)
+    managed_mcp_servers: dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -266,6 +268,25 @@ def _invoke_json_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, An
     return {"raw": raw}
 
 
+def _decode_nested_result(payload: Mapping[str, Any]) -> dict[str, Any]:
+    result = payload.get("result")
+    if isinstance(result, Mapping):
+        return dict(result)
+    if isinstance(result, str):
+        text = result.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z0-9_-]*\n", "", text)
+            text = re.sub(r"\n```$", "", text)
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return {"text": result}
+        if isinstance(parsed, Mapping):
+            return dict(parsed)
+        return {"value": parsed}
+    return dict(payload)
+
+
 def _discover_lean_mcp_tools() -> dict[str, str]:
     try:
         from tools.mcp_tool import discover_mcp_tools
@@ -291,6 +312,10 @@ def _discover_lean_mcp_tools() -> dict[str, str]:
         "leanfinder": "",
         "leansearch": "",
         "loogle": "",
+        "proof_context": "",
+        "auto_probe": "",
+        "auto_search": "",
+        "auto_try": "",
     }
     for tool_name in tool_names:
         lowered = tool_name.lower()
@@ -314,6 +339,19 @@ def _discover_lean_mcp_tools() -> dict[str, str]:
             discovered["leansearch"] = tool_name
         if not discovered["loogle"] and "loogle" in lowered:
             discovered["loogle"] = tool_name
+        if "proof_auto" in lowered:
+            if not discovered["proof_context"] and "get_proof_context" in lowered:
+                discovered["proof_context"] = tool_name
+            if not discovered["auto_search"] and "search_automated_proof" in lowered:
+                discovered["auto_search"] = tool_name
+            if not discovered["auto_try"] and "try_automated_proof" in lowered:
+                discovered["auto_try"] = tool_name
+            if (
+                not discovered["auto_probe"]
+                and "probe_file" not in lowered
+                and (lowered.endswith("_probe") or lowered.split("_")[-1] == "probe")
+            ):
+                discovered["auto_probe"] = tool_name
     return discovered
 
 
@@ -343,6 +381,22 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         search_providers.append(SEARCH_PROVIDER_LABELS["project_rg"])
         if project_root and (project_root / ".lake" / "packages" / "mathlib").is_dir():
             search_providers.append(SEARCH_PROVIDER_LABELS["mathlib_rg"])
+    try:
+        from tools.mcp_tool import get_mcp_status
+
+        mcp_status = list(get_mcp_status())
+    except Exception:
+        mcp_status = []
+    mcp_server_roles = {
+        str(entry.get("name", "") or ""): str(entry.get("role", "") or "")
+        for entry in mcp_status
+        if str(entry.get("name", "") or "").strip()
+    }
+    managed_mcp_servers = {
+        str(entry.get("name", "") or ""): bool(entry.get("healthy", False) or entry.get("connected", False))
+        for entry in mcp_status
+        if entry.get("managed") and str(entry.get("name", "") or "").strip()
+    }
     degraded: list[str] = []
     if not binaries.get("lean"):
         degraded.append("lean binary unavailable")
@@ -352,6 +406,10 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         degraded.append("lean project not detected")
     if not mcp_tools.get("diagnostics"):
         degraded.append("lean diagnostics MCP unavailable")
+    if not mcp_tools.get("proof_context"):
+        degraded.append("lean proof context MCP unavailable")
+    if not any(mcp_tools.get(key) for key in ("auto_probe", "auto_search", "auto_try")):
+        degraded.append("lean automation MCP unavailable")
     if not search_providers:
         degraded.append("no search providers available")
     return LeanCapabilityReport(
@@ -365,6 +423,8 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         helper_tools=_helper_tools(),
         workers=[record.spec_id for record in list_specs("worker")],
         degraded_reasons=degraded,
+        mcp_server_roles=mcp_server_roles,
+        managed_mcp_servers=managed_mcp_servers,
     )
 
 
@@ -738,6 +798,208 @@ def lean_search(
     )
     append_workflow_outcome("lean-search", result.to_dict())
     return result
+
+
+def _wrapper_unavailable_result(
+    *,
+    report: LeanCapabilityReport,
+    tool_name: str,
+    unavailable_reason: str,
+    extra: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "success": False,
+        "backend_tool": tool_name,
+        "degraded_reasons": list(dict.fromkeys([*report.degraded_reasons, unavailable_reason])),
+    }
+    if extra:
+        payload.update(dict(extra))
+    return payload
+
+
+def _invoke_native_mcp_wrapper(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    report: LeanCapabilityReport,
+    unavailable_reason: str,
+    outcome_kind: str,
+    extra: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not tool_name:
+        payload = _wrapper_unavailable_result(
+            report=report,
+            tool_name="",
+            unavailable_reason=unavailable_reason,
+            extra=extra,
+        )
+        append_workflow_outcome(outcome_kind, payload)
+        return payload
+    raw = _invoke_json_tool(tool_name, arguments)
+    if raw.get("error"):
+        payload = _wrapper_unavailable_result(
+            report=report,
+            tool_name=tool_name,
+            unavailable_reason=str(raw.get("error", unavailable_reason)),
+            extra=extra,
+        )
+        append_workflow_outcome(outcome_kind, payload)
+        return payload
+    parsed = _decode_nested_result(raw)
+    payload: dict[str, Any] = {
+        "success": bool(parsed.get("success", True)),
+        "backend_tool": tool_name,
+        "degraded_reasons": list(report.degraded_reasons),
+        **(dict(extra or {})),
+    }
+    if isinstance(parsed, Mapping):
+        for key, value in parsed.items():
+            if key not in {"success"}:
+                payload[key] = value
+    append_workflow_outcome(outcome_kind, payload)
+    return payload
+
+
+def lean_proof_context(
+    file_path: str,
+    theorem_id: str,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    include_similar_proofs: bool = True,
+    similarity_threshold: float = 0.7,
+) -> dict[str, Any]:
+    report = probe_capabilities(cwd)
+    payload = _invoke_native_mcp_wrapper(
+        report.mcp_tools.get("proof_context", ""),
+        {
+            "file_path": file_path,
+            "path": file_path,
+            "theorem_id": theorem_id,
+            "theorem_name": theorem_id,
+            "include_similar_proofs": include_similar_proofs,
+            "similarity_threshold": similarity_threshold,
+        },
+        report=report,
+        unavailable_reason="lean proof context MCP unavailable",
+        outcome_kind="lean-proof-context",
+        extra={"file_path": file_path, "theorem_id": theorem_id},
+    )
+    payload.setdefault("theorem_statement", "")
+    payload.setdefault("original_proof", "")
+    payload.setdefault("hypotheses", [])
+    payload.setdefault("in_scope", [])
+    payload.setdefault("namespace", "")
+    payload.setdefault("similar_proofs", [])
+    payload.setdefault("metadata", {})
+    payload.setdefault("timing", {})
+    return payload
+
+
+def lean_multi_attempt(
+    file_path: str,
+    line: int,
+    attempts: list[str],
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    column: int | None = None,
+) -> dict[str, Any]:
+    report = probe_capabilities(cwd)
+    return _invoke_native_mcp_wrapper(
+        report.mcp_tools.get("multi_attempt", ""),
+        {
+            "file_path": file_path,
+            "path": file_path,
+            "line": line,
+            "column": column,
+            "attempts": attempts,
+        },
+        report=report,
+        unavailable_reason="lean multi-attempt MCP unavailable",
+        outcome_kind="lean-multi-attempt",
+        extra={"file_path": file_path, "line": line, "column": column, "attempts": attempts},
+    )
+
+
+def lean_auto_probe(
+    file_path: str,
+    theorem_id: str,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    methods: list[str] | None = None,
+    timeout_s: int = 10,
+) -> dict[str, Any]:
+    report = probe_capabilities(cwd)
+    return _invoke_native_mcp_wrapper(
+        report.mcp_tools.get("auto_probe", ""),
+        {
+            "file_path": file_path,
+            "path": file_path,
+            "theorem_id": theorem_id,
+            "theorem_name": theorem_id,
+            "methods": list(methods or ["aesop", "aesop?", "grind"]),
+            "timeout_s": timeout_s,
+            "timeout": timeout_s,
+        },
+        report=report,
+        unavailable_reason="lean automation probe MCP unavailable",
+        outcome_kind="lean-auto-probe",
+        extra={"file_path": file_path, "theorem_id": theorem_id},
+    )
+
+
+def lean_auto_search(
+    file_path: str,
+    theorem_id: str,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    timeout_s: int = 10,
+    objective: str = "balanced",
+) -> dict[str, Any]:
+    report = probe_capabilities(cwd)
+    return _invoke_native_mcp_wrapper(
+        report.mcp_tools.get("auto_search", ""),
+        {
+            "file_path": file_path,
+            "path": file_path,
+            "theorem_id": theorem_id,
+            "theorem_name": theorem_id,
+            "timeout_s": timeout_s,
+            "timeout": timeout_s,
+            "objective": objective,
+        },
+        report=report,
+        unavailable_reason="lean automation search MCP unavailable",
+        outcome_kind="lean-auto-search",
+        extra={"file_path": file_path, "theorem_id": theorem_id, "objective": objective},
+    )
+
+
+def lean_auto_try(
+    file_path: str,
+    theorem_id: str,
+    proof_attempt: str,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    timeout_s: int = 10,
+) -> dict[str, Any]:
+    report = probe_capabilities(cwd)
+    return _invoke_native_mcp_wrapper(
+        report.mcp_tools.get("auto_try", ""),
+        {
+            "file_path": file_path,
+            "path": file_path,
+            "theorem_id": theorem_id,
+            "theorem_name": theorem_id,
+            "proof_attempt": proof_attempt,
+            "attempt": proof_attempt,
+            "timeout_s": timeout_s,
+            "timeout": timeout_s,
+        },
+        report=report,
+        unavailable_reason="lean automation try MCP unavailable",
+        outcome_kind="lean-auto-try",
+        extra={"file_path": file_path, "theorem_id": theorem_id, "proof_attempt": proof_attempt},
+    )
 
 
 def lean_axioms(
