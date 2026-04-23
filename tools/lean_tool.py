@@ -338,7 +338,7 @@ LEAN_PROOF_CONTEXT_SCHEMA = {
 
 LEAN_MULTI_ATTEMPT_SCHEMA = {
     "name": "lean_multi_attempt",
-    "description": "Screen multiple concrete tactic attempts at one proof location using the Lean MCP backend. Use only with a known file location and 2-6 specific candidates.",
+    "description": "Screen 2-6 short concrete tactic attempts at one proof location using the Lean MCP backend. Do not pass full proof blocks or candidates containing `sorry`.",
     "parameters": {
         "type": "object",
         "properties": {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from itertools import chain, repeat
 
@@ -1140,6 +1141,7 @@ def test_build_live_proof_state_assigns_current_queue_head_as_target(monkeypatch
     )
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
+    monkeypatch.setattr(runner, "_resolve_target_symbol", lambda history, checkpoint_state=None: "outcome")
     monkeypatch.setattr(runner, "_query_live_diagnostics", lambda path, symbol="": "lean-lsp diagnostics tool unavailable.")
     monkeypatch.setattr(runner, "_query_live_goals", lambda path, symbol: "lean-lsp goals tool unavailable.")
     monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
@@ -1236,6 +1238,34 @@ def test_declaration_work_queue_does_not_match_very_short_names_from_text_alone(
     queue = runner._declaration_work_queue(
         str(active),
         "type mismatch while rewriting with h in a later proof",
+        project_root=str(project),
+        scope="file",
+    )
+
+    assert queue == []
+
+
+def test_declaration_work_queue_ignores_info_only_diagnostics_without_sorries(tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "def isLipschitz (f : Nat -> Nat) : Prop := True",
+                "#check isLipschitz",
+                "",
+                "theorem solved : True := by",
+                "  trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    queue = runner._declaration_work_queue(
+        str(active),
+        '{"items":[{"severity":"info","message":"isLipschitz : Prop","line":2,"column":1}]}',
         project_root=str(project),
         scope="file",
     )
@@ -1480,7 +1510,7 @@ def test_recommended_verification_command_prefers_module_build_outside_single_it
 
     command = runner._recommended_verification_command(str(active))
 
-    assert command == "`lean_inspect` first, then `lake build Demo.Main` when the file is close to clean"
+    assert command == "`lean_inspect` first, then `lean_verify(mode=module)` when the file is close to clean"
 
 
 def test_recommended_verification_command_requires_canonical_file_check_for_single_item_turn(tmp_path, monkeypatch):
@@ -1497,7 +1527,7 @@ def test_recommended_verification_command_requires_canonical_file_check_for_sing
 
     assert command == (
         "`lean_inspect` on Demo/Main.lean, then the required acceptance check "
-        "`lake env lean Demo/Main.lean` for this file-scoped theorem turn"
+        "`lean_verify(mode=file_exact)` for this file-scoped theorem turn"
     )
 
 
@@ -1513,8 +1543,33 @@ def test_recommended_verification_command_falls_back_to_lake_env_lean_for_non_mo
 
     assert command == (
         "`lean_inspect` on Demo/RealTheorems-homework.lean, "
-        "then final `lake env lean Demo/RealTheorems-homework.lean` when close to clean"
+        "then final `lean_verify(mode=file_exact)` when close to clean"
     )
+
+
+def test_extract_active_files_normalizes_project_relative_paths(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    target = project / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+
+    files = runner._extract_active_files(
+        f"a//{target}\n{target}\nDemo/Main.lean\nMain.lean\n"
+    )
+
+    assert files == ["Demo/Main.lean", "Main.lean"]
+
+
+def test_goals_still_open_ignores_structured_history_fields_without_current_goals():
+    payload = {
+        "line_context": "theorem demo : True := by",
+        "goals": None,
+        "goals_before": [],
+        "goals_after": ["⊢ True"],
+    }
+
+    assert runner._goals_still_open(json.dumps(payload)) is False
 
 
 def test_resolve_active_file_prefers_configured_active_file(monkeypatch, tmp_path):

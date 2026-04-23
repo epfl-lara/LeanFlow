@@ -166,9 +166,9 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_api_missing_context_length_key(self, mock_fetch):
-        """Model in API but without context_length → defaults to 128000."""
+        """Model in API but without context_length falls through to later tiers."""
         mock_fetch.return_value = {"test/model": {"name": "Test"}}
-        assert get_model_context_length("test/model") == 128000
+        assert get_model_context_length("test/model") == UNKNOWN_CONTEXT_LENGTH_FALLBACK
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_cache_takes_priority_over_api(self, mock_fetch, tmp_path):
@@ -202,6 +202,16 @@ class TestGetModelContextLength:
         }
         assert get_model_context_length("test/model", base_url="http://local", api_key="secret") == 64000
         mock_provider_fetch.assert_called_once_with("http://local", api_key="secret")
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_provider_model_metadata")
+    def test_provider_metadata_missing_context_length_falls_back_to_defaults(self, mock_provider_fetch, mock_fetch):
+        mock_provider_fetch.return_value = {
+            "zai-org/GLM-5.1": {"name": "GLM-5.1"}
+        }
+        mock_fetch.return_value = {}
+
+        assert get_model_context_length("zai-org/GLM-5.1", base_url="http://local", api_key="secret") == 200000
 
 
 # =========================================================================

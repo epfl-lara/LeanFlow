@@ -19,7 +19,7 @@ Treat the native workflow specs as the contract. This skill is the routing layer
 2. `lean_inspect`
 3. `lean_search` with the smallest relevant search mode
 4. `lean_proof_context`, `lean_auto_probe`, `lean_auto_search`, or `lean_auto_try` only when the blocker/search state justifies theorem-local automation
-5. `lean_multi_attempt` only for 2-6 concrete tactic candidates at one proof location
+5. `lean_multi_attempt` only for 2-6 short local tactic candidates at one proof location, never for full proof blocks or snippets containing `sorry`
 6. edit minimally
 7. `lean_verify`
 8. `lean_worker_dispatch` when the route recommends a specialist worker
@@ -35,6 +35,6 @@ Treat the native workflow specs as the contract. This skill is the routing layer
 
 ## Verification Rules
 
-- File-scoped theorem turns: iterate with `lean_inspect`, but accept success only after the canonical `lake env lean <file>` check succeeds.
+- File-scoped theorem turns: iterate with `lean_inspect`, but accept success only after `lean_verify(mode=file_exact)` succeeds for the active file.
 - Module/project turns: prefer focused `lean_verify` module checks before a final project build.
 - Do not treat `grep`, truncated terminal output, or a disappearing `sorry` as success.
