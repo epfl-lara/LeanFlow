@@ -410,7 +410,7 @@ class CheckpointManager:
         """Resolve a file path to its working directory for checkpointing.
 
         Walks up from the file's parent to find a reasonable project root
-        (directory containing .git, pyproject.toml, package.json, etc.).
+        (directory containing Lean, git, or build-system root markers).
         Falls back to the file's parent directory.
         """
         path = Path(file_path).resolve()
@@ -420,8 +420,20 @@ class CheckpointManager:
             candidate = path.parent
 
         # Walk up looking for project root markers
-        markers = {".git", "pyproject.toml", "package.json", "Cargo.toml",
-                    "go.mod", "Makefile", "pom.xml", ".hg", "Gemfile"}
+        markers = {
+            ".git",
+            ".hg",
+            "pyproject.toml",
+            "package.json",
+            "Cargo.toml",
+            "go.mod",
+            "Makefile",
+            "pom.xml",
+            "Gemfile",
+            "lakefile.lean",
+            "lakefile.toml",
+            "lean-toolchain",
+        }
         check = candidate
         while check != check.parent:
             if any((check / m).exists() for m in markers):
