@@ -50,10 +50,11 @@ class TestToolResolution:
     def test_autoformalize_toolset_keeps_web_access(self):
         """The autoformalize toolset should keep the approved Lean research surface."""
         from model_tools import get_tool_definitions
-        tools = get_tool_definitions(
-            enabled_toolsets=["autoformalize"],
-            quiet_mode=True,
-        )
+        with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}, clear=False):
+            tools = get_tool_definitions(
+                enabled_toolsets=["autoformalize"],
+                quiet_mode=True,
+            )
         names = {t["function"]["name"] for t in tools}
         assert {"read_file", "web_search"}.issubset(names)
 

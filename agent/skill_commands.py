@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import tools.skills_tool as skills_tool_module
 from epflemma_cli.skill_core import discover_skill_commands, find_skill, load_skill
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,15 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     if not raw_identifier:
         return None
 
+    if _local_skill_override_active():
+        payload = skills_tool_module._local_skill_payload(raw_identifier)
+        if not payload:
+            return None
+        skill_file = Path(str(payload.get("file") or "")).expanduser() if payload.get("file") else None
+        skill_dir = skill_file.parent if skill_file else None
+        skill_name = str(payload.get("name") or raw_identifier)
+        return payload, skill_dir, skill_name
+
     try:
         normalized = raw_identifier.lstrip("/")
         loaded_skill = load_skill(normalized)
@@ -61,6 +71,27 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     skill_dir = record.skill_dir if record else None
 
     return loaded_skill, skill_dir, skill_name
+
+
+def _local_skill_override_active() -> bool:
+    default_skills_dir = skills_tool_module.GAUSS_HOME / "skills"
+    return skills_tool_module.SKILLS_DIR != default_skills_dir
+
+
+def _discover_local_skill_commands() -> Dict[str, Dict[str, Any]]:
+    commands: Dict[str, Dict[str, Any]] = {}
+    for skill in skills_tool_module._find_all_skills():
+        name = str(skill.get("name") or "").strip()
+        if not name:
+            continue
+        command = "/" + name.lower().replace(" ", "-").replace("_", "-")
+        description = str(skill.get("description") or "").strip()
+        commands[command] = {
+            "name": name,
+            "description": description or f"Invoke the {name} skill",
+            "source": "local",
+        }
+    return commands
 
 
 def _build_skill_message(
@@ -127,6 +158,10 @@ def _build_skill_message(
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Return the current EPFLemma skill command map."""
     global _skill_commands
+    if _local_skill_override_active():
+        _skill_commands = _discover_local_skill_commands()
+        return _skill_commands
+
     _skill_commands = dict(discover_skill_commands())
     try:
         for command, payload in list(_skill_commands.items()):

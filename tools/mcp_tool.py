@@ -1639,7 +1639,11 @@ def discover_mcp_tools() -> List[str]:
         # Dynamically inject into the Lean-first EPFLemma runtime toolsets.
         from toolsets import TOOLSETS
         for ts_name, ts in TOOLSETS.items():
-            if ts_name.startswith("epflemma-") or ts_name == "autoformalize":
+            if (
+                ts_name.startswith("epflemma-")
+                or ts_name.startswith("gauss-")
+                or ts_name == "autoformalize"
+            ):
                 for tool_name in all_tools:
                     if tool_name not in ts["tools"]:
                         ts["tools"].append(tool_name)
