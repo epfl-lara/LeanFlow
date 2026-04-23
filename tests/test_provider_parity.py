@@ -143,7 +143,7 @@ class TestBuildApiKwargsNousPortal:
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         extra = kwargs.get("extra_body", {})
-        assert extra.get("tags") == ["product=gauss-agent"]
+        assert extra.get("tags") == ["product=epflemma-agent"]
 
     def test_uses_chat_completions_format(self, monkeypatch):
         agent = _make_agent(monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1")
@@ -508,7 +508,23 @@ class TestBuildAssistantMessage:
 class TestAuxiliaryClientProviderPriority:
     """Verify auxiliary client resolution doesn't break for any provider."""
 
+    @staticmethod
+    def _clear_competing_provider_env(monkeypatch):
+        for key in (
+            "EPFLEMMA_OPENAI_BASE_URL",
+            "EPFLEMMA_OPENAI_API_KEY",
+            "GLM_API_KEY",
+            "ZAI_API_KEY",
+            "Z_AI_API_KEY",
+            "KIMI_API_KEY",
+            "MINIMAX_API_KEY",
+            "MINIMAX_CN_API_KEY",
+            "DEEPSEEK_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
     def test_openrouter_always_wins(self, monkeypatch):
+        self._clear_competing_provider_env(monkeypatch)
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         from agent.auxiliary_client import get_text_auxiliary_client
         with patch("agent.auxiliary_client.OpenAI") as mock:
@@ -517,6 +533,7 @@ class TestAuxiliaryClientProviderPriority:
         assert "openrouter" in str(mock.call_args.kwargs["base_url"]).lower()
 
     def test_nous_when_no_openrouter(self, monkeypatch):
+        self._clear_competing_provider_env(monkeypatch)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         from agent.auxiliary_client import get_text_auxiliary_client
         with patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "nous-tok"}), \
@@ -525,6 +542,7 @@ class TestAuxiliaryClientProviderPriority:
         assert model == "gemini-3-flash"
 
     def test_custom_endpoint_when_no_nous(self, monkeypatch):
+        self._clear_competing_provider_env(monkeypatch)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
@@ -535,6 +553,7 @@ class TestAuxiliaryClientProviderPriority:
         assert mock.call_args.kwargs["base_url"] == "http://localhost:1234/v1"
 
     def test_codex_fallback_last_resort(self, monkeypatch):
+        self._clear_competing_provider_env(monkeypatch)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)

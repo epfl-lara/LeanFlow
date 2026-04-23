@@ -66,7 +66,7 @@ class TestAgentLoopTools:
 class TestLegacyToolsetMap:
     def test_expected_legacy_names(self):
         expected = [
-            "web_tools", "browser_tools", "file_tools",
+            "web_tools", "file_tools",
         ]
         for name in expected:
             assert name in _LEGACY_TOOLSET_MAP, f"Missing legacy toolset: {name}"
@@ -127,4 +127,13 @@ print(json.dumps(sorted(set(entry.toolset for entry in registry._tools.values())
     )
 
     toolsets = json.loads(result.stdout.strip())
-    assert toolsets == ["browser", "file", "web"]
+    assert toolsets == [
+        "coordination",
+        "delegation",
+        "file",
+        "lean",
+        "session_search",
+        "skills",
+        "terminal",
+        "web",
+    ]

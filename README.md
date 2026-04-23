@@ -355,6 +355,7 @@ Inside the shell:
 /mcp status
 /mcp status --json
 /config get model.default
+/exit
 /quit
 ```
 
@@ -386,6 +387,8 @@ The shell also reads persisted managed-workflow state so these commands work acr
 - `/goals`
 - `/diagnostics`
 - `/proof-state`
+
+`/exit` now asks the current project's managed runner to shut down cleanly first, waits briefly for that exit request to land, and only then escalates to direct interrupts/PID termination if the runner is still alive.
 
 ## Autonomous Lean Behavior
 
@@ -460,7 +463,8 @@ What the runner does each cycle:
 - pick the current queue item and inject an "Assigned queue item" block into the agent prompt, with the declaration name, current file prefix through that declaration, current blocker, and the last N failed attempts for that exact target
 - auto-select the `lean-theorem-queue-worker` skill while an item is assigned, and fall back to `lean-proof-loop` when the queue is empty
 - after the agent's first `patch` or `write_file`, yield control back to the runner so diagnostics can be refreshed before the next edit
-- if the same `(target, file)` is still blocked after a cycle, record the attempt's proof-shape delta and failure reason into the target-scoped history
+- when a concrete proof edit is verified and the same `(target, file)` is still blocked, record that failed attempt immediately before the next edit overwrites it
+- keep the newest failed proof in the file so the model sees the live state directly; only older failed proofs move into structured `PREVIOUS ATTEMPTS`
 - when the queue empties but the file is not verified, switch to a whole-file sweep prompt for one pass
 - when the assigned theorem changes, rebuild the next prompt from a compact queue-aware handoff instead of reusing the full prior theorem transcript
 
@@ -525,6 +529,7 @@ Why this shape:
 - one declaration at a time keeps the agent from declaring victory after fixing only the first theorem
 - the yield-after-edit boundary forces fresh diagnostics between edits instead of speculative chained patches
 - target-scoped failed-attempt memory gives the next cycle real negative guidance without leaking across unrelated theorems
+- the failed-attempt ledger is theorem-local and is cleared when the queue advances to a different declaration
 - theorem transitions always clear raw search logs, long tool output, and previous-theorem reasoning from the live prompt; only a compact workflow snapshot and short previous-theorem outcome summary survive
 - the final file sweep handles residual warnings or malformed partial proofs that do not map to a single declaration
 
@@ -579,6 +584,12 @@ agent:
 - when the queue moves to a different theorem, the new theorem resets back to `medium`
 - when the declaration queue is empty but the file still needs a final cleanup pass, the whole-file sweep uses `high`
 - failed-attempt memory is scoped per theorem, so previous theorems do not drag old blocker history into unrelated prompts
+
+Operational details:
+
+- the failed-attempt counter increments on each failed `edit -> verification feedback -> still blocked` boundary, not only once per long conversation
+- the default reasoning escalation threshold is configurable with `EPFLEMMA_NATIVE_FAILED_ATTEMPT_REASONING_THRESHOLD`
+- the `PREVIOUS ATTEMPTS` cap is configurable with `EPFLEMMA_NATIVE_FAILED_ATTEMPT_HISTORY` and defaults to `10`
 
 You can still override it explicitly:
 
@@ -952,6 +963,7 @@ Compression defaults are tuned for long Lean sessions:
 - `reserved_output_tokens` keeps headroom for the next response instead of filling the full context window.
 - `prune_tool_output` replaces stale old tool result bodies with a fixed marker.
 - `prune_keep_recent_user_turns` keeps the newest user turns and their nearby tool output intact.
+- if provider metadata cannot tell EPFLemma the real context window, EPFLemma now falls back conservatively to `200,000` tokens instead of assuming a multi-million-token window.
 
 ## Doctor And MCP Status
 

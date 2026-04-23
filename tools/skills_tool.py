@@ -747,8 +747,16 @@ def _local_skill_payload(name: str, file_path: str | None = None) -> Dict[str, A
     base_dir = path.parent if path.name == "SKILL.md" else path.parent
 
     if file_path:
+        base_dir_resolved = base_dir.resolve()
         requested = (base_dir / file_path).resolve()
-        if not requested.is_file() or base_dir.resolve() not in requested.parents:
+        try:
+            requested.relative_to(base_dir_resolved)
+        except Exception:
+            return {
+                "success": False,
+                "error": f"Path traversal blocked: file path '{file_path}' escapes the skill boundary for skill '{name}'.",
+            }
+        if not requested.is_file():
             return {
                 "success": False,
                 "error": f"File '{file_path}' not found for skill '{name}'.",

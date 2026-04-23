@@ -47,10 +47,9 @@ from openai import OpenAI
 
 from epflemma_cli.auth import (
     PROVIDER_REGISTRY,
-    _read_codex_tokens,
     _resolve_kimi_base_url,
 )
-from epflemma_cli.config import get_epflemma_home, load_config
+from epflemma_cli.config import get_epflemma_home
 from epflemma_cli.runtime_provider import resolve_runtime_provider
 from gauss_constants import OPENROUTER_BASE_URL
 
@@ -85,8 +84,6 @@ _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "gemini-3-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
-_AUTH_JSON_PATH = get_epflemma_home() / "auth.json"
-
 # Codex fallback: uses the Responses API (the only endpoint the Codex
 # OAuth token can access) with a fast model for auxiliary tasks.
 # ChatGPT-backed Codex accounts currently reject gpt-5.3-codex for these
@@ -438,9 +435,10 @@ def _read_nous_auth() -> Optional[dict]:
     otherwise None.
     """
     try:
-        if not _AUTH_JSON_PATH.is_file():
+        auth_path = get_epflemma_home() / "auth.json"
+        if not auth_path.is_file():
             return None
-        data = json.loads(_AUTH_JSON_PATH.read_text())
+        data = json.loads(auth_path.read_text())
         if data.get("active_provider") != "nous":
             return None
         provider = data.get("providers", {}).get("nous", {})
@@ -464,17 +462,60 @@ def _nous_base_url() -> str:
 
 
 def _read_codex_access_token() -> Optional[str]:
-    """Read a valid Codex OAuth access token from Gauss auth store (~/.gauss/auth.json)."""
+    """Read a valid Codex OAuth access token from EPFLemma auth state.
+
+    EPFLemma's auth.json is authoritative when present. Legacy ``~/.codex``
+    fallback is opt-in to avoid unrelated desktop auth state silently changing
+    auxiliary routing and tests.
+    """
+    auth_path = get_epflemma_home() / "auth.json"
     try:
-        data = _read_codex_tokens()
+        if auth_path.is_file():
+            data = json.loads(auth_path.read_text())
+            provider = data.get("providers", {}).get("openai-codex", {})
+            tokens = provider.get("tokens", {})
+            access_token = tokens.get("access_token")
+            if isinstance(access_token, str) and access_token.strip():
+                return access_token.strip()
+            return None
+    except Exception as exc:
+        logger.debug(
+            "Could not read Codex auth for auxiliary client from %s: %s",
+            auth_path,
+            exc,
+        )
+        return None
+
+    use_legacy_store = str(os.getenv("EPFLEMMA_USE_LEGACY_CODEX_AUTH", "")).strip().lower()
+    if use_legacy_store not in {"1", "true", "yes", "on"}:
+        return None
+
+    legacy_path = Path.home() / ".codex" / "auth.json"
+    try:
+        if not legacy_path.is_file():
+            return None
+        data = json.loads(legacy_path.read_text())
         tokens = data.get("tokens", {})
         access_token = tokens.get("access_token")
         if isinstance(access_token, str) and access_token.strip():
             return access_token.strip()
-        return None
     except Exception as exc:
-        logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
-        return None
+        logger.debug(
+            "Could not read legacy Codex auth for auxiliary client from %s: %s",
+            legacy_path,
+            exc,
+        )
+    return None
+
+
+def _load_runtime_config() -> dict[str, Any]:
+    try:
+        from epflemma_cli import config as config_module
+
+        loaded = config_module.load_config()
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
 
 
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -580,7 +621,7 @@ def _read_main_model() -> str:
     if from_env:
         return from_env.strip()
     try:
-        cfg = load_config()
+        cfg = _load_runtime_config()
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str) and model_cfg.strip():
             return model_cfg.strip()
@@ -1016,7 +1057,7 @@ def _strict_vision_backend_available(provider: str) -> bool:
 def _preferred_main_vision_provider() -> Optional[str]:
     """Return the selected main provider when it is also a supported vision backend."""
     try:
-        config = load_config()
+        config = _load_runtime_config()
         model_cfg = config.get("model", {})
         if isinstance(model_cfg, dict):
             provider = _normalize_vision_provider(model_cfg.get("provider", ""))
@@ -1164,9 +1205,15 @@ def _get_cached_client(
     base_url: str = None,
     api_key: str = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
-    """Get or create a cached client for the given provider."""
+    """Get or create a cached client for the given provider.
+
+    Only explicit endpoint credentials are cached. Env/config-driven provider
+    resolution is intentionally resolved fresh each call so auxiliary routing
+    cannot be polluted by stale process-global state from earlier tasks/tests.
+    """
+    use_cache = bool((base_url or "").strip() or (api_key or "").strip())
     cache_key = (provider, async_mode, base_url or "", api_key or "")
-    if cache_key in _client_cache:
+    if use_cache and cache_key in _client_cache:
         cached_client, cached_default = _client_cache[cache_key]
         return cached_client, model or cached_default
     client, default_model = resolve_provider_client(
@@ -1176,7 +1223,7 @@ def _get_cached_client(
         explicit_base_url=base_url,
         explicit_api_key=api_key,
     )
-    if client is not None:
+    if use_cache and client is not None:
         _client_cache[cache_key] = (client, default_model)
     return client, model or default_model
 
@@ -1208,7 +1255,7 @@ def _resolve_task_provider_model(
 
     if task:
         try:
-            config = load_config()
+            config = _load_runtime_config()
         except Exception:
             config = {}
 
@@ -1226,7 +1273,6 @@ def _resolve_task_provider_model(
             comp = config.get("compression", {}) if isinstance(config, dict) else {}
             if isinstance(comp, dict):
                 cfg_provider = comp.get("summary_provider", "").strip() or None
-                cfg_model = cfg_model or comp.get("summary_model", "").strip() or None
 
     env_model = _get_auxiliary_env_override(task, "MODEL") if task else None
     resolved_model = model or env_model or cfg_model
