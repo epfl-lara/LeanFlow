@@ -96,6 +96,41 @@ def test_interactive_mcp_status_prints_sampling_metrics(monkeypatch, capsys):
     assert "sampling requests=2" in output
 
 
+def test_main_mcp_bootstrap_json(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "epflemma_cli.main.bootstrap_lean_mcp",
+        lambda python_bin=None: {
+            "success": True,
+            "home": "/tmp/home",
+            "config_path": "/tmp/home/config.yaml",
+            "servers": [{"name": "lean-lsp", "role": "primary-state-search", "command": "/tmp/lean-lsp-mcp"}],
+        },
+    )
+
+    assert main(["mcp", "bootstrap", "lean", "--json"]) == 0
+    output = capsys.readouterr().out
+    assert "\"success\": true" in output.lower()
+    assert "\"name\": \"lean-lsp\"" in output
+
+
+def test_interactive_mcp_bootstrap_prints_summary(monkeypatch, capsys):
+    shell = InteractiveShell()
+    monkeypatch.setattr(
+        "epflemma_cli.main.bootstrap_lean_mcp",
+        lambda: {
+            "success": True,
+            "home": "/tmp/home",
+            "config_path": "/tmp/home/config.yaml",
+            "servers": [{"name": "lean-proof-auto", "role": "secondary-automation-context", "command": "/tmp/lean-proof-auto-mcp"}],
+        },
+    )
+
+    assert shell._run_mcp_command("/mcp bootstrap lean") == 0
+    output = capsys.readouterr().out
+    assert "Managed Lean MCP bootstrap complete" in output
+    assert "lean-proof-auto" in output
+
+
 def test_describe_launch_plan_formats_provider_and_model(tmp_path):
     spec = NativeWorkflowSpec(
         workflow_kind="prove",

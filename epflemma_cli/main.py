@@ -67,6 +67,7 @@ from epflemma_cli.runtime_provider import (
     resolve_runtime_provider,
 )
 from epflemma_cli.skill_core import discover_skill_commands, discover_skills, load_skill
+from epflemma_cli.mcp_bootstrap import bootstrap_lean_mcp
 from epflemma_cli.workflow import FORGIVING_WORKFLOW_ALIAS_MAP, describe_launch_plan, resolve_workflow_request, run_workflow, spawn_workflow
 from epflemma_cli.workflow_state import (
     enqueue_workflow_agent_message,
@@ -148,6 +149,10 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
     mcp_status = mcp_sub.add_parser("status", help="Show MCP server status")
     mcp_status.add_argument("--json", action="store_true", dest="json_output")
+    mcp_bootstrap = mcp_sub.add_parser("bootstrap", help="Install or repair managed MCP backends")
+    mcp_bootstrap.add_argument("target", nargs="?", default="lean")
+    mcp_bootstrap.add_argument("--json", action="store_true", dest="json_output")
+    mcp_bootstrap.add_argument("--python", default=None)
 
     project_parser = subparsers.add_parser("project", help="Manage EPFLemma projects")
     project_sub = project_parser.add_subparsers(dest="project_command")
@@ -292,25 +297,60 @@ def _print_mcp_status(payload: Mapping[str, Any]) -> None:
         connected = "connected" if entry.get("connected") else "down"
         tools = int(entry.get("tools", 0) or 0)
         line = f"- {name}: {connected} ({transport}, {tools} tools)"
+        role = str(entry.get("role", "") or "").strip()
+        if role:
+            line += f", role={role}"
+        if entry.get("managed"):
+            line += ", managed"
+        if entry.get("configured") is False:
+            line += ", not configured"
+        if entry.get("installed") is False:
+            line += ", not installed"
         sampling = dict(entry.get("sampling", {}) or {})
         if sampling:
             line += (
                 f", sampling requests={int(sampling.get('requests', 0) or 0)}"
                 f", errors={int(sampling.get('errors', 0) or 0)}"
             )
+        if entry.get("bootstrap_recommended"):
+            line += ", bootstrap recommended"
         print(line)
+
+
+def _print_mcp_bootstrap(payload: Mapping[str, Any]) -> None:
+    if not payload.get("success"):
+        print("Managed MCP bootstrap failed.")
+        return
+    print("Managed Lean MCP bootstrap complete")
+    print(f"- home: {payload.get('home', '')}")
+    print(f"- config: {payload.get('config_path', '')}")
+    for entry in list(payload.get("servers", []) or []):
+        print(
+            f"- {entry.get('name', '[unknown]')}: "
+            f"{entry.get('role', '') or '[no role]'} -> {entry.get('command', '')}"
+        )
 
 
 def _handle_mcp(args: argparse.Namespace) -> int:
     command = getattr(args, "mcp_command", None) or "status"
-    if command != "status":
-        raise SystemExit("Unknown MCP command")
-    payload = _mcp_status_payload()
-    if getattr(args, "json_output", False):
-        _print_json(payload)
-    else:
-        _print_mcp_status(payload)
-    return 0
+    if command == "status":
+        payload = _mcp_status_payload()
+        if getattr(args, "json_output", False):
+            _print_json(payload)
+        else:
+            _print_mcp_status(payload)
+        return 0
+    if command == "bootstrap":
+        target = str(getattr(args, "target", "lean") or "lean").strip().lower()
+        if target != "lean":
+            raise SystemExit("Unknown MCP bootstrap target")
+        payload = bootstrap_lean_mcp(python_bin=getattr(args, "python", None))
+        if getattr(args, "json_output", False):
+            _print_json(payload)
+        else:
+            _print_mcp_bootstrap(payload)
+        return 0
+    raise SystemExit("Unknown MCP command")
 
 
 class InteractiveShell:
@@ -852,15 +892,26 @@ class InteractiveShell:
         args = parts[1:]
         json_output = "--json" in args
         subcmd = next((arg for arg in args if not arg.startswith("-")), "status")
-        if subcmd != "status":
-            self.console.print("[dim]Usage: /mcp status [--json][/]")
-            return 1
-        payload = _mcp_status_payload()
-        if json_output:
-            _print_json(payload)
-        else:
-            _print_mcp_status(payload)
-        return 0
+        if subcmd == "status":
+            payload = _mcp_status_payload()
+            if json_output:
+                _print_json(payload)
+            else:
+                _print_mcp_status(payload)
+            return 0
+        if subcmd == "bootstrap":
+            target = next((arg for arg in args if arg not in {"bootstrap", "--json"} and not arg.startswith("--")), "lean")
+            if target != "lean":
+                self.console.print("[dim]Usage: /mcp bootstrap lean [--json][/]")
+                return 1
+            payload = bootstrap_lean_mcp()
+            if json_output:
+                _print_json(payload)
+            else:
+                _print_mcp_bootstrap(payload)
+            return 0
+        self.console.print("[dim]Usage: /mcp status [--json] | /mcp bootstrap lean [--json][/]")
+        return 1
 
     def _run_workflow_command(self, raw: str) -> int:
         try:

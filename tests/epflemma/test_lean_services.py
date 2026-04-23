@@ -6,6 +6,56 @@ from epflemma_cli import lean_services
 from epflemma_cli.lean_services import LeanCapabilityReport
 
 
+def test_probe_capabilities_reports_managed_mcp_roles(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    monkeypatch.setattr(lean_services, "_project_root", lambda cwd=None: (project, ""))
+    monkeypatch.setattr(
+        lean_services,
+        "_discover_lean_mcp_tools",
+        lambda: {
+            "diagnostics": "mcp_lean_lsp_diagnostics",
+            "goals": "mcp_lean_lsp_goals",
+            "code_actions": "",
+            "multi_attempt": "mcp_lean_lsp_multi_attempt",
+            "run_code": "",
+            "local_search": "",
+            "leanfinder": "",
+            "leansearch": "",
+            "loogle": "",
+            "proof_context": "mcp_lean_proof_auto_get_proof_context",
+            "auto_probe": "mcp_lean_proof_auto_probe",
+            "auto_search": "mcp_lean_proof_auto_search_automated_proof",
+            "auto_try": "mcp_lean_proof_auto_try_automated_proof",
+        },
+    )
+    monkeypatch.setattr(
+        "tools.mcp_tool.get_mcp_status",
+        lambda: [
+            {
+                "name": "lean-lsp",
+                "role": "primary-state-search",
+                "managed": True,
+                "healthy": True,
+                "connected": True,
+            },
+            {
+                "name": "lean-proof-auto",
+                "role": "secondary-automation-context",
+                "managed": True,
+                "healthy": False,
+                "connected": False,
+            },
+        ],
+    )
+
+    report = lean_services.probe_capabilities(project)
+
+    assert report.mcp_server_roles["lean-lsp"] == "primary-state-search"
+    assert report.managed_mcp_servers["lean-lsp"] is True
+    assert report.managed_mcp_servers["lean-proof-auto"] is False
+
+
 def test_lean_search_marks_semantic_provider_fallback(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()

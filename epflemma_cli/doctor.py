@@ -103,8 +103,15 @@ def _doctor_payload(active_cwd: str | Path | None = None, *, mode: str = "all") 
     issues.extend(provider_issues)
 
     mcp_status = get_mcp_status()
-    if normalized_mode in {"all", "mcp"} and not mcp_status:
-        issues.append("No MCP servers configured.")
+    if normalized_mode in {"all", "mcp"}:
+        if not mcp_status:
+            issues.append("No MCP servers configured.")
+        else:
+            for entry in mcp_status:
+                if entry.get("bootstrap_recommended"):
+                    issues.append(
+                        f"MCP bootstrap recommended for {entry.get('name', '[unknown]')}."
+                    )
 
     search_providers = [str(item) for item in capability.get("search_providers", []) if str(item).strip()]
     if normalized_mode in {"all", "search"} and not search_providers:
@@ -188,7 +195,20 @@ def _format_doctor_report(payload: dict[str, Any]) -> str:
             transport = str(entry.get("transport", "") or "stdio")
             connected = "connected" if entry.get("connected") else "down"
             tools = int(entry.get("tools", 0) or 0)
-            lines.append(f"- {name}: {connected} ({transport}, {tools} tools)")
+            extras: list[str] = []
+            role = str(entry.get("role", "") or "").strip()
+            if role:
+                extras.append(f"role={role}")
+            if entry.get("managed"):
+                extras.append("managed")
+            if entry.get("configured") is False:
+                extras.append("not configured")
+            if entry.get("installed") is False:
+                extras.append("not installed")
+            if entry.get("bootstrap_recommended"):
+                extras.append("bootstrap recommended")
+            suffix = f" [{', '.join(extras)}]" if extras else ""
+            lines.append(f"- {name}: {connected} ({transport}, {tools} tools){suffix}")
 
     search = payload.get("search")
     if isinstance(search, dict):

@@ -109,3 +109,53 @@ def test_handle_function_call_passes_parent_agent_to_lean_worker_dispatch(monkey
     assert captured["worker"] == "proof-repair"
     assert captured["parent_agent"] is parent_agent
     assert captured["owner_id"] == "agent-123"
+
+
+def test_lean_proof_context_tool_returns_normalized_payload(monkeypatch):
+    monkeypatch.setattr(
+        lean_tool,
+        "lean_proof_context",
+        lambda *args, **kwargs: {
+            "success": True,
+            "backend_tool": "mcp_lean_proof_auto_get_proof_context",
+            "file_path": "Demo/Main.lean",
+            "theorem_id": "demo",
+            "theorem_statement": "theorem demo : True",
+            "hypotheses": ["h : True"],
+            "in_scope": ["trivial"],
+            "similar_proofs": [{"name": "demo2"}],
+            "degraded_reasons": [],
+        },
+    )
+
+    payload = json.loads(
+        lean_tool.lean_proof_context_tool("Demo/Main.lean", "demo")
+    )
+
+    assert payload["success"] is True
+    assert payload["theorem_id"] == "demo"
+    assert payload["similar_proofs"][0]["name"] == "demo2"
+
+
+def test_lean_auto_probe_tool_surfaces_degraded_reasons(monkeypatch):
+    monkeypatch.setattr(
+        lean_tool,
+        "lean_auto_probe",
+        lambda *args, **kwargs: {
+            "success": False,
+            "backend_tool": "",
+            "file_path": "Demo/Main.lean",
+            "theorem_id": "demo",
+            "degraded_reasons": [
+                "lean automation MCP unavailable",
+                "lean automation probe MCP unavailable",
+            ],
+        },
+    )
+
+    payload = json.loads(
+        lean_tool.lean_auto_probe_tool("Demo/Main.lean", "demo")
+    )
+
+    assert payload["success"] is False
+    assert "lean automation probe MCP unavailable" in payload["degraded_reasons"]

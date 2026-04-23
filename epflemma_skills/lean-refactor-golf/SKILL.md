@@ -14,9 +14,10 @@ Primary specs:
 
 1. `lean_inspect`
 2. `lean_search` for nearby proof shapes
-3. minimal cleanup or simplification edit
-4. `lean_verify`
-5. `lean_worker_dispatch` with `proof-golfer` only when the route explicitly recommends it
+3. `lean_multi_attempt` only for 2-6 concrete local simplification candidates at one proof position
+4. minimal cleanup or simplification edit
+5. `lean_verify`
+6. `lean_worker_dispatch` with `proof-golfer` only when the route explicitly recommends it
 
 ## Guardrails
 

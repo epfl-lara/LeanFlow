@@ -5,7 +5,7 @@ title: Prove
 summary: Queue-driven autonomous theorem proving with LSP-first inspection, native search fallbacks, worker escalation, and strict verification gates.
 aliases: [autoprove]
 skills: [lean-proof-loop, lean-theorem-queue-worker]
-tools: [lean_capabilities, lean_inspect, lean_search, lean_verify, lean_sorries, lean_axioms, lean_worker_dispatch]
+tools: [lean_capabilities, lean_inspect, lean_search, lean_proof_context, lean_auto_probe, lean_auto_search, lean_auto_try, lean_multi_attempt, lean_verify, lean_sorries, lean_axioms, lean_worker_dispatch]
 workers: [proof-repair, axiom-eliminator, sorry-filler-deep]
 review_actions: [continue, replan, redraft, falsify, stop]
 stop_conditions: [verified, blocked, interrupted, stalled]
@@ -54,16 +54,32 @@ Use `review`, `checkpoint`, `draft`, `refactor`, or `golf` for those cases.
    - do not loop on compiler failures caused by missing lemmas before searching
    - if 3 search attempts in a row return no usable result, stop searching and either make the best concrete proof/edit attempt you have or escalate the blocker
    - treat `repeated empty search loop detected` in `degraded_reasons` as a hard signal to stop searching in this turn
-4. edit the current target minimally
+4. `lean_proof_context`
+   - use when theorem-local search is exhausted, attempt history is nonzero, or the blocker looks automation-suited
+   - this is theorem-context retrieval: theorem statement, original proof, hypotheses, in-scope names, namespace, and similar proofs
+   - do not treat it as a replacement for `lean_inspect` goals/diagnostics
+5. `lean_auto_probe`
+   - use after `lean_proof_context` to test lightweight automation such as `aesop`, `aesop?`, or `grind`
+   - use it to measure whether automation can solve or simplify the goal before broader search
+6. `lean_auto_search`
+   - use only after context/probe data exists and the theorem is still blocked
+   - this is for one theorem-local automated candidate search, not broad queue triage
+7. `lean_auto_try`
+   - use to validate one concrete automated proof candidate before patching it into the file
+   - do not paste an unverified automated candidate directly into the proof
+8. `lean_multi_attempt`
+   - use only with a known proof location and 2-6 concrete tactic candidates
+   - do not use it for vague search or speculative whole-proof generation
+9. edit the current target minimally
    - queue-driven runs should change one declaration-sized unit at a time
    - local helper lemmas are allowed when they directly unblock the assigned declaration
-5. `lean_worker_dispatch`
+10. `lean_worker_dispatch`
    - use only when the route decision or blocker history points to a specialist worker
    - do not delegate by default
-6. `lean_verify`
+11. `lean_verify`
    - use the narrowest verification mode that matches the current gate
    - do not treat `grep`, truncated logs, or disappearing `sorry` text as verification
-7. `lean_sorries` or `lean_axioms`
+12. `lean_sorries` or `lean_axioms`
    - use when the blocker is global `sorry` inventory or axiom risk rather than local proof construction
 
 ## Queue Contract
@@ -119,7 +135,7 @@ Use the blocker kind from `lean_inspect` and the route decision from the runner 
 - search blocker
   - missing lemma or unknown proof shape
   - default route: `lean_search` before rewriting the proof blindly
-  - after repeated empty searches, stop theorem-name fishing and either try the most plausible local step or escalate as stuck
+  - after repeated empty searches, stop theorem-name fishing and either try the most plausible local step, call `lean_proof_context`/`lean_auto_probe`, or escalate as stuck
 - axiom-risk blocker
   - proof compiles but the axiom profile is unacceptable or unknown
   - default route: `lean_axioms`, then `axiom-eliminator` if needed

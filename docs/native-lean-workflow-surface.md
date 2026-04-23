@@ -76,6 +76,18 @@ The repo-owned Lean tool surface is defined in `tools/lean_tool.py` and backed b
   - MCP-first provider selection with `rg`/Mathlib fallback
   - provider provenance in `attempted_providers` and per-result metadata
   - explicit `degraded_reasons` when semantic providers are missing or skipped
+- `lean_proof_context`
+  - theorem-local context retrieval from the managed automation backend
+  - returns theorem statement, original proof, hypotheses, in-scope names, namespace, and optional similar proofs
+  - not a replacement for `lean_inspect` goals
+- `lean_multi_attempt`
+  - theorem-local screening for 2-6 concrete tactic candidates at one file position
+- `lean_auto_probe`
+  - theorem-local automation probing
+- `lean_auto_search`
+  - theorem-local automated proof candidate search after context/probe data exists
+- `lean_auto_try`
+  - validate one concrete theorem-local automated proof candidate before patching
 - `lean_sorries`
   - project/file-scoped `sorry` findings with line number and declaration name
 - `lean_axioms`
@@ -87,6 +99,15 @@ The repo-owned Lean tool surface is defined in `tools/lean_tool.py` and backed b
   - returns a structured plan instead of hard-failing when delegation is unavailable
 
 These tools are available through the `lean`, `epflemma-native`, and `epflemma-native-swarm` toolsets.
+
+EPFLemma installs and manages two Lean MCP backends by default:
+
+- `lean-lsp-mcp`
+  - role: `primary-state-search`
+- `lean-proof-auto-mcp`
+  - role: `secondary-automation-context`
+
+Those servers exist to back the native tools above. Raw `mcp_*` tools are not part of the normal native Lean workflow surface.
 
 ## Queueing, Routing, And Workers
 
@@ -143,11 +164,14 @@ Useful commands:
 epflemma doctor
 epflemma doctor mcp --json
 epflemma doctor search --json
+epflemma mcp bootstrap lean
 epflemma mcp status
 epflemma mcp status --json
 ```
 
-`epflemma mcp status` reports configured server state, last error, registered tools, and sampling counters.
+`epflemma mcp status` reports server role, managed/install/config health, connection state, last error, registered tools, and sampling counters.
+
+`epflemma mcp bootstrap lean` is the idempotent repair/setup command for the managed Lean MCP stack.
 
 For persistent sampling audit logs, set `mcp_servers.<name>.sampling.audit_jsonl: true` in `~/.epflemma/config.yaml`. The default path is `~/.epflemma/logs/mcp-sampling.jsonl`, with `audit_jsonl_path` available as an override.
 

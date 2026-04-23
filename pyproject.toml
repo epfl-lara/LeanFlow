@@ -22,6 +22,7 @@ dependencies = [
   "pyyaml",
   "requests",
   "rich",
+  "ruamel.yaml>=0.18.10",
   "tenacity",
 ]
 

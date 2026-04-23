@@ -86,10 +86,12 @@ source "$EPFLEMMA_VENV_DIR/bin/activate"
 
 python -m pip install --upgrade pip setuptools wheel
 if [[ "$INSTALL_MODE" == "editable" ]]; then
-  python -m pip install -e "$REPO_ROOT"
+  python -m pip install -e "$REPO_ROOT[mcp]"
 else
-  python -m pip install "$REPO_ROOT"
+  python -m pip install "$REPO_ROOT[mcp]"
 fi
+
+EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_VENV_DIR/bin/epflemma" mcp bootstrap lean >/dev/null
 
 cat > "$EPFLEMMA_BIN_DIR/epflemma" <<EOF
 #!/usr/bin/env bash
@@ -125,6 +127,7 @@ printf '  repo: %s\n' "$REPO_ROOT"
 printf '  home: %s\n' "$EPFLEMMA_HOME"
 printf '  venv: %s\n' "$EPFLEMMA_VENV_DIR"
 printf '  bin : %s\n' "$EPFLEMMA_BIN_DIR"
+printf '  mcp : managed lean-lsp + lean-proof-auto installed under %s/mcp\n' "$EPFLEMMA_HOME"
 printf '\n'
 printf 'Add %s to PATH if needed, then run:\n' "$EPFLEMMA_BIN_DIR"
 printf '  epflemma --help\n'
