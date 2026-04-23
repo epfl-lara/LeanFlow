@@ -68,8 +68,9 @@ Use `review`, `checkpoint`, `draft`, `refactor`, or `golf` for those cases.
    - use to validate one concrete automated proof candidate before patching it into the file
    - do not paste an unverified automated candidate directly into the proof
 8. `lean_multi_attempt`
-   - use only with a known proof location and 2-6 concrete tactic candidates
-   - do not use it for vague search or speculative whole-proof generation
+   - use only with a known proof location and 2-6 short local tactic candidates
+   - do not use it for vague search, speculative whole-proof generation, declaration headers, or candidates containing `sorry`
+   - if you have one full candidate proof, use `lean_auto_try` or patch the file and finish with `lean_verify`
 9. edit the current target minimally
    - queue-driven runs should change one declaration-sized unit at a time
    - local helper lemmas are allowed when they directly unblock the assigned declaration

@@ -972,6 +972,22 @@ def _extract_active_files(text: str) -> list[str]:
     seen: list[str] = []
     for match in re.findall(r"[\w./-]+\.lean\b", text or ""):
         normalized = match.strip()
+        if normalized.startswith("a//") or normalized.startswith("b//"):
+            normalized = normalized[2:]
+        project_root = _project_root()
+        try:
+            path = Path(normalized).expanduser()
+            if not path.is_absolute() and project_root:
+                candidate = (Path(project_root) / path).resolve()
+                if candidate.is_file():
+                    normalized = str(candidate.relative_to(Path(project_root).resolve()))
+            elif path.is_absolute() and path.is_file() and project_root:
+                try:
+                    normalized = str(path.resolve().relative_to(Path(project_root).resolve()))
+                except Exception:
+                    normalized = str(path.resolve())
+        except Exception:
+            normalized = match.strip()
         if normalized and normalized not in seen:
             seen.append(normalized)
     return seen[:8]
@@ -1396,6 +1412,7 @@ def _declaration_work_queue(
     requested_scope = scope or _declaration_queue_scope()
     queue: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+    diagnostics_active = _diagnostics_indicate_failure(issue_text)
     diagnostic_lines = _extract_diagnostic_line_numbers(issue_text)
 
     def _append(file_path: str, label: str, reasons: list[str], *, kind: str = "") -> None:
@@ -1429,10 +1446,10 @@ def _declaration_work_queue(
             name = str(entry.get("name", "") or "")
             line_number = int(entry.get("line", 0) or 0)
             anonymous = _is_anonymous_declaration_label(name)
-            if _declaration_name_safe_for_diagnostic_match(name):
+            if diagnostics_active and _declaration_name_safe_for_diagnostic_match(name):
                 if re.search(rf"\b{re.escape(name)}\b", issue_text or ""):
                     reasons.append("referenced in diagnostics")
-            if line_number and line_number in diagnostic_lines:
+            if diagnostics_active and line_number and line_number in diagnostic_lines:
                 reasons.append(f"diagnostic near line {line_number}")
             if anonymous and reasons and not entry.get("has_sorry") and not any(
                 reason.startswith("diagnostic near line ") for reason in reasons
@@ -1445,7 +1462,7 @@ def _declaration_work_queue(
                     reasons,
                     kind=str(entry.get("kind", "") or ""),
                 )
-        if not queue and _diagnostics_indicate_failure(issue_text):
+        if not queue and diagnostics_active:
             fallback = _nearest_declaration_name(active_file, next(iter(_extract_diagnostic_line_numbers(issue_text)), None))
             _append(active_file, fallback or "[file-level blocker]", ["diagnostics unresolved"])
         return queue
@@ -1460,7 +1477,7 @@ def _declaration_work_queue(
         except Exception:
             label = str(path)
         _append(str(path.resolve()), label, [f"{count} sorry placeholder(s)"])
-    if not queue and active_file and _diagnostics_indicate_failure(issue_text):
+    if not queue and active_file and diagnostics_active:
         try:
             active_label = str(Path(active_file).resolve().relative_to(Path(root).resolve()))
         except Exception:
@@ -1703,7 +1720,7 @@ def _queue_assignment_block(
         "- local helper lemmas or intermediate facts are allowed if they directly help this theorem",
         "- do not start solving unrelated later queue items",
         "- after a meaningful edit, stop and let the manager re-check the queue",
-        "- for this file-scoped theorem turn, the only acceptable final verification command is the canonical file check shown below",
+        "- for this file-scoped theorem turn, the only acceptable final verification step is `lean_verify(mode=file_exact)` for the active file",
     ]
     verification_hint = _queue_item_verification_hint(active_file)
     if verification_hint:
@@ -2194,7 +2211,7 @@ def _build_live_proof_state(
     recent_issue_text = _collect_message_text(history[-10:])
     blocker_summary = _normalize_blocker_summary(_extract_blocker_summary(recent_issue_text))
     declaration_scope = _declaration_queue_scope()
-    queue_issue_text = "\n".join(part for part in (diagnostics, recent_issue_text) if part).strip()
+    queue_issue_text = str(diagnostics or "").strip()
     declaration_queue = _declaration_work_queue(
         active_file,
         queue_issue_text,
@@ -2242,9 +2259,7 @@ def _build_live_proof_state(
     current_queue_item = _current_queue_item(declaration_queue, active_file)
     current_queue_label = str((current_queue_item or {}).get("label", "") or "").strip()
     queue_needs_final_file_sweep = declaration_scope == "file" and bool(active_file) and not declaration_queue
-    if declaration_scope == "file" and current_queue_label and (
-        not target_symbol or target_symbol == "[unknown]"
-    ):
+    if declaration_scope == "file" and current_queue_label:
         target_symbol = current_queue_label
     elif queue_needs_final_file_sweep:
         target_symbol = ""
@@ -2463,9 +2478,43 @@ def _diagnostics_indicate_failure(diagnostics: str) -> bool:
 
 
 def _goals_still_open(goals: str) -> bool:
+    def _structured_goals_still_open(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            lowered_value = value.lower()
+            if not lowered_value or "unavailable" in lowered_value:
+                return False
+            cleared_tokens = (
+                "no goals",
+                "goals accomplished",
+                "proof complete",
+                "no remaining goals",
+            )
+            if any(token in lowered_value for token in cleared_tokens):
+                return False
+            return "⊢" in value or bool(re.search(r"\bgoal\b", lowered_value))
+        if isinstance(value, list):
+            return any(_structured_goals_still_open(item) for item in value)
+        if isinstance(value, Mapping):
+            if "goals" in value:
+                return _structured_goals_still_open(value.get("goals"))
+            if "goal" in value:
+                return _structured_goals_still_open(value.get("goal"))
+            if "term_goal" in value:
+                return _structured_goals_still_open(value.get("term_goal"))
+            return False
+        return False
+
     lowered = (goals or "").lower()
     if not lowered or "unavailable" in lowered:
         return False
+    try:
+        parsed = json.loads(goals)
+    except Exception:
+        parsed = None
+    if parsed is not None:
+        return _structured_goals_still_open(parsed)
     cleared_tokens = (
         "no goals",
         "goals accomplished",
@@ -2541,8 +2590,9 @@ def _queue_item_verification_hint(active_file: str) -> str:
     if not command:
         return ""
     return (
-        f"- canonical check: `{command}`\n"
-        "- use `lean_inspect` for iteration, but do not accept the theorem as solved until this command succeeds for the active file\n"
+        "- canonical acceptance tool: `lean_verify(mode=file_exact)` on the active file\n"
+        f"- backend check performed by the tool: `{command}`\n"
+        "- use `lean_inspect` for iteration, but do not accept the theorem as solved until `lean_verify(mode=file_exact)` succeeds\n"
         "- do not treat `lake build`, `grep`, `head`, or truncated output as proof that this theorem-sized repair is clean"
     )
 
@@ -2550,15 +2600,14 @@ def _queue_item_verification_hint(active_file: str) -> str:
 def _recommended_verification_command(active_file: str) -> str:
     relative_label = _relative_file_label(active_file)
     if _single_queue_item_turn_enabled() and active_file:
-        command = _canonical_file_verification_command(active_file)
         return (
             f"`lean_inspect` on {relative_label}, then the required acceptance check "
-            f"`{command}` for this file-scoped theorem turn"
+            f"`lean_verify(mode=file_exact)` for this file-scoped theorem turn"
         )
     module_name = _module_name_for_file(active_file)
     if module_name:
-        return f"`lean_inspect` first, then `lake build {module_name}` when the file is close to clean"
-    return f"`lean_inspect` on {relative_label}, then final `lake env lean {relative_label}` when close to clean"
+        return f"`lean_inspect` first, then `lean_verify(mode=module)` when the file is close to clean"
+    return f"`lean_inspect` on {relative_label}, then final `lean_verify(mode=file_exact)` when close to clean"
 
 
 def _run_explicit_verification_build(active_file: str = "", *, full_project: bool = False) -> tuple[bool, str]:

@@ -33,7 +33,7 @@ Primary specs:
    - explain when a new attempt differs materially from earlier failures
 4. You may introduce local helper lemmas or intermediate proof steps when needed, but only if they directly unblock the assigned declaration.
 5. After each meaningful edit, re-check the assigned declaration with `lean_inspect` before making another large change.
-6. For a file-scoped assigned theorem, the only acceptable final verification command is `lake env lean <file>` for that exact file.
+6. For a file-scoped assigned theorem, the only acceptable final verification step is `lean_verify(mode=file_exact)` for that exact file. The tool runs the canonical `lake env lean <file>` backend check for you.
 7. Do not treat `lake build`, `grep`, `head`, or truncated output as proof that the assigned theorem is clean.
 8. If the declaration becomes clean, stop and hand control back to the manager rather than continuing to the next theorem on your own.
 
@@ -43,9 +43,11 @@ Primary specs:
 2. Search Mathlib next with `lean_search mode=semantic|type-pattern|natural-language` when the needed fact looks standard.
 3. If search is exhausted or the blocker still looks automation-suited, call `lean_proof_context` before deeper automation.
 4. Use `lean_auto_probe` first, then `lean_auto_search`, then `lean_auto_try` for one concrete candidate when theorem-local automation is justified.
-5. Use `lean_multi_attempt` only when you have 2-6 specific tactic candidates at one proof location.
-6. Only invent a new sublemma after those searches and theorem-local automation steps fail to produce the required statement.
-7. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, verification, worker dispatch, or blocker report you have.
+5. Use `lean_multi_attempt` only when you have 2-6 specific short local tactic candidates at one proof location.
+6. Do not send theorem-sized proof blocks, declaration headers, or candidates containing `sorry` to `lean_multi_attempt`.
+7. If you have one full candidate proof, prefer `lean_auto_try` or a direct patch followed by `lean_verify` instead.
+8. Only invent a new sublemma after those searches and theorem-local automation steps fail to produce the required statement.
+9. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, verification, worker dispatch, or blocker report you have.
 
 ## Success Condition
 

@@ -80,6 +80,9 @@ The repo-owned Lean tool surface is defined in `tools/lean_tool.py` and backed b
   - theorem-local context retrieval from the managed automation backend
   - returns theorem statement, original proof, hypotheses, in-scope names, namespace, and optional similar proofs
   - not a replacement for `lean_inspect` goals
+  - prefers local declaration-range stabilization when the active file already contains the target declaration
+  - falls back to a local declaration slice when proof-auto reports `theorem_not_found` or another backend-side context miss
+  - disables the proof-auto backend for the rest of the current run after a repeated theorem-lookup miss so later turns stop retrying the same broken path
 - `lean_multi_attempt`
   - theorem-local screening for 2-6 concrete tactic candidates at one file position
 - `lean_auto_probe`
@@ -106,6 +109,7 @@ EPFLemma installs and manages two Lean MCP backends by default:
   - role: `primary-state-search`
 - `lean-proof-auto-mcp`
   - role: `secondary-automation-context`
+  - used through native wrappers, with local fallback when backend theorem lookup misses a declaration visible in the current file
 
 Those servers exist to back the native tools above. Raw `mcp_*` tools are not part of the normal native Lean workflow surface.
 

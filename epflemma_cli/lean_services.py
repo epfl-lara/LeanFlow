@@ -34,6 +34,44 @@ SEARCH_PROVIDER_LABELS = {
     "project_rg": "project-rg",
     "mathlib_rg": "mathlib-rg",
 }
+MANAGED_MCP_TOOL_MAP = {
+    "diagnostics": ("mcp_lean_lsp_lean_diagnostic_messages",),
+    "goals": ("mcp_lean_lsp_lean_goal", "mcp_lean_lsp_lean_term_goal"),
+    "code_actions": ("mcp_lean_lsp_lean_code_actions",),
+    "multi_attempt": ("mcp_lean_lsp_lean_multi_attempt",),
+    "run_code": ("mcp_lean_lsp_lean_run_code",),
+    "local_search": ("mcp_lean_lsp_lean_local_search",),
+    "leanfinder": ("mcp_lean_lsp_lean_leanfinder",),
+    "leansearch": ("mcp_lean_lsp_lean_leansearch",),
+    "loogle": ("mcp_lean_lsp_lean_loogle",),
+    "proof_context": ("mcp_lean_proof_auto_get_proof_context",),
+    "auto_probe": ("mcp_lean_proof_auto_probe",),
+    "auto_search": ("mcp_lean_proof_auto_search_automated_proof",),
+    "auto_try": ("mcp_lean_proof_auto_try_automated_proof",),
+}
+INTERNAL_MANAGED_MCP_TOOL_MAP = {
+    "scan_theorem": ("mcp_lean_proof_auto_scan_theorem",),
+}
+MCP_CAPABILITY_DISABLED_LABELS = {
+    "diagnostics": "lean diagnostics MCP",
+    "goals": "lean goals MCP",
+    "code_actions": "lean code actions MCP",
+    "multi_attempt": "lean multi-attempt MCP",
+    "run_code": "lean run-code MCP",
+    "local_search": "lean local search MCP",
+    "leanfinder": "lean leanfinder MCP",
+    "leansearch": "lean leansearch MCP",
+    "loogle": "lean loogle MCP",
+    "proof_context": "lean proof context MCP",
+    "auto_probe": "lean automation probe MCP",
+    "auto_search": "lean automation search MCP",
+    "auto_try": "lean automation try MCP",
+}
+_DISABLED_MCP_TOOLS_BY_RUN: dict[str, set[str]] = {}
+MULTI_ATTEMPT_MIN_CANDIDATES = 2
+MULTI_ATTEMPT_MAX_CANDIDATES = 6
+MULTI_ATTEMPT_MAX_LINES = 12
+MULTI_ATTEMPT_MAX_CHARS = 700
 
 
 def recent_empty_search_streak(*, workflow_command: str, limit: int = 6) -> int:
@@ -69,6 +107,191 @@ def recent_empty_search_streak(*, workflow_command: str, limit: int = 6) -> int:
             continue
         break
     return streak
+
+
+def _workflow_run_key(cwd: str | os.PathLike[str] | None = None) -> str:
+    run_id = str(os.getenv("EPFLEMMA_WORKFLOW_RUN_ID", "") or "").strip()
+    if run_id:
+        return run_id
+    workflow_command = str(
+        os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "")
+        or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")
+        or ""
+    ).strip()
+    if workflow_command:
+        return f"workflow:{workflow_command}"
+    base = Path(cwd or os.getcwd()).expanduser().resolve()
+    return f"pid:{os.getpid()}:{base}"
+
+
+def _managed_mcp_tool_names() -> set[str]:
+    names: set[str] = set()
+    for candidates in MANAGED_MCP_TOOL_MAP.values():
+        names.update(candidates)
+    for candidates in INTERNAL_MANAGED_MCP_TOOL_MAP.values():
+        names.update(candidates)
+    return names
+
+
+def _disabled_mcp_tools_for_run(cwd: str | os.PathLike[str] | None = None) -> set[str]:
+    return set(_DISABLED_MCP_TOOLS_BY_RUN.get(_workflow_run_key(cwd), set()))
+
+
+def _disable_mcp_tool_for_run(tool_name: str, *, cwd: str | os.PathLike[str] | None = None) -> None:
+    normalized = str(tool_name or "").strip()
+    if not normalized or normalized not in _managed_mcp_tool_names():
+        return
+    run_key = _workflow_run_key(cwd)
+    disabled = _DISABLED_MCP_TOOLS_BY_RUN.setdefault(run_key, set())
+    disabled.add(normalized)
+
+
+def _apply_disabled_mcp_tools(
+    mcp_tools: dict[str, str],
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+) -> list[str]:
+    disabled = _disabled_mcp_tools_for_run(cwd)
+    if not disabled:
+        return []
+    reasons: list[str] = []
+    for capability, tool_name in list(mcp_tools.items()):
+        if tool_name and tool_name in disabled:
+            mcp_tools[capability] = ""
+            label = MCP_CAPABILITY_DISABLED_LABELS.get(capability, f"{capability} MCP")
+            reasons.append(f"{label} disabled for current run after previous backend failure")
+    return reasons
+
+
+def _strip_diff_path_prefix(file_path: str) -> str:
+    normalized = str(file_path or "").strip()
+    if normalized.startswith("a//") or normalized.startswith("b//"):
+        return normalized[2:]
+    return normalized
+
+
+def _canonical_tool_file_path(
+    file_path: str,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+) -> str:
+    normalized = _strip_diff_path_prefix(file_path)
+    if not normalized:
+        return ""
+
+    root = Path(cwd).expanduser().resolve() if cwd else None
+    if root is not None and not root.is_dir():
+        root = root.parent
+    if root is None:
+        project_root, _ = _project_root(cwd)
+        root = Path(project_root).expanduser().resolve() if project_root else None
+    configured_active = str(
+        os.getenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "")
+        or os.getenv("OPENGAUSS_NATIVE_ACTIVE_FILE", "")
+        or ""
+    ).strip()
+
+    def _resolve_candidate(candidate: str) -> Path | None:
+        raw = _strip_diff_path_prefix(candidate)
+        if not raw:
+            return None
+        path = Path(raw).expanduser()
+        if path.is_absolute():
+            return path.resolve()
+        if root:
+            return (root / path).resolve()
+        return path.resolve()
+
+    primary = _resolve_candidate(normalized)
+    if primary and primary.is_file():
+        return str(primary)
+
+    active_candidate = _resolve_candidate(configured_active)
+    if active_candidate and active_candidate.is_file():
+        requested_name = Path(normalized).name
+        if not primary or not requested_name or requested_name == active_candidate.name or normalized == configured_active:
+            return str(active_candidate)
+
+    return str(primary or normalized)
+
+
+def _summarize_attempt_diagnostics(attempts: list[dict[str, Any]]) -> list[str]:
+    summaries: list[str] = []
+    for attempt in attempts:
+        diagnostics = attempt.get("diagnostics")
+        if not isinstance(diagnostics, list):
+            continue
+        for diagnostic in diagnostics:
+            if not isinstance(diagnostic, Mapping):
+                continue
+            message = " ".join(str(diagnostic.get("message", "") or "").split()).strip()
+            if message:
+                summaries.append(message[:220])
+                break
+        if len(summaries) >= 2:
+            break
+    return summaries
+
+
+def _normalize_multi_attempt_candidates(attempts: list[str]) -> list[str]:
+    return [str(item or "").strip() for item in list(attempts or []) if str(item or "").strip()]
+
+
+def _multi_attempt_validation_reasons(attempts: list[str]) -> list[str]:
+    reasons: list[str] = []
+    count = len(attempts)
+    if count < MULTI_ATTEMPT_MIN_CANDIDATES or count > MULTI_ATTEMPT_MAX_CANDIDATES:
+        reasons.append(
+            f"lean_multi_attempt expects {MULTI_ATTEMPT_MIN_CANDIDATES}-{MULTI_ATTEMPT_MAX_CANDIDATES} concrete tactic candidates at one proof location"
+        )
+    declaration_pattern = re.compile(r"^\s*(theorem|lemma|example|def|instance|class|structure)\b")
+    for snippet in attempts:
+        sanitized = _strip_comments_and_strings(snippet)
+        if re.search(r"\bsorry\b", sanitized):
+            reasons.append("lean_multi_attempt candidates must not contain `sorry`")
+            break
+    for snippet in attempts:
+        lines = [line for line in str(snippet).splitlines() if line.strip()]
+        if (
+            len(str(snippet)) > MULTI_ATTEMPT_MAX_CHARS
+            or len(lines) > MULTI_ATTEMPT_MAX_LINES
+            or declaration_pattern.match(str(snippet))
+        ):
+            reasons.append("lean_multi_attempt expects short local tactic candidates, not full proof blocks")
+            break
+    return list(dict.fromkeys(reasons))
+
+
+def _discover_raw_mcp_tool_names() -> tuple[list[str], set[str]]:
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+
+        discover_mcp_tools()
+    except Exception:
+        pass
+
+    try:
+        from tools.registry import registry
+
+        tool_names = registry.get_all_tool_names()
+    except Exception:
+        tool_names = []
+    raw_tool_names = [name for name in tool_names if str(name).startswith("mcp_")]
+    return raw_tool_names, set(raw_tool_names)
+
+
+def _discover_internal_managed_mcp_tool(capability: str) -> str:
+    _, raw_tool_set = _discover_raw_mcp_tool_names()
+    for candidate in INTERNAL_MANAGED_MCP_TOOL_MAP.get(capability, ()):
+        if candidate in raw_tool_set:
+            return candidate
+    return ""
+
+
+def _disable_proof_auto_backend_for_run(*, cwd: str | os.PathLike[str] | None = None) -> None:
+    for tool_name in _managed_mcp_tool_names():
+        if tool_name.startswith("mcp_lean_proof_auto_"):
+            _disable_mcp_tool_for_run(tool_name, cwd=cwd)
 
 
 @dataclass(frozen=True)
@@ -288,19 +511,7 @@ def _decode_nested_result(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _discover_lean_mcp_tools() -> dict[str, str]:
-    try:
-        from tools.mcp_tool import discover_mcp_tools
-
-        discover_mcp_tools()
-    except Exception:
-        pass
-
-    try:
-        from tools.registry import registry
-
-        tool_names = registry.get_all_tool_names()
-    except Exception:
-        tool_names = []
+    raw_tool_names, raw_tool_set = _discover_raw_mcp_tool_names()
 
     discovered = {
         "diagnostics": "",
@@ -317,13 +528,23 @@ def _discover_lean_mcp_tools() -> dict[str, str]:
         "auto_search": "",
         "auto_try": "",
     }
-    for tool_name in tool_names:
+    for capability, candidates in MANAGED_MCP_TOOL_MAP.items():
+        for candidate in candidates:
+            if candidate in raw_tool_set:
+                discovered[capability] = candidate
+                break
+
+    for tool_name in raw_tool_names:
         lowered = tool_name.lower()
         if "lean" not in lowered:
             continue
         if not discovered["diagnostics"] and any(token in lowered for token in ("diagnostic", "message")):
             discovered["diagnostics"] = tool_name
-        if not discovered["goals"] and any(token in lowered for token in ("goal", "proof")):
+        if (
+            not discovered["goals"]
+            and "proof_auto" not in lowered
+            and ("_goal" in lowered or "term_goal" in lowered)
+        ):
             discovered["goals"] = tool_name
         if not discovered["code_actions"] and "code_action" in lowered:
             discovered["code_actions"] = tool_name
@@ -397,7 +618,7 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         for entry in mcp_status
         if entry.get("managed") and str(entry.get("name", "") or "").strip()
     }
-    degraded: list[str] = []
+    degraded: list[str] = _apply_disabled_mcp_tools(mcp_tools, cwd=base)
     if not binaries.get("lean"):
         degraded.append("lean binary unavailable")
     if not binaries.get("lake"):
@@ -495,6 +716,117 @@ def _find_symbol_line(path: Path, symbol: str | None) -> int | None:
         if entry["name"] == wanted:
             return int(entry["line"])
     return None
+
+
+def _find_declaration_entry(path: Path, theorem_id: str) -> dict[str, Any] | None:
+    wanted = str(theorem_id or "").strip()
+    if not wanted:
+        return None
+    short_name = wanted.split(".")[-1]
+    for entry in _declaration_index(path):
+        name = str(entry.get("name", "") or "").strip()
+        if name in {wanted, short_name}:
+            return dict(entry)
+    return None
+
+
+def _surrounding_declarations(path: Path, theorem_id: str, *, window: int = 3) -> list[str]:
+    entries = _declaration_index(path)
+    if not entries:
+        return []
+    wanted = str(theorem_id or "").strip()
+    short_name = wanted.split(".")[-1]
+    for idx, entry in enumerate(entries):
+        name = str(entry.get("name", "") or "").strip()
+        if name not in {wanted, short_name}:
+            continue
+        start = max(0, idx - window)
+        end = min(len(entries), idx + window + 1)
+        return [
+            str(item.get("name", "") or "").strip()
+            for item in entries[start:end]
+            if str(item.get("name", "") or "").strip() and str(item.get("name", "") or "").strip() != name
+        ]
+    return []
+
+
+def _split_declaration_statement_and_proof(text: str) -> tuple[str, str]:
+    snippet = str(text or "").strip()
+    if not snippet:
+        return "", ""
+    match = re.search(r":=\s*by\b", snippet)
+    if match:
+        statement = snippet[: match.start()].rstrip()
+        proof = snippet[match.end() :].lstrip()
+        return statement, proof
+    statement_line = snippet.splitlines()[0].strip()
+    remainder = "\n".join(snippet.splitlines()[1:]).strip()
+    return statement_line, remainder
+
+
+def _scan_theorem_by_range(
+    file_path: Path,
+    *,
+    start_line: int,
+    end_line: int,
+) -> dict[str, Any]:
+    tool_name = _discover_internal_managed_mcp_tool("scan_theorem")
+    if not tool_name:
+        return {}
+    raw = _invoke_json_tool(
+        tool_name,
+        {
+            "file": str(file_path),
+            "target": {"range": {"start_line": int(start_line), "end_line": int(end_line)}},
+        },
+    )
+    if raw.get("error"):
+        return {"error": str(raw.get("error", "") or "")}
+    parsed = _decode_nested_result(raw)
+    if isinstance(parsed, Mapping):
+        return dict(parsed)
+    return {}
+
+
+def _local_proof_context_payload(
+    file_path: Path,
+    theorem_id: str,
+    *,
+    degraded_reasons: list[str],
+    scan_payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    entry = _find_declaration_entry(file_path, theorem_id)
+    if not entry:
+        return None
+    theorem_name = str(entry.get("name", "") or theorem_id).strip()
+    statement, proof = _split_declaration_statement_and_proof(str(entry.get("text", "") or ""))
+    theorem = dict(scan_payload.get("theorem") or {}) if isinstance(scan_payload, Mapping) else {}
+    location = dict(theorem.get("location") or {}) if isinstance(theorem.get("location"), Mapping) else {}
+    metadata = {
+        "fallback_source": "local-declaration-slice",
+        "declaration_kind": str(entry.get("kind", "") or theorem.get("kind", "")),
+        "line": int(entry.get("line", 0) or 0),
+        "end_line": int(entry.get("end_line", 0) or 0),
+        "scan_theorem": dict(scan_payload or {}) if isinstance(scan_payload, Mapping) and scan_payload else {},
+    }
+    if location:
+        metadata["location"] = location
+    return {
+        "success": True,
+        "status": "local-fallback",
+        "backend_tool": "local-declaration-slice",
+        "degraded_reasons": list(dict.fromkeys(degraded_reasons)),
+        "file_path": str(file_path),
+        "theorem_id": theorem_name,
+        "theorem_statement": statement,
+        "original_proof": proof,
+        "hypotheses": [],
+        "in_scope": _surrounding_declarations(file_path, theorem_name),
+        "namespace": theorem_name.rsplit(".", 1)[0] if "." in theorem_name else "",
+        "similar_proofs": [],
+        "metadata": metadata,
+        "timing": {},
+    }
 
 
 def _diagnostics_text(file_path: Path, project_root: Path | None, mcp_tools: Mapping[str, str]) -> str:
@@ -837,11 +1169,20 @@ def _invoke_native_mcp_wrapper(
         return payload
     raw = _invoke_json_tool(tool_name, arguments)
     if raw.get("error"):
+        _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
         payload = _wrapper_unavailable_result(
             report=report,
             tool_name=tool_name,
             unavailable_reason=str(raw.get("error", unavailable_reason)),
             extra=extra,
+        )
+        payload["degraded_reasons"] = list(
+            dict.fromkeys(
+                [
+                    *payload.get("degraded_reasons", []),
+                    "managed MCP wrapper disabled for current run after previous backend failure",
+                ]
+            )
         )
         append_workflow_outcome(outcome_kind, payload)
         return payload
@@ -860,6 +1201,30 @@ def _invoke_native_mcp_wrapper(
     return payload
 
 
+def _auto_probe_attempt_succeeded(payload: Mapping[str, Any]) -> bool:
+    if bool(payload.get("success", False)):
+        return True
+    classification = str(payload.get("classification", "") or "").strip().lower()
+    if classification in {"trivial", "promising", "solved", "success"}:
+        return True
+    status = str(payload.get("status", "") or "").strip().lower()
+    return status in {"trivial", "promising", "solved", "success"}
+
+
+def _auto_search_depth_for_objective(objective: str) -> str:
+    normalized = str(objective or "").strip().lower()
+    mapping = {
+        "quick": "quick",
+        "fast": "quick",
+        "balanced": "normal",
+        "normal": "normal",
+        "deep": "deep",
+        "thorough": "deep",
+        "exhaustive": "exhaustive",
+    }
+    return mapping.get(normalized, "normal")
+
+
 def lean_proof_context(
     file_path: str,
     theorem_id: str,
@@ -869,21 +1234,122 @@ def lean_proof_context(
     similarity_threshold: float = 0.7,
 ) -> dict[str, Any]:
     report = probe_capabilities(cwd)
-    payload = _invoke_native_mcp_wrapper(
-        report.mcp_tools.get("proof_context", ""),
+    canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
+    target_path = Path(canonical_file_path).expanduser().resolve() if canonical_file_path else Path("")
+    declaration_entry = _find_declaration_entry(target_path, theorem_id) if canonical_file_path else None
+    scan_payload: dict[str, Any] = {}
+    resolved_theorem_id = str(theorem_id or "").strip()
+    if declaration_entry:
+        scan_payload = _scan_theorem_by_range(
+            target_path,
+            start_line=int(declaration_entry.get("line", 0) or 0),
+            end_line=int(declaration_entry.get("end_line", 0) or declaration_entry.get("line", 0) or 0),
+        )
+        theorem_info = dict(scan_payload.get("theorem") or {}) if isinstance(scan_payload, Mapping) else {}
+        theorem_name = str(theorem_info.get("name", "") or "").strip()
+        if theorem_name:
+            resolved_theorem_id = theorem_name
+
+    tool_name = report.mcp_tools.get("proof_context", "")
+    extra = {"file_path": canonical_file_path, "theorem_id": resolved_theorem_id}
+    if not tool_name:
+        payload = _wrapper_unavailable_result(
+            report=report,
+            tool_name="",
+            unavailable_reason="lean proof context MCP unavailable",
+            extra=extra,
+        )
+        append_workflow_outcome("lean-proof-context", payload)
+        return payload
+    raw = _invoke_json_tool(
+        tool_name,
         {
-            "file_path": file_path,
-            "path": file_path,
-            "theorem_id": theorem_id,
-            "theorem_name": theorem_id,
+            "file": canonical_file_path,
+            "theorem_id": resolved_theorem_id,
             "include_similar_proofs": include_similar_proofs,
             "similarity_threshold": similarity_threshold,
         },
-        report=report,
-        unavailable_reason="lean proof context MCP unavailable",
-        outcome_kind="lean-proof-context",
-        extra={"file_path": file_path, "theorem_id": theorem_id},
     )
+    if raw.get("error"):
+        _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
+        payload = _wrapper_unavailable_result(
+            report=report,
+            tool_name=tool_name,
+            unavailable_reason=str(raw.get("error", "lean proof context MCP unavailable")),
+            extra=extra,
+        )
+        payload["degraded_reasons"] = list(
+            dict.fromkeys(
+                [
+                    *payload.get("degraded_reasons", []),
+                    "managed MCP wrapper disabled for current run after previous backend failure",
+                ]
+            )
+        )
+        local_payload = _local_proof_context_payload(
+            target_path,
+            theorem_id,
+            degraded_reasons=[
+                *payload["degraded_reasons"],
+                "using local declaration fallback after proof context backend failure",
+            ],
+            scan_payload=scan_payload,
+        )
+        if local_payload is not None:
+            append_workflow_outcome("lean-proof-context", local_payload)
+            return local_payload
+        append_workflow_outcome("lean-proof-context", payload)
+        return payload
+    parsed = _decode_nested_result(raw)
+    payload: dict[str, Any] = {
+        "success": bool(parsed.get("success", True)),
+        "backend_tool": tool_name,
+        "degraded_reasons": list(report.degraded_reasons),
+        **extra,
+    }
+    if isinstance(parsed, Mapping):
+        for key, value in parsed.items():
+            if key not in {"success"}:
+                payload[key] = value
+    backend_status = str(payload.get("status", "") or "").strip().lower()
+    if backend_status and backend_status != "success":
+        fail_metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {}
+        fail_code = str(fail_metadata.get("fail_code", "") or "").strip().lower()
+        fail_message = str(
+            fail_metadata.get("fail_message", "")
+            or payload.get("error", "")
+            or payload.get("message", "")
+            or payload.get("status", "")
+        ).strip()
+        degraded_reasons = list(payload.get("degraded_reasons", []) or [])
+        if fail_message:
+            degraded_reasons.append(f"proof context backend failure: {fail_message}")
+        if fail_code == "theorem_not_found":
+            _disable_proof_auto_backend_for_run(cwd=report.cwd)
+            degraded_reasons.append(
+                "proof-auto backend disabled for current run after theorem_not_found backend miss"
+            )
+        elif tool_name:
+            _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
+            degraded_reasons.append(
+                "managed MCP wrapper disabled for current run after previous backend failure"
+            )
+        local_payload = _local_proof_context_payload(
+            target_path,
+            theorem_id,
+            degraded_reasons=[
+                *degraded_reasons,
+                "using local declaration fallback after proof context backend failure",
+            ],
+            scan_payload=scan_payload,
+        )
+        if local_payload is not None:
+            append_workflow_outcome("lean-proof-context", local_payload)
+            return local_payload
+        payload["success"] = False
+        payload["degraded_reasons"] = list(dict.fromkeys(degraded_reasons))
+        append_workflow_outcome("lean-proof-context", payload)
+        return payload
     payload.setdefault("theorem_statement", "")
     payload.setdefault("original_proof", "")
     payload.setdefault("hypotheses", [])
@@ -892,6 +1358,7 @@ def lean_proof_context(
     payload.setdefault("similar_proofs", [])
     payload.setdefault("metadata", {})
     payload.setdefault("timing", {})
+    append_workflow_outcome("lean-proof-context", payload)
     return payload
 
 
@@ -904,19 +1371,42 @@ def lean_multi_attempt(
     column: int | None = None,
 ) -> dict[str, Any]:
     report = probe_capabilities(cwd)
+    normalized_attempts = _normalize_multi_attempt_candidates(attempts)
+    validation_reasons = _multi_attempt_validation_reasons(normalized_attempts)
+    canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
+    if validation_reasons:
+        payload = {
+            "success": False,
+            "backend_tool": report.mcp_tools.get("multi_attempt", ""),
+            "degraded_reasons": list(
+                dict.fromkeys(
+                    [
+                        *report.degraded_reasons,
+                        *validation_reasons,
+                        "use `lean_auto_try` for one full candidate proof, or patch the file and finish with `lean_verify`",
+                    ]
+                )
+            ),
+            "file_path": canonical_file_path,
+            "line": line,
+            "column": column,
+            "attempts": normalized_attempts,
+            "action_required": "provide 2-6 short local tactic candidates at one proof location",
+        }
+        append_workflow_outcome("lean-multi-attempt", payload)
+        return payload
     return _invoke_native_mcp_wrapper(
         report.mcp_tools.get("multi_attempt", ""),
         {
-            "file_path": file_path,
-            "path": file_path,
+            "file_path": canonical_file_path,
             "line": line,
             "column": column,
-            "attempts": attempts,
+            "snippets": normalized_attempts,
         },
         report=report,
         unavailable_reason="lean multi-attempt MCP unavailable",
         outcome_kind="lean-multi-attempt",
-        extra={"file_path": file_path, "line": line, "column": column, "attempts": attempts},
+        extra={"file_path": canonical_file_path, "line": line, "column": column, "attempts": normalized_attempts},
     )
 
 
@@ -929,22 +1419,84 @@ def lean_auto_probe(
     timeout_s: int = 10,
 ) -> dict[str, Any]:
     report = probe_capabilities(cwd)
-    return _invoke_native_mcp_wrapper(
-        report.mcp_tools.get("auto_probe", ""),
-        {
-            "file_path": file_path,
-            "path": file_path,
-            "theorem_id": theorem_id,
-            "theorem_name": theorem_id,
-            "methods": list(methods or ["aesop", "aesop?", "grind"]),
-            "timeout_s": timeout_s,
-            "timeout": timeout_s,
-        },
-        report=report,
-        unavailable_reason="lean automation probe MCP unavailable",
-        outcome_kind="lean-auto-probe",
-        extra={"file_path": file_path, "theorem_id": theorem_id},
-    )
+    tool_name = report.mcp_tools.get("auto_probe", "")
+    canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
+    extra = {"file_path": canonical_file_path, "theorem_id": theorem_id}
+    normalized_methods = [
+        str(method).strip()
+        for method in list(methods or ["aesop", "aesop?", "grind"])
+        if str(method).strip()
+    ]
+    if not normalized_methods:
+        normalized_methods = ["aesop", "aesop?", "grind"]
+    if not tool_name:
+        payload = _wrapper_unavailable_result(
+            report=report,
+            tool_name="",
+            unavailable_reason="lean automation probe MCP unavailable",
+            extra=extra,
+        )
+        payload["attempts"] = []
+        append_workflow_outcome("lean-auto-probe", payload)
+        return payload
+
+    attempts_payload: list[dict[str, Any]] = []
+    for method in normalized_methods:
+        raw = _invoke_json_tool(
+            tool_name,
+            {
+                "file": canonical_file_path,
+                "theorem_id": theorem_id,
+                "mode": method,
+                "budget_s": float(timeout_s),
+            },
+        )
+        if raw.get("error"):
+            _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
+            payload = _wrapper_unavailable_result(
+                report=report,
+                tool_name=tool_name,
+                unavailable_reason=str(raw.get("error", "lean automation probe MCP unavailable")),
+                extra=extra,
+            )
+            payload["degraded_reasons"] = list(
+                dict.fromkeys(
+                    [
+                        *payload.get("degraded_reasons", []),
+                        "managed MCP wrapper disabled for current run after previous backend failure",
+                    ]
+                )
+            )
+            payload["attempts"] = attempts_payload
+            append_workflow_outcome("lean-auto-probe", payload)
+            return payload
+        parsed = _decode_nested_result(raw)
+        attempt_payload = {"mode": method}
+        if isinstance(parsed, Mapping):
+            attempt_payload.update(dict(parsed))
+        attempts_payload.append(attempt_payload)
+
+    recommended_mode = ""
+    for attempt in attempts_payload:
+        if _auto_probe_attempt_succeeded(attempt):
+            recommended_mode = str(attempt.get("mode", "") or "")
+            break
+    if not recommended_mode and attempts_payload:
+        recommended_mode = str(attempts_payload[0].get("mode", "") or "")
+    degraded_reasons = list(report.degraded_reasons)
+    if not any(_auto_probe_attempt_succeeded(attempt) for attempt in attempts_payload):
+        degraded_reasons.extend(_summarize_attempt_diagnostics(attempts_payload))
+    payload = {
+        "success": any(_auto_probe_attempt_succeeded(attempt) for attempt in attempts_payload),
+        "backend_tool": tool_name,
+        "degraded_reasons": list(dict.fromkeys(degraded_reasons)),
+        "file_path": canonical_file_path,
+        "theorem_id": theorem_id,
+        "attempts": attempts_payload,
+        "recommended_mode": recommended_mode,
+    }
+    append_workflow_outcome("lean-auto-probe", payload)
+    return payload
 
 
 def lean_auto_search(
@@ -956,21 +1508,19 @@ def lean_auto_search(
     objective: str = "balanced",
 ) -> dict[str, Any]:
     report = probe_capabilities(cwd)
+    canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
     return _invoke_native_mcp_wrapper(
         report.mcp_tools.get("auto_search", ""),
         {
-            "file_path": file_path,
-            "path": file_path,
+            "file": canonical_file_path,
             "theorem_id": theorem_id,
-            "theorem_name": theorem_id,
-            "timeout_s": timeout_s,
-            "timeout": timeout_s,
-            "objective": objective,
+            "search_budget_s": float(timeout_s),
+            "search_depth": _auto_search_depth_for_objective(objective),
         },
         report=report,
         unavailable_reason="lean automation search MCP unavailable",
         outcome_kind="lean-auto-search",
-        extra={"file_path": file_path, "theorem_id": theorem_id, "objective": objective},
+        extra={"file_path": canonical_file_path, "theorem_id": theorem_id, "objective": objective},
     )
 
 
@@ -983,22 +1533,20 @@ def lean_auto_try(
     timeout_s: int = 10,
 ) -> dict[str, Any]:
     report = probe_capabilities(cwd)
+    canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
     return _invoke_native_mcp_wrapper(
         report.mcp_tools.get("auto_try", ""),
         {
-            "file_path": file_path,
-            "path": file_path,
+            "file": canonical_file_path,
             "theorem_id": theorem_id,
-            "theorem_name": theorem_id,
             "proof_attempt": proof_attempt,
-            "attempt": proof_attempt,
             "timeout_s": timeout_s,
-            "timeout": timeout_s,
+            "return_proof_state": True,
         },
         report=report,
         unavailable_reason="lean automation try MCP unavailable",
         outcome_kind="lean-auto-try",
-        extra={"file_path": file_path, "theorem_id": theorem_id, "proof_attempt": proof_attempt},
+        extra={"file_path": canonical_file_path, "theorem_id": theorem_id, "proof_attempt": proof_attempt},
     )
 
 

@@ -435,6 +435,8 @@ The verification loop is intentionally Lean-LSP-first:
 - prefer a focused `lake build <Module>` when the active file is close to clean
 - reserve full-project `lake build` for milestone verification and final success checks
 
+Managed automation backends are intentionally treated as optional infrastructure behind the native Lean tools, not as authoritative proof state. When an automation backend misses a declaration that the local file queue can already see, EPFLemma records the backend miss in `degraded_reasons`, degrades cleanly, and continues with local source context instead of stalling the run.
+
 The inspection split is intentional:
 
 - `/workflow activity` is the structured step feed: API calls, assistant plans, tool starts, resumes, checkpoints, and autonomous follow-ups
@@ -459,6 +461,9 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
 - `lean_proof_context`
   - theorem-context retrieval from the managed automation backend: theorem statement, original proof text, hypotheses, in-scope names, namespace, and similar proofs
   - this is not a replacement for `lean_inspect` goals
+  - when the active file already contains the target declaration, EPFLemma first stabilizes lookup from the local declaration range before asking the backend for richer context
+  - if the proof-auto backend reports `theorem_not_found` or another backend-side context failure, EPFLemma falls back to a local declaration-slice context instead of pretending the backend succeeded
+  - repeated proof-auto lookup failures disable the proof-auto backend for the rest of the current workflow run so the agent stops wasting turns on the same blind spot
 - `lean_multi_attempt`
   - screen 2-6 concrete tactic candidates at one proof location through the MCP backend
 - `lean_auto_probe`
@@ -1034,6 +1039,7 @@ Installer/bootstrap-managed default Lean MCP backends:
 - `lean-proof-auto-mcp@v0.4.0`
   - secondary automation/context backend
   - theorem-local context and automation helpers such as `get_proof_context`, `probe`, `search_automated_proof`, and `try_automated_proof`
+  - EPFLemma uses it through native wrappers and now degrades cleanly when backend lookup misses a declaration that exists in the local file
 
 The install script bootstraps both backends by default under `~/.epflemma/mcp/venvs/`. To repair or recreate them later, run:
 
@@ -1044,6 +1050,12 @@ epflemma mcp bootstrap lean
 `epflemma mcp status` now shows server role labels, whether a server is EPFLemma-managed, whether it is configured/installed, and whether bootstrap is recommended. The same surfaces are available in the interactive shell through `/doctor ...`, `/mcp bootstrap lean`, and `/mcp status [--json]`.
 
 Raw `mcp_*` tools are still available through explicit `mcp-{server}` toolsets for debugging, but they are not part of the normal native Lean workflow surface. The model should use the native Lean wrappers instead.
+
+For theorem-local automation, the important behavior is:
+
+- `lean_proof_context` prefers backend context when available
+- if proof-auto lookup fails for a declaration that the local file already contains, EPFLemma falls back to a local declaration slice and nearby declarations
+- a proof-auto `theorem_not_found` miss disables the proof-auto backend for the rest of that workflow run so later turns do not keep retrying the same broken backend path
 
 To persist MCP sampling audit events to disk, enable it per server in `~/.epflemma/config.yaml`:
 

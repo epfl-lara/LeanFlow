@@ -317,14 +317,14 @@ def get_model_context_length(model: str, base_url: str = "", api_key: str = "") 
     if base_url:
         provider_metadata = fetch_provider_model_metadata(base_url, api_key=api_key)
         matched, provider_length = _lookup_metadata_context_length(provider_metadata, model)
-        if matched:
-            return provider_length or 128000
+        if matched and provider_length is not None:
+            return provider_length
 
     # 3. OpenRouter API metadata
     metadata = fetch_model_metadata()
     matched, metadata_length = _lookup_metadata_context_length(metadata, model)
-    if matched:
-        return metadata_length or 128000
+    if matched and metadata_length is not None:
+        return metadata_length
 
     # 4. Hardcoded defaults (case-insensitive exact match first, then fuzzy match)
     normalized_model = _normalize_model_name(model)
