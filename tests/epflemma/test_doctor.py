@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from epflemma_cli.doctor import run_doctor
+import pytest
+
+from epflemma_cli.doctor import DOCTOR_MODES, run_doctor
 
 
 def test_run_doctor_json_is_structured_in_degraded_mode(monkeypatch, tmp_path):
@@ -46,3 +48,111 @@ def test_run_doctor_supports_mcp_mode(monkeypatch, tmp_path):
 
     assert payload["mode"] == "mcp"
     assert payload["mcp_status"][0]["name"] == "lean-lsp"
+
+
+def test_run_doctor_supported_modes_cover_readme_surface():
+    # README advertises these modes; keeping the set in sync prevents silent drift.
+    assert DOCTOR_MODES == {"all", "env", "mcp", "search", "migrate", "cleanup"}
+
+
+def test_run_doctor_unknown_mode_normalizes_to_all(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "epflemma_cli.doctor.resolve_runtime_provider",
+        lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
+    )
+    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+
+    _issues, payload = run_doctor(tmp_path, mode="totally-bogus", json_output=True)
+
+    assert payload["mode"] == "all"
+    # mode=all implies every optional section is populated
+    for section in ("mcp_status", "search", "migrate", "cleanup"):
+        assert section in payload
+
+
+def test_run_doctor_text_output_renders_structured_report(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "epflemma_cli.doctor.resolve_runtime_provider",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://rcp.example/v1",
+            "api_mode": "chat_completions",
+            "model": "demo-model",
+        },
+    )
+    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+
+    _issues, text = run_doctor(tmp_path, json_output=False)
+
+    assert isinstance(text, str)
+    assert "Doctor" in text
+    assert "Runtime provider:" in text
+    assert "custom" in text
+    assert "Issues:" in text
+
+
+def test_run_doctor_reports_provider_error_without_raising(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+
+    def _blow_up():
+        raise RuntimeError("no credentials configured")
+
+    monkeypatch.setattr("epflemma_cli.doctor.resolve_runtime_provider", _blow_up)
+    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+
+    issues, payload = run_doctor(tmp_path, json_output=True)
+
+    assert payload["provider"]["available"] is False
+    assert "no credentials configured" in payload["provider"]["error"]
+    assert any("no credentials" in issue for issue in issues)
+
+
+def test_run_doctor_cleanup_mode_lists_legacy_candidates(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    (tmp_path / ".gauss").mkdir()
+    monkeypatch.setattr(
+        "epflemma_cli.doctor.resolve_runtime_provider",
+        lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
+    )
+    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+
+    _issues, payload = run_doctor(tmp_path, mode="cleanup", json_output=True)
+
+    assert payload["mode"] == "cleanup"
+    assert "cleanup" in payload
+    assert payload["cleanup"]["apply_supported"] is False
+    assert any(path.endswith(".gauss") for path in payload["cleanup"]["candidate_paths"])
+
+
+def test_run_doctor_migrate_mode_reports_legacy_home_presence(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "epflemma_cli.doctor.resolve_runtime_provider",
+        lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
+    )
+    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+
+    _issues, payload = run_doctor(tmp_path, mode="migrate", json_output=True)
+
+    assert payload["mode"] == "migrate"
+    assert "legacy_homes" in payload["migrate"]
+    legacy_paths = {entry["path"] for entry in payload["migrate"]["legacy_homes"]}
+    assert any(path.endswith(".gauss") for path in legacy_paths)
+    assert any(path.endswith(".opengauss") for path in legacy_paths)
+
+
+@pytest.mark.parametrize("mode", sorted({"all", "env", "mcp", "search", "migrate", "cleanup"}))
+def test_run_doctor_never_throws_for_each_supported_mode(monkeypatch, tmp_path, mode):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "epflemma_cli.doctor.resolve_runtime_provider",
+        lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
+    )
+    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+
+    issues, payload = run_doctor(tmp_path, mode=mode, json_output=True)
+
+    assert payload["mode"] == mode
+    assert isinstance(issues, list)
