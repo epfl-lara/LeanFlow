@@ -16,3 +16,9 @@ lake update
 epflemma project init
 epflemma workflow prove GaussTest/RealTheorems.lean
 ```
+
+Commit guard:
+
+- tracked files under `testdata/workflow_projects/GaussTest` are protected by the repo pre-commit hook
+- workflow attempts can still accumulate in ignored project-local state such as `.epflemma/` and `.lake/`
+- to intentionally refresh the canonical fixture, use `ALLOW_GAUSSTEST_COMMIT=1 git commit`

@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+case "${ALLOW_GAUSSTEST_COMMIT:-}" in
+  1|true|TRUE|yes|YES|on|ON)
+    exit 0
+    ;;
+esac
+
+protected_paths="$(git diff --cached --name-only -- testdata/workflow_projects/GaussTest)"
+
+if [ -z "${protected_paths}" ]; then
+  exit 0
+fi
+
+echo "Commit blocked: staged changes under testdata/workflow_projects/GaussTest are protected." >&2
+echo "These files are kept as a canonical workflow fixture." >&2
+echo "Runtime attempts should stay in ignored paths such as .epflemma/ and .lake/." >&2
+echo "For an intentional fixture refresh, rerun with ALLOW_GAUSSTEST_COMMIT=1." >&2
+echo >&2
+printf '%s\n' "${protected_paths}" >&2
+exit 1
