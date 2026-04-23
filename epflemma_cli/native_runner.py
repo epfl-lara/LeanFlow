@@ -1812,8 +1812,45 @@ def _remember_transition_failed_attempt(
     autonomy_state: dict[str, Any],
     outcome: Mapping[str, Any],
 ) -> None:
-    del autonomy_state
-    del outcome
+    current = dict(outcome or {})
+    status = str(current.get("status", "") or "").strip().lower()
+    if not status or status == "solved":
+        return
+    target_symbol = str(current.get("target_symbol", "") or "").strip()
+    active_file = str(current.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return
+
+    baseline = dict(autonomy_state.get("current_queue_assignment") or {})
+    slice_text = str(baseline.get("slice", "") or "").strip()
+    _, _, body = slice_text.partition(":\n")
+    snippet = body.strip() or slice_text or "[no attempted proof shape recorded]"
+    lines = [line.rstrip() for line in snippet.splitlines() if line.strip()]
+    if len(lines) > 6:
+        lines = lines[:6]
+    proof_shape = _single_line(" ".join(lines) if lines else snippet, 240)
+
+    reason = _single_line(
+        str(current.get("note", "") or current.get("build_status", "") or status),
+        240,
+    )
+    attempts = [dict(item) for item in autonomy_state.get("failed_attempts", []) if isinstance(item, Mapping)]
+    attempts.append(
+        {
+            "attempt": _failed_attempt_count_for_theorem(
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
+            + 1,
+            "cycle": 0,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "proof_shape": proof_shape or "[no attempted proof shape recorded]",
+            "reason": reason,
+        }
+    )
+    autonomy_state["failed_attempts"] = _prune_failed_attempt_entries(attempts)
 
 
 def _has_unresolved_theorem_outcomes(autonomy_state: Mapping[str, Any]) -> bool:
