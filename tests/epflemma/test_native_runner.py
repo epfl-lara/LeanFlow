@@ -2145,7 +2145,11 @@ def test_rebuild_history_for_theorem_transition_records_blocked_outcome_without_
         "current_target": "next_demo",
         "current_file": "Demo/Main.lean",
     }
-    assert "failed_attempts" not in autonomy_state
+    attempts = autonomy_state["failed_attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["target_symbol"] == "blocked_demo"
+    assert attempts[0]["active_file"] == "Demo/Main.lean"
+    assert "still has unresolved goals" in attempts[0]["reason"]
     outcomes = autonomy_state["theorem_outcomes"]
     assert outcomes["Demo/Main.lean::blocked_demo"]["status"] == "blocked"
 
