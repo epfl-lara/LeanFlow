@@ -13,6 +13,8 @@ It installs as `epflemma`, uses `~/.epflemma` for user-level config, keeps proje
 
 This fork removes the old managed `claude-code` and `codex` backend flow. EPFLemma now runs Lean workflows through its own internal `epflemma-native` runtime and routes inference through direct provider APIs, OpenAI-compatible endpoints such as RCP, or local runtimes such as `vllm`, `ollama`, and `llama.cpp`.
 
+EPFLemma builds on earlier OpenGauss work. The project history traces back to [math-inc/OpenGauss](https://github.com/math-inc/OpenGauss), and this repo carries that lineage forward in a Lean-first direction.
+
 ## Product Direction
 
 EPFLemma is intentionally Lean-first and automation-first.
@@ -232,7 +234,7 @@ The interface is styled around EPFL / Lean / AI-for-math work, but the executabl
 Direct local install from the current repo:
 
 ```bash
-git clone https://github.com/Lemmy00/EPFLemma.git
+git clone https://github.com/epfl-lara/EPFLemma.git
 cd EPFLemma
 ./scripts/install-internal.sh
 ```
