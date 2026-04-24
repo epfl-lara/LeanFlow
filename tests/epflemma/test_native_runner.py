@@ -1377,6 +1377,49 @@ def test_declaration_work_queue_ignores_info_only_diagnostics_without_sorries(tm
     assert queue == []
 
 
+def test_declaration_work_queue_maps_only_actionable_structured_diagnostics(tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "def isLipschitz (f : Nat -> Nat) : Prop := True",
+                "#check isLipschitz",
+                "",
+                "lemma style_warning : True := by",
+                "  have h : True := by trivial",
+                "  cases' h",
+                "  trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    queue = runner._declaration_work_queue(
+        str(active),
+        json.dumps(
+            {
+                "items": [
+                    {"severity": "info", "message": "isLipschitz : Prop", "line": 2, "column": 1},
+                    {
+                        "severity": "warning",
+                        "message": "The `cases'` tactic is discouraged",
+                        "line": 6,
+                        "column": 3,
+                    },
+                ]
+            }
+        ),
+        project_root=str(project),
+        scope="file",
+    )
+
+    assert [item["label"] for item in queue] == ["style_warning"]
+    assert queue[0]["reasons"] == ["diagnostic near line 6"]
+
+
 def test_queue_assignment_block_mentions_only_assigned_theorem():
     text = runner._queue_assignment_block(
         {
@@ -1492,6 +1535,24 @@ def test_live_state_is_not_verified_without_explicit_verification_result():
 
 def test_diagnostics_indicate_failure_for_warnings():
     assert runner._diagnostics_indicate_failure("warning: declaration uses simp") is True
+
+
+def test_diagnostics_indicate_failure_ignores_structured_info_messages():
+    assert (
+        runner._diagnostics_indicate_failure(
+            '{"items":[{"severity":"info","message":"#check output","line":2,"column":1}]}'
+        )
+        is False
+    )
+
+
+def test_diagnostics_indicate_failure_keeps_structured_warnings_blocking():
+    assert (
+        runner._diagnostics_indicate_failure(
+            '{"items":[{"severity":"warning","message":"style warning","line":6,"column":3}]}'
+        )
+        is True
+    )
 
 
 def test_promote_live_state_uses_focused_build_before_full_project_build(monkeypatch, tmp_path):

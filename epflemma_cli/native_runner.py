@@ -25,6 +25,10 @@ from agent.context_compressor import ContextCompressor
 from agent.model_metadata import estimate_messages_tokens_rough
 from epflemma_cli.file_locks import list_file_locks, release_all_file_locks
 from epflemma_cli.lean_services import (
+    actionable_diagnostic_items,
+    actionable_diagnostic_line_numbers,
+    diagnostic_items,
+    diagnostics_indicate_actionable_failure,
     lean_inspect,
     recent_empty_search_streak,
     lean_verify,
@@ -1394,6 +1398,9 @@ def _nearest_declaration_name(active_file: str, line_number: int | None) -> str:
 
 
 def _extract_diagnostic_line_numbers(text: str) -> list[int]:
+    actionable_lines = actionable_diagnostic_line_numbers(text)
+    if actionable_lines or diagnostic_items(text):
+        return actionable_lines
     values: list[int] = []
     patterns = (
         r":(\d+):\d+",
@@ -1451,6 +1458,12 @@ def _declaration_work_queue(
     seen: set[tuple[str, str]] = set()
     diagnostics_active = _diagnostics_indicate_failure(issue_text)
     diagnostic_lines = _extract_diagnostic_line_numbers(issue_text)
+    parsed_diagnostic_items = diagnostic_items(issue_text)
+    diagnostic_match_text = issue_text
+    if parsed_diagnostic_items:
+        diagnostic_match_text = "\n".join(
+            str(item.get("message", "") or "") for item in actionable_diagnostic_items(issue_text)
+        )
 
     def _append(file_path: str, label: str, reasons: list[str], *, kind: str = "") -> None:
         key = (file_path, label)
@@ -1484,7 +1497,7 @@ def _declaration_work_queue(
             line_number = int(entry.get("line", 0) or 0)
             anonymous = _is_anonymous_declaration_label(name)
             if diagnostics_active and _declaration_name_safe_for_diagnostic_match(name):
-                if re.search(rf"\b{re.escape(name)}\b", issue_text or ""):
+                if re.search(rf"\b{re.escape(name)}\b", diagnostic_match_text or ""):
                     reasons.append("referenced in diagnostics")
             diagnostic_reason = _diagnostic_reason_for_entry(entry, diagnostic_lines) if diagnostics_active else ""
             if diagnostic_reason:
@@ -2509,25 +2522,7 @@ def _attach_live_proof_state(user_message: str, live_state: Mapping[str, Any]) -
 
 
 def _diagnostics_indicate_failure(diagnostics: str) -> bool:
-    lowered = (diagnostics or "").lower()
-    cleared_tokens = (
-        "no errors found",
-        "no errors",
-        "without errors",
-    )
-    if any(token in lowered for token in cleared_tokens):
-        lowered = lowered.replace("no errors found", "").replace("no errors", "").replace("without errors", "")
-    failure_patterns = (
-        r"\berror\b",
-        r"\berrors\b",
-        r"\bwarning\b",
-        r"\bwarnings\b",
-        r"\bsorry\b",
-        r"\bunsolved\b",
-        r"\bfailed\b",
-        r"declaration uses sorry",
-    )
-    return any(re.search(pattern, lowered) for pattern in failure_patterns)
+    return diagnostics_indicate_actionable_failure(diagnostics)
 
 
 def _goals_still_open(goals: str) -> bool:
