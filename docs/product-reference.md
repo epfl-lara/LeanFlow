@@ -935,6 +935,7 @@ auxiliary:
   lean_reasoning:
     provider: main
     model: moonshotai/Kimi-K2.6-int4
+    reasoning_effort: high
     base_url: ""
     api_key: ""
 
@@ -990,6 +991,7 @@ epflemma config set model.provider '"auto"'
 epflemma config set model.base_url '"https://inference.rcp.epfl.ch/v1"'
 epflemma config set auxiliary.lean_reasoning.model '"moonshotai/Kimi-K2.6-int4"'
 epflemma config set auxiliary.lean_reasoning.provider '"main"'
+epflemma config set auxiliary.lean_reasoning.reasoning_effort '"high"'
 epflemma config set agent.reasoning_effort '"auto"'
 epflemma config set agent.seed '42'
 epflemma config set agent.temperature '0.3'

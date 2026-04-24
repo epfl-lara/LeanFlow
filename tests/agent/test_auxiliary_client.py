@@ -15,6 +15,8 @@ from agent.auxiliary_client import (
     auxiliary_max_tokens_param,
     _read_codex_access_token,
     _get_auxiliary_provider,
+    _build_call_kwargs,
+    _resolve_task_reasoning_effort,
     _resolve_forced_provider,
     _resolve_auto,
 )
@@ -32,6 +34,9 @@ def _clean_env(monkeypatch):
         "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
         "AUXILIARY_WEB_EXTRACT_PROVIDER", "AUXILIARY_WEB_EXTRACT_MODEL",
         "AUXILIARY_WEB_EXTRACT_BASE_URL", "AUXILIARY_WEB_EXTRACT_API_KEY",
+        "AUXILIARY_LEAN_REASONING_PROVIDER", "AUXILIARY_LEAN_REASONING_MODEL",
+        "AUXILIARY_LEAN_REASONING_BASE_URL", "AUXILIARY_LEAN_REASONING_API_KEY",
+        "AUXILIARY_LEAN_REASONING_REASONING_EFFORT",
         "CONTEXT_COMPRESSION_PROVIDER", "CONTEXT_COMPRESSION_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -585,3 +590,36 @@ class TestAuxiliaryMaxTokensParam:
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
             result = auxiliary_max_tokens_param(1024)
         assert result == {"max_tokens": 1024}
+
+
+class TestLeanReasoningBudget:
+    def test_lean_reasoning_effort_reads_config(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.auxiliary_client._load_runtime_config",
+            lambda: {"auxiliary": {"lean_reasoning": {"reasoning_effort": "high"}}},
+        )
+
+        assert _resolve_task_reasoning_effort("lean_reasoning") == "high"
+
+    def test_lean_reasoning_effort_env_overrides_config(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_LEAN_REASONING_REASONING_EFFORT", "medium")
+        monkeypatch.setattr(
+            "agent.auxiliary_client._load_runtime_config",
+            lambda: {"auxiliary": {"lean_reasoning": {"reasoning_effort": "high"}}},
+        )
+
+        assert _resolve_task_reasoning_effort("lean_reasoning") == "medium"
+
+    def test_rcp_main_route_gets_high_reasoning_budget(self):
+        kwargs = _build_call_kwargs(
+            "main",
+            "moonshotai/Kimi-K2.6-int4",
+            [{"role": "user", "content": "prove"}],
+            max_tokens=5000,
+            base_url="https://inference.rcp.epfl.ch/v1",
+            reasoning_effort="high",
+        )
+
+        assert kwargs["max_tokens"] == 5000
+        assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+        assert kwargs["extra_body"]["reasoning_effort"] == "high"

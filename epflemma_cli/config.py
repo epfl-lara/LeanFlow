@@ -46,6 +46,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "lean_reasoning": {
             "provider": "main",
             "model": "moonshotai/Kimi-K2.6-int4",
+            "reasoning_effort": "high",
             "base_url": "",
             "api_key": "",
         },
@@ -110,7 +111,8 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 #   auxiliary.lean_reasoning is used by the lean_reasoning_help tool when the
 #   primary model is stuck on a hard theorem. By default it uses the same
 #   endpoint/API key as the main model (`provider: main`) but asks
-#   moonshotai/Kimi-K2.6-int4.
+#   moonshotai/Kimi-K2.6-int4 with high reasoning effort when the endpoint
+#   supports explicit reasoning controls.
 #
 # Common model changes:
 #   - Change the primary model: model.default
@@ -118,6 +120,8 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 #   - Change a custom OpenAI-compatible endpoint: model.base_url or
 #     EPFLEMMA_OPENAI_BASE_URL in ~/.epflemma/.env
 #   - Change the theorem advisor model: auxiliary.lean_reasoning.model
+#   - Change the theorem advisor reasoning budget:
+#     auxiliary.lean_reasoning.reasoning_effort
 #   - Use a separate theorem advisor endpoint: set
 #     auxiliary.lean_reasoning.base_url and auxiliary.lean_reasoning.api_key,
 #     or AUXILIARY_LEAN_REASONING_BASE_URL / AUXILIARY_LEAN_REASONING_API_KEY
@@ -153,6 +157,7 @@ MINIMAX_API_KEY=
 # Optional per-task theorem-advisor overrides for lean_reasoning_help.
 AUXILIARY_LEAN_REASONING_PROVIDER=
 AUXILIARY_LEAN_REASONING_MODEL=
+AUXILIARY_LEAN_REASONING_REASONING_EFFORT=
 AUXILIARY_LEAN_REASONING_BASE_URL=
 AUXILIARY_LEAN_REASONING_API_KEY=
 

@@ -36,6 +36,7 @@ def test_load_config_returns_defaults_on_fresh_home(monkeypatch, tmp_path):
     assert config["model"]["default"] == "moonshotai/Kimi-K2.6"
     assert config["auxiliary"]["lean_reasoning"]["provider"] == "main"
     assert config["auxiliary"]["lean_reasoning"]["model"] == "moonshotai/Kimi-K2.6-int4"
+    assert config["auxiliary"]["lean_reasoning"]["reasoning_effort"] == "high"
     assert config["agent"]["max_turns"] == 120
     assert config["agent"]["reasoning_effort"] == "auto"
     assert config["agent"]["seed"] == 42
@@ -219,6 +220,7 @@ def test_ensure_epflemma_home_creates_expected_subdirectories(monkeypatch, tmp_p
     assert "EPFLEMMA_OPENAI_BASE_URL=" in env_text
     assert "KIMI_API_KEY=" in env_text
     assert "AUXILIARY_LEAN_REASONING_MODEL=" in env_text
+    assert "AUXILIARY_LEAN_REASONING_REASONING_EFFORT=" in env_text
 
 
 def test_ensure_epflemma_home_backfills_missing_env_template_keys(monkeypatch, tmp_path):
@@ -233,6 +235,7 @@ def test_ensure_epflemma_home_backfills_missing_env_template_keys(monkeypatch, t
     assert "EPFLEMMA_OPENAI_API_KEY=keep-me" in env_text
     assert "KIMI_API_KEY=" in env_text
     assert "AUXILIARY_LEAN_REASONING_PROVIDER=" in env_text
+    assert "AUXILIARY_LEAN_REASONING_REASONING_EFFORT=" in env_text
 
 
 def test_load_config_rewrites_legacy_payload_and_persists_transform(monkeypatch, tmp_path):
