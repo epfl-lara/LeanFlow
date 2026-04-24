@@ -6066,7 +6066,7 @@ class AIAgent:
                     if self.compression_enabled and _compressor.should_compress(_estimated_next_prompt):
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,
-                            approx_tokens=self.context_compressor.last_prompt_tokens,
+                            approx_tokens=_estimated_next_prompt,
                             task_id=effective_task_id,
                         )
                     
