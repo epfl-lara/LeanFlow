@@ -35,7 +35,7 @@ def test_load_config_returns_defaults_on_fresh_home(monkeypatch, tmp_path):
     assert config["model"]["default"] == DEFAULT_CONFIG["model"]["default"]
     assert config["model"]["default"] == "moonshotai/Kimi-K2.6"
     assert config["auxiliary"]["lean_reasoning"]["provider"] == "main"
-    assert config["auxiliary"]["lean_reasoning"]["model"] == "zai-org/GLM-5.1"
+    assert config["auxiliary"]["lean_reasoning"]["model"] == "moonshotai/Kimi-K2.6-int4"
     assert config["agent"]["max_turns"] == 120
     assert config["agent"]["reasoning_effort"] == "auto"
     assert config["agent"]["seed"] == 42
