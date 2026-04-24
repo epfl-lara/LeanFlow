@@ -1136,6 +1136,27 @@ class TestConcurrentToolExecution:
         # Second tool should succeed
         assert "success" in messages[1]["content"]
 
+    def test_concurrent_invokes_post_tool_result_callback(self, agent):
+        """Concurrent path should preserve the same post-tool hooks as sequential execution."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"beta"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        callbacks = []
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return f"result_{args['q']}"
+
+        agent.post_tool_result_callback = lambda name, args, result: callbacks.append((name, args, result))
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert callbacks == [
+            ("web_search", {"q": "alpha"}, "result_alpha"),
+            ("web_search", {"q": "beta"}, "result_beta"),
+        ]
+
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")

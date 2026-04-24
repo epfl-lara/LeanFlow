@@ -723,55 +723,63 @@ def _handle_managed_tool_result(
     if not _tool_result_counts_as_theorem_feedback(function_name, args):
         return
 
-    live_state = _build_live_proof_state(list(getattr(agent, "_session_messages", []) or []))
-    still_blocked = _same_queue_assignment_still_blocked(
-        {
-            "current_queue_assignment": {
-                "target_symbol": pending_target,
-                "active_file": pending_file,
-            }
-        },
-        live_state,
-    )
-    if still_blocked:
-        autonomy_state = getattr(agent, "_managed_autonomy_state", None)
-        if isinstance(autonomy_state, dict):
-            _remember_failed_attempt(
-                autonomy_state,
-                live_state,
-                cycle_number=int(autonomy_state.get("current_cycle", 0) or 0),
-            )
-            attempt_number = _failed_attempt_count_for_theorem(
-                autonomy_state,
-                target_symbol=pending_target,
-                active_file=pending_file,
-            )
-            _record_activity(
-                "failed-attempt-recorded",
-                f"Recorded failed theorem attempt #{attempt_number} for {pending_target}",
-                target_symbol=pending_target,
-                active_file=pending_file,
-                attempt=attempt_number,
-                verification_tool=function_name,
-            )
-
-    item = dict(live_state.get("current_queue_item") or {})
-    _record_activity(
-        "queue-step-boundary",
-        (
-            f"Yielding after failed verification feedback for {pending_target}"
-            if still_blocked
-            else f"Yielding after verification feedback for {pending_target}"
-        ),
-        queue_item=item,
-        target_symbol=pending_target,
-        active_file=pending_file,
-        reasons=list(item.get("reasons", []) or []),
-        verification_tool=function_name,
-        still_blocked=still_blocked,
-    )
-    agent._managed_pending_theorem_feedback = None
-    agent.interrupt(WORKFLOW_STEP_BOUNDARY_INTERRUPT)
+    live_state: dict[str, Any] = {}
+    item: dict[str, Any] = {}
+    still_blocked = False
+    refresh_error = ""
+    try:
+        live_state = _build_live_proof_state(list(getattr(agent, "_session_messages", []) or []))
+        still_blocked = _same_queue_assignment_still_blocked(
+            {
+                "current_queue_assignment": {
+                    "target_symbol": pending_target,
+                    "active_file": pending_file,
+                }
+            },
+            live_state,
+        )
+        if still_blocked:
+            autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+            if isinstance(autonomy_state, dict):
+                _remember_failed_attempt(
+                    autonomy_state,
+                    live_state,
+                    cycle_number=int(autonomy_state.get("current_cycle", 0) or 0),
+                )
+                attempt_number = _failed_attempt_count_for_theorem(
+                    autonomy_state,
+                    target_symbol=pending_target,
+                    active_file=pending_file,
+                )
+                _record_activity(
+                    "failed-attempt-recorded",
+                    f"Recorded failed theorem attempt #{attempt_number} for {pending_target}",
+                    target_symbol=pending_target,
+                    active_file=pending_file,
+                    attempt=attempt_number,
+                    verification_tool=function_name,
+                )
+        item = dict(live_state.get("current_queue_item") or {})
+    except Exception as exc:
+        refresh_error = str(exc)[:500]
+    finally:
+        _record_activity(
+            "queue-step-boundary",
+            (
+                f"Yielding after failed verification feedback for {pending_target}"
+                if still_blocked
+                else f"Yielding after verification feedback for {pending_target}"
+            ),
+            queue_item=item,
+            target_symbol=pending_target,
+            active_file=pending_file,
+            reasons=list(item.get("reasons", []) or []),
+            verification_tool=function_name,
+            still_blocked=still_blocked,
+            refresh_error=refresh_error,
+        )
+        agent._managed_pending_theorem_feedback = None
+        agent.interrupt(WORKFLOW_STEP_BOUNDARY_INTERRUPT)
 
 
 def _managed_agent_int(value: Any) -> int | None:
