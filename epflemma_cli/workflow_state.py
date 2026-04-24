@@ -29,7 +29,7 @@ WORKFLOW_RUN_SCOPE_TOP_LEVEL = "top-level"
 WORKFLOW_RUN_SCOPE_BACKGROUND = "background-session"
 
 
-def _activity_preview_limit(default: int = 280) -> int:
+def _activity_preview_limit(default: int = 420) -> int:
     try:
         logging_cfg = load_config().get("logging", {})
     except Exception:
@@ -611,24 +611,35 @@ def _agent_event_preview(event: Mapping[str, Any]) -> str:
     if event_type == "api-request":
         iteration = details.get("iteration")
         if iteration is not None:
-            return f"API call #{iteration}"
+            parts = [f"API step #{iteration}"]
+            message_count = details.get("message_count")
+            if message_count is not None:
+                parts.append(f"{message_count} messages")
+            approx_tokens = details.get("approx_tokens")
+            if approx_tokens is not None:
+                try:
+                    parts.append(f"~{int(approx_tokens):,} tokens")
+                except Exception:
+                    pass
+            return " · ".join(parts)
     if event_type == "conversation-start":
-        return _shorten_text(details.get("user_message", ""), limit=max(activity_limit - 60, 40)) or str(event.get("message", "") or "")
+        prompt = _shorten_text(details.get("user_message", ""), limit=activity_limit)
+        return f"Prompt: {prompt}" if prompt else str(event.get("message", "") or "")
     if event_type == "conversation-end":
         if details.get("interrupted"):
             return "Interrupted"
         if details.get("completed"):
             return "Completed"
     if event_type == "agent-input-queued":
-        return f"Queued prompt: {_shorten_text(details.get('text', ''), limit=max(activity_limit - 60, 40))}"
+        return f"Queued prompt: {_shorten_text(details.get('text', ''), limit=max(activity_limit - 20, 40))}"
     if event_type == "agent-awaiting-input":
         status = str(details.get("status", "") or "paused")
         return f"Waiting for input ({status})"
     if event_type == "agent-resume":
-        return _shorten_text(details.get("text", ""), limit=max(activity_limit - 60, 40)) or "Processing queued prompt"
+        return _shorten_text(details.get("text", ""), limit=max(activity_limit - 20, 40)) or "Processing queued prompt"
     if event_type == "runner-exit":
-        return _shorten_text(event.get("message", ""), limit=max(activity_limit - 60, 40)) or "Runner exited"
-    return _shorten_text(event.get("message", ""), limit=max(activity_limit - 60, 40))
+        return _shorten_text(event.get("message", ""), limit=max(activity_limit - 20, 40)) or "Runner exited"
+    return _shorten_text(event.get("message", ""), limit=max(activity_limit - 20, 40))
 
 
 def _tool_call_preview(tool_name: str, arguments: Any) -> str:

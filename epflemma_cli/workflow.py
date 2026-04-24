@@ -281,8 +281,10 @@ def resolve_workflow_request(
     if workflow.parallel_agents > 1 and not active_skill:
         selected_skill = "lean-autonomous-swarm"
     toolset_name = "epflemma-native-swarm" if workflow.parallel_agents > 1 else "epflemma-native"
+    agent_max_turns = load_agent_max_turns()
 
     child_env = dict(os.environ)
+    child_env.setdefault("AGENT_MAX_TURNS", agent_max_turns)
     child_env.update(
         {
             "EPFLEMMA_PROJECT_ROOT": str(project.root),
@@ -337,6 +339,20 @@ def load_default_model() -> str:
     if isinstance(model_cfg, str) and model_cfg.strip():
         return model_cfg.strip()
     return "moonshotai/Kimi-K2.6"
+
+
+def load_agent_max_turns() -> str:
+    from epflemma_cli.config import load_config
+
+    config = load_config()
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, Mapping):
+        try:
+            value = int(agent_cfg.get("max_turns", 120) or 120)
+        except Exception:
+            value = 120
+        return str(max(1, value))
+    return "120"
 
 
 def spawn_workflow(

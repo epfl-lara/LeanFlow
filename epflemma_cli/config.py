@@ -52,7 +52,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "toolsets": ["epflemma-cli"],
     "agent": {
-        "max_turns": 90,
+        "max_turns": 120,
         "reasoning_effort": "auto",
         "seed": 42,
         "temperature": 0.3,
@@ -61,11 +61,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "min_p": None,
     },
     "logging": {
-        "preview_lines": 6,
-        "preview_chars": 900,
-        "tool_output_head_lines": 20,
-        "tool_output_tail_lines": 8,
-        "activity_preview_chars": 280,
+        "preview_lines": 8,
+        "preview_chars": 1600,
+        "tool_output_head_lines": 28,
+        "tool_output_tail_lines": 12,
+        "activity_preview_chars": 420,
     },
     "compression": {
         "enabled": True,
@@ -121,6 +121,11 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 #     auxiliary.lean_reasoning.base_url and auxiliary.lean_reasoning.api_key,
 #     or AUXILIARY_LEAN_REASONING_BASE_URL / AUXILIARY_LEAN_REASONING_API_KEY
 #     in ~/.epflemma/.env
+#
+# Workflow/runtime tuning:
+#   - agent.max_turns controls the managed workflow API-step budget.
+#   - logging.preview_lines and logging.preview_chars control how much
+#     prompt, assistant, and reasoning context appears in run logs.
 #
 """
 

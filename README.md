@@ -441,7 +441,8 @@ The inspection split is intentional:
 
 - `/workflow activity` is the structured step feed: API calls, assistant plans, tool starts, resumes, checkpoints, and autonomous follow-ups
 - `/workflow log 120` is the raw saved runner transcript when you want the exact command/tool chronology that scrolled by during execution
-- workflow logs now include bounded assistant and reasoning previews; long multiline tool outputs keep both the head and tail instead of only the start
+- workflow logs include API-step separators, bounded prompt/assistant/reasoning previews, token usage, and cost estimates when provider pricing metadata is known
+- long multiline tool outputs keep both the head and tail instead of only the start
 - those preview limits are configurable through `logging.preview_lines`, `logging.preview_chars`, `logging.tool_output_head_lines`, `logging.tool_output_tail_lines`, and `logging.activity_preview_chars`
 
 ## Native Lean Tool Surface
@@ -595,6 +596,7 @@ EPFLemma now defaults to:
 
 ```yaml
 agent:
+  max_turns: 120
   reasoning_effort: "auto"
   seed: 42
   temperature: 0.3
@@ -935,6 +937,7 @@ auxiliary:
     api_key: ""
 
 agent:
+  max_turns: 120
   reasoning_effort: "auto"
   seed: 42
   temperature: 0.3
@@ -969,11 +972,11 @@ local_models:
       extra_args: []
 
 logging:
-  preview_lines: 6
-  preview_chars: 900
-  tool_output_head_lines: 20
-  tool_output_tail_lines: 8
-  activity_preview_chars: 280
+  preview_lines: 8
+  preview_chars: 1600
+  tool_output_head_lines: 28
+  tool_output_tail_lines: 12
+  activity_preview_chars: 420
 ```
 
 Useful commands:

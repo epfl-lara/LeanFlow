@@ -184,6 +184,38 @@ def test_workflow_activity_preview_uses_configured_limit(monkeypatch, tmp_path):
     assert preview.endswith("...")
 
 
+def test_api_request_preview_includes_step_size(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+
+    append_workflow_activity(
+        "api-request",
+        "API call #7",
+        iteration=7,
+        message_count=14,
+        approx_tokens=12345,
+    )
+
+    events = read_workflow_activity(limit=1)
+    preview = _agent_event_preview(events[0])
+    assert preview == "API step #7 · 14 messages · ~12,345 tokens"
+
+
+def test_conversation_start_preview_uses_larger_default_limit(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    prompt = "Start " + ("x" * 360)
+
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        user_message=prompt,
+    )
+
+    events = read_workflow_activity(limit=1)
+    preview = _agent_event_preview(events[0])
+    assert preview.startswith("Prompt: Start ")
+    assert "x" * 300 in preview
+
+
 def test_workflow_activity_writes_run_and_agent_jsonl_streams(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
