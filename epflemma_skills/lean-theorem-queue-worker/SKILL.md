@@ -31,11 +31,19 @@ Primary specs:
 3. Treat previous failed attempts as negative guidance:
    - do not blindly repeat the same proof shape
    - explain when a new attempt differs materially from earlier failures
-4. You may introduce local helper lemmas or intermediate proof steps when needed, but only if they directly unblock the assigned declaration.
+4. You may introduce helper lemmas, local intermediate facts, or small private supporting declarations when they make the assigned declaration easier to prove. This is optional, not required; use it when it genuinely breaks a hard proof into smaller verified steps, and keep every helper scoped to the assigned theorem's needs.
 5. After each meaningful edit, re-check the assigned declaration with `lean_inspect` before making another large change.
-6. For a file-scoped assigned theorem, the only acceptable final verification step is `lean_verify(mode=file_exact)` for that exact file. The tool runs the canonical `lake env lean <file>` backend check for you.
+6. For a file-scoped assigned theorem, the preferred edit path is `apply_verified_patch(check_mode=file_exact)` because it applies the Lean patch and immediately runs the canonical `lake env lean <file>` backend check.
 7. Do not treat `lake build`, `grep`, `head`, or truncated output as proof that the assigned theorem is clean.
 8. If the declaration becomes clean, stop and hand control back to the manager rather than continuing to the next theorem on your own.
+
+## Queue Hygiene
+
+1. If an earlier unresolved declaration is producing syntax, elaboration, or goal-state errors that prevent useful diagnostics for the current queue item, do not spend the turn solving that earlier declaration unless the manager assigned it to you.
+2. Preserve the earlier declaration's current proof work before unblocking the file: comment the broken proof state or failed attempt in place, then close that earlier declaration's active proof body with a minimal `sorry` so the current assigned declaration can be inspected.
+3. Never change, weaken, rename, move, or delete the earlier declaration statement while doing this. Only edit the proof body.
+4. Treat this as a temporary queue-unblocking move, not success. Mention the preserved commented attempt and the inserted `sorry` in the handoff or failed-attempt summary so a later queue pass can resume from it.
+5. Do not use this pattern to finish the assigned declaration. If the assigned declaration still needs `sorry`, report a blocker instead of claiming success.
 
 ## Search Strategy
 
@@ -45,9 +53,11 @@ Primary specs:
 4. Use `lean_auto_probe` first, then `lean_auto_search`, then `lean_auto_try` for one concrete candidate when theorem-local automation is justified.
 5. Use `lean_multi_attempt` only when you have 2-6 specific short local tactic candidates at one proof location.
 6. Do not send theorem-sized proof blocks, declaration headers, or candidates containing `sorry` to `lean_multi_attempt`.
-7. If you have one full candidate proof, prefer `lean_auto_try` or a direct patch followed by `lean_verify` instead.
-8. Only invent a new sublemma after those searches and theorem-local automation steps fail to produce the required statement.
-9. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, verification, worker dispatch, or blocker report you have.
+7. If you have one full candidate proof, prefer `lean_auto_try` or `apply_verified_patch` instead of raw patching.
+8. Invent helper lemmas or sublemmas when the direct proof is too large or repeated direct attempts fail. Prefer small statements that are easy to verify and directly feed the assigned declaration.
+9. If repeated focused attempts fail while the theorem still looks solvable, call `lean_reasoning_help` with the statement, diagnostics, current attempt, and failed-attempt summary.
+10. If `lean_reasoning_help` reports that the advisor is unavailable or returned no answer, continue with the strongest concrete edit, verification, worker dispatch, or blocker report you have.
+11. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, verification, worker dispatch, or blocker report you have.
 
 ## Success Condition
 
@@ -57,7 +67,7 @@ The assigned declaration is successful only when:
 - diagnostics for that declaration are clean
 - there are no remaining goals for that declaration
 - the attempted fix does not introduce a new local blocker around it
-- and the manager-requested file check succeeds when one is provided
+- and `apply_verified_patch` or `lean_verify(mode=file_exact)` succeeds for the manager-requested file check
 - and any recommended specialist worker route has either been used or explicitly ruled out
 
 ## Failure Condition

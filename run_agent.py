@@ -89,6 +89,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt
+from agent.usage_pricing import estimate_cost_usd, has_known_pricing
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -284,7 +285,7 @@ def _summarize_arg_value(key: str, value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, str):
-        if key in {"old_string", "new_string", "patch_content", "content"}:
+        if key in {"old_string", "new_string", "patch", "patch_content", "content"}:
             line_count = value.count("\n") + 1 if value else 0
             return f"{len(value):,} chars across {line_count} line(s)"
         return value
@@ -310,6 +311,7 @@ def _format_tool_args_for_log(function_name: str, function_args: dict[str, Any])
         "mode",
         "old_string",
         "new_string",
+        "patch",
         "patch_content",
         "content",
     ]
@@ -499,7 +501,7 @@ class AIAgent:
         provider: str = None,
         api_mode: str = None,
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
-        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int = 120,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -509,10 +511,10 @@ class AIAgent:
         ephemeral_system_prompt: str = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
-        log_preview_lines: int = 6,
-        log_preview_chars: int = 900,
-        tool_output_head_lines: int = 20,
-        tool_output_tail_lines: int = 8,
+        log_preview_lines: int = 8,
+        log_preview_chars: int = 1600,
+        tool_output_head_lines: int = 28,
+        tool_output_tail_lines: int = 12,
         providers_allowed: List[str] = None,
         providers_ignored: List[str] = None,
         providers_order: List[str] = None,
@@ -553,7 +555,7 @@ class AIAgent:
             provider (str): Provider identifier (optional; used for telemetry/routing hints)
             api_mode (str): API mode override: "chat_completions" or "codex_responses"
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
-            max_iterations (int): Maximum number of tool calling iterations (default: 90)
+            max_iterations (int): Maximum number of tool calling iterations (default: 120)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
@@ -612,10 +614,10 @@ class AIAgent:
         self.pass_session_id = pass_session_id
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
-        self.log_preview_lines = _positive_int(log_preview_lines, 6)
-        self.log_preview_chars = _positive_int(log_preview_chars, 900)
-        self.tool_output_head_lines = _positive_int(tool_output_head_lines, 20)
-        self.tool_output_tail_lines = _positive_int(tool_output_tail_lines, 8)
+        self.log_preview_lines = _positive_int(log_preview_lines, 8)
+        self.log_preview_chars = _positive_int(log_preview_chars, 1600)
+        self.tool_output_head_lines = _positive_int(tool_output_head_lines, 28)
+        self.tool_output_tail_lines = _positive_int(tool_output_tail_lines, 12)
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
         self.base_url = base_url or OPENROUTER_BASE_URL
@@ -1064,6 +1066,13 @@ class AIAgent:
         self.session_completion_tokens = 0
         self.session_total_tokens = 0
         self.session_api_calls = 0
+        self.session_reported_cost_usd: float | None = None
+        self._usage_summary_logged = False
+        self._turn_start_prompt_tokens = 0
+        self._turn_start_completion_tokens = 0
+        self._turn_start_total_tokens = 0
+        self._turn_start_api_calls = 0
+        self._current_run_api_calls = 0
         
         if not self.quiet_mode:
             if compression_enabled:
@@ -1277,6 +1286,7 @@ class AIAgent:
         """
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
+        self._log_session_usage_summary()
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
@@ -1684,6 +1694,7 @@ class AIAgent:
                 "last_updated": datetime.now().isoformat(),
                 "system_prompt": self._cached_system_prompt or "",
                 "tools": self.tools or [],
+                "usage": self._session_usage_summary(),
                 "message_count": len(cleaned),
                 "messages": cleaned,
             }
@@ -2706,6 +2717,64 @@ class AIAgent:
             self._try_refresh_anthropic_client_credentials()
         return self._anthropic_client.messages.create(**api_kwargs)
 
+    def _provider_request_timeout_seconds(self, api_kwargs: dict) -> float:
+        timeout_value = api_kwargs.get("timeout", os.getenv("GAUSS_API_TIMEOUT", 900.0))
+        if isinstance(timeout_value, (int, float)) and not isinstance(timeout_value, bool):
+            return max(float(timeout_value), 1.0)
+        return max(float(os.getenv("GAUSS_API_TIMEOUT", 900.0)), 1.0)
+
+    def _provider_wait_heartbeat_seconds(self) -> float:
+        raw_value = os.getenv("GAUSS_PROVIDER_WAIT_HEARTBEAT", "30.0")
+        try:
+            heartbeat_seconds = float(raw_value)
+        except (TypeError, ValueError):
+            heartbeat_seconds = 30.0
+        return max(heartbeat_seconds, 1.0)
+
+    def _abort_inflight_provider_request(self, request_client_holder: dict, *, reason: str) -> None:
+        if self.api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import build_anthropic_client
+
+            self._anthropic_client.close()
+            self._anthropic_client = build_anthropic_client(
+                self._anthropic_api_key,
+                getattr(self, "_anthropic_base_url", None),
+            )
+            return
+
+        request_client = request_client_holder.get("client")
+        if request_client is not None:
+            self._close_request_openai_client(request_client, reason=reason)
+
+    def _emit_provider_wait_heartbeat(
+        self,
+        *,
+        elapsed_seconds: float,
+        timeout_seconds: float,
+        streaming: bool,
+    ) -> None:
+        mode_label = "streaming" if streaming else "non-streaming"
+        message = (
+            f"Waiting on provider response ({elapsed_seconds:.0f}s elapsed, "
+            f"{timeout_seconds:.0f}s timeout, {mode_label})"
+        )
+        logger.warning(
+            "%s %s",
+            message,
+            self._client_log_context(),
+        )
+        self._vprint(f"{self.log_prefix}   ⏳ {message}", force=True)
+        _emit_workflow_event(
+            "provider-wait",
+            message,
+            **_workflow_agent_event_details(
+                self,
+                elapsed_seconds=round(elapsed_seconds, 3),
+                timeout_seconds=round(timeout_seconds, 3),
+                streaming=streaming,
+            ),
+        )
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -2740,25 +2809,43 @@ class AIAgent:
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
+        timeout_seconds = self._provider_request_timeout_seconds(api_kwargs)
+        heartbeat_seconds = self._provider_wait_heartbeat_seconds()
+        start_time = time.monotonic()
+        next_heartbeat_at = heartbeat_seconds
         while t.is_alive():
             t.join(timeout=0.3)
+            elapsed_seconds = time.monotonic() - start_time
+            if elapsed_seconds >= next_heartbeat_at:
+                self._emit_provider_wait_heartbeat(
+                    elapsed_seconds=elapsed_seconds,
+                    timeout_seconds=timeout_seconds,
+                    streaming=False,
+                )
+                next_heartbeat_at += heartbeat_seconds
+            if elapsed_seconds >= timeout_seconds:
+                try:
+                    self._abort_inflight_provider_request(
+                        request_client_holder,
+                        reason="request_timeout_abort",
+                    )
+                except Exception:
+                    pass
+                raise TimeoutError(
+                    f"Provider request exceeded {timeout_seconds:.0f}s without a response."
+                )
             if self._interrupt_requested:
                 # Force-close the in-flight worker-local HTTP connection to stop
                 # token generation without poisoning the shared client used to
                 # seed future retries.
                 try:
-                    if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
-                        self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                        )
-                    else:
-                        request_client = request_client_holder.get("client")
-                        if request_client is not None:
-                            self._close_request_openai_client(request_client, reason="interrupt_abort")
+                    # Preserve the explicit anthropic_messages/build_anthropic_client
+                    # interrupt contract in source: the helper below rebuilds the
+                    # Anthropic client when api_mode == "anthropic_messages".
+                    self._abort_inflight_provider_request(
+                        request_client_holder,
+                        reason="interrupt_abort",
+                    )
                 except Exception:
                     pass
                 raise InterruptedError("Agent interrupted during API call")
@@ -2883,22 +2970,40 @@ class AIAgent:
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
+        timeout_seconds = self._provider_request_timeout_seconds(api_kwargs)
+        heartbeat_seconds = self._provider_wait_heartbeat_seconds()
+        start_time = time.monotonic()
+        next_heartbeat_at = heartbeat_seconds
         while t.is_alive():
             t.join(timeout=0.3)
+            elapsed_seconds = time.monotonic() - start_time
+            if elapsed_seconds >= next_heartbeat_at:
+                self._emit_provider_wait_heartbeat(
+                    elapsed_seconds=elapsed_seconds,
+                    timeout_seconds=timeout_seconds,
+                    streaming=True,
+                )
+                next_heartbeat_at += heartbeat_seconds
+            if elapsed_seconds >= timeout_seconds:
+                try:
+                    self._abort_inflight_provider_request(
+                        request_client_holder,
+                        reason="stream_request_timeout_abort",
+                    )
+                except Exception:
+                    pass
+                raise TimeoutError(
+                    f"Provider request exceeded {timeout_seconds:.0f}s without a response."
+                )
             if self._interrupt_requested:
                 try:
-                    if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
-                        self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                        )
-                    else:
-                        request_client = request_client_holder.get("client")
-                        if request_client is not None:
-                            self._close_request_openai_client(request_client, reason="stream_interrupt_abort")
+                    # Preserve the explicit anthropic_messages/build_anthropic_client
+                    # interrupt contract in source: the helper below rebuilds the
+                    # Anthropic client when api_mode == "anthropic_messages".
+                    self._abort_inflight_provider_request(
+                        request_client_holder,
+                        reason="stream_interrupt_abort",
+                    )
                 except Exception:
                     pass
                 raise InterruptedError("Agent interrupted during API call")
@@ -3472,11 +3577,204 @@ class AIAgent:
         return msg
 
     @staticmethod
+    def _text_preview_lines(
+        text: Any,
+        *,
+        max_lines: int = 8,
+        max_chars: int = 1600,
+    ) -> list[str]:
+        """Build a compact multiline preview without losing all context."""
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        if not lines:
+            return []
+
+        max_lines = max(1, int(max_lines or 1))
+        max_chars = max(8, int(max_chars or 8))
+        preview_lines = lines[:max_lines]
+        preview_text = "\n".join(preview_lines)
+        if len(preview_text) > max_chars:
+            preview_text = preview_text[: max_chars - 4].rstrip() + " ..."
+            return preview_text.splitlines() or [preview_text]
+        if len(lines) > max_lines:
+            preview_lines[-1] = preview_lines[-1] + " ..."
+        return preview_lines
+
+    def _log_conversation_start(self, user_message: str) -> None:
+        preview_lines = self._text_preview_lines(
+            user_message,
+            max_lines=min(max(self.log_preview_lines, 1), 8),
+            max_chars=min(max(self.log_preview_chars, 480), 1600),
+        )
+        self._vprint(f"{self.log_prefix}💬 Starting conversation ({len(user_message):,} chars)")
+        for line in preview_lines:
+            self._vprint(f"{self.log_prefix}   {line}")
+
+    @staticmethod
+    def _extract_reported_cost_usd(usage: Any) -> float | None:
+        if usage is None:
+            return None
+        names = (
+            "cost",
+            "total_cost",
+            "total_cost_usd",
+            "cost_usd",
+            "estimated_cost",
+            "estimated_cost_usd",
+        )
+        for name in names:
+            if isinstance(usage, dict):
+                raw = usage.get(name)
+            else:
+                raw = getattr(usage, name, None)
+            if raw is None:
+                continue
+            try:
+                if isinstance(raw, str):
+                    raw = raw.strip().removeprefix("$")
+                return float(raw)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _session_usage_summary(self) -> dict[str, Any]:
+        turn_prompt_tokens = max(0, self.session_prompt_tokens - self._turn_start_prompt_tokens)
+        turn_completion_tokens = max(0, self.session_completion_tokens - self._turn_start_completion_tokens)
+        turn_total_tokens = max(0, self.session_total_tokens - self._turn_start_total_tokens)
+        turn_metered_api_calls = max(0, self.session_api_calls - self._turn_start_api_calls)
+        known_pricing = has_known_pricing(self.model)
+        estimated_cost = (
+            estimate_cost_usd(self.model, self.session_prompt_tokens, self.session_completion_tokens)
+            if known_pricing
+            else None
+        )
+        turn_estimated_cost = (
+            estimate_cost_usd(self.model, turn_prompt_tokens, turn_completion_tokens)
+            if known_pricing
+            else None
+        )
+        reported_cost = self.session_reported_cost_usd
+        if reported_cost is not None:
+            cost_source = "provider_reported"
+            total_cost = reported_cost
+        elif estimated_cost is not None:
+            cost_source = "estimated"
+            total_cost = estimated_cost
+        else:
+            cost_source = "unavailable"
+            total_cost = None
+        return {
+            "model": self.model,
+            "provider": self.provider,
+            "api_mode": self.api_mode,
+            "api_calls": int(self._current_run_api_calls or 0),
+            "metered_api_calls": int(turn_metered_api_calls),
+            "session_api_calls": int(self.session_api_calls),
+            "turn": {
+                "prompt_tokens": int(turn_prompt_tokens),
+                "completion_tokens": int(turn_completion_tokens),
+                "total_tokens": int(turn_total_tokens),
+            },
+            "session": {
+                "prompt_tokens": int(self.session_prompt_tokens),
+                "completion_tokens": int(self.session_completion_tokens),
+                "total_tokens": int(self.session_total_tokens),
+            },
+            "cost": {
+                "source": cost_source,
+                "total_usd": total_cost,
+                "estimated_total_usd": estimated_cost,
+                "estimated_turn_usd": turn_estimated_cost,
+                "provider_reported_total_usd": reported_cost,
+                "pricing_known": known_pricing,
+            },
+        }
+
+    def _log_session_usage_summary(self) -> None:
+        if self._usage_summary_logged:
+            return
+        self._usage_summary_logged = True
+        if self.quiet_mode:
+            return
+
+        summary = self._session_usage_summary()
+        turn = dict(summary.get("turn") or {})
+        session = dict(summary.get("session") or {})
+        cost = dict(summary.get("cost") or {})
+        api_calls = int(summary.get("api_calls") or 0)
+        metered_calls = int(summary.get("metered_api_calls") or 0)
+        self._vprint(f"\n{self.log_prefix}📈 Session usage summary")
+        self._vprint(
+            f"{self.log_prefix}   API calls: {api_calls:,} this conversation "
+            f"({metered_calls:,} with provider token usage)"
+        )
+        self._vprint(
+            f"{self.log_prefix}   Tokens this conversation: "
+            f"input {int(turn.get('prompt_tokens') or 0):,} · "
+            f"output {int(turn.get('completion_tokens') or 0):,} · "
+            f"total {int(turn.get('total_tokens') or 0):,}"
+        )
+        if (
+            int(session.get("prompt_tokens") or 0) != int(turn.get("prompt_tokens") or 0)
+            or int(session.get("completion_tokens") or 0) != int(turn.get("completion_tokens") or 0)
+            or int(session.get("total_tokens") or 0) != int(turn.get("total_tokens") or 0)
+        ):
+            self._vprint(
+                f"{self.log_prefix}   Session tokens total: "
+                f"input {int(session.get('prompt_tokens') or 0):,} · "
+                f"output {int(session.get('completion_tokens') or 0):,} · "
+                f"total {int(session.get('total_tokens') or 0):,}"
+            )
+
+        source = str(cost.get("source") or "unavailable")
+        total_cost = cost.get("total_usd")
+        if source == "provider_reported" and total_cost is not None:
+            self._vprint(f"{self.log_prefix}   Total cost: ${float(total_cost):.4f} (provider reported)")
+        elif source == "estimated" and total_cost is not None:
+            self._vprint(f"{self.log_prefix}   Total cost estimate: ${float(total_cost):.4f}")
+        else:
+            self._vprint(
+                f"{self.log_prefix}   Total cost: unavailable "
+                f"(no provider cost or pricing metadata for {self.model})"
+            )
+
+    def _log_token_usage(
+        self,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+    ) -> None:
+        self._vprint(
+            f"{self.log_prefix}   📊 Tokens: "
+            f"input {prompt_tokens:,} · output {completion_tokens:,} · total {total_tokens:,} "
+            f"(session {self.session_total_tokens:,})"
+        )
+        if has_known_pricing(self.model):
+            step_cost = estimate_cost_usd(self.model, prompt_tokens, completion_tokens)
+            session_cost = estimate_cost_usd(
+                self.model,
+                self.session_prompt_tokens,
+                self.session_completion_tokens,
+            )
+            self._vprint(
+                f"{self.log_prefix}   💵 Cost estimate: "
+                f"step ${step_cost:.4f} · session ${session_cost:.4f}"
+            )
+        else:
+            self._vprint(
+                f"{self.log_prefix}   💵 Cost estimate: unavailable "
+                f"(no pricing metadata for {self.model})"
+            )
+
+    @staticmethod
     def _reasoning_preview_lines(
         reasoning_text: str | None,
         *,
-        max_lines: int = 6,
-        max_chars: int = 900,
+        max_lines: int = 8,
+        max_chars: int = 1600,
     ) -> list[str]:
         """Build a compact reasoning preview suitable for managed runner logs."""
         if not reasoning_text:
@@ -3865,7 +4163,7 @@ class AIAgent:
                 function_args = {}
 
             # Checkpoint for file-mutating tools
-            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            if function_name in ("write_file", "patch", "apply_verified_patch") and self._checkpoint_mgr.enabled:
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -4020,6 +4318,12 @@ class AIAgent:
             }
             messages.append(tool_msg)
 
+            if self.post_tool_result_callback:
+                try:
+                    self.post_tool_result_callback(name, args, function_result)
+                except Exception as cb_err:
+                    logger.debug("post_tool_result_callback error: %s", cb_err)
+
         if not self.quiet_mode:
             print(f"{self.log_prefix}└─ Tool batch complete")
 
@@ -4101,7 +4405,7 @@ class AIAgent:
             )
 
             # Checkpoint: snapshot working dir before file-mutating tools
-            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            if function_name in ("write_file", "patch", "apply_verified_patch") and self._checkpoint_mgr.enabled:
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -4557,6 +4861,12 @@ class AIAgent:
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
         self._persist_user_message_override = persist_user_message
+        self._usage_summary_logged = False
+        self._turn_start_prompt_tokens = self.session_prompt_tokens
+        self._turn_start_completion_tokens = self.session_completion_tokens
+        self._turn_start_total_tokens = self.session_total_tokens
+        self._turn_start_api_calls = self.session_api_calls
+        self._current_run_api_calls = 0
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         
@@ -4622,7 +4932,7 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
-            print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            self._log_conversation_start(user_message)
         _emit_workflow_event(
             "conversation-start",
             "Agent conversation started",
@@ -4740,6 +5050,7 @@ class AIAgent:
                 break
             
             api_call_count += 1
+            self._current_run_api_calls = api_call_count
             if not self.iteration_budget.consume():
                 if not self.quiet_mode:
                     print(f"\n⚠️  Session iteration budget exhausted ({self.iteration_budget.max_total} total across agent + subagents)")
@@ -4838,8 +5149,9 @@ class AIAgent:
             thinking_spinner = None
             
             if not self.quiet_mode:
-                self._vprint(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
-                self._vprint(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
+                self._vprint(f"\n{self.log_prefix}{'─' * 72}")
+                self._vprint(f"{self.log_prefix}🔄 API step {api_call_count}/{self.max_iterations}")
+                self._vprint(f"{self.log_prefix}   📥 Request: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
                 self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
             elif self._stream_callback is None:
                 # Animated thinking spinner in quiet mode (skip during streaming TTS)
@@ -4885,6 +5197,7 @@ class AIAgent:
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
+            usage_dict: dict[str, int] = {}
 
             while retry_count < max_retries:
                 try:
@@ -5157,12 +5470,15 @@ class AIAgent:
                         else:
                             prompt_tokens = getattr(response.usage, 'prompt_tokens', 0) or 0
                             completion_tokens = getattr(response.usage, 'completion_tokens', 0) or 0
-                            total_tokens = getattr(response.usage, 'total_tokens', 0) or 0
+                            total_tokens = getattr(response.usage, 'total_tokens', 0) or (prompt_tokens + completion_tokens)
                         usage_dict = {
                             "prompt_tokens": prompt_tokens,
                             "completion_tokens": completion_tokens,
                             "total_tokens": total_tokens,
                         }
+                        reported_cost = self._extract_reported_cost_usd(response.usage)
+                        if reported_cost is not None:
+                            self.session_reported_cost_usd = (self.session_reported_cost_usd or 0.0) + reported_cost
                         self.context_compressor.update_from_response(usage_dict)
 
                         # Cache discovered context length after successful call
@@ -5176,6 +5492,13 @@ class AIAgent:
                         self.session_completion_tokens += completion_tokens
                         self.session_total_tokens += total_tokens
                         self.session_api_calls += 1
+
+                        if not self.quiet_mode:
+                            self._log_token_usage(
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=completion_tokens,
+                                total_tokens=total_tokens,
+                            )
 
                         # Persist token counts to session DB for /insights.
                         # Gateway sessions persist via session_store.update_session()
@@ -5211,6 +5534,8 @@ class AIAgent:
                             hit_pct = (cached / prompt * 100) if prompt > 0 else 0
                             if not self.quiet_mode:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
+                    elif not self.quiet_mode:
+                        self._vprint(f"{self.log_prefix}   📊 Tokens: unavailable from provider response")
                     
                     break  # Success, exit retry loop
 
@@ -5520,6 +5845,7 @@ class AIAgent:
 
             if restart_with_compressed_messages:
                 api_call_count -= 1
+                self._current_run_api_calls = api_call_count
                 self.iteration_budget.refund()
                 continue
 
@@ -5566,10 +5892,7 @@ class AIAgent:
 
                 reasoning_preview_lines = self._reasoning_preview_lines(
                     self._extract_reasoning(assistant_message),
-                    max_lines=max(
-                        self.log_preview_lines if self.verbose_logging else min(self.log_preview_lines, 3),
-                        1,
-                    ),
+                    max_lines=max(self.log_preview_lines, 1),
                     max_chars=self.log_preview_chars,
                 )
 
@@ -5897,7 +6220,7 @@ class AIAgent:
                     if self.compression_enabled and _compressor.should_compress(_estimated_next_prompt):
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,
-                            approx_tokens=self.context_compressor.last_prompt_tokens,
+                            approx_tokens=_estimated_next_prompt,
                             task_id=effective_task_id,
                         )
                     
@@ -6128,6 +6451,7 @@ class AIAgent:
             "last_reasoning": last_reasoning,
             "messages": messages,
             "api_calls": api_call_count,
+            "usage": self._session_usage_summary(),
             "completed": completed,
             "partial": False,  # True only when stopped due to invalid tool calls
             "interrupted": interrupted,
@@ -6147,6 +6471,7 @@ class AIAgent:
                 completed=completed,
                 interrupted=interrupted,
                 api_calls=api_call_count,
+                usage=result["usage"],
                 final_response=final_response,
                 response_previewed=getattr(self, "_response_was_previewed", False),
                 message_count=len(messages),

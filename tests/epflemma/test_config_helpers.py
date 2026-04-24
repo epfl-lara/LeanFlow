@@ -33,6 +33,11 @@ def test_load_config_returns_defaults_on_fresh_home(monkeypatch, tmp_path):
     config = load_config()
 
     assert config["model"]["default"] == DEFAULT_CONFIG["model"]["default"]
+    assert config["model"]["default"] == "moonshotai/Kimi-K2.6"
+    assert config["auxiliary"]["lean_reasoning"]["provider"] == "main"
+    assert config["auxiliary"]["lean_reasoning"]["model"] == "moonshotai/Kimi-K2.6-int4"
+    assert config["auxiliary"]["lean_reasoning"]["reasoning_effort"] == "high"
+    assert config["agent"]["max_turns"] == 120
     assert config["agent"]["reasoning_effort"] == "auto"
     assert config["agent"]["seed"] == 42
     assert config["agent"]["temperature"] == 0.3
@@ -40,8 +45,13 @@ def test_load_config_returns_defaults_on_fresh_home(monkeypatch, tmp_path):
     assert config["compression"]["prune_tool_output"] is True
     assert config["compression"]["prune_keep_recent_user_turns"] == 2
     assert config["compression"]["reserved_output_tokens"] == 20000
-    assert config["logging"]["preview_chars"] == 900
+    assert config["logging"]["preview_lines"] == 8
+    assert config["logging"]["preview_chars"] == 1600
+    assert config["logging"]["activity_preview_chars"] == 420
     assert get_config_path().exists()
+    rendered = get_config_path().read_text(encoding="utf-8")
+    assert "Main workflow model" in rendered
+    assert "Auxiliary theorem advisor" in rendered
 
 
 def test_load_config_falls_back_to_defaults_on_malformed_yaml(monkeypatch, tmp_path):
@@ -128,8 +138,10 @@ def test_env_file_sorted_and_quoted_free(monkeypatch, tmp_path):
     save_env_value("A_FIRST", "a")
 
     body = get_env_path().read_text(encoding="utf-8")
-    lines = [line for line in body.splitlines() if line]
-    assert lines == ["A_FIRST=a", "Z_LAST=z"]
+    lines = [line for line in body.splitlines() if line and not line.startswith("#")]
+    assert "A_FIRST=a" in lines
+    assert "Z_LAST=z" in lines
+    assert all('"' not in line for line in lines)
 
 
 def test_env_file_ignores_blank_and_commented_lines(monkeypatch, tmp_path):
@@ -140,7 +152,9 @@ def test_env_file_ignores_blank_and_commented_lines(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    assert load_env_file() == {"KEY": "value"}
+    loaded = load_env_file()
+    assert loaded["KEY"] == "value"
+    assert "# a comment" not in loaded
 
 
 def test_get_env_value_prefers_os_environ(monkeypatch, tmp_path):
@@ -202,6 +216,26 @@ def test_ensure_epflemma_home_creates_expected_subdirectories(monkeypatch, tmp_p
         assert (home / sub).is_dir(), f"{sub} directory was not created"
     assert (home / ".env").exists()
     assert (home / "SOUL.md").exists()
+    env_text = (home / ".env").read_text(encoding="utf-8")
+    assert "EPFLEMMA_OPENAI_BASE_URL=" in env_text
+    assert "KIMI_API_KEY=" in env_text
+    assert "AUXILIARY_LEAN_REASONING_MODEL=" in env_text
+    assert "AUXILIARY_LEAN_REASONING_REASONING_EFFORT=" in env_text
+
+
+def test_ensure_epflemma_home_backfills_missing_env_template_keys(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    home = Path(str(tmp_path / "home"))
+    home.mkdir(parents=True)
+    (home / ".env").write_text("EPFLEMMA_OPENAI_API_KEY=keep-me\n", encoding="utf-8")
+
+    ensure_epflemma_home()
+
+    env_text = (home / ".env").read_text(encoding="utf-8")
+    assert "EPFLEMMA_OPENAI_API_KEY=keep-me" in env_text
+    assert "KIMI_API_KEY=" in env_text
+    assert "AUXILIARY_LEAN_REASONING_PROVIDER=" in env_text
+    assert "AUXILIARY_LEAN_REASONING_REASONING_EFFORT=" in env_text
 
 
 def test_load_config_rewrites_legacy_payload_and_persists_transform(monkeypatch, tmp_path):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -29,7 +30,7 @@ WORKFLOW_RUN_SCOPE_TOP_LEVEL = "top-level"
 WORKFLOW_RUN_SCOPE_BACKGROUND = "background-session"
 
 
-def _activity_preview_limit(default: int = 280) -> int:
+def _activity_preview_limit(default: int = 420) -> int:
     try:
         logging_cfg = load_config().get("logging", {})
     except Exception:
@@ -143,6 +144,14 @@ def workflow_agent_inbox_path(agent_id: str) -> Path:
 
 def workflow_outcomes_path() -> Path:
     return workflow_state_root() / "outcomes.jsonl"
+
+
+def workflow_verified_patch_status_path() -> Path:
+    return workflow_state_root() / "verified_patch_status.json"
+
+
+def workflow_verified_patch_checkpoint_root() -> Path:
+    return workflow_state_root() / "verified-patch-checkpoints"
 
 
 def workflow_run_activity_path(run_id: str) -> Path:
@@ -379,6 +388,62 @@ def append_workflow_outcome(kind: str, payload: Mapping[str, Any]) -> None:
         handle.write("\n")
 
 
+def write_verified_patch_checkpoint(
+    *,
+    file_path: str,
+    cwd: str = "",
+    before_content: str = "",
+    patch: str = "",
+    check_mode: str = "",
+    theorem_id: str = "",
+) -> dict[str, Any]:
+    """Persist a pre-edit snapshot for apply_verified_patch."""
+    ensure_workflow_state_root()
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    checkpoint_id = f"vpatch-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+    before_bytes = before_content.encode("utf-8", errors="replace")
+    payload = {
+        "version": 1,
+        "checkpoint_id": checkpoint_id,
+        "created_at": timestamp,
+        "file_path": str(file_path or ""),
+        "cwd": str(cwd or ""),
+        "theorem_id": str(theorem_id or ""),
+        "check_mode": str(check_mode or ""),
+        "before_sha256": hashlib.sha256(before_bytes).hexdigest(),
+        "before_bytes": len(before_bytes),
+        "before_content": before_content,
+        "patch": patch,
+    }
+    path = workflow_verified_patch_checkpoint_root() / f"{checkpoint_id}.json"
+    write_json_file(path, payload)
+    return {
+        "checkpoint_id": checkpoint_id,
+        "snapshot_path": str(path),
+        "before_sha256": payload["before_sha256"],
+        "before_bytes": payload["before_bytes"],
+    }
+
+
+def save_verified_patch_status(payload: Mapping[str, Any]) -> None:
+    """Persist the latest apply_verified_patch status for resume/queue logic."""
+    status = dict(payload or {})
+    status.setdefault("timestamp", datetime.now(timezone.utc).replace(microsecond=0).isoformat())
+    write_json_file(
+        workflow_verified_patch_status_path(),
+        {
+            "version": 1,
+            "latest": status,
+        },
+    )
+
+
+def load_verified_patch_status() -> dict[str, Any]:
+    payload = read_json_file(workflow_verified_patch_status_path())
+    latest = payload.get("latest")
+    return dict(latest) if isinstance(latest, Mapping) else {}
+
+
 def _read_activity_file(path: Path | None) -> list[dict[str, Any]]:
     if path is None:
         return []
@@ -563,7 +628,7 @@ def _summarize_requested_tools(tool_calls: list[dict[str, Any]]) -> str:
         if preview:
             if name == "terminal":
                 previews.append(f"Run {preview}")
-            elif name == "patch":
+            elif name in {"patch", "apply_verified_patch"}:
                 previews.append(f"Edit {preview}")
             elif name == "read_file":
                 previews.append(f"Read {preview}")
@@ -611,24 +676,35 @@ def _agent_event_preview(event: Mapping[str, Any]) -> str:
     if event_type == "api-request":
         iteration = details.get("iteration")
         if iteration is not None:
-            return f"API call #{iteration}"
+            parts = [f"API step #{iteration}"]
+            message_count = details.get("message_count")
+            if message_count is not None:
+                parts.append(f"{message_count} messages")
+            approx_tokens = details.get("approx_tokens")
+            if approx_tokens is not None:
+                try:
+                    parts.append(f"~{int(approx_tokens):,} tokens")
+                except Exception:
+                    pass
+            return " · ".join(parts)
     if event_type == "conversation-start":
-        return _shorten_text(details.get("user_message", ""), limit=max(activity_limit - 60, 40)) or str(event.get("message", "") or "")
+        prompt = _shorten_text(details.get("user_message", ""), limit=activity_limit)
+        return f"Prompt: {prompt}" if prompt else str(event.get("message", "") or "")
     if event_type == "conversation-end":
         if details.get("interrupted"):
             return "Interrupted"
         if details.get("completed"):
             return "Completed"
     if event_type == "agent-input-queued":
-        return f"Queued prompt: {_shorten_text(details.get('text', ''), limit=max(activity_limit - 60, 40))}"
+        return f"Queued prompt: {_shorten_text(details.get('text', ''), limit=max(activity_limit - 20, 40))}"
     if event_type == "agent-awaiting-input":
         status = str(details.get("status", "") or "paused")
         return f"Waiting for input ({status})"
     if event_type == "agent-resume":
-        return _shorten_text(details.get("text", ""), limit=max(activity_limit - 60, 40)) or "Processing queued prompt"
+        return _shorten_text(details.get("text", ""), limit=max(activity_limit - 20, 40)) or "Processing queued prompt"
     if event_type == "runner-exit":
-        return _shorten_text(event.get("message", ""), limit=max(activity_limit - 60, 40)) or "Runner exited"
-    return _shorten_text(event.get("message", ""), limit=max(activity_limit - 60, 40))
+        return _shorten_text(event.get("message", ""), limit=max(activity_limit - 20, 40)) or "Runner exited"
+    return _shorten_text(event.get("message", ""), limit=max(activity_limit - 20, 40))
 
 
 def _tool_call_preview(tool_name: str, arguments: Any) -> str:
@@ -637,9 +713,9 @@ def _tool_call_preview(tool_name: str, arguments: Any) -> str:
     if tool_name == "terminal":
         command = str(args.get("command", "") or "").strip()
         return _shorten_text(command or "Call terminal", limit=max(activity_limit - 20, 40))
-    if tool_name in {"patch", "read_file", "write_file"}:
+    if tool_name in {"patch", "read_file", "write_file", "apply_verified_patch"}:
         path = str(args.get("path", "") or "").strip()
-        mode = str(args.get("mode", "") or "").strip()
+        mode = str(args.get("mode", "") or args.get("check_mode", "") or "").strip()
         if path and mode:
             return _shorten_text(f"{path} ({mode})", limit=max(activity_limit - 20, 40))
         if path:
@@ -665,17 +741,23 @@ def _tool_result_preview(tool_name: str, result: Any, *, is_error: bool) -> str:
             if output:
                 return f"exit {exit_code}: {output}" if exit_code is not None else output
             return f"{tool_name} {'failed' if is_error else 'completed'}"
-        if tool_name == "patch":
+        if tool_name in {"patch", "apply_verified_patch"}:
             success = payload.get("success")
+            status = _shorten_text(payload.get("status", ""), limit=80)
             error = _shorten_text(payload.get("error", ""), limit=max(activity_limit - 100, 40))
+            message = _shorten_text(payload.get("message", ""), limit=max(activity_limit - 100, 40))
             files_modified = payload.get("files_modified")
             modified_list = files_modified if isinstance(files_modified, list) else []
+            if tool_name == "apply_verified_patch" and not modified_list and payload.get("path"):
+                modified_list = [str(payload.get("path") or "")]
             first_file = str(modified_list[0] or "") if modified_list else ""
             diff = str(payload.get("diff", "") or "")
+            if not diff and isinstance(payload.get("patch"), dict):
+                diff = str(payload.get("patch", {}).get("diff", "") or "")
             hunk_count = diff.count("\n@@ ")
             if diff.startswith("@@ "):
                 hunk_count += 1
-            if success:
+            if success or status == "verified":
                 summary_parts: list[str] = []
                 if first_file:
                     summary_parts.append(_shorten_text(first_file, limit=100))
@@ -683,9 +765,13 @@ def _tool_result_preview(tool_name: str, result: Any, *, is_error: bool) -> str:
                     summary_parts.append(f"{len(modified_list)} file(s)")
                 if hunk_count:
                     summary_parts.append(f"{hunk_count} hunk(s)")
+                if tool_name == "apply_verified_patch":
+                    summary_parts.append("verified")
                 if summary_parts:
                     return "updated " + " · ".join(summary_parts)
                 return "patch applied"
+            if tool_name == "apply_verified_patch" and status:
+                return f"verified patch {status}: {message or error or '[no details]'}"
             if error:
                 return f"patch failed: {error}"
             return "patch failed"

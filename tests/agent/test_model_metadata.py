@@ -165,6 +165,11 @@ class TestGetModelContextLength:
         assert get_model_context_length("zai-org/GLM-5.1") == 200000
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    def test_case_insensitive_kimi_int4_default_match(self, mock_fetch):
+        mock_fetch.return_value = {}
+        assert get_model_context_length("moonshotai/Kimi-K2.6-int4") == 262144
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_api_missing_context_length_key(self, mock_fetch):
         """Model in API but without context_length falls through to later tiers."""
         mock_fetch.return_value = {"test/model": {"name": "Test"}}

@@ -1311,6 +1311,7 @@ def _build_call_kwargs(
     timeout: float = 30.0,
     extra_body: Optional[dict] = None,
     base_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
@@ -1339,12 +1340,55 @@ def _build_call_kwargs(
 
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})
+    if reasoning_effort:
+        custom_base = base_url or _current_custom_base_url()
+        if provider in {"custom", "main"} and _is_rcp_base_url(custom_base):
+            template_kwargs = dict(merged_extra.get("chat_template_kwargs") or {})
+            template_kwargs["enable_thinking"] = True
+            merged_extra["chat_template_kwargs"] = template_kwargs
+            merged_extra["reasoning_effort"] = _map_rcp_reasoning_effort(reasoning_effort)
     if provider == "nous" or auxiliary_is_nous:
         merged_extra.setdefault("tags", []).extend(["product=epflemma-agent"])
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 
     return kwargs
+
+
+def _is_rcp_base_url(base_url: str) -> bool:
+    normalized = str(base_url or "").lower()
+    return "inference.rcp.epfl.ch" in normalized or "inference-rcp.epfl.ch" in normalized
+
+
+def _map_rcp_reasoning_effort(effort: str) -> str:
+    normalized = str(effort or "medium").strip().lower()
+    if normalized in {"low", "medium", "high"}:
+        return normalized
+    if normalized == "minimal":
+        return "low"
+    if normalized in {"xhigh", "auto"}:
+        return "high" if normalized == "xhigh" else "medium"
+    return "medium"
+
+
+def _resolve_task_reasoning_effort(task: str = None) -> Optional[str]:
+    if not task:
+        return None
+    env_value = _get_auxiliary_env_override(task, "REASONING_EFFORT")
+    if env_value:
+        return env_value.strip()
+    try:
+        config = _load_runtime_config()
+    except Exception:
+        return None
+    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
+    if not isinstance(task_config, dict):
+        return None
+    value = task_config.get("reasoning_effort")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def call_llm(
@@ -1387,6 +1431,7 @@ def call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    reasoning_effort = _resolve_task_reasoning_effort(task)
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -1435,7 +1480,8 @@ def call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=timeout, extra_body=extra_body,
-        base_url=resolved_base_url)
+        base_url=resolved_base_url,
+        reasoning_effort=reasoning_effort)
 
     # Handle max_tokens vs max_completion_tokens retry
     try:
@@ -1469,6 +1515,7 @@ async def async_call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    reasoning_effort = _resolve_task_reasoning_effort(task)
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -1518,7 +1565,8 @@ async def async_call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=timeout, extra_body=extra_body,
-        base_url=resolved_base_url)
+        base_url=resolved_base_url,
+        reasoning_effort=reasoning_effort)
 
     try:
         return await client.chat.completions.create(**kwargs)

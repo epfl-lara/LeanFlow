@@ -252,6 +252,21 @@ def test_format_tool_args_for_log_summarizes_patch_payload():
     assert any("new_string: 3 chars across 1 line(s)" in line for line in lines)
 
 
+def test_format_tool_args_for_log_summarizes_verified_patch_payload():
+    lines = run_agent._format_tool_args_for_log(
+        "apply_verified_patch",
+        {
+            "path": "GaussTest/GaussTest/RealTheorems-homework.lean",
+            "patch": "*** Begin Patch\n*** Update File: Demo.lean\n-old\n+new\n*** End Patch",
+            "check_mode": "file_exact",
+        },
+    )
+
+    assert any("path: GaussTest/GaussTest/RealTheorems-homework.lean" in line for line in lines)
+    assert any("patch: 66 chars across 5 line(s)" in line for line in lines)
+    assert any("check_mode: file_exact" in line for line in lines)
+
+
 def test_format_tool_result_for_log_pretty_prints_terminal_result():
     payload = json.dumps(
         {
@@ -904,6 +919,22 @@ class TestReasoningPreviewLines:
         assert len(result[0]) == 50
 
 
+class TestTextPreviewLines:
+    def test_preview_keeps_more_than_old_one_line_start(self):
+        text = "Resume workflow\n" + "\n".join(f"checkpoint detail {idx}" for idx in range(10))
+
+        result = AIAgent._text_preview_lines(text, max_lines=5, max_chars=400)
+
+        assert result[0] == "Resume workflow"
+        assert any("checkpoint detail 3" in line for line in result)
+        assert result[-1].endswith("...")
+
+    def test_preview_truncates_by_chars(self):
+        result = AIAgent._text_preview_lines("x" * 200, max_lines=3, max_chars=40)
+
+        assert result == ["x" * 36 + " ..."]
+
+
 class TestFormatToolsForSystemMessage:
     def test_no_tools_returns_empty_array(self, agent):
         agent.tools = []
@@ -1105,6 +1136,27 @@ class TestConcurrentToolExecution:
         # Second tool should succeed
         assert "success" in messages[1]["content"]
 
+    def test_concurrent_invokes_post_tool_result_callback(self, agent):
+        """Concurrent path should preserve the same post-tool hooks as sequential execution."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"beta"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        callbacks = []
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return f"result_{args['q']}"
+
+        agent.post_tool_result_callback = lambda name, args, result: callbacks.append((name, args, result))
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert callbacks == [
+            ("web_search", {"q": "alpha"}, "result_alpha"),
+            ("web_search", {"q": "beta"}, "result_beta"),
+        ]
+
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
@@ -1217,6 +1269,106 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_non_quiet_logging_reports_prompt_preview_and_usage(self, agent, capsys):
+        self._setup_agent(agent)
+        agent.quiet_mode = False
+        agent.model = "gpt-4o"
+        agent.log_preview_lines = 4
+        agent.log_preview_chars = 520
+        prompt = "Resume managed workflow from persisted verified proof milestone. " + (
+            "Keep the theorem queue context visible. " * 8
+        )
+        resp = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 1_234,
+                "completion_tokens": 56,
+                "total_tokens": 1_290,
+            },
+        )
+        agent.client.chat.completions.create.return_value = resp
+        capsys.readouterr()
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(prompt)
+
+        output = capsys.readouterr().out
+        assert result["completed"] is True
+        assert "Starting conversation" in output
+        assert "verified proof milestone" in output
+        assert "API step 1/120" in output
+        assert "Tokens: input 1,234 · output 56 · total 1,290" in output
+        assert "Cost estimate: step $" in output
+
+    def test_non_quiet_logging_reports_session_usage_summary(self, agent, capsys):
+        self._setup_agent(agent)
+        agent.quiet_mode = False
+        agent.model = "gpt-4o"
+        resp = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 1_234,
+                "completion_tokens": 56,
+                "total_tokens": 1_290,
+            },
+        )
+        agent.client.chat.completions.create.return_value = resp
+        capsys.readouterr()
+
+        with (
+            patch.object(agent, "_save_session_log"),
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        output = capsys.readouterr().out
+        assert result["completed"] is True
+        assert result["usage"]["turn"]["prompt_tokens"] == 1_234
+        assert result["usage"]["turn"]["completion_tokens"] == 56
+        assert result["usage"]["cost"]["source"] == "estimated"
+        assert "Session usage summary" in output
+        assert "API calls: 1 this conversation" in output
+        assert "Tokens this conversation: input 1,234 · output 56 · total 1,290" in output
+        assert "Total cost estimate: $" in output
+
+    def test_session_usage_summary_prefers_provider_reported_cost(self, agent, capsys):
+        self._setup_agent(agent)
+        agent.quiet_mode = False
+        agent.model = "unknown/private-model"
+        resp = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "cost": 0.0042,
+            },
+        )
+        agent.client.chat.completions.create.return_value = resp
+        capsys.readouterr()
+
+        with (
+            patch.object(agent, "_save_session_log"),
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        output = capsys.readouterr().out
+        assert result["usage"]["cost"]["source"] == "provider_reported"
+        assert result["usage"]["cost"]["total_usd"] == pytest.approx(0.0042)
+        assert "Total cost: $0.0042 (provider reported)" in output
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
@@ -1363,6 +1515,56 @@ class TestRunConversation:
             )
             result = agent.run_conversation("search something")
         mock_compress.assert_called_once()
+        assert result["final_response"] == "All done"
+        assert result["completed"] is True
+
+    def test_post_tool_compression_uses_next_prompt_estimate(self, agent):
+        """Post-tool compression should log the estimate that crossed threshold."""
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+            usage={
+                "prompt_tokens": 121_308,
+                "completion_tokens": 1_000,
+                "total_tokens": 122_308,
+            },
+        )
+        resp2 = _mock_response(content="All done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+        tool_result = "x" * 18_000
+        expected_estimate = 121_308 + 1_000 + (len(tool_result) // 3)
+        seen_estimates: list[int] = []
+
+        def _should_compress(value):
+            seen_estimates.append(value)
+            return True
+
+        with (
+            patch("run_agent.handle_function_call", return_value=tool_result),
+            patch.object(
+                agent.context_compressor,
+                "should_compress",
+                side_effect=_should_compress,
+            ),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "search something"}],
+                "compressed system prompt",
+            )
+            result = agent.run_conversation("search something")
+
+        assert seen_estimates == [expected_estimate]
+        mock_compress.assert_called_once()
+        assert mock_compress.call_args.kwargs["approx_tokens"] == expected_estimate
         assert result["final_response"] == "All done"
         assert result["completed"] is True
 
@@ -1895,6 +2097,8 @@ class TestSaveSessionLogAtomicWrite:
         payload = call_args.args[1]
         assert payload["session_id"] == agent.session_id
         assert payload["messages"] == messages
+        assert payload["usage"]["session"]["total_tokens"] == 0
+        assert payload["usage"]["cost"]["source"] in {"estimated", "unavailable"}
         assert call_args.kwargs["indent"] == 2
         assert call_args.kwargs["default"] is str
 

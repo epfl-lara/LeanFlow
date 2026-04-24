@@ -37,14 +37,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "model": {
-        "default": "zai-org/GLM-5.1",
+        "default": "moonshotai/Kimi-K2.6",
         "provider": "auto",
         "base_url": "",
         "api_key": "",
     },
+    "auxiliary": {
+        "lean_reasoning": {
+            "provider": "main",
+            "model": "moonshotai/Kimi-K2.6-int4",
+            "reasoning_effort": "high",
+            "base_url": "",
+            "api_key": "",
+        },
+    },
     "toolsets": ["epflemma-cli"],
     "agent": {
-        "max_turns": 90,
+        "max_turns": 120,
         "reasoning_effort": "auto",
         "seed": 42,
         "temperature": 0.3,
@@ -53,16 +62,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "min_p": None,
     },
     "logging": {
-        "preview_lines": 6,
-        "preview_chars": 900,
-        "tool_output_head_lines": 20,
-        "tool_output_tail_lines": 8,
-        "activity_preview_chars": 280,
+        "preview_lines": 8,
+        "preview_chars": 1600,
+        "tool_output_head_lines": 28,
+        "tool_output_tail_lines": 12,
+        "activity_preview_chars": 420,
     },
     "compression": {
         "enabled": True,
         "threshold": 0.50,
-        "summary_model": "zai-org/GLM-5.1",
+        "summary_model": "moonshotai/Kimi-K2.6",
         "reserved_output_tokens": 20000,
         "prune_tool_output": True,
         "prune_keep_recent_user_turns": 2,
@@ -91,6 +100,70 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "custom_providers": [],
 }
+
+DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
+#
+# Main workflow model:
+#   model.default is the primary agent model used for prove/autoprove/formalize.
+#   The installation default is moonshotai/Kimi-K2.6.
+#
+# Auxiliary theorem advisor:
+#   auxiliary.lean_reasoning is used by the lean_reasoning_help tool when the
+#   primary model is stuck on a hard theorem. By default it uses the same
+#   endpoint/API key as the main model (`provider: main`) but asks
+#   moonshotai/Kimi-K2.6-int4 with high reasoning effort when the endpoint
+#   supports explicit reasoning controls.
+#
+# Common model changes:
+#   - Change the primary model: model.default
+#   - Change the primary provider: model.provider
+#   - Change a custom OpenAI-compatible endpoint: model.base_url or
+#     EPFLEMMA_OPENAI_BASE_URL in ~/.epflemma/.env
+#   - Change the theorem advisor model: auxiliary.lean_reasoning.model
+#   - Change the theorem advisor reasoning budget:
+#     auxiliary.lean_reasoning.reasoning_effort
+#   - Use a separate theorem advisor endpoint: set
+#     auxiliary.lean_reasoning.base_url and auxiliary.lean_reasoning.api_key,
+#     or AUXILIARY_LEAN_REASONING_BASE_URL / AUXILIARY_LEAN_REASONING_API_KEY
+#     in ~/.epflemma/.env
+#
+# Workflow/runtime tuning:
+#   - agent.max_turns controls the managed workflow API-step budget.
+#   - logging.preview_lines and logging.preview_chars control how much
+#     prompt, assistant, and reasoning context appears in run logs.
+#
+"""
+
+DEFAULT_ENV_TEMPLATE = """# EPFLemma environment overrides
+#
+# Leave values empty until you want to configure a provider. Values in this
+# file are loaded by the EPFLemma CLI and can be overridden by process env vars.
+
+# OpenAI-compatible primary endpoint, including EPFL RCP-style endpoints.
+EPFLEMMA_OPENAI_BASE_URL=
+EPFLEMMA_OPENAI_API_KEY=
+
+# OpenRouter fallback/primary endpoint.
+OPENROUTER_API_KEY=
+
+# Direct provider keys.
+KIMI_API_KEY=
+GLM_API_KEY=
+ZAI_API_KEY=
+ANTHROPIC_API_KEY=
+DEEPSEEK_API_KEY=
+MINIMAX_API_KEY=
+
+# Optional per-task theorem-advisor overrides for lean_reasoning_help.
+AUXILIARY_LEAN_REASONING_PROVIDER=
+AUXILIARY_LEAN_REASONING_MODEL=
+AUXILIARY_LEAN_REASONING_REASONING_EFFORT=
+AUXILIARY_LEAN_REASONING_BASE_URL=
+AUXILIARY_LEAN_REASONING_API_KEY=
+
+# Escape hatch for intentional Lean statement refactors. Keep empty by default.
+EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS=
+"""
 
 DEFAULT_SOUL_MD = """# EPFLemma
 
@@ -174,6 +247,43 @@ def _ensure_default_soul_md(home: Path) -> None:
         return
     soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
     _secure_file(soul_path)
+
+
+def default_config_yaml(config: Mapping[str, Any] | None = None) -> str:
+    payload = DEFAULT_CONFIG if config is None else config
+    return DEFAULT_CONFIG_HEADER + yaml.safe_dump(dict(payload), sort_keys=False)
+
+
+def _merge_env_template(existing: str) -> str:
+    existing_lines = existing.splitlines()
+    existing_keys = {
+        line.split("=", 1)[0].strip()
+        for line in existing_lines
+        if line.strip() and not line.lstrip().startswith("#") and "=" in line
+    }
+    additions = []
+    for line in DEFAULT_ENV_TEMPLATE.splitlines():
+        if not line.strip() or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key and key not in existing_keys:
+            additions.append(line)
+    if not existing.strip():
+        return DEFAULT_ENV_TEMPLATE.rstrip() + "\n"
+    if not additions:
+        return existing if existing.endswith("\n") else existing + "\n"
+    return (existing.rstrip() + "\n\n# Added by EPFLemma for provider/model setup.\n" + "\n".join(additions) + "\n")
+
+
+def _ensure_default_env_file(home: Path) -> None:
+    env_path = home / ".env"
+    if env_path.exists():
+        updated = _merge_env_template(env_path.read_text(encoding="utf-8"))
+    else:
+        updated = DEFAULT_ENV_TEMPLATE.rstrip() + "\n"
+    if not env_path.exists() or env_path.read_text(encoding="utf-8") != updated:
+        env_path.write_text(updated, encoding="utf-8")
+    _secure_file(env_path)
 
 
 def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
@@ -271,10 +381,7 @@ def ensure_epflemma_home(import_legacy: bool = True) -> Path:
         target = home / subdir
         target.mkdir(parents=True, exist_ok=True)
         _secure_dir(target)
-    env_path = home / ".env"
-    if not env_path.exists():
-        env_path.touch()
-    _secure_file(env_path)
+    _ensure_default_env_file(home)
     return home
 
 
@@ -282,7 +389,9 @@ def load_config() -> dict[str, Any]:
     ensure_epflemma_home()
     path = get_config_path()
     if not path.exists():
-        save_config(DEFAULT_CONFIG)
+        ensure_epflemma_home(import_legacy=False)
+        path.write_text(default_config_yaml(DEFAULT_CONFIG), encoding="utf-8")
+        _secure_file(path)
         return deepcopy(DEFAULT_CONFIG)
 
     try:

@@ -267,6 +267,56 @@ def test_handle_managed_tool_result_records_failed_attempt_after_verification_fe
     assert agent._managed_pending_theorem_feedback is None
 
 
+def test_apply_verified_patch_counts_as_edit_and_verification_feedback(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    live_state = {
+        "target_symbol": "demo",
+        "active_file": "Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "current_queue_item_slice": "theorem demo : True := by\n  sorry",
+        "diagnostics": "error: unsolved goals",
+        "goals": "⊢ True",
+        "build_status": "unknown",
+        "blocker_summary": "error: unsolved goals",
+    }
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state))
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(
+        agent,
+        "apply_verified_patch",
+        {"path": "Demo/Main.lean", "theorem_id": "demo"},
+        json.dumps({"status": "check_failed"}),
+    )
+
+    attempts = agent._managed_autonomy_state["failed_attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["reason"] == "error: unsolved goals"
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_pending_theorem_feedback is None
+
+
 def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(monkeypatch):
     class _Agent:
         def __init__(self):
@@ -317,6 +367,91 @@ def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(m
     assert "failed_attempts" not in agent._managed_autonomy_state
     assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
     assert agent._managed_pending_theorem_feedback is None
+
+
+def test_handle_managed_tool_result_supports_interrupted_property(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        @property
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "next_demo",
+            "active_file": "Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+            "current_queue_item_slice": "theorem next_demo : True := by\n  sorry",
+            "diagnostics": "warning: declaration uses sorry",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "blocker_summary": "warning: declaration uses sorry",
+        },
+    )
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+    runner._handle_managed_tool_result(agent, "lean_verify", {}, "")
+
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_pending_theorem_feedback is None
+
+
+def test_handle_managed_tool_result_interrupts_even_if_live_refresh_fails(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: (_ for _ in ()).throw(RuntimeError("lsp unavailable")),
+    )
+    recorded = []
+    monkeypatch.setattr(runner, "_record_activity", lambda kind, message, **details: recorded.append((kind, details)))
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+    runner._handle_managed_tool_result(agent, "lean_verify", {}, "")
+
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_pending_theorem_feedback is None
+    assert recorded[-1][0] == "queue-step-boundary"
+    assert "lsp unavailable" in recorded[-1][1]["refresh_error"]
 
 
 def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeypatch):
@@ -1217,6 +1352,60 @@ def test_declaration_work_queue_keeps_named_theorem_with_build_error_without_sor
     assert "diagnostic near line 4" in queue[0]["reasons"] or "referenced in diagnostics" in queue[0]["reasons"]
 
 
+def test_declaration_work_queue_maps_body_diagnostic_to_declaration(tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem broken : True := by",
+                "  have h : False := by",
+                "    exact ?missing",
+                "  exact False.elim h",
+                "",
+                "theorem later : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    queue = runner._declaration_work_queue(
+        str(active),
+        '{"severity": "error", "message": "unsolved goals", "line": 3, "column": 11}',
+        project_root=str(project),
+        scope="file",
+    )
+
+    assert queue
+    assert queue[0]["label"] == "broken"
+    assert "diagnostic near line 3" in queue[0]["reasons"]
+
+
+def test_current_queue_item_prefers_diagnostic_blocker_before_later_sorry(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem broken : True := by",
+                "  exact ?missing",
+                "",
+                "theorem later : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    queue = [
+        {"label": "broken", "reasons": ["diagnostic near line 2"]},
+        {"label": "later", "reasons": ["contains sorry"]},
+    ]
+
+    assert runner._current_queue_item(queue, str(active))["label"] == "broken"
+
+
 def test_declaration_work_queue_does_not_match_very_short_names_from_text_alone(tmp_path):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
@@ -1271,6 +1460,49 @@ def test_declaration_work_queue_ignores_info_only_diagnostics_without_sorries(tm
     )
 
     assert queue == []
+
+
+def test_declaration_work_queue_maps_only_actionable_structured_diagnostics(tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "def isLipschitz (f : Nat -> Nat) : Prop := True",
+                "#check isLipschitz",
+                "",
+                "lemma style_warning : True := by",
+                "  have h : True := by trivial",
+                "  cases' h",
+                "  trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    queue = runner._declaration_work_queue(
+        str(active),
+        json.dumps(
+            {
+                "items": [
+                    {"severity": "info", "message": "isLipschitz : Prop", "line": 2, "column": 1},
+                    {
+                        "severity": "warning",
+                        "message": "The `cases'` tactic is discouraged",
+                        "line": 6,
+                        "column": 3,
+                    },
+                ]
+            }
+        ),
+        project_root=str(project),
+        scope="file",
+    )
+
+    assert [item["label"] for item in queue] == ["style_warning"]
+    assert queue[0]["reasons"] == ["diagnostic near line 6"]
 
 
 def test_queue_assignment_block_mentions_only_assigned_theorem():
@@ -1390,6 +1622,24 @@ def test_diagnostics_indicate_failure_for_warnings():
     assert runner._diagnostics_indicate_failure("warning: declaration uses simp") is True
 
 
+def test_diagnostics_indicate_failure_ignores_structured_info_messages():
+    assert (
+        runner._diagnostics_indicate_failure(
+            '{"items":[{"severity":"info","message":"#check output","line":2,"column":1}]}'
+        )
+        is False
+    )
+
+
+def test_diagnostics_indicate_failure_keeps_structured_warnings_blocking():
+    assert (
+        runner._diagnostics_indicate_failure(
+            '{"items":[{"severity":"warning","message":"style warning","line":6,"column":3}]}'
+        )
+        is True
+    )
+
+
 def test_promote_live_state_uses_focused_build_before_full_project_build(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
@@ -1478,6 +1728,61 @@ def test_promote_live_state_file_scope_does_not_block_on_other_project_sorries(m
 
     assert promoted["verification_ok"] is True
     assert promoted["blocker_summary"] == ""
+
+
+def test_promote_live_state_logs_internal_manager_verification(monkeypatch, tmp_path, capsys):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    recorded = []
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_MANAGER_VERIFICATION_LOG_CACHE", set())
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (2, ["Other.lean (2)"]))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (
+            True,
+            "lake env lean Demo/Main.lean succeeded",
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert promoted["verification_ok"] is True
+    assert "Manager verification (file): passed" in output
+    assert "lake env lean Demo/Main.lean succeeded" in output
+    assert recorded == [
+        (
+            "manager-verification",
+            "Manager verification (file) passed",
+            {
+                "active_file": str(active),
+                "active_file_label": "Demo/Main.lean",
+                "full_project": False,
+                "verification_ok": True,
+                "build_status": "lake env lean Demo/Main.lean succeeded",
+            },
+        )
+    ]
 
 
 def test_normalize_blocker_summary_clears_resolved_text():
