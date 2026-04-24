@@ -29,24 +29,14 @@ theorem mathd_algebra_513
     a = 1 ∧ b = 1 := by
   sorry
 
-/--
-Let $n$ be a positive integer such that $n+1$ is divisible by $24$. Prove that the sum of all the divisors of $n$ is divisible by $24$.
--/
-theorem putnam_1969_b1
-    (n : ℕ)
-    (hnpos : n > 0)
-    (hn : 24 ∣ n + 1) :
-    24 ∣ ∑ d ∈ divisors n, d :=
-  sorry
-
-/--
-Suppose that the real numbers \( a_0, a_1, \ldots, a_n \) and \( x \), with \( 0 < x < 1 \), satisfy $ \frac{a_0}{1-x} + \frac{a_1}{(1-x)^2} + \cdots + \frac{a_n}{(1-x)^{n+1}} = 0. $ Prove that there exists a real number \( y \) with \( 0 < y < 1 \) such that $ a_0 + a_1y + \cdots + a_ny^n = 0. $.
--/
-theorem putnam_2013_a3
-    (n : ℕ)
-    (a : Set.Icc 0 n → ℝ)
+theorem amc12a_2009_p7
     (x : ℝ)
-    (hx : 0 < x ∧ x < 1)
-    (hsum : (∑ i : Set.Icc 0 n, a i / (1 - x ^ (i.1 + 1))) = 0) :
-    ∃ y : ℝ, 0 < y ∧ y < 1 ∧ (∑ i : Set.Icc 0 n, a i * y ^ i.1) = 0 :=
+    (n : ℕ)
+    (a : ℕ → ℝ)
+    (h_arith : ∀ m, a (m + 1) - a m = a (m + 2) - a (m + 1))
+    (h₁ : a 1 = 2 * x - 3)
+    (h₂ : a 2 = 5 * x - 11)
+    (h₃ : a 3 = 3 * x + 1)
+    (h₄ : a n = 2009) :
+    n = 502 := by
   sorry
