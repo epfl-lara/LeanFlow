@@ -304,11 +304,12 @@ def test_apply_verified_patch_tool_blocks_statement_changes_before_verify(tmp_pa
 
 
 def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
-    monkeypatch.setattr(
-        lean_tool,
-        "call_llm",
-        lambda **kwargs: SimpleNamespace(
-            model="zai-org/GLM-5.1",
+    captured: dict[str, object] = {}
+
+    def _fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            model="moonshotai/Kimi-K2.6-int4",
             choices=[
                 SimpleNamespace(
                     message=SimpleNamespace(
@@ -316,7 +317,12 @@ def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
                     )
                 )
             ],
-        ),
+        )
+
+    monkeypatch.setattr(
+        lean_tool,
+        "call_llm",
+        _fake_call_llm,
     )
 
     payload = json.loads(
@@ -331,8 +337,16 @@ def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
 
     assert payload["success"] is True
     assert payload["status"] == "answered"
-    assert payload["model"] == "zai-org/GLM-5.1"
+    assert payload["model"] == "moonshotai/Kimi-K2.6-int4"
     assert "monotonicity lemma" in payload["advice"]
+    assert "advice only" in payload["next_step"]
+    assert "placeholder proof" in payload["next_step"]
+    assert captured["task"] == "lean_reasoning"
+    system_prompt = captured["messages"][0]["content"]
+    assert "advisory only" in system_prompt
+    assert "not verification evidence" in system_prompt
+    assert "Do not suggest deleting, weakening, renaming, moving, or splitting" in system_prompt
+    assert "sorry, admit, axiom, unsafe code, or a placeholder" in system_prompt
 
 
 def test_lean_reasoning_help_tool_reports_no_answer(monkeypatch):
@@ -340,7 +354,7 @@ def test_lean_reasoning_help_tool_reports_no_answer(monkeypatch):
         lean_tool,
         "call_llm",
         lambda **kwargs: SimpleNamespace(
-            model="zai-org/GLM-5.1",
+            model="moonshotai/Kimi-K2.6-int4",
             choices=[SimpleNamespace(message=SimpleNamespace(content=""))],
         ),
     )

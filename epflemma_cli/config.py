@@ -45,7 +45,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auxiliary": {
         "lean_reasoning": {
             "provider": "main",
-            "model": "zai-org/GLM-5.1",
+            "model": "moonshotai/Kimi-K2.6-int4",
             "base_url": "",
             "api_key": "",
         },
@@ -109,7 +109,8 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 # Auxiliary theorem advisor:
 #   auxiliary.lean_reasoning is used by the lean_reasoning_help tool when the
 #   primary model is stuck on a hard theorem. By default it uses the same
-#   endpoint/API key as the main model (`provider: main`) but asks GLM-5.1.
+#   endpoint/API key as the main model (`provider: main`) but asks
+#   moonshotai/Kimi-K2.6-int4.
 #
 # Common model changes:
 #   - Change the primary model: model.default
