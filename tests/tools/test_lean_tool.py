@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import model_tools
 import tools.lean_tool as lean_tool
@@ -159,3 +160,66 @@ def test_lean_auto_probe_tool_surfaces_degraded_reasons(monkeypatch):
 
     assert payload["success"] is False
     assert "lean automation probe MCP unavailable" in payload["degraded_reasons"]
+
+
+def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
+    monkeypatch.setattr(
+        lean_tool,
+        "call_llm",
+        lambda **kwargs: SimpleNamespace(
+            model="zai-org/GLM-5.1",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="Try proving the monotonicity lemma first, then finish with nlinarith."
+                    )
+                )
+            ],
+        ),
+    )
+
+    payload = json.loads(
+        lean_tool.lean_reasoning_help_tool(
+            "demo",
+            "Demo/Main.lean",
+            theorem_statement="theorem demo : True := by",
+            current_diagnostics="unsolved goals",
+            recent_failed_attempts="simp did not close the arithmetic goal",
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["status"] == "answered"
+    assert payload["model"] == "zai-org/GLM-5.1"
+    assert "monotonicity lemma" in payload["advice"]
+
+
+def test_lean_reasoning_help_tool_reports_no_answer(monkeypatch):
+    monkeypatch.setattr(
+        lean_tool,
+        "call_llm",
+        lambda **kwargs: SimpleNamespace(
+            model="zai-org/GLM-5.1",
+            choices=[SimpleNamespace(message=SimpleNamespace(content=""))],
+        ),
+    )
+
+    payload = json.loads(lean_tool.lean_reasoning_help_tool("demo", "Demo/Main.lean"))
+
+    assert payload["success"] is False
+    assert payload["status"] == "no_answer"
+    assert "not working" in payload["message"]
+    assert "Continue with the main proof workflow" in payload["message"]
+
+
+def test_lean_reasoning_help_tool_reports_unavailable(monkeypatch):
+    def _raise_unavailable(**kwargs):
+        raise RuntimeError("No LLM provider configured")
+
+    monkeypatch.setattr(lean_tool, "call_llm", _raise_unavailable)
+
+    payload = json.loads(lean_tool.lean_reasoning_help_tool("demo", "Demo/Main.lean"))
+
+    assert payload["success"] is False
+    assert payload["status"] == "unavailable"
+    assert "No LLM provider configured" in payload["message"]
