@@ -278,6 +278,8 @@ def _verified_patch_failure(
     check_mode: str = "file_exact",
     checkpoint: dict | None = None,
     patch_applied: bool = False,
+    patch: dict | None = None,
+    changed_ranges: list[str] | None = None,
     verification: dict | None = None,
     lock: dict | None = None,
 ) -> str:
@@ -295,6 +297,10 @@ def _verified_patch_failure(
     if checkpoint:
         payload["checkpoint_id"] = checkpoint.get("checkpoint_id", "")
         payload["checkpoint"] = checkpoint
+    if patch:
+        payload["patch"] = patch
+    if changed_ranges is not None:
+        payload["changed_ranges"] = changed_ranges
     if verification:
         payload["verification"] = verification
     if lock:
@@ -338,6 +344,16 @@ def _patch_operation_paths(patch: str, *, cwd: str) -> tuple[list[Path], str]:
 
 def _diff_hunk_headers(diff: str) -> list[str]:
     return [line for line in str(diff or "").splitlines() if line.startswith("@@")]
+
+
+def _patch_error_is_no_change(error: str) -> bool:
+    lowered = str(error or "").lower()
+    return bool(
+        "old_string and new_string are identical" in lowered
+        or "no changes" in lowered
+        or "unchanged" in lowered
+        or "empty patch" in lowered
+    )
 
 
 def apply_verified_patch_tool(
@@ -404,6 +420,7 @@ def apply_verified_patch_tool(
 
     base_cwd = Path(str(cwd or "")).expanduser().resolve() if str(cwd or "").strip() else Path.cwd().resolve()
     before_content = ""
+    before_exists = resolved_path.exists()
     if resolved_path.exists():
         before_content = resolved_path.read_text(encoding="utf-8")
 
@@ -442,13 +459,45 @@ def apply_verified_patch_tool(
 
     patch_payload = patch_result.to_dict()
     if not patch_result.success:
+        patch_error = str(patch_result.error or "patch did not apply")
+        after_exists = resolved_path.exists()
+        after_content = resolved_path.read_text(encoding="utf-8") if after_exists else ""
+        if _patch_error_is_no_change(patch_error) and before_exists == after_exists and before_content == after_content:
+            return _verified_patch_failure(
+                "no_changes",
+                "Patch did not change the file; the file content is unchanged. Submit a patch that makes a real edit before verification.",
+                path=str(resolved_path),
+                cwd=str(base_cwd),
+                check_mode=normalized_check,
+                checkpoint=checkpoint,
+                patch_applied=False,
+                patch=patch_payload,
+                changed_ranges=[],
+                verification=None,
+            )
         return _verified_patch_failure(
             "patch_failed",
-            str(patch_result.error or "patch did not apply"),
+            patch_error,
             path=str(resolved_path),
             cwd=str(base_cwd),
             check_mode=normalized_check,
             checkpoint=checkpoint,
+            verification=None,
+        )
+
+    after_exists = resolved_path.exists()
+    after_content = resolved_path.read_text(encoding="utf-8") if after_exists else ""
+    if before_exists == after_exists and before_content == after_content:
+        return _verified_patch_failure(
+            "no_changes",
+            "Patch applied but the file content is unchanged. Submit a patch that makes a real edit before verification.",
+            path=str(resolved_path),
+            cwd=str(base_cwd),
+            check_mode=normalized_check,
+            checkpoint=checkpoint,
+            patch_applied=False,
+            patch=patch_payload,
+            changed_ranges=[],
             verification=None,
         )
 
