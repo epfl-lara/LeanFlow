@@ -91,6 +91,35 @@ else
   python -m pip install "$REPO_ROOT[mcp]"
 fi
 
+# Create/backfill user-visible config before any bootstrap step that may need
+# provider/env discovery. This makes ~/.epflemma/config.yaml and ~/.epflemma/.env
+# explicit installation artifacts instead of hidden first-run side effects.
+EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_VENV_DIR/bin/python" <<'PY'
+from collections.abc import Mapping
+
+import yaml
+
+from epflemma_cli.config import (
+    DEFAULT_CONFIG,
+    _deep_merge,
+    ensure_epflemma_home,
+    get_config_path,
+    save_config,
+)
+
+ensure_epflemma_home()
+path = get_config_path()
+try:
+    current = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+except Exception:
+    current = {}
+if not isinstance(current, Mapping):
+    current = {}
+merged = _deep_merge(DEFAULT_CONFIG, current)
+if merged != current:
+    save_config(merged)
+PY
+
 EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_VENV_DIR/bin/epflemma" mcp bootstrap lean >/dev/null
 
 cat > "$EPFLEMMA_BIN_DIR/epflemma" <<EOF
@@ -125,6 +154,8 @@ EOF
 printf 'EPFLemma installed.\n'
 printf '  repo: %s\n' "$REPO_ROOT"
 printf '  home: %s\n' "$EPFLEMMA_HOME"
+printf '  config: %s/config.yaml\n' "$EPFLEMMA_HOME"
+printf '  env : %s/.env\n' "$EPFLEMMA_HOME"
 printf '  venv: %s\n' "$EPFLEMMA_VENV_DIR"
 printf '  bin : %s\n' "$EPFLEMMA_BIN_DIR"
 printf '  mcp : managed lean-lsp + lean-proof-auto installed under %s/mcp\n' "$EPFLEMMA_HOME"
