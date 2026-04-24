@@ -52,7 +52,7 @@ example (x y : ℝ) (nh : x * y ≠ 0) : (x + y)^2 ≠ x^2 + y^2 := by
   contrapose nh with h-- equalities are better than inequalities. This swaps negated goal and assumption
   ring_nf at h -- Progress. Q: why did it not cancel x^2?
   simp at h  -- check `simp?` to see what it used
-  simp [mul_eq_zero] -- simplify the goal
+  simp only [mul_eq_zero] -- simplify the goal
   assumption
 
 example (x y : ℝ) (h : x * y ≠ 0) : (x + y)^2 ≠ x^2 + y^2 := by
@@ -65,7 +65,8 @@ example (x : ℝ) : x^2 ≥ 0 := by
 
 example (x : ℝ) (h : x ≠ 0) : ∃ y, ¬ (x + y)^2 ≥ (x - y)^2 := by
   exists -x
-  simp -- leaving simp like this is brittle. You can try: `simp?` and simp only [...]
+  simp only [add_neg_cancel, ne_eq, OfNat.ofNat_ne_zero, not_false_eq_true, zero_pow, sub_neg_eq_add,
+    ge_iff_le, sq_nonpos_iff, add_self_eq_zero]
   exact h
 
 -- we want something with absolute value, so use Lean 4: Loogle "abs"
@@ -83,7 +84,7 @@ def isLipschitz (f : ℝ → ℝ) (L : ℝ) : Prop :=
 
 #check abs_mul
 
-theorem ex1 : isLipschitz (λx => 2 * x) 2 := by
+theorem ex1 : isLipschitz (fun x => 2 * x) 2 := by
   intro x y
   simp only
   have h: 2*x - 2*y = 2*(x-y) := by ring
@@ -133,7 +134,7 @@ theorem Lipschitz_continuous (f : ℝ → ℝ) (L : ℝ) (Lpos : L > 0) (isLip :
   exact ⟨deltPos, main⟩
 
 def addF (f1 : ℝ → ℝ) (f2 : ℝ → ℝ) : ℝ → ℝ :=
-  λx:ℝ => (f1 x) + (f2 x)
+  fun x : ℝ => (f1 x) + (f2 x)
 
 #check norm_add_le
 #check Real.norm_eq_abs
@@ -152,7 +153,7 @@ theorem addLipschitz (f1 : ℝ → ℝ) (L1 : ℝ) (h1 : isLipschitz f1 L1)
 -- Now, we look at multiplication.
 
 def mulF (f1 : ℝ → ℝ) (f2 : ℝ → ℝ) : ℝ → ℝ :=
-  λx:ℝ => (f1 x) * (f2 x)
+  fun x : ℝ => (f1 x) * (f2 x)
 
 -- The product of two Lipschitz functions is NOT Lipschitz in general
 -- (e.g. f(x) = x is 1-Lipschitz but x*x = x² is not Lipschitz on ℝ).
