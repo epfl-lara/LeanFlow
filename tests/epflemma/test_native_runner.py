@@ -1730,6 +1730,61 @@ def test_promote_live_state_file_scope_does_not_block_on_other_project_sorries(m
     assert promoted["blocker_summary"] == ""
 
 
+def test_promote_live_state_logs_internal_manager_verification(monkeypatch, tmp_path, capsys):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    recorded = []
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_MANAGER_VERIFICATION_LOG_CACHE", set())
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (2, ["Other.lean (2)"]))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (
+            True,
+            "lake env lean Demo/Main.lean succeeded",
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert promoted["verification_ok"] is True
+    assert "Manager verification (file): passed" in output
+    assert "lake env lean Demo/Main.lean succeeded" in output
+    assert recorded == [
+        (
+            "manager-verification",
+            "Manager verification (file) passed",
+            {
+                "active_file": str(active),
+                "active_file_label": "Demo/Main.lean",
+                "full_project": False,
+                "verification_ok": True,
+                "build_status": "lake env lean Demo/Main.lean succeeded",
+            },
+        )
+    ]
+
+
 def test_normalize_blocker_summary_clears_resolved_text():
     assert runner._normalize_blocker_summary("None. All blockers resolved.") == ""
     assert runner._normalize_blocker_summary("type mismatch in `simpa`") == "type mismatch in `simpa`"
