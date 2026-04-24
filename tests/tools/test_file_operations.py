@@ -1,6 +1,7 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
 import os
+import subprocess
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -20,6 +21,7 @@ from tools.file_operations import (
     IMAGE_EXTENSIONS,
     MAX_LINE_LENGTH,
 )
+from epflemma_cli.lean_statement_guard import ALLOW_STATEMENT_EDITS_ENV
 
 
 # =========================================================================
@@ -191,6 +193,25 @@ def file_ops(mock_env):
     return ShellFileOperations(mock_env)
 
 
+class LocalShellEnv:
+    def __init__(self, cwd: Path):
+        self.cwd = str(cwd)
+
+    def execute(self, command, cwd=None, timeout=None, stdin_data=None):
+        completed = subprocess.run(
+            command,
+            shell=True,
+            cwd=cwd or self.cwd,
+            input=stdin_data,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+        )
+        return {"output": completed.stdout, "returncode": completed.returncode}
+
+
 class TestShellFileOpsHelpers:
     def test_escape_shell_arg_simple(self, file_ops):
         assert file_ops._escape_shell_arg("hello") == "'hello'"
@@ -333,3 +354,69 @@ class TestShellFileOpsWriteDenied:
         result = file_ops.patch_replace("~/.ssh/authorized_keys", "old", "new")
         assert result.error is not None
         assert "denied" in result.error.lower()
+
+
+class TestLeanStatementGuardedWrites:
+    def test_write_file_blocks_lean_statement_change(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(ALLOW_STATEMENT_EDITS_ENV, raising=False)
+        path = tmp_path / "Demo.lean"
+        original = "theorem demo : True := by\n  trivial\n"
+        path.write_text(original, encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.write_file(str(path), "theorem demo : False := by\n  trivial\n")
+
+        assert result.error is not None
+        assert "Lean statement guard blocked this edit" in result.error
+        assert "EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS" not in result.error
+        assert path.read_text(encoding="utf-8") == original
+
+    def test_patch_replace_blocks_lean_statement_change(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(ALLOW_STATEMENT_EDITS_ENV, raising=False)
+        path = tmp_path / "Demo.lean"
+        path.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.patch_replace(str(path), "theorem demo : True", "theorem demo : False")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "Lean statement guard blocked this edit" in result.error
+
+    def test_patch_v4a_blocks_lean_file_delete_with_theorem(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(ALLOW_STATEMENT_EDITS_ENV, raising=False)
+        path = tmp_path / "Demo.lean"
+        path.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.patch_v4a(
+            """\
+*** Begin Patch
+*** Delete File: Demo.lean
+*** End Patch"""
+        )
+
+        assert result.success is False
+        assert result.error is not None
+        assert "Lean statement guard blocked this edit" in result.error
+        assert path.exists()
+
+    def test_patch_v4a_blocks_lean_file_move_with_theorem(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(ALLOW_STATEMENT_EDITS_ENV, raising=False)
+        path = tmp_path / "Demo.lean"
+        moved = tmp_path / "Moved.lean"
+        path.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.patch_v4a(
+            """\
+*** Begin Patch
+*** Move File: Demo.lean -> Moved.lean
+*** End Patch"""
+        )
+
+        assert result.success is False
+        assert result.error is not None
+        assert "Lean statement guard blocked this move" in result.error
+        assert path.exists()
+        assert not moved.exists()
