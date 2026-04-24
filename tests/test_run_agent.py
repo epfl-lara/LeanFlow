@@ -1433,6 +1433,56 @@ class TestRunConversation:
         assert result["final_response"] == "All done"
         assert result["completed"] is True
 
+    def test_post_tool_compression_uses_next_prompt_estimate(self, agent):
+        """Post-tool compression should log the estimate that crossed threshold."""
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+            usage={
+                "prompt_tokens": 121_308,
+                "completion_tokens": 1_000,
+                "total_tokens": 122_308,
+            },
+        )
+        resp2 = _mock_response(content="All done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+        tool_result = "x" * 18_000
+        expected_estimate = 121_308 + 1_000 + (len(tool_result) // 3)
+        seen_estimates: list[int] = []
+
+        def _should_compress(value):
+            seen_estimates.append(value)
+            return True
+
+        with (
+            patch("run_agent.handle_function_call", return_value=tool_result),
+            patch.object(
+                agent.context_compressor,
+                "should_compress",
+                side_effect=_should_compress,
+            ),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "search something"}],
+                "compressed system prompt",
+            )
+            result = agent.run_conversation("search something")
+
+        assert seen_estimates == [expected_estimate]
+        mock_compress.assert_called_once()
+        assert mock_compress.call_args.kwargs["approx_tokens"] == expected_estimate
+        assert result["final_response"] == "All done"
+        assert result["completed"] is True
+
     @pytest.mark.parametrize(
         ("first_content", "second_content", "expected_final"),
         [
