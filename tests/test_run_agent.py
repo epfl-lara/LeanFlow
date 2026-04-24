@@ -904,6 +904,22 @@ class TestReasoningPreviewLines:
         assert len(result[0]) == 50
 
 
+class TestTextPreviewLines:
+    def test_preview_keeps_more_than_old_one_line_start(self):
+        text = "Resume workflow\n" + "\n".join(f"checkpoint detail {idx}" for idx in range(10))
+
+        result = AIAgent._text_preview_lines(text, max_lines=5, max_chars=400)
+
+        assert result[0] == "Resume workflow"
+        assert any("checkpoint detail 3" in line for line in result)
+        assert result[-1].endswith("...")
+
+    def test_preview_truncates_by_chars(self):
+        result = AIAgent._text_preview_lines("x" * 200, max_lines=3, max_chars=40)
+
+        assert result == ["x" * 36 + " ..."]
+
+
 class TestFormatToolsForSystemMessage:
     def test_no_tools_returns_empty_array(self, agent):
         agent.tools = []
@@ -1217,6 +1233,42 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_non_quiet_logging_reports_prompt_preview_and_usage(self, agent, capsys):
+        self._setup_agent(agent)
+        agent.quiet_mode = False
+        agent.model = "gpt-4o"
+        agent.log_preview_lines = 4
+        agent.log_preview_chars = 520
+        prompt = "Resume managed workflow from persisted verified proof milestone. " + (
+            "Keep the theorem queue context visible. " * 8
+        )
+        resp = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 1_234,
+                "completion_tokens": 56,
+                "total_tokens": 1_290,
+            },
+        )
+        agent.client.chat.completions.create.return_value = resp
+        capsys.readouterr()
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(prompt)
+
+        output = capsys.readouterr().out
+        assert result["completed"] is True
+        assert "Starting conversation" in output
+        assert "verified proof milestone" in output
+        assert "API step 1/120" in output
+        assert "Tokens: input 1,234 · output 56 · total 1,290" in output
+        assert "Cost estimate: step $" in output
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)

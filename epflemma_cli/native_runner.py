@@ -477,7 +477,7 @@ def _positive_int_config(name: str, default: int) -> int:
 
 
 def _single_line(text: Any, limit: int | None = None) -> str:
-    effective_limit = limit if limit is not None else max(_positive_int_config("activity_preview_chars", 280) + 140, 420)
+    effective_limit = limit if limit is not None else max(_positive_int_config("activity_preview_chars", 420) + 140, 560)
     collapsed = " ".join(str(text or "").split())
     if len(collapsed) <= effective_limit:
         return collapsed
@@ -802,7 +802,7 @@ def _install_workflow_run_log_capture() -> None:
 
 
 def _tool_progress_callback(name: str, preview: str, args: Mapping[str, Any] | None = None) -> None:
-    activity_limit = _positive_int_config("activity_preview_chars", 280)
+    activity_limit = _positive_int_config("activity_preview_chars", 420)
     if name == "_thinking":
         _record_activity("assistant-plan", _single_line(preview, activity_limit))
         return
@@ -3068,11 +3068,11 @@ def _build_agent() -> AIAgent:
     api_key = _read_native_env("API_KEY")
     provider = _read_native_env("PROVIDER")
     api_mode = _read_native_env("API_MODE")
-    max_turns_raw = _read_text_env("AGENT_MAX_TURNS", "90")
+    max_turns_raw = _read_text_env("AGENT_MAX_TURNS", "120")
     try:
         max_turns = max(1, int(max_turns_raw))
     except ValueError:
-        max_turns = 90
+        max_turns = 120
 
     if not model:
         raise SystemExit("epflemma-native: EPFLEMMA_NATIVE_MODEL is not configured")
@@ -3104,10 +3104,10 @@ def _build_agent() -> AIAgent:
         top_p=_managed_agent_float(agent_cfg.get("top_p")),
         top_k=_managed_agent_int(agent_cfg.get("top_k")),
         min_p=_managed_agent_float(agent_cfg.get("min_p")),
-        log_preview_lines=logging_cfg.get("preview_lines", 6),
-        log_preview_chars=logging_cfg.get("preview_chars", 900),
-        tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 20),
-        tool_output_tail_lines=logging_cfg.get("tool_output_tail_lines", 8),
+        log_preview_lines=logging_cfg.get("preview_lines", 8),
+        log_preview_chars=logging_cfg.get("preview_chars", 1600),
+        tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 28),
+        tool_output_tail_lines=logging_cfg.get("tool_output_tail_lines", 12),
     )
     agent._managed_base_reasoning_config = dict(reasoning_cfg or {}) if reasoning_cfg else None
 

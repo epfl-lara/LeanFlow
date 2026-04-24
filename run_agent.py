@@ -89,6 +89,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt
+from agent.usage_pricing import estimate_cost_usd, has_known_pricing
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -499,7 +500,7 @@ class AIAgent:
         provider: str = None,
         api_mode: str = None,
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
-        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int = 120,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -509,10 +510,10 @@ class AIAgent:
         ephemeral_system_prompt: str = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
-        log_preview_lines: int = 6,
-        log_preview_chars: int = 900,
-        tool_output_head_lines: int = 20,
-        tool_output_tail_lines: int = 8,
+        log_preview_lines: int = 8,
+        log_preview_chars: int = 1600,
+        tool_output_head_lines: int = 28,
+        tool_output_tail_lines: int = 12,
         providers_allowed: List[str] = None,
         providers_ignored: List[str] = None,
         providers_order: List[str] = None,
@@ -553,7 +554,7 @@ class AIAgent:
             provider (str): Provider identifier (optional; used for telemetry/routing hints)
             api_mode (str): API mode override: "chat_completions" or "codex_responses"
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
-            max_iterations (int): Maximum number of tool calling iterations (default: 90)
+            max_iterations (int): Maximum number of tool calling iterations (default: 120)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
@@ -612,10 +613,10 @@ class AIAgent:
         self.pass_session_id = pass_session_id
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
-        self.log_preview_lines = _positive_int(log_preview_lines, 6)
-        self.log_preview_chars = _positive_int(log_preview_chars, 900)
-        self.tool_output_head_lines = _positive_int(tool_output_head_lines, 20)
-        self.tool_output_tail_lines = _positive_int(tool_output_tail_lines, 8)
+        self.log_preview_lines = _positive_int(log_preview_lines, 8)
+        self.log_preview_chars = _positive_int(log_preview_chars, 1600)
+        self.tool_output_head_lines = _positive_int(tool_output_head_lines, 28)
+        self.tool_output_tail_lines = _positive_int(tool_output_tail_lines, 12)
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
         self.base_url = base_url or OPENROUTER_BASE_URL
@@ -3566,11 +3567,76 @@ class AIAgent:
         return msg
 
     @staticmethod
+    def _text_preview_lines(
+        text: Any,
+        *,
+        max_lines: int = 8,
+        max_chars: int = 1600,
+    ) -> list[str]:
+        """Build a compact multiline preview without losing all context."""
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        if not lines:
+            return []
+
+        max_lines = max(1, int(max_lines or 1))
+        max_chars = max(8, int(max_chars or 8))
+        preview_lines = lines[:max_lines]
+        preview_text = "\n".join(preview_lines)
+        if len(preview_text) > max_chars:
+            preview_text = preview_text[: max_chars - 4].rstrip() + " ..."
+            return preview_text.splitlines() or [preview_text]
+        if len(lines) > max_lines:
+            preview_lines[-1] = preview_lines[-1] + " ..."
+        return preview_lines
+
+    def _log_conversation_start(self, user_message: str) -> None:
+        preview_lines = self._text_preview_lines(
+            user_message,
+            max_lines=min(max(self.log_preview_lines, 1), 8),
+            max_chars=min(max(self.log_preview_chars, 480), 1600),
+        )
+        self._vprint(f"{self.log_prefix}💬 Starting conversation ({len(user_message):,} chars)")
+        for line in preview_lines:
+            self._vprint(f"{self.log_prefix}   {line}")
+
+    def _log_token_usage(
+        self,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+    ) -> None:
+        self._vprint(
+            f"{self.log_prefix}   📊 Tokens: "
+            f"input {prompt_tokens:,} · output {completion_tokens:,} · total {total_tokens:,} "
+            f"(session {self.session_total_tokens:,})"
+        )
+        if has_known_pricing(self.model):
+            step_cost = estimate_cost_usd(self.model, prompt_tokens, completion_tokens)
+            session_cost = estimate_cost_usd(
+                self.model,
+                self.session_prompt_tokens,
+                self.session_completion_tokens,
+            )
+            self._vprint(
+                f"{self.log_prefix}   💵 Cost estimate: "
+                f"step ${step_cost:.4f} · session ${session_cost:.4f}"
+            )
+        else:
+            self._vprint(
+                f"{self.log_prefix}   💵 Cost estimate: unavailable "
+                f"(no pricing metadata for {self.model})"
+            )
+
+    @staticmethod
     def _reasoning_preview_lines(
         reasoning_text: str | None,
         *,
-        max_lines: int = 6,
-        max_chars: int = 900,
+        max_lines: int = 8,
+        max_chars: int = 1600,
     ) -> list[str]:
         """Build a compact reasoning preview suitable for managed runner logs."""
         if not reasoning_text:
@@ -4716,7 +4782,7 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
-            print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            self._log_conversation_start(user_message)
         _emit_workflow_event(
             "conversation-start",
             "Agent conversation started",
@@ -4932,8 +4998,9 @@ class AIAgent:
             thinking_spinner = None
             
             if not self.quiet_mode:
-                self._vprint(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
-                self._vprint(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
+                self._vprint(f"\n{self.log_prefix}{'─' * 72}")
+                self._vprint(f"{self.log_prefix}🔄 API step {api_call_count}/{self.max_iterations}")
+                self._vprint(f"{self.log_prefix}   📥 Request: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
                 self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
             elif self._stream_callback is None:
                 # Animated thinking spinner in quiet mode (skip during streaming TTS)
@@ -4979,6 +5046,7 @@ class AIAgent:
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
+            usage_dict: dict[str, int] = {}
 
             while retry_count < max_retries:
                 try:
@@ -5271,6 +5339,13 @@ class AIAgent:
                         self.session_total_tokens += total_tokens
                         self.session_api_calls += 1
 
+                        if not self.quiet_mode:
+                            self._log_token_usage(
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=completion_tokens,
+                                total_tokens=total_tokens,
+                            )
+
                         # Persist token counts to session DB for /insights.
                         # Gateway sessions persist via session_store.update_session()
                         # after run_conversation returns, so only persist here for
@@ -5305,6 +5380,8 @@ class AIAgent:
                             hit_pct = (cached / prompt * 100) if prompt > 0 else 0
                             if not self.quiet_mode:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
+                    elif not self.quiet_mode:
+                        self._vprint(f"{self.log_prefix}   📊 Tokens: unavailable from provider response")
                     
                     break  # Success, exit retry loop
 
@@ -5660,10 +5737,7 @@ class AIAgent:
 
                 reasoning_preview_lines = self._reasoning_preview_lines(
                     self._extract_reasoning(assistant_message),
-                    max_lines=max(
-                        self.log_preview_lines if self.verbose_logging else min(self.log_preview_lines, 3),
-                        1,
-                    ),
+                    max_lines=max(self.log_preview_lines, 1),
                     max_chars=self.log_preview_chars,
                 )
 
