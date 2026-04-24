@@ -1285,6 +1285,70 @@ class TestRunConversation:
         assert "Tokens: input 1,234 · output 56 · total 1,290" in output
         assert "Cost estimate: step $" in output
 
+    def test_non_quiet_logging_reports_session_usage_summary(self, agent, capsys):
+        self._setup_agent(agent)
+        agent.quiet_mode = False
+        agent.model = "gpt-4o"
+        resp = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 1_234,
+                "completion_tokens": 56,
+                "total_tokens": 1_290,
+            },
+        )
+        agent.client.chat.completions.create.return_value = resp
+        capsys.readouterr()
+
+        with (
+            patch.object(agent, "_save_session_log"),
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        output = capsys.readouterr().out
+        assert result["completed"] is True
+        assert result["usage"]["turn"]["prompt_tokens"] == 1_234
+        assert result["usage"]["turn"]["completion_tokens"] == 56
+        assert result["usage"]["cost"]["source"] == "estimated"
+        assert "Session usage summary" in output
+        assert "API calls: 1 this conversation" in output
+        assert "Tokens this conversation: input 1,234 · output 56 · total 1,290" in output
+        assert "Total cost estimate: $" in output
+
+    def test_session_usage_summary_prefers_provider_reported_cost(self, agent, capsys):
+        self._setup_agent(agent)
+        agent.quiet_mode = False
+        agent.model = "unknown/private-model"
+        resp = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "cost": 0.0042,
+            },
+        )
+        agent.client.chat.completions.create.return_value = resp
+        capsys.readouterr()
+
+        with (
+            patch.object(agent, "_save_session_log"),
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        output = capsys.readouterr().out
+        assert result["usage"]["cost"]["source"] == "provider_reported"
+        assert result["usage"]["cost"]["total_usd"] == pytest.approx(0.0042)
+        assert "Total cost: $0.0042 (provider reported)" in output
+
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -2012,6 +2076,8 @@ class TestSaveSessionLogAtomicWrite:
         payload = call_args.args[1]
         assert payload["session_id"] == agent.session_id
         assert payload["messages"] == messages
+        assert payload["usage"]["session"]["total_tokens"] == 0
+        assert payload["usage"]["cost"]["source"] in {"estimated", "unavailable"}
         assert call_args.kwargs["indent"] == 2
         assert call_args.kwargs["default"] is str
 
