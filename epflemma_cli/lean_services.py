@@ -34,6 +34,7 @@ SEARCH_PROVIDER_LABELS = {
     "project_rg": "project-rg",
     "mathlib_rg": "mathlib-rg",
 }
+ACTIONABLE_DIAGNOSTIC_SEVERITIES = {"error", "warning"}
 MANAGED_MCP_TOOL_MAP = {
     "diagnostics": ("mcp_lean_lsp_lean_diagnostic_messages",),
     "goals": ("mcp_lean_lsp_lean_goal", "mcp_lean_lsp_lean_term_goal"),
@@ -708,7 +709,172 @@ def _declaration_index(path: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _coerce_positive_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except Exception:
+        return None
+    return number if number > 0 else None
+
+
+def _diagnostic_line_from_mapping(item: Mapping[str, Any]) -> int | None:
+    for key in ("line", "startLine", "start_line"):
+        line = _coerce_positive_int(item.get(key))
+        if line is not None:
+            return line
+    location = item.get("location")
+    if isinstance(location, Mapping):
+        line = _diagnostic_line_from_mapping(location)
+        if line is not None:
+            return line
+    range_value = item.get("range")
+    if isinstance(range_value, Mapping):
+        start = range_value.get("start")
+        if isinstance(start, Mapping):
+            line = _coerce_positive_int(start.get("line"))
+            if line is not None:
+                return line
+    return None
+
+
+def _normalise_diagnostic_item(item: Mapping[str, Any]) -> dict[str, Any] | None:
+    has_diagnostic_shape = any(key in item for key in ("severity", "level", "kind", "message", "line", "range", "location"))
+    if not has_diagnostic_shape:
+        return None
+    message = str(item.get("message", "") or item.get("text", "") or item.get("detail", "") or "").strip()
+    severity = str(item.get("severity", "") or item.get("level", "") or item.get("kind", "") or "").strip().lower()
+    lowered_message = message.lower()
+    if not severity:
+        if "error:" in lowered_message:
+            severity = "error"
+        elif "warning:" in lowered_message:
+            severity = "warning"
+        elif lowered_message:
+            severity = "info"
+    line = _diagnostic_line_from_mapping(item)
+    if not severity and not message and line is None:
+        return None
+    return {"severity": severity, "message": message, "line": line}
+
+
+def _json_diagnostic_values(text: str) -> list[Any]:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return []
+    try:
+        return [json.loads(stripped)]
+    except Exception:
+        values: list[Any] = []
+        for line in stripped.splitlines():
+            candidate = line.strip()
+            if not candidate or candidate[0] not in "[{":
+                continue
+            try:
+                values.append(json.loads(candidate))
+            except Exception:
+                continue
+        return values
+
+
+def _collect_diagnostic_items(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        items: list[dict[str, Any]] = []
+        for child in value:
+            items.extend(_collect_diagnostic_items(child))
+        return items
+    if not isinstance(value, Mapping):
+        return []
+    collected: list[dict[str, Any]] = []
+    normalized = _normalise_diagnostic_item(value)
+    if normalized is not None:
+        collected.append(normalized)
+    for key in ("items", "diagnostics", "messages", "errors", "warnings"):
+        child = value.get(key)
+        if isinstance(child, (list, Mapping)):
+            collected.extend(_collect_diagnostic_items(child))
+    return collected
+
+
+def diagnostic_items(text: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, int | None, str]] = set()
+    for value in _json_diagnostic_values(text):
+        for item in _collect_diagnostic_items(value):
+            key = (
+                str(item.get("severity", "") or ""),
+                item.get("line") if isinstance(item.get("line"), int) else None,
+                str(item.get("message", "") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(item)
+    if items:
+        return items
+
+    pattern = re.compile(
+        r"(?P<prefix>.*?):(?P<line>\d+):(?P<column>\d+):\s*(?P<severity>error|warning):\s*(?P<message>.*)",
+        flags=re.IGNORECASE,
+    )
+    for match in pattern.finditer(text or ""):
+        line = _coerce_positive_int(match.group("line"))
+        items.append(
+            {
+                "severity": match.group("severity").lower(),
+                "message": match.group("message").strip(),
+                "line": line,
+            }
+        )
+    return items
+
+
+def actionable_diagnostic_items(text: str) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in diagnostic_items(text)
+        if str(item.get("severity", "") or "").strip().lower() in ACTIONABLE_DIAGNOSTIC_SEVERITIES
+    ]
+
+
+def actionable_diagnostic_line_numbers(text: str) -> list[int]:
+    values: list[int] = []
+    for item in actionable_diagnostic_items(text):
+        line = item.get("line")
+        if isinstance(line, int) and line > 0 and line not in values:
+            values.append(line)
+    return values
+
+
+def diagnostics_indicate_actionable_failure(text: str) -> bool:
+    if actionable_diagnostic_items(text):
+        return True
+    if diagnostic_items(text):
+        return False
+    lowered = (text or "").lower()
+    cleared_tokens = (
+        "no errors found",
+        "no errors",
+        "without errors",
+    )
+    if any(token in lowered for token in cleared_tokens):
+        lowered = lowered.replace("no errors found", "").replace("no errors", "").replace("without errors", "")
+    failure_patterns = (
+        r"\berror\b",
+        r"\berrors\b",
+        r"\bwarning\b",
+        r"\bwarnings\b",
+        r"\bsorry\b",
+        r"\bunsolved\b",
+        r"\bfailed\b",
+        r"declaration uses sorry",
+    )
+    return any(re.search(pattern, lowered) for pattern in failure_patterns)
+
+
 def _diagnostic_line_numbers(text: str) -> list[int]:
+    actionable_lines = actionable_diagnostic_line_numbers(text)
+    if actionable_lines or diagnostic_items(text):
+        return actionable_lines
     values: list[int] = []
     patterns = (
         r":(\d+):\d+",
@@ -978,7 +1144,7 @@ def lean_inspect(
     sorry_count = _count_sorries(file_path)
     project_sorry_count, _ = _project_sorry_stats(project_root)
     queue_items: list[dict[str, Any]] = []
-    diagnostic_lines = _diagnostic_line_numbers(diagnostics)
+    diagnostic_lines = actionable_diagnostic_line_numbers(diagnostics)
     for entry in _declaration_index(file_path):
         reasons: list[str] = []
         text = str(entry.get("text", "") or "")
