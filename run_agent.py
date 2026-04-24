@@ -1066,6 +1066,13 @@ class AIAgent:
         self.session_completion_tokens = 0
         self.session_total_tokens = 0
         self.session_api_calls = 0
+        self.session_reported_cost_usd: float | None = None
+        self._usage_summary_logged = False
+        self._turn_start_prompt_tokens = 0
+        self._turn_start_completion_tokens = 0
+        self._turn_start_total_tokens = 0
+        self._turn_start_api_calls = 0
+        self._current_run_api_calls = 0
         
         if not self.quiet_mode:
             if compression_enabled:
@@ -1279,6 +1286,7 @@ class AIAgent:
         """
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
+        self._log_session_usage_summary()
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
@@ -1686,6 +1694,7 @@ class AIAgent:
                 "last_updated": datetime.now().isoformat(),
                 "system_prompt": self._cached_system_prompt or "",
                 "tools": self.tools or [],
+                "usage": self._session_usage_summary(),
                 "message_count": len(cleaned),
                 "messages": cleaned,
             }
@@ -3603,6 +3612,134 @@ class AIAgent:
         for line in preview_lines:
             self._vprint(f"{self.log_prefix}   {line}")
 
+    @staticmethod
+    def _extract_reported_cost_usd(usage: Any) -> float | None:
+        if usage is None:
+            return None
+        names = (
+            "cost",
+            "total_cost",
+            "total_cost_usd",
+            "cost_usd",
+            "estimated_cost",
+            "estimated_cost_usd",
+        )
+        for name in names:
+            if isinstance(usage, dict):
+                raw = usage.get(name)
+            else:
+                raw = getattr(usage, name, None)
+            if raw is None:
+                continue
+            try:
+                if isinstance(raw, str):
+                    raw = raw.strip().removeprefix("$")
+                return float(raw)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _session_usage_summary(self) -> dict[str, Any]:
+        turn_prompt_tokens = max(0, self.session_prompt_tokens - self._turn_start_prompt_tokens)
+        turn_completion_tokens = max(0, self.session_completion_tokens - self._turn_start_completion_tokens)
+        turn_total_tokens = max(0, self.session_total_tokens - self._turn_start_total_tokens)
+        turn_metered_api_calls = max(0, self.session_api_calls - self._turn_start_api_calls)
+        known_pricing = has_known_pricing(self.model)
+        estimated_cost = (
+            estimate_cost_usd(self.model, self.session_prompt_tokens, self.session_completion_tokens)
+            if known_pricing
+            else None
+        )
+        turn_estimated_cost = (
+            estimate_cost_usd(self.model, turn_prompt_tokens, turn_completion_tokens)
+            if known_pricing
+            else None
+        )
+        reported_cost = self.session_reported_cost_usd
+        if reported_cost is not None:
+            cost_source = "provider_reported"
+            total_cost = reported_cost
+        elif estimated_cost is not None:
+            cost_source = "estimated"
+            total_cost = estimated_cost
+        else:
+            cost_source = "unavailable"
+            total_cost = None
+        return {
+            "model": self.model,
+            "provider": self.provider,
+            "api_mode": self.api_mode,
+            "api_calls": int(self._current_run_api_calls or 0),
+            "metered_api_calls": int(turn_metered_api_calls),
+            "session_api_calls": int(self.session_api_calls),
+            "turn": {
+                "prompt_tokens": int(turn_prompt_tokens),
+                "completion_tokens": int(turn_completion_tokens),
+                "total_tokens": int(turn_total_tokens),
+            },
+            "session": {
+                "prompt_tokens": int(self.session_prompt_tokens),
+                "completion_tokens": int(self.session_completion_tokens),
+                "total_tokens": int(self.session_total_tokens),
+            },
+            "cost": {
+                "source": cost_source,
+                "total_usd": total_cost,
+                "estimated_total_usd": estimated_cost,
+                "estimated_turn_usd": turn_estimated_cost,
+                "provider_reported_total_usd": reported_cost,
+                "pricing_known": known_pricing,
+            },
+        }
+
+    def _log_session_usage_summary(self) -> None:
+        if self._usage_summary_logged:
+            return
+        self._usage_summary_logged = True
+        if self.quiet_mode:
+            return
+
+        summary = self._session_usage_summary()
+        turn = dict(summary.get("turn") or {})
+        session = dict(summary.get("session") or {})
+        cost = dict(summary.get("cost") or {})
+        api_calls = int(summary.get("api_calls") or 0)
+        metered_calls = int(summary.get("metered_api_calls") or 0)
+        self._vprint(f"\n{self.log_prefix}📈 Session usage summary")
+        self._vprint(
+            f"{self.log_prefix}   API calls: {api_calls:,} this conversation "
+            f"({metered_calls:,} with provider token usage)"
+        )
+        self._vprint(
+            f"{self.log_prefix}   Tokens this conversation: "
+            f"input {int(turn.get('prompt_tokens') or 0):,} · "
+            f"output {int(turn.get('completion_tokens') or 0):,} · "
+            f"total {int(turn.get('total_tokens') or 0):,}"
+        )
+        if (
+            int(session.get("prompt_tokens") or 0) != int(turn.get("prompt_tokens") or 0)
+            or int(session.get("completion_tokens") or 0) != int(turn.get("completion_tokens") or 0)
+            or int(session.get("total_tokens") or 0) != int(turn.get("total_tokens") or 0)
+        ):
+            self._vprint(
+                f"{self.log_prefix}   Session tokens total: "
+                f"input {int(session.get('prompt_tokens') or 0):,} · "
+                f"output {int(session.get('completion_tokens') or 0):,} · "
+                f"total {int(session.get('total_tokens') or 0):,}"
+            )
+
+        source = str(cost.get("source") or "unavailable")
+        total_cost = cost.get("total_usd")
+        if source == "provider_reported" and total_cost is not None:
+            self._vprint(f"{self.log_prefix}   Total cost: ${float(total_cost):.4f} (provider reported)")
+        elif source == "estimated" and total_cost is not None:
+            self._vprint(f"{self.log_prefix}   Total cost estimate: ${float(total_cost):.4f}")
+        else:
+            self._vprint(
+                f"{self.log_prefix}   Total cost: unavailable "
+                f"(no provider cost or pricing metadata for {self.model})"
+            )
+
     def _log_token_usage(
         self,
         *,
@@ -4718,6 +4855,12 @@ class AIAgent:
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
         self._persist_user_message_override = persist_user_message
+        self._usage_summary_logged = False
+        self._turn_start_prompt_tokens = self.session_prompt_tokens
+        self._turn_start_completion_tokens = self.session_completion_tokens
+        self._turn_start_total_tokens = self.session_total_tokens
+        self._turn_start_api_calls = self.session_api_calls
+        self._current_run_api_calls = 0
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         
@@ -4901,6 +5044,7 @@ class AIAgent:
                 break
             
             api_call_count += 1
+            self._current_run_api_calls = api_call_count
             if not self.iteration_budget.consume():
                 if not self.quiet_mode:
                     print(f"\n⚠️  Session iteration budget exhausted ({self.iteration_budget.max_total} total across agent + subagents)")
@@ -5320,12 +5464,15 @@ class AIAgent:
                         else:
                             prompt_tokens = getattr(response.usage, 'prompt_tokens', 0) or 0
                             completion_tokens = getattr(response.usage, 'completion_tokens', 0) or 0
-                            total_tokens = getattr(response.usage, 'total_tokens', 0) or 0
+                            total_tokens = getattr(response.usage, 'total_tokens', 0) or (prompt_tokens + completion_tokens)
                         usage_dict = {
                             "prompt_tokens": prompt_tokens,
                             "completion_tokens": completion_tokens,
                             "total_tokens": total_tokens,
                         }
+                        reported_cost = self._extract_reported_cost_usd(response.usage)
+                        if reported_cost is not None:
+                            self.session_reported_cost_usd = (self.session_reported_cost_usd or 0.0) + reported_cost
                         self.context_compressor.update_from_response(usage_dict)
 
                         # Cache discovered context length after successful call
@@ -5692,6 +5839,7 @@ class AIAgent:
 
             if restart_with_compressed_messages:
                 api_call_count -= 1
+                self._current_run_api_calls = api_call_count
                 self.iteration_budget.refund()
                 continue
 
@@ -6297,6 +6445,7 @@ class AIAgent:
             "last_reasoning": last_reasoning,
             "messages": messages,
             "api_calls": api_call_count,
+            "usage": self._session_usage_summary(),
             "completed": completed,
             "partial": False,  # True only when stopped due to invalid tool calls
             "interrupted": interrupted,
@@ -6316,6 +6465,7 @@ class AIAgent:
                 completed=completed,
                 interrupted=interrupted,
                 api_calls=api_call_count,
+                usage=result["usage"],
                 final_response=final_response,
                 response_previewed=getattr(self, "_response_was_previewed", False),
                 message_count=len(messages),
