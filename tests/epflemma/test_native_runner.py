@@ -267,6 +267,56 @@ def test_handle_managed_tool_result_records_failed_attempt_after_verification_fe
     assert agent._managed_pending_theorem_feedback is None
 
 
+def test_apply_verified_patch_counts_as_edit_and_verification_feedback(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    live_state = {
+        "target_symbol": "demo",
+        "active_file": "Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "current_queue_item_slice": "theorem demo : True := by\n  sorry",
+        "diagnostics": "error: unsolved goals",
+        "goals": "⊢ True",
+        "build_status": "unknown",
+        "blocker_summary": "error: unsolved goals",
+    }
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state))
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(
+        agent,
+        "apply_verified_patch",
+        {"path": "Demo/Main.lean", "theorem_id": "demo"},
+        json.dumps({"status": "check_failed"}),
+    )
+
+    attempts = agent._managed_autonomy_state["failed_attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["reason"] == "error: unsolved goals"
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_pending_theorem_feedback is None
+
+
 def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(monkeypatch):
     class _Agent:
         def __init__(self):

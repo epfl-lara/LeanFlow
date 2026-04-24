@@ -23,6 +23,7 @@ _LEAN_TOOLS = [
     "lean_auto_probe",
     "lean_auto_search",
     "lean_auto_try",
+    "apply_verified_patch",
     "lean_worker_dispatch",
     "lean_reasoning_help",
 ]
@@ -87,7 +88,7 @@ TOOLSETS: Dict[str, Dict[str, Any]] = {
     "autoformalize": {
         "description": "Lean workflow tool surface",
         "tools": [],
-        "includes": ["file", "web", "terminal", "skills", "session_search", "coordination"],
+        "includes": ["file", "web", "terminal", "skills", "session_search", "coordination", "lean"],
     },
     "epflemma-cli": {
         "description": "EPFLemma kernel CLI toolset",
