@@ -428,6 +428,25 @@ class ShellFileOperations(FileOperations):
             tofile=f"b/{filename}"
         )
         return ''.join(diff)
+
+    def _validate_lean_statement_write(self, path: str, content: str) -> Optional[str]:
+        """Return an error when a Lean write would alter protected statements."""
+        from epflemma_cli.lean_statement_guard import (
+            should_guard_lean_statement_path,
+            validate_lean_statement_edit,
+        )
+
+        if not should_guard_lean_statement_path(path):
+            return None
+
+        read_result = self._exec(f"cat {self._escape_shell_arg(path)} 2>/dev/null")
+        if read_result.exit_code != 0:
+            return None
+
+        guard_result = validate_lean_statement_edit(read_result.stdout, content)
+        if guard_result.ok:
+            return None
+        return guard_result.error
     
     # =========================================================================
     # READ Implementation
@@ -639,6 +658,10 @@ class ShellFileOperations(FileOperations):
         # Block writes to sensitive paths
         if _is_write_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+
+        guard_error = self._validate_lean_statement_write(path, content)
+        if guard_error:
+            return WriteResult(error=guard_error)
 
         # Create parent directories
         parent = os.path.dirname(path)

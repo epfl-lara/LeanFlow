@@ -315,6 +315,52 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     return True, diff
 
 
+def _read_raw_for_guard(file_ops: Any, path: str) -> Optional[str]:
+    """Read raw file contents for guards without line-number decoration."""
+    if hasattr(file_ops, "_exec") and hasattr(file_ops, "_escape_shell_arg"):
+        result = file_ops._exec(f"cat {file_ops._escape_shell_arg(path)} 2>/dev/null")
+        if result.exit_code == 0:
+            return result.stdout
+        return None
+
+    read_result = file_ops.read_file(path, limit=10000)
+    if getattr(read_result, "error", None):
+        return None
+    lines = []
+    for line in str(getattr(read_result, "content", "")).split("\n"):
+        match = re.match(r"^\s*\d+\|(.*)$", line)
+        lines.append(match.group(1) if match else line)
+    return "\n".join(lines)
+
+
+def _lean_statement_delete_error(file_ops: Any, path: str, *, action: str) -> Optional[str]:
+    """Return a guard error for deleting or moving Lean statements."""
+    from epflemma_cli.lean_statement_guard import (
+        should_guard_lean_statement_path,
+        validate_lean_statement_edit,
+    )
+
+    if not should_guard_lean_statement_path(path):
+        return None
+
+    before = _read_raw_for_guard(file_ops, path)
+    if before is None:
+        return None
+
+    result = validate_lean_statement_edit(before, "")
+    if result.ok:
+        return None
+
+    if action == "move":
+        details = "; ".join(v.replace("deleted ", "moved ") for v in result.violations)
+        return (
+            "Lean statement guard blocked this move: "
+            f"{details}. Existing theorem/lemma/example statements may not be deleted, moved, "
+            "renamed, or changed; edit only proof bodies."
+        )
+    return result.error
+
+
 def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a delete file operation."""
     # Read file first for diff
@@ -323,6 +369,10 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     if read_result.error and "not found" in read_result.error.lower():
         # File doesn't exist, nothing to delete
         return True, f"# {op.file_path} already deleted or doesn't exist"
+
+    guard_error = _lean_statement_delete_error(file_ops, op.file_path, action="delete")
+    if guard_error:
+        return False, guard_error
     
     # Delete directly via shell command using the underlying environment
     rm_result = file_ops._exec(f"rm -f {file_ops._escape_shell_arg(op.file_path)}")
@@ -336,6 +386,10 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a move file operation."""
+    guard_error = _lean_statement_delete_error(file_ops, op.file_path, action="move")
+    if guard_error:
+        return False, guard_error
+
     # Use shell mv command
     mv_result = file_ops._exec(
         f"mv {file_ops._escape_shell_arg(op.file_path)} {file_ops._escape_shell_arg(op.new_path)}"

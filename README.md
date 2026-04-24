@@ -996,6 +996,13 @@ epflemma config set agent.top_k 'null'
 epflemma config set agent.min_p 'null'
 ```
 
+Lean declaration edits are guarded by default. File write and patch tools block
+deleting, renaming, moving, or changing existing `theorem`, `lemma`, and
+`example` statements; proof-body edits and new declarations are allowed. For an
+intentional statement refactor, set `EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS=1` in
+the process environment or `~/.epflemma/.env`, then unset it again after the
+refactor.
+
 Compression defaults are tuned for long Lean sessions:
 
 - `reserved_output_tokens` keeps headroom for the next response instead of filling the full context window.
