@@ -239,6 +239,40 @@ def test_apply_verified_patch_tool_persists_check_failed_status(tmp_path, monkey
     assert load_verified_patch_status()["status"] == "check_failed"
 
 
+def test_apply_verified_patch_tool_reports_no_changes_without_verifying(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    target = tmp_path / "Demo.lean"
+    original = "theorem demo : True := by\n  trivial\n"
+    target.write_text(original, encoding="utf-8")
+    verify_called = {"value": False}
+
+    def _fake_verify(**kwargs):
+        verify_called["value"] = True
+        return SimpleNamespace(to_dict=lambda: {"ok": True})
+
+    monkeypatch.setattr(lean_tool, "lean_verify", _fake_verify)
+
+    patch = f"""\
+*** Begin Patch
+*** Update File: {target}
+ theorem demo : True := by
+-  trivial
++  trivial
+*** End Patch"""
+
+    payload = json.loads(lean_tool.apply_verified_patch_tool(str(target), patch, cwd=str(tmp_path)))
+
+    assert payload["success"] is False
+    assert payload["status"] == "no_changes"
+    assert payload["patch_applied"] is False
+    assert payload["check_passed"] is False
+    assert payload["changed_ranges"] == []
+    assert "unchanged" in payload["message"]
+    assert target.read_text(encoding="utf-8") == original
+    assert verify_called["value"] is False
+    assert load_verified_patch_status()["status"] == "no_changes"
+
+
 def test_apply_verified_patch_tool_blocks_statement_changes_before_verify(tmp_path, monkeypatch):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     target = tmp_path / "Demo.lean"
