@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 
+from agent.auxiliary_client import call_llm
 from epflemma_cli.lean_services import (
     LeanWorkerRequest,
     dispatch_worker,
@@ -230,6 +231,115 @@ def lean_auto_try_tool(
     )
 
 
+def _advisor_failure(status: str, message: str, *, theorem_id: str = "", file_path: str = "") -> str:
+    return json.dumps(
+        {
+            "success": False,
+            "status": status,
+            "theorem_id": theorem_id,
+            "file_path": file_path,
+            "message": (
+                "lean_reasoning_help is not working for this request: "
+                f"{message} Continue with the main proof workflow; do not treat missing advisor "
+                "advice as evidence that the theorem statement should change."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
+def lean_reasoning_help_tool(
+    theorem_id: str,
+    file_path: str,
+    *,
+    theorem_statement: str = "",
+    current_diagnostics: str = "",
+    current_goals: str = "",
+    current_attempt: str = "",
+    recent_failed_attempts: str = "",
+    question: str = "",
+    cwd: str = "",
+    timeout_s: int = 45,
+) -> str:
+    """Ask the configured auxiliary theorem advisor for proof-strategy advice."""
+    theorem_id = str(theorem_id or "").strip()
+    file_path = str(file_path or "").strip()
+    if not theorem_id:
+        return _advisor_failure("invalid_request", "missing theorem_id.", file_path=file_path)
+    if not file_path:
+        return _advisor_failure("invalid_request", "missing file_path.", theorem_id=theorem_id)
+
+    system_prompt = (
+        "You are an auxiliary Lean proof-strategy advisor for EPFLemma. "
+        "You do not edit files and you do not decide success. Give concrete proof ideas, "
+        "search terms, likely lemmas, and tactic sketches for the assigned theorem only. "
+        "The existing theorem/lemma/example statement must be preserved exactly; if the "
+        "statement appears wrong or too hard, say that as a blocker rather than proposing "
+        "a changed statement. Do not suggest replacing the proof with sorry."
+    )
+    user_prompt = "\n\n".join(
+        part
+        for part in [
+            f"File: {file_path}",
+            f"Theorem: {theorem_id}",
+            f"Working directory: {cwd}" if cwd else "",
+            f"Theorem statement:\n{theorem_statement}" if theorem_statement else "",
+            f"Current diagnostics:\n{current_diagnostics}" if current_diagnostics else "",
+            f"Current goals:\n{current_goals}" if current_goals else "",
+            f"Current attempt:\n{current_attempt}" if current_attempt else "",
+            f"Recent failed attempts:\n{recent_failed_attempts}" if recent_failed_attempts else "",
+            f"Question:\n{question}" if question else "Question:\nSuggest the next strongest proof strategy.",
+        ]
+        if part
+    )
+
+    try:
+        response = call_llm(
+            task="lean_reasoning",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+            max_tokens=3000,
+            timeout=max(5, int(timeout_s or 45)),
+        )
+    except RuntimeError as exc:
+        return _advisor_failure("unavailable", str(exc), theorem_id=theorem_id, file_path=file_path)
+    except Exception as exc:
+        return _advisor_failure(
+            "error",
+            f"{type(exc).__name__}: {exc}",
+            theorem_id=theorem_id,
+            file_path=file_path,
+        )
+
+    try:
+        advice = str(response.choices[0].message.content or "").strip()
+    except Exception:
+        advice = ""
+    if not advice:
+        return _advisor_failure(
+            "no_answer",
+            "the auxiliary advisor returned no content.",
+            theorem_id=theorem_id,
+            file_path=file_path,
+        )
+
+    return json.dumps(
+        {
+            "success": True,
+            "status": "answered",
+            "theorem_id": theorem_id,
+            "file_path": file_path,
+            "model": str(getattr(response, "model", "") or ""),
+            "advice": advice,
+            "next_step": "Use this as advice only; apply a concrete proof edit and verify with lean_verify(mode=file_exact).",
+        },
+        ensure_ascii=False,
+    )
+
+
 LEAN_CAPABILITIES_SCHEMA = {
     "name": "lean_capabilities",
     "description": "Inspect the native EPFLemma Lean workflow capability surface: project detection, Lean/Lake/Elan binaries, MCP/LSP tool availability, search providers, helper availability, workers, and degraded-mode reasons.",
@@ -426,6 +536,31 @@ LEAN_WORKER_DISPATCH_SCHEMA = {
     },
 }
 
+LEAN_REASONING_HELP_SCHEMA = {
+    "name": "lean_reasoning_help",
+    "description": (
+        "Ask the configured auxiliary theorem advisor for proof-strategy advice on a hard Lean theorem. "
+        "Use after repeated focused attempts or search/automation exhaustion. The advisor only gives advice; "
+        "you must still preserve the theorem statement and verify any edit with `lean_verify(mode=file_exact)`."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "theorem_id": {"type": "string", "description": "Assigned theorem/lemma/example identifier"},
+            "file_path": {"type": "string", "description": "Lean file containing the theorem"},
+            "theorem_statement": {"type": "string", "description": "Exact current declaration statement, if available"},
+            "current_diagnostics": {"type": "string", "description": "Current Lean diagnostics or blocker text"},
+            "current_goals": {"type": "string", "description": "Current Lean goals, if available"},
+            "current_attempt": {"type": "string", "description": "Most recent proof attempt or edit idea"},
+            "recent_failed_attempts": {"type": "string", "description": "Summary of prior failed attempts and errors"},
+            "question": {"type": "string", "description": "Specific advice request for the auxiliary model"},
+            "cwd": {"type": "string", "description": "Optional project working directory"},
+            "timeout_s": {"type": "integer", "description": "Advisor request timeout in seconds", "default": 45},
+        },
+        "required": ["theorem_id", "file_path"],
+    },
+}
+
 
 registry.register(
     name="lean_capabilities",
@@ -585,4 +720,23 @@ registry.register(
     ),
     check_fn=check_lean_requirements,
     emoji="🧠",
+)
+registry.register(
+    name="lean_reasoning_help",
+    toolset="lean",
+    schema=LEAN_REASONING_HELP_SCHEMA,
+    handler=lambda args, **kw: lean_reasoning_help_tool(
+        theorem_id=args.get("theorem_id", ""),
+        file_path=args.get("file_path", ""),
+        theorem_statement=args.get("theorem_statement", ""),
+        current_diagnostics=args.get("current_diagnostics", ""),
+        current_goals=args.get("current_goals", ""),
+        current_attempt=args.get("current_attempt", ""),
+        recent_failed_attempts=args.get("recent_failed_attempts", ""),
+        question=args.get("question", ""),
+        cwd=args.get("cwd", ""),
+        timeout_s=int(args.get("timeout_s", 45) or 45),
+    ),
+    check_fn=check_lean_requirements,
+    emoji="💡",
 )

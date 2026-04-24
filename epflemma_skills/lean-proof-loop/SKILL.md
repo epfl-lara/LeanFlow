@@ -20,9 +20,10 @@ Treat the native workflow specs as the contract. This skill is the routing layer
 3. `lean_search` with the smallest relevant search mode
 4. `lean_proof_context`, `lean_auto_probe`, `lean_auto_search`, or `lean_auto_try` only when the blocker/search state justifies theorem-local automation
 5. `lean_multi_attempt` only for 2-6 short local tactic candidates at one proof location, never for full proof blocks or snippets containing `sorry`
-6. edit minimally
-7. `lean_verify`
-8. `lean_worker_dispatch` when the route recommends a specialist worker
+6. `lean_reasoning_help` when repeated focused attempts fail and another configured model may provide proof-strategy advice
+7. edit minimally
+8. `lean_verify`
+9. `lean_worker_dispatch` when the route recommends a specialist worker
 
 ## Operating Rules
 
@@ -31,7 +32,8 @@ Treat the native workflow specs as the contract. This skill is the routing layer
 3. Treat failed-attempt history as negative guidance.
 4. Keep work pinned to the requested file or project scope.
 5. Use theorem-context and automation wrappers only after search exhaustion, repeated blockers, or an explicitly automation-suited route.
-6. Finish only after explicit verification of the requested scope.
+6. Treat `lean_reasoning_help` output as advice only; if it is unavailable or returns no answer, continue the main proof workflow and report that the advisor was unavailable if relevant.
+7. Finish only after explicit verification of the requested scope.
 
 ## Verification Rules
 

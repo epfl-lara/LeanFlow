@@ -50,6 +50,7 @@ def test_each_group_present_in_core_tools():
         assert tool in core, f"session tool {tool!r} missing from core"
     for tool in _COORDINATION_TOOLS:
         assert tool in core, f"coordination tool {tool!r} missing from core"
+    assert "lean_reasoning_help" in core
 
 
 def test_resolve_toolset_returns_empty_for_unknown_name():

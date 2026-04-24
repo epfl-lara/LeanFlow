@@ -24,6 +24,7 @@ _LEAN_TOOLS = [
     "lean_auto_search",
     "lean_auto_try",
     "lean_worker_dispatch",
+    "lean_reasoning_help",
 ]
 
 _EPFLEMMA_CORE_TOOLS = [

@@ -47,7 +47,9 @@ Primary specs:
 6. Do not send theorem-sized proof blocks, declaration headers, or candidates containing `sorry` to `lean_multi_attempt`.
 7. If you have one full candidate proof, prefer `lean_auto_try` or a direct patch followed by `lean_verify` instead.
 8. Only invent a new sublemma after those searches and theorem-local automation steps fail to produce the required statement.
-9. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, verification, worker dispatch, or blocker report you have.
+9. If repeated focused attempts fail while the theorem still looks solvable, call `lean_reasoning_help` with the statement, diagnostics, current attempt, and failed-attempt summary.
+10. If `lean_reasoning_help` reports that the advisor is unavailable or returned no answer, continue with the strongest concrete edit, verification, worker dispatch, or blocker report you have.
+11. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, verification, worker dispatch, or blocker report you have.
 
 ## Success Condition
 
