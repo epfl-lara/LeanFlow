@@ -922,10 +922,17 @@ epflemma:
     autonomous_followups: 6
 
 model:
-  default: zai-org/GLM-5.1
+  default: moonshotai/Kimi-K2.6
   provider: auto
   base_url: ""
   api_key: ""
+
+auxiliary:
+  lean_reasoning:
+    provider: main
+    model: zai-org/GLM-5.1
+    base_url: ""
+    api_key: ""
 
 agent:
   reasoning_effort: "auto"
@@ -938,7 +945,7 @@ agent:
 compression:
   enabled: true
   threshold: 0.5
-  summary_model: zai-org/GLM-5.1
+  summary_model: moonshotai/Kimi-K2.6
   reserved_output_tokens: 20000
   prune_tool_output: true
   prune_keep_recent_user_turns: 2
@@ -973,9 +980,11 @@ Useful commands:
 
 ```bash
 epflemma config get model.default
-epflemma config set model.default '"zai-org/GLM-5.1"'
+epflemma config set model.default '"moonshotai/Kimi-K2.6"'
 epflemma config set model.provider '"auto"'
 epflemma config set model.base_url '"https://inference.rcp.epfl.ch/v1"'
+epflemma config set auxiliary.lean_reasoning.model '"zai-org/GLM-5.1"'
+epflemma config set auxiliary.lean_reasoning.provider '"main"'
 epflemma config set agent.reasoning_effort '"auto"'
 epflemma config set agent.seed '42'
 epflemma config set agent.temperature '0.3'

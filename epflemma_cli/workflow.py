@@ -333,10 +333,10 @@ def load_default_model() -> str:
     config = load_config()
     model_cfg = config.get("model")
     if isinstance(model_cfg, Mapping):
-        return str(model_cfg.get("default", "zai-org/GLM-5.1") or "zai-org/GLM-5.1")
+        return str(model_cfg.get("default", "moonshotai/Kimi-K2.6") or "moonshotai/Kimi-K2.6")
     if isinstance(model_cfg, str) and model_cfg.strip():
         return model_cfg.strip()
-    return "zai-org/GLM-5.1"
+    return "moonshotai/Kimi-K2.6"
 
 
 def spawn_workflow(
