@@ -71,6 +71,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "kimi-k2.5": 262144,
     "kimi-k2-thinking": 262144,
     "kimi-k2-thinking-turbo": 262144,
+    "moonshotai/kimi-k2.6": 262144,
+    "moonshotai/kimi-k2.6-int4": 262144,
     "kimi-k2-turbo-preview": 262144,
     "kimi-k2-0905-preview": 131072,
     "MiniMax-M2.5": 204800,

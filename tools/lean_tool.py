@@ -570,11 +570,16 @@ def lean_reasoning_help_tool(
 
     system_prompt = (
         "You are an auxiliary Lean proof-strategy advisor for EPFLemma. "
-        "You do not edit files and you do not decide success. Give concrete proof ideas, "
+        "Your role is advisory only: you do not edit files, you do not decide success, "
+        "and your answer is not verification evidence. Give concrete proof ideas, "
         "search terms, likely lemmas, and tactic sketches for the assigned theorem only. "
-        "The existing theorem/lemma/example statement must be preserved exactly; if the "
-        "statement appears wrong or too hard, say that as a blocker rather than proposing "
-        "a changed statement. Do not suggest replacing the proof with sorry."
+        "Preserve the existing theorem/lemma/example statement exactly, including its "
+        "name, binders, hypotheses, conclusion, attributes, namespace location, and "
+        "surrounding API. If the statement appears wrong, underspecified, or too hard, "
+        "report a blocker and explain the evidence instead of proposing a changed "
+        "statement. Do not suggest deleting, weakening, renaming, moving, or splitting "
+        "the declaration unless the user explicitly asked for a refactor. Do not suggest "
+        "replacing the proof with sorry, admit, axiom, unsafe code, or a placeholder."
     )
     user_prompt = "\n\n".join(
         part
@@ -633,7 +638,11 @@ def lean_reasoning_help_tool(
             "file_path": file_path,
             "model": str(getattr(response, "model", "") or ""),
             "advice": advice,
-            "next_step": "Use this as advice only; apply a concrete proof edit and verify with lean_verify(mode=file_exact).",
+            "next_step": (
+                "Use this as advice only. Ignore any suggestion that changes the declaration "
+                "or uses a placeholder proof, then apply a concrete proof edit and verify "
+                "with lean_verify(mode=file_exact)."
+            ),
         },
         ensure_ascii=False,
     )

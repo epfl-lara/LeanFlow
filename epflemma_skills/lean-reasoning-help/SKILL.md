@@ -14,6 +14,8 @@ Use this skill for hard theorem-local blockers after normal proof workflow steps
 3. Treat the result as advice only; do not accept it until a concrete edit passes `lean_verify(mode=file_exact)` for the active file.
 4. Do not use auxiliary advice to justify deleting, weakening, renaming, moving, or replacing the declaration with `sorry`.
 5. If the advice suggests a statement change, report that as a blocker instead of applying it.
+6. If the advice suggests `sorry`, `admit`, axioms, unsafe code, or another placeholder, ignore that part and continue with verified proof repair.
+7. If the advisor is unavailable, returns no answer, or gives irrelevant advice, continue the main Lean workflow from the strongest verified local evidence; missing advice is not evidence that the theorem statement is wrong.
 
 ## Configuration
 

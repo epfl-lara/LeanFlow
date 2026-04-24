@@ -934,7 +934,7 @@ model:
 auxiliary:
   lean_reasoning:
     provider: main
-    model: zai-org/GLM-5.1
+    model: moonshotai/Kimi-K2.6-int4
     base_url: ""
     api_key: ""
 
@@ -988,7 +988,7 @@ epflemma config get model.default
 epflemma config set model.default '"moonshotai/Kimi-K2.6"'
 epflemma config set model.provider '"auto"'
 epflemma config set model.base_url '"https://inference.rcp.epfl.ch/v1"'
-epflemma config set auxiliary.lean_reasoning.model '"zai-org/GLM-5.1"'
+epflemma config set auxiliary.lean_reasoning.model '"moonshotai/Kimi-K2.6-int4"'
 epflemma config set auxiliary.lean_reasoning.provider '"main"'
 epflemma config set agent.reasoning_effort '"auto"'
 epflemma config set agent.seed '42'
