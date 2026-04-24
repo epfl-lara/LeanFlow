@@ -605,7 +605,7 @@ def lean_reasoning_help_tool(
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.2,
-            max_tokens=3000,
+            max_tokens=5000,
             timeout=max(5, int(timeout_s or 45)),
         )
     except RuntimeError as exc:
