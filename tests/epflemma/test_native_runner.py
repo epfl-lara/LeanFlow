@@ -369,6 +369,52 @@ def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(m
     assert agent._managed_pending_theorem_feedback is None
 
 
+def test_handle_managed_tool_result_supports_interrupted_property(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        @property
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "next_demo",
+            "active_file": "Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+            "current_queue_item_slice": "theorem next_demo : True := by\n  sorry",
+            "diagnostics": "warning: declaration uses sorry",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "blocker_summary": "warning: declaration uses sorry",
+        },
+    )
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+    runner._handle_managed_tool_result(agent, "lean_verify", {}, "")
+
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_pending_theorem_feedback is None
+
+
 def test_handle_managed_tool_result_interrupts_even_if_live_refresh_fails(monkeypatch):
     class _Agent:
         def __init__(self):
