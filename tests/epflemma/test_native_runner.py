@@ -369,6 +369,45 @@ def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(m
     assert agent._managed_pending_theorem_feedback is None
 
 
+def test_handle_managed_tool_result_interrupts_even_if_live_refresh_fails(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: (_ for _ in ()).throw(RuntimeError("lsp unavailable")),
+    )
+    recorded = []
+    monkeypatch.setattr(runner, "_record_activity", lambda kind, message, **details: recorded.append((kind, details)))
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+    runner._handle_managed_tool_result(agent, "lean_verify", {}, "")
+
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_pending_theorem_feedback is None
+    assert recorded[-1][0] == "queue-step-boundary"
+    assert "lsp unavailable" in recorded[-1][1]["refresh_error"]
+
+
 def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeypatch):
     class _Agent:
         session_id = "12345"

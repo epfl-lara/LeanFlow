@@ -4318,6 +4318,12 @@ class AIAgent:
             }
             messages.append(tool_msg)
 
+            if self.post_tool_result_callback:
+                try:
+                    self.post_tool_result_callback(name, args, function_result)
+                except Exception as cb_err:
+                    logger.debug("post_tool_result_callback error: %s", cb_err)
+
         if not self.quiet_mode:
             print(f"{self.log_prefix}└─ Tool batch complete")
 
