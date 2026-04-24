@@ -71,6 +71,7 @@ WORKFLOW_STEP_BOUNDARY_INTERRUPT = "[epflemma-native workflow step boundary]"
 ACTIVE_AGENT_STATUSES = {"active"}
 LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
+_MANAGER_VERIFICATION_LOG_CACHE: set[tuple[str, str, bool, str]] = set()
 
 
 def _utc_now_isoformat() -> str:
@@ -2689,6 +2690,36 @@ def _run_explicit_verification_build(active_file: str = "", *, full_project: boo
     return False, f"{result.command} reported errors: {detail[:280]}"
 
 
+def _log_manager_verification(
+    active_file: str,
+    *,
+    full_project: bool,
+    ok: bool,
+    build_status: str,
+) -> None:
+    scope = "project" if full_project else "file"
+    status = "passed" if ok else "failed"
+    file_label = _relative_file_label(active_file) or active_file or "[unknown]"
+    detail = _single_line(build_status, 520) or "[no output]"
+    signature = (scope, file_label, bool(ok), detail)
+    if signature in _MANAGER_VERIFICATION_LOG_CACHE:
+        return
+    _MANAGER_VERIFICATION_LOG_CACHE.add(signature)
+    _record_activity(
+        "manager-verification",
+        f"Manager verification ({scope}) {status}",
+        active_file=active_file,
+        active_file_label=file_label,
+        full_project=full_project,
+        verification_ok=bool(ok),
+        build_status=build_status,
+    )
+    print("")
+    print(f"🔎 Manager verification ({scope}): {status}")
+    print(f"   file: {file_label}")
+    print(f"   check: {detail}")
+
+
 def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dict[str, Any]:
     normalized = dict(live_state or {})
     if not normalized or not normalized.get("active_file"):
@@ -2708,6 +2739,7 @@ def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dic
     normalized["project_sorry_files"] = project_sorry_files
     active_file = str(normalized.get("active_file", "") or "")
     ok, build_status = _run_explicit_verification_build(active_file, full_project=False)
+    _log_manager_verification(active_file, full_project=False, ok=ok, build_status=build_status)
     verification_ok = bool(ok)
     needs_full_project_build = (
         verification_ok
@@ -2717,6 +2749,12 @@ def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dic
     )
     if needs_full_project_build:
         verification_ok, build_status = _run_explicit_verification_build(active_file, full_project=True)
+        _log_manager_verification(
+            active_file,
+            full_project=True,
+            ok=verification_ok,
+            build_status=build_status,
+        )
     normalized["build_status"] = build_status
     normalized["verification_ok"] = bool(verification_ok)
     if declaration_scope != "file" and isinstance(project_sorry_count, int) and project_sorry_count > 0:
