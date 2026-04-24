@@ -50,6 +50,7 @@ def test_each_group_present_in_core_tools():
         assert tool in core, f"session tool {tool!r} missing from core"
     for tool in _COORDINATION_TOOLS:
         assert tool in core, f"coordination tool {tool!r} missing from core"
+    assert "apply_verified_patch" in core
     assert "lean_reasoning_help" in core
 
 
@@ -69,6 +70,7 @@ def test_autoformalize_is_composite_and_includes_core_groups():
         assert t in tools, f"autoformalize missing terminal tool {t!r}"
     for t in _COORDINATION_TOOLS:
         assert t in tools, f"autoformalize missing coordination tool {t!r}"
+    assert "apply_verified_patch" in tools
 
 
 def test_resolved_toolsets_contain_no_duplicates():

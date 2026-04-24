@@ -648,7 +648,7 @@ def _record_managed_reasoning_policy(
 
 
 def _tool_result_counts_as_theorem_feedback(function_name: str, args: Mapping[str, Any] | None = None) -> bool:
-    if function_name in {"lean_inspect", "lean_verify"}:
+    if function_name in {"lean_inspect", "lean_verify", "apply_verified_patch"}:
         return True
     if function_name != "terminal":
         return False
@@ -673,6 +673,29 @@ def _handle_managed_tool_result(
     del _result
     if not _single_queue_item_turn_enabled() or agent.is_interrupted():
         return
+
+    if function_name == "apply_verified_patch":
+        baseline = dict(getattr(agent, "_managed_autonomy_state", {}) or {}).get("current_queue_assignment", {})
+        target_symbol = str(
+            dict(baseline or {}).get("target_symbol", "")
+            or dict(args or {}).get("theorem_id", "")
+            or ""
+        ).strip()
+        active_file = str(
+            dict(baseline or {}).get("active_file", "")
+            or dict(args or {}).get("path", "")
+            or ""
+        ).strip()
+        if not target_symbol or not active_file:
+            live_state = _build_live_proof_state(list(getattr(agent, "_session_messages", []) or []))
+            live_target, live_file = _queue_assignment_identity(live_state)
+            target_symbol = target_symbol or live_target
+            active_file = active_file or live_file
+        if target_symbol and active_file:
+            agent._managed_pending_theorem_feedback = {
+                "target_symbol": target_symbol,
+                "active_file": active_file,
+            }
 
     if function_name in {"patch", "write_file"}:
         baseline = dict(getattr(agent, "_managed_autonomy_state", {}) or {}).get("current_queue_assignment", {})

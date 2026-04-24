@@ -285,7 +285,7 @@ def _summarize_arg_value(key: str, value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, str):
-        if key in {"old_string", "new_string", "patch_content", "content"}:
+        if key in {"old_string", "new_string", "patch", "patch_content", "content"}:
             line_count = value.count("\n") + 1 if value else 0
             return f"{len(value):,} chars across {line_count} line(s)"
         return value
@@ -311,6 +311,7 @@ def _format_tool_args_for_log(function_name: str, function_args: dict[str, Any])
         "mode",
         "old_string",
         "new_string",
+        "patch",
         "patch_content",
         "content",
     ]
@@ -4025,7 +4026,7 @@ class AIAgent:
                 function_args = {}
 
             # Checkpoint for file-mutating tools
-            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            if function_name in ("write_file", "patch", "apply_verified_patch") and self._checkpoint_mgr.enabled:
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -4261,7 +4262,7 @@ class AIAgent:
             )
 
             # Checkpoint: snapshot working dir before file-mutating tools
-            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            if function_name in ("write_file", "patch", "apply_verified_patch") and self._checkpoint_mgr.enabled:
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:

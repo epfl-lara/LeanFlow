@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import model_tools
 import tools.lean_tool as lean_tool
+from epflemma_cli.workflow_state import load_verified_patch_status
 from epflemma_cli.lean_services import (
     LeanCapabilityReport,
     LeanSearchResult,
@@ -160,6 +161,112 @@ def test_lean_auto_probe_tool_surfaces_degraded_reasons(monkeypatch):
 
     assert payload["success"] is False
     assert "lean automation probe MCP unavailable" in payload["degraded_reasons"]
+
+
+def test_apply_verified_patch_tool_applies_patch_and_records_verified_status(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    target = tmp_path / "Demo.lean"
+    target.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        lean_tool,
+        "lean_verify",
+        lambda **kwargs: SimpleNamespace(
+            to_dict=lambda: {
+                "ok": True,
+                "mode": kwargs["mode"],
+                "command": "lake env lean Demo.lean",
+                "target": kwargs["target"],
+                "output": "ok",
+            }
+        ),
+    )
+
+    patch = f"""\
+*** Begin Patch
+*** Update File: {target}
+ theorem demo : True := by
+-  sorry
++  trivial
+*** End Patch"""
+
+    payload = json.loads(
+        lean_tool.apply_verified_patch_tool(str(target), patch, cwd=str(tmp_path), theorem_id="demo")
+    )
+
+    assert payload["success"] is True
+    assert payload["status"] == "verified"
+    assert payload["patch_applied"] is True
+    assert payload["check_passed"] is True
+    assert payload["checkpoint_id"].startswith("vpatch-")
+    assert "trivial" in target.read_text(encoding="utf-8")
+    assert load_verified_patch_status()["status"] == "verified"
+
+
+def test_apply_verified_patch_tool_persists_check_failed_status(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    target = tmp_path / "Demo.lean"
+    target.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        lean_tool,
+        "lean_verify",
+        lambda **kwargs: SimpleNamespace(
+            to_dict=lambda: {
+                "ok": False,
+                "mode": kwargs["mode"],
+                "command": "lake env lean Demo.lean",
+                "target": kwargs["target"],
+                "output": "unsolved goals",
+            }
+        ),
+    )
+
+    patch = f"""\
+*** Begin Patch
+*** Update File: {target}
+ theorem demo : True := by
+-  sorry
++  exact False.elim (by contradiction)
+*** End Patch"""
+
+    payload = json.loads(lean_tool.apply_verified_patch_tool(str(target), patch, cwd=str(tmp_path)))
+
+    assert payload["success"] is False
+    assert payload["status"] == "check_failed"
+    assert payload["patch_applied"] is True
+    assert payload["verification"]["output"] == "unsolved goals"
+    assert load_verified_patch_status()["status"] == "check_failed"
+
+
+def test_apply_verified_patch_tool_blocks_statement_changes_before_verify(tmp_path, monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    target = tmp_path / "Demo.lean"
+    original = "theorem demo : True := by\n  trivial\n"
+    target.write_text(original, encoding="utf-8")
+    verify_called = {"value": False}
+
+    def _fake_verify(**kwargs):
+        verify_called["value"] = True
+        return SimpleNamespace(to_dict=lambda: {"ok": True})
+
+    monkeypatch.setattr(lean_tool, "lean_verify", _fake_verify)
+    patch = f"""\
+*** Begin Patch
+*** Update File: {target}
+-theorem demo : True := by
++theorem demo : False := by
+   trivial
+*** End Patch"""
+
+    payload = json.loads(lean_tool.apply_verified_patch_tool(str(target), patch, cwd=str(tmp_path)))
+
+    assert payload["success"] is False
+    assert payload["status"] == "patch_failed"
+    assert payload["patch_applied"] is False
+    assert "Lean statement guard blocked" in payload["message"]
+    assert target.read_text(encoding="utf-8") == original
+    assert verify_called["value"] is False
 
 
 def test_lean_reasoning_help_tool_returns_advice(monkeypatch):

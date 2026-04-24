@@ -252,6 +252,21 @@ def test_format_tool_args_for_log_summarizes_patch_payload():
     assert any("new_string: 3 chars across 1 line(s)" in line for line in lines)
 
 
+def test_format_tool_args_for_log_summarizes_verified_patch_payload():
+    lines = run_agent._format_tool_args_for_log(
+        "apply_verified_patch",
+        {
+            "path": "GaussTest/GaussTest/RealTheorems-homework.lean",
+            "patch": "*** Begin Patch\n*** Update File: Demo.lean\n-old\n+new\n*** End Patch",
+            "check_mode": "file_exact",
+        },
+    )
+
+    assert any("path: GaussTest/GaussTest/RealTheorems-homework.lean" in line for line in lines)
+    assert any("patch: 66 chars across 5 line(s)" in line for line in lines)
+    assert any("check_mode: file_exact" in line for line in lines)
+
+
 def test_format_tool_result_for_log_pretty_prints_terminal_result():
     payload = json.dumps(
         {
