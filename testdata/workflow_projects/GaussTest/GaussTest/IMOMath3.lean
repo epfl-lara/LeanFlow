@@ -22,28 +22,6 @@ theorem putnam_1962_a3
   sorry
 
 /--
-Prove that for every integer $n$ greater than 1: \[ \frac{3n+1}{2n+2} < \left( \frac{1}{n} \right)^n + \left(\frac{2}{n} \right)^n + \cdots + \left(\frac{n}{n} \right)^n < 2. \]
--/
-theorem putnam_1962_b5
-    (n : ℤ)
-    (ng1 : n > 1) :
-    (3 * (n : ℝ) + 1) / (2 * n + 2) < ∑ i : Finset.Icc 1 n, ((i : ℝ) / n) ^ (n : ℝ) ∧
-      ∑ i : Finset.Icc 1 n, ((i : ℝ) / n) ^ (n : ℝ) < 2 :=
-  sorry
-
-/--
-Let $\{f(n)\}$ be a strictly increasing sequence of positive integers such that $f(2)=2$ and $f(mn)=f(m)f(n)$ for every relatively prime pair of positive integers $m$ and $n$ (the greatest common divisor of $m$ and $n$ is equal to $1$). Prove that $f(n)=n$ for every positive integer $n$.
--/
-theorem putnam_1963_a2
-    (f : ℕ → ℕ)
-    (hfpos : ∀ n, f n > 0)
-    (hfinc : StrictMonoOn f (Ici 1))
-    (hf2 : f 2 = 2)
-    (hfmn : ∀ m n, m > 0 → n > 0 → IsRelPrime m n → f (m * n) = f m * f n) :
-    ∀ n > 0, f n = n :=
-  sorry
-
-/--
 Let $S$ be a finite set of collinear points. Let $k$ be the maximum distance between any two points of $S$. Given a pair of points of $S$ a distance $d < k$ apart, we can find another pair of points of $S$ also a distance $d$ apart. Prove that if two pairs of points of $S$ are distances $a$ and $b$ apart, then $\frac{a}{b}$ is rational.
 -/
 theorem putnam_1964_a6
@@ -51,28 +29,9 @@ theorem putnam_1964_a6
     (pairs : Set (ℝ × ℝ))
     (hpairs : pairs = {(a, b) | (a ∈ S) ∧ (b ∈ S) ∧ (a < b)})
     (distance : ℝ × ℝ → ℝ)
-    (hdistance : distance = fun (a, b) ↦ b - a)
+    (hdistance : distance = fun (a, b) => b - a)
     (hrepdist : ∀ p ∈ pairs, (∃ m ∈ pairs, distance m > distance p) → ∃ q ∈ pairs, q ≠ p ∧ distance p = distance q) :
     ∀ p q : pairs, q ≠ p → ∃ r : ℚ, distance p / distance q = r :=
-  sorry
-
-/--
-Let $a_n$ denote the sequence $0, 1, 1, 2, 2, 3, \dots$, where $a_n = \frac{n}{2}$ if $n$ is even and $\frac{n - 1}{2}$ if n is odd. Furthermore, let $f(n)$ denote the sum of the first $n$ terms of $a_n$. Prove that all positive integers $x$ and $y$ with $x > y$ satisfy $xy = f(x + y) - f(x - y)$.
--/
-theorem putnam_1966_a1
-    (f : ℤ → ℤ)
-    (hf : f = fun n : ℤ => ∑ m ∈ Finset.Icc 0 n, if Even m then m / 2 else (m - 1) / 2) :
-    ∀ x y : ℤ, x > 0 ∧ y > 0 ∧ x > y → x * y = f (x + y) - f (x - y) :=
-  sorry
-
-/--
-Let $n$ be a positive integer such that $n+1$ is divisible by $24$. Prove that the sum of all the divisors of $n$ is divisible by $24$.
--/
-theorem putnam_1969_b1
-    (n : ℕ)
-    (hnpos : n > 0)
-    (hn : 24 ∣ n + 1) :
-    24 ∣ ∑ d ∈ divisors n, d :=
   sorry
 
 /--
@@ -96,7 +55,7 @@ theorem putnam_2002_a2
     (unit_sphere : Set (EuclideanSpace ℝ (Fin 3)))
     (hsphere : unit_sphere = sphere 0 1)
     (hemi : EuclideanSpace ℝ (Fin 3) → Set (EuclideanSpace ℝ (Fin 3)))
-    (hhemi : hemi = fun V ↦ {P : EuclideanSpace ℝ (Fin 3) | ⟪P, V⟫_ℝ ≥ 0}) :
+    (hhemi : hemi = fun V => {P : EuclideanSpace ℝ (Fin 3) | ⟪P, V⟫_ℝ ≥ 0}) :
     ∀ S : Set (EuclideanSpace ℝ (Fin 3)),
       S ⊆ unit_sphere ∧ S.encard = 5 →
         ∃ V : EuclideanSpace ℝ (Fin 3), V ≠ 0 ∧ (S ∩ hemi V).encard ≥ 4 :=
@@ -125,17 +84,6 @@ theorem putnam_2007_b1
     (n : ℤ)
     (hn : n > 0) :
     f.eval n ∣ f.eval (f.eval n + 1) ↔ n = 1 :=
-  sorry
-
-/--
-Let $*$ be a commutative and associative binary operation on a set $S$. Assume that for every $x$ and $y$ in $S$, there exists $z$ in $S$ such that $x*z=y$. (This $z$ may depend on $x$ and $y$.) Show that if $a,b,c$ are in $S$ and $a*c=b*c$, then $a=b$.
--/
-theorem putnam_2012_a2
-    (S : Type*) [CommSemigroup S]
-    (a b c : S)
-    (hS : ∀ x y : S, ∃ z : S, x * z = y)
-    (habc : a * c = b * c) :
-    a = b :=
   sorry
 
 /--
