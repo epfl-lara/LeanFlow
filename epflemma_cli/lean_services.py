@@ -708,6 +708,38 @@ def _declaration_index(path: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _diagnostic_line_numbers(text: str) -> list[int]:
+    values: list[int] = []
+    patterns = (
+        r":(\d+):\d+",
+        r"\bline\s+(\d+)\b",
+        r"""["']line["']\s*:\s*(\d+)""",
+        r"\((\d+),\s*\d+\)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text or "", flags=re.IGNORECASE):
+            try:
+                value = int(match.group(1))
+            except Exception:
+                continue
+            if value > 0 and value not in values:
+                values.append(value)
+    return values
+
+
+def _diagnostic_reason_for_entry(entry: Mapping[str, Any], diagnostic_lines: list[int]) -> str:
+    if not diagnostic_lines:
+        return ""
+    start = int(entry.get("line", 0) or 0)
+    end = int(entry.get("end_line", 0) or start)
+    if start <= 0:
+        return ""
+    for line_number in diagnostic_lines:
+        if start <= int(line_number) <= max(start, end):
+            return f"diagnostic near line {line_number}"
+    return ""
+
+
 def _find_symbol_line(path: Path, symbol: str | None) -> int | None:
     wanted = str(symbol or "").strip()
     if not wanted:
@@ -946,11 +978,15 @@ def lean_inspect(
     sorry_count = _count_sorries(file_path)
     project_sorry_count, _ = _project_sorry_stats(project_root)
     queue_items: list[dict[str, Any]] = []
+    diagnostic_lines = _diagnostic_line_numbers(diagnostics)
     for entry in _declaration_index(file_path):
         reasons: list[str] = []
         text = str(entry.get("text", "") or "")
         if re.search(r"\bsorry\b", _strip_comments_and_strings(text)):
             reasons.append("contains sorry")
+        diagnostic_reason = _diagnostic_reason_for_entry(entry, diagnostic_lines)
+        if diagnostic_reason:
+            reasons.append(diagnostic_reason)
         if reasons:
             queue_items.append(
                 {

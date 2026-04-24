@@ -1398,6 +1398,7 @@ def _extract_diagnostic_line_numbers(text: str) -> list[int]:
     patterns = (
         r":(\d+):\d+",
         r"\bline\s+(\d+)\b",
+        r"""["']line["']\s*:\s*(\d+)""",
         r"\((\d+),\s*\d+\)",
     )
     for pattern in patterns:
@@ -1423,6 +1424,19 @@ def _declaration_name_safe_for_diagnostic_match(name: str) -> bool:
     if len(normalized) >= 4:
         return True
     return bool(re.search(r"[^A-Za-z]", normalized))
+
+
+def _diagnostic_reason_for_entry(entry: Mapping[str, Any], diagnostic_lines: list[int]) -> str:
+    if not diagnostic_lines:
+        return ""
+    start = int(entry.get("line", 0) or 0)
+    end = int(entry.get("end_line", 0) or start)
+    if start <= 0:
+        return ""
+    for line_number in diagnostic_lines:
+        if start <= int(line_number) <= max(start, end):
+            return f"diagnostic near line {line_number}"
+    return ""
 
 
 def _declaration_work_queue(
@@ -1472,8 +1486,9 @@ def _declaration_work_queue(
             if diagnostics_active and _declaration_name_safe_for_diagnostic_match(name):
                 if re.search(rf"\b{re.escape(name)}\b", issue_text or ""):
                     reasons.append("referenced in diagnostics")
-            if diagnostics_active and line_number and line_number in diagnostic_lines:
-                reasons.append(f"diagnostic near line {line_number}")
+            diagnostic_reason = _diagnostic_reason_for_entry(entry, diagnostic_lines) if diagnostics_active else ""
+            if diagnostic_reason:
+                reasons.append(diagnostic_reason)
             if anonymous and reasons and not entry.get("has_sorry") and not any(
                 reason.startswith("diagnostic near line ") for reason in reasons
             ):
@@ -1531,11 +1546,26 @@ def _format_declaration_queue(queue: list[dict[str, Any]], *, limit: int = 8) ->
     return "\n".join(lines)
 
 
+def _queue_item_has_diagnostic_reason(item: Mapping[str, Any]) -> bool:
+    reasons = " ".join(str(reason or "") for reason in item.get("reasons", []) or []).lower()
+    return bool(
+        "diagnostic" in reasons
+        or "error" in reasons
+        or "unsolved" in reasons
+        or "type mismatch" in reasons
+        or "failed" in reasons
+    )
+
+
 def _current_queue_item(queue: list[dict[str, Any]], active_file: str) -> dict[str, Any] | None:
     if not queue:
         return None
     if not active_file:
         return dict(queue[0])
+    for item in queue:
+        label = str(item.get("label", "") or "")
+        if _find_declaration_entry(active_file, label) and _queue_item_has_diagnostic_reason(item):
+            return dict(item)
     for item in queue:
         label = str(item.get("label", "") or "")
         reasons = list(item.get("reasons", []) or [])
@@ -2616,6 +2646,8 @@ def _queue_item_verification_hint(active_file: str) -> str:
         "- canonical acceptance tool: `lean_verify(mode=file_exact)` on the active file\n"
         f"- backend check performed by the tool: `{command}`\n"
         "- use `lean_inspect` for iteration, but do not accept the theorem as solved until `lean_verify(mode=file_exact)` succeeds\n"
+        "- if the active file still reports errors, treat those errors as blockers before moving to later `sorry` items\n"
+        "- a declaration disappearing from the pending queue is not enough by itself when the file gate is still failing\n"
         "- do not treat `lake build`, `grep`, `head`, or truncated output as proof that this theorem-sized repair is clean"
     )
 

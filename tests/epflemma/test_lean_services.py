@@ -152,6 +152,56 @@ def test_lean_search_marks_repeated_empty_search_loop(monkeypatch, tmp_path):
     assert "repeated empty search loop detected; stop searching and change tactic" in result.degraded_reasons
 
 
+def test_lean_inspect_queue_includes_diagnostic_declaration_range(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Main.lean"
+    target.write_text(
+        "\n".join(
+            [
+                "theorem broken : True := by",
+                "  exact ?missing",
+                "",
+                "theorem later : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: LeanCapabilityReport(
+            cwd=str(project),
+            project_root=str(project),
+            project_valid=True,
+            project_error="",
+            binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+            mcp_tools={},
+            search_providers=[],
+            helper_tools={},
+            workers=[],
+            degraded_reasons=[],
+        ),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_diagnostics_text",
+        lambda file_path, project_root, mcp_tools: (
+            '{"severity": "error", "message": "unsolved goals", "line": 2, "column": 9}'
+        ),
+    )
+    monkeypatch.setattr(lean_services, "_goals_text", lambda *args, **kwargs: "no goals")
+    monkeypatch.setattr(lean_services, "_project_sorry_stats", lambda project_root: (1, ["Main.lean"]))
+    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args, **kwargs: None)
+
+    inspection = lean_services.lean_inspect(str(target), cwd=project)
+
+    assert inspection.queue_items[0]["label"] == "broken"
+    assert "diagnostic near line 2" in inspection.queue_items[0]["reasons"]
+    assert inspection.queue_items[1]["label"] == "later"
+
+
 def test_route_workflow_step_marks_search_exhausted_from_recent_empty_search_streak(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()
