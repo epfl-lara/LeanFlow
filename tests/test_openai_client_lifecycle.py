@@ -32,6 +32,21 @@ class FakeRequestClient:
         self._client.is_closed = True
 
 
+class ClosableHangingRequestClient(FakeRequestClient):
+    def __init__(self):
+        self._stop_event = threading.Event()
+        super().__init__(self._create)
+
+    def _create(self, **kwargs):
+        while not self._stop_event.is_set():
+            self._stop_event.wait(0.01)
+        raise TimeoutError("request client closed during hung request")
+
+    def close(self):
+        self._stop_event.set()
+        super().close()
+
+
 class FakeSharedClient(FakeRequestClient):
     pass
 
@@ -151,6 +166,30 @@ def test_concurrent_requests_do_not_break_each_other_when_one_client_closes(monk
     assert len(factory.calls) == 2
 
 
+def test_interruptible_api_call_times_out_and_emits_provider_wait(monkeypatch):
+    request_client = ClosableHangingRequestClient()
+    factory = OpenAIFactory([request_client])
+    monkeypatch.setattr(run_agent, "OpenAI", factory)
+    monkeypatch.setenv("GAUSS_PROVIDER_WAIT_HEARTBEAT", "0.2")
+
+    workflow_events = []
+    monkeypatch.setattr(
+        run_agent,
+        "_emit_workflow_event",
+        lambda *args, **kwargs: workflow_events.append((args, kwargs)),
+    )
+
+    agent = _build_agent()
+    agent.quiet_mode = False
+    agent._vprint = lambda *args, **kwargs: None
+
+    with pytest.raises(TimeoutError, match="Provider request exceeded 1s without a response."):
+        agent._interruptible_api_call({"model": agent.model, "messages": [], "timeout": 1.0})
+
+    assert request_client.close_calls >= 1
+    assert any(args and args[0] == "provider-wait" for args, _kwargs in workflow_events)
+
+
 
 def test_streaming_call_recreates_closed_shared_client_before_request(monkeypatch):
     chunks = iter([
@@ -180,3 +219,27 @@ def test_streaming_call_recreates_closed_shared_client_before_request(monkeypatc
     assert stale_shared.close_calls >= 1
     assert request_client.close_calls >= 1
     assert len(factory.calls) == 2
+
+
+def test_streaming_api_call_times_out_and_emits_provider_wait(monkeypatch):
+    request_client = ClosableHangingRequestClient()
+    factory = OpenAIFactory([request_client])
+    monkeypatch.setattr(run_agent, "OpenAI", factory)
+    monkeypatch.setenv("GAUSS_PROVIDER_WAIT_HEARTBEAT", "0.2")
+
+    workflow_events = []
+    monkeypatch.setattr(
+        run_agent,
+        "_emit_workflow_event",
+        lambda *args, **kwargs: workflow_events.append((args, kwargs)),
+    )
+
+    agent = _build_agent()
+    agent.quiet_mode = False
+    agent._vprint = lambda *args, **kwargs: None
+
+    with pytest.raises(TimeoutError, match="Provider request exceeded 1s without a response."):
+        agent._streaming_api_call({"model": agent.model, "messages": [], "timeout": 1.0}, lambda _delta: None)
+
+    assert request_client.close_calls >= 1
+    assert any(args and args[0] == "provider-wait" for args, _kwargs in workflow_events)

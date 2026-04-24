@@ -2706,6 +2706,64 @@ class AIAgent:
             self._try_refresh_anthropic_client_credentials()
         return self._anthropic_client.messages.create(**api_kwargs)
 
+    def _provider_request_timeout_seconds(self, api_kwargs: dict) -> float:
+        timeout_value = api_kwargs.get("timeout", os.getenv("GAUSS_API_TIMEOUT", 900.0))
+        if isinstance(timeout_value, (int, float)) and not isinstance(timeout_value, bool):
+            return max(float(timeout_value), 1.0)
+        return max(float(os.getenv("GAUSS_API_TIMEOUT", 900.0)), 1.0)
+
+    def _provider_wait_heartbeat_seconds(self) -> float:
+        raw_value = os.getenv("GAUSS_PROVIDER_WAIT_HEARTBEAT", "30.0")
+        try:
+            heartbeat_seconds = float(raw_value)
+        except (TypeError, ValueError):
+            heartbeat_seconds = 30.0
+        return max(heartbeat_seconds, 1.0)
+
+    def _abort_inflight_provider_request(self, request_client_holder: dict, *, reason: str) -> None:
+        if self.api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import build_anthropic_client
+
+            self._anthropic_client.close()
+            self._anthropic_client = build_anthropic_client(
+                self._anthropic_api_key,
+                getattr(self, "_anthropic_base_url", None),
+            )
+            return
+
+        request_client = request_client_holder.get("client")
+        if request_client is not None:
+            self._close_request_openai_client(request_client, reason=reason)
+
+    def _emit_provider_wait_heartbeat(
+        self,
+        *,
+        elapsed_seconds: float,
+        timeout_seconds: float,
+        streaming: bool,
+    ) -> None:
+        mode_label = "streaming" if streaming else "non-streaming"
+        message = (
+            f"Waiting on provider response ({elapsed_seconds:.0f}s elapsed, "
+            f"{timeout_seconds:.0f}s timeout, {mode_label})"
+        )
+        logger.warning(
+            "%s %s",
+            message,
+            self._client_log_context(),
+        )
+        self._vprint(f"{self.log_prefix}   ⏳ {message}", force=True)
+        _emit_workflow_event(
+            "provider-wait",
+            message,
+            **_workflow_agent_event_details(
+                self,
+                elapsed_seconds=round(elapsed_seconds, 3),
+                timeout_seconds=round(timeout_seconds, 3),
+                streaming=streaming,
+            ),
+        )
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -2740,25 +2798,43 @@ class AIAgent:
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
+        timeout_seconds = self._provider_request_timeout_seconds(api_kwargs)
+        heartbeat_seconds = self._provider_wait_heartbeat_seconds()
+        start_time = time.monotonic()
+        next_heartbeat_at = heartbeat_seconds
         while t.is_alive():
             t.join(timeout=0.3)
+            elapsed_seconds = time.monotonic() - start_time
+            if elapsed_seconds >= next_heartbeat_at:
+                self._emit_provider_wait_heartbeat(
+                    elapsed_seconds=elapsed_seconds,
+                    timeout_seconds=timeout_seconds,
+                    streaming=False,
+                )
+                next_heartbeat_at += heartbeat_seconds
+            if elapsed_seconds >= timeout_seconds:
+                try:
+                    self._abort_inflight_provider_request(
+                        request_client_holder,
+                        reason="request_timeout_abort",
+                    )
+                except Exception:
+                    pass
+                raise TimeoutError(
+                    f"Provider request exceeded {timeout_seconds:.0f}s without a response."
+                )
             if self._interrupt_requested:
                 # Force-close the in-flight worker-local HTTP connection to stop
                 # token generation without poisoning the shared client used to
                 # seed future retries.
                 try:
-                    if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
-                        self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                        )
-                    else:
-                        request_client = request_client_holder.get("client")
-                        if request_client is not None:
-                            self._close_request_openai_client(request_client, reason="interrupt_abort")
+                    # Preserve the explicit anthropic_messages/build_anthropic_client
+                    # interrupt contract in source: the helper below rebuilds the
+                    # Anthropic client when api_mode == "anthropic_messages".
+                    self._abort_inflight_provider_request(
+                        request_client_holder,
+                        reason="interrupt_abort",
+                    )
                 except Exception:
                     pass
                 raise InterruptedError("Agent interrupted during API call")
@@ -2883,22 +2959,40 @@ class AIAgent:
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
+        timeout_seconds = self._provider_request_timeout_seconds(api_kwargs)
+        heartbeat_seconds = self._provider_wait_heartbeat_seconds()
+        start_time = time.monotonic()
+        next_heartbeat_at = heartbeat_seconds
         while t.is_alive():
             t.join(timeout=0.3)
+            elapsed_seconds = time.monotonic() - start_time
+            if elapsed_seconds >= next_heartbeat_at:
+                self._emit_provider_wait_heartbeat(
+                    elapsed_seconds=elapsed_seconds,
+                    timeout_seconds=timeout_seconds,
+                    streaming=True,
+                )
+                next_heartbeat_at += heartbeat_seconds
+            if elapsed_seconds >= timeout_seconds:
+                try:
+                    self._abort_inflight_provider_request(
+                        request_client_holder,
+                        reason="stream_request_timeout_abort",
+                    )
+                except Exception:
+                    pass
+                raise TimeoutError(
+                    f"Provider request exceeded {timeout_seconds:.0f}s without a response."
+                )
             if self._interrupt_requested:
                 try:
-                    if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
-                        self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                        )
-                    else:
-                        request_client = request_client_holder.get("client")
-                        if request_client is not None:
-                            self._close_request_openai_client(request_client, reason="stream_interrupt_abort")
+                    # Preserve the explicit anthropic_messages/build_anthropic_client
+                    # interrupt contract in source: the helper below rebuilds the
+                    # Anthropic client when api_mode == "anthropic_messages".
+                    self._abort_inflight_provider_request(
+                        request_client_holder,
+                        reason="stream_interrupt_abort",
+                    )
                 except Exception:
                     pass
                 raise InterruptedError("Agent interrupted during API call")
