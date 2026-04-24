@@ -1267,6 +1267,60 @@ def test_declaration_work_queue_keeps_named_theorem_with_build_error_without_sor
     assert "diagnostic near line 4" in queue[0]["reasons"] or "referenced in diagnostics" in queue[0]["reasons"]
 
 
+def test_declaration_work_queue_maps_body_diagnostic_to_declaration(tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem broken : True := by",
+                "  have h : False := by",
+                "    exact ?missing",
+                "  exact False.elim h",
+                "",
+                "theorem later : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    queue = runner._declaration_work_queue(
+        str(active),
+        '{"severity": "error", "message": "unsolved goals", "line": 3, "column": 11}',
+        project_root=str(project),
+        scope="file",
+    )
+
+    assert queue
+    assert queue[0]["label"] == "broken"
+    assert "diagnostic near line 3" in queue[0]["reasons"]
+
+
+def test_current_queue_item_prefers_diagnostic_blocker_before_later_sorry(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem broken : True := by",
+                "  exact ?missing",
+                "",
+                "theorem later : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    queue = [
+        {"label": "broken", "reasons": ["diagnostic near line 2"]},
+        {"label": "later", "reasons": ["contains sorry"]},
+    ]
+
+    assert runner._current_queue_item(queue, str(active))["label"] == "broken"
+
+
 def test_declaration_work_queue_does_not_match_very_short_names_from_text_alone(tmp_path):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
