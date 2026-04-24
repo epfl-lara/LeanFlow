@@ -668,6 +668,16 @@ def _prepare_managed_turn_state(agent: Any, autonomy_state: dict[str, Any]) -> N
     agent._managed_pending_theorem_feedback = None
 
 
+def _agent_interrupted(agent: Any) -> bool:
+    value = getattr(agent, "is_interrupted", False)
+    if callable(value):
+        try:
+            return bool(value())
+        except TypeError:
+            return False
+    return bool(value)
+
+
 def _handle_managed_tool_result(
     agent: Any,
     function_name: str,
@@ -675,7 +685,7 @@ def _handle_managed_tool_result(
     _result: str,
 ) -> None:
     del _result
-    if not _single_queue_item_turn_enabled() or agent.is_interrupted():
+    if not _single_queue_item_turn_enabled() or _agent_interrupted(agent):
         return
 
     if function_name == "apply_verified_patch":
