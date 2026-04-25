@@ -12,9 +12,9 @@ Contents:
 
 - `GaussTest.lean`: default library entrypoint; imports the theorem files in project order
 - `GaussTest/RealTheorems.lean`: real-analysis and Lipschitz examples
-- `GaussTest/IMOMath1.lean`: smaller solved contest-style algebra, number theory, AIME, IMO, and Putnam examples
-- `GaussTest/IMOMath2.lean`: larger contest-style examples, mostly solved, with one remaining proof-repair target
-- `GaussTest/IMOMath3.lean`: harder Putnam-style theorem statements kept as `sorry` targets
+- `GaussTest/IMOMath1.lean`: smaller contest-style algebra, number theory, AIME, IMO, and Putnam examples
+- `GaussTest/IMOMath2.lean`: larger contest-style examples, medium difficulty Putnam problems, and some harder AIME problems
+- `GaussTest/IMOMath3.lean`: harder Putnam-style theorem statements
 
 The `lakefile.toml` default target is `GaussTest`, so `lake build` checks the sorted theorem collection by default.
 
