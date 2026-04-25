@@ -93,7 +93,7 @@ formalize "formalize this statement"
 - no `sorry` in the active target
 - no remaining project `sorry` outside dependencies
 
-For file-scoped work, EPFLemma drives the agent one declaration at a time. The runner owns the queue, refreshes diagnostics after edits, records failed attempts per theorem, and advances only when Lean verification says the current target is clean.
+For file-scoped work, EPFLemma drives the agent one declaration at a time. The runner owns the queue, refreshes diagnostics after edits, records failed attempts per theorem, and advances only when Lean verification says the current target is clean. If a theorem turn exhausts its API-step budget, the runner records that as a failed attempt and restores the original safe `sorry` body when it has an exact baseline slice; the theorem remains pending for the next queue cycle.
 
 ## Main Workflows
 
@@ -234,4 +234,3 @@ python -m pytest tests/epflemma tests/agent/test_prompt_builder.py tests/agent/t
 python -m epflemma_cli.main --help
 ./scripts/install-internal.sh
 ```
-

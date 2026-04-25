@@ -2904,6 +2904,101 @@ def test_same_queue_assignment_still_blocked_requires_same_theorem_and_real_bloc
     ) is False
 
 
+def test_restore_queue_assignment_to_baseline_sorry_replaces_only_assigned_declaration(tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text(
+        "theorem demo : True := by\n"
+        "  exact False.elim ?bad\n\n"
+        "theorem next_demo : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": "Assigned declaration slice (1-2):\ntheorem demo : True := by\n  sorry",
+        }
+    }
+
+    result = runner._restore_queue_assignment_to_baseline_sorry(autonomy_state, {})
+
+    assert result["restored"] is True
+    text = active.read_text(encoding="utf-8")
+    assert "theorem demo : True := by\n  sorry\n" in text
+    assert "exact False.elim" not in text
+    assert "theorem next_demo : True := by\n  sorry" in text
+
+
+def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(monkeypatch, tmp_path):
+    active = tmp_path / "Demo.lean"
+    active.write_text(
+        "theorem demo : True := by\n"
+        "  exact False.elim ?bad\n",
+        encoding="utf-8",
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": "Assigned declaration slice (1-2):\ntheorem demo : True := by\n  sorry",
+        }
+    }
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Demo.lean",
+        "target_symbol": "demo",
+        "current_queue_item": {"label": "demo", "reasons": ["diagnostic near line 2"]},
+        "current_queue_item_slice": (
+            "Assigned declaration slice (1-2):\n"
+            "theorem demo : True := by\n"
+            "  exact False.elim ?bad"
+        ),
+        "diagnostics": "error: unsolved goals",
+        "goals": "⊢ True",
+        "build_status": "error",
+        "current_blocker": "error: unsolved goals",
+    }
+    post_live_state = {
+        **live_state,
+        "current_queue_item_slice": "Assigned declaration slice (1-2):\ntheorem demo : True := by\n  sorry",
+        "diagnostics": "warning: declaration uses sorry",
+        "goals": "no goals",
+        "build_status": "lake env lean Demo.lean exits 0",
+        "current_blocker": "contains sorry",
+    }
+    events = []
+
+    class _Agent:
+        max_iterations = 120
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda path: {"ok": True, "command": f"lake env lean {path}"})
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: post_live_state)
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda state: state)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+
+    history, updated_live_state, attempt_recorded = runner._handle_api_step_budget_exhaustion(
+        _Agent(),
+        {"completed": False, "exit_reason": "max_iterations", "api_calls": 120},
+        [{"role": "assistant", "content": "failed attempt"}],
+        autonomy_state,
+        live_state,
+        cycle=3,
+        phase="autonomous",
+    )
+
+    assert attempt_recorded is True
+    assert updated_live_state is post_live_state
+    assert "EPFLEMMA-NATIVE API STEP BUDGET EXHAUSTED" in history[-1]["content"]
+    assert "baseline `sorry` slice" in history[-1]["content"]
+    assert autonomy_state["failed_attempts"][-1]["cycle"] == 3
+    assert "exact False.elim" in autonomy_state["failed_attempts"][-1]["proof_shape"]
+    assert "theorem demo : True := by\n  sorry" in active.read_text(encoding="utf-8")
+    assert events[-1][0][0] == "api-step-budget-exhausted"
+
+
 def test_rebuild_history_for_theorem_transition_records_blocked_outcome_without_fake_attempt():
     autonomy_state = {
         "current_cycle": 3,
