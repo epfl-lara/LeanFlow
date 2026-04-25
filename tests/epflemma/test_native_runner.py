@@ -463,10 +463,98 @@ def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup
 
     assert "failed_attempts" not in agent._managed_autonomy_state
     assert "THEOREM FEEDBACK" in agent._post_tool_result_appendix
-    assert "clean them before advancing" in agent._post_tool_result_appendix
+    assert "warning-only cleanup" in agent._post_tool_result_appendix
     assert "local cleanup" in agent._post_tool_result_appendix
+    assert "do not edit future queued declarations" in agent._post_tool_result_appendix
+    assert runner._manager_feedback_retry_count(
+        agent._managed_autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+        kind="warning",
+    ) == 1
     assert agent.interrupt_messages == []
     assert agent._managed_pending_theorem_feedback is None
+
+
+def test_handle_managed_tool_result_yields_after_warning_cleanup_retry(monkeypatch, tmp_path, capsys):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  trivial",
+                "",
+                "theorem later : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Agent:
+        quiet_mode = False
+
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  trivial",
+                }
+            }
+            runner._increment_manager_feedback_retry(
+                self._managed_autonomy_state,
+                target_symbol="demo",
+                active_file=str(active),
+                kind="warning",
+            )
+            self._managed_pending_theorem_feedback = None
+            self._managed_step_boundary_closed = False
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {
+            "ok": True,
+            "command": "lake env lean Main.lean",
+            "output": f"{active}:2:3: warning: This line exceeds the 100 character limit, please shorten it!",
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "active_file_label": "Main.lean",
+            "current_queue_item": {"label": "demo", "reasons": ["diagnostic near line 2"]},
+            "current_queue_item_slice": "theorem demo : True := by\n  trivial",
+            "diagnostics": f"{active}:2:3: warning: This line exceeds the 100 character limit, please shorten it!",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "blocker_summary": "diagnostic near line 2",
+        },
+    )
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+
+    assert "failed_attempts" not in agent._managed_autonomy_state
+    assert "manager_feedback_retries" not in agent._managed_autonomy_state
+    assert not hasattr(agent, "_post_tool_result_appendix")
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_step_boundary_closed is True
+    output = capsys.readouterr().out
+    assert "warning-only cleanup opportunity already used" in output
 
 
 def test_handle_managed_tool_result_yields_for_unrelated_warning_cleanup(monkeypatch, tmp_path, capsys):
@@ -656,7 +744,7 @@ def test_review_agent_final_report_rejects_same_declaration_warning(monkeypatch,
     assert "local_cleanup_reason" in result["manager_final_report_review"]
     assert "local cleanup" in result["messages"][-1]["content"]
     assert "blocker kind: warning" in result["messages"][-1]["content"]
-    assert "do not solve unrelated later queue items" in result["messages"][-1]["content"]
+    assert "do not solve unrelated future queue items" in result["messages"][-1]["content"]
 
 
 def test_review_agent_final_report_accepts_warning_only_after_one_retry(monkeypatch, tmp_path, capsys):
@@ -705,7 +793,7 @@ def test_review_agent_final_report_accepts_warning_only_after_one_retry(monkeypa
     assert second["manager_final_report_review"]["accepted_after_warning_retry_limit"] is True
     assert len(second["messages"]) == 1
     output = capsys.readouterr().out
-    assert "warning-only cleanup retry already used" in output
+    assert "warning-only cleanup opportunity already used" in output
 
 
 def test_review_agent_final_report_restores_sorry_after_hard_retry_limit(monkeypatch, tmp_path):
@@ -841,6 +929,54 @@ def test_handle_managed_tool_result_interrupts_even_if_live_refresh_fails(monkey
     assert agent._managed_pending_theorem_feedback is None
     assert recorded[-1][0] == "queue-step-boundary"
     assert "lsp unavailable" in recorded[-1][1]["refresh_error"]
+
+
+def test_handle_managed_lean_verify_uses_current_assignment_without_pending(monkeypatch):
+    class _Agent:
+        quiet_mode = True
+
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "verified"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  trivial",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self._managed_step_boundary_closed = False
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "next_demo",
+            "active_file": "Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+            "current_queue_item_slice": "theorem next_demo : True := by\n  sorry",
+            "diagnostics": "warning: declaration uses sorry",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "blocker_summary": "warning: declaration uses sorry",
+        },
+    )
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "lean_verify", {"mode": "file_exact"}, "")
+
+    assert "failed_attempts" not in agent._managed_autonomy_state
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_step_boundary_closed is True
 
 
 def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeypatch):
@@ -1711,6 +1847,23 @@ def test_build_live_proof_state_assigns_current_queue_head_as_target(monkeypatch
     assert "theorem first" in live_state["current_queue_item_slice"]
 
 
+def test_declaration_prefix_text_keeps_last_200_lines(tmp_path):
+    active = tmp_path / "Main.lean"
+    prefix = [f"-- prefix marker {i}" for i in range(1, 221)]
+    active.write_text(
+        "\n".join(prefix + ["theorem demo : True := by", "  sorry"]),
+        encoding="utf-8",
+    )
+
+    text = runner._declaration_prefix_text(str(active), "demo")
+    lines = text.splitlines()
+
+    assert "Current file prefix ending at `demo` (23-222)" in text
+    assert "-- prefix marker 22" not in lines
+    assert "-- prefix marker 23" in lines
+    assert "theorem demo : True := by" in text
+
+
 def test_declaration_work_queue_prefers_named_sorry_over_anonymous_diagnostic_noise(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
@@ -1851,7 +2004,7 @@ def test_declaration_work_queue_maps_body_diagnostic_to_declaration(tmp_path):
                 "    exact ?missing",
                 "  exact False.elim h",
                 "",
-                "theorem later : True := by",
+                "theorem future_demo : True := by",
                 "  sorry",
             ]
         ),
@@ -2019,7 +2172,7 @@ def test_queue_assignment_block_mentions_only_assigned_theorem():
     assert "current status: blocked" in text
     assert "current blocker: type mismatch in `simpa using h`" in text
     assert "local helper lemmas or intermediate facts are allowed" in text
-    assert "do not start solving unrelated later queue items" in text
+    assert "do not start solving unrelated future queue items" in text
     assert "Verification for this queue item:" in text
     assert "`lake env lean GaussTest/RealTheorems-homework.lean`" in text
     assert "do not treat `lake build`, `grep`, `head`, or truncated output" in text
@@ -2683,13 +2836,20 @@ def test_theorem_transition_handoff_includes_exact_tool_path():
             "active_file_label": "Demo/Main.lean",
             "target_symbol": "next_demo",
             "current_queue_item": {"label": "next_demo"},
-            "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
+            "declaration_scope": "file",
+            "declaration_queue_total": 2,
+            "declaration_queue_summary": (
+                "- next_demo [Demo/Main.lean] — contains sorry\n"
+                "- future_demo [Demo/Main.lean] — contains sorry"
+            ),
             "build_status": "unknown",
         },
     )
 
     assert "- file: Demo/Main.lean" in message
     assert "- exact tool path: /tmp/project/Demo/Main.lean" in message
+    assert "future_demo" not in message
+    assert "future queue items: hidden" in message
 
 
 def test_autonomous_continuation_prompt_switches_to_final_file_sweep_when_queue_empty(monkeypatch):
@@ -3348,6 +3508,190 @@ def test_build_live_proof_state_surfaces_search_exhaustion(monkeypatch, tmp_path
     assert live_state["search_exhausted"] is True
     assert live_state["recent_empty_search_streak"] == 3
     assert "search exhausted for this theorem" in live_state["message"]
+
+
+def test_build_live_proof_state_keeps_warning_only_items_out_of_primary_queue(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem style_warning : True := by",
+                "  trivial",
+                "",
+                "theorem later : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
+    monkeypatch.setattr(runner, "_project_root", lambda: str(project))
+    monkeypatch.setattr(runner, "_resolve_active_file", lambda history, checkpoint_state=None: str(active))
+    monkeypatch.setattr(runner, "_resolve_target_symbol", lambda history, checkpoint_state=None: "")
+    monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
+    monkeypatch.setattr(runner, "_collect_message_text", lambda history: "")
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (1, ["Demo/Main.lean (1)"]))
+    monkeypatch.setattr(runner, "recent_empty_search_streak", lambda workflow_command: 0)
+    monkeypatch.setattr(
+        runner,
+        "probe_capabilities",
+        lambda cwd=None: type(
+            "_Capabilities",
+            (),
+            {
+                "to_dict": lambda self: {
+                    "cwd": str(project),
+                    "project_root": str(project),
+                    "degraded_reasons": [],
+                }
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "lean_inspect",
+        lambda *args, **kwargs: type(
+            "_Inspection",
+            (),
+            {
+                "diagnostics": f"{active}:2:3: warning: This line exceeds the 100 character limit",
+                "goals": "no goals",
+                "sorry_count": 1,
+                "project_sorry_count": 1,
+                "blocker_kind": "diagnostics",
+                "queue_items": [
+                    {
+                        "label": "style_warning",
+                        "kind": "theorem",
+                        "line": 1,
+                        "end_line": 2,
+                        "reasons": ["diagnostic near line 2"],
+                    },
+                    {
+                        "label": "future_demo",
+                        "kind": "theorem",
+                        "line": 4,
+                        "end_line": 5,
+                        "reasons": ["contains sorry"],
+                    },
+                ],
+                "capability_report": {
+                    "cwd": str(project),
+                    "project_root": str(project),
+                    "degraded_reasons": [],
+                },
+            },
+        )(),
+    )
+
+    live_state = runner._build_live_proof_state([])
+
+    assert live_state["current_queue_item"]["label"] == "later"
+    assert "style_warning" not in live_state["declaration_queue_summary"]
+    assert "later" in live_state["declaration_queue_summary"]
+
+
+def test_build_live_proof_state_hides_future_sorries_from_model_message(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  sorry",
+                "",
+                "theorem future_demo : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
+    monkeypatch.setattr(runner, "_project_root", lambda: str(project))
+    monkeypatch.setattr(runner, "_resolve_active_file", lambda history, checkpoint_state=None: str(active))
+    monkeypatch.setattr(runner, "_resolve_target_symbol", lambda history, checkpoint_state=None: "")
+    monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
+    monkeypatch.setattr(runner, "_collect_message_text", lambda history: "")
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (2, ["Demo/Main.lean (2)"]))
+    monkeypatch.setattr(runner, "recent_empty_search_streak", lambda workflow_command: 0)
+    monkeypatch.setattr(
+        runner,
+        "probe_capabilities",
+        lambda cwd=None: type(
+            "_Capabilities",
+            (),
+            {
+                "to_dict": lambda self: {
+                    "cwd": str(project),
+                    "project_root": str(project),
+                    "degraded_reasons": [],
+                }
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "lean_inspect",
+        lambda *args, **kwargs: type(
+            "_Inspection",
+            (),
+            {
+                "diagnostics": "\n".join(
+                    [
+                        f"{active}:2:3: warning: declaration uses `sorry`",
+                        f"{active}:5:3: warning: declaration uses `sorry`",
+                    ]
+                ),
+                "goals": "no goals",
+                "sorry_count": 2,
+                "project_sorry_count": 2,
+                "blocker_kind": "diagnostics",
+                "queue_items": [
+                    {
+                        "label": "demo",
+                        "kind": "theorem",
+                        "line": 1,
+                        "end_line": 2,
+                        "reasons": ["contains sorry", "diagnostic near line 2"],
+                    },
+                    {
+                        "label": "future_demo",
+                        "kind": "theorem",
+                        "line": 4,
+                        "end_line": 5,
+                        "reasons": ["contains sorry", "diagnostic near line 5"],
+                    },
+                ],
+                "capability_report": {
+                    "cwd": str(project),
+                    "project_root": str(project),
+                    "degraded_reasons": [],
+                },
+            },
+        )(),
+    )
+
+    live_state = runner._build_live_proof_state([])
+
+    assert "future_demo" in live_state["declaration_queue_summary"]
+    assert "line 2" in live_state["message"]
+    assert "line 5" not in live_state["message"]
+    assert "future_demo" not in live_state["message"]
+    assert "project files with sorry" not in live_state["message"]
+    assert "future declaration sorry counts: hidden" in live_state["message"]
 
 
 def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkeypatch, capsys):

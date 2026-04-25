@@ -491,90 +491,161 @@ For file-scoped autonomous workflows (`prove` / `formalize` with an active Lean 
 
 What the runner does each cycle:
 
-- scan the active file, build a queue of declarations that still have `sorry`, theorem-level errors, or error diagnostics/build output pointing at them; warning-only cleanup is kept out of the theorem queue and handled as local cleanup or final sweep work
-- pick the current queue item and inject an "Assigned queue item" block into the agent prompt, with the declaration name, current file prefix through that declaration, current blocker, and the last N failed attempts for that exact target
-- auto-select the `lean-theorem-queue-worker` skill while an item is assigned, and fall back to `lean-proof-loop` when the queue is empty
-- after the agent edits, keep the same theorem turn alive while verification still points at the same declaration
-- after a successful `patch` or `write_file`, run the manager-owned file verification gate before deciding whether the queue can advance
-- when a concrete proof edit is checked and the same `(target, file)` is still blocked, record that failed attempt and feed the feedback back into the same theorem turn
-- only yield to the queue manager when verification clears the assigned declaration, the queue advances, or a real user/blocker stop occurs
-- keep the newest failed proof in the file so the model sees the live state directly; only older failed proofs move into structured `PREVIOUS ATTEMPTS`
-- when the queue empties and the file is already verified, log that no final verification sweep is needed
-- when the queue empties but the file is not verified, log the start of the final file sweep and switch to a whole-file sweep prompt for one pass
-- when the assigned theorem changes, rebuild the next prompt from a compact queue-aware handoff instead of reusing the full prior theorem transcript; print that deterministic handoff in the run log
+1. Refresh Lean state.
+   - Resolve the active file and current target from the workflow command, checkpoint state, or refreshed queue state.
+   - Run `lean_inspect` when available; otherwise query diagnostics and goals through the fallback wrappers.
+   - Keep the raw diagnostics, goals, build status, `sorry` counts, and queue candidates in the manager-owned live state.
+
+2. Build the manager-owned declaration queue.
+   - Add declarations that contain `sorry`.
+   - Add declarations that have theorem-level errors, open goals, or error diagnostics pointing into their declaration range.
+   - Prefer real error diagnostics over later `sorry` placeholders when choosing the current item.
+   - Do not put warning-only declarations into the primary theorem queue. Warning-only issues are handled as one local cleanup opportunity for the assigned declaration, or later by the final file sweep.
+
+3. Select one current queue item.
+   - If the queue is non-empty, store the assignment in `current_queue_assignment` as `(target_symbol, active_file, slice)`.
+   - While this assignment is active, the runner switches the active skill to `lean-theorem-queue-worker`.
+   - The assignment is the worker boundary. The model owns only that declaration, not the rest of the file.
+
+4. Build the model-facing handoff.
+   - The manager keeps the full queue internally for status, resume, and next-target selection.
+   - The prompt exposes only the current queue horizon:
+     - assigned declaration name
+     - exact file path and display file label
+     - current blocker for that declaration
+     - current file prefix ending at that declaration, capped to the last 200 lines for token hygiene
+     - assigned declaration slice
+     - recent failed attempts for the same `(theorem, file)` pair
+     - scoped diagnostics for the assigned declaration
+   - Future queued declarations are hidden from the model-facing live proof state until the manager assigns them.
+   - Future `sorry` warnings do not appear as current proof requirements. The prompt says that future queue items are hidden until assigned.
+
+5. Let the model work one theorem turn.
+   - The model may inspect the file, search, ask for proof context, or edit with `patch`, `write_file`, or `apply_verified_patch`.
+   - `patch` and `write_file` are preferred in managed queue workflows; after a successful edit, the manager runs the canonical file verification gate automatically.
+   - `apply_verified_patch` remains available when the atomic checkpoint plus verification payload is useful.
+   - An explicit `lean_verify(mode=file_exact)` can also close the assigned theorem turn because the manager falls back to the saved assignment even if no pending-feedback flag is set.
+   - If the model claims "solved" in a final report, the manager still runs deterministic review before accepting the claim.
+
+6. Classify the post-edit or final-report state.
+   - Hard blockers inside the assigned declaration:
+     - remaining `sorry`
+     - Lean errors
+     - unsolved goals
+     - manager verification output that points to assigned-declaration errors
+   - Warning-only cleanup inside the assigned declaration:
+     - no errors, no goals, no assigned-declaration `sorry`
+     - diagnostics are warnings scoped to that declaration
+   - Future queue items:
+     - later declarations with `sorry` or warnings
+     - unrelated file-level diagnostics that do not point at the assigned declaration
+
+7. Branch on the classification.
+   - If the assigned declaration has hard blockers:
+     - keep the same theorem turn alive
+     - record a theorem-local failed attempt for that exact `(theorem, file)`; this feeds `PREVIOUS ATTEMPTS` context and reasoning-effort escalation if the same theorem continues or returns later
+     - append manager feedback to the next model step
+     - do not advance the queue
+   - If the assigned declaration has warning-only cleanup:
+     - give one focused warning-cleanup opportunity for that same assigned declaration
+     - the opportunity starts when the manager first sees this state and sends warning-only feedback back into the same theorem turn
+     - starting the opportunity increments the manager warning-cleanup counter for this `(theorem, file)`
+     - this is not a single API step and not a new workflow run; the model continues the same theorem turn using the remaining workflow budget
+     - the opportunity is evaluated at the next manager gate for that same theorem: successful `patch` / `write_file` auto-verification, `apply_verified_patch`, explicit `lean_verify(mode=file_exact)`, or manager review of a final "solved" report
+     - do not record a failed proof attempt
+     - tell the model to fix only the assigned declaration and not edit future queued declarations
+     - if that next manager gate sees no warnings, accept the theorem and advance
+     - if that next manager gate still sees only assigned-declaration warnings and no hard blockers, accept the theorem and advance
+     - if that next manager gate sees an error, open goal, or assigned-declaration `sorry`, switch to the hard-blocker branch
+   - If only future queue items remain:
+     - accept the current theorem
+     - close the theorem boundary
+     - request a step-boundary interrupt
+     - rebuild the next prompt from a deterministic queue handoff
+   - If the model claims success but manager review finds hard blockers:
+     - reject the claim
+     - continue the same theorem
+     - after the hard retry limit is exhausted, preserve the failed proof state, restore the baseline `sorry` slice when possible, mark the theorem unresolved, and let the queue continue from a safe file state
+
+8. Handle API step-budget exhaustion.
+   - If the API step budget expires while the assigned theorem is still hard-blocked by errors, open goals, or assigned-declaration `sorry`, record a theorem-local failed attempt.
+   - If the proof is already clear and only warning-only cleanup remains, do not turn that into a failed proof attempt; the warning cleanup policy still allows the queue to advance after its focused opportunity is spent.
+   - When the original assignment slice is available, comment/preserve the current failed proof body and restore the assigned declaration to its safe baseline `sorry` body.
+   - Refresh live state and continue from the recorded failed-attempt context; this is not success. The theorem remains unresolved and can re-enter the queue from the restored `sorry` body.
+
+9. Rebuild the handoff after a theorem boundary.
+   - When the current assignment changes, discard raw theorem-local transcript, long tool output, and previous-theorem reasoning from the live prompt.
+   - Preserve a compact workflow snapshot, the active skill contract, and a deterministic theorem-transition handoff.
+   - Print the handoff in the run log so humans can see exactly what the next model turn receives.
+   - The next model turn starts with the new assigned theorem and a filtered current queue horizon, not the previous theorem's broad file context.
+
+10. Finish or final-sweep when the queue is empty.
+    - If the declaration queue is empty and file verification is clean, log that no final verification sweep is needed.
+    - If the declaration queue is empty but file verification still has residual warnings/errors, start final file sweep mode.
+    - Only final file sweep mode permits whole-file cleanup instead of single-theorem focus.
 
 Flow:
 
-```text
-  +------------------------------------------+
-  | runner: scan file, build queue           |
-  +------------------------------------------+
-                    |
-                    v
-  +------------------------------------------+
-  | queue empty?                             |
-  +------------------------------------------+
-         |                          |
-     no  |                          | yes
-         v                          v
-  +----------------+       +----------------------+
-  | pick current   |       | file verified?       |
-  | queue item     |       +----------------------+
-  +----------------+           |             |
-         |                 yes |             | no
-         v                     v             v
-  +-----------------+   +----------+  +----------------+
-  | prompt agent:   |   | DONE     |  | final file     |
-  | - target decl   |   +----------+  | sweep (one     |
-  | - slice+prefix  |                 | whole-file     |
-  | - blocker       |                 | pass)          |
-  | - prev attempts |                 +----------------+
-  +-----------------+
-         |
-         v
-  +-----------------------+
-  | agent edits (patch /  |
-  | write_file)           |
-  +-----------------------+
-         |
-         v
-  +-----------------------+
-  | manager verifies      |
-  | active file           |
-  +-----------------------+
-         |
-         v  (same theorem turn continues while blocked)
-  +-----------------------+
-  | runner refreshes      |
-  | diagnostics + queue   |
-  +-----------------------+
-         |
-         v
-  +-----------------------+
-  | same target still     |
-  | blocked?              |
-  +-----------------------+
-       |               |
-   yes |               | no
-       v               v
-  record failed    yield + advance to
-  attempt, keep    next queue item
-  same turn
-       \_______________/
-              |
-              v
-          next cycle
+```mermaid
+flowchart TD
+    A["Refresh Lean state"] --> B["Build manager-owned declaration queue"]
+    B --> C{"Queue empty?"}
+
+    C -- "yes" --> D{"File verification clean?"}
+    D -- "yes" --> Z["Verified completion"]
+    D -- "no" --> F["Final file sweep mode"]
+    F --> A
+
+    C -- "no" --> G["Select current queue item"]
+    G --> H["Save current_queue_assignment"]
+    H --> I["Build model-facing handoff"]
+    I --> I1["Expose assigned theorem, prefix/slice, scoped diagnostics, same-theorem failed attempts"]
+    I --> I2["Hide future queue items until assigned"]
+    I1 --> J["Run one theorem worker turn"]
+    I2 --> J
+
+    J --> K{"Model action"}
+    K -- "patch/write_file/apply_verified_patch" --> L["Manager runs canonical file verification"]
+    K -- "explicit lean_verify" --> L
+    K -- "claims solved" --> M["Manager final-report review"]
+    M --> L
+
+    L --> N["Refresh live state and classify assigned declaration"]
+    N --> O{"Assigned declaration status"}
+
+    O -- "error, open goals, or assigned sorry" --> P["Hard blocker"]
+    P --> P1["Record failed attempt for same theorem"]
+    P1 --> P2["Append focused manager feedback"]
+    P2 --> J
+
+    O -- "warning-only in assigned declaration" --> Q{"Warning cleanup opportunity already used?"}
+    Q -- "no" --> Q1["Give one cleanup opportunity; no failed attempt"]
+    Q1 --> J
+    Q -- "yes" --> R["Accept warning-only remainder"]
+
+    O -- "assigned declaration clean" --> R
+    R --> S["Close theorem boundary"]
+    S --> T["Step-boundary interrupt"]
+    T --> U["Rebuild compact queue handoff"]
+    U --> A
+
+    J --> V{"API step budget exhausted?"}
+    V -- "yes, still blocked" --> W["Record failed attempt and restore baseline sorry when possible"]
+    W --> A
+    V -- "no" --> J
 ```
 
-Why this shape:
+Queue handoff invariants:
 
-- one declaration at a time keeps the agent from declaring victory after fixing only the first theorem
-- failed verification remains in the same theorem-solving turn, so local proof search stays continuous
-- the queue boundary is reserved for solved/cleared declarations and real stops
-- target-scoped failed-attempt memory gives the next cycle real negative guidance without leaking across unrelated theorems
-- the failed-attempt ledger is theorem-local and is cleared when the queue advances to a different declaration
-- theorem transitions always clear raw search logs, long tool output, and previous-theorem reasoning from the live prompt; only a compact workflow snapshot and short previous-theorem outcome summary survive
-- the final file sweep handles residual warnings or malformed partial proofs that do not map to a single declaration
+- The manager owns the full queue; the model sees only the assigned theorem horizon.
+- Future theorem `sorry` warnings are not model-facing proof obligations until assigned.
+- The assigned theorem is successful when that declaration has no `sorry`, no open goals, no errors, and either no warning-only cleanup remains or its one focused warning-cleanup opportunity has already been spent.
+- Hard blockers keep the same theorem turn alive and become theorem-local failed-attempt context.
+- Warning-only cleanup never becomes a failed proof attempt and cannot stall the queue indefinitely.
+- Failed-attempt memory has two effects: it is scoped to the same `(theorem, file)` so the model can see prior proof shapes when that theorem continues or returns later, and hard exhaustion can restore the declaration to its baseline `sorry` slice so the queue can continue from a safe file state.
+- A final report from the model is a claim, not proof. The manager accepts it only after deterministic file verification and assigned-declaration checks.
+- Queue transitions rebuild the prompt from compact manager state instead of carrying previous-theorem reasoning into the next theorem.
+- The final file sweep is the only mode where the worker may clean whole-file residual warnings without a single assigned declaration.
 
 ## Routing And Specialist Workers
 
