@@ -198,11 +198,17 @@ class IterationBudget:
             self._used += 1
             return True
 
-    def refund(self) -> None:
-        """Give back one iteration (e.g. for execute_code turns)."""
+    def refund(self, count: int = 1) -> None:
+        """Give back one or more iterations (e.g. for execute_code turns)."""
+        try:
+            amount = int(count)
+        except (TypeError, ValueError):
+            amount = 1
+        if amount <= 0:
+            return
         with self._lock:
             if self._used > 0:
-                self._used -= 1
+                self._used = max(0, self._used - amount)
 
     @property
     def used(self) -> int:
@@ -220,6 +226,9 @@ _NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
+
+_DEFAULT_MAX_TOOL_RESULT_CHARS = 100_000
+_LEAN_REASONING_HELP_MAX_TOOL_RESULT_CHARS = 260_000
 
 # Patterns that indicate a terminal command may modify/delete files.
 _DESTRUCTIVE_PATTERNS = re.compile(
@@ -691,6 +700,14 @@ class AIAgent:
         self._budget_caution_threshold = 0.7   # 70% — nudge to start wrapping up
         self._budget_warning_threshold = 0.9   # 90% — urgent, respond now
         self._budget_pressure_enabled = True
+        self._last_budget_message_content = ""
+        try:
+            self._advisor_result_context_reserve_tokens = max(
+                0,
+                int(os.getenv("LEAN_REASONING_HELP_CONTEXT_RESERVE_TOKENS", "90000")),
+            )
+        except (TypeError, ValueError):
+            self._advisor_result_context_reserve_tokens = 90000
 
         # Persistent error log -- always writes WARNING+ to ~/.gauss/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
@@ -4302,14 +4319,15 @@ class AIAgent:
                 ),
             )
 
-            # Truncate oversized results
-            MAX_TOOL_RESULT_CHARS = 100_000
-            if len(function_result) > MAX_TOOL_RESULT_CHARS:
+            # Truncate oversized results. The Lean advisor gets a larger cap
+            # because it may return long proof-strategy notes by design.
+            max_tool_result_chars = self._max_tool_result_chars(function_name)
+            if len(function_result) > max_tool_result_chars:
                 original_len = len(function_result)
                 function_result = (
-                    function_result[:MAX_TOOL_RESULT_CHARS]
+                    function_result[:max_tool_result_chars]
                     + f"\n\n[Truncated: tool response was {original_len:,} chars, "
-                    f"exceeding the {MAX_TOOL_RESULT_CHARS:,} char limit]"
+                    f"exceeding the {max_tool_result_chars:,} char limit]"
                 )
 
             # Append tool result message in order
@@ -4569,16 +4587,16 @@ class AIAgent:
                 logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
 
             # Guard against tools returning absurdly large content that would
-            # blow up the context window. 100K chars ≈ 25K tokens — generous
-            # enough for any reasonable tool output but prevents catastrophic
-            # context explosions (e.g. accidental base64 image dumps).
-            MAX_TOOL_RESULT_CHARS = 100_000
-            if len(function_result) > MAX_TOOL_RESULT_CHARS:
+            # blow up the context window. Most tools are capped at 100K chars;
+            # the Lean advisor gets a larger cap because long proof-strategy
+            # output is an intentional use case.
+            max_tool_result_chars = self._max_tool_result_chars(function_name)
+            if len(function_result) > max_tool_result_chars:
                 original_len = len(function_result)
                 function_result = (
-                    function_result[:MAX_TOOL_RESULT_CHARS]
+                    function_result[:max_tool_result_chars]
                     + f"\n\n[Truncated: tool response was {original_len:,} chars, "
-                    f"exceeding the {MAX_TOOL_RESULT_CHARS:,} char limit]"
+                    f"exceeding the {max_tool_result_chars:,} char limit]"
                 )
 
             tool_msg = {
@@ -4688,6 +4706,134 @@ class AIAgent:
                 f"{remaining} iterations left. Start consolidating your work.]"
             )
         return None
+
+    def _max_tool_result_chars(self, function_name: str) -> int:
+        if str(function_name or "") == "lean_reasoning_help":
+            return _LEAN_REASONING_HELP_MAX_TOOL_RESULT_CHARS
+        return _DEFAULT_MAX_TOOL_RESULT_CHARS
+
+    def _maybe_append_budget_warning_message(self, messages: list, api_call_count: int) -> bool:
+        """Ensure budget pressure is visible even when no tool result carries it."""
+        warning = self._get_budget_warning(api_call_count)
+        if not warning:
+            return False
+        content = (
+            "[EPFLEMMA-RUNTIME STEP BUDGET]\n"
+            f"{warning}\n"
+            "Use the remaining API steps deliberately. If this is a managed Lean queue item "
+            "and you cannot finish it before the budget runs out, preserve a concise failed-attempt "
+            "status instead of claiming success."
+        )
+        last_content = str((messages[-1] or {}).get("content", "") or "") if messages else ""
+        if warning in last_content or content == last_content or content == self._last_budget_message_content:
+            return False
+        messages.append({"role": "user", "content": content})
+        self._last_budget_message_content = content
+        if not self.quiet_mode:
+            remaining = self.max_iterations - api_call_count
+            tier = "⚠️  WARNING" if remaining <= self.max_iterations * 0.1 else "💡 CAUTION"
+            print(f"{self.log_prefix}{tier}: {remaining} iterations remaining; runtime warning injected into model context")
+        return True
+
+    def _maybe_refresh_api_step_budget_after_advisor(self, api_call_count: int) -> int:
+        """Let a successful advisor call leave at least half the step budget for exploitation."""
+        if self.max_iterations <= 0:
+            return api_call_count
+        reset_to = max(1, self.max_iterations // 2)
+        if api_call_count <= reset_to:
+            return api_call_count
+        delta = max(api_call_count - reset_to, self.iteration_budget.used - reset_to)
+        self.iteration_budget.refund(delta)
+        if not self.quiet_mode:
+            print(
+                f"{self.log_prefix}↻ lean_reasoning_help returned; refreshed API step budget "
+                f"from {api_call_count}/{self.max_iterations} to {reset_to}/{self.max_iterations}."
+            )
+        _emit_workflow_event(
+            "api-step-budget-refreshed",
+            "Refreshed API step budget after lean_reasoning_help",
+            **_workflow_agent_event_details(
+                self,
+                previous_iteration=api_call_count,
+                reset_iteration=reset_to,
+                refunded_iterations=delta,
+            ),
+        )
+        return reset_to
+
+    def _maybe_precompress_before_advisor_tool(
+        self,
+        messages: list,
+        system_message: str,
+        active_system_prompt: str,
+        *,
+        effective_task_id: str,
+    ) -> tuple[list, str]:
+        """Compress prior history before adding large advisor output."""
+        if not self.compression_enabled:
+            return messages, active_system_prompt
+        reserve = int(getattr(self, "_advisor_result_context_reserve_tokens", 0) or 0)
+        if reserve <= 0:
+            return messages, active_system_prompt
+        compressor = self.context_compressor
+        estimated_with_advisor = (
+            estimate_tokens_rough(active_system_prompt or "")
+            + estimate_messages_tokens_rough(messages)
+            + reserve
+        )
+        if not compressor.should_compress(estimated_with_advisor):
+            return messages, active_system_prompt
+        if not self.quiet_mode:
+            print(
+                f"{self.log_prefix}📦 Pre-advisor compression: reserving ~{reserve:,} tokens "
+                "so lean_reasoning_help advice stays unsummarized."
+            )
+        for _ in range(3):
+            original_len = len(messages)
+            messages, active_system_prompt = self._compress_context(
+                messages,
+                system_message,
+                approx_tokens=estimated_with_advisor,
+                task_id=effective_task_id,
+            )
+            estimated_with_advisor = (
+                estimate_tokens_rough(active_system_prompt or "")
+                + estimate_messages_tokens_rough(messages)
+                + reserve
+            )
+            if not compressor.should_compress(estimated_with_advisor):
+                break
+            if len(messages) >= original_len:
+                break
+        return messages, active_system_prompt
+
+    def _compress_context_preserving_suffix(
+        self,
+        messages: list,
+        suffix_start: int,
+        system_message: str,
+        *,
+        approx_tokens: int,
+        task_id: str,
+    ) -> tuple[list, str]:
+        """Compress old history while keeping the latest advisor turn verbatim."""
+        if suffix_start <= 0 or suffix_start >= len(messages):
+            return self._compress_context(
+                messages,
+                system_message,
+                approx_tokens=approx_tokens,
+                task_id=task_id,
+            )
+        prefix = messages[:suffix_start]
+        suffix = messages[suffix_start:]
+        suffix_tokens = estimate_messages_tokens_rough(suffix)
+        compressed_prefix, active_system_prompt = self._compress_context(
+            prefix,
+            system_message,
+            approx_tokens=max(0, approx_tokens - suffix_tokens),
+            task_id=task_id,
+        )
+        return compressed_prefix + suffix, active_system_prompt
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
@@ -5087,7 +5233,9 @@ class AIAgent:
             if (self._skill_nudge_interval > 0
                     and "skill_manage" in self.valid_tool_names):
                 self._iters_since_skill += 1
-            
+
+            self._maybe_append_budget_warning_message(messages, api_call_count)
+
             # Prepare messages for API call
             # If we have an ephemeral system prompt, prepend it to the messages
             # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
@@ -6187,6 +6335,17 @@ class AIAgent:
                     # Reset retry counter on successful JSON validation
                     self._invalid_json_retries = 0
                     
+                    _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
+                    advisor_suffix_start = None
+                    if "lean_reasoning_help" in _tc_names:
+                        messages, active_system_prompt = self._maybe_precompress_before_advisor_tool(
+                            messages,
+                            system_message,
+                            active_system_prompt,
+                            effective_task_id=effective_task_id,
+                        )
+                        advisor_suffix_start = len(messages)
+
                     assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                     
                     # If this turn has both content AND tool_calls, capture the content
@@ -6210,10 +6369,14 @@ class AIAgent:
                     # Refund the iteration if the ONLY tool(s) called were
                     # execute_code (programmatic tool calling).  These are
                     # cheap RPC-style calls that shouldn't eat the budget.
-                    _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
                     if _tc_names == {"execute_code"}:
                         self.iteration_budget.refund()
-                    
+                    if "lean_reasoning_help" in _tc_names:
+                        refreshed_count = self._maybe_refresh_api_step_budget_after_advisor(api_call_count)
+                        if refreshed_count != api_call_count:
+                            api_call_count = refreshed_count
+                            self._current_run_api_calls = api_call_count
+
                     # Estimate next prompt size using real token counts from the
                     # last API response + rough estimate of newly appended tool
                     # results.  This catches cases where tool results push the
@@ -6228,11 +6391,20 @@ class AIAgent:
                         + _new_chars // 3  # conservative: JSON-heavy tool results ≈ 3 chars/token
                     )
                     if self.compression_enabled and _compressor.should_compress(_estimated_next_prompt):
-                        messages, active_system_prompt = self._compress_context(
-                            messages, system_message,
-                            approx_tokens=_estimated_next_prompt,
-                            task_id=effective_task_id,
-                        )
+                        if advisor_suffix_start is not None:
+                            messages, active_system_prompt = self._compress_context_preserving_suffix(
+                                messages,
+                                advisor_suffix_start,
+                                system_message,
+                                approx_tokens=_estimated_next_prompt,
+                                task_id=effective_task_id,
+                            )
+                        else:
+                            messages, active_system_prompt = self._compress_context(
+                                messages, system_message,
+                                approx_tokens=_estimated_next_prompt,
+                                task_id=effective_task_id,
+                            )
                     
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages
@@ -6438,6 +6610,16 @@ class AIAgent:
         
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
+        if completed:
+            exit_reason = "completed"
+        elif interrupted:
+            exit_reason = "interrupted"
+        elif api_call_count >= self.max_iterations:
+            exit_reason = "max_iterations"
+        elif self.iteration_budget.remaining <= 0:
+            exit_reason = "iteration_budget_exhausted"
+        else:
+            exit_reason = "partial"
 
         # Save trajectory if enabled
         self._save_trajectory(messages, user_message, completed)
@@ -6463,6 +6645,7 @@ class AIAgent:
             "api_calls": api_call_count,
             "usage": self._session_usage_summary(),
             "completed": completed,
+            "exit_reason": exit_reason,
             "partial": False,  # True only when stopped due to invalid tool calls
             "interrupted": interrupted,
             "response_previewed": getattr(self, "_response_was_previewed", False),
@@ -6480,6 +6663,7 @@ class AIAgent:
                 self,
                 completed=completed,
                 interrupted=interrupted,
+                exit_reason=exit_reason,
                 api_calls=api_call_count,
                 usage=result["usage"],
                 final_response=final_response,

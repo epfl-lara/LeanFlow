@@ -2010,6 +2010,98 @@ class TestBudgetPressure:
         agent.max_iterations = 0
         assert agent._get_budget_warning(0) is None
 
+    def test_runtime_budget_warning_message_is_model_visible(self, agent):
+        agent.max_iterations = 10
+        messages = [{"role": "user", "content": "continue"}]
+
+        injected = agent._maybe_append_budget_warning_message(messages, 7)
+
+        assert injected is True
+        assert messages[-1]["role"] == "user"
+        assert "EPFLEMMA-RUNTIME STEP BUDGET" in messages[-1]["content"]
+        assert "3 iterations left" in messages[-1]["content"]
+
+    def test_runtime_budget_warning_skips_duplicate_tool_warning(self, agent):
+        agent.max_iterations = 10
+        warning = agent._get_budget_warning(9)
+        messages = [{"role": "tool", "content": f"done\n\n{warning}", "tool_call_id": "tc1"}]
+
+        assert agent._maybe_append_budget_warning_message(messages, 9) is False
+        assert len(messages) == 1
+
+    def test_advisor_budget_refresh_resets_to_half_budget(self, agent):
+        agent.max_iterations = 120
+        agent.iteration_budget = run_agent.IterationBudget(120)
+        for _ in range(110):
+            assert agent.iteration_budget.consume()
+
+        refreshed = agent._maybe_refresh_api_step_budget_after_advisor(100)
+
+        assert refreshed == 60
+        assert agent.iteration_budget.used == 60
+
+    def test_advisor_budget_refresh_does_not_reset_early_calls(self, agent):
+        agent.max_iterations = 120
+        agent.iteration_budget = run_agent.IterationBudget(120)
+        for _ in range(40):
+            assert agent.iteration_budget.consume()
+
+        refreshed = agent._maybe_refresh_api_step_budget_after_advisor(40)
+
+        assert refreshed == 40
+        assert agent.iteration_budget.used == 40
+
+    def test_lean_reasoning_help_gets_larger_tool_result_cap(self, agent):
+        assert agent._max_tool_result_chars("lean_reasoning_help") > agent._max_tool_result_chars("web_search")
+
+    def test_precompresses_before_advisor_when_reserved_context_would_overflow(self, agent):
+        agent.compression_enabled = True
+        agent._advisor_result_context_reserve_tokens = 10_000
+        messages = [
+            {"role": "user", "content": "old theorem context"},
+            {"role": "assistant", "content": "old attempt"},
+        ]
+
+        with (
+            patch.object(agent.context_compressor, "should_compress", side_effect=[True, False]),
+            patch.object(agent, "_compress_context", return_value=([{"role": "user", "content": "summary"}], "compressed system")) as mock_compress,
+        ):
+            updated, system_prompt = agent._maybe_precompress_before_advisor_tool(
+                messages,
+                "system",
+                "active system",
+                effective_task_id="task-1",
+            )
+
+        mock_compress.assert_called_once()
+        assert updated == [{"role": "user", "content": "summary"}]
+        assert system_prompt == "compressed system"
+
+    def test_post_tool_compression_preserves_advisor_turn_suffix(self, agent):
+        messages = [
+            {"role": "user", "content": "old theorem context"},
+            {"role": "assistant", "content": "old attempt"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "tc1", "function": {"name": "lean_reasoning_help", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "tc1", "content": '{"advice":"use norm_num"}'},
+        ]
+
+        with patch.object(agent, "_compress_context", return_value=([{"role": "user", "content": "summary"}], "compressed system")):
+            updated, system_prompt = agent._compress_context_preserving_suffix(
+                messages,
+                2,
+                "system",
+                approx_tokens=50_000,
+                task_id="task-1",
+            )
+
+        assert updated[:1] == [{"role": "user", "content": "summary"}]
+        assert updated[-2:] == messages[-2:]
+        assert system_prompt == "compressed system"
+
     def test_injects_into_json_tool_result(self, agent):
         """Warning should be injected as _budget_warning field in JSON tool results."""
         import json

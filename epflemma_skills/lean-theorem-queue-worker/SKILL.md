@@ -36,6 +36,7 @@ Primary specs:
 6. For a managed file-scoped assigned theorem, the preferred edit path is `patch` or `write_file`; the queue manager runs the canonical file verification gate after successful edits. Use `apply_verified_patch(check_mode=file_exact)` only when you specifically need its atomic checkpoint plus verification payload.
 7. Do not treat `lake build`, `grep`, `head`, or truncated output as proof that the assigned theorem is clean.
 8. If the declaration becomes clean, stop and hand control back to the manager rather than continuing to the next theorem on your own.
+9. Treat runtime step-budget warnings as real control signals. With only a few API steps left, prefer one concrete verification-backed edit or a concise blocker report over starting a broad new strategy.
 
 ## Queue Hygiene
 
@@ -80,3 +81,5 @@ Stop and report a blocker when:
 - the surrounding file state prevents isolated progress on the assigned declaration
 
 When stopping with failure, summarize the blocker in terms the manager can store as the next failed attempt context.
+
+If the API step budget is exhausted before you finish, the runner records the current theorem as a failed attempt and, when it has the original untruncated `sorry` slice, restores that declaration to the safe baseline `sorry` body. That is not success and does not skip the theorem; the next queue cycle resumes the same item with the failed-attempt context.

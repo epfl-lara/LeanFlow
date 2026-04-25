@@ -2688,6 +2688,188 @@ def _same_queue_assignment_still_blocked(
     )
 
 
+def _result_exhausted_api_steps(result: Mapping[str, Any], agent: Any | None = None) -> bool:
+    if not isinstance(result, Mapping):
+        return False
+    if bool(result.get("interrupted")) and not _is_step_boundary_interrupt(result):
+        return False
+    reason = str(result.get("exit_reason", "") or "").strip()
+    if reason in {"max_iterations", "iteration_budget_exhausted"}:
+        return True
+    if bool(result.get("completed")):
+        return False
+    try:
+        api_calls = int(result.get("api_calls", 0) or 0)
+    except (TypeError, ValueError):
+        api_calls = 0
+    try:
+        max_turns = int(getattr(agent, "max_iterations", 0) or 0)
+    except (TypeError, ValueError):
+        max_turns = 0
+    return bool(max_turns > 0 and api_calls >= max_turns)
+
+
+def _queue_assignment_slice_body(slice_text: str) -> str:
+    raw = str(slice_text or "").strip()
+    if not raw:
+        return ""
+    _, separator, body = raw.partition(":\n")
+    candidate = body if separator else raw
+    if "-- [truncated declaration slice]" in candidate:
+        return ""
+    return candidate.strip()
+
+
+def _restore_queue_assignment_to_baseline_sorry(
+    autonomy_state: Mapping[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    baseline_body = _queue_assignment_slice_body(str(assignment.get("slice", "") or ""))
+    if not target_symbol or not active_file:
+        return {"restored": False, "reason": "missing queue assignment"}
+    if not baseline_body:
+        return {"restored": False, "reason": "missing untruncated baseline declaration slice"}
+    if not re.search(r"\bsorry\b", _strip_lean_comments_and_strings(baseline_body)):
+        return {"restored": False, "reason": "baseline declaration slice does not contain sorry"}
+    entry = _find_declaration_entry(active_file, target_symbol)
+    if not entry:
+        return {"restored": False, "reason": "current declaration entry not found"}
+    current_text = str(entry.get("text", "") or "").strip()
+    if current_text == baseline_body:
+        return {"restored": False, "reason": "current declaration is already at baseline sorry"}
+    start = int(entry.get("line", 0) or 0)
+    end = int(entry.get("end_line", 0) or 0)
+    if start <= 0 or end < start:
+        return {"restored": False, "reason": "invalid declaration range"}
+    path = Path(active_file)
+    try:
+        original_text = path.read_text(encoding="utf-8")
+    except Exception as exc:
+        return {"restored": False, "reason": f"could not read active file: {exc}"}
+    original_lines = original_text.splitlines()
+    replacement_lines = baseline_body.splitlines()
+    new_lines = original_lines[: start - 1] + replacement_lines + original_lines[end:]
+    new_text = "\n".join(new_lines)
+    if original_text.endswith("\n"):
+        new_text += "\n"
+    try:
+        path.write_text(new_text, encoding="utf-8")
+    except Exception as exc:
+        return {"restored": False, "reason": f"could not restore baseline sorry: {exc}"}
+    return {
+        "restored": True,
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "line": start,
+        "end_line": end,
+        "reason": "reverted current declaration to its baseline `sorry` slice after API step budget exhaustion",
+    }
+
+
+def _api_step_budget_handoff_message(
+    *,
+    target_symbol: str,
+    active_file: str,
+    api_calls: int,
+    max_turns: int,
+    attempt_recorded: bool,
+    restore_result: Mapping[str, Any],
+) -> str:
+    restored = bool(restore_result.get("restored"))
+    restore_line = (
+        "restored the current declaration to its baseline `sorry` slice"
+        if restored
+        else f"no file restore was applied ({restore_result.get('reason', 'not needed')})"
+    )
+    return "\n".join(
+        [
+            "[EPFLEMMA-NATIVE API STEP BUDGET EXHAUSTED]",
+            "",
+            f"- declaration: {target_symbol or '[unknown]'}",
+            f"- file: {active_file or '[unknown]'}",
+            f"- API steps used: {api_calls}/{max_turns}" if max_turns else f"- API steps used: {api_calls}",
+            "- manager action: recorded this as a failed focused attempt" if attempt_recorded else "- manager action: no failed attempt was recorded",
+            f"- safe-state action: {restore_line}",
+            "- next action: continue this same queue item from the recorded failed-attempt state; do not claim the theorem is solved until file verification clears it.",
+        ]
+    ).strip()
+
+
+def _handle_api_step_budget_exhaustion(
+    agent: Any,
+    result: Mapping[str, Any],
+    history: list[dict[str, Any]],
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+    *,
+    cycle: int = 0,
+    phase: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
+    if not _single_queue_item_turn_enabled() or not _result_exhausted_api_steps(result, agent):
+        return history, dict(live_state or {}), False
+    if not _same_queue_assignment_still_blocked(autonomy_state, live_state):
+        return history, dict(live_state or {}), False
+
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    try:
+        api_calls = int(result.get("api_calls", 0) or 0)
+    except (TypeError, ValueError):
+        api_calls = 0
+    try:
+        max_turns = int(getattr(agent, "max_iterations", 0) or 0)
+    except (TypeError, ValueError):
+        max_turns = 0
+
+    original_assignment = dict(assignment)
+    _remember_failed_attempt(autonomy_state, live_state, cycle_number=cycle)
+    if original_assignment:
+        autonomy_state["current_queue_assignment"] = original_assignment
+    restore_result = _restore_queue_assignment_to_baseline_sorry(autonomy_state, live_state)
+    if restore_result.get("restored"):
+        manager_check = _manager_verify_queue_file(active_file)
+        restore_result = dict(restore_result)
+        restore_result["manager_verification"] = manager_check
+
+    message = _api_step_budget_handoff_message(
+        target_symbol=target_symbol,
+        active_file=active_file,
+        api_calls=api_calls,
+        max_turns=max_turns,
+        attempt_recorded=True,
+        restore_result=restore_result,
+    )
+    updated_history = list(history or []) + [{"role": "user", "content": message}]
+    updated_live_state = _build_live_proof_state(updated_history, _journal_status())
+    updated_live_state = _promote_live_state_to_verified(updated_live_state)
+
+    print("")
+    print(
+        f"⚠️  API step budget exhausted while working on {target_symbol}; "
+        "recorded a failed attempt and refreshed the queue state."
+    )
+    if restore_result.get("restored"):
+        print("↻ Restored the declaration to its baseline `sorry` slice before continuing.")
+    else:
+        print(f"↻ Baseline restore skipped: {restore_result.get('reason', 'not needed')}.")
+    _record_activity(
+        "api-step-budget-exhausted",
+        f"API step budget exhausted for {target_symbol}",
+        phase=phase,
+        cycle=cycle,
+        target_symbol=target_symbol,
+        active_file=active_file,
+        api_calls=api_calls,
+        max_turns=max_turns,
+        restore=restore_result,
+    )
+    return updated_history, updated_live_state, True
+
+
 def _flatten_text_fragments(value: Any) -> list[str]:
     if value is None:
         return []
@@ -4073,6 +4255,15 @@ def _run_background_control_loop(
                 history = result["messages"]
                 live_state = _build_live_proof_state(history, checkpoint_state)
                 live_state = _promote_live_state_to_verified(live_state)
+                history, live_state, _ = _handle_api_step_budget_exhaustion(
+                    agent,
+                    result,
+                    history,
+                    autonomy_state,
+                    live_state,
+                    phase="background",
+                )
+                checkpoint_state = _journal_status()
                 _record_turn_activity(previous_history, history, phase="interactive")
                 _maybe_write_milestone_checkpoint(previous_history, history, agent, autonomy_state, live_state=live_state)
                 checkpoint_state = _journal_status()
@@ -4620,13 +4811,27 @@ def _drive_autonomous_followups(
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state(history, checkpoint_state)
         live_state = _promote_live_state_to_verified(live_state)
+        history, live_state, budget_recorded_attempt = _handle_api_step_budget_exhaustion(
+            agent,
+            result,
+            history,
+            autonomy_state,
+            live_state,
+            cycle=cycle,
+            phase="autonomous",
+        )
+        checkpoint_state = _journal_status()
         boundary_recorded_attempt = bool(getattr(agent, "_managed_step_boundary_recorded_attempt", False))
         if boundary_recorded_attempt:
             try:
                 setattr(agent, "_managed_step_boundary_recorded_attempt", False)
             except Exception:
                 pass
-        if not boundary_recorded_attempt and _same_queue_assignment_still_blocked(autonomy_state, live_state):
+        if (
+            not boundary_recorded_attempt
+            and not budget_recorded_attempt
+            and _same_queue_assignment_still_blocked(autonomy_state, live_state)
+        ):
             _remember_failed_attempt(autonomy_state, live_state, cycle_number=cycle)
         _record_turn_activity(previous_history, history, phase="autonomous")
         _maybe_write_milestone_checkpoint(previous_history, history, agent, autonomy_state, live_state=live_state)
@@ -4738,6 +4943,15 @@ def main() -> int:
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state(history, checkpoint_state)
         live_state = _promote_live_state_to_verified(live_state)
+        history, live_state, _ = _handle_api_step_budget_exhaustion(
+            agent,
+            result,
+            history,
+            autonomy_state,
+            live_state,
+            phase="startup",
+        )
+        checkpoint_state = _journal_status()
         _record_turn_activity(previous_history, history, phase="startup")
         _persist_live_status(history, compaction_state, checkpoint_state, live_state)
         if result.get("interrupted") and not _is_step_boundary_interrupt(result):
@@ -4992,6 +5206,15 @@ def main() -> int:
             history = result["messages"]
             live_state = _build_live_proof_state(history, checkpoint_state)
             live_state = _promote_live_state_to_verified(live_state)
+            history, live_state, _ = _handle_api_step_budget_exhaustion(
+                agent,
+                result,
+                history,
+                autonomy_state,
+                live_state,
+                phase="interactive",
+            )
+            checkpoint_state = _journal_status()
             _record_turn_activity(previous_history, history, phase="interactive")
             _maybe_write_milestone_checkpoint(previous_history, history, agent, autonomy_state, live_state=live_state)
             checkpoint_state = _journal_status()
