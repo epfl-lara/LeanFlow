@@ -581,7 +581,8 @@ What the runner does each cycle:
 
 10. Finish or final-sweep when the queue is empty.
     - If the declaration queue is empty and file verification is clean, log that no final verification sweep is needed.
-    - If the declaration queue is empty but file verification still has residual warnings/errors, start final file sweep mode.
+    - If the declaration queue is empty but file verification still has hard blockers, start final file sweep mode.
+    - If file verification exits successfully and only warnings remain, accept the file as complete after the final sweep signal; warning-only style cleanup must not loop forever.
     - Only final file sweep mode permits whole-file cleanup instead of single-theorem focus.
 
 Flow:
@@ -646,6 +647,7 @@ Queue handoff invariants:
 - A final report from the model is a claim, not proof. The manager accepts it only after deterministic file verification and assigned-declaration checks.
 - Queue transitions rebuild the prompt from compact manager state instead of carrying previous-theorem reasoning into the next theorem.
 - The final file sweep is the only mode where the worker may clean whole-file residual warnings without a single assigned declaration.
+- Final file sweep completion is warning-tolerant: `lean_verify`/file verification must exit successfully, `sorry` must be gone in the active file, and no hard diagnostics or open goals may remain; style warnings alone are accepted.
 
 ## Routing And Specialist Workers
 
