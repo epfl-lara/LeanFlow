@@ -60,6 +60,7 @@ from epflemma_cli.project import (
     format_project_summary,
     initialize_epflemma_project,
     resolve_template_source,
+    setup_project_power_modes,
 )
 from epflemma_cli.runtime_provider import (
     format_runtime_provider_error,
@@ -201,11 +202,28 @@ def _print_json(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def _print_project_power_setup(report: Mapping[str, Any]) -> None:
+    status = str(report.get("status", "") or "unknown")
+    if status == "ready":
+        print(f"REPL acceleration ready: {report.get('repl_path', '')}")
+    elif status in {"lake-missing", "manual-setup-needed", "update-failed", "build-failed", "binary-missing", "toolchain-missing"}:
+        print(f"REPL acceleration deferred: {status}")
+    else:
+        print(f"REPL acceleration status: {status}")
+    manual_steps = list(report.get("manual_steps", []) or [])
+    if manual_steps:
+        print("Manual REPL setup:")
+        for step in manual_steps:
+            print(f"  - {step}")
+
+
 def _handle_project(args: argparse.Namespace) -> int:
     if args.project_command == "init":
         project = initialize_epflemma_project(args.path, name=args.name or None)
+        setup_report = setup_project_power_modes(project.lean_root, progress=lambda message: print(message))
         print(f"Initialized project: {project.label}")
         print(project.root)
+        _print_project_power_setup(setup_report)
         return 0
     if args.project_command == "create":
         template_source = args.template_source or resolve_template_source(load_config(), os.environ)
@@ -315,6 +333,10 @@ def _print_mcp_status(payload: Mapping[str, Any]) -> None:
         if entry.get("bootstrap_recommended"):
             line += ", bootstrap recommended"
         print(line)
+        power = dict(entry.get("power_modes", {}) or {})
+        if power:
+            print(f"  power: local Loogle={power.get('loogle_local_status', 'unknown')}, REPL={power.get('repl_status', 'unknown')}")
+            print(f"  search: {power.get('remote_search_policy', 'public-fallbacks-enabled')}")
 
 
 def _print_mcp_bootstrap(payload: Mapping[str, Any]) -> None:
@@ -324,11 +346,16 @@ def _print_mcp_bootstrap(payload: Mapping[str, Any]) -> None:
     print("Managed Lean MCP bootstrap complete")
     print(f"- home: {payload.get('home', '')}")
     print(f"- config: {payload.get('config_path', '')}")
+    print(f"- search policy: {payload.get('remote_search_policy', 'public-fallbacks-enabled')}")
     for entry in list(payload.get("servers", []) or []):
         print(
             f"- {entry.get('name', '[unknown]')}: "
             f"{entry.get('role', '') or '[no role]'} -> {entry.get('command', '')}"
         )
+        power = dict(entry.get("power_modes", {}) or {})
+        if power:
+            print(f"  local Loogle: {power.get('loogle_local_status', 'unknown')} ({power.get('loogle_cache_dir', '')})")
+            print(f"  REPL: {power.get('repl_status', 'unknown')}")
 
 
 def _handle_mcp(args: argparse.Namespace) -> int:
@@ -783,11 +810,16 @@ class InteractiveShell:
                 or (target / ".gauss" / "project.yaml").is_file()
             )
             project = initialize_epflemma_project(path, name=name or None)
+            setup_report = setup_project_power_modes(
+                project.lean_root,
+                progress=lambda message: self.console.print(message),
+            )
             self.cwd = project.root
             if already_initialized:
                 self._plain_notice(f"Project already initialized: {project.label}")
             else:
                 self._plain_notice(f"Initialized project: {project.label}")
+            _print_project_power_setup(setup_report)
             return 0
         if subcmd == "create":
             if len(argv) < 2:

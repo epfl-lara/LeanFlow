@@ -568,8 +568,16 @@ def lean_reasoning_help_tool(
     if not file_path:
         return _advisor_failure("invalid_request", "missing file_path.", theorem_id=theorem_id)
 
+    try:
+        max_tokens = max(1000, int(os.getenv("EPFLEMMA_LEAN_REASONING_HELP_MAX_TOKENS", "64000")))
+    except (TypeError, ValueError):
+        max_tokens = 64000
+
     system_prompt = (
         "You are an auxiliary Lean proof-strategy advisor for EPFLemma. "
+        "Act as a world-class mathematical strategist, combining deep olympiad, "
+        "analysis, algebra, and formal-verification taste with practical Lean and "
+        "Mathlib expertise. "
         "Your role is advisory only: you do not edit files, you do not decide success, "
         "and your answer is not verification evidence. Give concrete proof ideas, "
         "search terms, likely lemmas, and tactic sketches for the assigned theorem only. "
@@ -605,7 +613,7 @@ def lean_reasoning_help_tool(
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.2,
-            max_tokens=5000,
+            max_tokens=max_tokens,
             timeout=max(5, int(timeout_s or 45)),
         )
     except RuntimeError as exc:
@@ -650,7 +658,12 @@ def lean_reasoning_help_tool(
 
 LEAN_CAPABILITIES_SCHEMA = {
     "name": "lean_capabilities",
-    "description": "Inspect the native EPFLemma Lean workflow capability surface: project detection, Lean/Lake/Elan binaries, MCP/LSP tool availability, search providers, helper availability, workers, and degraded-mode reasons.",
+    "description": (
+        "Inspect the native EPFLemma Lean workflow capability surface: project detection, "
+        "Lean/Lake/Elan binaries, MCP/LSP tool availability, search providers, local Loogle/REPL "
+        "power-mode status, helper availability, workers, and degraded-mode reasons. Use this early "
+        "to learn which proof-search and tactic-screening backends are actually available."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -693,7 +706,14 @@ LEAN_VERIFY_SCHEMA = {
 
 LEAN_SEARCH_SCHEMA = {
     "name": "lean_search",
-    "description": "Search for Lean declarations and proof hints using MCP/LSP providers first, then native rg/mathlib fallbacks. Returns provider provenance with each result. If degraded reasons report a repeated empty search loop, stop searching and change tactic.",
+    "description": (
+        "Search for Lean declarations, theorem names, type-pattern matches, and proof hints. "
+        "Uses powered MCP/LSP providers first: local project search, local/public Loogle, LeanExplore "
+        "when configured, and other semantic providers, then falls back to native rg/mathlib search. "
+        "Use `mode=type-pattern` for theorem-shape queries, `semantic` or `natural-language` for concept "
+        "queries, and `local` for project examples. Returns provider provenance. If degraded reasons report "
+        "a repeated empty search loop, stop searching and change tactic."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -740,7 +760,11 @@ LEAN_AXIOMS_SCHEMA = {
 
 LEAN_PROOF_CONTEXT_SCHEMA = {
     "name": "lean_proof_context",
-    "description": "Fetch theorem-local context from the managed Lean automation backend: theorem statement, original proof, hypotheses, in-scope names, namespace, and optional similar proofs.",
+    "description": (
+        "Fetch theorem-local context before deeper automation or major proof edits: theorem statement, "
+        "original proof, hypotheses, in-scope names, namespace, nearby declarations, and optional similar "
+        "proofs. Uses the managed Lean automation backend when available and local file fallback when needed."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -756,7 +780,12 @@ LEAN_PROOF_CONTEXT_SCHEMA = {
 
 LEAN_MULTI_ATTEMPT_SCHEMA = {
     "name": "lean_multi_attempt",
-    "description": "Screen 2-6 short concrete tactic attempts at one proof location using the Lean MCP backend. Do not pass full proof blocks or candidates containing `sorry`.",
+    "description": (
+        "Screen 2-6 short concrete tactic attempts at one proof location before editing. When REPL power mode "
+        "is available this can quickly test local tactics such as `simp`, `omega`, `linarith`, `aesop`, `ring`, "
+        "or small `exact`/`apply` candidates. Do not pass full proof blocks, declaration headers, or candidates "
+        "containing `sorry`."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -772,7 +801,11 @@ LEAN_MULTI_ATTEMPT_SCHEMA = {
 
 LEAN_AUTO_PROBE_SCHEMA = {
     "name": "lean_auto_probe",
-    "description": "Probe theorem-local automation methods such as `aesop`, `aesop?`, and `grind` before broader search.",
+    "description": (
+        "Probe theorem-local automation methods such as `aesop`, `aesop?`, and `grind` before broader search "
+        "or manual proof construction. Useful for goals that look routine or automation-suited; backend setup "
+        "errors are not proof failures."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -788,7 +821,11 @@ LEAN_AUTO_PROBE_SCHEMA = {
 
 LEAN_AUTO_SEARCH_SCHEMA = {
     "name": "lean_auto_search",
-    "description": "Ask the managed Lean automation backend to search for one theorem-local automated proof candidate after context/probe data exists.",
+    "description": (
+        "Ask the managed Lean automation backend to search for one theorem-local proof candidate after context "
+        "or probe data exists. Use when the goal looks automation-suited or repeated manual attempts are stuck; "
+        "treat backend/setup errors as degraded automation, not as evidence that the theorem is false."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -804,7 +841,11 @@ LEAN_AUTO_SEARCH_SCHEMA = {
 
 LEAN_AUTO_TRY_SCHEMA = {
     "name": "lean_auto_try",
-    "description": "Validate one concrete theorem-local automated proof attempt before patching it into the file.",
+    "description": (
+        "Validate one concrete theorem-local proof attempt before patching it into the file. Best for a single "
+        "full candidate proof you already believe should work. If the backend rejects project setup/options, "
+        "continue with managed edits or other Lean tools rather than treating the candidate as disproven."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -822,8 +863,9 @@ APPLY_VERIFIED_PATCH_SCHEMA = {
     "name": "apply_verified_patch",
     "description": (
         "Apply one V4A patch to a single .lean file, persist a pre-edit checkpoint, "
-        "then immediately run Lean verification. Prefer this for Lean proof/formalization edits "
-        "because patched is not considered verified until the check passes."
+        "then immediately run Lean verification. In managed queue workflows, ordinary `patch` "
+        "and `write_file` edits are manager-verified after successful tool calls; use this tool "
+        "when you specifically need one atomic patch/checkpoint/verification result."
     ),
     "parameters": {
         "type": "object",

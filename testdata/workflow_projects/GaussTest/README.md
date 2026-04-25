@@ -4,22 +4,29 @@ Small Lean workflow project kept in-repo for EPFLemma manual and opt-in workflow
 
 This is a vendored snapshot of the local `GaussTest` proving project. It is intentionally not wired into the default test suite. The purpose is to keep a compact real Lean repo around for:
 
-- `prove` and `autoprove` smoke runs
-- future `formalize` and `autoformalize` workflow experiments
+- `prove`/`autoprove` smoke runs
+- future `formalize`/`autoformalize` workflow experiments
 - workflow UX, resumability, and state/debugging checks against a nontrivial Lean project
 
 Contents:
 
-- `GaussTest/RealTheorems.lean`: analysis/algebra examples with several `sorry` goals
-- `GaussTest/IMOMath.lean`: olympiad-style theorem stubs
-- `examples_nam.txt` and `examples_f2f.txt`: extra prompt material for future workflow coverage
+- `GaussTest.lean`: default library entrypoint; imports the theorem files in project order
+- `GaussTest/RealTheorems.lean`: real-analysis and Lipschitz examples
+- `GaussTest/IMOMath1.lean`: smaller contest-style algebra, number theory, AIME, IMO, and Putnam examples
+- `GaussTest/IMOMath2.lean`: larger contest-style examples, medium difficulty Putnam problems, and some harder AIME problems
+- `GaussTest/IMOMath3.lean`: harder Putnam-style theorem statements
+
+The `lakefile.toml` default target is `GaussTest`, so `lake build` checks the sorted theorem collection by default.
 
 Typical local run:
 
 ```bash
 lake update
+lake build
 epflemma project init
 epflemma workflow prove GaussTest/RealTheorems.lean
+epflemma workflow prove GaussTest/IMOMath2.lean
+epflemma workflow prove GaussTest/IMOMath3.lean
 ```
 
-When updating this snapshot, keep it small and Lean-workflow focused. Do not turn it into a default CI dependency.
+When updating this snapshot, keep it small and Lean-workflow focused. Add new contest problems to the sorted `IMOMath*.lean` files, keep `GaussTest.lean` aligned with files that should build by default, and do not turn this project into a default CI dependency.

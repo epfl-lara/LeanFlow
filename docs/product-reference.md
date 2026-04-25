@@ -475,6 +475,9 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
   - ask the managed automation backend for one theorem-local automated proof candidate after context/probe data exists
 - `lean_auto_try`
   - validate one concrete automated proof candidate before patching it into the file
+- `apply_verified_patch`
+  - compatibility path for one atomic Lean patch, pre-edit checkpoint, and immediate verification payload
+  - in managed queue workflows, successful `patch` and `write_file` edits are already verified by the manager before the queue advances
 - `lean_sorries`
   - list remaining `sorry` findings across a project or a single file with declaration names and line numbers
 - `lean_axioms`
@@ -488,79 +491,161 @@ For file-scoped autonomous workflows (`prove` / `formalize` with an active Lean 
 
 What the runner does each cycle:
 
-- scan the active file, build a queue of declarations that still have `sorry`, theorem-level errors, warnings, or diagnostics/build output pointing at them
-- pick the current queue item and inject an "Assigned queue item" block into the agent prompt, with the declaration name, current file prefix through that declaration, current blocker, and the last N failed attempts for that exact target
-- auto-select the `lean-theorem-queue-worker` skill while an item is assigned, and fall back to `lean-proof-loop` when the queue is empty
-- after the agent's first `patch` or `write_file`, yield control back to the runner so diagnostics can be refreshed before the next edit
-- when a concrete proof edit is verified and the same `(target, file)` is still blocked, record that failed attempt immediately before the next edit overwrites it
-- keep the newest failed proof in the file so the model sees the live state directly; only older failed proofs move into structured `PREVIOUS ATTEMPTS`
-- when the queue empties but the file is not verified, switch to a whole-file sweep prompt for one pass
-- when the assigned theorem changes, rebuild the next prompt from a compact queue-aware handoff instead of reusing the full prior theorem transcript
+1. Refresh Lean state.
+   - Resolve the active file and current target from the workflow command, checkpoint state, or refreshed queue state.
+   - Run `lean_inspect` when available; otherwise query diagnostics and goals through the fallback wrappers.
+   - Keep the raw diagnostics, goals, build status, `sorry` counts, and queue candidates in the manager-owned live state.
+
+2. Build the manager-owned declaration queue.
+   - Add declarations that contain `sorry`.
+   - Add declarations that have theorem-level errors, open goals, or error diagnostics pointing into their declaration range.
+   - Prefer real error diagnostics over later `sorry` placeholders when choosing the current item.
+   - Do not put warning-only declarations into the primary theorem queue. Warning-only issues are handled as one local cleanup opportunity for the assigned declaration, or later by the final file sweep.
+
+3. Select one current queue item.
+   - If the queue is non-empty, store the assignment in `current_queue_assignment` as `(target_symbol, active_file, slice)`.
+   - While this assignment is active, the runner switches the active skill to `lean-theorem-queue-worker`.
+   - The assignment is the worker boundary. The model owns only that declaration, not the rest of the file.
+
+4. Build the model-facing handoff.
+   - The manager keeps the full queue internally for status, resume, and next-target selection.
+   - The prompt exposes only the current queue horizon:
+     - assigned declaration name
+     - exact file path and display file label
+     - current blocker for that declaration
+     - current file prefix ending at that declaration, capped to the last 200 lines for token hygiene
+     - assigned declaration slice
+     - recent failed attempts for the same `(theorem, file)` pair
+     - scoped diagnostics for the assigned declaration
+   - Future queued declarations are hidden from the model-facing live proof state until the manager assigns them.
+   - Future `sorry` warnings do not appear as current proof requirements. The prompt says that future queue items are hidden until assigned.
+
+5. Let the model work one theorem turn.
+   - The model may inspect the file, search, ask for proof context, or edit with `patch`, `write_file`, or `apply_verified_patch`.
+   - `patch` and `write_file` are preferred in managed queue workflows; after a successful edit, the manager runs the canonical file verification gate automatically.
+   - `apply_verified_patch` remains available when the atomic checkpoint plus verification payload is useful.
+   - An explicit `lean_verify(mode=file_exact)` can also close the assigned theorem turn because the manager falls back to the saved assignment even if no pending-feedback flag is set.
+   - If the model claims "solved" in a final report, the manager still runs deterministic review before accepting the claim.
+
+6. Classify the post-edit or final-report state.
+   - Hard blockers inside the assigned declaration:
+     - remaining `sorry`
+     - Lean errors
+     - unsolved goals
+     - manager verification output that points to assigned-declaration errors
+   - Warning-only cleanup inside the assigned declaration:
+     - no errors, no goals, no assigned-declaration `sorry`
+     - diagnostics are warnings scoped to that declaration
+   - Future queue items:
+     - later declarations with `sorry` or warnings
+     - unrelated file-level diagnostics that do not point at the assigned declaration
+
+7. Branch on the classification.
+   - If the assigned declaration has hard blockers:
+     - keep the same theorem turn alive
+     - record a theorem-local failed attempt for that exact `(theorem, file)`; this feeds `PREVIOUS ATTEMPTS` context and reasoning-effort escalation if the same theorem continues or returns later
+     - append manager feedback to the next model step
+     - do not advance the queue
+   - If the assigned declaration has warning-only cleanup:
+     - give one focused warning-cleanup opportunity for that same assigned declaration
+     - the opportunity starts when the manager first sees this state and sends warning-only feedback back into the same theorem turn
+     - starting the opportunity increments the manager warning-cleanup counter for this `(theorem, file)`
+     - this is not a single API step and not a new workflow run; the model continues the same theorem turn using the remaining workflow budget
+     - the opportunity is evaluated at the next manager gate for that same theorem: successful `patch` / `write_file` auto-verification, `apply_verified_patch`, explicit `lean_verify(mode=file_exact)`, or manager review of a final "solved" report
+     - do not record a failed proof attempt
+     - tell the model to fix only the assigned declaration and not edit future queued declarations
+     - if that next manager gate sees no warnings, accept the theorem and advance
+     - if that next manager gate still sees only assigned-declaration warnings and no hard blockers, accept the theorem and advance
+     - if that next manager gate sees an error, open goal, or assigned-declaration `sorry`, switch to the hard-blocker branch
+   - If only future queue items remain:
+     - accept the current theorem
+     - close the theorem boundary
+     - request a step-boundary interrupt
+     - rebuild the next prompt from a deterministic queue handoff
+   - If the model claims success but manager review finds hard blockers:
+     - reject the claim
+     - continue the same theorem
+     - after the hard retry limit is exhausted, preserve the failed proof state, restore the baseline `sorry` slice when possible, mark the theorem unresolved, and let the queue continue from a safe file state
+
+8. Handle API step-budget exhaustion.
+   - If the API step budget expires while the assigned theorem is still hard-blocked by errors, open goals, or assigned-declaration `sorry`, record a theorem-local failed attempt.
+   - If the proof is already clear and only warning-only cleanup remains, do not turn that into a failed proof attempt; the warning cleanup policy still allows the queue to advance after its focused opportunity is spent.
+   - When the original assignment slice is available, comment/preserve the current failed proof body and restore the assigned declaration to its safe baseline `sorry` body.
+   - Refresh live state and continue from the recorded failed-attempt context; this is not success. The theorem remains unresolved and can re-enter the queue from the restored `sorry` body.
+
+9. Rebuild the handoff after a theorem boundary.
+   - When the current assignment changes, discard raw theorem-local transcript, long tool output, and previous-theorem reasoning from the live prompt.
+   - Preserve a compact workflow snapshot, the active skill contract, and a deterministic theorem-transition handoff.
+   - Print the handoff in the run log so humans can see exactly what the next model turn receives.
+   - The next model turn starts with the new assigned theorem and a filtered current queue horizon, not the previous theorem's broad file context.
+
+10. Finish or final-sweep when the queue is empty.
+    - If the declaration queue is empty and file verification is clean, log that no final verification sweep is needed.
+    - If the declaration queue is empty but file verification still has residual warnings/errors, start final file sweep mode.
+    - Only final file sweep mode permits whole-file cleanup instead of single-theorem focus.
 
 Flow:
 
-```text
-  +------------------------------------------+
-  | runner: scan file, build queue           |
-  +------------------------------------------+
-                    |
-                    v
-  +------------------------------------------+
-  | queue empty?                             |
-  +------------------------------------------+
-         |                          |
-     no  |                          | yes
-         v                          v
-  +----------------+       +----------------------+
-  | pick current   |       | file verified?       |
-  | queue item     |       +----------------------+
-  +----------------+           |             |
-         |                 yes |             | no
-         v                     v             v
-  +-----------------+   +----------+  +----------------+
-  | prompt agent:   |   | DONE     |  | final file     |
-  | - target decl   |   +----------+  | sweep (one     |
-  | - slice+prefix  |                 | whole-file     |
-  | - blocker       |                 | pass)          |
-  | - prev attempts |                 +----------------+
-  +-----------------+
-         |
-         v
-  +-----------------------+
-  | agent edits (patch /  |
-  | write_file)           |
-  +-----------------------+
-         |
-         v  (yield after first theorem-sized edit)
-  +-----------------------+
-  | runner refreshes      |
-  | diagnostics + queue   |
-  +-----------------------+
-         |
-         v
-  +-----------------------+
-  | same target still     |
-  | blocked?              |
-  +-----------------------+
-       |               |
-   yes |               | no
-       v               v
-  record failed    advance to next
-  attempt          queue item
-       \_______________/
-              |
-              v
-          next cycle
+```mermaid
+flowchart TD
+    A["Refresh Lean state"] --> B["Build manager-owned declaration queue"]
+    B --> C{"Queue empty?"}
+
+    C -- "yes" --> D{"File verification clean?"}
+    D -- "yes" --> Z["Verified completion"]
+    D -- "no" --> F["Final file sweep mode"]
+    F --> A
+
+    C -- "no" --> G["Select current queue item"]
+    G --> H["Save current_queue_assignment"]
+    H --> I["Build model-facing handoff"]
+    I --> I1["Expose assigned theorem, prefix/slice, scoped diagnostics, same-theorem failed attempts"]
+    I --> I2["Hide future queue items until assigned"]
+    I1 --> J["Run one theorem worker turn"]
+    I2 --> J
+
+    J --> K{"Model action"}
+    K -- "patch/write_file/apply_verified_patch" --> L["Manager runs canonical file verification"]
+    K -- "explicit lean_verify" --> L
+    K -- "claims solved" --> M["Manager final-report review"]
+    M --> L
+
+    L --> N["Refresh live state and classify assigned declaration"]
+    N --> O{"Assigned declaration status"}
+
+    O -- "error, open goals, or assigned sorry" --> P["Hard blocker"]
+    P --> P1["Record failed attempt for same theorem"]
+    P1 --> P2["Append focused manager feedback"]
+    P2 --> J
+
+    O -- "warning-only in assigned declaration" --> Q{"Warning cleanup opportunity already used?"}
+    Q -- "no" --> Q1["Give one cleanup opportunity; no failed attempt"]
+    Q1 --> J
+    Q -- "yes" --> R["Accept warning-only remainder"]
+
+    O -- "assigned declaration clean" --> R
+    R --> S["Close theorem boundary"]
+    S --> T["Step-boundary interrupt"]
+    T --> U["Rebuild compact queue handoff"]
+    U --> A
+
+    J --> V{"API step budget exhausted?"}
+    V -- "yes, still blocked" --> W["Record failed attempt and restore baseline sorry when possible"]
+    W --> A
+    V -- "no" --> J
 ```
 
-Why this shape:
+Queue handoff invariants:
 
-- one declaration at a time keeps the agent from declaring victory after fixing only the first theorem
-- the yield-after-edit boundary forces fresh diagnostics between edits instead of speculative chained patches
-- target-scoped failed-attempt memory gives the next cycle real negative guidance without leaking across unrelated theorems
-- the failed-attempt ledger is theorem-local and is cleared when the queue advances to a different declaration
-- theorem transitions always clear raw search logs, long tool output, and previous-theorem reasoning from the live prompt; only a compact workflow snapshot and short previous-theorem outcome summary survive
-- the final file sweep handles residual warnings or malformed partial proofs that do not map to a single declaration
+- The manager owns the full queue; the model sees only the assigned theorem horizon.
+- Future theorem `sorry` warnings are not model-facing proof obligations until assigned.
+- The assigned theorem is successful when that declaration has no `sorry`, no open goals, no errors, and either no warning-only cleanup remains or its one focused warning-cleanup opportunity has already been spent.
+- Hard blockers keep the same theorem turn alive and become theorem-local failed-attempt context.
+- Warning-only cleanup never becomes a failed proof attempt and cannot stall the queue indefinitely.
+- Failed-attempt memory has two effects: it is scoped to the same `(theorem, file)` so the model can see prior proof shapes when that theorem continues or returns later, and hard exhaustion can restore the declaration to its baseline `sorry` slice so the queue can continue from a safe file state.
+- A final report from the model is a claim, not proof. The manager accepts it only after deterministic file verification and assigned-declaration checks.
+- Queue transitions rebuild the prompt from compact manager state instead of carrying previous-theorem reasoning into the next theorem.
+- The final file sweep is the only mode where the worker may clean whole-file residual warnings without a single assigned declaration.
 
 ## Routing And Specialist Workers
 
@@ -693,6 +778,7 @@ Requirements for `project init`:
 
 - the target must be inside a Lean 4 repo
 - a Lean root must be detectable from `lakefile.lean` or `lakefile.toml`
+- REPL acceleration setup is attempted automatically; `lakefile.toml` projects can be updated safely, while ambiguous `lakefile.lean` projects receive manual setup instructions
 
 EPFLemma writes:
 
@@ -700,6 +786,17 @@ EPFLemma writes:
 - `.epflemma/runtime/`
 - `.epflemma/cache/`
 - `.epflemma/workflows/`
+
+During `project init`, EPFLemma prints visible REPL setup progress:
+
+- inspect Lean project
+- detect `lean-toolchain`
+- check for an existing `repl` binary or dependency
+- add the `leanprover-community/repl` dependency when safe
+- run `lake update repl`
+- run `lake build repl`
+
+Long Lake commands print status before and after execution, including elapsed time. A failed REPL setup is a warning, not a project-init failure; proof workflows continue with LSP-backed tactic screening.
 - `.epflemma/workflow-state/`
 
 ## Skills And Overlays
@@ -890,7 +987,7 @@ There are now three important internal workflow surfaces:
 
 - `lean`
   - shared typed Lean capability surface
-  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_probe`, `lean_auto_search`, `lean_auto_try`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
+  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_probe`, `lean_auto_search`, `lean_auto_try`, `apply_verified_patch`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
 
 - `epflemma-native`
   - default single-agent Lean workflow runtime
@@ -1000,6 +1097,13 @@ epflemma config set agent.top_k 'null'
 epflemma config set agent.min_p 'null'
 ```
 
+`lean_reasoning_help` uses the configured `auxiliary.lean_reasoning` model as a
+deep theorem advisor. Its default response budget is `64000` tokens so hard
+proof advice is not prematurely clipped; override with
+`EPFLEMMA_LEAN_REASONING_HELP_MAX_TOKENS` when a provider needs a lower cap.
+Main model calls wait up to `1200` seconds by default before EPFLemma treats the
+provider request as timed out; override with `GAUSS_API_TIMEOUT` if needed.
+
 Lean declaration edits are guarded by default. File write and patch tools block
 deleting, renaming, moving, or changing existing `theorem`, `lemma`, and
 `example` statements; proof-body edits and new declarations are allowed. For an
@@ -1012,6 +1116,8 @@ Compression defaults are tuned for long Lean sessions:
 - `reserved_output_tokens` keeps headroom for the next response instead of filling the full context window.
 - `prune_tool_output` replaces stale old tool result bodies with a fixed marker.
 - `prune_keep_recent_user_turns` keeps the newest user turns and their nearby tool output intact.
+- the compression gate checks the exact outgoing API payload before every model call, including provider-specific reasoning replay fields such as `reasoning_content`.
+- provider usage accounting can undercount replayed reasoning for some backends; the `Request: ~N tokens` log line is the local payload estimate used for pre-send compression.
 - if provider metadata cannot tell EPFLemma the real context window, EPFLemma now falls back conservatively to `200,000` tokens instead of assuming a multi-million-token window.
 
 ## Doctor And MCP Status
@@ -1058,19 +1164,26 @@ Installer/bootstrap-managed default Lean MCP backends:
 
 - `lean-lsp-mcp==0.26.1`
   - primary state/search backend
-  - diagnostics, goals, local search, semantic search helpers, and `lean_multi_attempt`
+  - diagnostics, goals, local search, semantic search helpers, state/premise/hover/outline discovery, and `lean_multi_attempt`
+  - configured with local power modes: `LEAN_REPL=true`, `LEAN_LOOGLE_LOCAL=true` on Linux/macOS/WSL, `LEAN_REPL_TIMEOUT=60`, and `LEAN_REPL_MEM_MB=8192`
+  - search order prefers local Loogle when ready, then public remote Loogle/Lean search fallbacks, then project/Mathlib `rg`
 - `lean-proof-auto-mcp@v0.4.0`
   - secondary automation/context backend
   - theorem-local context and automation helpers such as `get_proof_context`, `probe`, `search_automated_proof`, and `try_automated_proof`
   - EPFLemma uses it through native wrappers and now degrades cleanly when backend lookup misses a declaration that exists in the local file
+- `lean-explore`
+  - optional semantic declaration-search backend
+  - installed and configured disabled by default because the API backend requires `LEANEXPLORE_API_KEY`; enable it in `~/.epflemma/config.yaml` or switch its args to the local backend after fetching LeanExplore data
 
-The install script bootstraps both backends by default under `~/.epflemma/mcp/venvs/`. To repair or recreate them later, run:
+The install script bootstraps these backends by default under `~/.epflemma/mcp/venvs/`. To repair or recreate them later, run:
 
 ```bash
 epflemma mcp bootstrap lean
 ```
 
-`epflemma mcp status` now shows server role labels, whether a server is EPFLemma-managed, whether it is configured/installed, and whether bootstrap is recommended. The same surfaces are available in the interactive shell through `/doctor ...`, `/mcp bootstrap lean`, and `/mcp status [--json]`.
+`epflemma mcp status` now shows server role labels, whether a server is EPFLemma-managed, whether it is configured/installed, local Loogle/REPL power-mode status, public remote fallback policy, and whether bootstrap is recommended. The same surfaces are available in the interactive shell through `/doctor ...`, `/mcp bootstrap lean`, and `/mcp status [--json]`.
+
+Local Loogle requires Unix-like systems (Linux, macOS, or WSL), `git`, `lake`/`elan`, and roughly 2GB of disk. The first local Loogle build can take 5-10 minutes; later starts are fast. If local Loogle is unavailable, EPFLemma allows public remote Lean search fallbacks. Paid or API-key backends are never required by the installer.
 
 Raw `mcp_*` tools are still available through explicit `mcp-{server}` toolsets for debugging, but they are not part of the normal native Lean workflow surface. The model should use the native Lean wrappers instead.
 

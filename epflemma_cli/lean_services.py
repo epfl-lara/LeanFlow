@@ -31,6 +31,7 @@ SEARCH_PROVIDER_LABELS = {
     "leanfinder": "mcp-leanfinder",
     "leansearch": "mcp-leansearch",
     "loogle": "mcp-loogle",
+    "leanexplore": "mcp-leanexplore",
     "project_rg": "project-rg",
     "mathlib_rg": "mathlib-rg",
 }
@@ -41,10 +42,22 @@ MANAGED_MCP_TOOL_MAP = {
     "code_actions": ("mcp_lean_lsp_lean_code_actions",),
     "multi_attempt": ("mcp_lean_lsp_lean_multi_attempt",),
     "run_code": ("mcp_lean_lsp_lean_run_code",),
+    "state_search": ("mcp_lean_lsp_lean_state_search",),
+    "hammer_premise": ("mcp_lean_lsp_lean_hammer_premise",),
+    "hover_info": ("mcp_lean_lsp_lean_hover_info",),
+    "file_outline": ("mcp_lean_lsp_lean_file_outline",),
+    "declaration_file": ("mcp_lean_lsp_lean_declaration_file",),
+    "profile_proof": ("mcp_lean_lsp_lean_profile_proof",),
     "local_search": ("mcp_lean_lsp_lean_local_search",),
     "leanfinder": ("mcp_lean_lsp_lean_leanfinder",),
     "leansearch": ("mcp_lean_lsp_lean_leansearch",),
     "loogle": ("mcp_lean_lsp_lean_loogle",),
+    "leanexplore": (
+        "mcp_lean_explore_search_summary",
+        "mcp_lean_explore_search",
+        "mcp_leanexplore_search_summary",
+        "mcp_leanexplore_search",
+    ),
     "proof_context": ("mcp_lean_proof_auto_get_proof_context",),
     "auto_probe": ("mcp_lean_proof_auto_probe",),
     "auto_search": ("mcp_lean_proof_auto_search_automated_proof",),
@@ -59,10 +72,17 @@ MCP_CAPABILITY_DISABLED_LABELS = {
     "code_actions": "lean code actions MCP",
     "multi_attempt": "lean multi-attempt MCP",
     "run_code": "lean run-code MCP",
+    "state_search": "lean state-search MCP",
+    "hammer_premise": "lean hammer-premise MCP",
+    "hover_info": "lean hover-info MCP",
+    "file_outline": "lean file-outline MCP",
+    "declaration_file": "lean declaration-file MCP",
+    "profile_proof": "lean profile-proof MCP",
     "local_search": "lean local search MCP",
     "leanfinder": "lean leanfinder MCP",
     "leansearch": "lean leansearch MCP",
     "loogle": "lean loogle MCP",
+    "leanexplore": "lean LeanExplore MCP",
     "proof_context": "lean proof context MCP",
     "auto_probe": "lean automation probe MCP",
     "auto_search": "lean automation search MCP",
@@ -309,6 +329,8 @@ class LeanCapabilityReport:
     degraded_reasons: list[str]
     mcp_server_roles: dict[str, str] = field(default_factory=dict)
     managed_mcp_servers: dict[str, bool] = field(default_factory=dict)
+    power_modes: dict[str, Any] = field(default_factory=dict)
+    remote_search_policy: str = "public-fallbacks-enabled"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -511,6 +533,60 @@ def _decode_nested_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     return dict(payload)
 
 
+def _format_search_payload_item(item: Any) -> str:
+    if isinstance(item, Mapping):
+        name = str(item.get("name", "") or "").strip()
+        module = str(item.get("module", "") or "").strip()
+        description = str(
+            item.get("description", "")
+            or item.get("informalization", "")
+            or item.get("docstring", "")
+            or item.get("source_text", "")
+            or ""
+        ).strip()
+        source_link = str(item.get("source_link", "") or "").strip()
+        parts = []
+        if name:
+            parts.append(name)
+        if module:
+            parts.append(f"[{module}]")
+        if description:
+            parts.append(description)
+        if source_link:
+            parts.append(source_link)
+        if parts:
+            return " - ".join(parts)
+        return json.dumps(dict(item), sort_keys=True, default=str)
+    if isinstance(item, list):
+        return "; ".join(_format_search_payload_item(part) for part in item)
+    return str(item).strip()
+
+
+def _search_payload_fragments(payload: Mapping[str, Any], *, limit: int) -> list[str]:
+    decoded = _decode_nested_result(payload)
+    candidates: list[Any] = []
+    for key in ("results", "matches", "items", "declarations"):
+        value = decoded.get(key)
+        if isinstance(value, list):
+            candidates.extend(value)
+            break
+    if not candidates:
+        for value in decoded.values():
+            if isinstance(value, str) and value.strip():
+                candidates.append(value)
+            elif isinstance(value, list):
+                candidates.extend(value[:limit])
+
+    fragments: list[str] = []
+    for item in candidates:
+        fragment = _format_search_payload_item(item)
+        if fragment:
+            fragments.append(fragment)
+        if len(fragments) >= limit:
+            break
+    return fragments
+
+
 def _discover_lean_mcp_tools() -> dict[str, str]:
     raw_tool_names, raw_tool_set = _discover_raw_mcp_tool_names()
 
@@ -520,10 +596,17 @@ def _discover_lean_mcp_tools() -> dict[str, str]:
         "code_actions": "",
         "multi_attempt": "",
         "run_code": "",
+        "state_search": "",
+        "hammer_premise": "",
+        "hover_info": "",
+        "file_outline": "",
+        "declaration_file": "",
+        "profile_proof": "",
         "local_search": "",
         "leanfinder": "",
         "leansearch": "",
         "loogle": "",
+        "leanexplore": "",
         "proof_context": "",
         "auto_probe": "",
         "auto_search": "",
@@ -553,6 +636,18 @@ def _discover_lean_mcp_tools() -> dict[str, str]:
             discovered["multi_attempt"] = tool_name
         if not discovered["run_code"] and "run_code" in lowered:
             discovered["run_code"] = tool_name
+        if not discovered["state_search"] and "state_search" in lowered:
+            discovered["state_search"] = tool_name
+        if not discovered["hammer_premise"] and "hammer_premise" in lowered:
+            discovered["hammer_premise"] = tool_name
+        if not discovered["hover_info"] and "hover_info" in lowered:
+            discovered["hover_info"] = tool_name
+        if not discovered["file_outline"] and "file_outline" in lowered:
+            discovered["file_outline"] = tool_name
+        if not discovered["declaration_file"] and "declaration_file" in lowered:
+            discovered["declaration_file"] = tool_name
+        if not discovered["profile_proof"] and "profile_proof" in lowered:
+            discovered["profile_proof"] = tool_name
         if not discovered["local_search"] and "local_search" in lowered:
             discovered["local_search"] = tool_name
         if not discovered["leanfinder"] and "leanfinder" in lowered:
@@ -561,6 +656,10 @@ def _discover_lean_mcp_tools() -> dict[str, str]:
             discovered["leansearch"] = tool_name
         if not discovered["loogle"] and "loogle" in lowered:
             discovered["loogle"] = tool_name
+        if not discovered["leanexplore"] and "lean" in lowered and "explore" in lowered and (
+            lowered.endswith("search_summary") or lowered.endswith("search")
+        ):
+            discovered["leanexplore"] = tool_name
         if "proof_auto" in lowered:
             if not discovered["proof_context"] and "get_proof_context" in lowered:
                 discovered["proof_context"] = tool_name
@@ -596,7 +695,7 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
     binaries = {name: bool(shutil.which(name)) for name in ("lean", "lake", "elan", "git", "rg")}
     mcp_tools = _discover_lean_mcp_tools()
     search_providers: list[str] = []
-    for key in ("leanfinder", "local_search", "leansearch", "loogle"):
+    for key in ("leanfinder", "leanexplore", "local_search", "leansearch", "loogle"):
         if mcp_tools.get(key):
             search_providers.append(SEARCH_PROVIDER_LABELS[key])
     if binaries.get("rg"):
@@ -634,6 +733,21 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         degraded.append("lean automation MCP unavailable")
     if not search_providers:
         degraded.append("no search providers available")
+    try:
+        from epflemma_cli.mcp_bootstrap import REMOTE_SEARCH_POLICY, managed_mcp_power_status
+
+        power_modes = managed_mcp_power_status(project_root=project_root)
+        remote_search_policy = REMOTE_SEARCH_POLICY
+    except Exception:
+        power_modes = {}
+        remote_search_policy = "public-fallbacks-enabled"
+    if power_modes:
+        if power_modes.get("loogle_local_configured") and not power_modes.get("loogle_local_available"):
+            degraded.append("local Loogle configured but unsupported on this platform; public remote Loogle fallback remains enabled")
+        elif power_modes.get("loogle_local_configured") and not power_modes.get("loogle_local_ready"):
+            degraded.append("local Loogle configured but cache is not warmed yet; first local query may build it or fall back remotely")
+        if project_root and power_modes.get("repl_configured") and not power_modes.get("repl_available"):
+            degraded.append("Lean REPL acceleration configured but repl binary is unavailable; run `epflemma project init` to build it")
     return LeanCapabilityReport(
         cwd=str(base),
         project_root=str(project_root or ""),
@@ -647,6 +761,8 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         degraded_reasons=degraded,
         mcp_server_roles=mcp_server_roles,
         managed_mcp_servers=managed_mcp_servers,
+        power_modes=power_modes,
+        remote_search_policy=remote_search_policy,
     )
 
 
@@ -1258,12 +1374,21 @@ def lean_search(
 
     mcp_order = []
     normalized_mode = str(mode or "auto").strip().lower()
-    semantic_provider_keys = ("leanfinder", "leansearch", "loogle")
-    semantic_provider_labels = [SEARCH_PROVIDER_LABELS[key] for key in semantic_provider_keys if report.mcp_tools.get(key)]
+    semantic_provider_keys = ("leanfinder", "leanexplore", "leansearch", "loogle")
+    semantic_provider_labels = [
+        SEARCH_PROVIDER_LABELS[key]
+        for key in semantic_provider_keys
+        if report.mcp_tools.get(key)
+    ]
     if normalized_mode in {"auto", "local"} and report.mcp_tools.get("local_search"):
         mcp_order.append(("local_search", report.mcp_tools["local_search"]))
     if normalized_mode in {"auto", "semantic"} and report.mcp_tools.get("leanfinder"):
         mcp_order.append(("leanfinder", report.mcp_tools["leanfinder"]))
+    if (
+        normalized_mode in {"auto", "semantic", "natural-language", "natural"}
+        and report.mcp_tools.get("leanexplore")
+    ):
+        mcp_order.append(("leanexplore", report.mcp_tools["leanexplore"]))
     if normalized_mode in {"auto", "natural-language", "natural"} and report.mcp_tools.get("leansearch"):
         mcp_order.append(("leansearch", report.mcp_tools["leansearch"]))
     if normalized_mode in {"auto", "type-pattern", "type"} and report.mcp_tools.get("loogle"):
@@ -1282,13 +1407,7 @@ def lean_search(
         )
         if payload.get("error"):
             continue
-        text_fragments = []
-        for key, value in payload.items():
-            if isinstance(value, str) and value.strip():
-                text_fragments.append(value.strip())
-            elif isinstance(value, list):
-                for item in value[:limit]:
-                    text_fragments.append(str(item))
+        text_fragments = _search_payload_fragments(payload, limit=limit)
         if text_fragments:
             results.extend(
                 {
@@ -1399,8 +1518,57 @@ def _invoke_native_mcp_wrapper(
         for key, value in parsed.items():
             if key not in {"success"}:
                 payload[key] = value
+    _normalize_native_backend_status(
+        payload,
+        outcome_kind=outcome_kind,
+        tool_name=tool_name,
+        cwd=report.cwd,
+    )
     append_workflow_outcome(outcome_kind, payload)
     return payload
+
+
+def _native_backend_status_indicates_failure(payload: Mapping[str, Any]) -> bool:
+    failure_statuses = {"rejected", "failed", "failure", "error", "invalid"}
+    for key in ("status", "validation_status", "result_status"):
+        status = str(payload.get(key, "") or "").strip().lower()
+        if status in failure_statuses:
+            return True
+    return False
+
+
+def _native_backend_failure_message(payload: Mapping[str, Any]) -> str:
+    for key in ("error_message", "error", "message", "failure", "reason", "status"):
+        value = str(payload.get(key, "") or "").strip()
+        if value:
+            return " ".join(value.split())[:500]
+    return ""
+
+
+def _normalize_native_backend_status(
+    payload: dict[str, Any],
+    *,
+    outcome_kind: str,
+    tool_name: str,
+    cwd: str | os.PathLike[str] | None,
+) -> None:
+    if not _native_backend_status_indicates_failure(payload):
+        return
+    payload["success"] = False
+    degraded_reasons = list(payload.get("degraded_reasons", []) or [])
+    failure_message = _native_backend_failure_message(payload)
+    if failure_message:
+        degraded_reasons.append(f"{outcome_kind} backend rejected: {failure_message}")
+    lowered = failure_message.lower()
+    if outcome_kind == "lean-auto-try" and "unknown option" in lowered and "linter.style.longline" in lowered:
+        _disable_mcp_tool_for_run(tool_name, cwd=cwd)
+        degraded_reasons.extend(
+            [
+                "lean automation try disabled for this run after backend rejected the project-level long-line linter option",
+                "Treat unsupported project options as file-level setup blockers, not theorem proof failures; do not edit unrelated examples or solved declarations just to satisfy lean_auto_try.",
+            ]
+        )
+    payload["degraded_reasons"] = list(dict.fromkeys(degraded_reasons))
 
 
 def _auto_probe_attempt_succeeded(payload: Mapping[str, Any]) -> bool:

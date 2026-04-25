@@ -45,6 +45,18 @@ epflemma project init
 epflemma project show
 ```
 
+`project init` also prepares Lean REPL acceleration when it can do so safely.
+It prints step-by-step progress while checking the Lean toolchain, adding the
+`leanprover-community/repl` dependency for `lakefile.toml` projects, and running
+`lake update repl` / `lake build repl`. If REPL setup is not safe or fails,
+EPFLemma keeps working and reports the fallback clearly.
+
+The installer configures local `lean-lsp-mcp` power modes by default:
+
+- local Loogle on Linux/macOS/WSL, with public remote Loogle fallback when local setup is cold or unavailable
+- REPL-backed `lean_multi_attempt` for faster tactic screening after `project init` builds `repl`
+- API-key backends such as LeanExplore API mode stay opt-in
+
 Run the main workflows:
 
 ```bash
@@ -93,7 +105,7 @@ formalize "formalize this statement"
 - no `sorry` in the active target
 - no remaining project `sorry` outside dependencies
 
-For file-scoped work, EPFLemma drives the agent one declaration at a time. The runner owns the queue, refreshes diagnostics after edits, records failed attempts per theorem, and advances only when Lean verification says the current target is clean.
+For file-scoped work, EPFLemma drives the agent one declaration at a time. The runner owns the queue, refreshes diagnostics after edits, records failed attempts per theorem, and advances only when Lean verification says the current target is clean. If a theorem turn exhausts its API-step budget, the runner records that as a failed attempt, comments the failed declaration in the Lean file, and restores the original safe `sorry` body when it has an exact baseline slice; the theorem remains pending for the next queue cycle.
 
 ## Main Workflows
 
@@ -234,4 +246,3 @@ python -m pytest tests/epflemma tests/agent/test_prompt_builder.py tests/agent/t
 python -m epflemma_cli.main --help
 ./scripts/install-internal.sh
 ```
-

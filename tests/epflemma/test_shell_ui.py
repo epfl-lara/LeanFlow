@@ -121,6 +121,7 @@ def test_interactive_mcp_bootstrap_prints_summary(monkeypatch, capsys):
             "success": True,
             "home": "/tmp/home",
             "config_path": "/tmp/home/config.yaml",
+            "remote_search_policy": "public-fallbacks-enabled",
             "servers": [{"name": "lean-proof-auto", "role": "secondary-automation-context", "command": "/tmp/lean-proof-auto-mcp"}],
         },
     )
@@ -129,6 +130,28 @@ def test_interactive_mcp_bootstrap_prints_summary(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "Managed Lean MCP bootstrap complete" in output
     assert "lean-proof-auto" in output
+    assert "public-fallbacks-enabled" in output
+
+
+def test_project_init_prints_repl_setup_progress(monkeypatch, tmp_path, capsys):
+    root = tmp_path / "Demo"
+    root.mkdir()
+    (root / "lakefile.toml").write_text('name = "Demo"\n', encoding="utf-8")
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
+
+    def _fake_setup(_lean_root, *, progress=None):
+        if progress:
+            progress("[1/6] Inspecting Lean project for REPL acceleration")
+            progress("[6/6] Building REPL binary with `lake build repl` (this can take several minutes)")
+        return {"status": "ready", "repl_path": str(root / ".lake" / "build" / "bin" / "repl")}
+
+    monkeypatch.setattr("epflemma_cli.main.setup_project_power_modes", _fake_setup)
+
+    assert main(["project", "init", str(root)]) == 0
+    output = capsys.readouterr().out
+    assert "Inspecting Lean project for REPL acceleration" in output
+    assert "lake build repl" in output
+    assert "REPL acceleration ready" in output
 
 
 def test_describe_launch_plan_formats_provider_and_model(tmp_path):

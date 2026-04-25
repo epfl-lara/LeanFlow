@@ -418,6 +418,38 @@ class TestExtractReasoning:
         assert result == "same text"
 
 
+class TestReasoningReplayAccounting:
+    def test_reasoning_context_payload_stats_counts_outgoing_reasoning_fields(self, agent):
+        stats = agent._reasoning_context_payload_stats(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "assistant", "content": "", "reasoning_content": "abc"},
+                {"role": "assistant", "content": "", "reasoning_details": [{"summary": "def"}]},
+                {"role": "assistant", "content": "plain"},
+            ]
+        )
+
+        assert stats["assistant_messages"] == 2
+        assert stats["chars"] == len("abc") + len(str([{"summary": "def"}]))
+
+    def test_reasoning_replay_accounting_logs_large_provider_mismatch(self, agent, capsys):
+        agent.quiet_mode = False
+        agent.log_prefix = ""
+        api_messages = [
+            {"role": "assistant", "content": "", "reasoning_content": "x" * 40_000},
+        ]
+
+        agent._log_reasoning_replay_accounting(
+            api_messages=api_messages,
+            approx_tokens=12_000,
+            provider_prompt_tokens=1_000,
+        )
+
+        output = capsys.readouterr().out
+        assert "Reasoning replay attached" in output
+        assert "Provider input accounting reported 1,000" in output
+
+
 class TestCleanSessionContent:
     def test_none_passthrough(self):
         assert AIAgent._clean_session_content(None) is None
@@ -628,6 +660,16 @@ class TestInterrupt:
             agent.interrupt("new question")
             assert agent._interrupt_message == "new question"
 
+    def test_interrupt_log_can_be_suppressed(self, agent, capsys):
+        agent.quiet_mode = False
+        agent._suppress_next_interrupt_log = True
+        with patch("run_agent._set_interrupt"):
+            agent.interrupt("internal step boundary")
+
+        assert capsys.readouterr().out == ""
+        assert agent._interrupt_requested is True
+        assert agent._interrupt_message == "internal step boundary"
+
     def test_clear_interrupt(self, agent):
         with patch("run_agent._set_interrupt"):
             agent.interrupt("msg")
@@ -747,7 +789,7 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["model"] == agent.model
         assert kwargs["messages"] is messages
-        assert kwargs["timeout"] == 900.0
+        assert kwargs["timeout"] == 1200.0
 
     def test_provider_preferences_injected(self, agent):
         agent.providers_allowed = ["Anthropic"]
@@ -978,6 +1020,23 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    def test_post_tool_result_callback_can_append_tool_context(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        def callback(name, args, result):
+            agent._post_tool_result_appendix = "[manager feedback]"
+
+        agent.post_tool_result_callback = callback
+
+        with patch("run_agent.handle_function_call", return_value="search result"):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        assert "search result" in messages[0]["content"]
+        assert "[manager feedback]" in messages[0]["content"]
+        assert agent._post_tool_result_appendix is None
+
     def test_interrupt_skips_remaining(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
@@ -1156,6 +1215,26 @@ class TestConcurrentToolExecution:
             ("web_search", {"q": "alpha"}, "result_alpha"),
             ("web_search", {"q": "beta"}, "result_beta"),
         ]
+
+    def test_concurrent_post_tool_result_callback_can_append_tool_context(self, agent):
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1])
+        messages = []
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return "result_alpha"
+
+        def callback(name, args, result):
+            agent._post_tool_result_appendix = "[manager feedback]"
+
+        agent.post_tool_result_callback = callback
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert "result_alpha" in messages[0]["content"]
+        assert "[manager feedback]" in messages[0]["content"]
+        assert agent._post_tool_result_appendix is None
 
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
@@ -1568,6 +1647,44 @@ class TestRunConversation:
         assert result["final_response"] == "All done"
         assert result["completed"] is True
 
+    def test_pre_send_compression_counts_reasoning_replay_payload(self, agent):
+        """Pre-send compression should use the final API payload, including reasoning replay."""
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+        agent.context_compressor.threshold_tokens = 1_000
+        messages = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "", "reasoning": "x" * 6_000},
+        ]
+        api_messages = agent._build_api_messages_for_turn(messages, "You are helpful.")
+        approx_tokens, _ = agent._api_payload_size_estimate(api_messages)
+
+        assert approx_tokens >= agent.context_compressor.threshold_tokens
+        assert any("reasoning_content" in msg for msg in api_messages)
+
+        with patch.object(
+            agent,
+            "_compress_context",
+            return_value=([{"role": "user", "content": "compact handoff"}], "compressed system"),
+        ) as mock_compress:
+            new_messages, new_system, new_api_messages, new_tokens, _ = (
+                agent._maybe_compress_before_api_send(
+                    messages,
+                    "You are helpful.",
+                    "You are helpful.",
+                    api_messages=api_messages,
+                    approx_tokens=approx_tokens,
+                    task_id="test-task",
+                )
+            )
+
+        mock_compress.assert_called_once()
+        assert mock_compress.call_args.kwargs["approx_tokens"] == approx_tokens
+        assert new_messages == [{"role": "user", "content": "compact handoff"}]
+        assert new_system == "compressed system"
+        assert new_tokens < approx_tokens
+        assert not any("reasoning_content" in msg for msg in new_api_messages)
+
     @pytest.mark.parametrize(
         ("first_content", "second_content", "expected_final"),
         [
@@ -1962,6 +2079,98 @@ class TestBudgetPressure:
     def test_zero_max_iterations(self, agent):
         agent.max_iterations = 0
         assert agent._get_budget_warning(0) is None
+
+    def test_runtime_budget_warning_message_is_model_visible(self, agent):
+        agent.max_iterations = 10
+        messages = [{"role": "user", "content": "continue"}]
+
+        injected = agent._maybe_append_budget_warning_message(messages, 7)
+
+        assert injected is True
+        assert messages[-1]["role"] == "user"
+        assert "EPFLEMMA-RUNTIME STEP BUDGET" in messages[-1]["content"]
+        assert "3 iterations left" in messages[-1]["content"]
+
+    def test_runtime_budget_warning_skips_duplicate_tool_warning(self, agent):
+        agent.max_iterations = 10
+        warning = agent._get_budget_warning(9)
+        messages = [{"role": "tool", "content": f"done\n\n{warning}", "tool_call_id": "tc1"}]
+
+        assert agent._maybe_append_budget_warning_message(messages, 9) is False
+        assert len(messages) == 1
+
+    def test_advisor_budget_refresh_resets_to_half_budget(self, agent):
+        agent.max_iterations = 120
+        agent.iteration_budget = run_agent.IterationBudget(120)
+        for _ in range(110):
+            assert agent.iteration_budget.consume()
+
+        refreshed = agent._maybe_refresh_api_step_budget_after_advisor(100)
+
+        assert refreshed == 60
+        assert agent.iteration_budget.used == 60
+
+    def test_advisor_budget_refresh_does_not_reset_early_calls(self, agent):
+        agent.max_iterations = 120
+        agent.iteration_budget = run_agent.IterationBudget(120)
+        for _ in range(40):
+            assert agent.iteration_budget.consume()
+
+        refreshed = agent._maybe_refresh_api_step_budget_after_advisor(40)
+
+        assert refreshed == 40
+        assert agent.iteration_budget.used == 40
+
+    def test_lean_reasoning_help_gets_larger_tool_result_cap(self, agent):
+        assert agent._max_tool_result_chars("lean_reasoning_help") > agent._max_tool_result_chars("web_search")
+
+    def test_precompresses_before_advisor_when_reserved_context_would_overflow(self, agent):
+        agent.compression_enabled = True
+        agent._advisor_result_context_reserve_tokens = 10_000
+        messages = [
+            {"role": "user", "content": "old theorem context"},
+            {"role": "assistant", "content": "old attempt"},
+        ]
+
+        with (
+            patch.object(agent.context_compressor, "should_compress", side_effect=[True, False]),
+            patch.object(agent, "_compress_context", return_value=([{"role": "user", "content": "summary"}], "compressed system")) as mock_compress,
+        ):
+            updated, system_prompt = agent._maybe_precompress_before_advisor_tool(
+                messages,
+                "system",
+                "active system",
+                effective_task_id="task-1",
+            )
+
+        mock_compress.assert_called_once()
+        assert updated == [{"role": "user", "content": "summary"}]
+        assert system_prompt == "compressed system"
+
+    def test_post_tool_compression_preserves_advisor_turn_suffix(self, agent):
+        messages = [
+            {"role": "user", "content": "old theorem context"},
+            {"role": "assistant", "content": "old attempt"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "tc1", "function": {"name": "lean_reasoning_help", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "tc1", "content": '{"advice":"use norm_num"}'},
+        ]
+
+        with patch.object(agent, "_compress_context", return_value=([{"role": "user", "content": "summary"}], "compressed system")):
+            updated, system_prompt = agent._compress_context_preserving_suffix(
+                messages,
+                2,
+                "system",
+                approx_tokens=50_000,
+                task_id="task-1",
+            )
+
+        assert updated[:1] == [{"role": "user", "content": "summary"}]
+        assert updated[-2:] == messages[-2:]
+        assert system_prompt == "compressed system"
 
     def test_injects_into_json_tool_result(self, agent):
         """Warning should be injected as _budget_warning field in JSON tool results."""

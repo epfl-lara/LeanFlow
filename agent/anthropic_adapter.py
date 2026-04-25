@@ -82,7 +82,7 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     from httpx import Timeout
 
     kwargs = {
-        "timeout": Timeout(timeout=900.0, connect=10.0),
+        "timeout": Timeout(timeout=1200.0, connect=10.0),
     }
     if base_url:
         kwargs["base_url"] = base_url
