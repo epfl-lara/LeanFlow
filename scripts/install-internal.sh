@@ -10,6 +10,29 @@ EPFLEMMA_VENV_DIR="${EPFLEMMA_VENV_DIR:-${OPENGAUSS_VENV_DIR:-$REPO_ROOT/.epflem
 EPFLEMMA_INSTALL_PYTHON="${EPFLEMMA_INSTALL_PYTHON:-${OPENGAUSS_INSTALL_PYTHON:-python3}}"
 INSTALL_MODE="editable"
 RECREATE_VENV=0
+STEP=0
+
+banner() {
+  printf '\n'
+  printf '============================================================\n'
+  printf ' EPFLemma Installer\n'
+  printf ' Lean-first automation kernel setup\n'
+  printf '============================================================\n'
+  printf '\n'
+}
+
+step() {
+  STEP=$((STEP + 1))
+  printf '\n[%d/9] %s\n' "$STEP" "$1"
+}
+
+ok() {
+  printf '  [ok] %s\n' "$1"
+}
+
+warn() {
+  printf '  [warn] %s\n' "$1"
+}
 
 usage() {
   cat <<'TXT'
@@ -71,29 +94,42 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+banner
+step "Preparing install directories"
 mkdir -p "$EPFLEMMA_HOME" "$EPFLEMMA_BIN_DIR"
+ok "home: $EPFLEMMA_HOME"
+ok "bin : $EPFLEMMA_BIN_DIR"
 
 if [[ "$RECREATE_VENV" == "1" && -e "$EPFLEMMA_VENV_DIR" ]]; then
+  warn "recreating virtualenv: $EPFLEMMA_VENV_DIR"
   rm -rf "$EPFLEMMA_VENV_DIR"
 fi
 
+step "Preparing Python environment"
 if [[ ! -x "$EPFLEMMA_VENV_DIR/bin/python" ]]; then
   "$EPFLEMMA_INSTALL_PYTHON" -m venv "$EPFLEMMA_VENV_DIR"
+  ok "created virtualenv: $EPFLEMMA_VENV_DIR"
+else
+  ok "using existing virtualenv: $EPFLEMMA_VENV_DIR"
 fi
 
 # shellcheck disable=SC1090
 source "$EPFLEMMA_VENV_DIR/bin/activate"
 
-python -m pip install --upgrade pip setuptools wheel
+step "Installing EPFLemma package"
+python -m pip install --quiet --quiet --upgrade pip setuptools wheel
 if [[ "$INSTALL_MODE" == "editable" ]]; then
-  python -m pip install -e "$REPO_ROOT[mcp]"
+  python -m pip install --quiet --quiet -e "$REPO_ROOT[mcp]"
+  ok "installed editable package"
 else
-  python -m pip install "$REPO_ROOT[mcp]"
+  python -m pip install --quiet --quiet "$REPO_ROOT[mcp]"
+  ok "installed package wheel"
 fi
 
 # Create/backfill user-visible config before any bootstrap step that may need
 # provider/env discovery. This makes ~/.epflemma/config.yaml and ~/.epflemma/.env
 # explicit installation artifacts instead of hidden first-run side effects.
+step "Creating EPFLemma config"
 EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_VENV_DIR/bin/python" <<'PY'
 from collections.abc import Mapping
 
@@ -119,9 +155,13 @@ merged = _deep_merge(DEFAULT_CONFIG, current)
 if merged != current:
     save_config(merged)
 PY
+ok "config: $EPFLEMMA_HOME/config.yaml"
 
-EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_VENV_DIR/bin/epflemma" mcp bootstrap lean >/dev/null
+step "Installing managed Lean MCP backends and power modes"
+EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_VENV_DIR/bin/epflemma" mcp bootstrap lean
+ok "managed MCP bootstrap complete"
 
+step "Writing command wrappers"
 cat > "$EPFLEMMA_BIN_DIR/epflemma" <<EOF
 #!/usr/bin/env bash
 : "\${EPFLEMMA_HOME:=${EPFLEMMA_HOME}}"
@@ -141,24 +181,37 @@ EOF
 chmod +x \
   "$EPFLEMMA_BIN_DIR/epflemma" \
   "$EPFLEMMA_BIN_DIR/epflemma-agent"
+ok "wrapper: $EPFLEMMA_BIN_DIR/epflemma"
+ok "wrapper: $EPFLEMMA_BIN_DIR/epflemma-agent"
 
+step "Cleaning legacy wrapper names"
 rm -f "$EPFLEMMA_BIN_DIR/epflemma-acp" "$EPFLEMMA_BIN_DIR/opengauss" "$EPFLEMMA_BIN_DIR/opengauss-agent"
+ok "legacy wrappers removed if present"
 
+step "Recording install metadata"
 cat > "${EPFLEMMA_HOME}/install-root" <<EOF
 repo_root=${REPO_ROOT}
 venv_dir=${EPFLEMMA_VENV_DIR}
 bin_dir=${EPFLEMMA_BIN_DIR}
 installed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 EOF
+ok "metadata: ${EPFLEMMA_HOME}/install-root"
 
-printf 'EPFLemma installed.\n'
+step "Final smoke check"
+EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_VENV_DIR/bin/epflemma" --help >/dev/null
+ok "epflemma --help"
+
+printf '\nEPFLemma installed.\n'
 printf '  repo: %s\n' "$REPO_ROOT"
 printf '  home: %s\n' "$EPFLEMMA_HOME"
 printf '  config: %s/config.yaml\n' "$EPFLEMMA_HOME"
 printf '  env : %s/.env\n' "$EPFLEMMA_HOME"
 printf '  venv: %s\n' "$EPFLEMMA_VENV_DIR"
 printf '  bin : %s\n' "$EPFLEMMA_BIN_DIR"
-printf '  mcp : managed lean-lsp + lean-proof-auto installed under %s/mcp\n' "$EPFLEMMA_HOME"
+printf '  mcp : managed Lean MCP backends installed under %s/mcp\n' "$EPFLEMMA_HOME"
+printf '  power modes: local Loogle/REPL configured when supported; public remote search fallbacks remain enabled\n'
 printf '\n'
 printf 'Add %s to PATH if needed, then run:\n' "$EPFLEMMA_BIN_DIR"
 printf '  epflemma --help\n'
+printf '  epflemma mcp status\n'
+printf '  epflemma project init   # inside a Lean repo, to build REPL acceleration\n'

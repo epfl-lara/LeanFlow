@@ -45,6 +45,18 @@ epflemma project init
 epflemma project show
 ```
 
+`project init` also prepares Lean REPL acceleration when it can do so safely.
+It prints step-by-step progress while checking the Lean toolchain, adding the
+`leanprover-community/repl` dependency for `lakefile.toml` projects, and running
+`lake update repl` / `lake build repl`. If REPL setup is not safe or fails,
+EPFLemma keeps working and reports the fallback clearly.
+
+The installer configures local `lean-lsp-mcp` power modes by default:
+
+- local Loogle on Linux/macOS/WSL, with public remote Loogle fallback when local setup is cold or unavailable
+- REPL-backed `lean_multi_attempt` for faster tactic screening after `project init` builds `repl`
+- API-key backends such as LeanExplore API mode stay opt-in
+
 Run the main workflows:
 
 ```bash

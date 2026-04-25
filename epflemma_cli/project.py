@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import yaml
 
@@ -73,6 +75,178 @@ class EPFLemmaProject:
 
 def format_project_summary(project: EPFLemmaProject) -> str:
     return f"{project.label} ({project.root})"
+
+
+ProgressCallback = Callable[[str], None]
+
+
+def _emit_progress(progress: ProgressCallback | None, message: str) -> None:
+    if progress:
+        progress(message)
+
+
+def _read_lean_toolchain_version(lean_root: Path) -> str:
+    try:
+        raw = (lean_root / "lean-toolchain").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    if ":" in raw:
+        return raw.rsplit(":", 1)[-1].strip()
+    return raw
+
+
+def _repl_dependency_present(lean_root: Path) -> bool:
+    for lakefile in (lean_root / "lakefile.toml", lean_root / "lakefile.lean"):
+        if not lakefile.is_file():
+            continue
+        try:
+            text = lakefile.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if (
+            "leanprover-community/repl" in text
+            or 'name = "repl"' in text
+            or "name = 'repl'" in text
+            or "require repl" in text
+        ):
+            return True
+    return False
+
+
+def _append_repl_to_lakefile_toml(lean_root: Path, rev: str) -> bool:
+    lakefile = lean_root / "lakefile.toml"
+    if not lakefile.is_file():
+        return False
+    text = lakefile.read_text(encoding="utf-8")
+    if "leanprover-community/repl" in text or 'name = "repl"' in text or "name = 'repl'" in text:
+        return False
+    addition = (
+        "\n"
+        "[[require]]\n"
+        'name = "repl"\n'
+        'git = "https://github.com/leanprover-community/repl"\n'
+        f'rev = "{rev}"\n'
+    )
+    lakefile.write_text(text.rstrip() + "\n" + addition, encoding="utf-8")
+    return True
+
+
+def _detect_project_repl_binary(lean_root: Path) -> str:
+    suffix = ".exe" if os.name == "nt" else ""
+    candidates = [
+        lean_root / ".lake" / "build" / "bin" / f"repl{suffix}",
+        lean_root / ".lake" / "packages" / "repl" / ".lake" / "build" / "bin" / f"repl{suffix}",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return ""
+
+
+def _run_power_setup_command(command: list[str], *, cwd: Path) -> tuple[int, str, float]:
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=900,
+        )
+        return completed.returncode, completed.stdout or "", time.monotonic() - started
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout if isinstance(exc.stdout, str) else ""
+        return 124, output, time.monotonic() - started
+    except Exception as exc:
+        return 1, str(exc), time.monotonic() - started
+
+
+def setup_project_power_modes(
+    lean_root: str | Path,
+    *,
+    progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    root = Path(lean_root).expanduser().resolve()
+    messages: list[str] = []
+
+    def note(message: str) -> None:
+        messages.append(message)
+        _emit_progress(progress, message)
+
+    report: dict[str, Any] = {
+        "repl_configured": False,
+        "repl_available": False,
+        "repl_path": "",
+        "status": "unknown",
+        "messages": messages,
+    }
+    note("[1/6] Inspecting Lean project for REPL acceleration")
+    version = _read_lean_toolchain_version(root)
+    if version:
+        note(f"[2/6] Detected Lean toolchain: {version}")
+    else:
+        note("[2/6] Lean toolchain version unavailable; skipping automatic REPL setup")
+        report["status"] = "toolchain-missing"
+        return report
+
+    existing_repl = _detect_project_repl_binary(root)
+    if existing_repl:
+        note(f"[3/6] Existing REPL binary found: {existing_repl}")
+        report.update({"repl_configured": True, "repl_available": True, "repl_path": existing_repl, "status": "ready"})
+        return report
+
+    note("[3/6] Checking Lake dependency for leanprover-community/repl")
+    dependency_present = _repl_dependency_present(root)
+    if not dependency_present:
+        if (root / "lakefile.toml").is_file():
+            note("[4/6] Adding REPL dependency to lakefile.toml")
+            dependency_present = _append_repl_to_lakefile_toml(root, version)
+        else:
+            note("[4/6] lakefile.lean detected; automatic REPL edit is not safe, leaving manual setup instructions")
+            report.update(
+                {
+                    "status": "manual-setup-needed",
+                    "manual_steps": [
+                        f'Add `require repl from git "https://github.com/leanprover-community/repl.git" @ "{version}"` to lakefile.lean.',
+                        "Run `lake update repl`.",
+                        "Run `lake build repl`.",
+                    ],
+                }
+            )
+            return report
+    else:
+        note("[4/6] REPL dependency already present")
+
+    report["repl_configured"] = bool(dependency_present)
+    if not shutil.which("lake"):
+        note("[5/6] Lake executable not found; REPL dependency is configured but build is deferred")
+        report["status"] = "lake-missing"
+        return report
+
+    note("[5/6] Running `lake update repl` (this may take a minute)")
+    update_code, update_output, update_elapsed = _run_power_setup_command(["lake", "update", "repl"], cwd=root)
+    if update_code != 0:
+        note(f"[5/6] `lake update repl` failed after {update_elapsed:.1f}s; continuing without REPL acceleration")
+        report.update({"status": "update-failed", "output": update_output[-2000:]})
+        return report
+    note(f"[5/6] `lake update repl` completed in {update_elapsed:.1f}s")
+
+    note("[6/6] Building REPL binary with `lake build repl` (this can take several minutes)")
+    build_code, build_output, build_elapsed = _run_power_setup_command(["lake", "build", "repl"], cwd=root)
+    if build_code != 0:
+        note(f"[6/6] `lake build repl` failed after {build_elapsed:.1f}s; continuing without REPL acceleration")
+        report.update({"status": "build-failed", "output": build_output[-2000:]})
+        return report
+    repl_path = _detect_project_repl_binary(root)
+    note(f"[6/6] `lake build repl` completed in {build_elapsed:.1f}s")
+    if repl_path:
+        note(f"REPL acceleration ready: {repl_path}")
+        report.update({"repl_available": True, "repl_path": repl_path, "status": "ready"})
+    else:
+        note("REPL build completed, but no repl binary was detected")
+        report["status"] = "binary-missing"
+    return report
 
 
 def is_lean_project_root(path: Path) -> bool:
