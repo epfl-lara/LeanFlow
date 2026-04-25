@@ -655,6 +655,116 @@ def test_review_agent_final_report_rejects_same_declaration_warning(monkeypatch,
     assert result["manager_final_report_review"]["ok"] is False
     assert "local_cleanup_reason" in result["manager_final_report_review"]
     assert "local cleanup" in result["messages"][-1]["content"]
+    assert "blocker kind: warning" in result["messages"][-1]["content"]
+    assert "do not solve unrelated later queue items" in result["messages"][-1]["content"]
+
+
+def test_review_agent_final_report_accepts_warning_only_after_one_retry(monkeypatch, tmp_path, capsys):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {
+            "ok": True,
+            "command": "lake env lean Main.lean",
+            "output": "Main.lean:5:3: warning: declaration uses `sorry`",
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_query_live_diagnostics",
+        lambda active_file, target_symbol="": f"{active}:2:3: warning: The `cases'` tactic is discouraged",
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    autonomy_state = {"current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}}
+
+    first = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "`demo` solved and verified.",
+            "messages": [{"role": "assistant", "content": "`demo` solved."}],
+        },
+        autonomy_state,
+    )
+    second = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "`demo` solved and verified.",
+            "messages": [{"role": "assistant", "content": "`demo` solved."}],
+        },
+        autonomy_state,
+    )
+
+    assert first["manager_final_report_review"]["ok"] is False
+    assert second["manager_final_report_review"]["ok"] is True
+    assert second["manager_final_report_review"]["accepted_after_warning_retry_limit"] is True
+    assert len(second["messages"]) == 1
+    output = capsys.readouterr().out
+    assert "warning-only cleanup retry already used" in output
+
+
+def test_review_agent_final_report_restores_sorry_after_hard_retry_limit(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "theorem demo : True := by\n"
+        "  exact False.elim ?bad\n",
+        encoding="utf-8",
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": "theorem demo : True := by\n  sorry",
+        }
+    }
+    runner._increment_manager_feedback_retry(
+        autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+        kind="error",
+    )
+    runner._increment_manager_feedback_retry(
+        autonomy_state,
+        target_symbol="demo",
+        active_file=str(active),
+        kind="error",
+    )
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {
+            "ok": False,
+            "command": "lake env lean Main.lean",
+            "output": "Main.lean:2:3: error: unsolved goals",
+        },
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    result = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "`demo` solved and verified.",
+            "messages": [{"role": "assistant", "content": "`demo` solved."}],
+        },
+        autonomy_state,
+    )
+
+    assert result["completed"] is False
+    assert result["exit_reason"] == "manager_retry_exhausted"
+    assert result["manager_final_report_review"]["retry_exhausted"] is True
+    assert result["manager_final_report_review"]["restore"]["restored"] is True
+    assert "EPFLEMMA-NATIVE MANAGER RETRY LIMIT REACHED" in result["messages"][-1]["content"]
+    text = active.read_text(encoding="utf-8")
+    assert "-- EPFLemma failed attempt preserved after API step budget exhaustion." in text
+    assert "theorem demo : True := by\n  sorry" in text
 
 
 def test_review_agent_final_report_rejects_claim_with_manager_feedback(monkeypatch, tmp_path, capsys):
