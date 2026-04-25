@@ -443,6 +443,72 @@ def test_proof_auto_wrappers_use_expected_backend_arguments(monkeypatch, tmp_pat
     assert "file_path" not in auto_try_args
 
 
+def test_lean_auto_try_marks_rejected_backend_payload_as_failure(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "\n".join(
+            [
+                "import Mathlib",
+                "set_option linter.style.longLine false",
+                "theorem demo : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    tool_name = "mcp_lean_proof_auto_try_automated_proof"
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={
+            "diagnostics": "",
+            "goals": "",
+            "code_actions": "",
+            "multi_attempt": "",
+            "run_code": "",
+            "local_search": "",
+            "leanfinder": "",
+            "leansearch": "",
+            "loogle": "",
+            "proof_context": "",
+            "auto_probe": "",
+            "auto_search": "",
+            "auto_try": tool_name,
+        },
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+    )
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *args, **kwargs: {
+            "status": "rejected",
+            "validation_status": "rejected",
+            "error_message": "Unknown option `linter.style.longLine`",
+        },
+    )
+    outcomes = []
+    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: outcomes.append(args))
+
+    payload = lean_services.lean_auto_try("Demo/Main.lean", "demo", "exact trivial", cwd=project)
+
+    assert payload["success"] is False
+    reasons = " ".join(payload["degraded_reasons"])
+    assert "lean-auto-try backend rejected" in reasons
+    assert "file-level setup blockers" in reasons
+    assert tool_name in lean_services._disabled_mcp_tools_for_run(project)
+    assert outcomes[-1][1]["success"] is False
+
+
 def test_lean_proof_context_prefers_range_scan_when_local_declaration_exists(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()

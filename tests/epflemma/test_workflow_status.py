@@ -653,6 +653,34 @@ def test_workflow_agent_summary_prefers_live_busy_phase_over_conversation_end(mo
     assert summaries[0]["finished_at"] == ""
 
 
+def test_workflow_agent_summary_maps_live_stalled_phase_to_blocked(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+
+    append_workflow_activity(
+        "conversation-start",
+        "Agent conversation started",
+        agent_session_id="agent-main",
+        process_id=24680,
+        workflow_kind="prove",
+        active_skill="lean-theorem-queue-worker",
+    )
+    save_workflow_live_status(
+        {
+            "version": 1,
+            "phase": "stalled",
+            "workflow_kind": "prove",
+            "active_skill": "lean-theorem-queue-worker",
+            "process_id": 24680,
+        }
+    )
+    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
+
+    summaries = summarize_workflow_agents(activity_limit=2)
+
+    assert summaries[0]["agent_id"] == "agent-main"
+    assert summaries[0]["status"] == "blocked"
+
+
 def test_background_workflow_conversation_end_is_not_terminal(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("EPFLEMMA_WORKFLOW_RUN_ID", "prove-background-test")

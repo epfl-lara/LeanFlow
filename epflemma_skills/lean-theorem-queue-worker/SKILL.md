@@ -33,7 +33,7 @@ Primary specs:
    - explain when a new attempt differs materially from earlier failures
 4. You may introduce helper lemmas, local intermediate facts, or small private supporting declarations when they make the assigned declaration easier to prove. This is optional, not required; use it when it genuinely breaks a hard proof into smaller verified steps, and keep every helper scoped to the assigned theorem's needs.
 5. After each meaningful edit, re-check the assigned declaration with `lean_inspect` before making another large change.
-6. For a file-scoped assigned theorem, the preferred edit path is `apply_verified_patch(check_mode=file_exact)` because it applies the Lean patch and immediately runs the canonical `lake env lean <file>` backend check.
+6. For a managed file-scoped assigned theorem, the preferred edit path is `patch` or `write_file`; the queue manager runs the canonical file verification gate after successful edits. Use `apply_verified_patch(check_mode=file_exact)` only when you specifically need its atomic checkpoint plus verification payload.
 7. Do not treat `lake build`, `grep`, `head`, or truncated output as proof that the assigned theorem is clean.
 8. If the declaration becomes clean, stop and hand control back to the manager rather than continuing to the next theorem on your own.
 
@@ -53,11 +53,12 @@ Primary specs:
 4. Use `lean_auto_probe` first, then `lean_auto_search`, then `lean_auto_try` for one concrete candidate when theorem-local automation is justified.
 5. Use `lean_multi_attempt` only when you have 2-6 specific short local tactic candidates at one proof location.
 6. Do not send theorem-sized proof blocks, declaration headers, or candidates containing `sorry` to `lean_multi_attempt`.
-7. If you have one full candidate proof, prefer `lean_auto_try` or `apply_verified_patch` instead of raw patching.
+7. If you have one full candidate proof, prefer `lean_auto_try` before editing; then use the managed edit path unless the atomic `apply_verified_patch` payload is specifically useful.
 8. Invent helper lemmas or sublemmas when the direct proof is too large or repeated direct attempts fail. Prefer small statements that are easy to verify and directly feed the assigned declaration.
 9. If repeated focused attempts fail while the theorem still looks solvable, call `lean_reasoning_help` with the statement, diagnostics, current attempt, and failed-attempt summary.
 10. If `lean_reasoning_help` reports that the advisor is unavailable or returned no answer, continue with the strongest concrete edit, verification, worker dispatch, or blocker report you have.
 11. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, verification, worker dispatch, or blocker report you have.
+12. If `lean_auto_try` reports a project-level backend/setup error such as an unsupported `set_option`, do not treat that as proof feedback for the assigned theorem and do not edit unrelated examples or solved declarations. Continue with the managed edit path or report the setup issue as a file-level blocker.
 
 ## Success Condition
 
@@ -67,7 +68,7 @@ The assigned declaration is successful only when:
 - diagnostics for that declaration are clean
 - there are no remaining goals for that declaration
 - the attempted fix does not introduce a new local blocker around it
-- and `apply_verified_patch` or `lean_verify(mode=file_exact)` succeeds for the manager-requested file check
+- and the manager-requested file check succeeds, either through the automatic post-edit gate or an explicit `lean_verify(mode=file_exact)`
 - and any recommended specialist worker route has either been used or explicitly ruled out
 
 ## Failure Condition

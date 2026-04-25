@@ -1736,6 +1736,7 @@ class AIAgent:
         """
         self._interrupt_requested = True
         self._interrupt_message = message
+        suppress_interrupt_log = bool(getattr(self, "_suppress_next_interrupt_log", False))
         # Signal all tools to abort any in-flight operations immediately
         _set_interrupt(True)
         # Propagate interrupt to any running child agents (subagent delegation)
@@ -1744,13 +1745,14 @@ class AIAgent:
                 child.interrupt(message)
             except Exception as e:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
-        if not self.quiet_mode:
+        if not self.quiet_mode and not suppress_interrupt_log:
             print(f"\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
     
     def clear_interrupt(self) -> None:
         """Clear any pending interrupt request and the global tool interrupt signal."""
         self._interrupt_requested = False
         self._interrupt_message = None
+        self._suppress_next_interrupt_log = False
         _set_interrupt(False)
     
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
@@ -2718,10 +2720,10 @@ class AIAgent:
         return self._anthropic_client.messages.create(**api_kwargs)
 
     def _provider_request_timeout_seconds(self, api_kwargs: dict) -> float:
-        timeout_value = api_kwargs.get("timeout", os.getenv("GAUSS_API_TIMEOUT", 900.0))
+        timeout_value = api_kwargs.get("timeout", os.getenv("GAUSS_API_TIMEOUT", 1200.0))
         if isinstance(timeout_value, (int, float)) and not isinstance(timeout_value, bool):
             return max(float(timeout_value), 1.0)
-        return max(float(os.getenv("GAUSS_API_TIMEOUT", 900.0)), 1.0)
+        return max(float(os.getenv("GAUSS_API_TIMEOUT", 1200.0)), 1.0)
 
     def _provider_wait_heartbeat_seconds(self) -> float:
         raw_value = os.getenv("GAUSS_PROVIDER_WAIT_HEARTBEAT", "30.0")
@@ -3350,7 +3352,7 @@ class AIAgent:
             "model": self.model,
             "messages": sanitized_messages,
             "tools": self.tools if self.tools else None,
-            "timeout": float(os.getenv("GAUSS_API_TIMEOUT", 900.0)),
+            "timeout": float(os.getenv("GAUSS_API_TIMEOUT", 1200.0)),
         }
 
         if self.max_tokens is not None:
@@ -4323,6 +4325,10 @@ class AIAgent:
                     self.post_tool_result_callback(name, args, function_result)
                 except Exception as cb_err:
                     logger.debug("post_tool_result_callback error: %s", cb_err)
+                appendix = getattr(self, "_post_tool_result_appendix", None)
+                if appendix:
+                    tool_msg["content"] = f"{tool_msg['content']}\n\n{appendix}"
+                    self._post_tool_result_appendix = None
 
         if not self.quiet_mode:
             print(f"{self.log_prefix}└─ Tool batch complete")
@@ -4617,6 +4623,10 @@ class AIAgent:
                     self.post_tool_result_callback(function_name, function_args, function_result)
                 except Exception as cb_err:
                     logger.debug("post_tool_result_callback error: %s", cb_err)
+                appendix = getattr(self, "_post_tool_result_appendix", None)
+                if appendix:
+                    tool_msg["content"] = f"{tool_msg['content']}\n\n{appendix}"
+                    self._post_tool_result_appendix = None
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i
@@ -5045,7 +5055,7 @@ class AIAgent:
             # Check for interrupt request (e.g., user sent new message)
             if self._interrupt_requested:
                 interrupted = True
-                if not self.quiet_mode:
+                if not self.quiet_mode and not bool(getattr(self, "_suppress_next_interrupt_log", False)):
                     print(f"\n⚡ Breaking out of tool loop due to interrupt...")
                 break
             

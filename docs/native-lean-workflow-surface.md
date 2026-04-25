@@ -91,6 +91,9 @@ The repo-owned Lean tool surface is defined in `tools/lean_tool.py` and backed b
   - theorem-local automated proof candidate search after context/probe data exists
 - `lean_auto_try`
   - validate one concrete theorem-local automated proof candidate before patching
+- `apply_verified_patch`
+  - compatibility path for one atomic Lean patch, pre-edit checkpoint, and immediate verification payload
+  - managed queue workflows normally use `patch`/`write_file`, because the runner verifies successful edits before advancing the queue
 - `lean_sorries`
   - project/file-scoped `sorry` findings with line number and declaration name
 - `lean_axioms`

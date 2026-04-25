@@ -1399,8 +1399,57 @@ def _invoke_native_mcp_wrapper(
         for key, value in parsed.items():
             if key not in {"success"}:
                 payload[key] = value
+    _normalize_native_backend_status(
+        payload,
+        outcome_kind=outcome_kind,
+        tool_name=tool_name,
+        cwd=report.cwd,
+    )
     append_workflow_outcome(outcome_kind, payload)
     return payload
+
+
+def _native_backend_status_indicates_failure(payload: Mapping[str, Any]) -> bool:
+    failure_statuses = {"rejected", "failed", "failure", "error", "invalid"}
+    for key in ("status", "validation_status", "result_status"):
+        status = str(payload.get(key, "") or "").strip().lower()
+        if status in failure_statuses:
+            return True
+    return False
+
+
+def _native_backend_failure_message(payload: Mapping[str, Any]) -> str:
+    for key in ("error_message", "error", "message", "failure", "reason", "status"):
+        value = str(payload.get(key, "") or "").strip()
+        if value:
+            return " ".join(value.split())[:500]
+    return ""
+
+
+def _normalize_native_backend_status(
+    payload: dict[str, Any],
+    *,
+    outcome_kind: str,
+    tool_name: str,
+    cwd: str | os.PathLike[str] | None,
+) -> None:
+    if not _native_backend_status_indicates_failure(payload):
+        return
+    payload["success"] = False
+    degraded_reasons = list(payload.get("degraded_reasons", []) or [])
+    failure_message = _native_backend_failure_message(payload)
+    if failure_message:
+        degraded_reasons.append(f"{outcome_kind} backend rejected: {failure_message}")
+    lowered = failure_message.lower()
+    if outcome_kind == "lean-auto-try" and "unknown option" in lowered and "linter.style.longline" in lowered:
+        _disable_mcp_tool_for_run(tool_name, cwd=cwd)
+        degraded_reasons.extend(
+            [
+                "lean automation try disabled for this run after backend rejected the project-level long-line linter option",
+                "Treat unsupported project options as file-level setup blockers, not theorem proof failures; do not edit unrelated examples or solved declarations just to satisfy lean_auto_try.",
+            ]
+        )
+    payload["degraded_reasons"] = list(dict.fromkeys(degraded_reasons))
 
 
 def _auto_probe_attempt_succeeded(payload: Mapping[str, Any]) -> bool:

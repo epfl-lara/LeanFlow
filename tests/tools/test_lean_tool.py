@@ -342,9 +342,11 @@ def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
     assert "advice only" in payload["next_step"]
     assert "placeholder proof" in payload["next_step"]
     assert captured["task"] == "lean_reasoning"
-    assert captured["max_tokens"] == 5000
+    assert captured["max_tokens"] == 64000
     system_prompt = captured["messages"][0]["content"]
     assert "advisory only" in system_prompt
+    assert "world-class mathematical strategist" in system_prompt
+    assert "Mathlib expertise" in system_prompt
     assert "not verification evidence" in system_prompt
     assert "Do not suggest deleting, weakening, renaming, moving, or splitting" in system_prompt
     assert "sorry, admit, axiom, unsafe code, or a placeholder" in system_prompt
