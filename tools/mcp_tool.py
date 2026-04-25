@@ -1698,6 +1698,8 @@ def get_mcp_status() -> List[dict]:
             entry["configured"] = bool(managed.get("configured", bool(cfg)))
             entry["healthy"] = bool(entry["connected"])
             entry["bootstrap_recommended"] = bool(managed.get("bootstrap_recommended", False))
+            if isinstance(managed.get("power_modes"), dict):
+                entry["power_modes"] = dict(managed.get("power_modes") or {})
         else:
             entry["managed"] = bool(cfg.get("managed", False))
             entry["configured"] = bool(cfg)

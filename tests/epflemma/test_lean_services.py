@@ -88,6 +88,65 @@ def test_lean_search_marks_semantic_provider_fallback(monkeypatch, tmp_path):
     assert "semantic providers unavailable" in result.degraded_reasons
 
 
+def test_lean_search_uses_leanexplore_summary_results(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: LeanCapabilityReport(
+            cwd=str(project),
+            project_root=str(project),
+            project_valid=True,
+            project_error="",
+            binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+            mcp_tools={"leanexplore": "mcp_lean_explore_search_summary"},
+            search_providers=["mcp-leanexplore"],
+            helper_tools={"search_fallback": True},
+            workers=[],
+            degraded_reasons=[],
+        ),
+    )
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _fake_invoke(tool_name, arguments):
+        calls.append((tool_name, dict(arguments)))
+        return {
+            "result": (
+                '{"results": ['
+                '{"id": 12345, "name": "Nat.Prime.dvd_mul", '
+                '"module": "Mathlib.Data.Nat.Prime.Basic", '
+                '"description": "Divisibility of a product by a prime"}'
+                "], \"count\": 1}"
+            )
+        }
+
+    monkeypatch.setattr(lean_services, "_invoke_json_tool", _fake_invoke)
+    monkeypatch.setattr(lean_services, "_rg_search", lambda root, query, *, limit=10: [])
+
+    result = lean_services.lean_search("prime number divisibility", cwd=project, mode="semantic", limit=3)
+
+    assert calls == [
+        (
+            "mcp_lean_explore_search_summary",
+            {
+                "query": "prime number divisibility",
+                "q": "prime number divisibility",
+                "path": "",
+                "file_path": "",
+                "limit": 3,
+            },
+        )
+    ]
+    assert result.attempted_providers == ["mcp-leanexplore"]
+    assert result.results == [
+        {
+            "provider": "mcp-leanexplore",
+            "match": "Nat.Prime.dvd_mul - [Mathlib.Data.Nat.Prime.Basic] - Divisibility of a product by a prime",
+        }
+    ]
+
+
 def test_lean_axioms_reports_custom_axioms(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()
@@ -306,6 +365,13 @@ def test_discover_lean_mcp_tools_prefers_raw_managed_tools_over_native_wrappers(
             "mcp_lean_lsp_lean_diagnostic_messages",
             "mcp_lean_lsp_lean_goal",
             "mcp_lean_lsp_lean_multi_attempt",
+            "mcp_lean_lsp_lean_state_search",
+            "mcp_lean_lsp_lean_hammer_premise",
+            "mcp_lean_lsp_lean_hover_info",
+            "mcp_lean_lsp_lean_file_outline",
+            "mcp_lean_lsp_lean_declaration_file",
+            "mcp_lean_lsp_lean_profile_proof",
+            "mcp_lean_explore_search_summary",
             "mcp_lean_proof_auto_get_proof_context",
             "mcp_lean_proof_auto_probe",
             "mcp_lean_proof_auto_try_automated_proof",
@@ -317,6 +383,13 @@ def test_discover_lean_mcp_tools_prefers_raw_managed_tools_over_native_wrappers(
     assert discovered["diagnostics"] == "mcp_lean_lsp_lean_diagnostic_messages"
     assert discovered["goals"] == "mcp_lean_lsp_lean_goal"
     assert discovered["multi_attempt"] == "mcp_lean_lsp_lean_multi_attempt"
+    assert discovered["state_search"] == "mcp_lean_lsp_lean_state_search"
+    assert discovered["hammer_premise"] == "mcp_lean_lsp_lean_hammer_premise"
+    assert discovered["hover_info"] == "mcp_lean_lsp_lean_hover_info"
+    assert discovered["file_outline"] == "mcp_lean_lsp_lean_file_outline"
+    assert discovered["declaration_file"] == "mcp_lean_lsp_lean_declaration_file"
+    assert discovered["profile_proof"] == "mcp_lean_lsp_lean_profile_proof"
+    assert discovered["leanexplore"] == "mcp_lean_explore_search_summary"
     assert discovered["proof_context"] == "mcp_lean_proof_auto_get_proof_context"
 
 

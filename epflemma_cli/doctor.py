@@ -209,6 +209,13 @@ def _format_doctor_report(payload: dict[str, Any]) -> str:
                 extras.append("bootstrap recommended")
             suffix = f" [{', '.join(extras)}]" if extras else ""
             lines.append(f"- {name}: {connected} ({transport}, {tools} tools){suffix}")
+            power = dict(entry.get("power_modes", {}) or {})
+            if power:
+                lines.append(
+                    f"  power: local Loogle={power.get('loogle_local_status', 'unknown')}, "
+                    f"REPL={power.get('repl_status', 'unknown')}, "
+                    f"search={power.get('remote_search_policy', 'public-fallbacks-enabled')}"
+                )
 
     search = payload.get("search")
     if isinstance(search, dict):

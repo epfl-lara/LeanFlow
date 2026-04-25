@@ -106,13 +106,19 @@ The repo-owned Lean tool surface is defined in `tools/lean_tool.py` and backed b
 
 These tools are available through the `lean`, `epflemma-native`, and `epflemma-native-swarm` toolsets.
 
-EPFLemma installs and manages two Lean MCP backends by default:
+EPFLemma installs and manages the Lean MCP backends by default:
 
 - `lean-lsp-mcp`
   - role: `primary-state-search`
+  - exposes diagnostics, goals, search, state/premise/hover/outline discovery, and tactic attempt screening
+  - configured with `LEAN_REPL=true` and local Loogle on Linux/macOS/WSL
+  - prefers local acceleration first, then public remote Lean search fallbacks, then native project/Mathlib search
 - `lean-proof-auto-mcp`
   - role: `secondary-automation-context`
   - used through native wrappers, with local fallback when backend theorem lookup misses a declaration visible in the current file
+- `lean-explore`
+  - role: `semantic-declaration-search`
+  - configured disabled by default because the API backend requires `LEANEXPLORE_API_KEY`; enable it or switch to a prepared local backend when semantic declaration search should join `lean_search`
 
 Those servers exist to back the native tools above. Raw `mcp_*` tools are not part of the normal native Lean workflow surface.
 
@@ -176,9 +182,15 @@ epflemma mcp status
 epflemma mcp status --json
 ```
 
-`epflemma mcp status` reports server role, managed/install/config health, connection state, last error, registered tools, and sampling counters.
+`epflemma mcp status` reports server role, managed/install/config health, connection state, registered tools, local Loogle/REPL power-mode status, public remote fallback policy, and sampling counters.
 
 `epflemma mcp bootstrap lean` is the idempotent repair/setup command for the managed Lean MCP stack.
+
+Power-mode details:
+
+- Local Loogle avoids the public Loogle rate limit and is attempted on Linux/macOS/WSL. First local setup may take 5-10 minutes and about 2GB of disk. If it is cold or unavailable, public remote Lean search fallback remains enabled.
+- REPL mode makes line-based `lean_multi_attempt` faster after the project has a built `repl` binary. `epflemma project init` attempts safe setup, prints progress for `lake update repl` and `lake build repl`, and continues with LSP fallback if setup fails.
+- LeanExplore API mode remains opt-in because it requires `LEANEXPLORE_API_KEY`; users can switch it to a prepared local backend manually.
 
 For persistent sampling audit logs, set `mcp_servers.<name>.sampling.audit_jsonl: true` in `~/.epflemma/config.yaml`. The default path is `~/.epflemma/logs/mcp-sampling.jsonl`, with `audit_jsonl_path` available as an override.
 

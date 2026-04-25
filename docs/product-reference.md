@@ -707,6 +707,7 @@ Requirements for `project init`:
 
 - the target must be inside a Lean 4 repo
 - a Lean root must be detectable from `lakefile.lean` or `lakefile.toml`
+- REPL acceleration setup is attempted automatically; `lakefile.toml` projects can be updated safely, while ambiguous `lakefile.lean` projects receive manual setup instructions
 
 EPFLemma writes:
 
@@ -714,6 +715,17 @@ EPFLemma writes:
 - `.epflemma/runtime/`
 - `.epflemma/cache/`
 - `.epflemma/workflows/`
+
+During `project init`, EPFLemma prints visible REPL setup progress:
+
+- inspect Lean project
+- detect `lean-toolchain`
+- check for an existing `repl` binary or dependency
+- add the `leanprover-community/repl` dependency when safe
+- run `lake update repl`
+- run `lake build repl`
+
+Long Lake commands print status before and after execution, including elapsed time. A failed REPL setup is a warning, not a project-init failure; proof workflows continue with LSP-backed tactic screening.
 - `.epflemma/workflow-state/`
 
 ## Skills And Overlays
@@ -1079,19 +1091,26 @@ Installer/bootstrap-managed default Lean MCP backends:
 
 - `lean-lsp-mcp==0.26.1`
   - primary state/search backend
-  - diagnostics, goals, local search, semantic search helpers, and `lean_multi_attempt`
+  - diagnostics, goals, local search, semantic search helpers, state/premise/hover/outline discovery, and `lean_multi_attempt`
+  - configured with local power modes: `LEAN_REPL=true`, `LEAN_LOOGLE_LOCAL=true` on Linux/macOS/WSL, `LEAN_REPL_TIMEOUT=60`, and `LEAN_REPL_MEM_MB=8192`
+  - search order prefers local Loogle when ready, then public remote Loogle/Lean search fallbacks, then project/Mathlib `rg`
 - `lean-proof-auto-mcp@v0.4.0`
   - secondary automation/context backend
   - theorem-local context and automation helpers such as `get_proof_context`, `probe`, `search_automated_proof`, and `try_automated_proof`
   - EPFLemma uses it through native wrappers and now degrades cleanly when backend lookup misses a declaration that exists in the local file
+- `lean-explore`
+  - optional semantic declaration-search backend
+  - installed and configured disabled by default because the API backend requires `LEANEXPLORE_API_KEY`; enable it in `~/.epflemma/config.yaml` or switch its args to the local backend after fetching LeanExplore data
 
-The install script bootstraps both backends by default under `~/.epflemma/mcp/venvs/`. To repair or recreate them later, run:
+The install script bootstraps these backends by default under `~/.epflemma/mcp/venvs/`. To repair or recreate them later, run:
 
 ```bash
 epflemma mcp bootstrap lean
 ```
 
-`epflemma mcp status` now shows server role labels, whether a server is EPFLemma-managed, whether it is configured/installed, and whether bootstrap is recommended. The same surfaces are available in the interactive shell through `/doctor ...`, `/mcp bootstrap lean`, and `/mcp status [--json]`.
+`epflemma mcp status` now shows server role labels, whether a server is EPFLemma-managed, whether it is configured/installed, local Loogle/REPL power-mode status, public remote fallback policy, and whether bootstrap is recommended. The same surfaces are available in the interactive shell through `/doctor ...`, `/mcp bootstrap lean`, and `/mcp status [--json]`.
+
+Local Loogle requires Unix-like systems (Linux, macOS, or WSL), `git`, `lake`/`elan`, and roughly 2GB of disk. The first local Loogle build can take 5-10 minutes; later starts are fast. If local Loogle is unavailable, EPFLemma allows public remote Lean search fallbacks. Paid or API-key backends are never required by the installer.
 
 Raw `mcp_*` tools are still available through explicit `mcp-{server}` toolsets for debugging, but they are not part of the normal native Lean workflow surface. The model should use the native Lean wrappers instead.
 

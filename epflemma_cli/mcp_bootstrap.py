@@ -12,7 +12,7 @@ import shutil
 import stat
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -29,7 +29,10 @@ class ManagedMCPServerSpec:
     venv_name: str
     install_spec: str
     console_script: str
+    args: tuple[str, ...] = ()
+    env: Mapping[str, str] = field(default_factory=dict)
     extra_install_specs: tuple[str, ...] = ()
+    default_enabled: bool = True
     timeout: int = 600
     connect_timeout: int = 120
 
@@ -53,7 +56,21 @@ MANAGED_LEAN_MCP_SPECS: dict[str, ManagedMCPServerSpec] = {
         console_script="lean-proof-auto-mcp",
         extra_install_specs=("PyYAML",),
     ),
+    "lean-explore": ManagedMCPServerSpec(
+        name="lean-explore",
+        role="semantic-declaration-search",
+        venv_name="lean-explore",
+        install_spec="lean-explore",
+        console_script="lean-explore",
+        args=("mcp", "serve", "--backend", "api"),
+        default_enabled=False,
+    ),
 }
+
+
+REMOTE_SEARCH_POLICY = "public-fallbacks-enabled"
+LEAN_REPL_TIMEOUT_SECONDS = "60"
+LEAN_REPL_MEM_MB = "8192"
 
 
 def managed_lean_mcp_specs() -> dict[str, ManagedMCPServerSpec]:
@@ -63,6 +80,14 @@ def managed_lean_mcp_specs() -> dict[str, ManagedMCPServerSpec]:
 def managed_mcp_root(home: str | os.PathLike[str] | None = None) -> Path:
     base = Path(home).expanduser().resolve() if home else get_epflemma_home()
     return base / "mcp"
+
+
+def managed_loogle_cache_dir(home: str | os.PathLike[str] | None = None) -> Path:
+    return managed_mcp_root(home) / "cache" / "loogle"
+
+
+def local_loogle_supported() -> bool:
+    return os.name != "nt"
 
 
 def managed_mcp_venv_dir(name: str, home: str | os.PathLike[str] | None = None) -> Path:
@@ -106,6 +131,48 @@ def _commented_map(value: Mapping[str, Any] | None = None) -> CommentedMap:
     return node
 
 
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _lean_lsp_power_env(home: Path) -> dict[str, str]:
+    env = {
+        "LEAN_REPL": "true",
+        "LEAN_REPL_TIMEOUT": LEAN_REPL_TIMEOUT_SECONDS,
+        "LEAN_REPL_MEM_MB": LEAN_REPL_MEM_MB,
+        "LEAN_LOOGLE_CACHE_DIR": str(managed_loogle_cache_dir(home)),
+        "LEAN_MCP_INSTRUCTIONS": (
+            "Prefer local Lean project search, local Loogle, and REPL-backed tactic screening. "
+            "Public remote Lean search fallbacks are allowed when local search is unavailable."
+        ),
+    }
+    if local_loogle_supported():
+        env["LEAN_LOOGLE_LOCAL"] = "true"
+    return env
+
+
+def _server_env_from_config(configured: Mapping[str, Any], name: str) -> dict[str, Any]:
+    cfg = configured.get(name, {})
+    if not isinstance(cfg, Mapping):
+        return {}
+    env = cfg.get("env", {})
+    return dict(env) if isinstance(env, Mapping) else {}
+
+
+def _detect_repl_binary(project_root: str | os.PathLike[str] | None = None) -> str:
+    if not project_root:
+        return ""
+    root = Path(project_root).expanduser().resolve()
+    candidates = [
+        root / ".lake" / "build" / "bin" / ("repl.exe" if os.name == "nt" else "repl"),
+        root / ".lake" / "packages" / "repl" / ".lake" / "build" / "bin" / ("repl.exe" if os.name == "nt" else "repl"),
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return ""
+
+
 def _load_bootstrap_document(path: Path) -> tuple[YAML, CommentedMap]:
     yaml = YAML()
     yaml.preserve_quotes = True
@@ -128,11 +195,25 @@ def _write_bootstrap_document(path: Path, yaml: YAML, payload: CommentedMap) -> 
 
 def _ensure_managed_server_entry(entry: CommentedMap, *, spec: ManagedMCPServerSpec, home: Path) -> None:
     entry["command"] = str(managed_mcp_command_path(spec.name, home))
-    entry["args"] = []
+    entry["args"] = list(spec.args)
+    env_defaults = dict(spec.env)
+    if spec.name == "lean-lsp":
+        env_defaults.update(_lean_lsp_power_env(home))
+    if env_defaults:
+        env = entry.get("env")
+        if not isinstance(env, Mapping):
+            env = CommentedMap()
+            entry["env"] = env
+        elif not isinstance(env, CommentedMap):
+            env = _commented_map(dict(env))
+            entry["env"] = env
+        for key, value in env_defaults.items():
+            if key not in env:
+                env[key] = value
     entry["role"] = spec.role
     entry["managed"] = True
     if "enabled" not in entry:
-        entry["enabled"] = True
+        entry["enabled"] = spec.default_enabled
     if "timeout" not in entry:
         entry["timeout"] = spec.timeout
     if "connect_timeout" not in entry:
@@ -226,9 +307,52 @@ def _install_into_managed_venv(
     extra_install_specs: tuple[str, ...] = (),
 ) -> None:
     python_path = _ensure_venv(venv_dir, python_bin=python_bin)
-    subprocess.run([str(python_path), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"], check=True)
+    subprocess.run([str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", "pip", "setuptools", "wheel"], check=True)
     for spec in (install_spec, *extra_install_specs):
-        subprocess.run([str(python_path), "-m", "pip", "install", "--upgrade", spec], check=True)
+        subprocess.run([str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", spec], check=True)
+
+
+def managed_mcp_power_status(
+    home: str | os.PathLike[str] | None = None,
+    *,
+    project_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    home_path = Path(home).expanduser().resolve() if home else get_epflemma_home()
+    config_path = home_path / get_config_path().name
+    _yaml, doc = _load_bootstrap_document(config_path)
+    configured = doc.get("mcp_servers")
+    configured = dict(configured) if isinstance(configured, Mapping) else {}
+    lean_lsp_env = _server_env_from_config(configured, "lean-lsp")
+    repl_path = str(lean_lsp_env.get("LEAN_REPL_PATH", "") or "").strip() or _detect_repl_binary(project_root)
+    repl_configured = _truthy(lean_lsp_env.get("LEAN_REPL"))
+    repl_available = bool(repl_path and Path(repl_path).is_file())
+    loogle_cache_dir = Path(
+        str(lean_lsp_env.get("LEAN_LOOGLE_CACHE_DIR", "") or managed_loogle_cache_dir(home_path))
+    ).expanduser()
+    loogle_supported = local_loogle_supported()
+    loogle_configured = _truthy(lean_lsp_env.get("LEAN_LOOGLE_LOCAL"))
+    loogle_ready = bool(loogle_cache_dir.is_dir() and any(loogle_cache_dir.iterdir()))
+    if not loogle_supported:
+        loogle_status = "unsupported"
+    elif loogle_ready:
+        loogle_status = "ready"
+    elif loogle_configured:
+        loogle_status = "configured"
+    else:
+        loogle_status = "disabled"
+    return {
+        "remote_search_policy": REMOTE_SEARCH_POLICY,
+        "loogle_local_configured": loogle_configured,
+        "loogle_local_available": bool(loogle_supported and loogle_configured),
+        "loogle_local_ready": loogle_ready,
+        "loogle_local_status": loogle_status,
+        "loogle_local_supported": loogle_supported,
+        "loogle_cache_dir": str(loogle_cache_dir),
+        "repl_configured": repl_configured,
+        "repl_available": repl_available,
+        "repl_path": repl_path,
+        "repl_status": "ready" if repl_available else ("configured" if repl_configured else "disabled"),
+    }
 
 
 def managed_mcp_server_status(home: str | os.PathLike[str] | None = None) -> dict[str, dict[str, Any]]:
@@ -237,6 +361,7 @@ def managed_mcp_server_status(home: str | os.PathLike[str] | None = None) -> dic
     _yaml, doc = _load_bootstrap_document(config_path)
     configured = doc.get("mcp_servers")
     configured = dict(configured) if isinstance(configured, Mapping) else {}
+    power_status = managed_mcp_power_status(home_path)
     status: dict[str, dict[str, Any]] = {}
     for spec in MANAGED_LEAN_MCP_SPECS.values():
         venv_dir = managed_mcp_venv_dir(spec.name, home_path)
@@ -255,6 +380,8 @@ def managed_mcp_server_status(home: str | os.PathLike[str] | None = None) -> dic
             "command_matches": configured_command == str(command_path),
             "enabled": bool(cfg.get("enabled", True)) if cfg else False,
         }
+        if spec.name == "lean-lsp":
+            entry["power_modes"] = power_status
         entry["healthy"] = bool(entry["installed"] and entry["configured"] and entry["command_matches"])
         entry["bootstrap_recommended"] = not bool(entry["healthy"])
         status[spec.name] = entry
@@ -265,8 +392,11 @@ def bootstrap_lean_mcp(*, home: str | os.PathLike[str] | None = None, python_bin
     home_path = Path(home).expanduser().resolve() if home else ensure_epflemma_home(import_legacy=False)
     managed_root = managed_mcp_root(home_path)
     (managed_root / "venvs").mkdir(parents=True, exist_ok=True)
+    managed_loogle_cache_dir(home_path).mkdir(parents=True, exist_ok=True)
     _secure_dir(managed_root)
     _secure_dir(managed_root / "venvs")
+    _secure_dir(managed_root / "cache")
+    _secure_dir(managed_loogle_cache_dir(home_path))
 
     installed_servers: list[dict[str, Any]] = []
     for spec in MANAGED_LEAN_MCP_SPECS.values():
@@ -288,10 +418,16 @@ def bootstrap_lean_mcp(*, home: str | os.PathLike[str] | None = None, python_bin
         )
 
     config_result = write_managed_mcp_config(home_path)
+    power_status = managed_mcp_power_status(home_path)
+    for entry in installed_servers:
+        if entry.get("name") == "lean-lsp":
+            entry["power_modes"] = power_status
     return {
         "success": True,
         "home": str(home_path),
         "managed_root": str(managed_root),
         "config_path": config_result["config_path"],
+        "remote_search_policy": REMOTE_SEARCH_POLICY,
+        "power_modes": power_status,
         "servers": installed_servers,
     }
