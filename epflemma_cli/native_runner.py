@@ -69,6 +69,8 @@ AUTONOMOUS_WORKFLOW_KINDS = {"prove", "formalize"}
 PROJECT_SCAN_SKIP_DIRS = {".git", ".lake", ".epflemma", ".opengauss", ".gauss", "build"}
 WORKFLOW_STEP_BOUNDARY_INTERRUPT = "[epflemma-native workflow step boundary]"
 STARTUP_SKILL_CONTRACT_MAX_CHARS = 7000
+MANAGER_WARNING_RETRY_LIMIT = 1
+MANAGER_HARD_RETRY_LIMIT = 2
 ACTIVE_AGENT_STATUSES = {"active"}
 LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
@@ -749,9 +751,11 @@ def _manager_final_report_feedback(
     active_file: str,
     manager_check: Mapping[str, Any],
 ) -> str:
-    status = "passed" if manager_check.get("ok") else "failed"
+    file_check_ok = bool(manager_check.get("file_check_ok", manager_check.get("ok")))
+    status = "passed" if file_check_ok else "failed"
     command = str(manager_check.get("command", "") or "manager file verification")
     output = str(manager_check.get("output", "") or manager_check.get("error", "") or "").strip()
+    blocker_kind = str(manager_check.get("feedback_kind", "") or "").strip()
     lines = [
         "[EPFLEMMA-NATIVE MANAGER REVIEW]",
         "The agent reported this queue item as solved, so the manager ran deterministic verification.",
@@ -760,15 +764,201 @@ def _manager_final_report_feedback(
         f"- manager file check: {status}",
         f"- check: `{command}`",
     ]
-    if output:
+    if blocker_kind:
+        lines.append(f"- blocker kind: {blocker_kind}")
+    if output and blocker_kind != "warning":
         lines.append(f"- feedback: {_single_line(output, 700)}")
+    elif output:
+        lines.append(
+            "- file check output: "
+            + _single_line(output, 700)
+            + " [not the blocking reason unless it points at the assigned declaration]"
+        )
     if manager_check.get("local_cleanup_reason"):
         lines.append(f"- local cleanup: {_single_line(manager_check.get('local_cleanup_reason'), 700)}")
+    if blocker_kind == "warning":
+        retry_count = int(manager_check.get("feedback_retry_count", 0) or 0)
+        retry_limit = int(manager_check.get("feedback_retry_limit", MANAGER_WARNING_RETRY_LIMIT) or MANAGER_WARNING_RETRY_LIMIT)
+        lines.append(
+            f"- retry policy: warning-only cleanup gets {retry_limit} manager retry; "
+            f"this is retry {retry_count + 1}."
+        )
     if manager_check.get("ok"):
         lines.append("- next step: accept this report and refresh the queue.")
+    elif blocker_kind == "warning":
+        lines.append(
+            "- next step: fix the warning(s) in the assigned declaration only; "
+            "do not solve unrelated later queue items just because their `sorry` warnings appear in file output."
+        )
+    elif blocker_kind == "sorry":
+        lines.append(
+            "- next step: continue the same theorem; the assigned declaration still contains `sorry`, "
+            "so solve it or report a concrete blocker."
+        )
+    elif blocker_kind == "error":
+        lines.append(
+            "- next step: continue the same theorem; fix the assigned declaration's Lean error(s) "
+            "before reporting success again."
+        )
     else:
         lines.append("- next step: continue the same theorem; fix the returned manager feedback before reporting success again.")
     return "\n".join(lines)
+
+
+def _manager_feedback_retry_key(target_symbol: str, active_file: str) -> str:
+    file_key = str(active_file or "").strip()
+    if file_key:
+        try:
+            file_key = str(Path(file_key).expanduser().resolve())
+        except Exception:
+            pass
+    return f"{file_key}::{str(target_symbol or '').strip()}"
+
+
+def _manager_feedback_retry_count(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+    kind: str,
+) -> int:
+    retries = autonomy_state.get("manager_feedback_retries", {}) if isinstance(autonomy_state, Mapping) else {}
+    if not isinstance(retries, Mapping):
+        return 0
+    entry = retries.get(_manager_feedback_retry_key(target_symbol, active_file), {})
+    if not isinstance(entry, Mapping):
+        return 0
+    try:
+        return max(0, int(entry.get(kind, 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _increment_manager_feedback_retry(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+    kind: str,
+) -> int:
+    if not isinstance(autonomy_state, dict):
+        return 0
+    retries = autonomy_state.setdefault("manager_feedback_retries", {})
+    if not isinstance(retries, dict):
+        retries = {}
+        autonomy_state["manager_feedback_retries"] = retries
+    key = _manager_feedback_retry_key(target_symbol, active_file)
+    entry = retries.setdefault(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+        retries[key] = entry
+    count = _manager_feedback_retry_count(
+        autonomy_state,
+        target_symbol=target_symbol,
+        active_file=active_file,
+        kind=kind,
+    ) + 1
+    entry[kind] = count
+    return count
+
+
+def _clear_manager_feedback_retries(
+    autonomy_state: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> None:
+    if not isinstance(autonomy_state, dict):
+        return
+    retries = autonomy_state.get("manager_feedback_retries")
+    if not isinstance(retries, dict):
+        return
+    retries.pop(_manager_feedback_retry_key(target_symbol, active_file), None)
+    if not retries:
+        autonomy_state.pop("manager_feedback_retries", None)
+
+
+def _line_in_declaration(entry: Mapping[str, Any] | None, line: Any) -> bool:
+    if not isinstance(line, int) or line <= 0 or not entry:
+        return False
+    start = int(entry.get("line", 0) or 0)
+    end = int(entry.get("end_line", 0) or start)
+    return bool(start > 0 and start <= line <= max(start, end))
+
+
+def _manager_feedback_kind(
+    active_file: str,
+    target_symbol: str,
+    manager_check: Mapping[str, Any],
+) -> str:
+    entry = _find_declaration_entry(active_file, target_symbol)
+    if entry and entry.get("has_sorry"):
+        return "sorry"
+
+    local_cleanup = str(manager_check.get("local_cleanup_reason", "") or "").strip()
+    lowered_cleanup = local_cleanup.lower()
+    if lowered_cleanup:
+        if "error" in lowered_cleanup or "unsolved" in lowered_cleanup or "failed" in lowered_cleanup:
+            return "error"
+        if "sorry" in lowered_cleanup:
+            return "sorry"
+        return "warning"
+
+    output = str(manager_check.get("output", "") or manager_check.get("error", "") or "")
+    parsed = diagnostic_items(output)
+    for item in parsed:
+        severity = str(item.get("severity", "") or "").strip().lower()
+        message = str(item.get("message", "") or "").strip().lower()
+        line = item.get("line")
+        if severity == "error":
+            return "error"
+        if _line_in_declaration(entry, line):
+            if "sorry" in message:
+                return "sorry"
+            if severity == "warning":
+                return "warning"
+
+    lowered_output = output.lower()
+    if any(token in lowered_output for token in ("error:", "unsolved goals", "type mismatch", "failed to synthesize")):
+        return "error"
+    if entry and entry.get("has_sorry"):
+        return "sorry"
+    if not bool(manager_check.get("ok")):
+        return "warning"
+    return ""
+
+
+def _manager_retry_exhausted_message(
+    *,
+    target_symbol: str,
+    active_file: str,
+    kind: str,
+    retry_limit: int,
+    restore_result: Mapping[str, Any],
+    manager_check: Mapping[str, Any],
+) -> str:
+    output = str(manager_check.get("output", "") or manager_check.get("error", "") or "").strip()
+    restore_line = (
+        "restored current declaration to the baseline `sorry` slice"
+        if restore_result.get("restored")
+        else f"baseline restore skipped: {restore_result.get('reason', 'not needed')}"
+    )
+    lines = [
+        "[EPFLEMMA-NATIVE MANAGER RETRY LIMIT REACHED]",
+        "",
+        f"- declaration: {target_symbol or '[unknown]'}",
+        f"- file: {active_file or '[unknown]'}",
+        f"- blocker kind: {kind or 'unknown'}",
+        f"- manager retries used: {retry_limit}",
+        f"- safe-state action: {restore_line}",
+    ]
+    if output:
+        lines.append(f"- last manager feedback: {_single_line(output, 700)}")
+    lines.append(
+        "- next action: continue this same queue item from the recorded failed-attempt state; "
+        "do not claim it is solved until manager verification clears it."
+    )
+    return "\n".join(lines).strip()
 
 
 def _review_agent_final_report(
@@ -791,7 +981,10 @@ def _review_agent_final_report(
         return updated
 
     manager_check = _manager_verify_queue_file(active_file)
-    if manager_check.get("ok"):
+    file_check_ok = bool(manager_check.get("ok"))
+    manager_check = dict(manager_check)
+    manager_check["file_check_ok"] = file_check_ok
+    if file_check_ok:
         local_diagnostics = _query_live_diagnostics(active_file)
         cleanup_reason = _declaration_diagnostic_feedback_reason(
             active_file,
@@ -801,11 +994,67 @@ def _review_agent_final_report(
             local_diagnostics,
         )
         if cleanup_reason:
-            manager_check = dict(manager_check)
             manager_check["ok"] = False
             manager_check["local_cleanup_reason"] = cleanup_reason
             manager_check["diagnostics"] = _single_line(local_diagnostics, 700)
+    feedback_kind = _manager_feedback_kind(active_file, target_symbol, manager_check)
+    if feedback_kind:
+        manager_check["feedback_kind"] = feedback_kind
+    retry_count = 0
+    retry_limit = 0
+    if not bool(manager_check.get("ok")):
+        if feedback_kind == "warning":
+            retry_limit = MANAGER_WARNING_RETRY_LIMIT
+        elif feedback_kind in {"error", "sorry"}:
+            retry_limit = MANAGER_HARD_RETRY_LIMIT
+        if retry_limit:
+            retry_count = _manager_feedback_retry_count(
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                kind=feedback_kind,
+            )
+            manager_check["feedback_retry_count"] = retry_count
+            manager_check["feedback_retry_limit"] = retry_limit
+            if feedback_kind == "warning" and retry_count >= retry_limit:
+                manager_check["ok"] = True
+                manager_check["accepted_after_warning_retry_limit"] = True
+                manager_check["acceptance_note"] = (
+                    "accepted after one warning-only manager retry; remaining warnings are not allowed to stall the queue"
+                )
+            elif feedback_kind in {"error", "sorry"} and retry_count >= retry_limit:
+                restore_result = _restore_queue_assignment_to_baseline_sorry(autonomy_state, {})
+                if restore_result.get("restored"):
+                    restore_result = dict(restore_result)
+                    restore_result["reason"] = (
+                        "reverted current declaration to its baseline `sorry` slice after manager retry exhaustion"
+                    )
+                manager_check["retry_exhausted"] = True
+                manager_check["restore"] = restore_result
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _manager_retry_exhausted_message(
+                            target_symbol=target_symbol,
+                            active_file=active_file,
+                            kind=feedback_kind,
+                            retry_limit=retry_limit,
+                            restore_result=restore_result,
+                            manager_check=manager_check,
+                        ),
+                    }
+                )
+                updated["messages"] = messages
+                updated["completed"] = False
+                updated["exit_reason"] = "manager_retry_exhausted"
+                updated["error"] = "Manager retry limit reached for unresolved theorem feedback"
     ok = bool(manager_check.get("ok"))
+    if ok:
+        _clear_manager_feedback_retries(
+            autonomy_state,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
     file_label = _relative_file_label(active_file) or active_file
     _record_activity(
         "manager-final-report-review",
@@ -823,12 +1072,29 @@ def _review_agent_final_report(
     detail = str(manager_check.get("output", "") or manager_check.get("error", "") or "").strip()
     if detail:
         print(f"   result: {_single_line(detail, 520)}")
+    if feedback_kind:
+        print(f"   blocker kind: {feedback_kind}")
     if manager_check.get("local_cleanup_reason"):
         print(f"   cleanup: {_single_line(manager_check.get('local_cleanup_reason'), 520)}")
     if ok:
+        if manager_check.get("accepted_after_warning_retry_limit"):
+            print("   note: warning-only cleanup retry already used; allowing the queue to advance.")
         print(f"✅ Workflow step verified for {target_symbol}; refreshing Lean state and selecting the next target...")
         _print_queue_step_separator(target_symbol)
+    elif manager_check.get("retry_exhausted"):
+        print(
+            f"⚠️  Manager retry limit reached for {target_symbol}; "
+            "restored safe state when possible and recorded this as unresolved."
+        )
+        _print_queue_step_separator(target_symbol, accepted=False)
     else:
+        if retry_limit:
+            _increment_manager_feedback_retry(
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                kind=feedback_kind,
+            )
         print(f"↻ Agent reported {target_symbol} as solved, but manager verification still failed; continuing this queue item.")
         _print_queue_step_separator(target_symbol, accepted=False)
         messages.append(
