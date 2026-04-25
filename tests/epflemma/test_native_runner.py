@@ -2925,8 +2925,9 @@ def test_restore_queue_assignment_to_baseline_sorry_replaces_only_assigned_decla
 
     assert result["restored"] is True
     text = active.read_text(encoding="utf-8")
+    assert "-- EPFLemma failed attempt preserved after API step budget exhaustion." in text
+    assert "--   exact False.elim ?bad" in text
     assert "theorem demo : True := by\n  sorry\n" in text
-    assert "exact False.elim" not in text
     assert "theorem next_demo : True := by\n  sorry" in text
 
 
@@ -2995,7 +2996,10 @@ def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(mo
     assert "baseline `sorry` slice" in history[-1]["content"]
     assert autonomy_state["failed_attempts"][-1]["cycle"] == 3
     assert "exact False.elim" in autonomy_state["failed_attempts"][-1]["proof_shape"]
-    assert "theorem demo : True := by\n  sorry" in active.read_text(encoding="utf-8")
+    restored_text = active.read_text(encoding="utf-8")
+    assert "-- theorem demo : True := by" in restored_text
+    assert "--   exact False.elim ?bad" in restored_text
+    assert "theorem demo : True := by\n  sorry" in restored_text
     assert events[-1][0][0] == "api-step-budget-exhausted"
 
 

@@ -2720,6 +2720,37 @@ def _queue_assignment_slice_body(slice_text: str) -> str:
     return candidate.strip()
 
 
+def _failed_attempt_comment_lines(
+    current_text: str,
+    *,
+    target_symbol: str,
+    max_lines: int = 120,
+    max_chars: int = 20_000,
+) -> list[str]:
+    text = str(current_text or "").strip()
+    if not text:
+        return []
+    truncated = False
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip()
+        truncated = True
+    attempt_lines = text.splitlines()
+    if len(attempt_lines) > max_lines:
+        attempt_lines = attempt_lines[:max_lines]
+        truncated = True
+    lines = [
+        "-- EPFLemma failed attempt preserved after API step budget exhaustion.",
+        f"-- Declaration: {target_symbol or '[unknown]'}",
+        "-- The active proof was restored to the baseline `sorry` body below.",
+        "-- Failed attempt:",
+    ]
+    for line in attempt_lines:
+        lines.append(f"-- {line}" if line else "--")
+    if truncated:
+        lines.append("-- [truncated failed attempt]")
+    return lines
+
+
 def _restore_queue_assignment_to_baseline_sorry(
     autonomy_state: Mapping[str, Any],
     live_state: Mapping[str, Any] | None,
@@ -2750,7 +2781,10 @@ def _restore_queue_assignment_to_baseline_sorry(
     except Exception as exc:
         return {"restored": False, "reason": f"could not read active file: {exc}"}
     original_lines = original_text.splitlines()
-    replacement_lines = baseline_body.splitlines()
+    replacement_lines = (
+        _failed_attempt_comment_lines(current_text, target_symbol=target_symbol)
+        + baseline_body.splitlines()
+    )
     new_lines = original_lines[: start - 1] + replacement_lines + original_lines[end:]
     new_text = "\n".join(new_lines)
     if original_text.endswith("\n"):
