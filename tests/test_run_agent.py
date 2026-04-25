@@ -418,6 +418,38 @@ class TestExtractReasoning:
         assert result == "same text"
 
 
+class TestReasoningReplayAccounting:
+    def test_reasoning_context_payload_stats_counts_outgoing_reasoning_fields(self, agent):
+        stats = agent._reasoning_context_payload_stats(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "assistant", "content": "", "reasoning_content": "abc"},
+                {"role": "assistant", "content": "", "reasoning_details": [{"summary": "def"}]},
+                {"role": "assistant", "content": "plain"},
+            ]
+        )
+
+        assert stats["assistant_messages"] == 2
+        assert stats["chars"] == len("abc") + len(str([{"summary": "def"}]))
+
+    def test_reasoning_replay_accounting_logs_large_provider_mismatch(self, agent, capsys):
+        agent.quiet_mode = False
+        agent.log_prefix = ""
+        api_messages = [
+            {"role": "assistant", "content": "", "reasoning_content": "x" * 40_000},
+        ]
+
+        agent._log_reasoning_replay_accounting(
+            api_messages=api_messages,
+            approx_tokens=12_000,
+            provider_prompt_tokens=1_000,
+        )
+
+        output = capsys.readouterr().out
+        assert "Reasoning replay attached" in output
+        assert "Provider input accounting reported 1,000" in output
+
+
 class TestCleanSessionContent:
     def test_none_passthrough(self):
         assert AIAgent._clean_session_content(None) is None

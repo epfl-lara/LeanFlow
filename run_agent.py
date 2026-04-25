@@ -3789,6 +3789,54 @@ class AIAgent:
             )
 
     @staticmethod
+    def _reasoning_context_payload_stats(api_messages: list) -> dict[str, int]:
+        reasoning_chars = 0
+        assistant_messages = 0
+        for msg in api_messages or []:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            message_chars = 0
+            for key in ("reasoning_content", "reasoning_details", "codex_reasoning_items"):
+                value = msg.get(key)
+                if not value:
+                    continue
+                message_chars += len(str(value))
+            if message_chars:
+                assistant_messages += 1
+                reasoning_chars += message_chars
+        return {
+            "assistant_messages": assistant_messages,
+            "chars": reasoning_chars,
+            "approx_tokens": reasoning_chars // 4,
+        }
+
+    def _log_reasoning_replay_accounting(
+        self,
+        *,
+        api_messages: list,
+        approx_tokens: int,
+        provider_prompt_tokens: int,
+    ) -> None:
+        if self.quiet_mode:
+            return
+        stats = self._reasoning_context_payload_stats(api_messages)
+        reasoning_tokens = int(stats.get("approx_tokens") or 0)
+        reasoning_chars = int(stats.get("chars") or 0)
+        provider_prompt_tokens = int(provider_prompt_tokens or 0)
+        approx_tokens = int(approx_tokens or 0)
+        if reasoning_tokens < 4_000 or provider_prompt_tokens <= 0:
+            return
+        if approx_tokens < provider_prompt_tokens * 2:
+            return
+        self._vprint(
+            f"{self.log_prefix}   🧠 Reasoning replay attached: "
+            f"{int(stats.get('assistant_messages') or 0):,} assistant msg(s), "
+            f"~{reasoning_tokens:,} local tokens ({reasoning_chars:,} chars). "
+            f"Provider input accounting reported {provider_prompt_tokens:,}; "
+            "compare with the local request estimate above."
+        )
+
+    @staticmethod
     def _reasoning_preview_lines(
         reasoning_text: str | None,
         *,
@@ -5656,6 +5704,11 @@ class AIAgent:
                                 prompt_tokens=prompt_tokens,
                                 completion_tokens=completion_tokens,
                                 total_tokens=total_tokens,
+                            )
+                            self._log_reasoning_replay_accounting(
+                                api_messages=api_messages,
+                                approx_tokens=approx_tokens,
+                                provider_prompt_tokens=prompt_tokens,
                             )
 
                         # Persist token counts to session DB for /insights.
