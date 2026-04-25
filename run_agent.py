@@ -4883,6 +4883,100 @@ class AIAgent:
         )
         return compressed_prefix + suffix, active_system_prompt
 
+    def _build_api_messages_for_turn(self, messages: list, active_system_prompt: str) -> list:
+        """Build the exact message payload sent for one chat-completions turn."""
+        api_messages = []
+        for msg in messages:
+            api_msg = msg.copy()
+
+            # For ALL assistant messages, pass reasoning back to the API.
+            # This ensures multi-turn reasoning context is preserved.
+            if msg.get("role") == "assistant":
+                reasoning_text = msg.get("reasoning")
+                if reasoning_text:
+                    # Moonshot AI, Novita, and OpenRouter use reasoning_content
+                    # for replaying assistant reasoning across tool turns.
+                    api_msg["reasoning_content"] = reasoning_text
+
+            # Remove 'reasoning' field - it is trajectory storage only.
+            # It has already been copied to reasoning_content when needed.
+            if "reasoning" in api_msg:
+                api_msg.pop("reasoning")
+            # Remove finish_reason - not accepted by strict APIs.
+            if "finish_reason" in api_msg:
+                api_msg.pop("finish_reason")
+            # Strip Codex Responses API fields for strict providers like Mistral.
+            if "api.mistral.ai" in self.base_url.lower():
+                self._sanitize_tool_calls_for_strict_api(api_msg)
+            # Keep reasoning_details: OpenRouter uses it for reasoning continuity.
+            api_messages.append(api_msg)
+
+        effective_system = active_system_prompt or ""
+        if self.ephemeral_system_prompt:
+            effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+        if effective_system:
+            api_messages = [{"role": "system", "content": effective_system}] + api_messages
+
+        if self.prefill_messages:
+            sys_offset = 1 if effective_system else 0
+            for idx, pfm in enumerate(self.prefill_messages):
+                api_messages.insert(sys_offset + idx, pfm.copy())
+
+        if self._use_prompt_caching:
+            api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl)
+
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            api_messages = self.context_compressor._sanitize_tool_pairs(api_messages)
+
+        return api_messages
+
+    def _api_payload_size_estimate(self, api_messages: list) -> tuple[int, int]:
+        total_chars = sum(len(str(msg)) for msg in api_messages)
+        return total_chars // 4, total_chars
+
+    def _maybe_compress_before_api_send(
+        self,
+        messages: list,
+        system_message: str,
+        active_system_prompt: str,
+        *,
+        api_messages: list,
+        approx_tokens: int,
+        task_id: str,
+    ) -> tuple[list, str, list, int, int]:
+        """Compress before send when the exact outgoing payload crosses threshold."""
+        total_chars = sum(len(str(msg)) for msg in api_messages)
+        if not self.compression_enabled:
+            return messages, active_system_prompt, api_messages, approx_tokens, total_chars
+
+        compressor = self.context_compressor
+        if approx_tokens < compressor.threshold_tokens:
+            return messages, active_system_prompt, api_messages, approx_tokens, total_chars
+
+        for attempt in range(1, 4):
+            if not self.quiet_mode:
+                self._vprint(
+                    f"{self.log_prefix}📦 Pre-send compression: outgoing request estimate "
+                    f"~{approx_tokens:,} tokens >= {compressor.threshold_tokens:,} threshold "
+                    f"(attempt {attempt}/3)"
+                )
+            previous_tokens = approx_tokens
+            previous_len = len(messages)
+            messages, active_system_prompt = self._compress_context(
+                messages,
+                system_message,
+                approx_tokens=approx_tokens,
+                task_id=task_id,
+            )
+            api_messages = self._build_api_messages_for_turn(messages, active_system_prompt)
+            approx_tokens, total_chars = self._api_payload_size_estimate(api_messages)
+            if approx_tokens < compressor.threshold_tokens:
+                break
+            if approx_tokens >= previous_tokens and len(messages) >= previous_len:
+                break
+
+        return messages, active_system_prompt, api_messages, approx_tokens, total_chars
+
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
         print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
@@ -5284,72 +5378,18 @@ class AIAgent:
 
             self._maybe_append_budget_warning_message(messages, api_call_count)
 
-            # Prepare messages for API call
-            # If we have an ephemeral system prompt, prepend it to the messages
-            # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
-            # However, providers like Moonshot AI require a separate 'reasoning_content' field
-            # on assistant messages with tool_calls. We handle both cases here.
-            api_messages = []
-            for msg in messages:
-                api_msg = msg.copy()
-
-                # For ALL assistant messages, pass reasoning back to the API
-                # This ensures multi-turn reasoning context is preserved
-                if msg.get("role") == "assistant":
-                    reasoning_text = msg.get("reasoning")
-                    if reasoning_text:
-                        # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
-                        api_msg["reasoning_content"] = reasoning_text
-
-                # Remove 'reasoning' field - it's for trajectory storage only
-                # We've copied it to 'reasoning_content' for the API above
-                if "reasoning" in api_msg:
-                    api_msg.pop("reasoning")
-                # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
-                if "finish_reason" in api_msg:
-                    api_msg.pop("finish_reason")
-                # Strip Codex Responses API fields (call_id, response_item_id) for
-                # strict providers like Mistral that reject unknown fields with 422.
-                # Uses new dicts so the internal messages list retains the fields
-                # for Codex Responses compatibility.
-                if "api.mistral.ai" in self.base_url.lower():
-                    self._sanitize_tool_calls_for_strict_api(api_msg)
-                # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
-                # The signature field helps maintain reasoning continuity
-                api_messages.append(api_msg)
-
-            # Build the final system message: cached prompt + ephemeral system prompt.
-            # Ephemeral additions are API-call-time only (not persisted to session DB).
-            effective_system = active_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
-            if effective_system:
-                api_messages = [{"role": "system", "content": effective_system}] + api_messages
-
-            # Inject ephemeral prefill messages right after the system prompt
-            # but before conversation history. Same API-call-time-only pattern.
-            if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
-                for idx, pfm in enumerate(self.prefill_messages):
-                    api_messages.insert(sys_offset + idx, pfm.copy())
-
-            # Apply Anthropic prompt caching for Claude models via OpenRouter.
-            # Auto-detected: if model name contains "claude" and base_url is OpenRouter,
-            # inject cache_control breakpoints (system + last 3 messages) to reduce
-            # input token costs by ~75% on multi-turn conversations.
-            if self._use_prompt_caching:
-                api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl)
-
-            # Safety net: strip orphaned tool results / add stubs for missing
-            # results before sending to the API.  The compressor handles this
-            # during compression, but orphans can also sneak in from session
-            # loading or manual message manipulation.
-            if hasattr(self, 'context_compressor') and self.context_compressor:
-                api_messages = self.context_compressor._sanitize_tool_pairs(api_messages)
-
-            # Calculate approximate request size for logging
-            total_chars = sum(len(str(msg)) for msg in api_messages)
-            approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
+            api_messages = self._build_api_messages_for_turn(messages, active_system_prompt)
+            approx_tokens, total_chars = self._api_payload_size_estimate(api_messages)
+            messages, active_system_prompt, api_messages, approx_tokens, total_chars = (
+                self._maybe_compress_before_api_send(
+                    messages,
+                    system_message,
+                    active_system_prompt,
+                    api_messages=api_messages,
+                    approx_tokens=approx_tokens,
+                    task_id=effective_task_id,
+                )
+            )
             
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
