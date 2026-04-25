@@ -1647,6 +1647,44 @@ class TestRunConversation:
         assert result["final_response"] == "All done"
         assert result["completed"] is True
 
+    def test_pre_send_compression_counts_reasoning_replay_payload(self, agent):
+        """Pre-send compression should use the final API payload, including reasoning replay."""
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+        agent.context_compressor.threshold_tokens = 1_000
+        messages = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "", "reasoning": "x" * 6_000},
+        ]
+        api_messages = agent._build_api_messages_for_turn(messages, "You are helpful.")
+        approx_tokens, _ = agent._api_payload_size_estimate(api_messages)
+
+        assert approx_tokens >= agent.context_compressor.threshold_tokens
+        assert any("reasoning_content" in msg for msg in api_messages)
+
+        with patch.object(
+            agent,
+            "_compress_context",
+            return_value=([{"role": "user", "content": "compact handoff"}], "compressed system"),
+        ) as mock_compress:
+            new_messages, new_system, new_api_messages, new_tokens, _ = (
+                agent._maybe_compress_before_api_send(
+                    messages,
+                    "You are helpful.",
+                    "You are helpful.",
+                    api_messages=api_messages,
+                    approx_tokens=approx_tokens,
+                    task_id="test-task",
+                )
+            )
+
+        mock_compress.assert_called_once()
+        assert mock_compress.call_args.kwargs["approx_tokens"] == approx_tokens
+        assert new_messages == [{"role": "user", "content": "compact handoff"}]
+        assert new_system == "compressed system"
+        assert new_tokens < approx_tokens
+        assert not any("reasoning_content" in msg for msg in new_api_messages)
+
     @pytest.mark.parametrize(
         ("first_content", "second_content", "expected_final"),
         [

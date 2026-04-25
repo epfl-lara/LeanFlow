@@ -1116,6 +1116,8 @@ Compression defaults are tuned for long Lean sessions:
 - `reserved_output_tokens` keeps headroom for the next response instead of filling the full context window.
 - `prune_tool_output` replaces stale old tool result bodies with a fixed marker.
 - `prune_keep_recent_user_turns` keeps the newest user turns and their nearby tool output intact.
+- the compression gate checks the exact outgoing API payload before every model call, including provider-specific reasoning replay fields such as `reasoning_content`.
+- provider usage accounting can undercount replayed reasoning for some backends; the `Request: ~N tokens` log line is the local payload estimate used for pre-send compression.
 - if provider metadata cannot tell EPFLemma the real context window, EPFLemma now falls back conservatively to `200,000` tokens instead of assuming a multi-million-token window.
 
 ## Doctor And MCP Status
