@@ -2523,6 +2523,21 @@ def _theorem_transition_handoff_message(
     ).strip()
 
 
+def _theorem_transition_active_skill_message(live_state: Mapping[str, Any] | None) -> str:
+    skill_contract = _startup_active_skill_contract(_effective_skill_name(live_state))
+    if not skill_contract:
+        return ""
+    return "\n".join(
+        [
+            "[EPFLEMMA-NATIVE THEOREM TRANSITION ACTIVE SKILL]",
+            "",
+            "The active skill contract is preserved after clearing theorem-local context.",
+            "",
+            skill_contract,
+        ]
+    ).strip()
+
+
 def _rebuild_history_for_theorem_transition(
     history: list[dict[str, Any]],
     compaction_state: Mapping[str, Any] | None,
@@ -2543,8 +2558,11 @@ def _rebuild_history_for_theorem_transition(
         )
     rebuilt_history = [
         {"role": "assistant", "content": _workflow_transition_snapshot(compaction_state, live_state)},
-        {"role": "assistant", "content": _theorem_transition_handoff_message(outcome, live_state)},
     ]
+    skill_message = _theorem_transition_active_skill_message(live_state)
+    if skill_message:
+        rebuilt_history.append({"role": "assistant", "content": skill_message})
+    rebuilt_history.append({"role": "assistant", "content": _theorem_transition_handoff_message(outcome, live_state)})
     autonomy_state["last_theorem_outcome"] = outcome
     autonomy_state["continuation_blocked_runs"] = 0
     autonomy_state["continuation_stable_cycles"] = 0
@@ -4788,7 +4806,7 @@ def _drive_autonomous_followups(
             )
             _record_activity(
                 "theorem-handoff-rebuilt",
-                f"Rebuilt compact handoff for {transition['current_target']}",
+                f"Rebuilt theorem handoff for {transition['current_target']}",
                 previous_theorem=transition["previous_target"],
                 current_theorem=transition["current_target"],
                 previous_status=str(previous_outcome.get("status", "") or "unknown"),
