@@ -16,3 +16,8 @@ rev = "v4.30.0-rc2"
 
 [[lean_lib]]
 name = "GaussTest"
+
+[[require]]
+name = "repl"
+git = "https://github.com/leanprover-community/repl"
+rev = "v4.30.0-rc2"
