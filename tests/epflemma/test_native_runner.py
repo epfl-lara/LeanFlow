@@ -437,7 +437,7 @@ def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup
         runner,
         "_manager_verify_queue_file",
         lambda active_file: {
-            "ok": False,
+            "ok": True,
             "command": "lake env lean Main.lean",
             "output": f"{active}:2:3: warning: This line exceeds the 100 character limit, please shorten it!",
         },
@@ -555,6 +555,22 @@ def test_handle_managed_tool_result_yields_after_warning_cleanup_retry(monkeypat
     assert agent._managed_step_boundary_closed is True
     output = capsys.readouterr().out
     assert "warning-only cleanup opportunity already used" in output
+
+
+def test_manager_feedback_kind_treats_nonzero_verification_as_error(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+
+    result = runner._manager_feedback_kind(
+        str(active),
+        "demo",
+        {
+            "ok": False,
+            "output": f"{active}:2:3: warning: this tactic is never executed",
+        },
+    )
+
+    assert result == "error"
 
 
 def test_handle_managed_tool_result_yields_for_unrelated_warning_cleanup(monkeypatch, tmp_path, capsys):
@@ -2279,6 +2295,21 @@ def test_diagnostics_indicate_failure_keeps_structured_warnings_blocking():
     )
 
 
+def test_diagnostics_indicate_hard_failure_ignores_warning_only_diagnostics():
+    assert (
+        runner._diagnostics_indicate_hard_failure(
+            "Demo/Main.lean:2:3: warning: this tactic is never executed"
+        )
+        is False
+    )
+    assert (
+        runner._diagnostics_indicate_hard_failure(
+            "Demo/Main.lean:2:3: error: unsolved goals"
+        )
+        is True
+    )
+
+
 def test_promote_live_state_uses_focused_build_before_full_project_build(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
@@ -2306,6 +2337,38 @@ def test_promote_live_state_uses_focused_build_before_full_project_build(monkeyp
     assert promoted["build_status"] == "lake build Main reported errors: unresolved import"
     assert promoted["verification_ok"] is False
     assert runner._live_state_is_verified(promoted) is False
+
+
+def test_promote_live_state_accepts_warning_only_final_file_sweep(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake env lean Demo/Main.lean exits 0"),
+    )
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": f"{active}:2:3: warning: this tactic is never executed",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        }
+    )
+
+    assert promoted["verification_ok"] is True
+    assert runner._live_state_is_verified(promoted) is True
+    assert runner._queue_needs_final_file_sweep(promoted) is False
 
 
 def test_promote_live_state_does_not_mark_non_module_file_verified_from_project_build(monkeypatch, tmp_path):

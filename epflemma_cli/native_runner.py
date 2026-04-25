@@ -896,6 +896,18 @@ def _manager_feedback_kind(
     if entry and entry.get("has_sorry"):
         return "sorry"
 
+    output = str(manager_check.get("output", "") or manager_check.get("error", "") or "")
+    parsed = diagnostic_items(output)
+    if any(str(item.get("severity", "") or "").strip().lower() == "error" for item in parsed):
+        return "error"
+    manager_verification_failed = (
+        ("ok" in manager_check or "file_check_ok" in manager_check)
+        and not bool(manager_check.get("ok"))
+        and not bool(manager_check.get("file_check_ok"))
+    )
+    if manager_verification_failed:
+        return "error"
+
     local_cleanup = str(manager_check.get("local_cleanup_reason", "") or "").strip()
     lowered_cleanup = local_cleanup.lower()
     if lowered_cleanup:
@@ -905,8 +917,6 @@ def _manager_feedback_kind(
             return "sorry"
         return "warning"
 
-    output = str(manager_check.get("output", "") or manager_check.get("error", "") or "")
-    parsed = diagnostic_items(output)
     for item in parsed:
         severity = str(item.get("severity", "") or "").strip().lower()
         message = str(item.get("message", "") or "").strip().lower()
@@ -925,7 +935,7 @@ def _manager_feedback_kind(
     if entry and entry.get("has_sorry"):
         return "sorry"
     if not bool(manager_check.get("ok")):
-        return "warning"
+        return "error"
     return ""
 
 
@@ -3812,6 +3822,30 @@ def _diagnostics_indicate_failure(diagnostics: str) -> bool:
     return diagnostics_indicate_actionable_failure(diagnostics)
 
 
+def _diagnostics_indicate_hard_failure(diagnostics: str) -> bool:
+    items = diagnostic_items(diagnostics)
+    if items:
+        return any(
+            str(item.get("severity", "") or "").strip().lower() == "error"
+            for item in items
+        )
+    lowered = (diagnostics or "").lower()
+    for token in ("no errors found", "no errors", "without errors"):
+        lowered = lowered.replace(token, "")
+    hard_patterns = (
+        r"\berror\b",
+        r"\berrors\b",
+        r"\bunsolved\b",
+        r"\btype mismatch\b",
+        r"\bunknown constant\b",
+        r"\bfailed to synthesize\b",
+        r"\bdeterministic timeout\b",
+        r"\bmaximum number of heartbeats\b",
+        r"\btactic execution\b",
+    )
+    return any(re.search(pattern, lowered) for pattern in hard_patterns)
+
+
 def _goals_still_open(goals: str) -> bool:
     def _structured_goals_still_open(value: Any) -> bool:
         if value is None:
@@ -3872,6 +3906,7 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     sorry_count = live_state.get("sorry_count")
     project_sorry_count = live_state.get("project_sorry_count")
     verification_ok = live_state.get("verification_ok")
+    declaration_queue_total = int(live_state.get("declaration_queue_total", 0) or 0)
 
     if not active_file:
         return False
@@ -3879,7 +3914,13 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
         return False
     if declaration_scope != "file" and isinstance(project_sorry_count, int) and project_sorry_count > 0:
         return False
-    if _diagnostics_indicate_failure(diagnostics):
+    warning_only_final_file = (
+        declaration_scope == "file"
+        and declaration_queue_total == 0
+        and bool(verification_ok)
+        and not _diagnostics_indicate_hard_failure(diagnostics)
+    )
+    if _diagnostics_indicate_failure(diagnostics) and not warning_only_final_file:
         return False
     if "reported errors" in build_status:
         return False
@@ -3995,7 +4036,14 @@ def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dic
         return normalized
     normalized["verification_ok"] = False
     declaration_scope = str(normalized.get("declaration_scope", "") or _declaration_queue_scope())
-    if _diagnostics_indicate_failure(str(normalized.get("diagnostics", "") or "")):
+    diagnostics = str(normalized.get("diagnostics", "") or "")
+    declaration_queue_total = int(normalized.get("declaration_queue_total", 0) or 0)
+    warning_only_final_file = (
+        declaration_scope == "file"
+        and declaration_queue_total == 0
+        and not _diagnostics_indicate_hard_failure(diagnostics)
+    )
+    if _diagnostics_indicate_failure(diagnostics) and not warning_only_final_file:
         return normalized
     if _goals_still_open(str(normalized.get("goals", "") or "")):
         return normalized
@@ -4026,6 +4074,8 @@ def _promote_live_state_to_verified(live_state: Mapping[str, Any] | None) -> dic
         )
     normalized["build_status"] = build_status
     normalized["verification_ok"] = bool(verification_ok)
+    if verification_ok:
+        normalized["queue_needs_final_file_sweep"] = False
     if declaration_scope != "file" and isinstance(project_sorry_count, int) and project_sorry_count > 0:
         normalized["blocker_summary"] = (
             f"project still contains {project_sorry_count} sorry placeholder(s): "
