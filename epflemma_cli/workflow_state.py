@@ -787,7 +787,7 @@ def _agent_status_from_live_phase(phase: str) -> str:
     normalized = str(phase or "").strip().lower()
     if normalized in {"busy", "verifying", "in-progress", "compacted"}:
         return "active"
-    if normalized == "blocked":
+    if normalized in {"blocked", "stalled"}:
         return "blocked"
     if normalized == "paused":
         return "paused"

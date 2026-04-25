@@ -475,6 +475,9 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
   - ask the managed automation backend for one theorem-local automated proof candidate after context/probe data exists
 - `lean_auto_try`
   - validate one concrete automated proof candidate before patching it into the file
+- `apply_verified_patch`
+  - compatibility path for one atomic Lean patch, pre-edit checkpoint, and immediate verification payload
+  - in managed queue workflows, successful `patch` and `write_file` edits are already verified by the manager before the queue advances
 - `lean_sorries`
   - list remaining `sorry` findings across a project or a single file with declaration names and line numbers
 - `lean_axioms`
@@ -488,14 +491,17 @@ For file-scoped autonomous workflows (`prove` / `formalize` with an active Lean 
 
 What the runner does each cycle:
 
-- scan the active file, build a queue of declarations that still have `sorry`, theorem-level errors, warnings, or diagnostics/build output pointing at them
+- scan the active file, build a queue of declarations that still have `sorry`, theorem-level errors, or error diagnostics/build output pointing at them; warning-only cleanup is kept out of the theorem queue and handled as local cleanup or final sweep work
 - pick the current queue item and inject an "Assigned queue item" block into the agent prompt, with the declaration name, current file prefix through that declaration, current blocker, and the last N failed attempts for that exact target
 - auto-select the `lean-theorem-queue-worker` skill while an item is assigned, and fall back to `lean-proof-loop` when the queue is empty
-- after the agent's first `patch` or `write_file`, yield control back to the runner so diagnostics can be refreshed before the next edit
-- when a concrete proof edit is verified and the same `(target, file)` is still blocked, record that failed attempt immediately before the next edit overwrites it
+- after the agent edits, keep the same theorem turn alive while verification still points at the same declaration
+- after a successful `patch` or `write_file`, run the manager-owned file verification gate before deciding whether the queue can advance
+- when a concrete proof edit is checked and the same `(target, file)` is still blocked, record that failed attempt and feed the feedback back into the same theorem turn
+- only yield to the queue manager when verification clears the assigned declaration, the queue advances, or a real user/blocker stop occurs
 - keep the newest failed proof in the file so the model sees the live state directly; only older failed proofs move into structured `PREVIOUS ATTEMPTS`
-- when the queue empties but the file is not verified, switch to a whole-file sweep prompt for one pass
-- when the assigned theorem changes, rebuild the next prompt from a compact queue-aware handoff instead of reusing the full prior theorem transcript
+- when the queue empties and the file is already verified, log that no final verification sweep is needed
+- when the queue empties but the file is not verified, log the start of the final file sweep and switch to a whole-file sweep prompt for one pass
+- when the assigned theorem changes, rebuild the next prompt from a compact queue-aware handoff instead of reusing the full prior theorem transcript; print that deterministic handoff in the run log
 
 Flow:
 
@@ -531,7 +537,13 @@ Flow:
   | write_file)           |
   +-----------------------+
          |
-         v  (yield after first theorem-sized edit)
+         v
+  +-----------------------+
+  | manager verifies      |
+  | active file           |
+  +-----------------------+
+         |
+         v  (same theorem turn continues while blocked)
   +-----------------------+
   | runner refreshes      |
   | diagnostics + queue   |
@@ -545,8 +557,9 @@ Flow:
        |               |
    yes |               | no
        v               v
-  record failed    advance to next
-  attempt          queue item
+  record failed    yield + advance to
+  attempt, keep    next queue item
+  same turn
        \_______________/
               |
               v
@@ -556,7 +569,8 @@ Flow:
 Why this shape:
 
 - one declaration at a time keeps the agent from declaring victory after fixing only the first theorem
-- the yield-after-edit boundary forces fresh diagnostics between edits instead of speculative chained patches
+- failed verification remains in the same theorem-solving turn, so local proof search stays continuous
+- the queue boundary is reserved for solved/cleared declarations and real stops
 - target-scoped failed-attempt memory gives the next cycle real negative guidance without leaking across unrelated theorems
 - the failed-attempt ledger is theorem-local and is cleared when the queue advances to a different declaration
 - theorem transitions always clear raw search logs, long tool output, and previous-theorem reasoning from the live prompt; only a compact workflow snapshot and short previous-theorem outcome summary survive
@@ -890,7 +904,7 @@ There are now three important internal workflow surfaces:
 
 - `lean`
   - shared typed Lean capability surface
-  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_probe`, `lean_auto_search`, `lean_auto_try`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
+  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_probe`, `lean_auto_search`, `lean_auto_try`, `apply_verified_patch`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
 
 - `epflemma-native`
   - default single-agent Lean workflow runtime
@@ -999,6 +1013,13 @@ epflemma config set agent.top_p 'null'
 epflemma config set agent.top_k 'null'
 epflemma config set agent.min_p 'null'
 ```
+
+`lean_reasoning_help` uses the configured `auxiliary.lean_reasoning` model as a
+deep theorem advisor. Its default response budget is `64000` tokens so hard
+proof advice is not prematurely clipped; override with
+`EPFLEMMA_LEAN_REASONING_HELP_MAX_TOKENS` when a provider needs a lower cap.
+Main model calls wait up to `1200` seconds by default before EPFLemma treats the
+provider request as timed out; override with `GAUSS_API_TIMEOUT` if needed.
 
 Lean declaration edits are guarded by default. File write and patch tools block
 deleting, renaming, moving, or changing existing `theorem`, `lemma`, and

@@ -568,8 +568,16 @@ def lean_reasoning_help_tool(
     if not file_path:
         return _advisor_failure("invalid_request", "missing file_path.", theorem_id=theorem_id)
 
+    try:
+        max_tokens = max(1000, int(os.getenv("EPFLEMMA_LEAN_REASONING_HELP_MAX_TOKENS", "64000")))
+    except (TypeError, ValueError):
+        max_tokens = 64000
+
     system_prompt = (
         "You are an auxiliary Lean proof-strategy advisor for EPFLemma. "
+        "Act as a world-class mathematical strategist, combining deep olympiad, "
+        "analysis, algebra, and formal-verification taste with practical Lean and "
+        "Mathlib expertise. "
         "Your role is advisory only: you do not edit files, you do not decide success, "
         "and your answer is not verification evidence. Give concrete proof ideas, "
         "search terms, likely lemmas, and tactic sketches for the assigned theorem only. "
@@ -605,7 +613,7 @@ def lean_reasoning_help_tool(
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.2,
-            max_tokens=5000,
+            max_tokens=max_tokens,
             timeout=max(5, int(timeout_s or 45)),
         )
     except RuntimeError as exc:
@@ -822,8 +830,9 @@ APPLY_VERIFIED_PATCH_SCHEMA = {
     "name": "apply_verified_patch",
     "description": (
         "Apply one V4A patch to a single .lean file, persist a pre-edit checkpoint, "
-        "then immediately run Lean verification. Prefer this for Lean proof/formalization edits "
-        "because patched is not considered verified until the check passes."
+        "then immediately run Lean verification. In managed queue workflows, ordinary `patch` "
+        "and `write_file` edits are manager-verified after successful tool calls; use this tool "
+        "when you specifically need one atomic patch/checkpoint/verification result."
     ),
     "parameters": {
         "type": "object",

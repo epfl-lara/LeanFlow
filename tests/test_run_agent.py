@@ -628,6 +628,16 @@ class TestInterrupt:
             agent.interrupt("new question")
             assert agent._interrupt_message == "new question"
 
+    def test_interrupt_log_can_be_suppressed(self, agent, capsys):
+        agent.quiet_mode = False
+        agent._suppress_next_interrupt_log = True
+        with patch("run_agent._set_interrupt"):
+            agent.interrupt("internal step boundary")
+
+        assert capsys.readouterr().out == ""
+        assert agent._interrupt_requested is True
+        assert agent._interrupt_message == "internal step boundary"
+
     def test_clear_interrupt(self, agent):
         with patch("run_agent._set_interrupt"):
             agent.interrupt("msg")
@@ -747,7 +757,7 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["model"] == agent.model
         assert kwargs["messages"] is messages
-        assert kwargs["timeout"] == 900.0
+        assert kwargs["timeout"] == 1200.0
 
     def test_provider_preferences_injected(self, agent):
         agent.providers_allowed = ["Anthropic"]
@@ -978,6 +988,23 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    def test_post_tool_result_callback_can_append_tool_context(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        def callback(name, args, result):
+            agent._post_tool_result_appendix = "[manager feedback]"
+
+        agent.post_tool_result_callback = callback
+
+        with patch("run_agent.handle_function_call", return_value="search result"):
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        assert "search result" in messages[0]["content"]
+        assert "[manager feedback]" in messages[0]["content"]
+        assert agent._post_tool_result_appendix is None
+
     def test_interrupt_skips_remaining(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
@@ -1156,6 +1183,26 @@ class TestConcurrentToolExecution:
             ("web_search", {"q": "alpha"}, "result_alpha"),
             ("web_search", {"q": "beta"}, "result_beta"),
         ]
+
+    def test_concurrent_post_tool_result_callback_can_append_tool_context(self, agent):
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1])
+        messages = []
+
+        def fake_handle(name, args, task_id, **kwargs):
+            return "result_alpha"
+
+        def callback(name, args, result):
+            agent._post_tool_result_appendix = "[manager feedback]"
+
+        agent.post_tool_result_callback = callback
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert "result_alpha" in messages[0]["content"]
+        assert "[manager feedback]" in messages[0]["content"]
+        assert agent._post_tool_result_appendix is None
 
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
