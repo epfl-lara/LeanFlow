@@ -2794,7 +2794,10 @@ def test_summarize_theorem_transition_outcome_marks_reverted_to_sorry():
     assert "reverted" in outcome["note"]
 
 
-def test_rebuild_history_for_theorem_transition_uses_compact_handoff():
+def test_rebuild_history_for_theorem_transition_uses_compact_handoff(monkeypatch):
+    monkeypatch.delenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", raising=False)
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+
     rebuilt, transition = runner._rebuild_history_for_theorem_transition(
         [
             {"role": "assistant", "content": "Detailed search transcript for amc12a_2021_p19"},
@@ -2830,6 +2833,60 @@ def test_rebuild_history_for_theorem_transition_uses_compact_handoff():
     joined = "\n".join(msg["content"] for msg in rebuilt)
     assert "Detailed search transcript" not in joined
     assert "Very long raw tool output" not in joined
+
+
+def test_rebuild_history_for_theorem_transition_preserves_full_active_skill_contract(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
+    monkeypatch.setattr(runner, "_project_root", lambda: "/tmp/project")
+    monkeypatch.setattr(
+        runner,
+        "load_skill",
+        lambda name, cwd=None: {
+            "name": name,
+            "source": "builtin",
+            "content": "Queue worker full contract body",
+            "linked_files": {},
+        },
+    )
+
+    class _Spec:
+        spec_id = "prove"
+
+    monkeypatch.setattr(runner, "specs_for_skill", lambda name: [_Spec()])
+
+    rebuilt, transition = runner._rebuild_history_for_theorem_transition(
+        [
+            {"role": "assistant", "content": "Detailed search transcript for old theorem"},
+            {"role": "tool", "content": "Very long raw tool output for old theorem"},
+        ],
+        {"snapshot_text": "Compact workflow snapshot"},
+        {
+            "current_queue_assignment": {
+                "target_symbol": "old_demo",
+                "active_file": "Demo/Main.lean",
+                "slice": "theorem old_demo : True := by\n  exact True.intro",
+            }
+        },
+        {
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+            "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
+            "build_status": "lake env lean Demo/Main.lean exits 0",
+            "current_blocker": "",
+        },
+    )
+
+    assert transition is not None
+    assert len(rebuilt) == 3
+    assert rebuilt[1]["content"].startswith("[EPFLEMMA-NATIVE THEOREM TRANSITION ACTIVE SKILL]")
+    assert "[EPFLEMMA ACTIVE SKILL: lean-theorem-queue-worker (builtin)]" in rebuilt[1]["content"]
+    assert "Queue worker full contract body" in rebuilt[1]["content"]
+    assert "Linked workflow specs available through `skill_view`: prove." in rebuilt[1]["content"]
+    assert rebuilt[2]["content"].startswith("[EPFLEMMA-NATIVE THEOREM TRANSITION HANDOFF]")
+    joined = "\n".join(msg["content"] for msg in rebuilt)
+    assert "Detailed search transcript for old theorem" not in joined
+    assert "Very long raw tool output for old theorem" not in joined
 
 
 def test_summarize_theorem_transition_outcome_prefers_previous_theorem_failed_attempt_reason():
