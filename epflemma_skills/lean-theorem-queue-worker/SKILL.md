@@ -82,4 +82,4 @@ Stop and report a blocker when:
 
 When stopping with failure, summarize the blocker in terms the manager can store as the next failed attempt context.
 
-If the API step budget is exhausted before you finish, the runner records the current theorem as a failed attempt and, when it has the original untruncated `sorry` slice, restores that declaration to the safe baseline `sorry` body. That is not success and does not skip the theorem; the next queue cycle resumes the same item with the failed-attempt context.
+If the API step budget is exhausted before you finish, the runner records the current theorem as a failed attempt and, when it has the original untruncated `sorry` slice, comments the current failed declaration above the theorem and restores that declaration to the safe baseline `sorry` body. That is not success and does not skip the theorem; the next queue cycle resumes the same item with the failed-attempt context.
