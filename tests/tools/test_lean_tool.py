@@ -81,6 +81,50 @@ def test_lean_search_tool_marks_repeated_empty_search_loop_as_action_required(mo
     assert "action_required" in payload
 
 
+def test_lean_incremental_check_tool_dispatches_structured_payload(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _fake_incremental_check(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "backend": "lean_interact",
+            "action": kwargs["action"],
+            "target": kwargs["theorem_id"],
+            "elapsed_s": 0.01,
+            "cache": {"cache_hit": True},
+        }
+
+    monkeypatch.setattr(lean_tool, "lean_incremental_check", _fake_incremental_check)
+
+    payload = json.loads(
+        model_tools.handle_function_call(
+            "lean_incremental_check",
+            {
+                "file_path": "Demo/Main.lean",
+                "theorem_id": "demo",
+                "action": "check_target",
+                "cwd": "/tmp/project",
+                "include_tactics": True,
+                "timeout_s": 12,
+            },
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["ok"] is True
+    assert payload["backend"] == "lean_interact"
+    assert captured == {
+        "action": "check_target",
+        "file_path": "Demo/Main.lean",
+        "theorem_id": "demo",
+        "cwd": "/tmp/project",
+        "replacement": "",
+        "include_tactics": True,
+        "timeout_s": 12,
+    }
+
+
 def test_handle_function_call_passes_parent_agent_to_lean_worker_dispatch(monkeypatch):
     captured: dict[str, object] = {}
     parent_agent = object()

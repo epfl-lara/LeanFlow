@@ -330,6 +330,7 @@ class LeanCapabilityReport:
     mcp_server_roles: dict[str, str] = field(default_factory=dict)
     managed_mcp_servers: dict[str, bool] = field(default_factory=dict)
     power_modes: dict[str, Any] = field(default_factory=dict)
+    incremental: dict[str, Any] = field(default_factory=dict)
     remote_search_policy: str = "public-fallbacks-enabled"
 
     def to_dict(self) -> dict[str, Any]:
@@ -748,6 +749,19 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
             degraded.append("local Loogle configured but cache is not warmed yet; first local query may build it or fall back remotely")
         if project_root and power_modes.get("repl_configured") and not power_modes.get("repl_available"):
             degraded.append("Lean REPL acceleration configured but repl binary is unavailable; run `epflemma project init` to build it")
+    try:
+        from epflemma_cli.lean_incremental import lean_incremental_capabilities
+
+        incremental = lean_incremental_capabilities(base)
+    except Exception as exc:
+        incremental = {
+            "available": False,
+            "degraded_reasons": [f"LeanInteract incremental verifier unavailable: {exc}"],
+        }
+    if not bool(incremental.get("available", False)):
+        for reason in list(incremental.get("degraded_reasons", []) or []):
+            if reason and reason not in degraded:
+                degraded.append(str(reason))
     return LeanCapabilityReport(
         cwd=str(base),
         project_root=str(project_root or ""),
@@ -762,6 +776,7 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         mcp_server_roles=mcp_server_roles,
         managed_mcp_servers=managed_mcp_servers,
         power_modes=power_modes,
+        incremental=incremental,
         remote_search_policy=remote_search_policy,
     )
 
@@ -1571,6 +1586,54 @@ def _normalize_native_backend_status(
     payload["degraded_reasons"] = list(dict.fromkeys(degraded_reasons))
 
 
+UNSUPPORTED_PROOF_AUTO_OPTIONS = {
+    "linter.style.longLine": "lean-auto-try backend does not support project-level `set_option linter.style.longLine`",
+}
+
+
+def _proof_auto_unsupported_option_reason(file_path: str | os.PathLike[str]) -> str:
+    try:
+        text = Path(file_path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for option, reason in UNSUPPORTED_PROOF_AUTO_OPTIONS.items():
+        if re.search(rf"(?m)^\s*set_option\s+{re.escape(option)}\b", text):
+            return reason
+    return ""
+
+
+def _local_auto_try_preflight_failure(
+    *,
+    report: LeanCapabilityReport,
+    tool_name: str,
+    file_path: str,
+    theorem_id: str,
+    proof_attempt: str,
+    reason: str,
+) -> dict[str, Any]:
+    if tool_name:
+        _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
+    payload: dict[str, Any] = {
+        "success": False,
+        "backend_tool": tool_name,
+        "file_path": file_path,
+        "theorem_id": theorem_id,
+        "proof_attempt": proof_attempt,
+        "degraded_reasons": list(
+            dict.fromkeys(
+                [
+                    *report.degraded_reasons,
+                    reason,
+                    "lean automation try disabled for this run before MCP call because the project contains an option the backend rejects",
+                    "Use lean_incremental_check or managed patch verification for this theorem; do not edit unrelated examples or solved declarations just to satisfy lean_auto_try.",
+                ]
+            )
+        ),
+    }
+    append_workflow_outcome("lean-auto-try", payload)
+    return payload
+
+
 def _auto_probe_attempt_succeeded(payload: Mapping[str, Any]) -> bool:
     if bool(payload.get("success", False)):
         return True
@@ -1904,8 +1967,19 @@ def lean_auto_try(
 ) -> dict[str, Any]:
     report = probe_capabilities(cwd)
     canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
+    tool_name = report.mcp_tools.get("auto_try", "")
+    unsupported_option_reason = _proof_auto_unsupported_option_reason(canonical_file_path)
+    if unsupported_option_reason:
+        return _local_auto_try_preflight_failure(
+            report=report,
+            tool_name=tool_name,
+            file_path=canonical_file_path,
+            theorem_id=theorem_id,
+            proof_attempt=proof_attempt,
+            reason=unsupported_option_reason,
+        )
     return _invoke_native_mcp_wrapper(
-        report.mcp_tools.get("auto_try", ""),
+        tool_name,
         {
             "file": canonical_file_path,
             "theorem_id": theorem_id,

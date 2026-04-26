@@ -15,6 +15,7 @@ _LEAN_TOOLS = [
     "lean_capabilities",
     "lean_inspect",
     "lean_verify",
+    "lean_incremental_check",
     "lean_search",
     "lean_sorries",
     "lean_axioms",

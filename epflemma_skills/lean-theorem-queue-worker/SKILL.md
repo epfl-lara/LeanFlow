@@ -32,11 +32,13 @@ Primary specs:
    - do not blindly repeat the same proof shape
    - explain when a new attempt differs materially from earlier failures
 4. You may introduce helper lemmas, local intermediate facts, or small private supporting declarations when they make the assigned declaration easier to prove. This is optional, not required; use it when it genuinely breaks a hard proof into smaller verified steps, and keep every helper scoped to the assigned theorem's needs.
-5. After each meaningful edit, re-check the assigned declaration with `lean_inspect` before making another large change.
-6. For a managed file-scoped assigned theorem, the preferred edit path is `patch` or `write_file`; the queue manager runs the canonical file verification gate after successful edits. Use `apply_verified_patch(check_mode=file_exact)` only when you specifically need its atomic checkpoint plus verification payload.
-7. Do not treat `lake build`, `grep`, `head`, or truncated output as proof that the assigned theorem is clean.
-8. If the declaration becomes clean, stop and hand control back to the manager rather than continuing to the next theorem on your own.
-9. Treat runtime step-budget warnings as real control signals. With only a few API steps left, prefer one concrete verification-backed edit or a concise blocker report over starting a broad new strategy.
+5. After each meaningful edit, re-check the assigned declaration with `lean_inspect` or `lean_incremental_check(check_target)` before making another large change.
+6. For a managed file-scoped assigned theorem, the preferred edit path is `patch` or `write_file`; the queue manager runs the LeanInteract queue-step verifier after successful edits and falls back to Lake if needed. Use `apply_verified_patch(check_mode=file_exact)` only when you specifically need its atomic checkpoint plus verification payload.
+7. When ordinary diagnostics are not enough, call `lean_incremental_check(action=feedback, include_tactics=true)` for the assigned declaration. Use returned `tactics[*].goals`, `tactics[*].proof_state`, file-global message positions, and `feedback_lean` comments as the repair context.
+8. Use Lean tools for normal managed queue verification so the manager can classify the assigned declaration. Terminal-based Lake checks are allowed as an emergency/manual fallback if the Lean tools themselves are broken.
+9. Do not treat `lake build`, `grep`, `head`, or truncated output as proof that the assigned theorem is clean.
+10. If the declaration becomes clean, stop and hand control back to the manager rather than continuing to the next theorem on your own.
+11. Treat runtime step-budget warnings as real control signals. With only a few API steps left, prefer one concrete verification-backed edit or a concise blocker report over starting a broad new strategy.
 
 ## Queue Hygiene
 
@@ -69,7 +71,7 @@ The assigned declaration is successful only when:
 - diagnostics for that declaration are clean
 - there are no remaining goals for that declaration
 - the attempted fix does not introduce a new local blocker around it
-- and the manager-requested file check succeeds, either through the automatic post-edit gate or an explicit `lean_verify(mode=file_exact)`
+- and the manager-requested check succeeds, either through the automatic post-edit `lean_incremental_check(check_target)` gate, an explicit incremental check, or a final/fallback `lean_verify(mode=file_exact)`
 - and any recommended specialist worker route has either been used or explicitly ruled out
 
 ## Failure Condition

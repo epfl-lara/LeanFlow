@@ -516,7 +516,7 @@ def test_proof_auto_wrappers_use_expected_backend_arguments(monkeypatch, tmp_pat
     assert "file_path" not in auto_try_args
 
 
-def test_lean_auto_try_marks_rejected_backend_payload_as_failure(monkeypatch, tmp_path):
+def test_lean_auto_try_preflights_unsupported_project_option(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()
     target = project / "Demo" / "Main.lean"
@@ -560,15 +560,8 @@ def test_lean_auto_try_marks_rejected_backend_payload_as_failure(monkeypatch, tm
         degraded_reasons=[],
     )
     monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
-    monkeypatch.setattr(
-        lean_services,
-        "_invoke_json_tool",
-        lambda *args, **kwargs: {
-            "status": "rejected",
-            "validation_status": "rejected",
-            "error_message": "Unknown option `linter.style.longLine`",
-        },
-    )
+    calls = []
+    monkeypatch.setattr(lean_services, "_invoke_json_tool", lambda *args, **kwargs: calls.append(args) or {})
     outcomes = []
     monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: outcomes.append(args))
 
@@ -576,9 +569,10 @@ def test_lean_auto_try_marks_rejected_backend_payload_as_failure(monkeypatch, tm
 
     assert payload["success"] is False
     reasons = " ".join(payload["degraded_reasons"])
-    assert "lean-auto-try backend rejected" in reasons
-    assert "file-level setup blockers" in reasons
+    assert "linter.style.longLine" in reasons
+    assert "before MCP call" in reasons
     assert tool_name in lean_services._disabled_mcp_tools_for_run(project)
+    assert calls == []
     assert outcomes[-1][1]["success"] is False
 
 
