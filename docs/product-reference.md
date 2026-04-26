@@ -483,7 +483,7 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
   - this is not a replacement for `lean_inspect` goals
   - when the active file already contains the target declaration, EPFLemma first stabilizes lookup from the local declaration range before asking the backend for richer context
   - if the proof-auto backend reports `theorem_not_found` or another backend-side context failure, EPFLemma falls back to a local declaration-slice context instead of pretending the backend succeeded
-  - repeated proof-auto lookup failures disable the proof-auto backend for the rest of the current workflow run so the agent stops wasting turns on the same blind spot
+  - a theorem-lookup miss does not disable proof-auto for the rest of the run; EPFLemma only sticky-disables proof-auto after transport or systemic backend failures
 - `lean_multi_attempt`
   - screen 2-6 concrete tactic candidates at one proof location through the MCP backend
 - `lean_auto_probe`
@@ -1216,7 +1216,7 @@ For theorem-local automation, the important behavior is:
 
 - `lean_proof_context` prefers backend context when available
 - if proof-auto lookup fails for a declaration that the local file already contains, EPFLemma falls back to a local declaration slice and nearby declarations
-- a proof-auto `theorem_not_found` miss disables the proof-auto backend for the rest of that workflow run so later turns do not keep retrying the same broken backend path
+- a proof-auto `theorem_not_found` miss is treated as a local context miss, not a run-wide backend failure; proof-auto remains available for later declarations
 
 To persist MCP sampling audit events to disk, enable it per server in `~/.epflemma/config.yaml`:
 
