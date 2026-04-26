@@ -2782,6 +2782,302 @@ def test_declaration_work_queue_scans_project_when_scope_is_project(monkeypatch,
     assert queue[0]["reasons"] == ["1 sorry placeholder(s)"]
 
 
+def test_project_prove_manager_uses_llm_file_order(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    first = module_dir / "A.lean"
+    second = module_dir / "B.lean"
+    first.write_text("theorem a : True := by\n  sorry\n", encoding="utf-8")
+    second.write_text("theorem b : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    events: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+
+    class _Message:
+        content = '{"files": ["Demo/B.lean", "Demo/A.lean"], "reason": "B is shorter"}'
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        choices = [_Choice()]
+
+    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: _Response())
+
+    state: dict[str, object] = {}
+    assert runner._ensure_project_prove_manager_started(state, phase="startup") is True
+
+    assert os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/B.lean"
+    assert state["project_prove_file_queue"] == ["Demo/B.lean", "Demo/A.lean"]
+    assert state["project_prove_plan_source"] == "llm"
+    assert [args[0] for args, _ in events] == [
+        "project-prove-file-queue-planned",
+        "project-prove-file-assigned",
+    ]
+    planned = events[0][1]
+    assert planned["ordered_files"] == ["Demo/B.lean", "Demo/A.lean"]
+    assert planned["plan_source"] == "llm"
+    assert planned["total_candidates"] == 2
+
+
+def test_project_prove_manager_llm_prompt_includes_context_and_dependency_data(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    base = module_dir / "Base.lean"
+    later = module_dir / "Later.lean"
+    base.write_text(
+        "import Mathlib\n\n"
+        "/-- Doc for the base theorem. -/\n"
+        "theorem base_easy : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    later.write_text(
+        "import Demo.Base\n\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    prompts: list[str] = []
+
+    class _Message:
+        content = '{"files": ["Demo/Base.lean", "Demo/Later.lean"], "reason": "Base unblocks Later"}'
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        choices = [_Choice()]
+
+    def _fake_call_llm(**kwargs):
+        prompts.append(kwargs["messages"][0]["content"])
+        return _Response()
+
+    monkeypatch.setattr(runner, "call_llm", _fake_call_llm)
+
+    state: dict[str, object] = {}
+    assert runner._ensure_project_prove_manager_started(state, phase="startup") is True
+
+    prompt = prompts[0]
+    assert "Doc for the base theorem" in prompt
+    assert "theorem base_easy" in prompt
+    assert "candidate_downstream_count" in prompt
+    assert "Demo/Later.lean" in prompt
+    assert '"kind": "full"' in prompt
+
+
+def test_project_prove_manager_fallback_prefers_upstream_files(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    upstream = module_dir / "Base.lean"
+    downstream = module_dir / "Later.lean"
+    upstream.write_text("theorem base : True := by\n  sorry\n", encoding="utf-8")
+    downstream.write_text("import Demo.Base\n\ntheorem later : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no aux")))
+
+    state: dict[str, object] = {}
+    assert runner._ensure_project_prove_manager_started(state, phase="startup") is True
+
+    assert os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/Base.lean"
+    assert state["project_prove_file_queue"][0] == "Demo/Base.lean"
+    assert state["project_prove_plan_source"] == "fallback"
+
+
+def test_project_prove_manager_fallback_uses_transitive_candidate_dependencies(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    base = module_dir / "Base.lean"
+    middle = module_dir / "Middle.lean"
+    leaf = module_dir / "Leaf.lean"
+    base.write_text("theorem base : True := by\n  sorry\n", encoding="utf-8")
+    middle.write_text("import Demo.Base\n\ntheorem middle : True := by\n  sorry\n", encoding="utf-8")
+    leaf.write_text("import Demo.Middle\n\ntheorem leaf : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+
+    candidates = runner._collect_project_prove_file_candidates(project)
+    by_label = {item["label"]: item for item in candidates}
+
+    assert by_label["Demo/Base.lean"]["candidate_downstream_count"] == 2
+    assert by_label["Demo/Middle.lean"]["candidate_downstream_count"] == 1
+    assert by_label["Demo/Leaf.lean"]["candidate_downstream_count"] == 0
+    assert runner._project_prove_fallback_order(candidates) == [
+        "Demo/Base.lean",
+        "Demo/Middle.lean",
+        "Demo/Leaf.lean",
+    ]
+
+
+def test_project_prove_manager_fallback_prefers_hinted_easy_file(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    homework = module_dir / "Homework.lean"
+    competition = module_dir / "Competition.lean"
+    homework.write_text(
+        "import Mathlib\n\n"
+        "example (x : ℝ) : |x| ≥ 0 := by exact abs_nonneg x\n"
+        "#check abs_nonneg\n"
+        "-- TODO: prove this\n"
+        "theorem absLipschitz1 : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    competition.write_text(
+        "import Mathlib\n\n"
+        "theorem putnam_2020_a1 : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no aux")))
+
+    state: dict[str, object] = {}
+    assert runner._ensure_project_prove_manager_started(state, phase="startup") is True
+
+    assert os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/Homework.lean"
+    assert state["project_prove_file_queue"][0] == "Demo/Homework.lean"
+
+
+def test_project_prove_manager_guards_llm_order_by_difficulty(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    homework = module_dir / "Homework.lean"
+    competition = module_dir / "Competition.lean"
+    homework.write_text(
+        "import Mathlib\n\n"
+        "example (x : ℝ) : |x| ≥ 0 := by exact abs_nonneg x\n"
+        "#check abs_nonneg\n"
+        "-- TODO: prove this\n"
+        "theorem absLipschitz1 : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    competition.write_text(
+        "import Mathlib\n\n"
+        "theorem putnam_2020_a1 : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    class _Message:
+        content = '{"files": ["Demo/Competition.lean", "Demo/Homework.lean"], "reason": "bad model order"}'
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        choices = [_Choice()]
+
+    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: _Response())
+
+    state: dict[str, object] = {}
+    assert runner._ensure_project_prove_manager_started(state, phase="startup") is True
+
+    assert os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/Homework.lean"
+    assert state["project_prove_file_queue"] == ["Demo/Homework.lean", "Demo/Competition.lean"]
+    assert state["project_prove_plan_source"] == "llm"
+
+
+def test_project_prove_manager_skips_artifact_lean_files(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    artifact_dir = project / ".artifacts" / "run1" / "Demo"
+    module_dir.mkdir(parents=True)
+    artifact_dir.mkdir(parents=True)
+    source = module_dir / "A.lean"
+    artifact = artifact_dir / "Old.lean"
+    source.write_text("theorem a : True := by\n  sorry\n", encoding="utf-8")
+    artifact.write_text("theorem old : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+
+    candidates = runner._collect_project_prove_file_candidates(project)
+    labels = {item["label"] for item in candidates}
+
+    assert labels == {"Demo/A.lean"}
+
+
+def test_project_prove_manager_advances_to_next_file_after_verified_file(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    first = module_dir / "A.lean"
+    second = module_dir / "B.lean"
+    first.write_text("theorem a : True := by\n  trivial\n", encoding="utf-8")
+    second.write_text("theorem b : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/A.lean")
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no aux")))
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: bool(live_state.get("verification_ok")))
+
+    state: dict[str, object] = {
+        "project_prove_manager_enabled": True,
+        "project_prove_file_queue": ["Demo/A.lean", "Demo/B.lean"],
+    }
+    live_state = {
+        "active_file": str(first),
+        "active_file_label": "Demo/A.lean",
+        "verification_ok": True,
+        "project_sorry_count": 1,
+    }
+
+    assert runner._advance_project_prove_manager_if_needed(state, live_state, phase="autonomous") is True
+    assert os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/B.lean"
+    assert state["project_prove_completed_files"] == ["Demo/A.lean"]
+
+
+def test_project_prove_manager_does_not_take_over_explicit_file(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "A.lean"
+    active.write_text("theorem a : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/A.lean")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+
+    state: dict[str, object] = {}
+    assert runner._ensure_project_prove_manager_started(state, phase="startup") is False
+    assert "project_prove_manager_enabled" not in state
+
+
 def test_build_live_proof_state_assigns_current_queue_head_as_target(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
@@ -5236,6 +5532,10 @@ def test_build_live_proof_state_hides_future_sorries_from_model_message(monkeypa
 def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkeypatch, capsys):
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_SKILL", raising=False)
 
     class _LoopAgent(_FakeAgent):
         def __init__(self):

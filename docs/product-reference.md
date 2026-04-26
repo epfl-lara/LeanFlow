@@ -357,6 +357,7 @@ Inside the shell:
 /cd path/to/project
 /project init
 /project create DemoProject --template-source https://github.com/example/lean-template.git
+/prove
 /prove Main.lean
 /prove Main.lean --agents 3
 /prove Main.lean --no-parallel
@@ -374,6 +375,7 @@ Inside the shell:
 Workflow commands also accept forgiving forms without the leading slash:
 
 ```text
+prove
 prove Main.lean
 prove Main.lean --agents 3
 prove Main.lean --no-parallel
@@ -427,6 +429,65 @@ Autonomous workflows are intentionally stricter than a local file-only loop. `pr
 EPFLemma writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.epflemma/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
 
 That state now also includes structured capability snapshots, route decisions, and workflow/worker outcomes in `.epflemma/workflow-state/outcomes.jsonl`, so resumed runs can reuse prior blocker classification and worker history instead of starting blind.
+
+### Project-Scoped `/prove`
+
+`/prove SomeFile.lean` remains the direct file-scoped proof-repair workflow. `/prove` with no Lean file is the project-scoped manager workflow.
+
+The project prove manager pipeline is:
+
+1. Detect that the command is `prove` and has no explicit `.lean` argument.
+2. Scan project Lean files for remaining `sorry` placeholders.
+3. Build one candidate record per file with relative file label, absolute path, module name, `sorry_count`, `line_count`, declaration count, pending declaration names, theorem excerpts, hint/example counts, theorem-difficulty scores, candidate-to-candidate import/dependent counts, project-wide import/dependent counts, and import count.
+4. Include source context in the planner payload: full source for small files, and selected headers, imports, hints, checked lemmas, and pending theorem excerpts for larger files.
+5. Compute a deterministic fallback order: files with more unresolved candidate files depending on them first, then files with fewer unresolved candidate-file dependencies of their own, then project-wide downstream importance, lower theorem-difficulty score, lower first-pending-declaration difficulty, fewer `sorry` placeholders, shorter files, fewer declarations, and path label as the stable tie-breaker.
+6. Ask the configured LLM to rank the bounded candidate list using the same policy: dependency importance, theorem difficulty, actual source context, local hints/examples, and length.
+7. Sanitize the LLM output so only known candidate labels survive, append any missing fallback files, and keep deterministic dependency/difficulty buckets as guardrails around the model order.
+8. Persist the resulting queue and assign the first file by setting the native active file.
+9. Hand execution to the existing file-scoped theorem queue, exactly as if the user had run `/prove SomeFile.lean`.
+10. When that file verifies and other project files still contain `sorry`, mark the file complete, refresh the queue against the current filesystem, and assign the next file.
+
+This keeps the manager responsible for file order only. The existing theorem queue remains responsible for theorem-level repair, diagnostics, failed-attempt history, incremental verification, final file sweeps, and blocker handling.
+
+Parallel agents are disabled by default. The manager assigns one file at a time unless the user explicitly starts a swarm workflow with an agent-count flag such as `--agents 3`.
+
+### Logging And Inspection
+
+Project prove-manager state is visible in the same surfaces as other managed workflows:
+
+- `/workflow status` reads `.epflemma/workflow-state/live_status.json`
+- `/workflow activity` reads structured JSONL events under `.epflemma/workflow-state/activity/runs/`
+- `/workflow log 120` tails the saved raw runner transcript from `.epflemma/workflow-state/latest-run.log` or the timestamped file under `.epflemma/workflow-state/runs/`
+- `/proof-state` includes the live proof-state message that is also sent back into autonomous continuation prompts
+
+For fileless `/prove`, `live_status.json` includes:
+
+- `project_prove_manager`
+- `project_prove_file_queue`
+- `project_prove_completed_files`
+- `project_prove_plan_source`
+- `project_prove_plan_reason`
+- the normal active-file, target theorem, declaration queue, diagnostics, goals, build, route, checkpoint, and model/provider fields
+
+The structured activity stream records manager events suitable for detailed inspection and offline trace curation:
+
+- `project-prove-file-queue-planned`: candidate metrics, final file order, plan source, and plan reason
+- `project-prove-file-assigned`: assigned file, absolute path, remaining queue, plan source, and plan reason
+- `project-prove-file-queue-empty`: no project files with `sorry` were found
+- `project-prove-file-queue-complete`: the project prove queue has no remaining candidate files
+
+Those events sit alongside the existing theorem-level and runner-level events:
+
+- `queue-item-assigned`
+- `manager-incremental-warmup`
+- `assistant-plan`
+- `tool-start`
+- `tool-result`
+- `autonomous-followup`
+- `checkpoint`
+- `runner-start` / `runner-exit`
+
+The structured activity feed is the right source for programmatic inspection and training-data curation because it preserves event types and details as JSON. The raw workflow log is the right source when a human needs the chronological transcript, provider previews, tool output head/tail, token usage, and cost estimates. Preview sizes are bounded and configurable through `logging.preview_lines`, `logging.preview_chars`, `logging.tool_output_head_lines`, `logging.tool_output_tail_lines`, and `logging.activity_preview_chars`.
 
 The verification loop is intentionally Lean-LSP-first:
 

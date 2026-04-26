@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from difflib import unified_diff
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, Sequence
+from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -80,11 +80,17 @@ LIVE_PROOF_STATE_PREFIX = (
     "for the active workflow. Treat it as current unless newer tool results contradict it."
 )
 AUTONOMOUS_WORKFLOW_KINDS = {"prove", "formalize"}
-PROJECT_SCAN_SKIP_DIRS = {".git", ".lake", ".epflemma", ".opengauss", ".gauss", "build"}
+PROJECT_SCAN_SKIP_DIRS = {".artifacts", ".git", ".lake", ".epflemma", ".opengauss", ".gauss", "build"}
 WORKFLOW_STEP_BOUNDARY_INTERRUPT = "[epflemma-native workflow step boundary]"
 STARTUP_SKILL_CONTRACT_MAX_CHARS = 7000
 MANAGER_WARNING_RETRY_LIMIT = 1
 MANAGER_HARD_RETRY_LIMIT = 2
+PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT = 40
+PROJECT_PROVE_MANAGER_FULL_FILE_MAX_CHARS = 6000
+PROJECT_PROVE_MANAGER_SELECTED_FILE_MAX_CHARS = 5000
+PROJECT_PROVE_MANAGER_DECL_CONTEXT_MAX_CHARS = 1600
+PROJECT_PROVE_MANAGER_HINT_CONTEXT_MAX_CHARS = 1600
+PROJECT_PROVE_MANAGER_PENDING_DECL_LIMIT = 8
 ACTIVE_AGENT_STATUSES = {"active"}
 LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
@@ -398,6 +404,11 @@ def _persist_live_status(
         "proof_state_message": str(live_state.get("message", "") or ""),
         "sorry_count": live_state.get("sorry_count"),
         "project_sorry_count": live_state.get("project_sorry_count"),
+        "project_prove_manager": bool(live_state.get("project_prove_manager", False)),
+        "project_prove_file_queue": list(live_state.get("project_prove_file_queue", []) or []),
+        "project_prove_completed_files": list(live_state.get("project_prove_completed_files", []) or []),
+        "project_prove_plan_source": str(live_state.get("project_prove_plan_source", "") or ""),
+        "project_prove_plan_reason": str(live_state.get("project_prove_plan_reason", "") or ""),
         "capability_report": dict(live_state.get("capability_report", {}) or {}),
         "route_decision": dict(live_state.get("route_decision", {}) or {}),
         "checkpoint_count": int(checkpoint_state.get("count", 0) or 0),
@@ -2729,6 +2740,697 @@ def _count_project_sorries(project_root: str) -> tuple[int | None, list[str]]:
     return total, files[:8]
 
 
+def _workflow_command_has_explicit_lean_file() -> bool:
+    return bool(_extract_active_files(_read_native_env("WORKFLOW_COMMAND")))
+
+
+def _project_prove_manager_requested() -> bool:
+    return _workflow_kind() == "prove" and not _workflow_command_has_explicit_lean_file()
+
+
+def _project_prove_manager_active(autonomy_state: Mapping[str, Any] | None = None) -> bool:
+    return isinstance(autonomy_state, Mapping) and bool(autonomy_state.get("project_prove_manager_enabled"))
+
+
+def _set_project_prove_manager_active(value: bool) -> None:
+    return None
+
+
+def _relative_project_file_label(path: str | os.PathLike[str], project_root: str | os.PathLike[str] | None = None) -> str:
+    raw = Path(path)
+    root = Path(project_root or _project_root())
+    try:
+        return str(raw.resolve().relative_to(root.resolve()))
+    except Exception:
+        return str(raw)
+
+
+def _set_native_active_file(file_label: str) -> None:
+    normalized = str(file_label or "").strip()
+    os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] = normalized
+
+
+def _lean_import_modules(file_path: str | os.PathLike[str]) -> list[str]:
+    try:
+        lines = Path(file_path).read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    modules: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("import "):
+            continue
+        body = stripped[len("import ") :].split("--", 1)[0].strip()
+        for token in body.split():
+            module = token.strip()
+            if module and module not in modules:
+                modules.append(module)
+    return modules
+
+
+def _module_name_for_project_path(path: Path, project_root: Path) -> str:
+    try:
+        relative = path.resolve().relative_to(project_root.resolve())
+    except Exception:
+        relative = path
+    parts = list(relative.parts)
+    if not parts or not parts[-1].endswith(".lean"):
+        return ""
+    parts[-1] = parts[-1][:-5]
+    return ".".join(parts)
+
+
+def _project_prove_bounded_excerpt(text: str, max_chars: int) -> str:
+    raw = str(text or "").strip()
+    if max_chars <= 0 or len(raw) <= max_chars:
+        return raw
+    marker = "\n\n-- [epflemma: excerpt truncated; middle omitted]\n\n"
+    head_chars = max(0, (max_chars - len(marker)) * 2 // 3)
+    tail_chars = max(0, max_chars - len(marker) - head_chars)
+    return (raw[:head_chars].rstrip() + marker + raw[-tail_chars:].lstrip()).strip()
+
+
+def _project_prove_declaration_context(
+    lines: Sequence[str],
+    entry: Mapping[str, Any],
+    *,
+    max_chars: int = PROJECT_PROVE_MANAGER_DECL_CONTEXT_MAX_CHARS,
+) -> str:
+    line = int(entry.get("line", 0) or 0)
+    end_line = int(entry.get("end_line", line) or line)
+    if line <= 0 or end_line <= 0:
+        return ""
+    start = max(1, line)
+    doc_end_idx = line - 2
+    if 0 <= doc_end_idx < len(lines) and lines[doc_end_idx].strip().endswith("-/"):
+        idx = doc_end_idx
+        while idx >= 0 and doc_end_idx - idx < 40:
+            if lines[idx].strip().startswith("/-"):
+                start = idx + 1
+                break
+            idx -= 1
+    else:
+        idx = line - 2
+        while idx >= 0 and line - idx <= 16:
+            stripped = lines[idx].strip()
+            if not stripped:
+                start = idx + 1
+                idx -= 1
+                continue
+            if stripped.startswith("--"):
+                start = idx + 1
+                idx -= 1
+                continue
+            break
+    start = max(1, start)
+    end = min(len(lines), max(end_line, line))
+    return _project_prove_bounded_excerpt("\n".join(lines[start - 1 : end]), max_chars)
+
+
+def _project_prove_header_excerpt(text: str, entries: Sequence[Mapping[str, Any]]) -> str:
+    lines = str(text or "").splitlines()
+    first_line = min((int(entry.get("line", 0) or 0) for entry in entries), default=0)
+    if first_line <= 1:
+        first_line = min(len(lines) + 1, 35)
+    return _project_prove_bounded_excerpt("\n".join(lines[: max(0, first_line - 1)]), 1200)
+
+
+def _project_prove_hint_excerpt(text: str) -> str:
+    lines = str(text or "").splitlines()
+    selected: list[str] = []
+    patterns = ("#check", "hint", "todo", "useful lemma", "useful mathlib")
+    for idx, line in enumerate(lines):
+        lowered = line.lower()
+        if not any(pattern in lowered for pattern in patterns):
+            continue
+        start = max(0, idx - 1)
+        end = min(len(lines), idx + 2)
+        block = "\n".join(lines[start:end]).strip()
+        if block and block not in selected:
+            selected.append(block)
+    return _project_prove_bounded_excerpt("\n\n".join(selected), PROJECT_PROVE_MANAGER_HINT_CONTEXT_MAX_CHARS)
+
+
+def _project_prove_file_context_excerpt(
+    text: str,
+    entries: Sequence[Mapping[str, Any]],
+) -> tuple[str, str]:
+    raw = str(text or "").strip()
+    if len(raw) <= PROJECT_PROVE_MANAGER_FULL_FILE_MAX_CHARS:
+        return "full", raw
+    parts: list[str] = []
+    header = _project_prove_header_excerpt(raw, entries)
+    if header:
+        parts.append("File header/imports:\n" + header)
+    hints = _project_prove_hint_excerpt(raw)
+    if hints:
+        parts.append("Hints and checked lemmas:\n" + hints)
+    pending = [dict(entry) for entry in entries if bool(entry.get("has_sorry"))]
+    lines = raw.splitlines()
+    for entry in pending[:2]:
+        context = _project_prove_declaration_context(lines, entry, max_chars=1200)
+        if context:
+            parts.append(f"Pending declaration near line {entry.get('line', '[unknown]')}:\n{context}")
+    return "selected", _project_prove_bounded_excerpt("\n\n".join(parts), PROJECT_PROVE_MANAGER_SELECTED_FILE_MAX_CHARS)
+
+
+def _project_prove_declaration_difficulty(entry: Mapping[str, Any]) -> int:
+    name = str(entry.get("name", "") or "").lower()
+    text = str(entry.get("text", "") or "").lower()
+    combined = f"{name}\n{text}"
+    score = 4
+    hard_tokens = {
+        "putnam": 5,
+        "imo": 4,
+        "aime": 3,
+        "amc": 2,
+        "numbertheory": 2,
+        "olympiad": 3,
+        "convexhull": 2,
+        "euclideanspace": 2,
+        "volume": 2,
+        "polynomial": 1,
+        "finset": 1,
+        "strictmono": 1,
+    }
+    easy_tokens = {
+        "mathd": 2,
+        "linear": 1,
+        "lipschitz": 1,
+        "abs": 1,
+    }
+    for token, weight in hard_tokens.items():
+        if token in combined:
+            score += weight
+    for token, weight in easy_tokens.items():
+        if token in combined:
+            score -= weight
+    line = int(entry.get("line", 0) or 0)
+    end_line = int(entry.get("end_line", line) or line)
+    span = max(1, end_line - line + 1)
+    if span > 12:
+        score += 1
+    if span > 24:
+        score += 1
+    return max(0, score)
+
+
+def _project_prove_file_hint_count(text: str) -> int:
+    lowered = str(text or "").lower()
+    return (
+        len(re.findall(r"^\s*#check\b", str(text or ""), flags=re.MULTILINE))
+        + lowered.count("hint")
+        + lowered.count("useful lemma")
+        + lowered.count("useful mathlib")
+    )
+
+
+def _project_prove_worked_example_count(entries: Sequence[Mapping[str, Any]], first_pending_line: int) -> int:
+    return sum(
+        1
+        for entry in entries
+        if int(entry.get("line", 0) or 0) < first_pending_line
+        and not bool(entry.get("has_sorry"))
+        and str(entry.get("kind", "") or "") in {"example", "theorem", "lemma"}
+    )
+
+
+def _project_prove_file_difficulty(
+    entries: Sequence[Mapping[str, Any]],
+    text: str,
+) -> dict[str, Any]:
+    pending = [dict(entry) for entry in entries if bool(entry.get("has_sorry"))]
+    file_context_kind, file_context_excerpt = _project_prove_file_context_excerpt(text, entries)
+    if not pending:
+        return {
+            "difficulty_score": 0,
+            "first_pending_difficulty_score": 0,
+            "hint_count": _project_prove_file_hint_count(text),
+            "worked_example_count": 0,
+            "pending_declarations": [],
+            "file_context_kind": file_context_kind,
+            "file_context_excerpt": file_context_excerpt,
+        }
+    lines = str(text or "").splitlines()
+    pending_declarations = [
+        {
+            "name": str(entry.get("name", "") or ""),
+            "kind": str(entry.get("kind", "") or ""),
+            "line": int(entry.get("line", 0) or 0),
+            "difficulty_score": _project_prove_declaration_difficulty(entry),
+            "context_excerpt": _project_prove_declaration_context(lines, entry),
+        }
+        for entry in pending[:PROJECT_PROVE_MANAGER_PENDING_DECL_LIMIT]
+    ]
+    first_line = int(pending[0].get("line", 0) or 0)
+    hint_count = _project_prove_file_hint_count(text)
+    worked_example_count = _project_prove_worked_example_count(entries, first_line)
+    first_score = int(pending_declarations[0].get("difficulty_score", 0) or 0)
+    average_score = round(
+        sum(int(item.get("difficulty_score", 0) or 0) for item in pending_declarations) / len(pending_declarations),
+        2,
+    )
+    support_discount = min(4, hint_count // 2 + worked_example_count // 3)
+    difficulty_score = max(0, int(round((first_score * 2 + average_score) / 3)) - support_discount)
+    return {
+        "difficulty_score": difficulty_score,
+        "first_pending_difficulty_score": first_score,
+        "hint_count": hint_count,
+        "worked_example_count": worked_example_count,
+        "pending_declarations": pending_declarations,
+        "file_context_kind": file_context_kind,
+        "file_context_excerpt": file_context_excerpt,
+    }
+
+
+def _project_prove_dependency_graph(
+    lean_files: Sequence[Path],
+    module_to_path: Mapping[str, Path],
+) -> tuple[dict[Path, set[Path]], dict[Path, set[Path]], dict[Path, list[str]]]:
+    imports_by_path: dict[Path, set[Path]] = {path.resolve(): set() for path in lean_files}
+    imported_by_path: dict[Path, set[Path]] = {path.resolve(): set() for path in lean_files}
+    import_modules_by_path: dict[Path, list[str]] = {}
+    for path in lean_files:
+        resolved = path.resolve()
+        modules = _lean_import_modules(path)
+        import_modules_by_path[resolved] = modules
+        for module in modules:
+            imported = module_to_path.get(module)
+            if imported is None:
+                continue
+            imported_resolved = imported.resolve()
+            if imported_resolved == resolved:
+                continue
+            imports_by_path.setdefault(resolved, set()).add(imported_resolved)
+            imported_by_path.setdefault(imported_resolved, set()).add(resolved)
+    return imports_by_path, imported_by_path, import_modules_by_path
+
+
+def _project_prove_transitive_paths(start: Path, graph: Mapping[Path, set[Path]]) -> set[Path]:
+    root = start.resolve()
+    seen: set[Path] = set()
+    stack = list(graph.get(root, set()))
+    while stack:
+        current = stack.pop()
+        if current in seen or current == root:
+            continue
+        seen.add(current)
+        stack.extend(path for path in graph.get(current, set()) if path not in seen)
+    return seen
+
+
+def _project_prove_label_list(paths: Iterable[Path], root: Path, *, limit: int = 8) -> list[str]:
+    labels = [_relative_project_file_label(path, root) for path in sorted(paths, key=lambda value: str(value))]
+    return [label for label in labels if label][:limit]
+
+
+def _collect_project_prove_file_candidates(project_root: str | os.PathLike[str] | None = None) -> list[dict[str, Any]]:
+    root = Path(project_root or _project_root())
+    if not root.is_dir():
+        return []
+    lean_files = _project_lean_files(str(root))
+    module_to_path = {
+        module: path.resolve()
+        for path in lean_files
+        for module in [_module_name_for_project_path(path, root)]
+        if module
+    }
+    imports_by_path, imported_by_path, import_modules_by_path = _project_prove_dependency_graph(lean_files, module_to_path)
+    sorry_files: list[Path] = []
+    for path in lean_files:
+        count = _count_sorries(str(path))
+        if isinstance(count, int) and count > 0:
+            sorry_files.append(path.resolve())
+
+    sorry_path_set = {path.resolve() for path in sorry_files}
+
+    candidates: list[dict[str, Any]] = []
+    for path in sorry_files:
+        resolved = path.resolve()
+        try:
+            text = path.read_text(encoding="utf-8")
+            line_count = len(text.splitlines())
+        except Exception:
+            text = ""
+            line_count = 0
+        declarations = _declaration_line_index(str(path))
+        difficulty = _project_prove_file_difficulty(declarations, text)
+        direct_imports = set(imports_by_path.get(resolved, set()))
+        direct_imported_by = set(imported_by_path.get(resolved, set()))
+        transitive_imports = _project_prove_transitive_paths(resolved, imports_by_path)
+        transitive_imported_by = _project_prove_transitive_paths(resolved, imported_by_path)
+        candidate_imports = direct_imports & sorry_path_set
+        candidate_imported_by = direct_imported_by & sorry_path_set
+        candidate_upstream = transitive_imports & sorry_path_set
+        candidate_downstream = transitive_imported_by & sorry_path_set
+        candidates.append(
+            {
+                "label": _relative_project_file_label(path, root),
+                "path": str(path),
+                "module_name": _module_name_for_project_path(path, root),
+                "sorry_count": int(_count_sorries(str(path)) or 0),
+                "line_count": line_count,
+                "declaration_count": len(declarations),
+                "import_count": int(len(import_modules_by_path.get(resolved, []) or [])),
+                "project_import_count": int(len(direct_imports)),
+                "imported_by_count": int(len(direct_imported_by)),
+                "project_downstream_count": int(len(transitive_imported_by)),
+                "candidate_import_count": int(len(candidate_imports)),
+                "candidate_imports": _project_prove_label_list(candidate_imports, root),
+                "candidate_imported_by_count": int(len(candidate_imported_by)),
+                "candidate_imported_by": _project_prove_label_list(candidate_imported_by, root),
+                "candidate_upstream_count": int(len(candidate_upstream)),
+                "candidate_downstream_count": int(len(candidate_downstream)),
+                "candidate_downstream": _project_prove_label_list(candidate_downstream, root),
+                "project_imports": _project_prove_label_list(direct_imports, root),
+                "project_imported_by": _project_prove_label_list(direct_imported_by, root),
+                **difficulty,
+            }
+        )
+    return candidates
+
+
+def _project_prove_fallback_order(candidates: Sequence[Mapping[str, Any]]) -> list[str]:
+    ordered = sorted(
+        (dict(item) for item in candidates),
+        key=lambda item: (
+            -int(item.get("candidate_downstream_count", 0) or 0),
+            int(item.get("candidate_import_count", 0) or 0),
+            -int(item.get("project_downstream_count", 0) or 0),
+            -int(item.get("imported_by_count", 0) or 0),
+            int(item.get("difficulty_score", 0) or 0),
+            int(item.get("first_pending_difficulty_score", 0) or 0),
+            int(item.get("sorry_count", 0) or 0),
+            int(item.get("line_count", 0) or 0),
+            int(item.get("declaration_count", 0) or 0),
+            str(item.get("label", "") or ""),
+        ),
+    )
+    return [str(item.get("label", "") or "") for item in ordered if str(item.get("label", "") or "")]
+
+
+def _project_prove_priority_bucket(candidate: Mapping[str, Any]) -> tuple[int, ...]:
+    return (
+        -int(candidate.get("candidate_downstream_count", 0) or 0),
+        int(candidate.get("candidate_import_count", 0) or 0),
+        -int(candidate.get("project_downstream_count", 0) or 0),
+        -int(candidate.get("imported_by_count", 0) or 0),
+        int(candidate.get("difficulty_score", 0) or 0) // 3,
+        int(candidate.get("first_pending_difficulty_score", 0) or 0) // 3,
+    )
+
+
+def _guard_project_prove_llm_order(
+    labels: Sequence[str],
+    candidates: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    fallback = _project_prove_fallback_order(candidates)
+    if not labels:
+        return fallback
+    candidate_by_label = {str(item.get("label", "") or ""): dict(item) for item in candidates}
+    llm_rank = {str(label): idx for idx, label in enumerate(labels)}
+    fallback_rank = {str(label): idx for idx, label in enumerate(fallback)}
+    return sorted(
+        fallback,
+        key=lambda label: (
+            _project_prove_priority_bucket(candidate_by_label.get(label, {})),
+            llm_rank.get(label, len(llm_rank) + fallback_rank.get(label, 0)),
+            fallback_rank.get(label, 0),
+        ),
+    )
+
+
+def _extract_json_payload(text: str) -> Any:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = raw.find(opener)
+        end = raw.rfind(closer)
+        if start >= 0 and end > start:
+            try:
+                return json.loads(raw[start : end + 1])
+            except Exception:
+                continue
+    return None
+
+
+def _ordered_labels_from_llm_payload(payload: Any, valid_labels: set[str]) -> list[str]:
+    if isinstance(payload, Mapping):
+        raw_items = (
+            payload.get("files")
+            or payload.get("queue")
+            or payload.get("ordered_files")
+            or payload.get("order")
+            or []
+        )
+    else:
+        raw_items = payload if isinstance(payload, list) else []
+    labels: list[str] = []
+    for item in raw_items:
+        if isinstance(item, Mapping):
+            label = str(item.get("label") or item.get("file") or item.get("path") or "").strip()
+        else:
+            label = str(item or "").strip()
+        if label in valid_labels and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _llm_prioritize_project_prove_files(candidates: Sequence[Mapping[str, Any]]) -> tuple[list[str], str, str]:
+    fallback = _project_prove_fallback_order(candidates)
+    if not candidates:
+        return [], "fallback", "no candidate files"
+    valid_labels = {str(item.get("label", "") or "") for item in candidates}
+    summaries = [
+        {
+            "label": str(item.get("label", "") or ""),
+            "sorry_count": int(item.get("sorry_count", 0) or 0),
+            "line_count": int(item.get("line_count", 0) or 0),
+            "declaration_count": int(item.get("declaration_count", 0) or 0),
+            "imported_by_count": int(item.get("imported_by_count", 0) or 0),
+            "import_count": int(item.get("import_count", 0) or 0),
+            "module_name": str(item.get("module_name", "") or ""),
+            "dependency": {
+                "candidate_downstream_count": int(item.get("candidate_downstream_count", 0) or 0),
+                "candidate_downstream": list(item.get("candidate_downstream", []) or []),
+                "candidate_import_count": int(item.get("candidate_import_count", 0) or 0),
+                "candidate_imports": list(item.get("candidate_imports", []) or []),
+                "candidate_imported_by_count": int(item.get("candidate_imported_by_count", 0) or 0),
+                "candidate_imported_by": list(item.get("candidate_imported_by", []) or []),
+                "project_downstream_count": int(item.get("project_downstream_count", 0) or 0),
+                "project_imported_by": list(item.get("project_imported_by", []) or []),
+                "project_imports": list(item.get("project_imports", []) or []),
+            },
+            "difficulty_score": int(item.get("difficulty_score", 0) or 0),
+            "first_pending_difficulty_score": int(item.get("first_pending_difficulty_score", 0) or 0),
+            "hint_count": int(item.get("hint_count", 0) or 0),
+            "worked_example_count": int(item.get("worked_example_count", 0) or 0),
+            "pending_declarations": list(item.get("pending_declarations", []) or [])[:5],
+            "file_context": {
+                "kind": str(item.get("file_context_kind", "") or ""),
+                "excerpt": str(item.get("file_context_excerpt", "") or ""),
+            },
+        }
+        for item in list(candidates)[:PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT]
+    ]
+    prompt = (
+        "Rank Lean files for an EPFLemma `/prove` project run.\n\n"
+        "Priority policy:\n"
+        "1. Prefer candidate files that other candidate files transitively depend on. "
+        "Use `dependency.candidate_downstream_count` and `dependency.candidate_downstream` for this.\n"
+        "2. Prefer files with fewer unresolved candidate-file dependencies of their own. "
+        "Use `dependency.candidate_import_count` and `dependency.candidate_imports`.\n"
+        "3. Use project-wide import data as secondary dependency evidence, because top-level aggregator files may import many peers.\n"
+        "4. Prefer easier files, especially lower `difficulty_score` and lower `first_pending_difficulty_score`.\n"
+        "5. Read the provided file excerpt and pending declaration contexts. Full source is included for small files; large files include selected headers, hints, and pending theorem excerpts.\n"
+        "6. Treat files with local hints, checked lemmas, worked examples, and simple first pending declarations as easier.\n"
+        "7. Treat competition-style names such as Putnam, IMO, AIME, AMC, and deep number theory as harder unless the excerpt shows a simple proof path.\n"
+        "8. Prefer fewer `sorry`s and shorter files only when dependency and difficulty are similar.\n\n"
+        "Return only JSON in this shape: {\"files\": [\"relative/File.lean\", ...], \"reason\": \"short reason\"}.\n"
+        "Use only labels from the candidate list.\n\n"
+        f"Candidates:\n{json.dumps(summaries, ensure_ascii=False)}"
+    )
+    try:
+        response = call_llm(
+            task="prove_manager",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=2000,
+            timeout=20.0,
+        )
+        content = response.choices[0].message.content
+        payload = _extract_json_payload(content if isinstance(content, str) else str(content or ""))
+        labels = _ordered_labels_from_llm_payload(payload, valid_labels)
+        for label in fallback:
+            if label not in labels:
+                labels.append(label)
+        labels = _guard_project_prove_llm_order(labels, candidates)
+        if labels:
+            reason = str(payload.get("reason", "") if isinstance(payload, Mapping) else "").strip()
+            return labels, "llm", reason or "LLM-ranked by dependency, theorem difficulty, and length"
+    except Exception as exc:
+        return fallback, "fallback", f"LLM ranking unavailable: {type(exc).__name__}: {exc}"
+    return fallback, "fallback", "LLM ranking returned no usable file order"
+
+
+def _refresh_project_prove_file_queue(autonomy_state: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = _collect_project_prove_file_candidates(_project_root())
+    candidate_by_label = {str(item.get("label", "") or ""): dict(item) for item in candidates}
+    existing_queue = [
+        str(label or "")
+        for label in autonomy_state.get("project_prove_file_queue", [])
+        if str(label or "") in candidate_by_label
+    ]
+    planned_new_queue = not existing_queue
+    if existing_queue:
+        ordered_labels = existing_queue
+        fallback = _project_prove_fallback_order(candidates)
+        for label in fallback:
+            if label not in ordered_labels:
+                ordered_labels.append(label)
+        source = str(autonomy_state.get("project_prove_plan_source", "") or "existing")
+        reason = str(autonomy_state.get("project_prove_plan_reason", "") or "kept existing file queue")
+    else:
+        ordered_labels, source, reason = _llm_prioritize_project_prove_files(candidates)
+    ordered_candidates = [candidate_by_label[label] for label in ordered_labels if label in candidate_by_label]
+    autonomy_state["project_prove_file_queue"] = [str(item["label"]) for item in ordered_candidates]
+    autonomy_state["project_prove_file_candidates"] = ordered_candidates[:PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT]
+    autonomy_state["project_prove_plan_source"] = source
+    autonomy_state["project_prove_plan_reason"] = reason
+    if planned_new_queue and ordered_candidates:
+        _record_activity(
+            "project-prove-file-queue-planned",
+            f"Project prove manager planned {len(ordered_candidates)} file(s)",
+            total_candidates=len(candidates),
+            candidate_limit=PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT,
+            ordered_files=[str(item.get("label", "") or "") for item in ordered_candidates],
+            candidates=ordered_candidates[:PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT],
+            plan_source=source,
+            plan_reason=reason,
+        )
+    return ordered_candidates
+
+
+def _assign_project_prove_file(
+    autonomy_state: dict[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    phase: str,
+) -> bool:
+    label = str(candidate.get("label", "") or "").strip()
+    path = str(candidate.get("path", "") or "").strip()
+    if not label or not path:
+        return False
+    _set_native_active_file(label)
+    _set_project_prove_manager_active(True)
+    autonomy_state["project_prove_manager_enabled"] = True
+    autonomy_state["project_prove_active_file"] = label
+    autonomy_state["project_prove_active_file_path"] = path
+    autonomy_state.pop("final_file_sweep_announcement", None)
+    for key in _FINAL_SWEEP_AUTONOMY_KEYS:
+        autonomy_state.pop(key, None)
+    queue = [str(value or "") for value in autonomy_state.get("project_prove_file_queue", [])]
+    _record_activity(
+        "project-prove-file-assigned",
+        f"Project prove manager assigned {label}",
+        phase=phase,
+        active_file=label,
+        active_file_path=path,
+        remaining_files=queue[:PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT],
+        plan_source=str(autonomy_state.get("project_prove_plan_source", "") or ""),
+        plan_reason=str(autonomy_state.get("project_prove_plan_reason", "") or ""),
+    )
+    print("")
+    print(f"Project prove manager assigned file: {label}")
+    return True
+
+
+def _ensure_project_prove_manager_started(
+    autonomy_state: dict[str, Any],
+    *,
+    phase: str,
+) -> bool:
+    if not _project_prove_manager_requested():
+        return False
+    autonomy_state["project_prove_manager_enabled"] = True
+    _set_project_prove_manager_active(True)
+    if _read_native_env("ACTIVE_FILE", "").strip():
+        return False
+    candidates = _refresh_project_prove_file_queue(autonomy_state)
+    if not candidates:
+        _record_activity(
+            "project-prove-file-queue-empty",
+            "Project prove manager found no files with sorry placeholders",
+            phase=phase,
+        )
+        return False
+    return _assign_project_prove_file(autonomy_state, candidates[0], phase=phase)
+
+
+def _advance_project_prove_manager_if_needed(
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+    *,
+    phase: str,
+) -> bool:
+    if not _project_prove_manager_active(autonomy_state):
+        return False
+    current = dict(live_state or {})
+    if not _live_state_is_verified(current):
+        return False
+    active_label = _display_file_label(current) or str(autonomy_state.get("project_prove_active_file", "") or "")
+    if active_label:
+        completed = [str(value or "") for value in autonomy_state.get("project_prove_completed_files", [])]
+        if active_label not in completed:
+            completed.append(active_label)
+        autonomy_state["project_prove_completed_files"] = completed
+    candidates = _refresh_project_prove_file_queue(autonomy_state)
+    if not candidates:
+        autonomy_state["project_prove_file_queue"] = []
+        _record_activity(
+            "project-prove-file-queue-complete",
+            "Project prove manager has no remaining files with sorry placeholders",
+            phase=phase,
+            completed_files=list(autonomy_state.get("project_prove_completed_files", []) or []),
+        )
+        return False
+    for candidate in candidates:
+        label = str(candidate.get("label", "") or "")
+        if label and label != active_label:
+            return _assign_project_prove_file(autonomy_state, candidate, phase=phase)
+    return False
+
+
+def _project_prove_manager_summary(autonomy_state: Mapping[str, Any] | None) -> str:
+    if not _project_prove_manager_active(autonomy_state):
+        return ""
+    state = dict(autonomy_state or {})
+    queue = [str(item or "") for item in state.get("project_prove_file_queue", []) if str(item or "")]
+    active = str(state.get("project_prove_active_file", "") or _read_native_env("ACTIVE_FILE", "") or "").strip()
+    completed = [str(item or "") for item in state.get("project_prove_completed_files", []) if str(item or "")]
+    lines = [
+        "Project prove manager:",
+        f"- active file: {active or '[none assigned]'}",
+        f"- queue source: {state.get('project_prove_plan_source', '[unknown]')}",
+    ]
+    reason = str(state.get("project_prove_plan_reason", "") or "").strip()
+    if reason:
+        lines.append(f"- prioritization reason: {_single_line(reason, 220)}")
+    if queue:
+        shown = queue[:8]
+        lines.append("- file queue: " + ", ".join(shown) + (f", ... plus {len(queue) - len(shown)} more" if len(queue) > len(shown) else ""))
+    else:
+        lines.append("- file queue: [empty]")
+    if completed:
+        lines.append("- completed files: " + ", ".join(completed[-6:]))
+    return "\n".join(lines)
+
+
 def _failed_attempt_history_limit() -> int:
     raw = _read_native_env("FAILED_ATTEMPT_HISTORY", "10")
     try:
@@ -4070,6 +4772,8 @@ def _theorem_transition_handoff_message(
 
 
 def _theorem_transition_active_skill_message(live_state: Mapping[str, Any] | None) -> str:
+    if not _single_queue_item_turn_enabled():
+        return ""
     skill_contract = _startup_active_skill_contract(_effective_skill_name(live_state))
     if not skill_contract:
         return ""
@@ -4758,47 +5462,53 @@ def _build_live_proof_state(
         project_sorry_count=project_sorry_count,
         project_sorry_files=list(project_sorry_files),
     )
+    project_prove_summary = _project_prove_manager_summary(autonomy_state)
     body = "\n".join(
-        [
-            LIVE_PROOF_STATE_PREFIX,
-            "",
-            f"Workflow: {_workflow_kind()}",
-            f"Active file: {active_file_label or '[unknown]'}",
-            f"Active file path: {active_file or '[unknown]'}",
-            f"Target theorem: {target_symbol or ('[full-file verification sweep]' if queue_needs_final_file_sweep else '[unknown]')}",
-            "",
-            "Diagnostics:",
-            model_diagnostics,
-            "",
-            "Goals:",
-            goals,
-            "",
-            "Build:",
-            build_status or "no recent manager verification",
-            "",
-            "Queue horizon:",
-            model_queue_summary,
-            "",
-            "Route:",
-            f"{route_action} via {route_decision.get('skill_name', '[unknown]')}",
-            route_summary,
-            "",
-            "Recommended verification path:",
-            verification_hint or "`lean_inspect` first, then `lean_verify` when close to clean",
-            "",
-            "Search state:",
-            (
-                f"empty search streak: {empty_search_streak} (search exhausted for this theorem)"
-                if search_exhausted
-                else f"empty search streak: {empty_search_streak}"
-            ),
-            "",
-            "Capabilities:",
-            f"degraded reasons: {degraded_summary}",
-            "",
-            "Proof status:",
-            *model_proof_status,
-        ]
+        (
+            [
+                LIVE_PROOF_STATE_PREFIX,
+                "",
+                f"Workflow: {_workflow_kind()}",
+                f"Active file: {active_file_label or '[unknown]'}",
+                f"Active file path: {active_file or '[unknown]'}",
+                f"Target theorem: {target_symbol or ('[full-file verification sweep]' if queue_needs_final_file_sweep else '[unknown]')}",
+                "",
+                "Diagnostics:",
+                model_diagnostics,
+                "",
+                "Goals:",
+                goals,
+                "",
+                "Build:",
+                build_status or "no recent manager verification",
+                "",
+                "Queue horizon:",
+                model_queue_summary,
+                "",
+                "Route:",
+                f"{route_action} via {route_decision.get('skill_name', '[unknown]')}",
+                route_summary,
+                "",
+                "Recommended verification path:",
+                verification_hint or "`lean_inspect` first, then `lean_verify` when close to clean",
+                "",
+                "Search state:",
+                (
+                    f"empty search streak: {empty_search_streak} (search exhausted for this theorem)"
+                    if search_exhausted
+                    else f"empty search streak: {empty_search_streak}"
+                ),
+                "",
+            ]
+            + (["Project manager:", project_prove_summary, ""] if project_prove_summary else [])
+            + [
+                "Capabilities:",
+                f"degraded reasons: {degraded_summary}",
+                "",
+                "Proof status:",
+                *model_proof_status,
+            ]
+        )
     ).strip()
     live_state = {
         "active_file": active_file,
@@ -4827,6 +5537,11 @@ def _build_live_proof_state(
         "route_decision": route_decision,
         "recent_empty_search_streak": empty_search_streak,
         "search_exhausted": search_exhausted,
+        "project_prove_manager": _project_prove_manager_active(autonomy_state),
+        "project_prove_file_queue": list(dict(autonomy_state or {}).get("project_prove_file_queue", []) or []),
+        "project_prove_completed_files": list(dict(autonomy_state or {}).get("project_prove_completed_files", []) or []),
+        "project_prove_plan_source": str(dict(autonomy_state or {}).get("project_prove_plan_source", "") or ""),
+        "project_prove_plan_reason": str(dict(autonomy_state or {}).get("project_prove_plan_reason", "") or ""),
         "message": body,
     }
     if _workflow_kind() in AUTONOMOUS_WORKFLOW_KINDS:
@@ -4858,47 +5573,53 @@ def _build_live_proof_state(
             project_sorry_count=live_state.get("project_sorry_count"),
             project_sorry_files=list(live_state.get("project_sorry_files", []) or []),
         )
+        live_project_prove_summary = _project_prove_manager_summary(autonomy_state)
         live_state["message"] = "\n".join(
-            [
-                LIVE_PROOF_STATE_PREFIX,
-                "",
-                f"Workflow: {_workflow_kind()}",
-                f"Active file: {live_state.get('active_file_label') or '[unknown]'}",
-                f"Active file path: {live_state.get('active_file') or '[unknown]'}",
-                f"Target theorem: {live_state.get('target_symbol') or '[unknown]'}",
-                "",
-                "Diagnostics:",
-                live_diagnostics,
-                "",
-                "Goals:",
-                str(live_state.get("goals", "") or "unavailable"),
-                "",
-                "Build:",
-                str(live_state.get("build_status", "") or "no recent manager verification"),
-                "",
-                "Queue horizon:",
-                live_queue_summary,
-                "",
-                "Route:",
-                (
-                    f"{dict(live_state.get('route_decision', {}) or {}).get('route_action', '[none]')} "
-                    f"via {dict(live_state.get('route_decision', {}) or {}).get('skill_name', '[unknown]')}"
-                ),
-                str(dict(live_state.get("route_decision", {}) or {}).get("reason", "") or "[none]"),
-                "",
-                "Recommended verification path:",
-                str(live_state.get("verification_hint", "") or "`lean_inspect` first, then `lean_verify` when close to clean"),
-                "",
-                "Capabilities:",
-                "degraded reasons: "
-                + (
-                    ", ".join(dict(live_state.get("capability_report", {}) or {}).get("degraded_reasons", []) or [])
-                    or "[none]"
-                ),
-                "",
-                "Proof status:",
-                *live_proof_status,
-            ]
+            (
+                [
+                    LIVE_PROOF_STATE_PREFIX,
+                    "",
+                    f"Workflow: {_workflow_kind()}",
+                    f"Active file: {live_state.get('active_file_label') or '[unknown]'}",
+                    f"Active file path: {live_state.get('active_file') or '[unknown]'}",
+                    f"Target theorem: {live_state.get('target_symbol') or '[unknown]'}",
+                    "",
+                    "Diagnostics:",
+                    live_diagnostics,
+                    "",
+                    "Goals:",
+                    str(live_state.get("goals", "") or "unavailable"),
+                    "",
+                    "Build:",
+                    str(live_state.get("build_status", "") or "no recent manager verification"),
+                    "",
+                    "Queue horizon:",
+                    live_queue_summary,
+                    "",
+                    "Route:",
+                    (
+                        f"{dict(live_state.get('route_decision', {}) or {}).get('route_action', '[none]')} "
+                        f"via {dict(live_state.get('route_decision', {}) or {}).get('skill_name', '[unknown]')}"
+                    ),
+                    str(dict(live_state.get("route_decision", {}) or {}).get("reason", "") or "[none]"),
+                    "",
+                    "Recommended verification path:",
+                    str(live_state.get("verification_hint", "") or "`lean_inspect` first, then `lean_verify` when close to clean"),
+                    "",
+                ]
+                + (["Project manager:", live_project_prove_summary, ""] if live_project_prove_summary else [])
+                + [
+                    "Capabilities:",
+                    "degraded reasons: "
+                    + (
+                        ", ".join(dict(live_state.get("capability_report", {}) or {}).get("degraded_reasons", []) or [])
+                        or "[none]"
+                    ),
+                    "",
+                    "Proof status:",
+                    *live_proof_status,
+                ]
+            )
         ).strip()
     return live_state
 
@@ -5005,7 +5726,7 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     diagnostics = str(live_state.get("diagnostics", "") or "")
     goals = str(live_state.get("goals", "") or "")
     build_status = str(live_state.get("build_status", "") or "")
-    declaration_scope = str(live_state.get("declaration_scope", "") or _declaration_queue_scope())
+    declaration_scope = str(live_state.get("declaration_scope", "") or "project")
     sorry_count = live_state.get("sorry_count")
     project_sorry_count = live_state.get("project_sorry_count")
     verification_ok = live_state.get("verification_ok")
@@ -6707,6 +7428,10 @@ def _drive_autonomous_followups(
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
         live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
+        if _advance_project_prove_manager_if_needed(autonomy_state, live_state, phase="autonomous"):
+            checkpoint_state = _journal_status()
+            live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
+            live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
         rebuilt_history, transition = _rebuild_history_for_theorem_transition(
             history,
             compaction_state,
@@ -6873,6 +7598,7 @@ def main() -> int:
         resumed_checkpoint = checkpoint_state.get("current")
         if resumed_checkpoint:
             history = _checkpoint_replay_history(resumed_checkpoint)
+        _ensure_project_prove_manager_started(autonomy_state, phase="startup")
         live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="resumed" if resumed_checkpoint else "ready")
         _record_agent_activity(agent, "runner-start", "Managed workflow runner started", resumed=bool(resumed_checkpoint))
