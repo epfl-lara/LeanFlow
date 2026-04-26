@@ -376,6 +376,19 @@ def render_workflow_status_panel(console: Console, *, status: dict[str, object],
     table.add_row("Agents", str(status.get("parallel_agents", "1")))
     table.add_row("File", str(status.get("active_file_label", "[unknown]")))
     table.add_row("Theorem", str(status.get("target_symbol", "[unknown]")))
+    if bool(status.get("project_prove_manager")):
+        raw_queue = status.get("project_prove_file_queue", [])
+        raw_completed = status.get("project_prove_completed_files", [])
+        queue_items = raw_queue if isinstance(raw_queue, list) else []
+        completed_items = raw_completed if isinstance(raw_completed, list) else []
+        queue = [str(item or "") for item in queue_items if str(item or "")]
+        completed = [str(item or "") for item in completed_items if str(item or "")]
+        source = str(status.get("project_prove_plan_source", "") or "active")
+        table.add_row("Project manager", f"{source}; {len(queue)} queued, {len(completed)} completed")
+        if queue:
+            shown = queue[:4]
+            suffix = f", +{len(queue) - len(shown)} more" if len(queue) > len(shown) else ""
+            table.add_row("File queue", ", ".join(shown) + suffix)
     table.add_row("Build", str(status.get("build_status", "unknown")))
     table.add_row("Project sorries", str(status.get("project_sorry_count", "[unknown]")))
     table.add_row("Checkpoint", str(status.get("latest_checkpoint_label", "[none]")))
