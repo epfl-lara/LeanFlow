@@ -532,6 +532,7 @@ class AIAgent:
         provider_data_collection: str = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
+        pre_tool_call_callback: callable = None,
         post_tool_result_callback: callable = None,
         thinking_callback: callable = None,
         reasoning_callback: callable = None,
@@ -584,6 +585,9 @@ class AIAgent:
             provider_sort (str): Sort providers by price/throughput/latency (optional)
             session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
+            pre_tool_call_callback (callable): Callback function(tool_name, args_dict) invoked before each tool.
+                If it returns a string or JSON-serializable object, the tool call is skipped and that value is
+                used as the tool result.
             post_tool_result_callback (callable): Callback function(tool_name, args_dict, result_text)
                 invoked after each tool finishes. Can request an interrupt to stop after a
                 workflow boundary such as the first file edit.
@@ -647,6 +651,7 @@ class AIAgent:
             self.api_mode = "chat_completions"
 
         self.tool_progress_callback = tool_progress_callback
+        self.pre_tool_call_callback = pre_tool_call_callback
         self.post_tool_result_callback = post_tool_result_callback
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
@@ -1276,6 +1281,12 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")
+        try:
+            from tools.terminal_tool import clear_task_env_overrides
+
+            clear_task_env_overrides(task_id)
+        except Exception:
+            pass
         _cleanup_optional_browser_state(task_id)
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
@@ -4137,6 +4148,9 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        preflight_result = self._preflight_tool_call(function_name, function_args)
+        if preflight_result is not None:
+            return preflight_result
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -4190,6 +4204,24 @@ class AIAgent:
                 owner_id=self.session_id,
                 parent_agent=self,
             )
+
+    def _preflight_tool_call(self, function_name: str, function_args: dict) -> str | None:
+        callback = getattr(self, "pre_tool_call_callback", None)
+        if not callback:
+            return None
+        try:
+            result = callback(function_name, function_args)
+        except Exception as cb_err:
+            logger.debug("pre_tool_call_callback error: %s", cb_err)
+            return None
+        if result is None or result is False:
+            return None
+        if isinstance(result, str):
+            return result
+        try:
+            return json.dumps(result, ensure_ascii=False)
+        except Exception:
+            return str(result)
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute multiple tool calls concurrently using a thread pool.
@@ -4501,8 +4533,12 @@ class AIAgent:
                     pass  # never block tool execution
 
             tool_start_time = time.time()
+            preflight_result = self._preflight_tool_call(function_name, function_args)
 
-            if function_name == "todo":
+            if preflight_result is not None:
+                function_result = preflight_result
+                tool_duration = time.time() - tool_start_time
+            elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
                 function_result = _todo_tool(
                     todos=function_args.get("todos"),
