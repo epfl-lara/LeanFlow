@@ -36,6 +36,9 @@ from tools.patch_parser import OperationType, parse_v4a_patch
 from tools.registry import registry
 
 
+LEAN_REASONING_HELP_MIN_TIMEOUT_S = 1200
+
+
 def check_lean_requirements() -> bool:
     return True
 
@@ -216,7 +219,7 @@ def lean_auto_probe_tool(
     *,
     cwd: str = "",
     methods: list[str] | None = None,
-    timeout_s: int = 10,
+    timeout_s: int = 60,
 ) -> str:
     return json.dumps(
         lean_auto_probe(
@@ -586,7 +589,7 @@ def lean_reasoning_help_tool(
     recent_failed_attempts: str = "",
     question: str = "",
     cwd: str = "",
-    timeout_s: int = 45,
+    timeout_s: int = LEAN_REASONING_HELP_MIN_TIMEOUT_S,
 ) -> str:
     """Ask the configured auxiliary theorem advisor for proof-strategy advice."""
     theorem_id = str(theorem_id or "").strip()
@@ -642,7 +645,7 @@ def lean_reasoning_help_tool(
             ],
             temperature=0.2,
             max_tokens=max_tokens,
-            timeout=max(5, int(timeout_s or 45)),
+            timeout=max(LEAN_REASONING_HELP_MIN_TIMEOUT_S, int(timeout_s or 0)),
         )
     except RuntimeError as exc:
         return _advisor_failure("unavailable", str(exc), theorem_id=theorem_id, file_path=file_path)
@@ -878,7 +881,7 @@ LEAN_AUTO_PROBE_SCHEMA = {
             "file_path": {"type": "string", "description": "Lean file path"},
             "theorem_id": {"type": "string", "description": "Declaration name to probe"},
             "methods": {"type": "array", "items": {"type": "string"}, "description": "Automation methods to probe"},
-            "timeout_s": {"type": "integer", "default": 10},
+            "timeout_s": {"type": "integer", "default": 60},
             "cwd": {"type": "string", "description": "Optional working directory"},
         },
         "required": ["file_path", "theorem_id"],
@@ -996,7 +999,7 @@ LEAN_REASONING_HELP_SCHEMA = {
             "recent_failed_attempts": {"type": "string", "description": "Summary of prior failed attempts and errors"},
             "question": {"type": "string", "description": "Specific advice request for the auxiliary model"},
             "cwd": {"type": "string", "description": "Optional project working directory"},
-            "timeout_s": {"type": "integer", "description": "Advisor request timeout in seconds", "default": 45},
+            "timeout_s": {"type": "integer", "description": "Advisor request timeout in seconds", "default": 1200},
         },
         "required": ["theorem_id", "file_path"],
     },
@@ -1127,7 +1130,7 @@ registry.register(
         theorem_id=args.get("theorem_id", ""),
         cwd=args.get("cwd", ""),
         methods=list(args.get("methods", []) or []) or None,
-        timeout_s=int(args.get("timeout_s", 10) or 10),
+        timeout_s=int(args.get("timeout_s", 60) or 60),
     ),
     check_fn=check_lean_requirements,
     emoji="🧪",
@@ -1208,7 +1211,7 @@ registry.register(
         recent_failed_attempts=args.get("recent_failed_attempts", ""),
         question=args.get("question", ""),
         cwd=args.get("cwd", ""),
-        timeout_s=int(args.get("timeout_s", 45) or 45),
+        timeout_s=int(args.get("timeout_s", LEAN_REASONING_HELP_MIN_TIMEOUT_S) or LEAN_REASONING_HELP_MIN_TIMEOUT_S),
     ),
     check_fn=check_lean_requirements,
     emoji="💡",

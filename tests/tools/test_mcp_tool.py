@@ -432,6 +432,54 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_managed_lean_server_uses_project_root_as_cwd(self, tmp_path, monkeypatch):
+        """Managed Lean MCP subprocesses should start in the active Lean project."""
+        from tools.mcp_tool import MCPServerTask
+
+        monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(tmp_path))
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params, p_stdio, p_cs:
+                server = MCPServerTask("lean-proof-auto")
+                await server.start({"command": "lean-proof-auto-mcp"})
+
+                assert mock_params.call_args.kwargs["cwd"] == str(tmp_path)
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+
+    def test_explicit_stdio_cwd_wins_over_project_root(self, tmp_path, monkeypatch):
+        """A configured MCP cwd remains authoritative for nonstandard servers."""
+        from tools.mcp_tool import MCPServerTask
+
+        configured = tmp_path / "configured"
+        configured.mkdir()
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params, p_stdio, p_cs:
+                server = MCPServerTask("lean-proof-auto")
+                await server.start({"command": "lean-proof-auto-mcp", "cwd": str(configured)})
+
+                assert mock_params.call_args.kwargs["cwd"] == str(configured)
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+
     def test_shutdown_signals_task_exit(self):
         """shutdown() signals the event and waits for task completion."""
         from tools.mcp_tool import MCPServerTask

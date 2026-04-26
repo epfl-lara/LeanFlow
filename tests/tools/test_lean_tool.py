@@ -184,10 +184,11 @@ def test_lean_proof_context_tool_returns_normalized_payload(monkeypatch):
 
 
 def test_lean_auto_probe_tool_surfaces_degraded_reasons(monkeypatch):
-    monkeypatch.setattr(
-        lean_tool,
-        "lean_auto_probe",
-        lambda *args, **kwargs: {
+    captured: dict[str, object] = {}
+
+    def _fake_auto_probe(*args, **kwargs):
+        captured.update(kwargs)
+        return {
             "success": False,
             "backend_tool": "",
             "file_path": "Demo/Main.lean",
@@ -196,7 +197,12 @@ def test_lean_auto_probe_tool_surfaces_degraded_reasons(monkeypatch):
                 "lean automation MCP unavailable",
                 "lean automation probe MCP unavailable",
             ],
-        },
+        }
+
+    monkeypatch.setattr(
+        lean_tool,
+        "lean_auto_probe",
+        _fake_auto_probe,
     )
 
     payload = json.loads(
@@ -205,6 +211,7 @@ def test_lean_auto_probe_tool_surfaces_degraded_reasons(monkeypatch):
 
     assert payload["success"] is False
     assert "lean automation probe MCP unavailable" in payload["degraded_reasons"]
+    assert captured["timeout_s"] == 60
 
 
 def test_apply_verified_patch_tool_applies_patch_and_records_verified_status(tmp_path, monkeypatch):
@@ -387,6 +394,7 @@ def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
     assert "placeholder proof" in payload["next_step"]
     assert captured["task"] == "lean_reasoning"
     assert captured["max_tokens"] == 64000
+    assert captured["timeout"] == 1200
     system_prompt = captured["messages"][0]["content"]
     assert "advisory only" in system_prompt
     assert "world-class mathematical strategist" in system_prompt
@@ -394,6 +402,26 @@ def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
     assert "not verification evidence" in system_prompt
     assert "Do not suggest deleting, weakening, renaming, moving, or splitting" in system_prompt
     assert "sorry, admit, axiom, unsafe code, or a placeholder" in system_prompt
+
+
+def test_lean_reasoning_help_tool_clamps_short_timeout(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            model="moonshotai/Kimi-K2.6-int4",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Use a coordinate normalization first."))],
+        )
+
+    monkeypatch.setattr(lean_tool, "call_llm", _fake_call_llm)
+
+    payload = json.loads(
+        lean_tool.lean_reasoning_help_tool("demo", "Demo/Main.lean", timeout_s=45)
+    )
+
+    assert payload["success"] is True
+    assert captured["timeout"] == 1200
 
 
 def test_lean_reasoning_help_tool_reports_no_answer(monkeypatch):
