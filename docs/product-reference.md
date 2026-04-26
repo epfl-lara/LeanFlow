@@ -431,7 +431,10 @@ That state now also includes structured capability snapshots, route decisions, a
 The verification loop is intentionally Lean-LSP-first:
 
 - use diagnostics and proof goals for most iterations
-- for file-scoped theorem-queue turns, only accept success after the canonical `lake env lean <file>` check for that file
+- for ordered same-file theorem-queue turns, use `lean_incremental_check(check_target)` as the primary queue-step verifier; it keeps a LeanInteract server warm, reuses header/import state, and checks only the assigned declaration chunk
+- keep the canonical `lake env lean <file>` path for final file/project sweeps, explicit canonical checks, and LeanInteract fallback recovery
+- the queue manager performs controlled LeanInteract warmup with `prepare_file` when a theorem assignment is created or changes, so patch verification can reuse the warmed server
+- agents should use `lean_incremental_check` or `lean_verify` for normal theorem-queue verification so the manager can classify the assigned declaration; terminal-based Lake checks remain available as an emergency/manual fallback when Lean tools themselves are broken
 - do not treat `lake build`, `grep`, `head`, or truncated output as proof that an assigned theorem is clean
 - outside those theorem-scoped turns, avoid repeated `lake env lean <file>` checks because they are slow on large imports
 - prefer a focused `lake build <Module>` when the active file is close to clean
@@ -457,7 +460,21 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
   - return structured Lean state for a file: diagnostics, goals, `sorry` counts, blocker classification, queue candidates, and the current capability snapshot
 - `lean_verify`
   - run the canonical verification ladder in `file_exact`, `module`, or `project` mode
-  - file-scoped theorem acceptance still requires the exact-file `lake env lean <file>` path
+- `lean_incremental_check`
+  - run the fast LeanInteract-backed verifier for ordered same-file theorem queues
+  - `prepare_file` warms imports/header and optionally advances cached environments to a target declaration
+  - `check_target` verifies the assigned declaration or replacement chunk with `allow_sorry=False`
+  - `feedback` returns diagnostics and optional tactic/proof-state annotations for repair prompts
+  - default usage for queue progress:
+    - `lean_incremental_check(file_path="Demo/Main.lean", theorem_id="my_theorem", action="check_target")`
+    - read `ok`, `valid_without_sorry`, `has_errors`, `has_sorry`, `messages`, `elapsed_s`, and `cache`
+  - richer repair usage:
+    - set `include_tactics=true`, or use `action="feedback"`, when diagnostics are not enough and the model needs intermediate tactic states
+    - inspect `tactics[*].tactic`, `tactics[*].goals`, `tactics[*].proof_state`, `tactics[*].file_start`, `messages[*].file_start`, and `feedback_lean`
+    - `feedback_lean` is the model-readable version of the current declaration with inserted feedback comments; use it to repair the proof at the exact failing line
+    - failures automatically try to rerun with tactic collection when possible, so blocked proofs usually return richer context without slowing successful checks
+  - trust it for queue-step validity when LeanInteract is available, the project-local REPL matches the current toolchain, the cached environment was built from current file content up to the target, and the checked chunk exactly matches the current declaration replacement
+  - use `lean_verify` instead for final sweeps, unavailable/crashed/stale LeanInteract sessions, header/import/earlier-declaration edits, non-ordered queues, or explicit canonical checks
 - `lean_search`
   - search in `auto`, `local`, `semantic`, `type-pattern`, or `natural-language` mode
   - prefers MCP/LSP-backed providers first and falls back to local `rg`/Mathlib search with explicit provider provenance and degraded reasons
@@ -466,7 +483,7 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
   - this is not a replacement for `lean_inspect` goals
   - when the active file already contains the target declaration, EPFLemma first stabilizes lookup from the local declaration range before asking the backend for richer context
   - if the proof-auto backend reports `theorem_not_found` or another backend-side context failure, EPFLemma falls back to a local declaration-slice context instead of pretending the backend succeeded
-  - repeated proof-auto lookup failures disable the proof-auto backend for the rest of the current workflow run so the agent stops wasting turns on the same blind spot
+  - a theorem-lookup miss does not disable proof-auto for the rest of the run; EPFLemma only sticky-disables proof-auto after transport or systemic backend failures
 - `lean_multi_attempt`
   - screen 2-6 concrete tactic candidates at one proof location through the MCP backend
 - `lean_auto_probe`
@@ -522,9 +539,13 @@ What the runner does each cycle:
 
 5. Let the model work one theorem turn.
    - The model may inspect the file, search, ask for proof context, or edit with `patch`, `write_file`, or `apply_verified_patch`.
-   - `patch` and `write_file` are preferred in managed queue workflows; after a successful edit, the manager runs the canonical file verification gate automatically.
+   - During a theorem queue turn, terminal-based file edits are rejected. Shell verification is allowed, but edits must go through file tools so the manager can check the assigned-declaration boundary.
+   - If a file tool changes content outside the assigned declaration, the manager restores the out-of-scope declarations to their pre-tool state and reports the queue edit guard in the tool result.
+   - `patch` and `write_file` are preferred in managed queue workflows; the manager warms LeanInteract with `prepare_file` at assignment time, and after a successful edit it first runs `lean_incremental_check(check_target)` for the assigned declaration.
+   - If LeanInteract is unavailable, crashes, times out, or cannot rebuild a valid cache, the manager falls back to the canonical file verification gate.
+   - Direct terminal verification commands are not the normal managed path because the manager cannot classify them as precisely, but they remain available as an emergency/manual fallback if the Lean tool surface is broken.
    - `apply_verified_patch` remains available when the atomic checkpoint plus verification payload is useful.
-   - An explicit `lean_verify(mode=file_exact)` can also close the assigned theorem turn because the manager falls back to the saved assignment even if no pending-feedback flag is set.
+   - An explicit `lean_incremental_check(check_target)` or `lean_verify(mode=file_exact)` can also close the assigned theorem turn because the manager falls back to the saved assignment even if no pending-feedback flag is set.
    - If the model claims "solved" in a final report, the manager still runs deterministic review before accepting the claim.
 
 6. Classify the post-edit or final-report state.
@@ -551,7 +572,7 @@ What the runner does each cycle:
      - the opportunity starts when the manager first sees this state and sends warning-only feedback back into the same theorem turn
      - starting the opportunity increments the manager warning-cleanup counter for this `(theorem, file)`
      - this is not a single API step and not a new workflow run; the model continues the same theorem turn using the remaining workflow budget
-     - the opportunity is evaluated at the next manager gate for that same theorem: successful `patch` / `write_file` auto-verification, `apply_verified_patch`, explicit `lean_verify(mode=file_exact)`, or manager review of a final "solved" report
+     - the opportunity is evaluated at the next manager gate for that same theorem: successful `patch` / `write_file` LeanInteract auto-verification, `apply_verified_patch`, explicit `lean_incremental_check(check_target)`, explicit `lean_verify(mode=file_exact)`, or manager review of a final "solved" report
      - do not record a failed proof attempt
      - tell the model to fix only the assigned declaration and not edit future queued declarations
      - if that next manager gate sees no warnings, accept the theorem and advance
@@ -581,7 +602,8 @@ What the runner does each cycle:
 
 10. Finish or final-sweep when the queue is empty.
     - If the declaration queue is empty and file verification is clean, log that no final verification sweep is needed.
-    - If the declaration queue is empty but file verification still has residual warnings/errors, start final file sweep mode.
+    - If the declaration queue is empty but file verification still has hard blockers, start final file sweep mode.
+    - If file verification exits successfully and only warnings remain, accept the file as complete after the final sweep signal; warning-only style cleanup must not loop forever.
     - Only final file sweep mode permits whole-file cleanup instead of single-theorem focus.
 
 Flow:
@@ -605,8 +627,8 @@ flowchart TD
     I2 --> J
 
     J --> K{"Model action"}
-    K -- "patch/write_file/apply_verified_patch" --> L["Manager runs canonical file verification"]
-    K -- "explicit lean_verify" --> L
+    K -- "patch/write_file/apply_verified_patch" --> L["Manager runs LeanInteract queue-step verification"]
+    K -- "explicit lean_incremental_check or lean_verify" --> L
     K -- "claims solved" --> M["Manager final-report review"]
     M --> L
 
@@ -639,6 +661,8 @@ Queue handoff invariants:
 
 - The manager owns the full queue; the model sees only the assigned theorem horizon.
 - Future theorem `sorry` warnings are not model-facing proof obligations until assigned.
+- Raw diagnostics from future declarations are not classified as current-theorem manager feedback after the assigned declaration's target-level check has succeeded.
+- Queue turns are edit-scoped to the assigned declaration. Broad shell replacements, whole-file rewrites, and accidental edits to future queue items are blocked or restored by the manager.
 - The assigned theorem is successful when that declaration has no `sorry`, no open goals, no errors, and either no warning-only cleanup remains or its one focused warning-cleanup opportunity has already been spent.
 - Hard blockers keep the same theorem turn alive and become theorem-local failed-attempt context.
 - Warning-only cleanup never becomes a failed proof attempt and cannot stall the queue indefinitely.
@@ -646,6 +670,7 @@ Queue handoff invariants:
 - A final report from the model is a claim, not proof. The manager accepts it only after deterministic file verification and assigned-declaration checks.
 - Queue transitions rebuild the prompt from compact manager state instead of carrying previous-theorem reasoning into the next theorem.
 - The final file sweep is the only mode where the worker may clean whole-file residual warnings without a single assigned declaration.
+- Final file sweep completion is warning-tolerant: `lean_verify`/file verification must exit successfully, `sorry` must be gone in the active file, and no hard diagnostics or open goals may remain; style warnings alone are accepted.
 
 ## Routing And Specialist Workers
 
@@ -987,7 +1012,7 @@ There are now three important internal workflow surfaces:
 
 - `lean`
   - shared typed Lean capability surface
-  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_probe`, `lean_auto_search`, `lean_auto_try`, `apply_verified_patch`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
+  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_incremental_check`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_probe`, `lean_auto_search`, `lean_auto_try`, `apply_verified_patch`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
 
 - `epflemma-native`
   - default single-agent Lean workflow runtime
@@ -1191,7 +1216,7 @@ For theorem-local automation, the important behavior is:
 
 - `lean_proof_context` prefers backend context when available
 - if proof-auto lookup fails for a declaration that the local file already contains, EPFLemma falls back to a local declaration slice and nearby declarations
-- a proof-auto `theorem_not_found` miss disables the proof-auto backend for the rest of that workflow run so later turns do not keep retrying the same broken backend path
+- a proof-auto `theorem_not_found` miss is treated as a local context miss, not a run-wide backend failure; proof-auto remains available for later declarations
 
 To persist MCP sampling audit events to disk, enable it per server in `~/.epflemma/config.yaml`:
 

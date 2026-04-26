@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -93,6 +94,7 @@ MULTI_ATTEMPT_MIN_CANDIDATES = 2
 MULTI_ATTEMPT_MAX_CANDIDATES = 6
 MULTI_ATTEMPT_MAX_LINES = 12
 MULTI_ATTEMPT_MAX_CHARS = 700
+LOCAL_INCREMENTAL_AUTO_PROBE_MIN_TIMEOUT_S = 60
 
 
 def recent_empty_search_streak(*, workflow_command: str, limit: int = 6) -> int:
@@ -330,6 +332,7 @@ class LeanCapabilityReport:
     mcp_server_roles: dict[str, str] = field(default_factory=dict)
     managed_mcp_servers: dict[str, bool] = field(default_factory=dict)
     power_modes: dict[str, Any] = field(default_factory=dict)
+    incremental: dict[str, Any] = field(default_factory=dict)
     remote_search_policy: str = "public-fallbacks-enabled"
 
     def to_dict(self) -> dict[str, Any]:
@@ -448,7 +451,18 @@ def _repo_root() -> Path:
 
 
 def _project_root(cwd: str | os.PathLike[str] | None = None) -> tuple[Path | None, str]:
-    base = Path(cwd or os.getcwd()).expanduser().resolve()
+    explicit = str(
+        os.getenv(
+            "EPFLEMMA_PROJECT_ROOT",
+            os.getenv("OPENGAUSS_PROJECT_ROOT", os.getenv("GAUSS_PROJECT_ROOT", "")),
+        )
+        or ""
+    ).strip()
+    base = Path(cwd or explicit or os.getcwd()).expanduser().resolve()
+    if cwd is None and explicit:
+        lean_root = find_lean_project_root(base)
+        if lean_root is not None:
+            return lean_root, ""
     try:
         project = discover_epflemma_project(base)
         return project.root, ""
@@ -690,7 +704,14 @@ def _helper_tools() -> dict[str, bool]:
 
 
 def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabilityReport:
-    base = Path(cwd or os.getcwd()).expanduser().resolve()
+    explicit = str(
+        os.getenv(
+            "EPFLEMMA_PROJECT_ROOT",
+            os.getenv("OPENGAUSS_PROJECT_ROOT", os.getenv("GAUSS_PROJECT_ROOT", "")),
+        )
+        or ""
+    ).strip()
+    base = Path(cwd or explicit or os.getcwd()).expanduser().resolve()
     project_root, project_error = _project_root(base)
     binaries = {name: bool(shutil.which(name)) for name in ("lean", "lake", "elan", "git", "rg")}
     mcp_tools = _discover_lean_mcp_tools()
@@ -748,6 +769,19 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
             degraded.append("local Loogle configured but cache is not warmed yet; first local query may build it or fall back remotely")
         if project_root and power_modes.get("repl_configured") and not power_modes.get("repl_available"):
             degraded.append("Lean REPL acceleration configured but repl binary is unavailable; run `epflemma project init` to build it")
+    try:
+        from epflemma_cli.lean_incremental import lean_incremental_capabilities
+
+        incremental = lean_incremental_capabilities(base)
+    except Exception as exc:
+        incremental = {
+            "available": False,
+            "degraded_reasons": [f"LeanInteract incremental verifier unavailable: {exc}"],
+        }
+    if not bool(incremental.get("available", False)):
+        for reason in list(incremental.get("degraded_reasons", []) or []):
+            if reason and reason not in degraded:
+                degraded.append(str(reason))
     return LeanCapabilityReport(
         cwd=str(base),
         project_root=str(project_root or ""),
@@ -762,6 +796,7 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         mcp_server_roles=mcp_server_roles,
         managed_mcp_servers=managed_mcp_servers,
         power_modes=power_modes,
+        incremental=incremental,
         remote_search_policy=remote_search_policy,
     )
 
@@ -1557,18 +1592,78 @@ def _normalize_native_backend_status(
     payload["success"] = False
     degraded_reasons = list(payload.get("degraded_reasons", []) or [])
     failure_message = _native_backend_failure_message(payload)
-    if failure_message:
-        degraded_reasons.append(f"{outcome_kind} backend rejected: {failure_message}")
     lowered = failure_message.lower()
     if outcome_kind == "lean-auto-try" and "unknown option" in lowered and "linter.style.longline" in lowered:
         _disable_mcp_tool_for_run(tool_name, cwd=cwd)
+        payload["setup_blocker"] = {
+            "kind": "unsupported_project_option",
+            "option": "linter.style.longLine",
+            "scope": "file",
+            "message": failure_message,
+        }
         degraded_reasons.extend(
             [
                 "lean automation try disabled for this run after backend rejected the project-level long-line linter option",
                 "Treat unsupported project options as file-level setup blockers, not theorem proof failures; do not edit unrelated examples or solved declarations just to satisfy lean_auto_try.",
             ]
         )
+    elif failure_message:
+        degraded_reasons.append(f"{outcome_kind} backend rejected: {failure_message}")
     payload["degraded_reasons"] = list(dict.fromkeys(degraded_reasons))
+
+
+UNSUPPORTED_PROOF_AUTO_OPTIONS = {
+    "linter.style.longLine": "lean-auto-try backend does not support project-level `set_option linter.style.longLine`",
+}
+
+
+def _proof_auto_unsupported_option_reason(file_path: str | os.PathLike[str]) -> str:
+    try:
+        text = Path(file_path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for option, reason in UNSUPPORTED_PROOF_AUTO_OPTIONS.items():
+        if re.search(rf"(?m)^\s*set_option\s+{re.escape(option)}\b", text):
+            return reason
+    return ""
+
+
+def _local_auto_try_preflight_failure(
+    *,
+    report: LeanCapabilityReport,
+    tool_name: str,
+    file_path: str,
+    theorem_id: str,
+    proof_attempt: str,
+    reason: str,
+) -> dict[str, Any]:
+    if tool_name:
+        _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
+    payload: dict[str, Any] = {
+        "success": False,
+        "backend_tool": tool_name,
+        "file_path": file_path,
+        "theorem_id": theorem_id,
+        "proof_attempt": proof_attempt,
+        "setup_blocker": {
+            "kind": "unsupported_project_option",
+            "option": "linter.style.longLine",
+            "scope": "file",
+            "message": reason,
+        },
+        "degraded_reasons": list(
+            dict.fromkeys(
+                [
+                    *report.degraded_reasons,
+                    reason,
+                    "lean automation try disabled for this run before MCP call because the project contains an option the backend rejects",
+                    "Use lean_incremental_check or managed patch verification for this theorem; do not edit unrelated examples or solved declarations just to satisfy lean_auto_try.",
+                ]
+            )
+        ),
+    }
+    append_workflow_outcome("lean-auto-try", payload)
+    return payload
 
 
 def _auto_probe_attempt_succeeded(payload: Mapping[str, Any]) -> bool:
@@ -1579,6 +1674,152 @@ def _auto_probe_attempt_succeeded(payload: Mapping[str, Any]) -> bool:
         return True
     status = str(payload.get("status", "") or "").strip().lower()
     return status in {"trivial", "promising", "solved", "success"}
+
+
+def _automation_probe_replacement(entry: Mapping[str, Any], method: str) -> str:
+    text = str(entry.get("text", "") or "").strip()
+    tactic = str(method or "").strip()
+    if not text or not tactic:
+        return ""
+    match = re.search(r":=\s*by\b", text)
+    if match:
+        return text[: match.end()].rstrip() + f"\n  {tactic}\n"
+    if re.search(r"\b(sorry|by)\b", text):
+        return re.sub(r"\b(sorry|by\s+.*)\s*$", f"by\n  {tactic}", text, count=1, flags=re.DOTALL)
+    return ""
+
+
+def _incremental_probe_diagnostics(result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    diagnostics = []
+    for message in list(result.get("messages") or [])[:6]:
+        if not isinstance(message, Mapping):
+            continue
+        location = None
+        file_start = message.get("file_start")
+        if isinstance(file_start, Mapping):
+            location = {
+                "file": str(result.get("file", "") or ""),
+                "line": file_start.get("line"),
+                "column": file_start.get("column"),
+            }
+        diagnostics.append(
+            {
+                "severity": str(message.get("severity", "") or "info"),
+                "message": str(message.get("message", "") or ""),
+                "location": location,
+            }
+        )
+    if not diagnostics and str(result.get("error", "") or "").strip():
+        diagnostics.append(
+            {
+                "severity": "error",
+                "message": str(result.get("error", "") or ""),
+                "location": None,
+            }
+        )
+    return diagnostics
+
+
+def _local_incremental_auto_probe(
+    *,
+    file_path: str,
+    theorem_id: str,
+    cwd: str | os.PathLike[str] | None,
+    methods: list[str],
+    timeout_s: int,
+    report: LeanCapabilityReport,
+) -> dict[str, Any] | None:
+    incremental = report.incremental if isinstance(report.incremental, Mapping) else {}
+    if not bool(incremental.get("available", False)):
+        return None
+    path = Path(file_path)
+    entry = _find_declaration_entry(path, theorem_id)
+    if not entry:
+        return None
+    try:
+        from epflemma_cli.lean_incremental import lean_incremental_check
+    except Exception:
+        return None
+
+    effective_timeout_s = max(int(timeout_s or 0), LOCAL_INCREMENTAL_AUTO_PROBE_MIN_TIMEOUT_S)
+    attempts: list[dict[str, Any]] = []
+    for method in methods:
+        replacement = _automation_probe_replacement(entry, method)
+        started = time.monotonic()
+        if not replacement:
+            attempts.append(
+                {
+                    "mode": method,
+                    "api_version": "epflemma-local-lean-interact",
+                    "status": "error",
+                    "probe_result": {"mode": method, "outcome": "error", "classification": "error", "suggested_script": None},
+                    "diagnostics": [
+                        {
+                            "severity": "error",
+                            "message": "local_incremental_probe: could not construct an automation replacement for this declaration",
+                            "location": None,
+                        }
+                    ],
+                    "timing": {"elapsed_ms": 0.0, "budget_s": float(effective_timeout_s)},
+                    "metadata": {"backend": "lean_incremental_check", "error_code": "replacement_construction_failed"},
+                }
+            )
+            continue
+        result = lean_incremental_check(
+            action="check_target",
+            file_path=file_path,
+            theorem_id=theorem_id,
+            cwd=str(cwd or report.project_root or report.cwd or ""),
+            replacement=replacement,
+            include_tactics=False,
+            timeout_s=effective_timeout_s,
+        )
+        elapsed_ms = round((time.monotonic() - started) * 1000, 2)
+        ok = bool(result.get("success")) and bool(result.get("ok"))
+        status = "success" if ok else ("failed" if bool(result.get("success")) else "error")
+        classification = "success" if ok else ("failed" if bool(result.get("success")) else "error")
+        attempts.append(
+            {
+                "mode": method,
+                "api_version": "epflemma-local-lean-interact",
+                "status": status,
+                "probe_result": {
+                    "mode": method,
+                    "outcome": status,
+                    "classification": classification,
+                    "suggested_script": replacement if ok else None,
+                },
+                "diagnostics": _incremental_probe_diagnostics(result),
+                "timing": {"elapsed_ms": elapsed_ms, "budget_s": float(effective_timeout_s)},
+                "metadata": {
+                    "backend": "lean_incremental_check",
+                    "cache": result.get("cache", {}),
+                    "valid_without_sorry": result.get("valid_without_sorry"),
+                    "has_errors": result.get("has_errors"),
+                    "has_sorry": result.get("has_sorry"),
+                },
+            }
+        )
+
+    recommended_mode = ""
+    for attempt in attempts:
+        if _auto_probe_attempt_succeeded(attempt):
+            recommended_mode = str(attempt.get("mode", "") or "")
+            break
+    if not recommended_mode and attempts:
+        recommended_mode = str(attempts[0].get("mode", "") or "")
+    degraded_reasons = list(report.degraded_reasons)
+    if not any(_auto_probe_attempt_succeeded(attempt) for attempt in attempts):
+        degraded_reasons.extend(_summarize_attempt_diagnostics(attempts))
+    return {
+        "success": any(_auto_probe_attempt_succeeded(attempt) for attempt in attempts),
+        "backend_tool": "lean_incremental_check",
+        "degraded_reasons": list(dict.fromkeys(degraded_reasons)),
+        "file_path": file_path,
+        "theorem_id": theorem_id,
+        "attempts": attempts,
+        "recommended_mode": recommended_mode,
+    }
 
 
 def _auto_search_depth_for_objective(objective: str) -> str:
@@ -1695,9 +1936,8 @@ def lean_proof_context(
         if fail_message:
             degraded_reasons.append(f"proof context backend failure: {fail_message}")
         if fail_code == "theorem_not_found":
-            _disable_proof_auto_backend_for_run(cwd=report.cwd)
             degraded_reasons.append(
-                "proof-auto backend disabled for current run after theorem_not_found backend miss"
+                "using local declaration fallback after theorem_not_found without disabling proof-auto MCP"
             )
         elif tool_name:
             _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
@@ -1786,7 +2026,7 @@ def lean_auto_probe(
     *,
     cwd: str | os.PathLike[str] | None = None,
     methods: list[str] | None = None,
-    timeout_s: int = 10,
+    timeout_s: int = 60,
 ) -> dict[str, Any]:
     report = probe_capabilities(cwd)
     tool_name = report.mcp_tools.get("auto_probe", "")
@@ -1799,6 +2039,19 @@ def lean_auto_probe(
     ]
     if not normalized_methods:
         normalized_methods = ["aesop", "aesop?", "grind"]
+
+    local_payload = _local_incremental_auto_probe(
+        file_path=canonical_file_path,
+        theorem_id=theorem_id,
+        cwd=cwd,
+        methods=normalized_methods,
+        timeout_s=timeout_s,
+        report=report,
+    )
+    if local_payload is not None:
+        append_workflow_outcome("lean-auto-probe", local_payload)
+        return local_payload
+
     if not tool_name:
         payload = _wrapper_unavailable_result(
             report=report,
@@ -1904,8 +2157,19 @@ def lean_auto_try(
 ) -> dict[str, Any]:
     report = probe_capabilities(cwd)
     canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
+    tool_name = report.mcp_tools.get("auto_try", "")
+    unsupported_option_reason = _proof_auto_unsupported_option_reason(canonical_file_path)
+    if unsupported_option_reason:
+        return _local_auto_try_preflight_failure(
+            report=report,
+            tool_name=tool_name,
+            file_path=canonical_file_path,
+            theorem_id=theorem_id,
+            proof_attempt=proof_attempt,
+            reason=unsupported_option_reason,
+        )
     return _invoke_native_mcp_wrapper(
-        report.mcp_tools.get("auto_try", ""),
+        tool_name,
         {
             "file": canonical_file_path,
             "theorem_id": theorem_id,

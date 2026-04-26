@@ -4,6 +4,8 @@ import json
 import os
 from itertools import chain, repeat
 
+import pytest
+
 from epflemma_cli import native_runner as runner
 from epflemma_cli.workflow_state import read_workflow_activity
 
@@ -56,6 +58,30 @@ def test_run_managed_conversation_passes_through_result():
 
     assert result["interrupted"] is False
     assert result["kwargs"]["user_message"] == "hello"
+
+
+def test_run_managed_conversation_uses_managed_tool_task_id():
+    class _Agent:
+        _managed_tool_task_id = "managed-task"
+
+        def run_conversation(self, **kwargs):
+            return {"messages": [], "interrupted": False, "kwargs": kwargs}
+
+    result = runner._run_managed_conversation(_Agent(), user_message="hello")
+
+    assert result["kwargs"]["task_id"] == "managed-task"
+
+
+def test_run_managed_conversation_preserves_explicit_task_id():
+    class _Agent:
+        _managed_tool_task_id = "managed-task"
+
+        def run_conversation(self, **kwargs):
+            return {"messages": [], "interrupted": False, "kwargs": kwargs}
+
+    result = runner._run_managed_conversation(_Agent(), user_message="hello", task_id="explicit-task")
+
+    assert result["kwargs"]["task_id"] == "explicit-task"
 
 
 def test_run_managed_conversation_interrupts_on_ctrl_c(monkeypatch, capsys):
@@ -369,7 +395,25 @@ def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(m
             self.interrupt_messages.append(message)
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda active_file: {"ok": True, "command": "lake env lean Demo/Main.lean"})
+    incremental_calls = []
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda active_file, target_symbol: incremental_calls.append((active_file, target_symbol))
+        or {
+            "ok": True,
+            "mode": "incremental_target",
+            "backend": "lean_interact",
+            "command": "lean_interact check_target",
+            "target": target_symbol,
+            "incremental": {"success": True, "ok": True},
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: pytest.fail("successful incremental queue checks should not fall back to Lake"),
+    )
     monkeypatch.setattr(
         runner,
         "_build_live_proof_state",
@@ -394,8 +438,358 @@ def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(m
     assert "Workflow step verified for demo" in output
     assert "selecting the next target" in output
     assert "Queue step boundary: demo verified" in output
+    assert incremental_calls == [("Demo/Main.lean", "demo")]
     assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
     assert agent._managed_pending_theorem_feedback is None
+
+
+def test_handle_managed_tool_result_advances_when_target_check_clean_despite_inspect_warning(
+    monkeypatch, tmp_path, capsys
+):
+    """Regression: file-wide ``lean_inspect`` style warnings on the assigned
+    declaration must NOT block queue advancement when the targeted manager
+    check is clean. The targeted check is the spec-authoritative gate; the
+    user-visible ``Manager verification ... warnings: 0`` line and the
+    runner's actual decision must agree."""
+
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem addLipschitz : True := by",
+                "  have h : True := by",
+                "    simp [addF]",
+                "  trivial",
+                "",
+                "theorem next_demo : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "addLipschitz",
+                    "active_file": str(active),
+                    "slice": "theorem addLipschitz : True := by\n  trivial",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda active_file, target_symbol: {
+            "ok": True,
+            "mode": "incremental_target",
+            "backend": "lean_interact",
+            "command": "lean_interact check_target",
+            "target": target_symbol,
+            "output": "",
+            "incremental": {"success": True, "ok": True},
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: pytest.fail("successful incremental queue checks should not fall back to Lake"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "next_demo",
+            "active_file": str(active),
+            "active_file_label": "Main.lean",
+            "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+            "current_queue_item_slice": "theorem next_demo : True := by\n  sorry",
+            # File-wide inspect surfaces a style warning at line 3 (inside
+            # addLipschitz's range) — this used to spuriously trigger a
+            # cleanup-feedback opportunity even though the targeted check
+            # said warnings: 0.
+            "diagnostics": (
+                f"{active}:3:5: warning: simp [addF] is a flexible tactic; "
+                "consider using `simp only [addF]`"
+            ),
+            "goals": "no goals",
+            "build_status": "unknown",
+            "blocker_summary": "",
+        },
+    )
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+
+    assert not getattr(agent, "_post_tool_result_appendix", ""), (
+        "C2: file-wide warnings must not synthesize a cleanup-feedback appendix"
+    )
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    output = capsys.readouterr().out
+    assert "Workflow step verified for addLipschitz" in output
+    assert "Queue step boundary: addLipschitz verified" in output
+    assert "🟡 Cleanup feedback" not in output
+
+
+def test_handle_managed_tool_result_prints_cleanup_feedback_when_warning_in_target_check(
+    monkeypatch, tmp_path, capsys
+):
+    """Regression for Fix B: when the post-patch boundary keeps the same
+    theorem turn for a focused warning-cleanup opportunity, the runner must
+    print a visible ``🟡 Cleanup feedback`` line so the user can see why the
+    next API step happens. Before this fix the cleanup branch fell through
+    silently and looked indistinguishable from a hallucinated re-edit."""
+
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  trivial",
+                "",
+                "theorem next_demo : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  trivial",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda active_file, target_symbol: {
+            "ok": True,
+            "mode": "incremental_target",
+            "backend": "lean_interact",
+            "command": "lean_interact check_target",
+            "target": target_symbol,
+            # Warning is in the targeted check's own output -> Fix C2
+            # correctly keeps this as a real cleanup opportunity.
+            "output": f"{active}:2:3: warning: This line exceeds the 100 character limit, please shorten it!",
+            "incremental": {"success": True, "ok": True},
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: pytest.fail("successful incremental queue checks should not fall back to Lake"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "active_file_label": "Main.lean",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+            "current_queue_item_slice": "theorem demo : True := by\n  trivial",
+            "diagnostics": "",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "blocker_summary": "",
+        },
+    )
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+
+    assert "THEOREM FEEDBACK" in agent._post_tool_result_appendix
+    assert "warning-only cleanup" in agent._post_tool_result_appendix
+    output = capsys.readouterr().out
+    assert "🟡 Cleanup feedback for demo" in output
+    assert "focused warning-cleanup opportunity granted" in output
+    # Cleanup branch must NOT close the boundary or interrupt the agent —
+    # the model gets the same theorem turn back with the appendix attached.
+    assert agent.interrupt_messages == []
+    assert "Queue step boundary" not in output
+
+
+def test_handle_managed_tool_result_fires_cleanup_from_incremental_check_structured_messages(
+    monkeypatch, tmp_path, capsys
+):
+    """Regression: ``lean_incremental_check`` reports warnings as plain
+    ``warning: ...`` lines without the ``<file>:<line>:<col>:`` prefix that
+    ``diagnostic_items()``'s text fallback regex requires. Before forwarding
+    the structured ``messages`` list to the cleanup helper, those warnings
+    were invisible to the post-patch boundary even though the runner's own
+    ``🔎 Manager verification`` line reported the count correctly. The
+    focused warning-cleanup opportunity must fire when the targeted check
+    surfaces a warning whose line falls inside the assigned declaration."""
+
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  have h : True := by",
+                "    all_goals trivial",
+                "  trivial",
+                "",
+                "theorem next_demo : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  trivial",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda active_file, target_symbol: {
+            "ok": True,
+            "mode": "incremental_target",
+            "backend": "lean_interact",
+            "command": "lean_interact check_target",
+            "target": target_symbol,
+            # `lean_incremental_check`-style flat output: no `:line:col:`
+            # prefix, so `diagnostic_items()` returns [] for this text.
+            "output": (
+                "warning: 'all_goals trivial' tactic does nothing "
+                "Note: This linter can be disabled with `set_option linter.unusedTactic false`"
+            ),
+            # Structured form survives via the new `messages` field.
+            "messages": [
+                {
+                    "severity": "warning",
+                    "message": "'all_goals trivial' tactic does nothing",
+                    "line": 3,
+                    "column": 5,
+                }
+            ],
+            "incremental": {"success": True, "ok": True},
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: pytest.fail("successful incremental queue checks should not fall back to Lake"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "active_file_label": "Main.lean",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+            "current_queue_item_slice": "theorem demo : True := by\n  trivial",
+            "diagnostics": "",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "blocker_summary": "",
+        },
+    )
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+
+    appendix = getattr(agent, "_post_tool_result_appendix", "")
+    assert "THEOREM FEEDBACK" in appendix
+    assert "warning-only cleanup" in appendix
+    assert "all_goals trivial" in appendix
+    output = capsys.readouterr().out
+    assert "🟡 Cleanup feedback for demo" in output
+    assert "warning near line 3" in output
+    assert "focused warning-cleanup opportunity granted" in output
+    # Cleanup branch must NOT close the boundary or interrupt the agent —
+    # the model gets the same theorem turn back with the appendix attached.
+    assert agent.interrupt_messages == []
+    assert "Queue step boundary" not in output
+
+
+def test_declaration_diagnostic_feedback_reason_prefers_structured_items_over_text(tmp_path):
+    """Pin the helper contract: a structured warning inside the assigned
+    declaration's range wins over text-form parsing, so `lean_interact`
+    output that text-parsers cannot locate still produces a cleanup reason."""
+
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  have h : True := by",
+                "    all_goals trivial",
+                "  trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    text_only = runner._declaration_diagnostic_feedback_reason(
+        str(active),
+        "demo",
+        "warning: 'all_goals trivial' tactic does nothing",
+    )
+    structured = runner._declaration_diagnostic_feedback_reason(
+        str(active),
+        "demo",
+        "warning: 'all_goals trivial' tactic does nothing",
+        structured_items=[
+            {
+                "severity": "warning",
+                "message": "'all_goals trivial' tactic does nothing",
+                "line": 3,
+                "column": 5,
+            }
+        ],
+    )
+
+    # Without structured items, the regex fallback cannot locate the warning
+    # because there is no `<file>:<line>:<col>:` prefix.
+    assert text_only == ""
+    assert "warning near line 3" in structured
+    assert "all_goals trivial" in structured
 
 
 def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup(monkeypatch, tmp_path):
@@ -437,7 +831,7 @@ def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup
         runner,
         "_manager_verify_queue_file",
         lambda active_file: {
-            "ok": False,
+            "ok": True,
             "command": "lake env lean Main.lean",
             "output": f"{active}:2:3: warning: This line exceeds the 100 character limit, please shorten it!",
         },
@@ -466,6 +860,15 @@ def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup
     assert "warning-only cleanup" in agent._post_tool_result_appendix
     assert "local cleanup" in agent._post_tool_result_appendix
     assert "do not edit future queued declarations" in agent._post_tool_result_appendix
+    # Per-theorem cleanup appendix must (a) require an attempt before the
+    # bail clause, (b) name concrete low-risk fixes, (c) make the bail
+    # clause conditional on having read the declaration first. Prevents the
+    # model from running `lean_verify` and immediately declaring done.
+    assert "expected effort" in agent._post_tool_result_appendix.lower()
+    assert "at least one safe edit" in agent._post_tool_result_appendix.lower()
+    assert "all_goals" in agent._post_tool_result_appendix.lower()
+    assert "bail clause" in agent._post_tool_result_appendix.lower()
+    assert "inspected the declaration first" in agent._post_tool_result_appendix.lower()
     assert runner._manager_feedback_retry_count(
         agent._managed_autonomy_state,
         target_symbol="demo",
@@ -555,6 +958,75 @@ def test_handle_managed_tool_result_yields_after_warning_cleanup_retry(monkeypat
     assert agent._managed_step_boundary_closed is True
     output = capsys.readouterr().out
     assert "warning-only cleanup opportunity already used" in output
+
+
+def test_manager_feedback_kind_treats_nonzero_verification_as_error(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+
+    result = runner._manager_feedback_kind(
+        str(active),
+        "demo",
+        {
+            "ok": False,
+            "output": f"{active}:2:3: warning: this tactic is never executed",
+        },
+    )
+
+    assert result == "error"
+
+
+def test_manager_feedback_kind_adapter_golden_cases(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  trivial",
+                "",
+                "theorem future : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assigned_error = runner._manager_check_for_feedback_kind(
+        str(active),
+        "demo",
+        {"ok": False, "output": '{"items":[{"severity":"error","message":"type mismatch","line":2}]}'},
+    )
+    assigned_warning = runner._manager_check_for_feedback_kind(
+        str(active),
+        "demo",
+        {"ok": True, "output": '{"items":[{"severity":"warning","message":"style","line":2}]}'},
+    )
+    future_only = runner._manager_check_for_feedback_kind(
+        str(active),
+        "demo",
+        {"ok": False, "output": '{"items":[{"severity":"error","message":"future failed","line":5}]}'},
+    )
+    no_decl_evidence = runner._manager_check_for_feedback_kind(
+        str(active),
+        "demo",
+        {"ok": False, "output": "lean verification failed without scoped diagnostics"},
+    )
+    clean = runner._manager_check_for_feedback_kind(str(active), "demo", {"ok": True, "output": ""})
+
+    assert runner.classify_check(assigned_error) is runner.Classification.HARD_BLOCKER
+    assert runner._manager_feedback_kind(str(active), "demo", {"ok": False, "output": '{"items":[{"severity":"error","message":"type mismatch","line":2}]}'}) == "error"
+    assert runner.classify_check(assigned_warning) is runner.Classification.WARNING_ONCE
+    assert runner.classify_check(future_only) is runner.Classification.FUTURE_ONLY
+    assert runner._manager_feedback_kind(str(active), "demo", {"ok": False, "output": '{"items":[{"severity":"error","message":"future failed","line":5}]}'}) == ""
+    assert runner.classify_check(no_decl_evidence) is runner.Classification.HARD_BLOCKER
+    assert runner.classify_check(clean) is runner.Classification.ACCEPT
+
+
+def test_manager_feedback_kind_adapter_detects_assigned_sorry(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    assert runner._manager_feedback_kind(str(active), "demo", {"ok": True, "output": ""}) == "sorry"
 
 
 def test_handle_managed_tool_result_yields_for_unrelated_warning_cleanup(monkeypatch, tmp_path, capsys):
@@ -673,12 +1145,116 @@ def test_handle_managed_tool_result_supports_interrupted_property(monkeypatch):
     assert agent._managed_pending_theorem_feedback is None
 
 
+def test_handle_managed_tool_result_logs_target_verification_and_stores_record(monkeypatch, capsys):
+    class _Agent:
+        quiet_mode = False
+
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  trivial",
+                }
+            }
+            self._managed_pending_theorem_feedback = {
+                "target_symbol": "demo",
+                "active_file": "Demo/Main.lean",
+            }
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None, autonomy_state=None: {
+            "target_symbol": "next_demo",
+            "active_file": "Demo/Main.lean",
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+            "current_queue_item_slice": "theorem next_demo : True := by\n  sorry",
+            "diagnostics": "warning: declaration uses sorry",
+            "goals": "no goals",
+            "build_status": "",
+            "blocker_summary": "",
+        },
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_incremental_check",
+        {"action": "check_target"},
+        json.dumps(
+            {
+                "success": True,
+                "ok": True,
+                "action": "check_target",
+                "target": "demo",
+                "elapsed_s": 0.42,
+                "cache": {"cache_hit": True},
+                "messages": [],
+            }
+        ),
+    )
+
+    output = capsys.readouterr().out
+    assert "Manager verification (target demo): passed" in output
+    assert agent._managed_autonomy_state["last_verification"]["scope"] == "target:demo"
+    assert agent._managed_autonomy_state["last_verification"]["tool"] == "lean_incremental_check"
+
+
+def test_handle_managed_tool_result_disables_auto_try_schema_for_run(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self.tools = [
+                {"type": "function", "function": {"name": "lean_auto_try"}},
+                {"type": "function", "function": {"name": "lean_inspect"}},
+            ]
+            self.valid_tool_names = {"lean_auto_try", "lean_inspect"}
+            self._managed_autonomy_state = {}
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    agent = _Agent()
+
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_auto_try",
+        {},
+        json.dumps(
+            {
+                "success": False,
+                "degraded_reasons": [
+                    "lean automation try disabled for this run before MCP call because the project contains an option the backend rejects"
+                ],
+            }
+        ),
+    )
+
+    assert "lean_auto_try" not in agent.valid_tool_names
+    assert [tool["function"]["name"] for tool in agent.tools] == ["lean_inspect"]
+    assert agent._managed_autonomy_state["disabled_tools_this_run"][0]["name"] == "lean_auto_try"
+
+
 def test_review_agent_final_report_accepts_claim_only_after_manager_check(monkeypatch, tmp_path, capsys):
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
     events = []
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
     monkeypatch.setattr(
         runner,
         "_manager_verify_queue_file",
@@ -709,24 +1285,147 @@ def test_review_agent_final_report_accepts_claim_only_after_manager_check(monkey
     assert events
 
 
+def test_review_agent_final_report_accepts_incremental_queue_success_with_future_file_errors(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  trivial",
+                "",
+                "theorem later : True := by",
+                "  exact bad",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "file")
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda active_file, target_symbol: {
+            "ok": True,
+            "mode": "incremental_target",
+            "command": "lean_interact check_target",
+            "target": target_symbol,
+            "output": "",
+            "incremental": {
+                "success": True,
+                "ok": True,
+                "valid_without_sorry": True,
+                "has_errors": False,
+                "has_sorry": False,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: pytest.fail("clean assigned declarations must not be rejected by future file errors"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_query_live_diagnostics",
+        lambda active_file, target_symbol="": pytest.fail("clean target check should not query file-wide diagnostics"),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    result = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "`demo` solved.",
+            "messages": [{"role": "assistant", "content": "`demo` solved."}],
+        },
+        {"current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}},
+    )
+
+    assert result["manager_final_report_review"]["ok"] is True
+    assert result["manager_final_report_review"]["manager_tool"] == "lean_incremental_check"
+    assert len(result["messages"]) == 1
+
+
+def test_review_agent_final_report_does_not_classify_future_errors_as_current_feedback(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  trivial",
+                "",
+                "theorem later : True := by",
+                "  exact bad",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    future_error = f"{active}:5:8: error: unknown identifier 'bad'"
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "file")
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda active_file, target_symbol: {
+            "ok": True,
+            "mode": "incremental_target",
+            "command": "lean_interact check_target",
+            "target": target_symbol,
+            "output": future_error,
+            "incremental": {
+                "success": True,
+                "ok": True,
+                "valid_without_sorry": True,
+                "has_errors": False,
+                "has_sorry": False,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_query_live_diagnostics",
+        lambda active_file, target_symbol="": pytest.fail("clean target check should not query file-wide diagnostics"),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    result = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "`demo` solved.",
+            "messages": [{"role": "assistant", "content": "`demo` solved."}],
+        },
+        {"current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}},
+    )
+
+    review = result["manager_final_report_review"]
+    assert review["ok"] is True
+    assert review["manager_tool"] == "lean_incremental_check"
+    assert "feedback_kind" not in review
+    assert len(result["messages"]) == 1
+
+
 def test_review_agent_final_report_rejects_same_declaration_warning(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
     monkeypatch.setattr(
         runner,
         "_manager_verify_queue_file",
         lambda active_file: {
             "ok": True,
             "command": "lake env lean Main.lean",
-            "output": "lake env lean Main.lean succeeded",
+            "output": f"{active}:2:3: warning: The `cases'` tactic is discouraged",
         },
     )
     monkeypatch.setattr(
         runner,
         "_query_live_diagnostics",
-        lambda active_file, target_symbol="": f"{active}:2:3: warning: The `cases'` tactic is discouraged",
+        lambda active_file, target_symbol="": pytest.fail("final-report cleanup should use manager check output"),
     )
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
 
@@ -747,24 +1446,64 @@ def test_review_agent_final_report_rejects_same_declaration_warning(monkeypatch,
     assert "do not solve unrelated future queue items" in result["messages"][-1]["content"]
 
 
+def test_review_agent_final_report_ignores_same_declaration_info_diagnostics(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n#check True\n", encoding="utf-8")
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "file")
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda active_file, target_symbol: {
+            "ok": True,
+            "mode": "incremental_target",
+            "command": "lean_interact check_target",
+            "target": target_symbol,
+            "output": "Main.lean:3:1: info: True : Prop",
+            "incremental": {"success": True, "ok": True},
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_query_live_diagnostics",
+        lambda active_file, target_symbol="": pytest.fail("final-report cleanup should use manager check output"),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    result = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "`demo` solved.",
+            "messages": [{"role": "assistant", "content": "`demo` solved."}],
+        },
+        {"current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}},
+    )
+
+    assert result["manager_final_report_review"]["ok"] is True
+    assert "local_cleanup_reason" not in result["manager_final_report_review"]
+
+
 def test_review_agent_final_report_accepts_warning_only_after_one_retry(monkeypatch, tmp_path, capsys):
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
     monkeypatch.setattr(
         runner,
         "_manager_verify_queue_file",
         lambda active_file: {
             "ok": True,
             "command": "lake env lean Main.lean",
-            "output": "Main.lean:5:3: warning: declaration uses `sorry`",
+            "output": f"{active}:2:3: warning: The `cases'` tactic is discouraged",
         },
     )
     monkeypatch.setattr(
         runner,
         "_query_live_diagnostics",
-        lambda active_file, target_symbol="": f"{active}:2:3: warning: The `cases'` tactic is discouraged",
+        lambda active_file, target_symbol="": pytest.fail("final-report cleanup should use manager check output"),
     )
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
     autonomy_state = {"current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}}
@@ -824,6 +1563,7 @@ def test_review_agent_final_report_restores_sorry_after_hard_retry_limit(monkeyp
     )
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
     monkeypatch.setattr(
         runner,
         "_manager_verify_queue_file",
@@ -860,6 +1600,7 @@ def test_review_agent_final_report_rejects_claim_with_manager_feedback(monkeypat
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
     monkeypatch.setattr(
         runner,
         "_manager_verify_queue_file",
@@ -889,6 +1630,234 @@ def test_review_agent_final_report_rejects_claim_with_manager_feedback(monkeypat
     output = capsys.readouterr().out
     assert "needs work" in output
     assert "Queue step boundary: demo needs manager feedback" in output
+
+
+def test_declaration_queue_ignores_names_referenced_only_in_future_error_context(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "def isLipschitz : Prop := True",
+                "",
+                "theorem clean : isLipschitz := by",
+                "  trivial",
+                "",
+                "theorem later : True := by",
+                "  exact bad",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    diagnostics = (
+        '{"items":[{"severity":"error","message":"h : isLipschitz\\nunknown identifier bad",'
+        '"line":7,"column":8}]}'
+    )
+
+    queue = runner._declaration_work_queue(str(active), diagnostics, scope="file")
+
+    labels = [item["label"] for item in queue]
+    assert "later" in labels
+    assert "isLipschitz" not in labels
+    assert "clean" not in labels
+
+
+def test_declaration_cleanup_ignores_info_diagnostics(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "theorem demo : True := by\n"
+        "  trivial\n"
+        "#check True\n",
+        encoding="utf-8",
+    )
+
+    reason = runner._declaration_diagnostic_feedback_reason(
+        str(active),
+        "demo",
+        f"{active}:2:3: info: True : Prop",
+    )
+
+    assert reason == ""
+
+
+def test_same_queue_assignment_ignores_future_file_errors_when_assigned_clean(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  trivial",
+                "",
+                "theorem later : True := by",
+                "  exact bad",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    live_state = {
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "current_queue_item": {"label": "demo", "reasons": []},
+        "diagnostics": f"{active}:5:8: error: unknown identifier 'bad'",
+        "goals": "no goals",
+        "build_status": "lake env lean Main.lean reported errors",
+        "blocker_summary": "",
+    }
+
+    assert runner._same_queue_assignment_still_blocked(autonomy_state, live_state) is False
+
+
+def test_managed_pre_tool_call_blocks_terminal_edits_in_queue(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent:
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    result = runner._managed_pre_tool_call(
+        _Agent(),
+        "terminal",
+        {"command": "sed -i '' 's/sorry/trivial/' Main.lean"},
+    )
+
+    payload = json.loads(result)
+    assert payload["success"] is False
+    assert "terminal-based file edits" in payload["error"]
+    assert active.read_text(encoding="utf-8") == "theorem demo : True := by\n  sorry\n"
+    assert (
+        runner._managed_pre_tool_call(
+            _Agent(),
+            "terminal",
+            {"command": "lake env lean Main.lean 2>&1"},
+        )
+        is None
+    )
+
+
+def test_prepare_queue_assignment_state_warms_incremental_once(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(
+        runner,
+        "_manager_prepare_incremental_queue_item",
+        lambda active_file, target_symbol: calls.append((active_file, target_symbol))
+        or {
+            "success": True,
+            "ok": True,
+            "backend": "lean_interact",
+            "action": "prepare_file",
+            "target": target_symbol,
+            "elapsed_s": 0.1,
+            "cache": {"cache_hit": False},
+        },
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    autonomy_state = {}
+    live_state = {
+        "active_file": str(active),
+        "current_queue_item": {"label": "demo"},
+        "current_queue_item_slice": active.read_text(encoding="utf-8"),
+    }
+
+    runner._prepare_queue_assignment_state(autonomy_state, live_state)
+    runner._prepare_queue_assignment_state(autonomy_state, live_state)
+
+    assert calls == [(str(active), "demo")]
+    assert autonomy_state["current_queue_assignment"]["incremental_prepare"]["success"] is True
+
+
+def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "theorem demo : True := by\n"
+        "  sorry\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    class _Agent:
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "theorem demo : True := by\n"
+        "  trivial\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  trivial\n",
+        encoding="utf-8",
+    )
+
+    feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
+
+    assert "changed content outside the assigned declaration" in feedback
+    assert active.read_text(encoding="utf-8") == (
+        "theorem demo : True := by\n"
+        "  trivial\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n"
+    )
+
+
+def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
+    project = tmp_path / "Project"
+    project.mkdir()
+    registered = []
+
+    class _Agent:
+        session_id = "abc123"
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "model")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_API_KEY", "key")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "provider")
+    monkeypatch.setattr(runner, "AIAgent", _Agent)
+    monkeypatch.setattr(
+        "tools.terminal_tool.register_task_env_overrides",
+        lambda task_id, overrides: registered.append((task_id, overrides)),
+    )
+
+    agent = runner._build_agent()
+
+    assert os.environ["TERMINAL_CWD"] == str(project)
+    assert agent._managed_tool_task_id == "epflemma-native-abc123"
+    assert registered == [("epflemma-native-abc123", {"cwd": str(project)})]
 
 
 def test_handle_managed_tool_result_interrupts_even_if_live_refresh_fails(monkeypatch):
@@ -2045,6 +3014,50 @@ def test_current_queue_item_prefers_diagnostic_blocker_before_later_sorry(tmp_pa
     assert runner._current_queue_item(queue, str(active))["label"] == "broken"
 
 
+def test_current_queue_item_does_not_select_clean_declaration(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem clean : True := by",
+                "  trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    queue = [{"label": "clean", "reasons": []}]
+
+    assert runner._current_queue_item(queue, str(active)) is None
+
+
+def test_diagnostics_for_queue_horizon_does_not_leak_unparseable_future_lines(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem assigned : True := by",
+                "  trivial",
+                "",
+                "theorem future : True := by",
+                "  exact bad",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    text = runner._diagnostics_for_queue_horizon(
+        active_file=str(active),
+        target_symbol="assigned",
+        diagnostics="Lean said something failed around line 5: unknown identifier bad",
+        declaration_scope="file",
+        queue_needs_final_file_sweep=False,
+    )
+
+    assert "line 5" not in text
+    assert "future queue items are hidden" not in text
+    assert "could not be scoped reliably" in text
+
+
 def test_declaration_work_queue_does_not_match_very_short_names_from_text_alone(tmp_path):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
@@ -2257,6 +3270,42 @@ def test_live_state_is_not_verified_without_explicit_verification_result():
     assert runner._live_state_is_verified(live_state) is False
 
 
+def test_live_state_is_not_verified_when_typed_verification_failed():
+    live_state = {
+        "active_file": "/tmp/project/Main.lean",
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake build succeeded",
+        "verification_ok": True,
+        "sorry_count": 0,
+        "project_sorry_count": 0,
+        "last_verification": {
+            "scope": "file",
+            "ok": False,
+            "tool": "lean_verify",
+            "summary": "lake build reported errors",
+        },
+    }
+
+    assert runner._verification_outcome(live_state=live_state) == "failed"
+    assert runner._live_state_is_verified(live_state) is False
+
+
+def test_live_state_ignores_legacy_reported_errors_when_typed_verification_passed():
+    live_state = {
+        "active_file": "/tmp/project/Main.lean",
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake build reported errors",
+        "verification_ok": True,
+        "sorry_count": 0,
+        "project_sorry_count": 0,
+    }
+
+    assert runner._verification_outcome(live_state=live_state) == "ok"
+    assert runner._live_state_is_verified(live_state) is True
+
+
 def test_diagnostics_indicate_failure_for_warnings():
     assert runner._diagnostics_indicate_failure("warning: declaration uses simp") is True
 
@@ -2274,6 +3323,21 @@ def test_diagnostics_indicate_failure_keeps_structured_warnings_blocking():
     assert (
         runner._diagnostics_indicate_failure(
             '{"items":[{"severity":"warning","message":"style warning","line":6,"column":3}]}'
+        )
+        is True
+    )
+
+
+def test_diagnostics_indicate_hard_failure_ignores_warning_only_diagnostics():
+    assert (
+        runner._diagnostics_indicate_hard_failure(
+            "Demo/Main.lean:2:3: warning: this tactic is never executed"
+        )
+        is False
+    )
+    assert (
+        runner._diagnostics_indicate_hard_failure(
+            "Demo/Main.lean:2:3: error: unsolved goals"
         )
         is True
     )
@@ -2308,6 +3372,324 @@ def test_promote_live_state_uses_focused_build_before_full_project_build(monkeyp
     assert runner._live_state_is_verified(promoted) is False
 
 
+def test_promote_live_state_accepts_warning_only_final_file_sweep(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake env lean Demo/Main.lean exits 0"),
+    )
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": f"{active}:2:3: warning: this tactic is never executed",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        }
+    )
+
+    assert promoted["verification_ok"] is True
+    assert runner._live_state_is_verified(promoted) is True
+    assert runner._queue_needs_final_file_sweep(promoted) is False
+
+
+def test_promote_live_state_grants_one_final_sweep_warning_cleanup(monkeypatch, tmp_path, capsys):
+    """Spec :672 — final sweep is the canonical whole-file warning cleanup
+    window. When the queue is empty, lake build is clean, and warnings remain
+    on the active file, the runner must grant exactly one focused cleanup
+    cycle: snapshot the file, set the one-shot flag, and suppress
+    verification so the workflow loop drives one more conversation."""
+
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake env lean Demo/Main.lean exits 0"),
+    )
+
+    autonomy_state: dict = {}
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": f"{active}:2:3: warning: this tactic is never executed",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+
+    assert promoted["verification_ok"] is False, "warnings present must hold the workflow open for cleanup"
+    assert promoted["final_sweep_warning_cleanup_pending"] is True
+    assert promoted["final_sweep_warning_count"] == 1
+    assert "this tactic is never executed" in promoted["final_sweep_warning_summary"]
+    assert "line 2" in promoted["final_sweep_warning_summary"]
+    assert promoted["queue_needs_final_file_sweep"] is True
+    assert autonomy_state["final_sweep_cleanup_attempted"] is True
+    baseline = autonomy_state["final_sweep_baseline"]
+    assert baseline["content"] == "theorem t : True := by\n  trivial\n"
+    output = capsys.readouterr().out
+    assert "🟢 Final file sweep — warning cleanup opportunity granted (1/1)" in output
+    assert "1 warning(s) remain on the active file" in output
+
+
+def test_promote_live_state_skips_final_sweep_cleanup_when_flag_already_set(monkeypatch, tmp_path):
+    """One-shot guarantee: once the flag is set, the runner accepts the
+    warning-only state instead of looping the cleanup window."""
+
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake env lean Demo/Main.lean exits 0"),
+    )
+
+    autonomy_state: dict = {"final_sweep_cleanup_attempted": True}
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": f"{active}:2:3: warning: this tactic is never executed",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+
+    assert promoted["verification_ok"] is True
+    assert "final_sweep_warning_cleanup_pending" not in promoted
+    assert autonomy_state.get("final_sweep_cleanup_attempted") is True
+
+
+def test_promote_live_state_skips_final_sweep_cleanup_when_no_warnings(monkeypatch, tmp_path):
+    """Clean files do not consume an extra cycle just because the queue is empty."""
+
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake env lean Demo/Main.lean exits 0"),
+    )
+
+    autonomy_state: dict = {}
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+
+    assert promoted["verification_ok"] is True
+    assert "final_sweep_warning_cleanup_pending" not in promoted
+    assert "final_sweep_cleanup_attempted" not in autonomy_state
+    assert "final_sweep_baseline" not in autonomy_state
+
+
+def test_promote_live_state_restores_baseline_when_cleanup_attempt_regresses(monkeypatch, tmp_path, capsys):
+    """If the cleanup-cycle edit breaks the file (lake newly fails), the
+    runner must restore the captured baseline and accept the original
+    warning-only state. We promised warning-tolerant — never ship worse."""
+
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    baseline_content = "theorem t : True := by\n  trivial\n"
+    # File on disk is the (broken) post-cleanup version; baseline below holds
+    # the original passing content.
+    broken_content = "theorem t : True := by\n  this_does_not_compile\n"
+    active.write_text(broken_content, encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+
+    build_calls: list[tuple[str, bool]] = []
+
+    def _fake_build(active_file="", *, full_project=False):
+        build_calls.append((active_file, full_project))
+        if len(build_calls) == 1:
+            return False, "lake env lean Demo/Main.lean reported errors: unknown identifier"
+        return True, "lake env lean Demo/Main.lean exits 0"
+
+    monkeypatch.setattr(runner, "_run_explicit_verification_build", _fake_build)
+
+    autonomy_state: dict = {
+        "final_sweep_cleanup_attempted": True,
+        "final_sweep_baseline": {
+            "active_file": str(active.resolve()),
+            "content": baseline_content,
+        },
+    }
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+
+    assert promoted["verification_ok"] is True, "post-restore lake build should succeed against baseline"
+    assert active.read_text(encoding="utf-8") == baseline_content
+    assert "final_sweep_baseline" not in autonomy_state, "baseline payload should be released after one shot"
+    output = capsys.readouterr().out
+    assert "↩️" in output and "restored active file to pre-cleanup baseline" in output
+
+
+def test_startup_prompt_surfaces_final_sweep_warning_cleanup_on_resume(monkeypatch, tmp_path):
+    """Regression: when the cleanup gate has fired (queue empty + warnings)
+    and the workflow is being resumed from a checkpoint, the initial
+    conversation prompt must include the warning-cleanup invitation. The
+    bug was that ``_startup_user_message`` only consulted
+    ``_queue_assignment_block`` (which returns "" for an empty queue) and
+    never ``_final_file_sweep_block``, so the model resumed, saw the route
+    line ``action: final-sweep``, observed the file was clean, and bailed
+    without ever reading the cleanup-effort wording."""
+
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
+    monkeypatch.setattr(runner, "_runner_lean_prompt_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_swarm_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_startup_active_skill_contract", lambda _name: "")
+    monkeypatch.setattr(
+        runner,
+        "route_workflow_step",
+        lambda *args, **kwargs: type(
+            "Route",
+            (),
+            {
+                "to_dict": lambda self: {
+                    "skill_name": "lean-proof-loop",
+                    "route_action": "final-sweep",
+                    "blocker_kind": "open_goals",
+                    "reason": "queue empty",
+                    "recommended_worker": "",
+                }
+            },
+        )(),
+    )
+
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Demo/Main.lean",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "diagnostics": f"{active}:2:3: warning: this tactic is never executed",
+        "verification_ok": False,
+        "final_sweep_warning_cleanup_pending": True,
+        "final_sweep_warning_count": 3,
+        "final_sweep_warning_summary": (
+            "- line 2: this tactic is never executed\n"
+            "- line 5: 'all_goals omega' tactic does nothing\n"
+            "- line 12: unused variable `hfpos`"
+        ),
+        "current_queue_item": {},
+    }
+
+    prompt = runner._startup_user_message(
+        resumed_checkpoint={"label": "verified proof milestone"},
+        live_state=live_state,
+        autonomy_state={"final_sweep_cleanup_attempted": True},
+    )
+
+    # The cleanup-pending wording must reach the resume prompt.
+    assert "warning cleanup (1/1 opportunity)" in prompt.lower()
+    assert "3 warning(s) remain" in prompt
+    assert "expected effort" in prompt.lower()
+    assert "at least one safe edit" in prompt.lower()
+    assert "bail clause" in prompt.lower()
+    # The detected-warnings summary must be visible in the resume prompt.
+    assert "all_goals omega" in prompt
+    # Hard-blocker sweep wording should not bleed in (no `current blocker`).
+    assert "current blocker:" not in prompt.lower()
+
+
+def test_final_file_sweep_block_renders_warning_cleanup_wording(tmp_path):
+    """Prompt block should switch to warning-cleanup wording when the cleanup
+    is pending, instead of the generic hard-blocker sweep wording."""
+
+    block = runner._final_file_sweep_block(
+        {
+            "active_file": str(tmp_path / "Main.lean"),
+            "active_file_label": "Demo/Main.lean",
+            "diagnostics": "Demo/Main.lean:2:3: warning: this tactic is never executed",
+            "final_sweep_warning_cleanup_pending": True,
+            "final_sweep_warning_count": 2,
+            "final_sweep_warning_summary": "- line 2: this tactic is never executed\n- line 5: 'all_goals omega' tactic does nothing",
+        }
+    )
+
+    assert "warning cleanup (1/1 opportunity)" in block.lower()
+    assert "2 warning(s) remain" in block
+    # Updated wording must require an attempt before the bail clause and
+    # surface concrete safe-cleanup examples so the model can't trivially
+    # decline without inspecting the file.
+    assert "expected effort" in block.lower()
+    assert "at least one safe edit" in block.lower()
+    assert "bail clause" in block.lower()
+    assert "actually inspected the file first" in block.lower()
+    assert "do not touch theorem statements" in block.lower()
+    assert "warnings will be accepted as-is" in block.lower()
+    # Detected-warning summary must surface so the model has concrete targets.
+    assert "all_goals omega" in block
+    # Hard-blocker wording should not bleed in.
+    assert "current blocker" not in block.lower()
+
+
 def test_promote_live_state_does_not_mark_non_module_file_verified_from_project_build(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
@@ -2338,6 +3720,28 @@ def test_promote_live_state_does_not_mark_non_module_file_verified_from_project_
     assert calls == [(str(active), False)]
     assert promoted["verification_ok"] is False
     assert "reported errors" in promoted["build_status"]
+
+
+def test_manager_verification_log_cache_is_bounded(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    runner._MANAGER_VERIFICATION_LOG_CACHE.clear()
+    runner._MANAGER_VERIFICATION_LOG_CACHE_ORDER.clear()
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+
+    for index in range(runner._MANAGER_VERIFICATION_LOG_CACHE_LIMIT + 5):
+        runner._log_manager_verification(
+            str(active),
+            full_project=False,
+            ok=True,
+            build_status=f"lake env lean Main.lean succeeded {index}",
+        )
+
+    assert len(runner._MANAGER_VERIFICATION_LOG_CACHE) == runner._MANAGER_VERIFICATION_LOG_CACHE_LIMIT
+    assert len(runner._MANAGER_VERIFICATION_LOG_CACHE_ORDER) == runner._MANAGER_VERIFICATION_LOG_CACHE_LIMIT
+    assert ("file", "Main.lean", True, "lake env lean Main.lean succeeded 0") not in runner._MANAGER_VERIFICATION_LOG_CACHE
+    capsys.readouterr()
 
 
 def test_promote_live_state_file_scope_does_not_block_on_other_project_sorries(monkeypatch, tmp_path):
@@ -2470,8 +3874,8 @@ def test_recommended_verification_command_requires_canonical_file_check_for_sing
     command = runner._recommended_verification_command(str(active))
 
     assert command == (
-        "`lean_inspect` on Demo/Main.lean, then the required acceptance check "
-        "`lean_verify(mode=file_exact)` for this file-scoped theorem turn"
+        "`lean_inspect` on Demo/Main.lean, then `lean_incremental_check(check_target)` "
+        "for this file-scoped queue step"
     )
 
 
@@ -2848,8 +4252,102 @@ def test_theorem_transition_handoff_includes_exact_tool_path():
 
     assert "- file: Demo/Main.lean" in message
     assert "- exact tool path: /tmp/project/Demo/Main.lean" in message
+    assert "- pending count: 1 pending" in message
     assert "future_demo" not in message
-    assert "future queue items: hidden" in message
+    assert "future queue items: hidden until the manager assigns them (1 pending)" in message
+
+
+def test_handoff_pending_count_parses_summary_when_queue_items_are_absent():
+    mgr = runner.TheoremQueueManager()
+
+    assert runner._handoff_pending_count(
+        mgr,
+        {
+            "declaration_queue_summary": (
+                "- current_demo [Demo/Main.lean] — contains sorry\n"
+                "- future_demo [Demo/Main.lean] — contains sorry\n"
+                "- another_future [Demo/Main.lean] — diagnostic near line 10"
+            ),
+            "declaration_queue_total": 99,
+        },
+        "current_demo",
+    ) == 2
+
+
+def test_queue_handoff_sequence_matches_realtheorems_order_and_hides_future_items(monkeypatch, tmp_path):
+    project = tmp_path / "GaussTest"
+    module_dir = project / "GaussTest"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "RealTheorems.lean"
+    labels = ["absLipschitz1", "abs_add_diff", "addLipschitz", "abs_mul_diff", "mulLipschitz"]
+
+    def write_state(solved_count: int) -> None:
+        lines = ["def isLipschitz (_f : Nat -> Nat) (_L : Nat) : Prop := True", ""]
+        for index, label in enumerate(labels):
+            lines.extend(
+                [
+                    f"theorem {label} : True := by",
+                    "  trivial" if index < solved_count else "  sorry",
+                    "",
+                ]
+            )
+        active.write_text("\n".join(lines), encoding="utf-8")
+
+    def live_state_for_queue() -> dict[str, object]:
+        queue = runner._declaration_work_queue(str(active), "", project_root=str(project), scope="file")
+        current = runner._current_queue_item(queue, str(active))
+        current_label = str((current or {}).get("label", "") or "")
+        return {
+            "active_file": str(active),
+            "active_file_label": "GaussTest/RealTheorems.lean",
+            "target_symbol": current_label,
+            "current_queue_item": dict(current or {}),
+            "declaration_scope": "file",
+            "declaration_queue_total": len(queue),
+            "declaration_queue_summary": runner._format_declaration_queue(queue),
+            "build_status": "lake env lean GaussTest/RealTheorems.lean succeeded",
+        }
+
+    monkeypatch.setattr(runner, "_project_root", lambda: str(project))
+
+    for solved_count, previous in enumerate(labels):
+        write_state(solved_count)
+        queue = runner._declaration_work_queue(str(active), "", project_root=str(project), scope="file")
+        assert [item["label"] for item in queue] == labels[solved_count:]
+        assert runner._current_queue_item(queue, str(active))["label"] == previous
+
+        write_state(solved_count + 1)
+        next_queue = runner._declaration_work_queue(str(active), "", project_root=str(project), scope="file")
+        assert [item["label"] for item in next_queue] == labels[solved_count + 1 :]
+
+        if solved_count == len(labels) - 1:
+            assert next_queue == []
+            assert live_state_for_queue()["declaration_queue_total"] == 0
+            continue
+
+        current = labels[solved_count + 1]
+        handoff = runner._theorem_transition_handoff_message(
+            {
+                "target_symbol": previous,
+                "active_file": str(active),
+                "status": "solved",
+                "note": f"{previous} no longer appears in the pending declaration queue.",
+                "build_status": "lake env lean GaussTest/RealTheorems.lean succeeded",
+            },
+            live_state_for_queue(),
+        )
+
+        assert f"- declaration: {previous}" in handoff
+        assert f"- declaration: {current}" in handoff
+        assert f"- assigned declaration: {current} - contains sorry" in handoff
+        expected_pending = len(labels[solved_count + 2 :])
+        assert f"- pending count: {expected_pending} pending" in handoff
+        if expected_pending:
+            assert f"- future queue items: hidden until the manager assigns them ({expected_pending} pending)" in handoff
+        else:
+            assert "- future queue items: no further queue items pending (0 pending)" in handoff
+        for hidden_label in labels[solved_count + 2 :]:
+            assert hidden_label not in handoff
 
 
 def test_autonomous_continuation_prompt_switches_to_final_file_sweep_when_queue_empty(monkeypatch):
@@ -2920,6 +4418,47 @@ def test_remember_failed_attempt_uses_theorem_delta_for_proof_shape():
     assert "+ intro x" in attempt["proof_shape"] or "- sorry" in attempt["proof_shape"]
     assert attempt["reason"] == "type mismatch"
     assert "intro x" in autonomy_state["current_queue_assignment"]["slice"]
+
+
+def test_remember_failed_attempt_prefers_restored_assignment_over_live_queue_item(tmp_path, monkeypatch):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem original : True := by",
+                "  exact True.intro",
+                "",
+                "theorem future : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "original",
+            "active_file": str(active),
+            "slice": "theorem original : True := by\n  sorry",
+        }
+    }
+
+    runner._remember_failed_attempt(
+        autonomy_state,
+        {
+            "target_symbol": "future",
+            "active_file": str(active),
+            "current_queue_item": {"label": "future", "reasons": ["contains sorry"]},
+            "current_queue_item_slice": "theorem future : True := by\n  sorry",
+            "blocker_summary": "unsolved goals",
+        },
+        cycle_number=7,
+    )
+
+    attempt = autonomy_state["failed_attempts"][0]
+    assert attempt["target_symbol"] == "original"
+    assert attempt["active_file"] == str(active)
+    assert "theorem original" in autonomy_state["current_queue_assignment"]["slice"]
 
 
 def test_recent_failed_attempts_summary_does_not_leak_other_theorem_attempts():

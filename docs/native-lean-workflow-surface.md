@@ -82,7 +82,7 @@ The repo-owned Lean tool surface is defined in `tools/lean_tool.py` and backed b
   - not a replacement for `lean_inspect` goals
   - prefers local declaration-range stabilization when the active file already contains the target declaration
   - falls back to a local declaration slice when proof-auto reports `theorem_not_found` or another backend-side context miss
-  - disables the proof-auto backend for the rest of the current run after a repeated theorem-lookup miss so later turns stop retrying the same broken path
+  - keeps proof-auto MCP enabled after a theorem-lookup miss; only transport or systemic backend failures are sticky-disabled for the current run
 - `lean_multi_attempt`
   - theorem-local screening for 2-6 concrete tactic candidates at one file position
 - `lean_auto_probe`
