@@ -945,6 +945,18 @@ def test_canonical_tool_file_path_prefers_active_file_for_basename_matches(monke
     assert resolved == str(target.resolve())
 
 
+def test_project_root_prefers_native_project_env_when_cwd_omitted(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    (project / "lakefile.toml").write_text("[package]\nname = \"Demo\"\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+
+    root, error = lean_services._project_root()
+
+    assert root == project.resolve()
+    assert error == ""
+
+
 def test_auto_probe_surfaces_attempt_diagnostic_summary(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()
@@ -991,3 +1003,111 @@ def test_auto_probe_surfaces_attempt_diagnostic_summary(monkeypatch, tmp_path):
 
     assert payload["file_path"] == str(target.resolve())
     assert any("harness_error: Failed to extract declarations" in reason for reason in payload["degraded_reasons"])
+
+
+def test_auto_probe_prefers_incremental_probe_when_available(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    target = project / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={
+            "diagnostics": "",
+            "goals": "",
+            "code_actions": "",
+            "multi_attempt": "",
+            "run_code": "",
+            "local_search": "",
+            "leanfinder": "",
+            "leansearch": "",
+            "loogle": "",
+            "proof_context": "",
+            "auto_probe": "mcp_lean_proof_auto_probe",
+            "auto_search": "",
+            "auto_try": "",
+        },
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+        incremental={"available": True},
+    )
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    monkeypatch.setattr(
+        lean_services,
+        "_local_incremental_auto_probe",
+        lambda **kwargs: {
+            "success": False,
+            "backend_tool": "lean_incremental_check",
+            "degraded_reasons": [],
+            "file_path": kwargs["file_path"],
+            "theorem_id": kwargs["theorem_id"],
+            "attempts": [{"mode": "aesop", "status": "failed"}],
+            "recommended_mode": "aesop",
+        },
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("MCP probe should not be called")),
+    )
+
+    payload = lean_services.lean_auto_probe("Demo/Main.lean", "demo", cwd=project, methods=["aesop"])
+
+    assert payload["backend_tool"] == "lean_incremental_check"
+    assert payload["file_path"] == str(target.resolve())
+
+
+def test_incremental_auto_probe_clamps_short_timeout(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    target = project / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={},
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+        incremental={"available": True},
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_incremental_check(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "ok": False,
+            "messages": [],
+            "cache": {},
+            "valid_without_sorry": False,
+            "has_errors": True,
+            "has_sorry": False,
+        }
+
+    import epflemma_cli.lean_incremental as lean_incremental
+
+    monkeypatch.setattr(lean_incremental, "lean_incremental_check", _fake_incremental_check)
+
+    payload = lean_services._local_incremental_auto_probe(
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=project,
+        methods=["aesop"],
+        timeout_s=30,
+        report=report,
+    )
+
+    assert captured["timeout_s"] == 60
+    assert payload is not None
+    assert payload["attempts"][0]["timing"]["budget_s"] == 60.0

@@ -244,6 +244,27 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     return resolved_command, resolved_env
 
 
+def _resolve_stdio_cwd(server_name: str, config: dict) -> str | None:
+    configured = str(config.get("cwd", "") or "").strip()
+    if configured:
+        path = os.path.expanduser(configured)
+        return path if os.path.isdir(path) else None
+
+    if str(server_name or "").startswith("lean-"):
+        project_root = str(
+            os.getenv(
+                "EPFLEMMA_PROJECT_ROOT",
+                os.getenv("OPENGAUSS_PROJECT_ROOT", os.getenv("GAUSS_PROJECT_ROOT", "")),
+            )
+            or ""
+        ).strip()
+        if project_root:
+            path = os.path.expanduser(project_root)
+            if os.path.isdir(path):
+                return path
+    return None
+
+
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
 
@@ -794,10 +815,12 @@ class MCPServerTask:
 
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)
+        cwd = _resolve_stdio_cwd(self.name, config)
         server_params = StdioServerParameters(
             command=command,
             args=args,
             env=safe_env if safe_env else None,
+            cwd=cwd,
         )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
