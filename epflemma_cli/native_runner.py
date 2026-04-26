@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from difflib import unified_diff
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -92,6 +92,20 @@ _MANAGER_VERIFICATION_LOG_CACHE_LIMIT = 256
 _MANAGER_VERIFICATION_LOG_CACHE_ORDER: deque[tuple[str, str, bool, str]] = deque(maxlen=_MANAGER_VERIFICATION_LOG_CACHE_LIMIT)
 _MANAGER_VERIFICATION_LOG_CACHE: set[tuple[str, str, bool, str]] = set()
 _QUEUE_MANAGER_STATE_KEYS = TheoremQueueManager.OWNED_AUTONOMY_KEYS
+
+# Final-sweep warning-cleanup state. Lives directly on autonomy_state because
+# it is workflow-loop scoped, not per-theorem. The flag persists across
+# checkpoint resume so a crashed run cannot accidentally re-trigger the
+# one-shot cleanup window. The baseline carries the file's pre-cleanup
+# content so the runner can restore it if the cleanup attempt introduces a
+# hard failure (we promised "warning-tolerant" — never ship worse).
+_FINAL_SWEEP_AUTONOMY_KEYS = frozenset(
+    {
+        "final_sweep_cleanup_attempted",
+        "final_sweep_baseline",
+        "final_sweep_warning_summary",
+    }
+)
 
 
 def _utc_now_isoformat() -> str:
@@ -827,6 +841,14 @@ def _manager_incremental_check_queue_item(active_file: str, target_symbol: str) 
             "incremental": {"success": False, "error": str(exc)[:500]},
         }
     output = str(result.get("output", "") or result.get("error", "") or "")
+    # Forward the structured `messages` list alongside the flattened text so
+    # downstream consumers (notably `_declaration_diagnostic_feedback_reason`)
+    # can locate per-line warnings/errors. The flattened `output` field is
+    # capped + single-lined and lacks the `<file>:<line>:<col>:` prefix that
+    # `diagnostic_items()`'s text parser depends on, so without this the
+    # cleanup-feedback helper silently returns "" for `lean_interact`-style
+    # warnings and the per-theorem warning-cleanup opportunity never fires.
+    structured_messages = list(result.get("messages") or [])
     return {
         "ok": bool(result.get("ok", False)),
         "mode": "incremental_target",
@@ -834,6 +856,7 @@ def _manager_incremental_check_queue_item(active_file: str, target_symbol: str) 
         "command": str(result.get("command", "lean_interact check_target") or "lean_interact check_target"),
         "target": str(result.get("target", target) or target),
         "output": _single_line(output, 500),
+        "messages": structured_messages,
         "incremental": result,
     }
 
@@ -963,6 +986,105 @@ def _verification_record_from_check(
         "summary": summary,
         "command": str(check.get("command", "") or ""),
     }
+
+
+def _active_file_warning_summary(live_state: Mapping[str, Any] | None) -> tuple[int, str]:
+    """Count style/linter warnings on the active file from the latest live state.
+
+    Reads the structured diagnostics already attached to ``live_state`` by the
+    most recent ``lean_inspect`` refresh. Returns ``(count, summary)`` where
+    ``summary`` is a short multi-line string suitable for prompts and logs.
+    The check is intentionally cheap — no extra Lean process is spawned here;
+    we trust the live-state refresh that the workflow loop just performed.
+    """
+    diagnostics_text = str((live_state or {}).get("diagnostics", "") or "")
+    if not diagnostics_text:
+        return 0, ""
+    items = diagnostic_items(diagnostics_text)
+    warnings = [
+        item
+        for item in items
+        if str(item.get("severity", "") or "").strip().lower() == "warning"
+    ]
+    if not warnings:
+        return 0, ""
+    summary_lines = []
+    for item in warnings[:6]:
+        line = item.get("line") if isinstance(item.get("line"), int) else None
+        message = _single_line(str(item.get("message", "") or ""), 160)
+        prefix = f"line {line}: " if line else ""
+        summary_lines.append(f"- {prefix}{message}".rstrip())
+    if len(warnings) > 6:
+        summary_lines.append(f"- ...and {len(warnings) - 6} more warning(s)")
+    return len(warnings), "\n".join(summary_lines)
+
+
+def _capture_final_sweep_baseline(
+    autonomy_state: Mapping[str, Any] | None,
+    active_file: str,
+) -> bool:
+    """Snapshot the active file's content into autonomy_state for restore-on-fail.
+
+    Returns False if we cannot read the file; in that case the caller should
+    skip the cleanup attempt entirely (we cannot promise warning-tolerant
+    rollback without a baseline).
+    """
+    if not isinstance(autonomy_state, dict):
+        return False
+    try:
+        content = Path(active_file).read_text(encoding="utf-8")
+    except Exception:
+        return False
+    autonomy_state["final_sweep_baseline"] = {
+        "active_file": str(Path(active_file).resolve()),
+        "content": content,
+    }
+    return True
+
+
+def _restore_final_sweep_baseline(
+    autonomy_state: Mapping[str, Any] | None,
+    active_file: str,
+) -> bool:
+    """Rewrite the active file from the captured baseline. Returns True on success."""
+    if not isinstance(autonomy_state, dict):
+        return False
+    baseline = dict(autonomy_state.get("final_sweep_baseline") or {})
+    content = baseline.get("content")
+    baseline_file = str(baseline.get("active_file", "") or "")
+    if not isinstance(content, str) or not baseline_file:
+        return False
+    try:
+        if Path(baseline_file).resolve() != Path(active_file).resolve():
+            return False
+        Path(active_file).write_text(content, encoding="utf-8")
+    except Exception:
+        return False
+    return True
+
+
+def _final_sweep_warning_cleanup_due(
+    autonomy_state: Mapping[str, Any] | None,
+    live_state: Mapping[str, Any] | None,
+) -> tuple[bool, int, str]:
+    """Spec ([:672](docs/product-reference.md:672)): grant exactly one whole-file
+    warning-cleanup opportunity when the queue is empty and only warnings
+    remain. Returns ``(due, warning_count, warning_summary)``."""
+    if not isinstance(autonomy_state, dict):
+        return False, 0, ""
+    if bool(autonomy_state.get("final_sweep_cleanup_attempted")):
+        return False, 0, ""
+    current = dict(live_state or {})
+    if str(current.get("declaration_scope", "") or "") != "file":
+        return False, 0, ""
+    if int(current.get("declaration_queue_total", 0) or 0) != 0:
+        return False, 0, ""
+    if not str(current.get("active_file", "") or "").strip():
+        return False, 0, ""
+    count, summary = _active_file_warning_summary(current)
+    if count <= 0:
+        return False, 0, ""
+    return True, count, summary
 
 
 def _store_last_verification(
@@ -1482,6 +1604,7 @@ def _review_agent_final_report(
             target_symbol,
             str(manager_check.get("output", "") or ""),
             str(manager_check.get("error", "") or ""),
+            structured_items=manager_check.get("messages") or (),
         )
         if cleanup_reason:
             manager_check["ok"] = False
@@ -1793,11 +1916,15 @@ def _finish_queue_step_boundary(
         # the targeted check intentionally ignores) override its verdict.
         # Otherwise the printed `🔎 Manager verification ... warnings: 0`
         # line and the runner's actual decision contradict each other.
+        # Pass structured `messages` so the helper can locate
+        # `lean_incremental_check`-style warnings, which lack the
+        # `<file>:<line>:<col>:` prefix the text fallback regex needs.
         cleanup_feedback_reason = _declaration_diagnostic_feedback_reason(
             pending_file,
             pending_target,
             str(manager_check.get("output", "") or ""),
             str(manager_check.get("error", "") or ""),
+            structured_items=manager_check.get("messages") or (),
         )
         if cleanup_feedback_reason:
             feedback_kind = _manager_feedback_kind(
@@ -1928,6 +2055,18 @@ def _finish_queue_step_boundary(
                 feedback_lines.append(f"- local cleanup: {cleanup_feedback_reason}")
                 feedback_lines.append(
                     "- cleanup opportunity: this consumes the assigned declaration's one focused warning-cleanup opportunity; if the next manager check still sees only warnings here, the queue advances"
+                )
+                feedback_lines.append(
+                    "- expected effort: attempt at least one safe edit before bailing — low-risk fixes include "
+                    "removing a `try { ... }`/`<;> try { ... }` whose tactic is reported as never executed, "
+                    "deleting an `all_goals X` reported as doing nothing, dropping a `<;>` reported as "
+                    "unnecessary sequencing, or removing a tactic the linter says is unused. Do NOT touch "
+                    "the theorem statement, the proof's overall structure, or any line not flagged."
+                )
+                feedback_lines.append(
+                    "- bail clause: if you have read the assigned declaration and identified that no safe "
+                    "cleanup remains, you may emit a final report — the warnings will be accepted and the "
+                    "queue advances. The bail clause requires that you actually inspected the declaration first."
                 )
                 feedback_lines.append(
                     "- queue boundary: do not edit future queued declarations; stop after this cleanup or after the manager cleanup opportunity"
@@ -2859,7 +2998,12 @@ def _diagnostic_reason_for_entry(entry: Mapping[str, Any], diagnostic_lines: lis
     return ""
 
 
-def _declaration_diagnostic_feedback_reason(active_file: str, label: str, *texts: str) -> str:
+def _declaration_diagnostic_feedback_reason(
+    active_file: str,
+    label: str,
+    *texts: str,
+    structured_items: Sequence[Mapping[str, Any]] = (),
+) -> str:
     entry = _find_declaration_entry(active_file, label)
     if not entry:
         return ""
@@ -2867,6 +3011,27 @@ def _declaration_diagnostic_feedback_reason(active_file: str, label: str, *texts
     end = int(entry.get("end_line", 0) or start)
     if start <= 0:
         return ""
+    # Prefer the manager_check's structured messages when available. The text
+    # fallbacks below only catch diagnostics that come in `<file>:<line>:<col>:`
+    # form (lake / lean_inspect output); `lean_incremental_check` returns
+    # warnings as plain `warning: ...` lines that the regex cannot locate, so
+    # the structured path is the only way to honour the spec's per-theorem
+    # warning-cleanup opportunity for warnings the targeted check surfaced.
+    for diagnostic in structured_items or ():
+        if not isinstance(diagnostic, Mapping):
+            continue
+        line = diagnostic.get("line")
+        if not (isinstance(line, int) and start <= line <= max(start, end)):
+            continue
+        severity = str(diagnostic.get("severity", "") or "diagnostic").strip().lower()
+        if severity not in {"warning", "error"}:
+            continue
+        message = _single_line(str(diagnostic.get("message", "") or ""), 180)
+        return (
+            f"{severity} near line {line}: {message}"
+            if message
+            else f"{severity} near line {line}"
+        )
     for text in texts:
         if not text:
             continue
@@ -4038,6 +4203,56 @@ def _final_file_sweep_block(live_state: Mapping[str, Any]) -> str:
     active_file_label = _display_file_label(live_state) or active_file
     blocker = str(live_state.get("current_blocker", "") or live_state.get("diagnostics", "") or "unknown remaining issue").strip()
     verification_hint = _queue_item_verification_hint(str(live_state.get("active_file", "") or ""))
+    warning_cleanup_pending = bool(live_state.get("final_sweep_warning_cleanup_pending"))
+    warning_count = int(live_state.get("final_sweep_warning_count", 0) or 0)
+    warning_summary = str(live_state.get("final_sweep_warning_summary", "") or "").strip()
+    if warning_cleanup_pending:
+        # Warning-only cleanup mode: file already passes verification; this is
+        # the spec's one focused whole-file warning-cleanup window. Bound to a
+        # single attempt — if the model breaks the file the runner restores
+        # the baseline and accepts the original warning-only state.
+        lines = [
+            "Queue status:",
+            "- declaration queue is empty",
+            f"- file: {active_file_label}",
+            f"- exact tool path: {active_file}",
+            "- file verification: passing (lake build clean; only style warnings remain)",
+            (
+                f"- final file verification: {verification_hint}"
+                if verification_hint
+                else "- final file verification: [unknown]"
+            ),
+            "",
+            "Final file sweep — warning cleanup (1/1 opportunity):",
+            f"- {warning_count} warning(s) remain in `{active_file_label}`",
+        ]
+        if warning_summary:
+            lines.append("- detected warnings (first few shown):")
+            lines.extend(f"  {line}" for line in warning_summary.splitlines()[:6])
+        lines.extend(
+            [
+                "- this is your one focused whole-file warning-cleanup opportunity",
+                (
+                    "- expected effort: read the file with `read_file`, then make at least one safe edit "
+                    "before bailing. Low-risk fixes include: removing a `try { ... }` or `<;> try { ... }` "
+                    "whose tactic is reported as never executed; deleting an `all_goals X`/`<;> X` reported "
+                    "as doing nothing; renaming an unused parameter to `_` (or dropping it from the proof "
+                    "body if it's a `have`); removing a `simp`/`linarith`/`omega` reported as unused."
+                ),
+                "- safety: edit only lines flagged by the linter. Do NOT touch theorem statements, proof "
+                "structure, or any unflagged tactic. The runner will restore the file to its pre-cleanup "
+                "content if your edit causes a hard verification failure.",
+                "- after one focused edit, stop and let the manager re-verify; the manager runs `lean_verify` "
+                "automatically.",
+                (
+                    "- bail clause: if you have read the file and identified that no safe cleanup remains, "
+                    "emit a final report. The warnings will be accepted as-is and the file marked verified. "
+                    "The bail clause requires that you actually inspected the file first — emitting a final "
+                    "report without reading the file is not the intended use of this opportunity."
+                ),
+            ]
+        )
+        return "\n".join(lines)
     return "\n".join(
         [
             "Queue status:",
@@ -5043,6 +5258,87 @@ def _promote_live_state_to_verified(
             build_status=build_status,
         )
     normalized["build_status"] = build_status
+
+    # Spec line 672: the final file sweep is the canonical place for the
+    # worker to clean whole-file residual warnings. Lake build does not see
+    # style linter warnings, so a passing lake build alone leaves them
+    # forever. We grant exactly one focused cleanup cycle here when warnings
+    # remain and the one-shot flag is unset; on the second pass the flag is
+    # set, so we either accept (clean / warnings-only) or restore baseline
+    # (model introduced a hard issue) and accept the original warning-only
+    # state. "Wouldn't overkill it" — never loops, never stalls.
+    final_sweep_cleanup_already_attempted = bool(
+        isinstance(autonomy_state, dict)
+        and autonomy_state.get("final_sweep_cleanup_attempted")
+    )
+    if (
+        verification_ok
+        and not final_sweep_cleanup_already_attempted
+        and declaration_scope == "file"
+        and declaration_queue_total == 0
+    ):
+        warning_count, warning_summary = _active_file_warning_summary(normalized)
+        if warning_count > 0 and isinstance(autonomy_state, dict):
+            if _capture_final_sweep_baseline(autonomy_state, active_file):
+                autonomy_state["final_sweep_cleanup_attempted"] = True
+                autonomy_state["final_sweep_warning_summary"] = warning_summary
+                normalized["final_sweep_warning_cleanup_pending"] = True
+                normalized["final_sweep_warning_count"] = warning_count
+                normalized["final_sweep_warning_summary"] = warning_summary
+                # Suppress verified status so the workflow loop runs one more
+                # cycle with the cleanup-pending state visible to the prompt.
+                verification_ok = False
+                normalized["queue_needs_final_file_sweep"] = True
+                normalized["blocker_summary"] = (
+                    f"final-sweep warning cleanup pending: {warning_count} warning(s) remain"
+                )
+                _record_activity(
+                    "final-sweep-warning-cleanup-granted",
+                    f"Granted one focused whole-file warning cleanup ({warning_count} warning(s))",
+                    active_file=active_file,
+                    warning_count=warning_count,
+                )
+                print("")
+                print(
+                    f"🟢 Final file sweep — warning cleanup opportunity granted (1/1): "
+                    f"{warning_count} warning(s) remain on the active file"
+                )
+                if warning_summary:
+                    for line in warning_summary.splitlines()[:3]:
+                        print(f"   {line}")
+                normalized["last_verification"] = _last_verification_record(autonomy_state, normalized)
+                normalized["verification_ok"] = False
+                return normalized
+
+    if (
+        final_sweep_cleanup_already_attempted
+        and declaration_scope == "file"
+        and declaration_queue_total == 0
+        and isinstance(autonomy_state, dict)
+        and dict(autonomy_state.get("final_sweep_baseline") or {}).get("content") is not None
+    ):
+        # Cleanup turn happened. If lake/lean is now unhappy, the model broke
+        # the file trying to clean style warnings — restore to the captured
+        # baseline and proceed as warning-tolerant accept.
+        if not verification_ok:
+            restored = _restore_final_sweep_baseline(autonomy_state, active_file)
+            if restored:
+                _record_activity(
+                    "final-sweep-warning-cleanup-restored",
+                    "Restored active file from final-sweep baseline after cleanup attempt regressed",
+                    active_file=active_file,
+                )
+                print("")
+                print(
+                    "↩️  Final file sweep cleanup attempt regressed verification; "
+                    "restored active file to pre-cleanup baseline and accepting warning-only state."
+                )
+                ok, build_status = _run_explicit_verification_build(active_file, full_project=False)
+                verification_ok = bool(ok)
+                normalized["build_status"] = build_status
+        # One-shot complete; drop the heavy baseline payload from autonomy_state.
+        autonomy_state.pop("final_sweep_baseline", None)
+
     normalized["last_verification"] = _last_verification_record(autonomy_state, normalized)
     normalized["verification_ok"] = bool(verification_ok)
     if verification_ok:
@@ -6118,9 +6414,19 @@ def _startup_user_message(
         route_block = f"\n\n{chr(10).join(route_lines)}"
     queue_block = ""
     if _single_queue_item_turn_enabled():
-        queue_text = _queue_assignment_block(dict(live_state or {}), autonomy_state)
-        if queue_text:
-            queue_block = f"\n\n{queue_text}"
+        # Mirror the continuation-prompt conditional: when the queue is empty
+        # but the file still needs the final whole-file sweep (e.g. on resume
+        # after the cleanup gate granted a warning-cleanup window), the
+        # startup prompt must surface the warning-cleanup wording. Otherwise
+        # the model resumes, sees `action: final-sweep` in the route line,
+        # observes the file is clean, and bails without ever reading the
+        # cleanup invitation — which is what happened on the IMOMath2 resume.
+        if _queue_needs_final_file_sweep(live_state):
+            queue_block = f"\n\n{_final_file_sweep_block(dict(live_state or {}))}"
+        else:
+            queue_text = _queue_assignment_block(dict(live_state or {}), autonomy_state)
+            if queue_text:
+                queue_block = f"\n\n{queue_text}"
     swarm_block = ""
     if _swarm_enabled():
         swarm_block = (
