@@ -56,6 +56,41 @@ def test_render_workflow_status_panel_marks_stale_dead_snapshot():
     assert "8111" in output
 
 
+def test_render_workflow_status_panel_shows_project_prove_manager_queue():
+    console = Console(record=True, width=120)
+
+    render_workflow_status_panel(
+        console,
+        status={
+            "phase": "in-progress",
+            "workflow_kind": "prove",
+            "workflow_command": "/prove",
+            "project_root": "/tmp/project",
+            "provider": "custom",
+            "model": "zai-org/GLM-5.1",
+            "active_skill": "lean-theorem-queue-worker",
+            "parallel_agents": 1,
+            "active_file_label": "Demo/Base.lean",
+            "target_symbol": "base",
+            "project_prove_manager": True,
+            "project_prove_file_queue": ["Demo/Base.lean", "Demo/Later.lean"],
+            "project_prove_completed_files": ["Demo/Intro.lean"],
+            "project_prove_plan_source": "llm",
+            "build_status": "unknown",
+            "project_sorry_count": 2,
+            "latest_checkpoint_label": "[none]",
+            "held_locks": 0,
+            "updated_at": "2026-04-22T14:33:57+00:00",
+        },
+        activities=[],
+    )
+
+    output = console.export_text()
+    assert "Project manager" in output
+    assert "llm; 2 queued, 1 completed" in output
+    assert "Demo/Base.lean, Demo/Later.lean" in output
+
+
 def test_list_runtime_provider_targets_includes_local_and_zai():
     names = {entry["name"] for entry in list_runtime_provider_targets()}
 

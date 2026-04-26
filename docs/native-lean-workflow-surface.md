@@ -158,6 +158,55 @@ Current worker recommendation rules:
 - `sorry-filler-deep`
   - repeated stuck queue items or exhausted search
 
+## Project Prove Manager
+
+`/prove SomeFile.lean` enters the existing file-scoped theorem queue directly. `/prove` with no file enters the project prove manager first.
+
+The manager is intentionally a thin scheduler above the file queue:
+
+- it only chooses the next file
+- it does not edit Lean files itself
+- it does not replace theorem-level queueing, diagnostics, failed-attempt tracking, or verification gates
+- it delegates each assigned file back to the same path used by `/prove SomeFile.lean`
+
+Startup behavior:
+
+1. The workflow resolver normalizes `/prove` and `/autoprove` to `prove`.
+2. The native runner checks whether the command contains an explicit `.lean` file.
+3. If there is no explicit file, the project prove manager scans project Lean files for `sorry`.
+4. Candidate files are summarized with:
+   - relative label
+   - absolute path
+   - module name
+   - `sorry_count`
+   - `line_count`
+   - declaration count
+   - pending declaration names, source excerpts, and per-declaration difficulty scores
+   - hint and worked-example counts
+   - full source for small files, or selected header/import/hint/theorem excerpts for larger files
+   - direct and transitive candidate-file imports/dependents
+   - direct and transitive project-file imports/dependents
+   - `imported_by_count`
+   - `import_count`
+5. A deterministic fallback queue is built from candidate-to-candidate dependency importance, unresolved candidate dependencies, project-wide downstream importance, theorem difficulty, first-pending-declaration difficulty, `sorry` count, length, declaration count, and stable path order.
+6. The configured LLM is asked to reorder the bounded candidate list using the same policy and the provided source context, with competition-style theorem names treated as harder and hinted/worked-example-heavy files treated as easier.
+7. The LLM response is accepted only as JSON-like file labels that match known candidates; missing fallback files are appended, and deterministic dependency/difficulty buckets remain guardrails around the model order.
+8. The first file is assigned by setting `EPFLEMMA_NATIVE_ACTIVE_FILE`.
+9. The normal file-scoped theorem queue takes over.
+
+Continuation behavior:
+
+- after the active file verifies, the manager records it as completed
+- the manager refreshes candidates from the current filesystem, so solved files disappear from the queue
+- if candidates remain, the next file is assigned
+- if no candidates remain, the project prove queue is complete
+
+Parallelism policy:
+
+- default `/prove` uses one managed agent and one assigned file at a time
+- parallel agents are only enabled by explicit user flags such as `--agents 3`
+- explicit file workflows with a file argument continue to force file-local handling instead of becoming project scheduling runs
+
 ## Doctor And MCP
 
 `epflemma doctor` now uses the same capability layer as the Lean workflows.
@@ -205,5 +254,16 @@ Relevant files under `.epflemma/workflow-state/` include:
 - `runs/`
 - `file_locks.json`
 - `outcomes.jsonl`
+
+For project-scoped `/prove`, `live_status.json` stores `project_prove_manager`, `project_prove_file_queue`, `project_prove_completed_files`, `project_prove_plan_source`, and `project_prove_plan_reason` alongside the normal active-file, queue, diagnostics, build, route, checkpoint, and provider/model fields.
+
+The activity JSONL stream records project prove-manager events:
+
+- `project-prove-file-queue-planned`
+- `project-prove-file-assigned`
+- `project-prove-file-queue-empty`
+- `project-prove-file-queue-complete`
+
+`project-prove-file-queue-planned` contains the candidate metrics and final ordered file labels. `project-prove-file-assigned` contains the assigned file, absolute path, remaining queue, plan source, and plan reason. These events are intended to be machine-readable enough for detailed inspection and offline training trace curation.
 
 `outcomes.jsonl` records route decisions and worker outcomes so later cycles and resumed sessions can reuse prior blocker classifications, worker recommendations, and search/repair history.
