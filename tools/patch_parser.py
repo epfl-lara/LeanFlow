@@ -30,6 +30,7 @@ Usage:
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional, Tuple, Any
 from enum import Enum
 
@@ -39,6 +40,20 @@ class OperationType(Enum):
     UPDATE = "update"
     DELETE = "delete"
     MOVE = "move"
+
+
+def _diff_display_path(file_path: str) -> str:
+    text = str(file_path or "")
+    try:
+        path = Path(text).expanduser()
+        if path.is_absolute():
+            try:
+                return str(path.resolve().relative_to(Path.cwd().resolve()))
+            except Exception:
+                return path.name
+    except Exception:
+        return text.lstrip("/")
+    return text
 
 
 @dataclass
@@ -484,8 +499,8 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     diff_lines = difflib.unified_diff(
         current_content.splitlines(keepends=True),
         new_content.splitlines(keepends=True),
-        fromfile=f"a/{op.file_path}",
-        tofile=f"b/{op.file_path}"
+        fromfile=f"a/{_diff_display_path(op.file_path)}",
+        tofile=f"b/{_diff_display_path(op.file_path)}"
     )
     diff = ''.join(diff_lines)
     
