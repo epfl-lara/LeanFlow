@@ -571,6 +571,7 @@ def test_lean_auto_try_preflights_unsupported_project_option(monkeypatch, tmp_pa
     reasons = " ".join(payload["degraded_reasons"])
     assert "linter.style.longLine" in reasons
     assert "before MCP call" in reasons
+    assert payload["setup_blocker"]["kind"] == "unsupported_project_option"
     assert tool_name in lean_services._disabled_mcp_tools_for_run(project)
     assert calls == []
     assert outcomes[-1][1]["success"] is False
@@ -657,7 +658,7 @@ def test_lean_proof_context_prefers_range_scan_when_local_declaration_exists(mon
     assert payload["backend_tool"] == "mcp_lean_proof_auto_get_proof_context"
 
 
-def test_lean_proof_context_falls_back_to_local_slice_and_disables_proof_auto_backend(monkeypatch, tmp_path):
+def test_lean_proof_context_falls_back_to_local_slice_without_disabling_proof_auto_backend(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()
     target = project / "Demo" / "Main.lean"
@@ -750,11 +751,13 @@ def test_lean_proof_context_falls_back_to_local_slice_and_disables_proof_auto_ba
     assert "first" in payload["in_scope"]
     assert "next_demo" in payload["in_scope"]
     assert any("Theorem not found: abs_add_diff" in reason for reason in payload["degraded_reasons"])
-    assert any("proof-auto backend disabled for current run" in reason for reason in payload["degraded_reasons"])
-    assert report.mcp_tools["proof_context"] == ""
-    assert report.mcp_tools["auto_probe"] == ""
-    assert report.mcp_tools["auto_search"] == ""
-    assert report.mcp_tools["auto_try"] == ""
+    assert any("without disabling proof-auto MCP" in reason for reason in payload["degraded_reasons"])
+    assert not any("proof-auto backend disabled for current run" in reason for reason in payload["degraded_reasons"])
+    assert report.mcp_tools["proof_context"] == "mcp_lean_proof_auto_get_proof_context"
+    assert report.mcp_tools["auto_probe"] == "mcp_lean_proof_auto_probe"
+    assert report.mcp_tools["auto_search"] == "mcp_lean_proof_auto_search_automated_proof"
+    assert report.mcp_tools["auto_try"] == "mcp_lean_proof_auto_try_automated_proof"
+    assert not any("disabled for current run" in reason for reason in report.degraded_reasons)
 
 
 def test_auto_probe_and_multi_attempt_use_expected_backend_arguments(monkeypatch, tmp_path):
