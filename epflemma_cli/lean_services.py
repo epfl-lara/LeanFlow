@@ -1572,17 +1572,23 @@ def _normalize_native_backend_status(
     payload["success"] = False
     degraded_reasons = list(payload.get("degraded_reasons", []) or [])
     failure_message = _native_backend_failure_message(payload)
-    if failure_message:
-        degraded_reasons.append(f"{outcome_kind} backend rejected: {failure_message}")
     lowered = failure_message.lower()
     if outcome_kind == "lean-auto-try" and "unknown option" in lowered and "linter.style.longline" in lowered:
         _disable_mcp_tool_for_run(tool_name, cwd=cwd)
+        payload["setup_blocker"] = {
+            "kind": "unsupported_project_option",
+            "option": "linter.style.longLine",
+            "scope": "file",
+            "message": failure_message,
+        }
         degraded_reasons.extend(
             [
                 "lean automation try disabled for this run after backend rejected the project-level long-line linter option",
                 "Treat unsupported project options as file-level setup blockers, not theorem proof failures; do not edit unrelated examples or solved declarations just to satisfy lean_auto_try.",
             ]
         )
+    elif failure_message:
+        degraded_reasons.append(f"{outcome_kind} backend rejected: {failure_message}")
     payload["degraded_reasons"] = list(dict.fromkeys(degraded_reasons))
 
 
@@ -1619,6 +1625,12 @@ def _local_auto_try_preflight_failure(
         "file_path": file_path,
         "theorem_id": theorem_id,
         "proof_attempt": proof_attempt,
+        "setup_blocker": {
+            "kind": "unsupported_project_option",
+            "option": "linter.style.longLine",
+            "scope": "file",
+            "message": reason,
+        },
         "degraded_reasons": list(
             dict.fromkeys(
                 [
@@ -1758,9 +1770,8 @@ def lean_proof_context(
         if fail_message:
             degraded_reasons.append(f"proof context backend failure: {fail_message}")
         if fail_code == "theorem_not_found":
-            _disable_proof_auto_backend_for_run(cwd=report.cwd)
             degraded_reasons.append(
-                "proof-auto backend disabled for current run after theorem_not_found backend miss"
+                "using local declaration fallback after theorem_not_found without disabling proof-auto MCP"
             )
         elif tool_name:
             _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)

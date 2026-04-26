@@ -34,6 +34,7 @@ def _isolate_gauss_home(tmp_path, monkeypatch):
     (fake_epflemma_home / "local-models").mkdir()
     monkeypatch.setenv("GAUSS_HOME", str(fake_home))
     monkeypatch.setenv("EPFLEMMA_HOME", str(fake_epflemma_home))
+    monkeypatch.setenv("EPFLEMMA_QUEUE_INVARIANT_CHECKS", "1")
     # Tests should not inherit the agent's current gateway/messaging surface.
     # Individual tests that need gateway behavior set these explicitly.
     monkeypatch.delenv("GAUSS_SESSION_PLATFORM", raising=False)

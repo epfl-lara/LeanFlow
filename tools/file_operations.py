@@ -422,10 +422,20 @@ class ShellFileOperations(FileOperations):
         """Generate unified diff between old and new content."""
         old_lines = old_content.splitlines(keepends=True)
         new_lines = new_content.splitlines(keepends=True)
+        display_name = str(filename or "")
+        try:
+            path = Path(display_name).expanduser()
+            if path.is_absolute():
+                try:
+                    display_name = str(path.resolve().relative_to(Path(self.cwd).expanduser().resolve()))
+                except Exception:
+                    display_name = path.name
+        except Exception:
+            display_name = display_name.lstrip("/")
         diff = difflib.unified_diff(
             old_lines, new_lines,
-            fromfile=f"a/{filename}",
-            tofile=f"b/{filename}"
+            fromfile=f"a/{display_name}",
+            tofile=f"b/{display_name}"
         )
         return ''.join(diff)
 
