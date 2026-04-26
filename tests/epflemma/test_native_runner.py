@@ -3700,6 +3700,101 @@ def test_promote_live_state_accepts_warning_only_final_file_sweep(monkeypatch, t
     assert runner._queue_needs_final_file_sweep(promoted) is False
 
 
+def test_live_state_is_verified_blocks_when_warning_cleanup_pending():
+    """Regression: in a multi-file project workflow, the project-prove
+    manager calls ``_advance_project_prove_manager_if_needed`` after every
+    queue-empty cycle and uses ``_live_state_is_verified`` as the "this file
+    is done" gate. If that gate ignores the cleanup-pending flag, the
+    project manager advances to the next file *before* the cleanup
+    conversation runs and ``_assign_project_prove_file`` pops the cleanup
+    state — so warnings persist forever in multi-file mode. Pin the gate."""
+
+    base_state = {
+        "active_file": "/tmp/Demo.lean",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "sorry_count": 0,
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake env lean Demo.lean exits 0",
+        "verification_ok": False,  # promote() set this when cleanup fired
+        "last_verification": {
+            "ok": True,
+            "scope": "file",
+            "tool": "lean_verify",
+            "summary": "lake env lean Demo.lean exits 0",
+        },
+    }
+
+    # Without the cleanup-pending flag, the file is treated as verified
+    # (lake build passed, no sorries, no errors).
+    assert runner._live_state_is_verified(base_state) is True
+
+    # With cleanup pending, the file is NOT yet verified — the cleanup turn
+    # must run first, otherwise the project manager will advance and pop
+    # the cleanup state before the conversation drives.
+    pending_state = dict(base_state, final_sweep_warning_cleanup_pending=True)
+    assert runner._live_state_is_verified(pending_state) is False
+
+
+def test_advance_project_prove_manager_blocks_while_cleanup_pending(monkeypatch):
+    """End-to-end: project-prove manager must NOT advance to the next file
+    while the current file's cleanup conversation is still pending."""
+
+    autonomy_state: dict = {
+        "project_prove_manager_enabled": True,
+        "project_prove_active_file": "Demo/A.lean",
+        "project_prove_active_file_path": "/tmp/Demo/A.lean",
+        "final_sweep_cleanup_attempted": True,
+        "final_sweep_baseline": {
+            "active_file": "/tmp/Demo/A.lean",
+            "content": "theorem t : True := by trivial\n",
+        },
+    }
+    live_state = {
+        "active_file": "/tmp/Demo/A.lean",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "sorry_count": 0,
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake env lean exits 0",
+        "verification_ok": False,
+        "final_sweep_warning_cleanup_pending": True,
+        "last_verification": {
+            "ok": True,
+            "scope": "file",
+            "tool": "lean_verify",
+            "summary": "lake env lean exits 0",
+        },
+    }
+
+    # If the manager were to advance, it would pop the cleanup state via
+    # `_assign_project_prove_file`. Patch that to fail loudly so the test
+    # also catches a future regression where the gate is bypassed elsewhere.
+    monkeypatch.setattr(
+        runner,
+        "_assign_project_prove_file",
+        lambda *args, **kwargs: pytest.fail(
+            "project manager must not assign a new file while cleanup is pending"
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_refresh_project_prove_file_queue",
+        lambda autonomy_state: [{"label": "Demo/B.lean", "path": "/tmp/Demo/B.lean"}],
+    )
+
+    advanced = runner._advance_project_prove_manager_if_needed(
+        autonomy_state, live_state, phase="autonomous"
+    )
+
+    assert advanced is False
+    # Cleanup state must survive the (non-)advancement.
+    assert autonomy_state["final_sweep_cleanup_attempted"] is True
+    assert "final_sweep_baseline" in autonomy_state
+
+
 def test_promote_live_state_grants_one_final_sweep_warning_cleanup(monkeypatch, tmp_path, capsys):
     """Spec :672 — final sweep is the canonical whole-file warning cleanup
     window. When the queue is empty, lake build is clean, and warnings remain

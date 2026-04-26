@@ -5736,6 +5736,15 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
 
     if not active_file:
         return False
+    # The final-sweep warning-cleanup gate granted a one-shot cleanup turn;
+    # the file is NOT fully verified until that turn runs (or is bypassed
+    # by the no-regression path on the next promote pass). Without this
+    # check the project-prove manager treats the file as done, advances to
+    # the next file, and pops the cleanup state via `_assign_project_prove_file`
+    # — so the cleanup conversation never gets to drive the model. That's
+    # exactly why warnings persist across multi-file project workflows.
+    if bool(live_state.get("final_sweep_warning_cleanup_pending")):
+        return False
     if isinstance(sorry_count, int) and sorry_count > 0:
         return False
     if declaration_scope != "file" and isinstance(project_sorry_count, int) and project_sorry_count > 0:
