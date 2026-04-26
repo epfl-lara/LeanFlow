@@ -10,6 +10,7 @@ from pathlib import Path
 
 from agent.auxiliary_client import call_llm
 from epflemma_cli.file_locks import ensure_file_lock, release_file_lock
+from epflemma_cli.lean_incremental import lean_incremental_check
 from epflemma_cli.lean_services import (
     LeanWorkerRequest,
     dispatch_worker,
@@ -64,6 +65,33 @@ def lean_verify_tool(target: str = "", cwd: str = "", mode: str = "project") -> 
         {
             "success": True,
             **lean_verify(target=target, cwd=cwd or None, mode=mode).to_dict(),
+        },
+        ensure_ascii=False,
+    )
+
+
+def lean_incremental_check_tool(
+    file_path: str,
+    *,
+    action: str = "check_target",
+    theorem_id: str = "",
+    cwd: str = "",
+    replacement: str = "",
+    include_tactics: bool = False,
+    timeout_s: int = 60,
+) -> str:
+    return json.dumps(
+        {
+            "success": True,
+            **lean_incremental_check(
+                action=action,
+                file_path=file_path,
+                theorem_id=theorem_id,
+                cwd=cwd,
+                replacement=replacement,
+                include_tactics=include_tactics,
+                timeout_s=timeout_s,
+            ),
         },
         ensure_ascii=False,
     )
@@ -648,8 +676,8 @@ def lean_reasoning_help_tool(
             "advice": advice,
             "next_step": (
                 "Use this as advice only. Ignore any suggestion that changes the declaration "
-                "or uses a placeholder proof, then apply a concrete proof edit and verify "
-                "with lean_verify(mode=file_exact)."
+                "or uses a placeholder proof, then apply a concrete proof edit and verify the "
+                "assigned queue declaration with lean_incremental_check(check_target)."
             ),
         },
         ensure_ascii=False,
@@ -701,6 +729,44 @@ LEAN_VERIFY_SCHEMA = {
                 "default": "project",
             },
         },
+    },
+}
+
+LEAN_INCREMENTAL_CHECK_SCHEMA = {
+    "name": "lean_incremental_check",
+    "description": (
+        "Fast LeanInteract-backed verifier for ordered same-file proof queues. It warms the "
+        "file header/imports, reuses cached Lean environments, and checks only the assigned "
+        "declaration or replacement chunk. Use this for inner-loop proof feedback and optional "
+        "tactic/proof-state annotations; use lean_verify for explicit final Lake sweeps. "
+        "Normal queue use is action=check_target with file_path and theorem_id. Use "
+        "action=prepare_file to warm imports before a run. Use action=feedback or "
+        "include_tactics=true when the proof is blocked and you need intermediate tactic "
+        "ranges, goals, proof_state, feedback_lean comments, and file-global diagnostic locations."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Lean file path"},
+            "theorem_id": {"type": "string", "description": "Assigned declaration name"},
+            "cwd": {"type": "string", "description": "Optional project working directory"},
+            "action": {
+                "type": "string",
+                "description": "`prepare_file` warms header/imports and prior envs; `check_target` validates the assigned declaration; `feedback` is a rich diagnostic check with tactic/proof-state output.",
+                "default": "check_target",
+            },
+            "replacement": {
+                "type": "string",
+                "description": "Optional full replacement declaration chunk to check instead of current file text",
+            },
+            "include_tactics": {
+                "type": "boolean",
+                "description": "Include tactic ranges, tactic text, goals, proof_state, and feedback_lean annotations. Leave false for speed on likely-success checks; set true when asking the model to repair a stuck proof. Failures auto-rerun with tactics when possible.",
+                "default": False,
+            },
+            "timeout_s": {"type": "integer", "description": "LeanInteract request timeout", "default": 60},
+        },
+        "required": ["file_path"],
     },
 }
 
@@ -915,7 +981,8 @@ LEAN_REASONING_HELP_SCHEMA = {
     "description": (
         "Ask the configured auxiliary theorem advisor for proof-strategy advice on a hard Lean theorem. "
         "Use after repeated focused attempts or search/automation exhaustion. The advisor only gives advice; "
-        "you must still preserve the theorem statement and verify any edit with `lean_verify(mode=file_exact)`."
+        "you must still preserve the theorem statement and verify same-file queue edits with "
+        "`lean_incremental_check(check_target)`; keep `lean_verify` for final Lake sweeps or explicit canonical checks."
     ),
     "parameters": {
         "type": "object",
@@ -968,6 +1035,22 @@ registry.register(
     ),
     check_fn=check_lean_requirements,
     emoji="✅",
+)
+registry.register(
+    name="lean_incremental_check",
+    toolset="lean",
+    schema=LEAN_INCREMENTAL_CHECK_SCHEMA,
+    handler=lambda args, **kw: lean_incremental_check_tool(
+        file_path=args.get("file_path", ""),
+        action=args.get("action", "check_target"),
+        theorem_id=args.get("theorem_id", ""),
+        cwd=args.get("cwd", ""),
+        replacement=args.get("replacement", ""),
+        include_tactics=bool(args.get("include_tactics", False)),
+        timeout_s=int(args.get("timeout_s", 60) or 60),
+    ),
+    check_fn=check_lean_requirements,
+    emoji="⚡",
 )
 registry.register(
     name="lean_search",

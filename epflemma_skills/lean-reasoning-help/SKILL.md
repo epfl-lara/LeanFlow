@@ -11,7 +11,7 @@ Use this skill for hard theorem-local blockers after normal proof workflow steps
 
 1. Preserve the assigned theorem/lemma/example statement exactly.
 2. Call `lean_reasoning_help` with the theorem id, file path, current diagnostics, current attempt, and recent failed attempts.
-3. Treat the result as advice only; do not accept it until a concrete edit passes `lean_verify(mode=file_exact)` for the active file.
+3. Treat the result as advice only; do not accept it until a concrete edit passes `lean_incremental_check(check_target)` for the assigned declaration, or `lean_verify(mode=file_exact)` when doing a final Lake sweep or explicit canonical check.
 4. Do not use auxiliary advice to justify deleting, weakening, renaming, moving, or replacing the declaration with `sorry`.
 5. If the advice suggests a statement change, report that as a blocker instead of applying it.
 6. If the advice suggests `sorry`, `admit`, axioms, unsafe code, or another placeholder, ignore that part and continue with verified proof repair.

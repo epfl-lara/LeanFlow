@@ -27,7 +27,7 @@ Primary specs:
 
 - Keep names readable and codebase-consistent.
 - Start from structured Lean state, not guessed missing imports or guessed theorem names.
-- In managed queue workflows, prefer `patch`/`write_file` because the runner records the automatic post-edit verification result. Use `apply_verified_patch` for compatibility or when its pre-edit checkpoint payload is specifically useful.
+- In managed queue workflows, prefer `patch`/`write_file` because the runner records the automatic post-edit `lean_incremental_check(check_target)` result and falls back to Lake only when needed. Use `apply_verified_patch` for compatibility or when its pre-edit checkpoint payload is specifically useful.
 - Prefer focused `lean_verify` module checks when close to clean; reserve full-project verification for milestone checks.
 - Prefer explicit intermediate lemmas over brittle proof scripts.
 - Do not declare success while the requested scope still has diagnostics, open goals, warnings, or `sorry`.

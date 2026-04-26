@@ -24,6 +24,7 @@ from agent.auxiliary_client import call_llm
 from agent.context_compressor import ContextCompressor
 from agent.model_metadata import estimate_messages_tokens_rough
 from epflemma_cli.file_locks import list_file_locks, release_all_file_locks
+from epflemma_cli.lean_incremental import lean_incremental_check
 from epflemma_cli.lean_services import (
     actionable_diagnostic_line_numbers,
     diagnostic_items,
@@ -656,7 +657,7 @@ def _record_managed_reasoning_policy(
 
 
 def _tool_result_counts_as_theorem_feedback(function_name: str, args: Mapping[str, Any] | None = None) -> bool:
-    if function_name in {"lean_inspect", "lean_verify", "apply_verified_patch"}:
+    if function_name in {"lean_inspect", "lean_verify", "lean_incremental_check", "apply_verified_patch"}:
         return True
     if function_name != "terminal":
         return False
@@ -717,6 +718,83 @@ def _manager_verify_queue_file(active_file: str) -> dict[str, Any]:
         "target": result.target,
         "output": _single_line(result.output, 500),
     }
+
+
+def _manager_incremental_check_queue_item(active_file: str, target_symbol: str) -> dict[str, Any]:
+    path = str(active_file or "").strip()
+    target = str(target_symbol or "").strip()
+    if not path or not target:
+        return {"ok": False, "error": "active file and target declaration are required"}
+    try:
+        result = lean_incremental_check(
+            action="check_target",
+            file_path=path,
+            theorem_id=target,
+            cwd=_project_root(),
+            include_tactics=False,
+            timeout_s=90,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "backend": "lean_interact",
+            "error": str(exc)[:500],
+            "incremental": {"success": False, "error": str(exc)[:500]},
+        }
+    output = str(result.get("output", "") or result.get("error", "") or "")
+    return {
+        "ok": bool(result.get("ok", False)),
+        "mode": "incremental_target",
+        "backend": str(result.get("backend", "lean_interact") or "lean_interact"),
+        "command": str(result.get("command", "lean_interact check_target") or "lean_interact check_target"),
+        "target": str(result.get("target", target) or target),
+        "output": _single_line(output, 500),
+        "incremental": result,
+    }
+
+
+def _manager_prepare_incremental_queue_item(active_file: str, target_symbol: str) -> dict[str, Any]:
+    path = str(active_file or "").strip()
+    target = str(target_symbol or "").strip()
+    if not path or not target:
+        return {"success": False, "ok": False, "error": "active file and target declaration are required"}
+    try:
+        result = lean_incremental_check(
+            action="prepare_file",
+            file_path=path,
+            theorem_id=target,
+            cwd=_project_root(),
+            include_tactics=False,
+            timeout_s=90,
+        )
+    except Exception as exc:
+        return {
+            "success": False,
+            "ok": False,
+            "backend": "lean_interact",
+            "error": str(exc)[:500],
+        }
+    output = str(result.get("output", "") or result.get("error", "") or "")
+    return {
+        "success": bool(result.get("success", False)),
+        "ok": bool(result.get("ok", False)),
+        "backend": str(result.get("backend", "lean_interact") or "lean_interact"),
+        "action": "prepare_file",
+        "target": str(result.get("target", target) or target),
+        "elapsed_s": result.get("elapsed_s", 0),
+        "output": _single_line(output, 500),
+        "cache": dict(result.get("cache") or {}),
+        "error": str(result.get("error", "") or ""),
+    }
+
+
+def _manager_check_queue_item(active_file: str, target_symbol: str) -> tuple[dict[str, Any], str]:
+    if target_symbol and active_file:
+        manager_verification = _manager_incremental_check_queue_item(active_file, target_symbol)
+        incremental_payload = dict(manager_verification.get("incremental") or {})
+        if incremental_payload.get("success", False):
+            return manager_verification, "lean_incremental_check"
+    return _manager_verify_queue_file(active_file), "lean_verify"
 
 
 def _latest_assistant_content(messages: list[dict[str, Any]]) -> str:
@@ -898,15 +976,11 @@ def _manager_feedback_kind(
 
     output = str(manager_check.get("output", "") or manager_check.get("error", "") or "")
     parsed = diagnostic_items(output)
-    if any(str(item.get("severity", "") or "").strip().lower() == "error" for item in parsed):
-        return "error"
     manager_verification_failed = (
         ("ok" in manager_check or "file_check_ok" in manager_check)
         and not bool(manager_check.get("ok"))
         and not bool(manager_check.get("file_check_ok"))
     )
-    if manager_verification_failed:
-        return "error"
 
     local_cleanup = str(manager_check.get("local_cleanup_reason", "") or "").strip()
     lowered_cleanup = local_cleanup.lower()
@@ -921,16 +995,23 @@ def _manager_feedback_kind(
         severity = str(item.get("severity", "") or "").strip().lower()
         message = str(item.get("message", "") or "").strip().lower()
         line = item.get("line")
-        if severity == "error":
-            return "error"
         if _line_in_declaration(entry, line):
+            if severity == "error":
+                return "error"
             if "sorry" in message:
                 return "sorry"
-            if severity == "warning":
+            if severity == "warning" and not manager_verification_failed:
                 return "warning"
 
+    if manager_verification_failed:
+        return "error"
+    if not entry and any(str(item.get("severity", "") or "").strip().lower() == "error" for item in parsed):
+        return "error"
+
     lowered_output = output.lower()
-    if any(token in lowered_output for token in ("error:", "unsolved goals", "type mismatch", "failed to synthesize")):
+    if (manager_verification_failed or not entry) and any(
+        token in lowered_output for token in ("error:", "unsolved goals", "type mismatch", "failed to synthesize")
+    ):
         return "error"
     if entry and entry.get("has_sorry"):
         return "sorry"
@@ -991,11 +1072,12 @@ def _review_agent_final_report(
     if not _final_report_claims_queue_success(final_text):
         return updated
 
-    manager_check = _manager_verify_queue_file(active_file)
+    manager_check, manager_tool = _manager_check_queue_item(active_file, target_symbol)
     file_check_ok = bool(manager_check.get("ok"))
     manager_check = dict(manager_check)
     manager_check["file_check_ok"] = file_check_ok
-    if file_check_ok:
+    manager_check["manager_tool"] = manager_tool
+    if bool(manager_check.get("ok")):
         local_diagnostics = _query_live_diagnostics(active_file)
         cleanup_reason = _declaration_diagnostic_feedback_reason(
             active_file,
@@ -1136,6 +1218,128 @@ def _managed_tool_result_succeeded(result: str) -> bool:
     if "ok" in payload:
         return bool(payload.get("ok"))
     return True
+
+
+def _terminal_command_may_edit(command: str) -> bool:
+    text = str(command or "")
+    if not text.strip():
+        return False
+    patterns = (
+        r"\bsed\s+(?:-[A-Za-z]*i|[^;&|]*\s-i\b)",
+        r"\bperl\s+-[A-Za-z]*i\b",
+        r"\bpython(?:3)?\b.*\b(?:write_text|open\s*\(|Path\s*\().*(?:write|append|unlink)",
+        r"\b(?:rm|mv|cp|touch|chmod|chown|truncate)\b",
+        r"\btee\b",
+        r"(?:^|\s)(?:\d)?>>?(?!&)",
+    )
+    return any(re.search(pattern, text, flags=re.DOTALL) for pattern in patterns)
+
+
+def _queue_edit_snapshot_required(function_name: str, args: Mapping[str, Any] | None) -> bool:
+    if function_name in {"patch", "write_file", "apply_verified_patch"}:
+        return True
+    if function_name == "terminal":
+        return _terminal_command_may_edit(str(dict(args or {}).get("command", "") or ""))
+    return False
+
+
+def _managed_pre_tool_call(agent: Any, function_name: str, args: Mapping[str, Any] | None) -> str | None:
+    if not _single_queue_item_turn_enabled() or _agent_interrupted(agent):
+        return None
+    if not _queue_edit_snapshot_required(function_name, args):
+        return None
+    autonomy_state = getattr(agent, "_managed_autonomy_state", {}) or {}
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return None
+    if function_name == "terminal":
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    "Managed theorem queues do not allow terminal-based file edits. "
+                    "Use `patch` for a targeted edit inside the assigned declaration only."
+                ),
+            },
+            ensure_ascii=False,
+        )
+    try:
+        before_text = Path(active_file).read_text(encoding="utf-8")
+    except Exception:
+        return None
+    entry = _find_declaration_entry(active_file, target_symbol)
+    if not entry:
+        return None
+    setattr(
+        agent,
+        "_managed_queue_edit_snapshot",
+        {
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "before_text": before_text,
+            "start": int(entry.get("line", 0) or 0),
+            "end": int(entry.get("end_line", 0) or 0),
+        },
+    )
+    return None
+
+
+def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
+    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+        return ""
+    snapshot = dict(getattr(agent, "_managed_queue_edit_snapshot", {}) or {})
+    try:
+        delattr(agent, "_managed_queue_edit_snapshot")
+    except Exception:
+        pass
+    active_file = str(snapshot.get("active_file", "") or "")
+    target_symbol = str(snapshot.get("target_symbol", "") or "")
+    before_text = str(snapshot.get("before_text", "") or "")
+    start = int(snapshot.get("start", 0) or 0)
+    end = int(snapshot.get("end", 0) or 0)
+    if not active_file or not target_symbol or not before_text or start <= 0 or end < start:
+        return ""
+    path = Path(active_file)
+    try:
+        current_text = path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    if current_text == before_text:
+        return ""
+    current_entry = _find_declaration_entry(active_file, target_symbol)
+    if not current_entry:
+        try:
+            path.write_text(before_text, encoding="utf-8")
+        except Exception:
+            return ""
+        return (
+            "[EPFLEMMA-NATIVE QUEUE EDIT GUARD]\n"
+            f"The `{function_name}` edit removed or obscured the assigned declaration `{target_symbol}`. "
+            "The manager restored the file to its pre-tool state. Edit only the assigned declaration."
+        )
+    current_slice = str(current_entry.get("text", "") or "").strip()
+    if not current_slice:
+        return ""
+    before_lines = before_text.splitlines()
+    replacement_lines = current_slice.splitlines()
+    restored_lines = before_lines[: start - 1] + replacement_lines + before_lines[end:]
+    restored_text = "\n".join(restored_lines)
+    if before_text.endswith("\n"):
+        restored_text += "\n"
+    if restored_text == current_text:
+        return ""
+    try:
+        path.write_text(restored_text, encoding="utf-8")
+    except Exception:
+        return ""
+    return (
+        "[EPFLEMMA-NATIVE QUEUE EDIT GUARD]\n"
+        f"The `{function_name}` edit changed content outside the assigned declaration `{target_symbol}`. "
+        "The manager preserved the current assigned declaration body and restored all other declarations "
+        "to their pre-tool state. Do not edit future queue items in this theorem turn."
+    )
 
 
 def _finish_queue_step_boundary(
@@ -1412,12 +1616,13 @@ def _handle_managed_tool_result(
                 "target_symbol": target_symbol,
                 "active_file": active_file,
             }
-            manager_verification = _manager_verify_queue_file(active_file)
+            manager_verification, manager_tool = _manager_check_queue_item(active_file, target_symbol)
+            verification_tool = f"{function_name}+{manager_tool}"
             _finish_queue_step_boundary(
                 agent,
                 pending_target=target_symbol,
                 pending_file=active_file,
-                verification_tool=f"{function_name}+lean_verify",
+                verification_tool=verification_tool,
                 manager_verification=manager_verification,
             )
         return
@@ -2217,6 +2422,8 @@ def _declaration_diagnostic_feedback_reason(active_file: str, label: str, *texts
             line = diagnostic.get("line")
             if isinstance(line, int) and start <= line <= max(start, end):
                 severity = str(diagnostic.get("severity", "") or "diagnostic").strip().lower()
+                if severity not in {"warning", "error"}:
+                    continue
                 message = _single_line(str(diagnostic.get("message", "") or ""), 180)
                 return (
                     f"{severity} near line {line}: {message}"
@@ -2224,6 +2431,12 @@ def _declaration_diagnostic_feedback_reason(active_file: str, label: str, *texts
                     else f"{severity} near line {line}"
                 )
         if not parsed_items:
+            lowered_text = text.lower()
+            if re.search(r":\d+:\d+:\s*info:", lowered_text) and not re.search(
+                r":\d+:\d+:\s*(?:warning|error):",
+                lowered_text,
+            ):
+                continue
             reason = _diagnostic_reason_for_entry(entry, _extract_diagnostic_line_numbers(text))
             if reason:
                 return reason
@@ -2280,7 +2493,7 @@ def _declaration_work_queue(
             name = str(entry.get("name", "") or "")
             line_number = int(entry.get("line", 0) or 0)
             anonymous = _is_anonymous_declaration_label(name)
-            if diagnostics_active and _declaration_name_safe_for_diagnostic_match(name):
+            if diagnostics_active and not diagnostic_lines and _declaration_name_safe_for_diagnostic_match(name):
                 if re.search(rf"\b{re.escape(name)}\b", diagnostic_match_text or ""):
                     reasons.append("referenced in diagnostics")
             diagnostic_reason = _diagnostic_reason_for_entry(entry, diagnostic_lines) if diagnostics_active else ""
@@ -2547,11 +2760,43 @@ def _prepare_queue_assignment_state(
     label = str(item.get("label", "") or current.get("target_symbol", "") or "").strip()
     active_file = str(current.get("active_file", "") or current.get("active_file_label", "") or "").strip()
     slice_text = str(current.get("current_queue_item_slice", "") or "").strip()
-    autonomy_state["current_queue_assignment"] = {
+    previous = dict(autonomy_state.get("current_queue_assignment") or {})
+    previous_target = str(previous.get("target_symbol", "") or "").strip()
+    previous_file = str(previous.get("active_file", "") or "").strip()
+    same_assignment = bool(
+        label
+        and active_file
+        and previous_target == label
+        and _same_active_file(previous_file, active_file)
+    )
+    assignment = {
         "target_symbol": label,
         "active_file": active_file,
         "slice": slice_text,
     }
+    if label and active_file:
+        previous_prepare = dict(previous.get("incremental_prepare") or {})
+        if same_assignment and previous_prepare.get("success"):
+            assignment["incremental_prepare"] = previous_prepare
+        else:
+            prepare = _manager_prepare_incremental_queue_item(active_file, label)
+            assignment["incremental_prepare"] = prepare
+            _record_activity(
+                "manager-incremental-warmup",
+                (
+                    f"LeanInteract warmup succeeded for {label}"
+                    if prepare.get("success")
+                    else f"LeanInteract warmup unavailable for {label}"
+                ),
+                target_symbol=label,
+                active_file=active_file,
+                ok=bool(prepare.get("ok")),
+                success=bool(prepare.get("success")),
+                elapsed_s=prepare.get("elapsed_s", 0),
+                cache=dict(prepare.get("cache") or {}),
+                error=str(prepare.get("error", "") or ""),
+            )
+    autonomy_state["current_queue_assignment"] = assignment
 
 
 def _queue_assignment_identity(live_state: Mapping[str, Any] | None) -> tuple[str, str]:
@@ -2704,13 +2949,24 @@ def _queue_assignment_block(
         "- local helper lemmas or intermediate facts are allowed if they directly help this theorem",
         "- do not start solving unrelated future queue items",
         "- future queued `sorry` warnings are queue state only; do not edit those declarations in this turn",
-        "- if file verification succeeds and only unrelated queued declarations remain, stop and let the manager hand off the next item",
+        "- if the assigned declaration verifies and only unrelated queued declarations remain, stop and let the manager hand off the next item",
         "- after a meaningful edit, stop and let the manager re-check the queue",
-        "- for this file-scoped theorem turn, the only acceptable final verification step is `lean_verify(mode=file_exact)` for the active file",
+        "- for this file-scoped theorem turn, use `lean_incremental_check(check_target)` as the fast queue-step acceptance check; `lean_verify(mode=file_exact)` is reserved for final Lake sweeps, fallback, or explicit canonical verification",
+        "- use Lean tools for normal verification so the manager can classify the assigned declaration; terminal-based Lake checks are emergency/manual fallback only",
     ]
     verification_hint = _queue_item_verification_hint(active_file)
     if verification_hint:
         parts.extend(["", "Verification for this queue item:", verification_hint])
+    warmup = dict(dict(autonomy_state or {}).get("current_queue_assignment", {}) or {}).get("incremental_prepare")
+    if isinstance(warmup, Mapping):
+        status = "ready" if warmup.get("success") else "unavailable"
+        detail = str(warmup.get("error", "") or warmup.get("output", "") or "").strip()
+        line = f"- LeanInteract warmup: {status}"
+        if warmup.get("elapsed_s") not in (None, ""):
+            line += f" ({warmup.get('elapsed_s')}s)"
+        if detail and not warmup.get("success"):
+            line += f"; {detail[:180]}"
+        parts.extend(["", "Incremental verifier state:", line])
     prefix_text = str(live_state.get("current_queue_item_prefix", "") or "").strip()
     if prefix_text:
         parts.extend(["", prefix_text])
@@ -3176,9 +3432,9 @@ def _final_file_sweep_block(live_state: Mapping[str, Any]) -> str:
             f"- exact tool path: {active_file}",
             f"- current blocker: {blocker}",
             (
-                f"- canonical file verification: {verification_hint}"
+                f"- final file verification: {verification_hint}"
                 if verification_hint
-                else "- canonical file verification: [unknown]"
+                else "- final file verification: [unknown]"
             ),
             "",
             "Final file sweep:",
@@ -3212,6 +3468,11 @@ def _same_queue_assignment_still_blocked(
     entry = _find_declaration_entry(current_file, current_target)
     if entry and entry.get("has_sorry"):
         return True
+    assigned_error = _queue_item_has_error_diagnostic(
+        {"label": current_target},
+        current_file,
+        diagnostics,
+    )
     blocker_lower = blocker_summary.lower()
     hard_blocker_summary = bool(
         blocker_summary
@@ -3229,9 +3490,8 @@ def _same_queue_assignment_still_blocked(
     )
     return bool(
         hard_blocker_summary
-        or _diagnostics_indicate_queue_blocker(diagnostics)
+        or assigned_error
         or _goals_still_open(goals)
-        or ("error" in build_status.lower())
     )
 
 
@@ -3966,9 +4226,9 @@ def _queue_item_verification_hint(active_file: str) -> str:
     if not command:
         return ""
     return (
-        "- canonical acceptance tool: `lean_verify(mode=file_exact)` on the active file\n"
-        f"- backend check performed by the tool: `{command}`\n"
-        "- use `lean_inspect` for iteration, but do not accept the theorem as solved until `lean_verify(mode=file_exact)` succeeds\n"
+        "- queue-step acceptance tool: `lean_incremental_check(action=check_target)` on the active file and assigned declaration\n"
+        f"- final Lake sweep command when requested or at queue end: `{command}`\n"
+        "- use `lean_inspect` for iteration; when the proof is ready, verify the assigned declaration with `lean_incremental_check`\n"
         "- if the active file still reports errors, treat those errors as blockers before moving to future `sorry` items\n"
         "- future queued `sorry` warnings do not belong to this theorem turn; stop after this assigned declaration is clean\n"
         "- a declaration disappearing from the pending queue is not enough by itself when the file gate is still failing\n"
@@ -3980,8 +4240,8 @@ def _recommended_verification_command(active_file: str) -> str:
     relative_label = _relative_file_label(active_file)
     if _single_queue_item_turn_enabled() and active_file:
         return (
-            f"`lean_inspect` on {relative_label}, then the required acceptance check "
-            f"`lean_verify(mode=file_exact)` for this file-scoped theorem turn"
+            f"`lean_inspect` on {relative_label}, then `lean_incremental_check(check_target)` "
+            "for this file-scoped queue step"
         )
     module_name = _module_name_for_file(active_file)
     if module_name:
@@ -4534,11 +4794,33 @@ def _build_agent() -> AIAgent:
         tool_output_head_lines=logging_cfg.get("tool_output_head_lines", 28),
         tool_output_tail_lines=logging_cfg.get("tool_output_tail_lines", 12),
     )
+    project_root = _project_root()
+    managed_tool_task_id = f"epflemma-native-{getattr(agent, 'session_id', '') or os.getpid()}"
+    agent._managed_tool_task_id = managed_tool_task_id
+    os.environ["TERMINAL_CWD"] = project_root
+    try:
+        from tools.terminal_tool import register_task_env_overrides
+
+        register_task_env_overrides(managed_tool_task_id, {"cwd": project_root})
+    except Exception:
+        pass
     agent._managed_base_reasoning_config = dict(reasoning_cfg or {}) if reasoning_cfg else None
 
-    def _post_tool_result_callback(function_name: str, _args: Mapping[str, Any], _result: str) -> None:
-        _handle_managed_tool_result(agent, function_name, _args, _result)
+    def _pre_tool_call_callback(function_name: str, _args: Mapping[str, Any]) -> str | None:
+        return _managed_pre_tool_call(agent, function_name, _args)
 
+    def _post_tool_result_callback(function_name: str, _args: Mapping[str, Any], _result: str) -> None:
+        guard_feedback = _restore_out_of_scope_queue_edit(agent, function_name)
+        _handle_managed_tool_result(agent, function_name, _args, _result)
+        if guard_feedback:
+            previous_appendix = str(getattr(agent, "_post_tool_result_appendix", "") or "").strip()
+            setattr(
+                agent,
+                "_post_tool_result_appendix",
+                f"{previous_appendix}\n\n{guard_feedback}".strip() if previous_appendix else guard_feedback,
+            )
+
+    agent.pre_tool_call_callback = _pre_tool_call_callback
     agent.post_tool_result_callback = _post_tool_result_callback
     owner_id = str(getattr(agent, "session_id", "") or "")
     if owner_id:
@@ -4589,6 +4871,9 @@ def _run_managed_conversation(
     on_interrupt: Callable[[], None] | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
+    managed_task_id = str(getattr(agent, "_managed_tool_task_id", "") or "").strip()
+    if managed_task_id and not kwargs.get("task_id"):
+        kwargs["task_id"] = managed_task_id
     result_holder: dict[str, Any] = {}
     error_holder: dict[str, BaseException] = {}
 
@@ -5285,7 +5570,8 @@ def _autonomous_continuation_prompt(
     if _runner_lean_prompt_enabled():
         if declaration_scope == "file":
             verification_gate = str(
-                live_state.get("verification_hint", "") or "`lean_inspect` on the active file, then the canonical file verification gate"
+                live_state.get("verification_hint", "")
+                or "`lean_inspect` on the active file, then the LeanInteract queue-step gate or final Lake verification gate"
             )
         else:
             verification_gate = str(
@@ -5302,7 +5588,7 @@ def _autonomous_continuation_prompt(
     else:
         if declaration_scope == "file":
             verification_lines = (
-                "- explicit successful file verification\n"
+                "- explicit successful `lean_incremental_check(check_target)` for queue steps, or file verification for final/fallback checks\n"
                 "- no errors that prevent checking the active file\n"
                 "- no warnings in the assigned declaration, except after the manager's focused warning-cleanup opportunity is exhausted\n"
                 "- no open goals for the active work\n"
