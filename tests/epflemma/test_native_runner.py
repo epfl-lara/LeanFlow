@@ -635,6 +635,163 @@ def test_handle_managed_tool_result_prints_cleanup_feedback_when_warning_in_targ
     assert "Queue step boundary" not in output
 
 
+def test_handle_managed_tool_result_fires_cleanup_from_incremental_check_structured_messages(
+    monkeypatch, tmp_path, capsys
+):
+    """Regression: ``lean_incremental_check`` reports warnings as plain
+    ``warning: ...`` lines without the ``<file>:<line>:<col>:`` prefix that
+    ``diagnostic_items()``'s text fallback regex requires. Before forwarding
+    the structured ``messages`` list to the cleanup helper, those warnings
+    were invisible to the post-patch boundary even though the runner's own
+    ``🔎 Manager verification`` line reported the count correctly. The
+    focused warning-cleanup opportunity must fire when the targeted check
+    surfaces a warning whose line falls inside the assigned declaration."""
+
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  have h : True := by",
+                "    all_goals trivial",
+                "  trivial",
+                "",
+                "theorem next_demo : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  trivial",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda active_file, target_symbol: {
+            "ok": True,
+            "mode": "incremental_target",
+            "backend": "lean_interact",
+            "command": "lean_interact check_target",
+            "target": target_symbol,
+            # `lean_incremental_check`-style flat output: no `:line:col:`
+            # prefix, so `diagnostic_items()` returns [] for this text.
+            "output": (
+                "warning: 'all_goals trivial' tactic does nothing "
+                "Note: This linter can be disabled with `set_option linter.unusedTactic false`"
+            ),
+            # Structured form survives via the new `messages` field.
+            "messages": [
+                {
+                    "severity": "warning",
+                    "message": "'all_goals trivial' tactic does nothing",
+                    "line": 3,
+                    "column": 5,
+                }
+            ],
+            "incremental": {"success": True, "ok": True},
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: pytest.fail("successful incremental queue checks should not fall back to Lake"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "active_file_label": "Main.lean",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+            "current_queue_item_slice": "theorem demo : True := by\n  trivial",
+            "diagnostics": "",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "blocker_summary": "",
+        },
+    )
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+
+    appendix = getattr(agent, "_post_tool_result_appendix", "")
+    assert "THEOREM FEEDBACK" in appendix
+    assert "warning-only cleanup" in appendix
+    assert "all_goals trivial" in appendix
+    output = capsys.readouterr().out
+    assert "🟡 Cleanup feedback for demo" in output
+    assert "warning near line 3" in output
+    assert "focused warning-cleanup opportunity granted" in output
+    # Cleanup branch must NOT close the boundary or interrupt the agent —
+    # the model gets the same theorem turn back with the appendix attached.
+    assert agent.interrupt_messages == []
+    assert "Queue step boundary" not in output
+
+
+def test_declaration_diagnostic_feedback_reason_prefers_structured_items_over_text(tmp_path):
+    """Pin the helper contract: a structured warning inside the assigned
+    declaration's range wins over text-form parsing, so `lean_interact`
+    output that text-parsers cannot locate still produces a cleanup reason."""
+
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  have h : True := by",
+                "    all_goals trivial",
+                "  trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    text_only = runner._declaration_diagnostic_feedback_reason(
+        str(active),
+        "demo",
+        "warning: 'all_goals trivial' tactic does nothing",
+    )
+    structured = runner._declaration_diagnostic_feedback_reason(
+        str(active),
+        "demo",
+        "warning: 'all_goals trivial' tactic does nothing",
+        structured_items=[
+            {
+                "severity": "warning",
+                "message": "'all_goals trivial' tactic does nothing",
+                "line": 3,
+                "column": 5,
+            }
+        ],
+    )
+
+    # Without structured items, the regex fallback cannot locate the warning
+    # because there is no `<file>:<line>:<col>:` prefix.
+    assert text_only == ""
+    assert "warning near line 3" in structured
+    assert "all_goals trivial" in structured
+
+
 def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text(
@@ -703,6 +860,15 @@ def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup
     assert "warning-only cleanup" in agent._post_tool_result_appendix
     assert "local cleanup" in agent._post_tool_result_appendix
     assert "do not edit future queued declarations" in agent._post_tool_result_appendix
+    # Per-theorem cleanup appendix must (a) require an attempt before the
+    # bail clause, (b) name concrete low-risk fixes, (c) make the bail
+    # clause conditional on having read the declaration first. Prevents the
+    # model from running `lean_verify` and immediately declaring done.
+    assert "expected effort" in agent._post_tool_result_appendix.lower()
+    assert "at least one safe edit" in agent._post_tool_result_appendix.lower()
+    assert "all_goals" in agent._post_tool_result_appendix.lower()
+    assert "bail clause" in agent._post_tool_result_appendix.lower()
+    assert "inspected the declaration first" in agent._post_tool_result_appendix.lower()
     assert runner._manager_feedback_retry_count(
         agent._managed_autonomy_state,
         target_symbol="demo",
@@ -3236,6 +3402,292 @@ def test_promote_live_state_accepts_warning_only_final_file_sweep(monkeypatch, t
     assert promoted["verification_ok"] is True
     assert runner._live_state_is_verified(promoted) is True
     assert runner._queue_needs_final_file_sweep(promoted) is False
+
+
+def test_promote_live_state_grants_one_final_sweep_warning_cleanup(monkeypatch, tmp_path, capsys):
+    """Spec :672 — final sweep is the canonical whole-file warning cleanup
+    window. When the queue is empty, lake build is clean, and warnings remain
+    on the active file, the runner must grant exactly one focused cleanup
+    cycle: snapshot the file, set the one-shot flag, and suppress
+    verification so the workflow loop drives one more conversation."""
+
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake env lean Demo/Main.lean exits 0"),
+    )
+
+    autonomy_state: dict = {}
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": f"{active}:2:3: warning: this tactic is never executed",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+
+    assert promoted["verification_ok"] is False, "warnings present must hold the workflow open for cleanup"
+    assert promoted["final_sweep_warning_cleanup_pending"] is True
+    assert promoted["final_sweep_warning_count"] == 1
+    assert "this tactic is never executed" in promoted["final_sweep_warning_summary"]
+    assert "line 2" in promoted["final_sweep_warning_summary"]
+    assert promoted["queue_needs_final_file_sweep"] is True
+    assert autonomy_state["final_sweep_cleanup_attempted"] is True
+    baseline = autonomy_state["final_sweep_baseline"]
+    assert baseline["content"] == "theorem t : True := by\n  trivial\n"
+    output = capsys.readouterr().out
+    assert "🟢 Final file sweep — warning cleanup opportunity granted (1/1)" in output
+    assert "1 warning(s) remain on the active file" in output
+
+
+def test_promote_live_state_skips_final_sweep_cleanup_when_flag_already_set(monkeypatch, tmp_path):
+    """One-shot guarantee: once the flag is set, the runner accepts the
+    warning-only state instead of looping the cleanup window."""
+
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake env lean Demo/Main.lean exits 0"),
+    )
+
+    autonomy_state: dict = {"final_sweep_cleanup_attempted": True}
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": f"{active}:2:3: warning: this tactic is never executed",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+
+    assert promoted["verification_ok"] is True
+    assert "final_sweep_warning_cleanup_pending" not in promoted
+    assert autonomy_state.get("final_sweep_cleanup_attempted") is True
+
+
+def test_promote_live_state_skips_final_sweep_cleanup_when_no_warnings(monkeypatch, tmp_path):
+    """Clean files do not consume an extra cycle just because the queue is empty."""
+
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake env lean Demo/Main.lean exits 0"),
+    )
+
+    autonomy_state: dict = {}
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+
+    assert promoted["verification_ok"] is True
+    assert "final_sweep_warning_cleanup_pending" not in promoted
+    assert "final_sweep_cleanup_attempted" not in autonomy_state
+    assert "final_sweep_baseline" not in autonomy_state
+
+
+def test_promote_live_state_restores_baseline_when_cleanup_attempt_regresses(monkeypatch, tmp_path, capsys):
+    """If the cleanup-cycle edit breaks the file (lake newly fails), the
+    runner must restore the captured baseline and accept the original
+    warning-only state. We promised warning-tolerant — never ship worse."""
+
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    baseline_content = "theorem t : True := by\n  trivial\n"
+    # File on disk is the (broken) post-cleanup version; baseline below holds
+    # the original passing content.
+    broken_content = "theorem t : True := by\n  this_does_not_compile\n"
+    active.write_text(broken_content, encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+
+    build_calls: list[tuple[str, bool]] = []
+
+    def _fake_build(active_file="", *, full_project=False):
+        build_calls.append((active_file, full_project))
+        if len(build_calls) == 1:
+            return False, "lake env lean Demo/Main.lean reported errors: unknown identifier"
+        return True, "lake env lean Demo/Main.lean exits 0"
+
+    monkeypatch.setattr(runner, "_run_explicit_verification_build", _fake_build)
+
+    autonomy_state: dict = {
+        "final_sweep_cleanup_attempted": True,
+        "final_sweep_baseline": {
+            "active_file": str(active.resolve()),
+            "content": baseline_content,
+        },
+    }
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+
+    assert promoted["verification_ok"] is True, "post-restore lake build should succeed against baseline"
+    assert active.read_text(encoding="utf-8") == baseline_content
+    assert "final_sweep_baseline" not in autonomy_state, "baseline payload should be released after one shot"
+    output = capsys.readouterr().out
+    assert "↩️" in output and "restored active file to pre-cleanup baseline" in output
+
+
+def test_startup_prompt_surfaces_final_sweep_warning_cleanup_on_resume(monkeypatch, tmp_path):
+    """Regression: when the cleanup gate has fired (queue empty + warnings)
+    and the workflow is being resumed from a checkpoint, the initial
+    conversation prompt must include the warning-cleanup invitation. The
+    bug was that ``_startup_user_message`` only consulted
+    ``_queue_assignment_block`` (which returns "" for an empty queue) and
+    never ``_final_file_sweep_block``, so the model resumed, saw the route
+    line ``action: final-sweep``, observed the file was clean, and bailed
+    without ever reading the cleanup-effort wording."""
+
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
+    monkeypatch.setattr(runner, "_runner_lean_prompt_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_swarm_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_startup_active_skill_contract", lambda _name: "")
+    monkeypatch.setattr(
+        runner,
+        "route_workflow_step",
+        lambda *args, **kwargs: type(
+            "Route",
+            (),
+            {
+                "to_dict": lambda self: {
+                    "skill_name": "lean-proof-loop",
+                    "route_action": "final-sweep",
+                    "blocker_kind": "open_goals",
+                    "reason": "queue empty",
+                    "recommended_worker": "",
+                }
+            },
+        )(),
+    )
+
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Demo/Main.lean",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "diagnostics": f"{active}:2:3: warning: this tactic is never executed",
+        "verification_ok": False,
+        "final_sweep_warning_cleanup_pending": True,
+        "final_sweep_warning_count": 3,
+        "final_sweep_warning_summary": (
+            "- line 2: this tactic is never executed\n"
+            "- line 5: 'all_goals omega' tactic does nothing\n"
+            "- line 12: unused variable `hfpos`"
+        ),
+        "current_queue_item": {},
+    }
+
+    prompt = runner._startup_user_message(
+        resumed_checkpoint={"label": "verified proof milestone"},
+        live_state=live_state,
+        autonomy_state={"final_sweep_cleanup_attempted": True},
+    )
+
+    # The cleanup-pending wording must reach the resume prompt.
+    assert "warning cleanup (1/1 opportunity)" in prompt.lower()
+    assert "3 warning(s) remain" in prompt
+    assert "expected effort" in prompt.lower()
+    assert "at least one safe edit" in prompt.lower()
+    assert "bail clause" in prompt.lower()
+    # The detected-warnings summary must be visible in the resume prompt.
+    assert "all_goals omega" in prompt
+    # Hard-blocker sweep wording should not bleed in (no `current blocker`).
+    assert "current blocker:" not in prompt.lower()
+
+
+def test_final_file_sweep_block_renders_warning_cleanup_wording(tmp_path):
+    """Prompt block should switch to warning-cleanup wording when the cleanup
+    is pending, instead of the generic hard-blocker sweep wording."""
+
+    block = runner._final_file_sweep_block(
+        {
+            "active_file": str(tmp_path / "Main.lean"),
+            "active_file_label": "Demo/Main.lean",
+            "diagnostics": "Demo/Main.lean:2:3: warning: this tactic is never executed",
+            "final_sweep_warning_cleanup_pending": True,
+            "final_sweep_warning_count": 2,
+            "final_sweep_warning_summary": "- line 2: this tactic is never executed\n- line 5: 'all_goals omega' tactic does nothing",
+        }
+    )
+
+    assert "warning cleanup (1/1 opportunity)" in block.lower()
+    assert "2 warning(s) remain" in block
+    # Updated wording must require an attempt before the bail clause and
+    # surface concrete safe-cleanup examples so the model can't trivially
+    # decline without inspecting the file.
+    assert "expected effort" in block.lower()
+    assert "at least one safe edit" in block.lower()
+    assert "bail clause" in block.lower()
+    assert "actually inspected the file first" in block.lower()
+    assert "do not touch theorem statements" in block.lower()
+    assert "warnings will be accepted as-is" in block.lower()
+    # Detected-warning summary must surface so the model has concrete targets.
+    assert "all_goals omega" in block
+    # Hard-blocker wording should not bleed in.
+    assert "current blocker" not in block.lower()
 
 
 def test_promote_live_state_does_not_mark_non_module_file_verified_from_project_build(monkeypatch, tmp_path):
