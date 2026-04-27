@@ -26,19 +26,21 @@ Primary specs:
 
 ## Worker Contract
 
-1. Focus only on the assigned declaration until it is solved or a concrete blocker is proven.
+1. Focus only on solving the assigned declaration until it is solved or a concrete blocker is proven.
 2. Do not jump to later theorems in the file, even if they also contain `sorry`.
 3. Treat previous failed attempts as negative guidance:
    - do not blindly repeat the same proof shape
    - explain when a new attempt differs materially from earlier failures
 4. You may introduce helper lemmas, local intermediate facts, or small private supporting declarations when they make the assigned declaration easier to prove. This is optional, not required; use it when it genuinely breaks a hard proof into smaller verified steps, and keep every helper scoped to the assigned theorem's needs.
-5. After each meaningful edit, re-check the assigned declaration with `lean_inspect` or `lean_incremental_check(check_target)` before making another large change.
-6. For a managed file-scoped assigned theorem, the preferred edit path is `patch` or `write_file`; the queue manager runs the LeanInteract queue-step verifier after successful edits and falls back to Lake if needed. Use `apply_verified_patch(check_mode=file_exact)` only when you specifically need its atomic checkpoint plus verification payload.
-7. When ordinary diagnostics are not enough, call `lean_incremental_check(action=feedback, include_tactics=true)` for the assigned declaration. Use returned `tactics[*].goals`, `tactics[*].proof_state`, file-global message positions, and `feedback_lean` comments as the repair context.
-8. Use Lean tools for normal managed queue verification so the manager can classify the assigned declaration. Terminal-based Lake checks are allowed as an emergency/manual fallback if the Lean tools themselves are broken.
-9. Do not treat `lake build`, `grep`, `head`, or truncated output as proof that the assigned theorem is clean.
-10. If the declaration becomes clean, stop and hand control back to the manager rather than continuing to the next theorem on your own.
-11. Treat runtime step-budget warnings as real control signals. With only a few API steps left, prefer one concrete verification-backed edit or a concise blocker report over starting a broad new strategy.
+5. Queue edit scope protects declarations that already existed when this theorem was assigned. Do not edit, reorder, rename, delete, or solve pre-existing non-assigned declarations or future queue items, but adding and iterating on new helper declarations for this theorem is allowed.
+6. Preserve existing theorem, lemma, and example statements exactly unless the user explicitly requested a refactor. This applies to the assigned declaration and to helper declarations after you create them; change proof bodies, not established statements.
+7. After each meaningful edit, re-check the assigned declaration with `lean_inspect` or `lean_incremental_check(check_target)` before making another large change.
+8. For a managed file-scoped assigned theorem, the preferred edit path is `patch` or `write_file`; the queue manager runs the LeanInteract queue-step verifier after successful edits and falls back to Lake if needed. Use `apply_verified_patch(check_mode=file_exact)` only when you specifically need its atomic checkpoint plus verification payload.
+9. When ordinary diagnostics are not enough, call `lean_incremental_check(action=feedback, include_tactics=true)` for the assigned declaration. Use returned `tactics[*].goals`, `tactics[*].proof_state`, file-global message positions, and `feedback_lean` comments as the repair context.
+10. Use Lean tools for normal managed queue verification so the manager can classify the assigned declaration. Terminal-based Lake checks are allowed as an emergency/manual fallback if the Lean tools themselves are broken.
+11. Do not treat `lake build`, `grep`, `head`, or truncated output as proof that the assigned theorem is clean.
+12. If the declaration becomes clean, stop and hand control back to the manager rather than continuing to the next theorem on your own.
+13. Treat runtime step-budget warnings as real control signals. With only a few API steps left, prefer one concrete verification-backed edit or a concise blocker report over starting a broad new strategy.
 
 ## Queue Hygiene
 

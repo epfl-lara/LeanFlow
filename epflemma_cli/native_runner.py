@@ -1354,8 +1354,9 @@ def _manager_final_report_feedback(
         lines.append("- next step: accept this report and refresh the queue.")
     elif blocker_kind == "warning":
         lines.append(
-            "- next step: fix the warning(s) in the assigned declaration only; "
-            "do not solve unrelated future queue items just because their `sorry` warnings appear in file output."
+            "- next step: fix the warning(s) in the assigned declaration context; "
+            "helper declarations created for this theorem may be adjusted, but do not solve unrelated future "
+            "queue items just because their `sorry` warnings appear in file output."
         )
     elif blocker_kind == "sorry":
         lines.append(

@@ -371,7 +371,7 @@ def _lean_statement_delete_error(file_ops: Any, path: str, *, action: str) -> Op
         return (
             "Lean statement guard blocked this move: "
             f"{details}. Existing theorem/lemma/example statements may not be deleted, moved, "
-            "renamed, or changed; edit only proof bodies."
+            "renamed, or changed; edit proof bodies for existing declarations. New helper declarations are allowed."
         )
     return result.error
 
