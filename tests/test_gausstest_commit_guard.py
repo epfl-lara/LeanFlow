@@ -45,7 +45,8 @@ def test_pre_commit_blocks_doc_formalization_demo_fixture_changes(tmp_path):
         / "workflow_projects"
         / "DocFormalizationDemo"
         / "docs"
-        / "RecountingTheRationals.tex"
+        / "PythagoreanPolynomialParametrization"
+        / "pyth.tex"
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\\title{changed}\n", encoding="utf-8")
@@ -80,7 +81,8 @@ def test_pre_commit_allows_doc_formalization_demo_explicit_override(tmp_path):
         / "workflow_projects"
         / "DocFormalizationDemo"
         / "docs"
-        / "RecountingTheRationals.tex"
+        / "QuantizingPythagoreanTriples"
+        / "Pythagore2.tex"
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\\title{changed}\n", encoding="utf-8")
