@@ -33,7 +33,9 @@ Primary specs:
 - Prefer focused `lean_verify` module checks when close to clean; reserve full-project verification for milestone checks.
 - Prefer explicit intermediate lemmas over brittle proof scripts.
 - Every generated Lean file must begin with imports. Do not put module doc comments, file overviews, namespaces, or declarations above imports.
-- For document formalization, update the planner blueprint before writing the main Lean draft. Replace `_pending_` source inventory entries with declaration names, dependencies, split lemmas, and proof notes.
+- For document formalization, update the nearby `Blueprint.md` before writing the main Lean draft. Replace `_pending_` source inventory entries with declaration names, dependencies, split lemmas, statement-fidelity reviews, and proof/prover notes.
+- In the planner draft, leave nontrivial theorem/lemma proofs as `by sorry`; the managed prover queue should solve them one declaration at a time after the statement skeleton is stable.
+- During proof repair, consult the nearby `Blueprint.md` and original `.tex`/`.pdf` source for the paper's proof strategy before inventing a proof.
 - Keep the generated blueprint aligned with declaration names, split lemmas, source labels, and statement-fidelity decisions.
 - Do not declare success while the requested scope still has diagnostics, open goals, warnings, or `sorry`.
 - Surface missing assumptions or ambiguous math instead of hiding them.

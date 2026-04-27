@@ -169,13 +169,14 @@ def _safe_slug(value: str, default: str = "formalization") -> str:
     return slug[:96] or default
 
 
-def _default_target_lean_path(project_root: Path, project_label: str, source_path: Path) -> Path:
+def _default_document_workspace_path(project_root: Path, project_label: str, source_path: Path) -> Path:
     module_name = _safe_name(project_label or project_root.name, "Formalization")
     source_name = _safe_name(source_path.stem, "Document")
-    module_dir = project_root / module_name
-    if module_dir.is_dir():
-        return module_dir / "Formalization" / f"{source_name}.lean"
-    return project_root / "Formalization" / f"{source_name}.lean"
+    return project_root / module_name / source_name
+
+
+def _default_target_lean_path(project_root: Path, project_label: str, source_path: Path) -> Path:
+    return _default_document_workspace_path(project_root, project_label, source_path) / "Main.lean"
 
 
 def _line_number(text: str, offset: int) -> int:
@@ -441,18 +442,21 @@ def _render_context_markdown(
         "2. Use `formalization_document_inspect` for deterministic re-inspection when the source is a .tex or .pdf file.",
         "3. Search local project facts and Mathlib before inventing names or definitions.",
         "4. Use web search only for references or surrounding literature that the source document actually points to.",
-        "5. Create or update the planner blueprint before drafting Lean, recording definitions, lemmas, theorem dependencies, source pointers, and proof notes. The initial `_pending_` blueprint is only a placeholder and does not satisfy the workflow.",
-        "6. Draft Lean files in small units with stable names, minimal imports, and `sorry` only where the prover queue should take over.",
+        "5. Create or update the planner blueprint before drafting Lean, recording definitions, lemmas, theorem dependencies, source pointers, formal-statement review, and natural-language proof/prover notes. The initial `_pending_` blueprint is only a placeholder and does not satisfy the workflow.",
+        "6. Draft Lean files in small units with stable names, minimal imports, and `sorry` placeholders for theorem/lemma proofs that the prover queue should solve. Do not do deep proof repair in the planner draft.",
         "7. Lean import discipline is mandatory: every generated Lean file must begin with all `import` commands before any `/-! ... -/` module doc comment or declaration.",
         "8. Verify that the drafted declarations typecheck and that each formal statement matches the original source claim before moving into proof repair.",
         "",
         "Statement fidelity:",
         "- keep source pointers, ambiguity notes, dependencies, and proof notes in the planner blueprint",
+        "- explicitly compare each Lean statement against the corresponding source statement before handing it to the prover queue",
         "- do not silently weaken or strengthen the source theorem",
         "- avoid adding Lean comments unless they clarify a concrete formalization choice",
+        "- the blueprint is intentionally next to the Lean files so planner and prover turns can reread it easily",
         "",
         "Proof phase:",
         "- After the declaration skeleton is stable, use the normal managed Lean queue to eliminate `sorry` one declaration at a time.",
+        "- When proving, consult the nearby blueprint and the original source document for natural-language proof strategy before inventing a proof.",
         "- Keep blueprint entries aligned when a theorem is split or renamed.",
         "- Completion still requires clean diagnostics, no open goals, no `sorry` in the requested scope, and final Lean verification.",
         "",
@@ -500,10 +504,15 @@ def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata
         "- [ ] Record source labels/pages/equations for every generated declaration.",
         "- [ ] Check local project and Mathlib names before introducing duplicates.",
         "- [ ] Verify drafted Lean statements match the source document.",
+        "- [ ] Record a natural-language proof strategy or source proof pointer for each theorem/lemma.",
         "- [ ] Hand stable `sorry` declarations to the managed prover queue.",
         "",
         "Replace all `_pending_` entries before drafting Lean. The managed workflow treats this initial",
         "blueprint as a placeholder, not as a completed plan.",
+        "",
+        "For each theorem or lemma, include proof guidance useful to the prover: relevant source proof",
+        "paragraphs, induction variables, reductions, important previously planned lemmas, and any",
+        "known statement-fidelity caveats. Keep long exposition here, not in generated Lean comments.",
         "",
         "## Source Statement Inventory",
         "",
@@ -520,6 +529,8 @@ def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata
                 f"- Source line/page: {block.get('line', '?')}",
                 f"- Planned Lean declarations: _pending_",
                 f"- Dependencies: {', '.join(block.get('uses', []) or []) or '_pending_'}",
+                "- Formal statement review: _pending_",
+                "- Source proof / prover notes: _pending_",
                 "",
                 str(block.get("statement", "") or "_statement pending manual extraction_"),
                 "",
@@ -549,12 +560,12 @@ def prepare_formalization_document_context(
     state_dir = root / ".epflemma" / "workflow-state" / "formalization" / slug
     target_lean_path = _default_target_lean_path(root, project_label, source_path)
     module_name = _safe_name(project_label or root.name, "Formalization")
-    import_module = module_name if (root / module_name).is_dir() else "Mathlib"
+    import_module = module_name if (root / f"{module_name}.lean").exists() or (root / module_name).is_dir() else "Mathlib"
     target_lean_relative = _relative_to_project(target_lean_path, root) if target_lean_path.exists() else str(target_lean_path.relative_to(root))
     context_path = state_dir / "context.md"
     manifest_path = state_dir / "manifest.json"
     extracted_text_path = state_dir / "extracted.txt"
-    blueprint_path = state_dir / "blueprint.md"
+    blueprint_path = target_lean_path.parent / "Blueprint.md"
 
     metadata.update(
         {
@@ -572,12 +583,12 @@ def prepare_formalization_document_context(
     )
 
     state_dir.mkdir(parents=True, exist_ok=True)
+    target_lean_path.parent.mkdir(parents=True, exist_ok=True)
     extracted_text_path.write_text(str(metadata.get("extracted_text", "") or ""), encoding="utf-8")
     _write_json(manifest_path, metadata)
     if not blueprint_path.exists():
         blueprint_path.write_text(_initial_blueprint(source_relative, target_lean_relative, metadata), encoding="utf-8")
     if not target_lean_path.exists():
-        target_lean_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             blueprint_relative = str(blueprint_path.resolve().relative_to(root.resolve()))
         except Exception:

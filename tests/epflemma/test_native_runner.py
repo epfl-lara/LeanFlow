@@ -1821,7 +1821,8 @@ def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch,
 
     feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
 
-    assert "changed content outside the assigned declaration" in feedback
+    assert "restored those protected declarations" in feedback
+    assert "later" in feedback
     assert active.read_text(encoding="utf-8") == (
         "theorem demo : True := by\n"
         "  trivial\n"
@@ -1829,6 +1830,106 @@ def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch,
         "theorem later : True := by\n"
         "  sorry\n"
     )
+
+
+def test_out_of_scope_queue_edit_guard_allows_new_helper_declarations(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "theorem demo : True := by\n"
+        "  sorry\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    class _Agent:
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "private lemma demo_helper : True := by\n"
+        "  trivial\n"
+        "\n"
+        "theorem demo : True := by\n"
+        "  trivial\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
+
+    assert feedback == ""
+    assert "demo_helper" in active.read_text(encoding="utf-8")
+
+
+def test_out_of_scope_queue_edit_guard_allows_iterating_on_added_helpers(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "theorem demo : True := by\n"
+        "  sorry\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    class _Agent:
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "lemma demo_helper : True := by\n"
+        "  trivial\n"
+        "\n"
+        "theorem demo : True := by\n"
+        "  exact demo_helper\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    assert runner._restore_out_of_scope_queue_edit(agent, "patch") == ""
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "lemma demo_helper : True := by\n"
+        "  exact True.intro\n"
+        "\n"
+        "theorem demo : True := by\n"
+        "  exact demo_helper\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    assert runner._restore_out_of_scope_queue_edit(agent, "patch") == ""
+    assert "exact True.intro" in active.read_text(encoding="utf-8")
 
 
 def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
@@ -3690,14 +3791,9 @@ def test_promote_live_state_uses_focused_build_before_full_project_build(monkeyp
 
 
 def test_promote_document_formalization_scaffold_waits_for_planner(monkeypatch, tmp_path):
-    active = tmp_path / "Formalization" / "Paper.lean"
+    active = tmp_path / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
-    active.write_text(
-        "/-!\n"
-        "EPFLemma created this file as the active formalization target.\n"
-        "-/\n",
-        encoding="utf-8",
-    )
+    active.write_text("import Demo\n", encoding="utf-8")
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
 
@@ -3725,7 +3821,7 @@ def test_promote_document_formalization_scaffold_waits_for_planner(monkeypatch, 
 
 
 def test_document_formalization_placeholder_blueprint_blocks_verified(monkeypatch, tmp_path):
-    active = tmp_path / "Formalization" / "Paper.lean"
+    active = tmp_path / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
     active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
     blueprint = tmp_path / ".epflemma" / "workflow-state" / "formalization" / "paper" / "blueprint.md"
@@ -3770,11 +3866,11 @@ def test_document_formalization_placeholder_blueprint_blocks_verified(monkeypatc
 
 def test_document_formalization_write_target_requires_blueprint_plan(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
-    active = project / "Demo" / "Formalization" / "Paper.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
     active.write_text("import Demo\n", encoding="utf-8")
-    blueprint = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "blueprint.md"
-    blueprint.parent.mkdir(parents=True)
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.parent.mkdir(parents=True, exist_ok=True)
     blueprint.write_text(
         "# Formalization Blueprint\n\n"
         "- Status: planner preflight created; replace this with the agent's dependency plan.\n\n"
@@ -3786,14 +3882,14 @@ def test_document_formalization_write_target_requires_blueprint_plan(monkeypatch
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
-    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Formalization/Paper.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
 
     result = runner._managed_pre_tool_call(
         _FakeAgent(),
         "write_file",
         {
-            "path": "Demo/Formalization/Paper.lean",
+            "path": "Demo/Paper/Main.lean",
             "content": "import Demo\n\ntheorem t : True := by\n  trivial\n",
         },
     )
@@ -3808,16 +3904,49 @@ def test_document_formalization_write_target_requires_blueprint_plan(monkeypatch
         "- Status: planned\n\n"
         "### thm:demo\n"
         "- Planned Lean declarations: `t`\n"
-        "- Dependencies: none\n",
+        "- Dependencies: none\n"
+        "- Formal statement review: source statement exactly matches `True` in the fixture\n"
+        "- Source proof / prover notes: prove by `trivial`\n",
         encoding="utf-8",
     )
+
+    planner_result = runner._managed_pre_tool_call(
+        _FakeAgent(),
+        "write_file",
+        {
+            "path": "Demo/Paper/Main.lean",
+            "content": "import Demo\n\ntheorem t : True := by\n  trivial\n",
+        },
+    )
+    assert planner_result is not None
+    planner_payload = json.loads(planner_result)
+    assert "must leave theorem/lemma proofs as `sorry`" in planner_payload["error"]
 
     assert (
         runner._managed_pre_tool_call(
             _FakeAgent(),
             "write_file",
             {
-                "path": "Demo/Formalization/Paper.lean",
+                "path": "Demo/Paper/Main.lean",
+                "content": "import Demo\n\ntheorem t : True := by\n  sorry\n",
+            },
+        )
+        is None
+    )
+
+    prover_agent = _FakeAgent()
+    prover_agent._managed_autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "t",
+            "active_file": str(active),
+        }
+    }
+    assert (
+        runner._managed_pre_tool_call(
+            prover_agent,
+            "write_file",
+            {
+                "path": "Demo/Paper/Main.lean",
                 "content": "import Demo\n\ntheorem t : True := by\n  trivial\n",
             },
         )

@@ -302,7 +302,7 @@ def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(mo
     assert plan.toolset_name == "epflemma-native"
     assert plan.formalization_document is not None
     assert plan.child_env["EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE"] == "docs/paper.tex"
-    assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Formalization/Paper.lean"
+    assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/Paper/Main.lean"
 
 
 def test_resolve_workflow_request_requires_document_for_formalize(monkeypatch, tmp_path):
