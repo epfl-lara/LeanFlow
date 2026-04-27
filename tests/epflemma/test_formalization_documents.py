@@ -100,21 +100,22 @@ def test_doc_formalization_demo_fixture_is_parseable():
 
     assert payload["success"] is True
     assert payload["source_kind"] == "latex"
-    assert payload["title"] == "A Calkin-Wilf Tree Formalization Target"
+    assert payload["title"] == "Hyperbinary Representations and the Calkin-Wilf Enumeration"
     labels = [item["label"] for item in payload["theorem_blocks"]]
     assert labels == [
-        "def:reduced_positive_fraction",
+        "def:hyperbinary_representation",
+        "def:hyperbinary_count",
+        "def:calkin_wilf_fraction",
+        "lem:hyperbinary_zero",
+        "lem:hyperbinary_odd",
+        "lem:hyperbinary_even",
+        "lem:consecutive_coprime",
         "def:calkin_wilf_children",
-        "def:calkin_wilf_node",
-        "def:calkin_wilf_parent",
-        "lem:children_reduced",
-        "lem:unique_parent",
-        "lem:parent_decreases_sum",
-        "lem:parent_iterates_to_root",
-        "thm:every_fraction_has_address",
-        "thm:calkin_wilf_address_unique",
-        "thm:calkin_wilf_bijection",
-        "cor:breadth_first_enumeration",
+        "lem:left_child_recurrence",
+        "lem:right_child_recurrence",
+        "lem:parent_step_decreases",
+        "thm:calkin_wilf_enumeration",
+        "cor:explicit_positive_rational_listing",
     ]
 
 
