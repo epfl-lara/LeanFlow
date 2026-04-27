@@ -5,7 +5,7 @@ title: Formalize
 summary: Autonomous Lean formalization that drafts declarations in small verifiable steps and then proves them through the same queue-driven proving engine.
 aliases: [autoformalize]
 skills: [lean-formalization, lean-proof-loop, lean-theorem-queue-worker]
-tools: [lean_capabilities, lean_inspect, lean_search, lean_verify, lean_sorries, lean_axioms, lean_worker_dispatch]
+tools: [formalization_document_inspect, lean_capabilities, lean_inspect, lean_search, lean_verify, lean_sorries, lean_axioms, lean_worker_dispatch]
 workers: [proof-repair, axiom-eliminator, sorry-filler-deep]
 review_actions: [continue, replan, redraft, falsify, stop]
 stop_conditions: [verified, blocked, interrupted, stalled]
@@ -18,43 +18,65 @@ Use `/formalize` or `/autoformalize` for the same autonomous workflow.
 
 ## When To Use
 
-Use this workflow when the input is mathematical intent that must be turned into Lean declarations and verified proofs.
+Use this workflow when the input is a project-local mathematical source document that must be turned into Lean declarations and verified proofs.
 
 Typical inputs:
 
-- an informal theorem statement
-- a request to formalize a definition plus first lemmas
-- a partially drafted Lean file that still needs formalization and proof completion
+- a LaTeX source document inside the project, for example `docs/paper.tex`
+- a PDF source document inside the project, for example `docs/paper.pdf`
+- a partially drafted document-backed Lean file that still needs formalization and proof completion
 
 ## What Not To Use This Workflow For
 
 Do not use this workflow for:
 
+- one-off informal theorem strings with no source document
 - proof-only repair where the statement shape is already stable
 - read-only review
 - save-point/checkpoint work
 - pure tactic shortening after the declarations already compile
 
-Use `prove`, `review`, `checkpoint`, or `golf` for those cases. Use `draft` only when the task is limited to declaration skeletons or signatures with no expectation of completing the proving loop.
+Use `prove`, `review`, `checkpoint`, or `golf` for those cases. Use `draft` when the task is limited to declaration skeletons or signatures with no expectation of completing the proving loop.
+
+## Document Input Contract
+
+`/formalize` and `/autoformalize` require a project-local `.tex` or `.pdf` path.
+
+The workflow resolver prepares:
+
+- a source-document preflight manifest
+- a Markdown planner blueprint
+- a bounded extracted-text cache
+- an active Lean target file for the generated declarations
+- startup context that points to all of the above
+
+The active Lean target file is only the entry point. The planner may split work into additional Lean files when the blueprint justifies it, but it must keep imports, source comments, and blueprint references coherent.
 
 ## Tool Order
 
-1. `lean_capabilities`
+1. `formalization_document_inspect`
+   - inspect the required project-local source document
+   - for LaTeX, use extracted theorem-like environments, labels, references, citations, and sections as the starting inventory
+   - for PDF, use the extracted text and PDF metadata; if extraction is degraded, record that explicitly before planning
+2. `lean_capabilities`
    - read the actual available diagnostics, search, and worker surface first
-2. `lean_inspect`
+3. `lean_inspect`
    - inspect the target file, existing declarations, queue items, and blocker kind
    - use this before inserting more declarations into a broken file
-3. `lean_search`
+4. `lean_search`
    - search local project facts, imports, and Mathlib before inventing names or structures
    - use it both for statement design and proof search
-4. draft or revise declarations in small verifiable steps
+5. create or update the planner blueprint
+   - list source statements, dependencies, planned Lean names, split lemmas, and proof notes
+   - if a `blueprint/` directory or `leanblueprint` setup exists, keep a compatible TeX blueprint in sync where practical
+6. draft or revise declarations in small verifiable steps
    - prefer one declaration or one local helper at a time
    - keep imports and dependencies minimal and explicit
-5. `lean_worker_dispatch`
+7. `lean_worker_dispatch`
    - use only when the route points to `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
-6. `lean_verify`
+8. `lean_verify`
    - use the narrowest truthful verification gate for the current step
-7. `lean_sorries` / `lean_axioms`
+9. `lean_sorries` / `lean_axioms`
    - use when remaining `sorry` inventory or axiom profile is the real blocker
 
 ## Formalization Policy
@@ -71,12 +93,27 @@ Prefer:
 - explicit intermediate lemmas over brittle monolithic tactics
 - local project naming and import patterns over fresh ad hoc style
 - small draft-and-verify increments over large speculative file rewrites
+- source comments immediately above every generated definition, lemma, theorem, or instance
+- stable source pointers: section, label, page, equation, or bibliography reference
+- a blueprint dependency plan before deep proof work
 
 Avoid:
 
 - drifting into unrelated helper files unless the workflow explicitly widened scope
 - repeated header rewrites when the blocker is actually proof search or compilation
 - declaring victory after only drafting statements without proving them
+- silent theorem weakening or strengthening relative to the source document
+
+## Source Comments And Statement Fidelity
+
+Every generated Lean declaration should be preceded by a short comment that includes:
+
+- the natural-language mathematical statement or definition from the document
+- the source pointer, such as theorem label, section, page, or equation number
+- relevant dependency/proof notes from the planner blueprint
+- any intentional scope change, generalization, specialization, or assumption added for Lean
+
+Before moving from planning to proving, verify that each Lean statement still matches the source claim. If the document statement is ambiguous, record the ambiguity in the blueprint and in the source comment rather than hiding it in the Lean signature.
 
 ## Header Stability And Redraft
 

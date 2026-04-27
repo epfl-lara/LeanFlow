@@ -7,7 +7,7 @@ EPFLemma is a Lean AI for Math shell focused on automated Lean coding agents. Th
 The product is optimized for two main jobs:
 
 - `prove`: drive Lean proof repair and completion until the code compiles cleanly
-- `formalize`: translate mathematical intent into Lean declarations and verified proofs
+- `formalize`: translate a project-local LaTeX/PDF source document into planned Lean declarations and verified proofs
 
 Internally, `/prove` and `/autoprove` normalize to the same native workflow, and `/formalize` and `/autoformalize` normalize to the same native workflow. The auto-prefixed forms are compatibility aliases, not separate product surfaces.
 
@@ -50,7 +50,7 @@ Built-in skills:
   - emphasizes: current blockers, open goals, verification state, and project-wide remaining `sorry`
 - `lean-formalization`
   - formalization and declaration-building skill for `formalize` and `draft`
-  - emphasizes: small verifiable steps, dependency order, and zero build errors / zero `sorry`
+  - emphasizes: source-document inspection, blueprint planning, source comments, small verifiable steps, dependency order, and zero build errors / zero `sorry`
 - `lean-project-search`
   - local project search helper used before editing proofs
   - emphasizes: nearby declarations, imports, naming/style reuse, and file-local context
@@ -321,14 +321,14 @@ Run a workflow:
 epflemma workflow prove Main.lean
 epflemma workflow prove Main.lean --agents 3
 epflemma workflow prove Main.lean --no-parallel
-epflemma workflow formalize "Define the object and prove the first lemma"
+epflemma workflow formalize docs/paper.tex
 ```
 
 ## Workflow Example Projects
 
 The repo also carries opt-in Lean workflow projects under `testdata/workflow_projects/`.
 
-These are for manual workflow runs and future targeted integration coverage, not for the default pytest or CI path. The current example project is `testdata/workflow_projects/GaussTest`, a small mathlib-based repo with `sorry` targets and extra text examples for proving/formalization workflows.
+These are for manual workflow runs and future targeted integration coverage, not for the default pytest or CI path. `testdata/workflow_projects/GaussTest` is the proof-repair fixture, and `testdata/workflow_projects/DocFormalizationDemo` is the document-formalization fixture.
 
 Interactive mode:
 
@@ -361,7 +361,7 @@ Inside the shell:
 /prove Main.lean
 /prove Main.lean --agents 3
 /prove Main.lean --no-parallel
-/formalize "state the theorem"
+/formalize docs/paper.tex
 /doctor
 /doctor search --json
 /mcp bootstrap lean
@@ -379,7 +379,7 @@ prove
 prove Main.lean
 prove Main.lean --agents 3
 prove Main.lean --no-parallel
-formalize "formalize this statement"
+formalize docs/paper.tex
 ```
 
 The interactive shell starts with an EPFLemma banner that shows the current route and the main Lean commands you are expected to use.
@@ -425,6 +425,20 @@ What counts as success:
 5. there are no remaining `sorry` elsewhere in the project outside dependencies
 
 Autonomous workflows are intentionally stricter than a local file-only loop. `prove` and `formalize` should keep going until the project is clean, not merely until the current theorem looks finished.
+
+### Document Formalization
+
+`/formalize` and `/autoformalize` require a project-local `.tex` or `.pdf` source document path. They remain the same workflow; `autoformalize` is only a compatibility alias.
+
+The resolver prepares a document formalization workspace before the native runner starts:
+
+- source-document preflight manifest under `.epflemma/workflow-state/formalization/`
+- bounded extracted-text cache
+- Markdown planner blueprint
+- active Lean target file for drafted declarations
+- startup context that tells the agent to plan definitions, lemmas, theorem splits, source comments, source pointers, and statement-fidelity checks before proof repair
+
+The deterministic preflight is intentionally modest. LaTeX documents get theorem-like environments, labels, references, citations, and sections extracted. PDFs use installed local tools such as `pdftotext`, `pdfinfo`, and `pdfimages` when available, and record degraded extraction reasons when they are not. The planner agent can then use the normal file, terminal, web, and Lean tools to inspect the document more deeply, pull referenced material, draft Lean files with `sorry`, and hand the resulting queue to the prover loop.
 
 EPFLemma writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.epflemma/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
 
@@ -831,7 +845,7 @@ Explicit swarm behavior:
 
 ```bash
 epflemma workflow prove Main.lean --agents 3
-epflemma workflow formalize "formalize theorem X" --agents 3
+epflemma workflow formalize docs/paper.tex --agents 3
 ```
 
 What `--agents N` does:
@@ -1074,10 +1088,13 @@ There are now three important internal workflow surfaces:
 - `lean`
   - shared typed Lean capability surface
   - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_incremental_check`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_probe`, `lean_auto_search`, `lean_auto_try`, `apply_verified_patch`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
+- `document`
+  - project-local source-document inspection for formalization
+  - includes `formalization_document_inspect`
 
 - `epflemma-native`
   - default single-agent Lean workflow runtime
-  - includes the shared `lean` toolset plus file, terminal, web, session search, skills, and file-lock coordination
+  - includes the shared `lean` and `document` toolsets plus file, terminal, web, session search, skills, and file-lock coordination
   - does not include delegation
 - `epflemma-native-swarm`
   - enabled only for user-approved `--agents N` workflows

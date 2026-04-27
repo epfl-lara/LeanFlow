@@ -409,6 +409,11 @@ def _persist_live_status(
         "project_prove_completed_files": list(live_state.get("project_prove_completed_files", []) or []),
         "project_prove_plan_source": str(live_state.get("project_prove_plan_source", "") or ""),
         "project_prove_plan_reason": str(live_state.get("project_prove_plan_reason", "") or ""),
+        "formalization_document": _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", ""),
+        "formalization_document_kind": _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_KIND", ""),
+        "formalization_context": _read_text_env("EPFLEMMA_FORMALIZATION_CONTEXT", ""),
+        "formalization_blueprint": _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", ""),
+        "formalization_target_file": _read_text_env("EPFLEMMA_FORMALIZATION_TARGET_FILE", ""),
         "capability_report": dict(live_state.get("capability_report", {}) or {}),
         "route_decision": dict(live_state.get("route_decision", {}) or {}),
         "checkpoint_count": int(checkpoint_state.get("count", 0) or 0),
@@ -2399,6 +2404,9 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
         f"Workflow request: {workflow_command or '[missing workflow command]'}\n"
         f"Execution guidance: {detail}"
     )
+    document_block = _formalization_document_startup_block()
+    if workflow_kind == "formalize" and document_block:
+        guidance += f"\n\n{document_block}"
     if _swarm_enabled():
         agent_count = _parallel_agents()
         guidance += (
@@ -2408,6 +2416,36 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
             "If you delegate, assign concrete Lean goals, avoid duplicate file ownership, and keep one verifier path focused on final compilation."
         )
     return guidance
+
+
+def _formalization_document_startup_block() -> str:
+    document = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip()
+    if not document:
+        return ""
+    kind = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_KIND", "").strip() or "document"
+    target = _read_text_env("EPFLEMMA_FORMALIZATION_TARGET_FILE", "").strip()
+    context = _read_text_env("EPFLEMMA_FORMALIZATION_CONTEXT", "").strip()
+    blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    lines = [
+        "Document formalization source:",
+        f"- document: {document}",
+        f"- kind: {kind}",
+    ]
+    if target:
+        lines.append(f"- target Lean file: {target}")
+    if context:
+        lines.append(f"- planner context: {context}")
+    if blueprint:
+        lines.append(f"- planner blueprint: {blueprint}")
+    lines.extend(
+        [
+            "",
+            "Start in planner mode: read the document context, inspect the source document, create/update the blueprint, "
+            "draft well-scoped Lean declarations with source comments, verify statement fidelity, then let the normal "
+            "proof queue eliminate the resulting `sorry` placeholders.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _print_runner_help() -> None:
@@ -5736,6 +5774,8 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
 
     if not active_file:
         return False
+    if _document_formalization_needs_planner_draft(active_file):
+        return False
     # The final-sweep warning-cleanup gate granted a one-shot cleanup turn;
     # the file is NOT fully verified until that turn runs (or is bypassed
     # by the no-regression path on the next promote pass). Without this
@@ -5764,6 +5804,32 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     if _goals_still_open(goals):
         return False
     return verification_passed
+
+
+def _document_formalization_requested() -> bool:
+    return (
+        _workflow_kind() == "formalize"
+        and bool(_read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip())
+    )
+
+
+def _document_formalization_needs_planner_draft(active_file: str) -> bool:
+    if not _document_formalization_requested() or not active_file:
+        return False
+    try:
+        text = Path(active_file).read_text(encoding="utf-8")
+    except Exception:
+        return False
+    has_declaration = bool(
+        re.search(
+            r"^\s*(?:@[A-Za-z0-9_.]+\s+)*(?:theorem|lemma|def|instance|class|structure|inductive)\s+",
+            text,
+            flags=re.MULTILINE,
+        )
+    )
+    if has_declaration:
+        return False
+    return "EPFLemma created this file as the active formalization target" in text
 
 
 def _module_name_for_file(active_file: str) -> str:
@@ -5927,6 +5993,11 @@ def _promote_live_state_to_verified(
     if not normalized or not normalized.get("active_file"):
         return normalized
     normalized["verification_ok"] = False
+    active_file = str(normalized.get("active_file", "") or "")
+    if _document_formalization_needs_planner_draft(active_file):
+        normalized["blocker_summary"] = "document formalization planner has not drafted Lean declarations yet"
+        normalized["build_status"] = normalized.get("build_status") or "waiting for document formalization draft"
+        return normalized
     declaration_scope = str(normalized.get("declaration_scope", "") or _declaration_queue_scope())
     diagnostics = str(normalized.get("diagnostics", "") or "")
     declaration_queue_total = int(normalized.get("declaration_queue_total", 0) or 0)
@@ -5946,7 +6017,6 @@ def _promote_live_state_to_verified(
     project_sorry_count, project_sorry_files = _count_project_sorries(_project_root())
     normalized["project_sorry_count"] = project_sorry_count
     normalized["project_sorry_files"] = project_sorry_files
-    active_file = str(normalized.get("active_file", "") or "")
     ok, build_status = _run_explicit_verification_build(active_file, full_project=False)
     record = _record_manager_verification(
         autonomy_state,
@@ -6592,6 +6662,12 @@ def _print_header() -> None:
     print(f"Parallel agents: {_parallel_agents()}")
     if project_root:
         print(f"Project: {project_root}")
+    formalization_document = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip()
+    if formalization_document:
+        print(f"Document: {formalization_document}")
+        target = _read_text_env("EPFLEMMA_FORMALIZATION_TARGET_FILE", "").strip()
+        if target:
+            print(f"Formalization target: {target}")
     print(f"Run log: {_workflow_state_root() / 'latest-run.log'}")
     print("")
     print("Commands: /help, /status, /status <agent> [N], /swarm [agent] [N], /proof-state, /diagnostics, /goals, /history, /checkpoint [note], /rollback <N>, /resume-plan [N], /compact, /exit, Ctrl+C")

@@ -21,7 +21,7 @@ COMMANDS_BY_CATEGORY = {
         "/refactor": "Run the Lean refactor workflow",
         "/golf": "Run the Lean proof golfing workflow",
         "/prove": "Run the autonomous Lean proving workflow; add --agents N for explicit swarm mode",
-        "/formalize": "Run the autonomous Lean formalization workflow; add --agents N for explicit swarm mode",
+        "/formalize": "Formalize a project-local .tex/.pdf document; add --agents N for explicit swarm mode",
     },
     "Runtime": {
         "/status": "Show the current project, provider, model, and runtime summary",

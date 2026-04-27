@@ -11,6 +11,7 @@ _SKILL_TOOLS = ["skills_list", "skill_view"]
 _SESSION_TOOLS = ["session_search"]
 _COORDINATION_TOOLS = ["acquire_file_lock", "release_file_lock", "list_file_locks"]
 _DELEGATION_TOOLS = ["delegate_task"]
+_DOCUMENT_TOOLS = ["formalization_document_inspect"]
 _LEAN_TOOLS = [
     "lean_capabilities",
     "lean_inspect",
@@ -36,6 +37,7 @@ _EPFLEMMA_CORE_TOOLS = [
     *_SKILL_TOOLS,
     *_SESSION_TOOLS,
     *_COORDINATION_TOOLS,
+    *_DOCUMENT_TOOLS,
     *_LEAN_TOOLS,
 ]
 
@@ -76,6 +78,11 @@ TOOLSETS: Dict[str, Dict[str, Any]] = {
         "tools": _COORDINATION_TOOLS,
         "includes": [],
     },
+    "document": {
+        "description": "Project-local source document inspection for formalization workflows",
+        "tools": _DOCUMENT_TOOLS,
+        "includes": [],
+    },
     "lean": {
         "description": "Native Lean workflow tools",
         "tools": _LEAN_TOOLS,
@@ -89,7 +96,7 @@ TOOLSETS: Dict[str, Dict[str, Any]] = {
     "autoformalize": {
         "description": "Lean workflow tool surface",
         "tools": [],
-        "includes": ["file", "web", "terminal", "skills", "session_search", "coordination", "lean"],
+        "includes": ["file", "web", "terminal", "skills", "session_search", "coordination", "document", "lean"],
     },
     "epflemma-cli": {
         "description": "EPFLemma kernel CLI toolset",

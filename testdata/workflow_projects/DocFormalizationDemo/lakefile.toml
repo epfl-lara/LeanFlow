@@ -1,0 +1,23 @@
+name = "DocFormalizationDemo"
+version = "0.1.0"
+keywords = ["math", "formalization"]
+defaultTargets = ["DocFormalizationDemo"]
+
+[leanOptions]
+pp.unicode.fun = true
+relaxedAutoImplicit = false
+weak.linter.mathlibStandardSet = true
+maxSynthPendingDepth = 3
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.30.0-rc2"
+
+[[lean_lib]]
+name = "DocFormalizationDemo"
+
+[[require]]
+name = "repl"
+git = "https://github.com/leanprover-community/repl"
+rev = "v4.30.0-rc2"

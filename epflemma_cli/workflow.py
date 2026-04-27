@@ -16,6 +16,10 @@ from epflemma_cli.project import (
     ProjectNotFoundError,
     discover_epflemma_project,
 )
+from epflemma_cli.formalization_documents import (
+    FormalizationDocumentContext,
+    prepare_formalization_document_context,
+)
 from epflemma_cli.skill_core import default_workflow_skill
 from epflemma_cli.runtime_provider import resolve_runtime_provider
 
@@ -66,6 +70,7 @@ class NativeLaunchPlan:
     argv: list[str]
     active_skill: str
     toolset_name: str
+    formalization_document: FormalizationDocumentContext | None = None
 
 
 def _project_lean_files(project_root: Path) -> list[Path]:
@@ -170,7 +175,7 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
     frontend_command = plan.workflow.canonical_command
     if plan.workflow.workflow_args:
         frontend_command = f"{frontend_command} {plan.workflow.workflow_args}"
-    return {
+    summary = {
         "workflow": plan.workflow.canonical_command.lstrip("/"),
         "command": frontend_command,
         "project": plan.project.label,
@@ -181,6 +186,11 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
         "skill": plan.active_skill,
         "agents": str(plan.workflow.parallel_agents),
     }
+    if plan.formalization_document is not None:
+        summary["document"] = plan.formalization_document.source_relative
+        summary["target_file"] = plan.formalization_document.target_lean_relative
+        summary["planner_context"] = str(plan.formalization_document.context_path)
+    return summary
 
 
 def rewrite_forgiving_workflow_command(raw: str) -> str:
@@ -261,7 +271,16 @@ def resolve_workflow_request(
     cwd = Path(active_cwd or os.getcwd()).expanduser().resolve()
     project = discover_epflemma_project(cwd)
     runtime = resolve_runtime_provider(requested=requested_provider)
+    formalization_document: FormalizationDocumentContext | None = None
     normalized_workflow_args = _normalize_workflow_args(project.root, cwd, workflow.workflow_args)
+    if workflow.workflow_kind == "formalize":
+        formalization_document = prepare_formalization_document_context(
+            project_root=project.root,
+            cwd=cwd,
+            workflow_args=workflow.workflow_args,
+            project_label=project.label,
+        )
+        normalized_workflow_args = formalization_document.source_relative
     if normalized_workflow_args != workflow.workflow_args:
         workflow = replace(
             workflow,
@@ -275,7 +294,9 @@ def resolve_workflow_request(
             else f"{WORKFLOW_ALIAS_MAP[workflow.frontend_command][2]} {normalized_workflow_args}",
         )
     normalized_active_file = _normalize_requested_active_file(project.root, cwd, workflow.workflow_args)
-    if normalized_active_file and workflow.parallel_agents > 1:
+    if formalization_document is not None:
+        normalized_active_file = formalization_document.target_lean_relative
+    if normalized_active_file and workflow.workflow_kind == "prove" and workflow.parallel_agents > 1:
         workflow = replace(workflow, parallel_agents=1)
     selected_skill = (active_skill or "").strip() or default_workflow_skill(workflow.workflow_kind)
     if workflow.parallel_agents > 1 and not active_skill:
@@ -317,6 +338,8 @@ def resolve_workflow_request(
             "OPENGAUSS_NATIVE_ACTIVE_FILE": normalized_active_file,
         }
     )
+    if formalization_document is not None:
+        child_env.update(formalization_document.to_env())
     argv = [sys.executable, "-m", _native_runner_module()]
     return NativeLaunchPlan(
         project=project,
@@ -326,6 +349,7 @@ def resolve_workflow_request(
         argv=argv,
         active_skill=selected_skill,
         toolset_name=toolset_name,
+        formalization_document=formalization_document,
     )
 
 
