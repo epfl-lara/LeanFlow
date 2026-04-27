@@ -66,6 +66,8 @@ def test_prepare_formalization_document_context_creates_planner_artifacts(tmp_pa
     assert "keep source pointers, ambiguity notes, dependencies, and proof notes in the planner blueprint" in startup_context
     assert "reread it easily" in startup_context
     assert "must begin with all `import` commands" in startup_context
+    assert "document formalization handoff verifier" in startup_context
+    assert "root project module imports the generated target module" in startup_context
 
     blueprint = context.blueprint_path.read_text(encoding="utf-8")
     assert "thm:zero_good" in blueprint

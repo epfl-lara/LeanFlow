@@ -18,12 +18,13 @@ Primary specs:
 3. `lean_inspect`
 4. `lean_search`
 5. create or update the planner blueprint before deep proof work
-6. `lean_proof_context`, `lean_auto_probe`, `lean_auto_search`, or `lean_auto_try` only when a drafted declaration is blocked and theorem-local automation is justified
-7. draft the declaration or helper lemma
-8. `patch` or `write_file` for managed Lean file edits; the queue manager verifies successful edits against the current gate
-9. `apply_verified_patch` only when you specifically need a single atomic patch/checkpoint/verification result
-10. `lean_verify` for final broader verification when the manager gate did not cover the requested scope
-11. `lean_worker_dispatch` when the router recommends `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
+6. satisfy the document formalization handoff verifier before the managed prover queue starts
+7. `lean_proof_context`, `lean_auto_probe`, `lean_auto_search`, or `lean_auto_try` only when a drafted declaration is blocked and theorem-local automation is justified
+8. draft the declaration or helper lemma
+9. `patch` or `write_file` for managed Lean file edits; the queue manager verifies successful edits against the current gate
+10. `apply_verified_patch` only when you specifically need a single atomic patch/checkpoint/verification result
+11. `lean_verify` for final broader verification when the manager gate did not cover the requested scope
+12. `lean_worker_dispatch` when the router recommends `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
 
 ## Guardrails
 
@@ -35,6 +36,7 @@ Primary specs:
 - Every generated Lean file must begin with imports. Do not put module doc comments, file overviews, namespaces, or declarations above imports.
 - For document formalization, update the nearby `Blueprint.md` before writing the main Lean draft. Replace `_pending_` source inventory entries with declaration names, dependencies, split lemmas, statement-fidelity reviews, and proof/prover notes.
 - In the planner draft, leave nontrivial theorem/lemma proofs as `by sorry`; the managed prover queue should solve them one declaration at a time after the statement skeleton is stable.
+- Before handoff to the prover queue, make the handoff verifier pass: replace scaffold root imports with direct Mathlib/project dependencies, add the generated target module to the root project module so plain `lake build` checks it, and keep the blueprint import plan identical to the target Lean imports.
 - During proof repair, consult the nearby `Blueprint.md` and original `.tex`/`.pdf` source for the paper's proof strategy before inventing a proof.
 - Keep the generated blueprint aligned with declaration names, split lemmas, source labels, and statement-fidelity decisions.
 - Do not declare success while the requested scope still has diagnostics, open goals, warnings, or `sorry`.

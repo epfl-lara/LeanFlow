@@ -5687,9 +5687,21 @@ def _build_live_proof_state(
                     merged["blocker_signature"] = f"{label or 'queue'}:{merged.get('line', '?')}"
                 enriched_queue.append(merged)
         declaration_queue = enriched_queue
+    document_handoff = _document_formalization_handoff_verification(
+        active_file,
+        sorry_count=sorry_count if isinstance(sorry_count, int) else None,
+    )
+    queue_blocked_by_document_handoff = bool(declaration_queue) and not bool(document_handoff.get("ok"))
+    if queue_blocked_by_document_handoff:
+        declaration_queue = []
     current_queue_item = _current_queue_item(declaration_queue, active_file)
     current_queue_label = str((current_queue_item or {}).get("label", "") or "").strip()
-    queue_needs_final_file_sweep = declaration_scope == "file" and bool(active_file) and not declaration_queue
+    queue_needs_final_file_sweep = (
+        declaration_scope == "file"
+        and bool(active_file)
+        and not declaration_queue
+        and not queue_blocked_by_document_handoff
+    )
     if declaration_scope == "file" and current_queue_label:
         target_symbol = current_queue_label
     elif queue_needs_final_file_sweep:
@@ -5697,7 +5709,12 @@ def _build_live_proof_state(
     current_queue_prefix = _declaration_prefix_text(active_file, current_queue_label) if current_queue_label else ""
     current_queue_slice = _declaration_slice_text(active_file, current_queue_label) if current_queue_label else ""
     declaration_queue_summary = _format_declaration_queue(declaration_queue)
+    if queue_blocked_by_document_handoff:
+        declaration_queue_summary = str(document_handoff.get("summary", "") or declaration_queue_summary)
     current_blocker = blocker_summary or ", ".join((current_queue_item or {}).get("reasons", []) or [])
+    if queue_blocked_by_document_handoff:
+        current_blocker = str(document_handoff.get("summary", "") or current_blocker)
+        blocker_summary = current_blocker
     active_file_label = ""
     verification_hint = _recommended_verification_command(active_file)
     if active_file:
@@ -5737,6 +5754,7 @@ def _build_live_proof_state(
         "capability_report": capability_report,
         "recent_empty_search_streak": empty_search_streak,
         "search_exhausted": search_exhausted,
+        "document_formalization_handoff": dict(document_handoff),
     }
     route_decision = route_workflow_step(
         _workflow_kind(),
@@ -5799,6 +5817,9 @@ def _build_live_proof_state(
                 "Queue horizon:",
                 model_queue_summary,
                 "",
+                "Document formalization handoff verifier:",
+                str(document_handoff.get("summary", "") or "[not active]"),
+                "",
                 "Route:",
                 f"{route_action} via {route_decision.get('skill_name', '[unknown]')}",
                 route_summary,
@@ -5851,6 +5872,7 @@ def _build_live_proof_state(
         "route_decision": route_decision,
         "recent_empty_search_streak": empty_search_streak,
         "search_exhausted": search_exhausted,
+        "document_formalization_handoff": dict(document_handoff),
         "project_prove_manager": _project_prove_manager_active(autonomy_state),
         "project_prove_file_queue": list(dict(autonomy_state or {}).get("project_prove_file_queue", []) or []),
         "project_prove_completed_files": list(dict(autonomy_state or {}).get("project_prove_completed_files", []) or []),
@@ -5888,6 +5910,7 @@ def _build_live_proof_state(
             project_sorry_files=list(live_state.get("project_sorry_files", []) or []),
         )
         live_project_prove_summary = _project_prove_manager_summary(autonomy_state)
+        live_document_handoff = dict(live_state.get("document_formalization_handoff", {}) or {})
         live_state["message"] = "\n".join(
             (
                 [
@@ -5909,6 +5932,9 @@ def _build_live_proof_state(
                     "",
                     "Queue horizon:",
                     live_queue_summary,
+                    "",
+                    "Document formalization handoff verifier:",
+                    str(live_document_handoff.get("summary", "") or "[not active]"),
                     "",
                     "Route:",
                     (
@@ -6054,6 +6080,13 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
         return False
     if _document_formalization_needs_blueprint_plan():
         return False
+    document_handoff = _document_formalization_handoff_verification(
+        active_file,
+        sorry_count=sorry_count if isinstance(sorry_count, int) else None,
+        completion=True,
+    )
+    if not bool(document_handoff.get("ok")):
+        return False
     # The final-sweep warning-cleanup gate granted a one-shot cleanup turn;
     # the file is NOT fully verified until that turn runs (or is bypassed
     # by the no-regression path on the next promote pass). Without this
@@ -6132,6 +6165,202 @@ def _document_formalization_needs_blueprint_plan() -> bool:
         "planner preflight created" in lowered
         or "_pending_" in lowered
     )
+
+
+def _lean_imports_from_text(text: str) -> list[str]:
+    imports: list[str] = []
+    for match in re.finditer(
+        r"^\s*import\s+([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)\b",
+        _strip_lean_comments_and_strings(str(text or "")),
+        flags=re.MULTILINE,
+    ):
+        module = match.group(1).strip()
+        if module and module not in imports:
+            imports.append(module)
+    return imports
+
+
+def _lean_imports_from_file(path: Path) -> list[str]:
+    try:
+        return _lean_imports_from_text(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _valid_lean_module_name(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return all(re.match(r"^[A-Za-z_][A-Za-z0-9_']*$", part) for part in text.split("."))
+
+
+def _blueprint_import_plan_section(text: str) -> str:
+    match = re.search(
+        r"^##+\s+Lean Import Plan\s*$\n(?P<body>.*?)(?=^##+\s+|\Z)",
+        str(text or ""),
+        flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    return str(match.group("body") or "") if match else ""
+
+
+def _blueprint_import_plan_imports(text: str) -> list[str]:
+    section = _blueprint_import_plan_section(text)
+    if not section:
+        return []
+    imports: list[str] = []
+
+    def _add(module: str) -> None:
+        normalized = str(module or "").strip()
+        if normalized.endswith(".lean") or "/" in normalized:
+            return
+        if _valid_lean_module_name(normalized) and normalized not in imports:
+            imports.append(normalized)
+
+    for match in re.finditer(
+        r"^\s*import\s+([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)\b",
+        section,
+        flags=re.MULTILINE,
+    ):
+        _add(match.group(1))
+    for line in section.splitlines():
+        if not line.lstrip().startswith("-"):
+            continue
+        code_span = re.search(r"`([^`]+)`", line)
+        if code_span:
+            _add(code_span.group(1))
+            continue
+        bullet = re.search(
+            r"-\s*([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)\b",
+            line,
+        )
+        if bullet:
+            _add(bullet.group(1))
+    return imports
+
+
+def _document_formalization_manifest_labels() -> list[str]:
+    manifest = _read_text_env("EPFLEMMA_FORMALIZATION_MANIFEST", "").strip()
+    if not manifest:
+        return []
+    try:
+        payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    labels: list[str] = []
+    for block in payload.get("theorem_blocks", []) or []:
+        if not isinstance(block, Mapping):
+            continue
+        label = str(block.get("label", "") or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _root_module_file_for_module(module_name: str) -> tuple[str, Path] | None:
+    if not module_name or "." not in module_name:
+        return None
+    root_module = module_name.split(".", 1)[0]
+    if not _valid_lean_module_name(root_module):
+        return None
+    return root_module, Path(_project_root()) / f"{root_module}.lean"
+
+
+def _document_formalization_handoff_verification(
+    active_file: str,
+    *,
+    sorry_count: int | None = None,
+    completion: bool = False,
+) -> dict[str, Any]:
+    if not _document_formalization_requested() or not active_file:
+        return {"ok": True, "issues": [], "summary": "document formalization not active"}
+
+    issues: list[str] = []
+    active_path = Path(active_file).expanduser()
+    try:
+        active_path = active_path.resolve()
+    except Exception:
+        pass
+
+    if _document_formalization_needs_planner_draft(str(active_path)):
+        issues.append("planner has not drafted Lean declarations in the target file")
+    if _document_formalization_needs_blueprint_plan():
+        issues.append("blueprint still contains preflight placeholders or `_pending_` entries")
+
+    blueprint_path = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    blueprint_text = ""
+    if blueprint_path:
+        try:
+            blueprint_text = Path(blueprint_path).read_text(encoding="utf-8")
+        except Exception:
+            issues.append("blueprint file could not be read")
+    else:
+        issues.append("blueprint file is not configured")
+
+    target_text = ""
+    try:
+        target_text = active_path.read_text(encoding="utf-8")
+    except Exception:
+        issues.append("target Lean file could not be read")
+
+    target_imports = _lean_imports_from_text(target_text)
+    module_name = _module_name_for_file(str(active_path))
+    root_info = _root_module_file_for_module(module_name)
+    if root_info:
+        root_module, root_file = root_info
+        if root_module in target_imports:
+            issues.append(
+                f"target module `{module_name}` still imports root module `{root_module}`; "
+                "replace the scaffold import with direct dependencies before project-wide inclusion"
+            )
+        elif not root_file.is_file():
+            issues.append(
+                f"root module file `{root_file.name}` is missing, so plain `lake build` will not include `{module_name}`"
+            )
+        elif module_name not in _lean_imports_from_file(root_file):
+            issues.append(
+                f"root module `{root_module}` does not import `{module_name}`, so plain `lake build` can skip it"
+            )
+
+    if blueprint_text:
+        for label in _document_formalization_manifest_labels():
+            if label not in blueprint_text:
+                issues.append(f"blueprint is missing source inventory entry `{label}`")
+
+        planned_imports = _blueprint_import_plan_imports(blueprint_text)
+        if planned_imports:
+            missing_from_target = [module for module in planned_imports if module not in target_imports]
+            missing_from_plan = [module for module in target_imports if module not in planned_imports]
+            if missing_from_target:
+                issues.append(
+                    "blueprint import plan mentions modules not imported by the target Lean file: "
+                    + ", ".join(f"`{module}`" for module in missing_from_target)
+                )
+            if missing_from_plan:
+                issues.append(
+                    "target Lean file imports modules missing from the blueprint import plan: "
+                    + ", ".join(f"`{module}`" for module in missing_from_plan)
+                )
+
+        if completion and isinstance(sorry_count, int) and sorry_count == 0:
+            if re.search(r"^\s*-\s*Status:\s*active formalization\s*$", blueprint_text, flags=re.MULTILINE | re.IGNORECASE):
+                issues.append("blueprint status is still `active formalization` after proofs are complete")
+            handoff_match = re.search(
+                r"^\s*-\s*\[(?P<checked>[ xX])\]\s*Hand stable `sorry` declarations to the managed prover queue\.",
+                blueprint_text,
+                flags=re.MULTILINE,
+            )
+            if handoff_match and handoff_match.group("checked") == " ":
+                issues.append("blueprint managed-prover handoff checklist item is still unchecked")
+
+    ok = not issues
+    summary = (
+        "document formalization handoff verifier passed"
+        if ok
+        else "document formalization handoff verifier blocked queue: " + "; ".join(issues[:5])
+    )
+    if len(issues) > 5:
+        summary += f"; plus {len(issues) - 5} more issue(s)"
+    return {"ok": ok, "issues": issues, "summary": summary}
 
 
 def _module_name_for_file(active_file: str) -> str:
@@ -6303,6 +6532,16 @@ def _promote_live_state_to_verified(
     if _document_formalization_needs_blueprint_plan():
         normalized["blocker_summary"] = "document formalization blueprint has not been updated from the preflight placeholder"
         normalized["build_status"] = normalized.get("build_status") or "waiting for document formalization blueprint plan"
+        return normalized
+    document_handoff = _document_formalization_handoff_verification(
+        active_file,
+        sorry_count=normalized.get("sorry_count") if isinstance(normalized.get("sorry_count"), int) else None,
+        completion=True,
+    )
+    normalized["document_formalization_handoff"] = dict(document_handoff)
+    if not bool(document_handoff.get("ok")):
+        normalized["blocker_summary"] = str(document_handoff.get("summary", "") or "document formalization handoff blocked")
+        normalized["build_status"] = normalized.get("build_status") or "waiting for document formalization handoff verifier"
         return normalized
     declaration_scope = str(normalized.get("declaration_scope", "") or _declaration_queue_scope())
     diagnostics = str(normalized.get("diagnostics", "") or "")
