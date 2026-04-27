@@ -10,100 +10,131 @@
 \newtheorem{theorem}{Theorem}
 \newtheorem{corollary}{Corollary}
 
-\title{A Calkin-Wilf Tree Formalization Target}
-\author{EPFLemma workflow fixture}
+\title{Hyperbinary Representations and the Calkin-Wilf Enumeration}
+\author{}
 \date{}
 
 \begin{document}
 \maketitle
 
-\section{Source}
+\section{Introduction}
 
-This fixture is based on the short Monthly paper \emph{Recounting the
-Rationals} by Calkin and Wilf~\cite{calkinwilf2000}.  The paper gives an
-explicit listing of the positive rational numbers in which each positive
-rational appears exactly once.  A convenient formalization route is to use the
-equivalent binary tree: the root is $1/1$, and a reduced fraction $a/b$ has
-children
+Calkin and Wilf gave a compact explicit enumeration of the positive rational
+numbers in \emph{Recounting the Rationals}~\cite{calkinwilf2000}.  The
+enumeration is built from the number of hyperbinary representations of a
+nonnegative integer.  It has the striking form
+\[
+  \frac{h(0)}{h(1)},\frac{h(1)}{h(2)},\frac{h(2)}{h(3)},\ldots,
+\]
+where the consecutive values of $h$ are always relatively prime and every
+positive reduced rational occurs exactly once.
+
+The statements below isolate the core theorem and the recurrence lemmas that
+make the construction work.  They are phrased so that the central result is the
+same enumerating property as in Calkin and Wilf's paper, while leaving the
+formal representation of finite sums and finite binary words to the
+formalization.
+
+\section{Hyperbinary Representations}
+
+\begin{definition}[Hyperbinary representation]\label{def:hyperbinary_representation}
+A hyperbinary representation of a nonnegative integer $n$ is a finite sequence
+$(\varepsilon_0,\varepsilon_1,\ldots,\varepsilon_k)$ with each
+$\varepsilon_i\in\{0,1,2\}$ such that
+\[
+  n=\sum_{i=0}^{k}\varepsilon_i2^i.
+\]
+Trailing zeroes are ignored, so two representations that differ only by
+extra zeroes at the end are identified.
+\end{definition}
+
+\begin{definition}[The hyperbinary counting function]\label{def:hyperbinary_count}
+Let $h(n)$ denote the number of hyperbinary representations of $n$.
+\end{definition}
+
+\begin{definition}[Calkin-Wilf fraction]\label{def:calkin_wilf_fraction}
+For $n\ge 0$, define
+\[
+  q_n=\frac{h(n)}{h(n+1)}.
+\]
+\end{definition}
+
+\section{Recurrences}
+
+\begin{lemma}[The initial value]\label{lem:hyperbinary_zero}
+The empty sum is the only hyperbinary representation of $0$, and therefore
+$h(0)=1$.
+\end{lemma}
+
+\begin{lemma}[Odd recurrence]\label{lem:hyperbinary_odd}
+For every $n\ge 0$,
+\[
+  h(2n+1)=h(n).
+\]
+\end{lemma}
+
+\begin{lemma}[Even recurrence]\label{lem:hyperbinary_even}
+For every $n\ge 1$,
+\[
+  h(2n)=h(n)+h(n-1).
+\]
+\end{lemma}
+
+\begin{lemma}[Consecutive values are coprime]\label{lem:consecutive_coprime}
+For every $n\ge 0$,
+\[
+  \gcd(h(n),h(n+1))=1.
+\]
+\end{lemma}
+
+\section{Tree Interpretation}
+
+\begin{definition}[Calkin-Wilf children]\label{def:calkin_wilf_children}
+For a reduced positive fraction $a/b$, define its two children to be
 \[
   \frac{a}{a+b}
   \qquad\text{and}\qquad
   \frac{a+b}{b}.
 \]
-
-The goal is not to formalize all of the paper.  The target is the core
-existence-and-uniqueness theorem for this tree, plus the immediate enumeration
-corollary.  This should force a planner to introduce the right representation
-of reduced positive fractions, define the tree recursively over finite binary
-words, and prove the inverse-parent argument.
-
-\section{Definitions}
-
-\begin{definition}[Reduced positive fraction]\label{def:reduced_positive_fraction}
-A reduced positive fraction is a pair $(a,b)$ of positive natural numbers with
-$\gcd(a,b)=1$.  It represents the positive rational number $a/b$.
 \end{definition}
 
-\begin{definition}[Calkin-Wilf children]\label{def:calkin_wilf_children}
-For a reduced positive fraction $(a,b)$, define its left child to be
-$(a,a+b)$ and its right child to be $(a+b,b)$.
-\end{definition}
-
-\begin{definition}[Calkin-Wilf node]\label{def:calkin_wilf_node}
-For a finite binary word $w$, define $T(w)$ recursively as follows.  The empty
-word maps to $(1,1)$.  Appending a left bit sends $T(w)$ to its left child, and
-appending a right bit sends $T(w)$ to its right child.
-\end{definition}
-
-\begin{definition}[Parent map]\label{def:calkin_wilf_parent}
-For a reduced positive fraction $(a,b)\ne(1,1)$, define its parent to be
-$(a,b-a)$ if $a<b$, and $(a-b,b)$ if $b<a$.
-\end{definition}
-
-\section{Tree Lemmas}
-
-\begin{lemma}[Children stay reduced]\label{lem:children_reduced}
-The left and right children of a reduced positive fraction are reduced positive
-fractions.
+\begin{lemma}[Left child recurrence]\label{lem:left_child_recurrence}
+If $q_n=a/b$ in reduced form, then
+\[
+  q_{2n+1}=\frac{a}{a+b}.
+\]
 \end{lemma}
 
-\begin{lemma}[A non-root fraction has a unique parent]\label{lem:unique_parent}
-Every reduced positive fraction other than $(1,1)$ is the left or right child
-of a unique reduced positive fraction.  Its parent is the fraction from
-Definition~\ref{def:calkin_wilf_parent}.
+\begin{lemma}[Right child recurrence]\label{lem:right_child_recurrence}
+If $q_n=a/b$ in reduced form, then
+\[
+  q_{2n+2}=\frac{a+b}{b}.
+\]
 \end{lemma}
 
-\begin{lemma}[The parent map decreases height]\label{lem:parent_decreases_sum}
-If $(a,b)$ is a reduced positive fraction different from $(1,1)$, then the sum
-of the numerator and denominator of its parent is strictly smaller than
-$a+b$.
+\begin{lemma}[The parent step decreases the sum]\label{lem:parent_step_decreases}
+Let $a$ and $b$ be coprime positive integers with $(a,b)\ne(1,1)$.  If
+$a<b$, then $(a,b-a)$ is a reduced positive fraction and $a+(b-a)<a+b$.
+If $b<a$, then $(a-b,b)$ is a reduced positive fraction and $(a-b)+b<a+b$.
 \end{lemma}
 
-\begin{lemma}[Every reduced positive fraction reaches the root]\label{lem:parent_iterates_to_root}
-Starting from any reduced positive fraction and repeatedly applying the parent
-map eventually reaches $(1,1)$.
-\end{lemma}
+\section{Main Theorem}
 
-\section{Main Result}
-
-\begin{theorem}[Existence of a Calkin-Wilf address]\label{thm:every_fraction_has_address}
-For every reduced positive fraction $q$, there exists a finite binary word
-$w$ such that $T(w)=q$.
+\begin{theorem}[Calkin-Wilf enumeration]\label{thm:calkin_wilf_enumeration}
+For every pair of coprime positive integers $a$ and $b$, there exists a unique
+integer $n\ge 0$ such that
+\[
+  h(n)=a
+  \qquad\text{and}\qquad
+  h(n+1)=b.
+\]
+Equivalently, the sequence $q_0,q_1,q_2,\ldots$ contains every positive
+rational number exactly once, always in lowest terms.
 \end{theorem}
 
-\begin{theorem}[Uniqueness of Calkin-Wilf addresses]\label{thm:calkin_wilf_address_unique}
-If $T(u)=T(v)$ for finite binary words $u$ and $v$, then $u=v$.
-\end{theorem}
-
-\begin{theorem}[Calkin-Wilf tree enumerates the positive rationals]\label{thm:calkin_wilf_bijection}
-The map sending a finite binary word $w$ to the rational number represented by
-$T(w)$ is a bijection from finite binary words to positive rational numbers in
-reduced form.
-\end{theorem}
-
-\begin{corollary}[Breadth-first listing has no repeats and misses none]\label{cor:breadth_first_enumeration}
-Reading the Calkin-Wilf tree level by level gives a list in which every
-positive rational number appears exactly once.
+\begin{corollary}[An explicit countable listing]\label{cor:explicit_positive_rational_listing}
+The function $n\mapsto q_n$ is a bijection from the nonnegative integers to
+the positive rational numbers.
 \end{corollary}
 
 \begin{thebibliography}{9}
