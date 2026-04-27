@@ -124,7 +124,9 @@ EPFLemma installs and manages the Lean MCP backends by default:
   - used through native wrappers, with local fallback when backend theorem lookup misses a declaration visible in the current file
 - `lean-explore`
   - role: `semantic-declaration-search`
-  - configured disabled by default because the API backend requires `LEANEXPLORE_API_KEY`; enable it or switch to a prepared local backend when semantic declaration search should join `lean_search`
+  - `lean_search` prefers the local LeanExplore backend when `lean-explore[local]` is installed and `lean-explore data fetch` has prepared the index
+  - `lean_search` can fall back to the hosted LeanExplore API when `LEANEXPLORE_API_KEY` is set
+  - the managed MCP server is still configured disabled by default; enable it for MCP `search_summary`/getter tools, or switch it to a prepared local backend after fetching LeanExplore data
 
 Those servers exist to back the native tools above. Raw `mcp_*` tools are not part of the normal native Lean workflow surface.
 
@@ -262,7 +264,7 @@ Power-mode details:
 
 - Local Loogle avoids the public Loogle rate limit and is attempted on Linux/macOS/WSL. First local setup may take 5-10 minutes and about 2GB of disk. If it is cold or unavailable, public remote Lean search fallback remains enabled.
 - REPL mode makes line-based `lean_multi_attempt` faster after the project has a built `repl` binary. `epflemma project init` attempts safe setup, prints progress for `lake update repl` and `lake build repl`, and continues with LSP fallback if setup fails.
-- LeanExplore API mode remains opt-in because it requires `LEANEXPLORE_API_KEY`; users can switch it to a prepared local backend manually.
+- LeanExplore local mode is preferred when available. Install with `pip install 'epflemma-agent[lean-explore]'` or `pip install 'lean-explore[local]'`, run `lean-explore data fetch`, then use `lean_search mode=semantic|natural-language`. Hosted API mode remains credential-gated through `LEANEXPLORE_API_KEY`.
 
 For persistent sampling audit logs, set `mcp_servers.<name>.sampling.audit_jsonl: true` in `~/.epflemma/config.yaml`. The default path is `~/.epflemma/logs/mcp-sampling.jsonl`, with `audit_jsonl_path` available as an override.
 
