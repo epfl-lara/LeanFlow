@@ -1,0 +1,117 @@
+\documentclass{article}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{hyperref}
+
+\newtheorem{definition}{Definition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{theorem}{Theorem}
+\newtheorem{corollary}{Corollary}
+
+\title{A Calkin-Wilf Tree Formalization Target}
+\author{EPFLemma workflow fixture}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Source}
+
+This fixture is based on the short Monthly paper \emph{Recounting the
+Rationals} by Calkin and Wilf~\cite{calkinwilf2000}.  The paper gives an
+explicit listing of the positive rational numbers in which each positive
+rational appears exactly once.  A convenient formalization route is to use the
+equivalent binary tree: the root is $1/1$, and a reduced fraction $a/b$ has
+children
+\[
+  \frac{a}{a+b}
+  \qquad\text{and}\qquad
+  \frac{a+b}{b}.
+\]
+
+The goal is not to formalize all of the paper.  The target is the core
+existence-and-uniqueness theorem for this tree, plus the immediate enumeration
+corollary.  This should force a planner to introduce the right representation
+of reduced positive fractions, define the tree recursively over finite binary
+words, and prove the inverse-parent argument.
+
+\section{Definitions}
+
+\begin{definition}[Reduced positive fraction]\label{def:reduced_positive_fraction}
+A reduced positive fraction is a pair $(a,b)$ of positive natural numbers with
+$\gcd(a,b)=1$.  It represents the positive rational number $a/b$.
+\end{definition}
+
+\begin{definition}[Calkin-Wilf children]\label{def:calkin_wilf_children}
+For a reduced positive fraction $(a,b)$, define its left child to be
+$(a,a+b)$ and its right child to be $(a+b,b)$.
+\end{definition}
+
+\begin{definition}[Calkin-Wilf node]\label{def:calkin_wilf_node}
+For a finite binary word $w$, define $T(w)$ recursively as follows.  The empty
+word maps to $(1,1)$.  Appending a left bit sends $T(w)$ to its left child, and
+appending a right bit sends $T(w)$ to its right child.
+\end{definition}
+
+\begin{definition}[Parent map]\label{def:calkin_wilf_parent}
+For a reduced positive fraction $(a,b)\ne(1,1)$, define its parent to be
+$(a,b-a)$ if $a<b$, and $(a-b,b)$ if $b<a$.
+\end{definition}
+
+\section{Tree Lemmas}
+
+\begin{lemma}[Children stay reduced]\label{lem:children_reduced}
+The left and right children of a reduced positive fraction are reduced positive
+fractions.
+\end{lemma}
+
+\begin{lemma}[A non-root fraction has a unique parent]\label{lem:unique_parent}
+Every reduced positive fraction other than $(1,1)$ is the left or right child
+of a unique reduced positive fraction.  Its parent is the fraction from
+Definition~\ref{def:calkin_wilf_parent}.
+\end{lemma}
+
+\begin{lemma}[The parent map decreases height]\label{lem:parent_decreases_sum}
+If $(a,b)$ is a reduced positive fraction different from $(1,1)$, then the sum
+of the numerator and denominator of its parent is strictly smaller than
+$a+b$.
+\end{lemma}
+
+\begin{lemma}[Every reduced positive fraction reaches the root]\label{lem:parent_iterates_to_root}
+Starting from any reduced positive fraction and repeatedly applying the parent
+map eventually reaches $(1,1)$.
+\end{lemma}
+
+\section{Main Result}
+
+\begin{theorem}[Existence of a Calkin-Wilf address]\label{thm:every_fraction_has_address}
+For every reduced positive fraction $q$, there exists a finite binary word
+$w$ such that $T(w)=q$.
+\end{theorem}
+
+\begin{theorem}[Uniqueness of Calkin-Wilf addresses]\label{thm:calkin_wilf_address_unique}
+If $T(u)=T(v)$ for finite binary words $u$ and $v$, then $u=v$.
+\end{theorem}
+
+\begin{theorem}[Calkin-Wilf tree enumerates the positive rationals]\label{thm:calkin_wilf_bijection}
+The map sending a finite binary word $w$ to the rational number represented by
+$T(w)$ is a bijection from finite binary words to positive rational numbers in
+reduced form.
+\end{theorem}
+
+\begin{corollary}[Breadth-first listing has no repeats and misses none]\label{cor:breadth_first_enumeration}
+Reading the Calkin-Wilf tree level by level gives a list in which every
+positive rational number appears exactly once.
+\end{corollary}
+
+\begin{thebibliography}{9}
+\bibitem{calkinwilf2000}
+N. Calkin and H. S. Wilf,
+\emph{Recounting the Rationals},
+The American Mathematical Monthly 107(4), 360--363, 2000.
+DOI: \url{https://doi.org/10.1080/00029890.2000.12005205}.
+\end{thebibliography}
+
+\end{document}

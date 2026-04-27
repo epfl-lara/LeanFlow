@@ -9,9 +9,8 @@ proof-repair fixture, while this project exercises the `/formalize` and
 Contents:
 
 - `lakefile.toml`: Lean package configured with mathlib and REPL.
-- `DocFormalizationDemo.lean`: library entrypoint.
-- `DocFormalizationDemo/Setup.lean`: local coding-theory definitions that a planner can reuse.
-- `docs/Hamming74SingleErrorCorrection.tex`: LaTeX document formalizing the Hamming(7,4) single-error-correction argument.
+- `DocFormalizationDemo.lean`: minimal library entrypoint importing mathlib.
+- `docs/RecountingTheRationals.tex`: LaTeX source document to formalize, covering the Calkin-Wilf enumeration of the positive rationals.
 
 Typical run:
 
@@ -19,18 +18,23 @@ Typical run:
 lake update
 lake build
 epflemma project init
-epflemma workflow formalize docs/Hamming74SingleErrorCorrection.tex
+epflemma workflow formalize docs/RecountingTheRationals.tex
 ```
 
 The alias is equivalent:
 
 ```bash
-epflemma workflow autoformalize docs/Hamming74SingleErrorCorrection.tex
+epflemma workflow autoformalize docs/RecountingTheRationals.tex
 ```
 
 Expected preflight artifacts after starting the workflow:
 
-- `.epflemma/workflow-state/formalization/docs-Hamming74SingleErrorCorrection/context.md`
-- `.epflemma/workflow-state/formalization/docs-Hamming74SingleErrorCorrection/blueprint.md`
-- `.epflemma/workflow-state/formalization/docs-Hamming74SingleErrorCorrection/manifest.json`
-- `DocFormalizationDemo/Formalization/Hamming74SingleErrorCorrection.lean`
+- `.epflemma/workflow-state/formalization/docs-RecountingTheRationals/context.md`
+- `.epflemma/workflow-state/formalization/docs-RecountingTheRationals/blueprint.md`
+- `.epflemma/workflow-state/formalization/docs-RecountingTheRationals/manifest.json`
+- `DocFormalizationDemo/Formalization/RecountingTheRationals.lean`
+
+`DocFormalizationDemo/Formalization/RecountingTheRationals.lean` should not
+exist in the clean base fixture. EPFLemma creates it when the formalization
+workflow starts. There is no pre-written Lean formalization of the target in
+this fixture.
