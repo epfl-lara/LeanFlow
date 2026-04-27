@@ -597,7 +597,7 @@ What the runner does each cycle:
 3. Select one current queue item.
    - If the queue is non-empty, store the assignment in `current_queue_assignment` as `(target_symbol, active_file, slice)`.
    - While this assignment is active, the runner switches the active skill to `lean-theorem-queue-worker`.
-   - The assignment is the worker boundary. The model owns only that declaration, not the rest of the file.
+   - The assignment is the worker boundary. The model owns the assigned proof task, may add small helper declarations that directly support it, and must not modify pre-existing non-assigned declarations or future queue items.
 
 4. Build the model-facing handoff.
    - The manager keeps the full queue internally for status, resume, and next-target selection.
@@ -615,7 +615,8 @@ What the runner does each cycle:
 5. Let the model work one theorem turn.
    - The model may inspect the file, search, ask for proof context, or edit with `patch`, `write_file`, or `apply_verified_patch`.
    - During a theorem queue turn, terminal-based file edits are rejected. Shell verification is allowed, but edits must go through file tools so the manager can check the assigned-declaration boundary.
-   - If a file tool changes content outside the assigned declaration, the manager restores the out-of-scope declarations to their pre-tool state and reports the queue edit guard in the tool result.
+   - New helper declarations are allowed when they directly help the assigned theorem; the manager does not restore them merely because they are outside the assigned declaration body.
+   - If a file tool changes a pre-existing non-assigned declaration or future queue item, the manager restores those protected declarations to their assignment-start state and reports the queue edit guard in the tool result.
    - `patch` and `write_file` are preferred in managed queue workflows; the manager warms LeanInteract with `prepare_file` at assignment time, and after a successful edit it first runs `lean_incremental_check(check_target)` for the assigned declaration.
    - If LeanInteract is unavailable, crashes, times out, or cannot rebuild a valid cache, the manager falls back to the canonical file verification gate.
    - Direct terminal verification commands are not the normal managed path because the manager cannot classify them as precisely, but they remain available as an emergency/manual fallback if the Lean tool surface is broken.
@@ -649,7 +650,7 @@ What the runner does each cycle:
      - this is not a single API step and not a new workflow run; the model continues the same theorem turn using the remaining workflow budget
      - the opportunity is evaluated at the next manager gate for that same theorem: successful `patch` / `write_file` LeanInteract auto-verification, `apply_verified_patch`, explicit `lean_incremental_check(check_target)`, explicit `lean_verify(mode=file_exact)`, or manager review of a final "solved" report
      - do not record a failed proof attempt
-     - tell the model to fix only the assigned declaration and not edit future queued declarations
+     - tell the model to fix only the assigned-declaration warning context and not edit future queued declarations; helper declarations created for this theorem remain part of this turn's proof work
      - if that next manager gate sees no warnings, accept the theorem and advance
      - if that next manager gate still sees only assigned-declaration warnings and no hard blockers, accept the theorem and advance
      - if that next manager gate sees an error, open goal, or assigned-declaration `sorry`, switch to the hard-blocker branch
@@ -737,7 +738,7 @@ Queue handoff invariants:
 - The manager owns the full queue; the model sees only the assigned theorem horizon.
 - Future theorem `sorry` warnings are not model-facing proof obligations until assigned.
 - Raw diagnostics from future declarations are not classified as current-theorem manager feedback after the assigned declaration's target-level check has succeeded.
-- Queue turns are edit-scoped to the assigned declaration. Broad shell replacements, whole-file rewrites, and accidental edits to future queue items are blocked or restored by the manager.
+- Queue turns are scoped to the assigned proof task. New helper declarations that directly support the assigned theorem are allowed, while broad shell replacements, whole-file rewrites, and accidental edits to pre-existing future queue items are blocked or restored by the manager.
 - The assigned theorem is successful when that declaration has no `sorry`, no open goals, no errors, and either no warning-only cleanup remains or its one focused warning-cleanup opportunity has already been spent.
 - Hard blockers keep the same theorem turn alive and become theorem-local failed-attempt context.
 - Warning-only cleanup never becomes a failed proof attempt and cannot stall the queue indefinitely.
@@ -1209,10 +1210,12 @@ provider request as timed out; override with `GAUSS_API_TIMEOUT` if needed.
 
 Lean declaration edits are guarded by default. File write and patch tools block
 deleting, renaming, moving, or changing existing `theorem`, `lemma`, and
-`example` statements; proof-body edits and new declarations are allowed. For an
-intentional statement refactor, set `EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS=1` in
-the process environment or `~/.epflemma/.env`, then unset it again after the
-refactor.
+`example` statements; proof-body edits and new declarations are allowed. In a
+managed theorem queue turn, the queue guard additionally restores edits to
+pre-existing non-assigned declarations while allowing new helper declarations
+for the assigned theorem. For an intentional statement refactor, set
+`EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS=1` in the process environment or
+`~/.epflemma/.env`, then unset it again after the refactor.
 
 Compression defaults are tuned for long Lean sessions:
 

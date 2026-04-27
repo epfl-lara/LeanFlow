@@ -45,7 +45,7 @@ class LeanStatementGuardResult:
         return (
             "Lean statement guard blocked this edit: "
             f"{details}. Existing theorem/lemma/example statements may not be deleted, moved, renamed, "
-            "or changed; edit only proof bodies."
+            "or changed; edit proof bodies for existing declarations. New helper declarations are allowed."
         )
 
 

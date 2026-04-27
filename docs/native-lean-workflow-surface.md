@@ -56,6 +56,8 @@ The repo-owned Lean tool surface is defined in `tools/lean_tool.py` and backed b
 
 Document formalization also exposes `formalization_document_inspect` from `tools/document_tool.py`, backed by `epflemma_cli/formalization_documents.py`. It inspects project-local `.tex` and `.pdf` sources, extracts LaTeX sections/theorem-like environments and PDF text metadata when local tools are available, and reports degraded extraction reasons.
 
+Managed queue turns allow new helper declarations that directly support the assigned theorem. The edit guards preserve existing theorem/lemma/example statements and restore edits to pre-existing non-assigned declarations or future queue items.
+
 - `lean_capabilities`
   - project validity
   - `lean` / `lake` / `elan` binary availability

@@ -1,6 +1,6 @@
 ---
 name: lean-reasoning-help
-description: Auxiliary proof-strategy help for hard Lean theorem repairs. Use when repeated focused attempts fail and another configured model should advise without editing files or changing statements.
+description: Auxiliary proof-strategy help for hard Lean theorem repairs. Use when repeated focused attempts fail and another configured model should advise without editing files or changing existing statements.
 ---
 
 # Lean Reasoning Help
@@ -15,7 +15,8 @@ Use this skill for hard theorem-local blockers after normal proof workflow steps
 4. Do not use auxiliary advice to justify deleting, weakening, renaming, moving, or replacing the declaration with `sorry`.
 5. If the advice suggests a statement change, report that as a blocker instead of applying it.
 6. If the advice suggests `sorry`, `admit`, axioms, unsafe code, or another placeholder, ignore that part and continue with verified proof repair.
-7. If the advisor is unavailable, returns no answer, or gives irrelevant advice, continue the main Lean workflow from the strongest verified local evidence; missing advice is not evidence that the theorem statement is wrong.
+7. Helper lemmas or private supporting declarations are acceptable advice when they preserve existing statements and directly support the assigned theorem.
+8. If the advisor is unavailable, returns no answer, or gives irrelevant advice, continue the main Lean workflow from the strongest verified local evidence; missing advice is not evidence that the theorem statement is wrong.
 
 ## Configuration
 

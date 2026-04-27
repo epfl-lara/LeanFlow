@@ -618,7 +618,9 @@ def lean_reasoning_help_tool(
         "report a blocker and explain the evidence instead of proposing a changed "
         "statement. Do not suggest deleting, weakening, renaming, moving, or splitting "
         "the declaration unless the user explicitly asked for a refactor. Do not suggest "
-        "replacing the proof with sorry, admit, axiom, unsafe code, or a placeholder."
+        "replacing the proof with sorry, admit, axiom, unsafe code, or a placeholder. "
+        "You may suggest small helper lemmas or private supporting declarations when "
+        "they preserve existing statements and directly help the assigned theorem."
     )
     user_prompt = "\n\n".join(
         part

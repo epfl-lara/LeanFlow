@@ -220,7 +220,8 @@ def test_theorem_queue_worker_skill_is_loadable(monkeypatch, tmp_path):
     prompt = build_skill_prompt("lean-theorem-queue-worker", tmp_path)
 
     assert "external workflow manager" in prompt
-    assert "Focus only on the assigned declaration" in prompt
+    assert "Focus only on solving the assigned declaration" in prompt
+    assert "adding and iterating on new helper declarations" in prompt
 
 
 def test_all_curated_builtin_skills_are_discoverable(monkeypatch, tmp_path):

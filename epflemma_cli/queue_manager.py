@@ -165,8 +165,9 @@ class QueueAssignment:
     """The currently-assigned theorem turn.
 
     Spec contract (docs/product-reference.md, section "Theorem-By-Theorem
-    Proving Loop", step 3): "the assignment is the worker boundary. The model
-    owns only that declaration, not the rest of the file."
+    Proving Loop", step 3): "the assignment is the worker boundary." The model
+    owns the assigned proof task, may add helper declarations for it, and must
+    not modify pre-existing non-assigned declarations or future queue items.
 
     `slice` is the declaration text captured at assignment time so the runner
     can detect out-of-scope edits and restore baseline.
