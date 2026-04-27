@@ -121,6 +121,19 @@ def test_skill_without_frontmatter_falls_back_to_directory_name(monkeypatch, tmp
     assert record.source == "project"
 
 
+def test_load_skill_accepts_direct_skill_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    skill = tmp_path / "external" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: external-skill\ndescription: External\n---\n# External\n", encoding="utf-8")
+
+    payload = load_skill(str(skill), tmp_path)
+
+    assert payload is not None
+    assert payload["name"] == "external-skill"
+    assert payload["source"] == "path"
+
+
 @pytest.mark.parametrize(
     "workflow_kind,expected_skill",
     [

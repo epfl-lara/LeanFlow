@@ -38,6 +38,7 @@ class FormalizationDocumentContext:
     manifest_path: Path
     extracted_text_path: Path
     blueprint_path: Path
+    blueprint_skill_path: Path
     target_lean_path: Path
     target_lean_relative: str
     metadata: dict[str, Any]
@@ -58,6 +59,8 @@ class FormalizationDocumentContext:
             "OPENGAUSS_FORMALIZATION_MANIFEST": str(self.manifest_path),
             "EPFLEMMA_FORMALIZATION_BLUEPRINT": str(self.blueprint_path),
             "OPENGAUSS_FORMALIZATION_BLUEPRINT": str(self.blueprint_path),
+            "EPFLEMMA_FORMALIZATION_BLUEPRINT_SKILL": str(self.blueprint_skill_path),
+            "OPENGAUSS_FORMALIZATION_BLUEPRINT_SKILL": str(self.blueprint_skill_path),
             "EPFLEMMA_FORMALIZATION_EXTRACTED_TEXT": str(self.extracted_text_path),
             "OPENGAUSS_FORMALIZATION_EXTRACTED_TEXT": str(self.extracted_text_path),
             "EPFLEMMA_FORMALIZATION_TARGET_FILE": self.target_lean_relative,
@@ -169,6 +172,67 @@ def _safe_slug(value: str, default: str = "formalization") -> str:
     return slug[:96] or default
 
 
+def _blueprint_skill_name(target_lean_relative: str) -> str:
+    slug = _safe_slug(Path(target_lean_relative).with_suffix("").as_posix().replace("/", "-"), "formalization")
+    return f"formalization-blueprint-{slug[:72]}"
+
+
+def _extract_blueprint_source(blueprint_path: Path) -> str:
+    try:
+        text = blueprint_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    match = re.search(r"^\s*-\s*Source:\s*`?([^`\n]+)`?\s*$", text, flags=re.MULTILINE)
+    return match.group(1).strip() if match else ""
+
+
+def ensure_formalization_blueprint_skill(
+    *,
+    project_root: str | Path,
+    target_lean_relative: str,
+    blueprint_path: str | Path | None = None,
+    source_relative: str = "",
+) -> Path | None:
+    root = Path(project_root).expanduser().resolve()
+    if not target_lean_relative:
+        return None
+    target_path = (root / target_lean_relative).resolve()
+    resolved_blueprint = Path(blueprint_path).expanduser() if blueprint_path else target_path.parent / "Blueprint.md"
+    try:
+        resolved_blueprint = resolved_blueprint.resolve()
+    except Exception:
+        pass
+    if not resolved_blueprint.is_file():
+        return None
+    try:
+        blueprint_relative = str(resolved_blueprint.relative_to(root))
+    except Exception:
+        blueprint_relative = str(resolved_blueprint)
+    source_label = source_relative.strip() or _extract_blueprint_source(resolved_blueprint)
+    source_line = f"- Source document: `{source_label}`\n" if source_label else ""
+    skill_name = _blueprint_skill_name(target_lean_relative)
+    skill_dir = root / ".epflemma" / "skills" / skill_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_path = skill_dir / "SKILL.md"
+    content = (
+        "---\n"
+        f"name: {skill_name}\n"
+        f"description: Blueprint and source map for `{target_lean_relative}`.\n"
+        "---\n\n"
+        "# Formalization Blueprint Skill\n\n"
+        f"Before proving declarations in `{target_lean_relative}`, read and use the local formalization blueprint.\n\n"
+        f"- Blueprint: `{blueprint_relative}`\n"
+        f"{source_line}"
+        "- Treat the blueprint as the source map for theorem locators, planned Lean names, dependencies, "
+        "statement-fidelity caveats, and prover notes.\n"
+        "- If the current proof is unclear, reopen the blueprint first, then the original source document when listed.\n"
+        "- Do not change source-backed theorem statements during proving unless a separate statement/source review "
+        "explicitly corrected the blueprint and Lean draft.\n"
+    )
+    skill_path.write_text(content, encoding="utf-8")
+    return skill_path
+
+
 def _default_document_workspace_path(project_root: Path, project_label: str, source_path: Path) -> Path:
     module_name = _safe_name(project_label or project_root.name, "Formalization")
     source_name = _safe_name(source_path.stem, "Document")
@@ -181,6 +245,10 @@ def _default_target_lean_path(project_root: Path, project_label: str, source_pat
 
 def _line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, max(0, offset)) + 1
+
+
+def _line_span(text: str, start: int, end: int) -> tuple[int, int]:
+    return _line_number(text, start), _line_number(text, max(start, end))
 
 
 def _clean_tex_statement(value: str) -> str:
@@ -216,10 +284,13 @@ def _extract_latex_summary(path: Path) -> dict[str, Any]:
         body = match.group("body") or ""
         label_match = re.search(r"\\label\{([^{}]+)\}", body)
         option = (match.group("option") or "").strip()
+        start_line, end_line = _line_span(raw, match.start(), match.end())
         blocks.append(
             {
                 "kind": match.group("env"),
-                "line": _line_number(raw, match.start()),
+                "line": start_line,
+                "end_line": end_line,
+                "offset": match.start(),
                 "label": label_match.group(1).strip() if label_match else "",
                 "title": option.strip("[]"),
                 "lean": _extract_braced_commands(body, "lean"),
@@ -229,6 +300,56 @@ def _extract_latex_summary(path: Path) -> dict[str, Any]:
         )
         if len(blocks) >= MAX_THEOREM_BLOCKS:
             break
+    if len(blocks) < MAX_THEOREM_BLOCKS:
+        existing_offsets = {int(block.get("offset", -1) or -1) for block in blocks}
+        profess_pattern = re.compile(
+            r"\\profess\{(?P<kind>[^{}]+)\}\s*(?P<body>.*?)\\endprofess",
+            re.IGNORECASE | re.DOTALL,
+        )
+        for match in profess_pattern.finditer(raw):
+            if match.start() in existing_offsets:
+                continue
+            raw_kind = str(match.group("kind") or "statement").strip()
+            kind = re.sub(r"[^A-Za-z]+", " ", raw_kind).strip().lower() or "statement"
+            if kind.endswith("."):
+                kind = kind[:-1].strip()
+            following = raw[match.end(): match.end() + 12_000]
+            proof = ""
+            proof_match = re.search(
+                r"^\s*\\proof\s*(?P<body>.*?)\\endproof",
+                following,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if proof_match:
+                proof = _bounded(_clean_tex_statement(proof_match.group("body") or ""), MAX_STATEMENT_CHARS)
+                proof_start_line, proof_end_line = _line_span(
+                    raw,
+                    match.end() + proof_match.start(),
+                    match.end() + proof_match.end(),
+                )
+            else:
+                proof_start_line = proof_end_line = 0
+            line = _line_number(raw, match.start())
+            _start_line, end_line = _line_span(raw, match.start(), match.end())
+            label_match = re.search(r"\\label\{([^{}]+)\}", match.group("body") or "")
+            blocks.append(
+                {
+                    "kind": kind,
+                    "line": line,
+                    "end_line": end_line,
+                    "proof_line": proof_start_line,
+                    "proof_end_line": proof_end_line,
+                    "offset": match.start(),
+                    "label": label_match.group(1).strip() if label_match else f"line-{line}",
+                    "title": raw_kind,
+                    "lean": _extract_braced_commands(match.group("body") or "", "lean"),
+                    "uses": _extract_braced_commands(match.group("body") or "", "uses"),
+                    "statement": _bounded(_clean_tex_statement(match.group("body") or ""), MAX_STATEMENT_CHARS),
+                    "proof": proof,
+                }
+            )
+            if len(blocks) >= MAX_THEOREM_BLOCKS:
+                break
 
     section_pattern = re.compile(r"\\(?P<level>chapter|section|subsection|subsubsection)\*?\{(?P<title>[^{}\n]+)\}")
     sections = [
@@ -240,13 +361,18 @@ def _extract_latex_summary(path: Path) -> dict[str, Any]:
         for match in section_pattern.finditer(raw)
     ][:MAX_SECTIONS]
     title_match = re.search(r"\\title\{([^{}\n]+)\}", raw)
+    title = title_match.group(1).strip() if title_match else ""
+    if not title:
+        title_lines = re.findall(r"\\centerline\{\\titlefont\s+([^{}\n]+)\}", raw)
+        if title_lines:
+            title = " ".join(item.strip() for item in title_lines if item.strip())
     bibliography_files = _extract_braced_commands(raw, "bibliography") + _extract_braced_commands(raw, "addbibresource")
     citations = _extract_braced_commands(raw, "cite")[:MAX_REFERENCES]
     labels = _extract_braced_commands(raw, "label")[:MAX_REFERENCES]
     refs = _extract_braced_commands(raw, "ref")[:MAX_REFERENCES]
     return {
         "source_kind": "latex",
-        "title": title_match.group(1).strip() if title_match else "",
+        "title": title,
         "bytes": path.stat().st_size,
         "sections": sections,
         "theorem_blocks": blocks,
@@ -378,14 +504,21 @@ def _render_blocks_for_markdown(blocks: list[Mapping[str, Any]]) -> str:
         label = str(block.get("label", "") or "[unlabeled]")
         kind = str(block.get("kind", "") or "statement")
         line = block.get("line", "?")
+        end_line = block.get("end_line") or line
         title = str(block.get("title", "") or "").strip()
-        heading = f"{index}. `{label}` ({kind}, line {line})"
+        heading = f"{index}. `{label}` ({kind}, lines {line}-{end_line})"
         if title:
             heading += f" - {title}"
         lines.append(heading)
         statement = str(block.get("statement", "") or "").strip()
         if statement:
             lines.append(f"   Source statement: {statement}")
+        proof = str(block.get("proof", "") or "").strip()
+        if proof:
+            lines.append(f"   Source proof excerpt: {proof}")
+            proof_line = block.get("proof_line") or "?"
+            proof_end_line = block.get("proof_end_line") or proof_line
+            lines.append(f"   Source proof locator: lines {proof_line}-{proof_end_line}")
         lean = ", ".join(block.get("lean", []) or [])
         uses = ", ".join(block.get("uses", []) or [])
         if lean:
@@ -446,17 +579,21 @@ def _render_context_markdown(
         "6. Draft Lean files in small units with stable names, minimal imports, and `sorry` placeholders for theorem/lemma proofs that the prover queue should solve. Do not do deep proof repair in the planner draft.",
         "7. Lean import discipline is mandatory: every generated Lean file must begin with all `import` commands before any `/-! ... -/` module doc comment or declaration.",
         "8. Before handing declarations to the managed prover queue, satisfy the document formalization handoff verifier: replace scaffold root imports with direct dependencies, ensure the root project module imports the generated target module so plain `lake build` covers it, and keep the blueprint import plan aligned with the target Lean imports.",
-        "9. Verify that the drafted declarations typecheck and that each formal statement matches the original source claim before moving into proof repair.",
+        "9. Verify draft readiness with `lean_inspect` and `lean_verify` (module or file_exact); do not fall back to terminal `lake env lean` just to decide whether the draft is ready.",
+        "10. Stop after the source map, blueprint, theorem statements, and `sorry` skeletons are ready. Ask for an independent statement/source verification pass before the prover queue starts.",
         "",
         "Statement fidelity:",
         "- keep source pointers, ambiguity notes, dependencies, and proof notes in the planner blueprint",
+        "- put a compact `Source proof` / `Proof sketch` / `Prover notes` paragraph in the Lean doc comment immediately above each source theorem or lemma when the source contains proof guidance",
+        "- the generated supplemental blueprint skill keeps the `Blueprint.md` path available to prover turns after compaction",
         "- explicitly compare each Lean statement against the corresponding source statement before handing it to the prover queue",
+        "- record `Statement verification status: approved` only after the verification pass has checked and corrected the blueprint and Lean statements",
         "- do not silently weaken or strengthen the source theorem",
         "- avoid adding Lean comments unless they clarify a concrete formalization choice",
         "- the blueprint is intentionally next to the Lean files so planner and prover turns can reread it easily",
         "",
         "Proof phase:",
-        "- After the declaration skeleton is stable, use the normal managed Lean queue to eliminate `sorry` one declaration at a time.",
+        "- After the declaration skeleton is stable and statement/source verification is approved, use the normal managed Lean queue to eliminate `sorry` one declaration at a time.",
         "- If the handoff verifier blocks the queue, update the root module, target imports, or blueprint first; do not work around the blocker by editing theorem statements opportunistically.",
         "- When proving, consult the nearby blueprint and the original source document for natural-language proof strategy before inventing a proof.",
         "- Keep blueprint entries aligned when a theorem is split or renamed.",
@@ -506,6 +643,7 @@ def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata
         "- [ ] Record source labels/pages/equations for every generated declaration.",
         "- [ ] Check local project and Mathlib names before introducing duplicates.",
         "- [ ] Verify drafted Lean statements match the source document.",
+        "- [ ] Run independent statement/source verification review and apply corrections.",
         "- [ ] Record a natural-language proof strategy or source proof pointer for each theorem/lemma.",
         "- [ ] Hand stable `sorry` declarations to the managed prover queue.",
         "",
@@ -514,7 +652,8 @@ def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata
         "",
         "For each theorem or lemma, include proof guidance useful to the prover: relevant source proof",
         "paragraphs, induction variables, reductions, important previously planned lemmas, and any",
-        "known statement-fidelity caveats. Keep long exposition here, not in generated Lean comments.",
+        "known statement-fidelity caveats. Lean doc comments should include compact proof notes;",
+        "the generated supplemental blueprint skill carries the durable `Blueprint.md` reference.",
         "",
         "## Source Statement Inventory",
         "",
@@ -528,11 +667,16 @@ def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata
                 f"### {label}",
                 "",
                 f"- Kind: {block.get('kind', 'statement')}",
-                f"- Source line/page: {block.get('line', '?')}",
+                f"- Source locator: `{source_relative}:{block.get('line', '?')}-{block.get('end_line') or block.get('line', '?')}`",
                 f"- Planned Lean declarations: _pending_",
                 f"- Dependencies: {', '.join(block.get('uses', []) or []) or '_pending_'}",
                 "- Formal statement review: _pending_",
+                "- Source qualifiers: _pending_",
+                "- Lean coverage: _pending_",
+                "- Scope changes: _pending_",
+                "- Statement verification status: _pending_",
                 "- Source proof / prover notes: _pending_",
+                f"- Source proof excerpt: {str(block.get('proof', '') or '[none detected by preflight]')}",
                 "",
                 str(block.get("statement", "") or "_statement pending manual extraction_"),
                 "",
@@ -568,6 +712,13 @@ def prepare_formalization_document_context(
     manifest_path = state_dir / "manifest.json"
     extracted_text_path = state_dir / "extracted.txt"
     blueprint_path = target_lean_path.parent / "Blueprint.md"
+    blueprint_skill_path = (
+        root
+        / ".epflemma"
+        / "skills"
+        / _blueprint_skill_name(target_lean_relative)
+        / "SKILL.md"
+    )
 
     metadata.update(
         {
@@ -580,6 +731,7 @@ def prepare_formalization_document_context(
             "manifest_path": str(manifest_path),
             "extracted_text_path": str(extracted_text_path),
             "blueprint_path": str(blueprint_path),
+            "blueprint_skill_path": str(blueprint_skill_path),
             "created_at_unix": int(time.time()),
         }
     )
@@ -590,6 +742,14 @@ def prepare_formalization_document_context(
     _write_json(manifest_path, metadata)
     if not blueprint_path.exists():
         blueprint_path.write_text(_initial_blueprint(source_relative, target_lean_relative, metadata), encoding="utf-8")
+    generated_skill_path = ensure_formalization_blueprint_skill(
+        project_root=root,
+        target_lean_relative=target_lean_relative,
+        blueprint_path=blueprint_path,
+        source_relative=source_relative,
+    )
+    if generated_skill_path is not None:
+        blueprint_skill_path = generated_skill_path
     if not target_lean_path.exists():
         try:
             blueprint_relative = str(blueprint_path.resolve().relative_to(root.resolve()))
@@ -620,6 +780,7 @@ def prepare_formalization_document_context(
         manifest_path=manifest_path,
         extracted_text_path=extracted_text_path,
         blueprint_path=blueprint_path,
+        blueprint_skill_path=blueprint_skill_path,
         target_lean_path=target_lean_path,
         target_lean_relative=target_lean_relative,
         metadata=dict(metadata),

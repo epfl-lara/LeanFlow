@@ -18,6 +18,7 @@ from epflemma_cli.project import (
 )
 from epflemma_cli.formalization_documents import (
     FormalizationDocumentContext,
+    ensure_formalization_blueprint_skill,
     prepare_formalization_document_context,
 )
 from epflemma_cli.skill_core import default_workflow_skill
@@ -59,6 +60,7 @@ class NativeWorkflowSpec:
     workflow_args: str
     parallel_agents: int = 1
     explicit_goal: str = ""
+    additional_skills: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,7 @@ class NativeLaunchPlan:
     argv: list[str]
     active_skill: str
     toolset_name: str
+    additional_skills: tuple[str, ...] = ()
     formalization_document: FormalizationDocumentContext | None = None
 
 
@@ -190,6 +193,8 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
         summary["document"] = plan.formalization_document.source_relative
         summary["target_file"] = plan.formalization_document.target_lean_relative
         summary["planner_context"] = str(plan.formalization_document.context_path)
+    if plan.additional_skills:
+        summary["additional_skills"] = ", ".join(plan.additional_skills)
     return summary
 
 
@@ -216,6 +221,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
     parallel_agents = 1
     no_parallel = False
     explicit_goal = ""
+    additional_skills: list[str] = []
     workflow_tokens: list[str] = []
     idx = 0
     while idx < len(remaining):
@@ -239,6 +245,12 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             explicit_goal = " ".join(remaining[idx + 1:]).strip()
             idx = len(remaining)
             continue
+        if token in {"--additional-skill", "--additional_skill"}:
+            if idx + 1 >= len(remaining):
+                raise ValueError(f"{token} requires a value")
+            additional_skills.append(remaining[idx + 1])
+            idx += 2
+            continue
         workflow_tokens.append(token)
         idx += 1
     if no_parallel:
@@ -253,11 +265,24 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         workflow_args=workflow_args.strip(),
         parallel_agents=parallel_agents,
         explicit_goal=explicit_goal,
+        additional_skills=tuple(additional_skills),
     )
 
 
 def _native_runner_module() -> str:
     return "epflemma_cli.native_runner"
+
+
+def _dedupe_skills(values: list[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return tuple(result)
 
 
 def resolve_workflow_request(
@@ -301,6 +326,17 @@ def resolve_workflow_request(
     selected_skill = (active_skill or "").strip() or default_workflow_skill(workflow.workflow_kind)
     if workflow.parallel_agents > 1 and not active_skill:
         selected_skill = "lean-autonomous-swarm"
+    additional_skills = list(workflow.additional_skills)
+    if formalization_document is not None:
+        additional_skills.append(str(formalization_document.blueprint_skill_path))
+    elif workflow.workflow_kind == "prove" and normalized_active_file:
+        blueprint_skill = ensure_formalization_blueprint_skill(
+            project_root=project.root,
+            target_lean_relative=normalized_active_file,
+        )
+        if blueprint_skill is not None:
+            additional_skills.append(str(blueprint_skill))
+    additional_skills_tuple = _dedupe_skills(additional_skills)
     toolset_name = "epflemma-native-swarm" if workflow.parallel_agents > 1 else "epflemma-native"
     agent_max_turns = load_agent_max_turns()
 
@@ -326,6 +362,8 @@ def resolve_workflow_request(
             "OPENGAUSS_NATIVE_WORKFLOW_COMMAND": workflow.backend_command,
             "EPFLEMMA_NATIVE_ACTIVE_SKILL": selected_skill,
             "OPENGAUSS_NATIVE_ACTIVE_SKILL": selected_skill,
+            "EPFLEMMA_NATIVE_ADDITIONAL_SKILLS": os.pathsep.join(additional_skills_tuple),
+            "OPENGAUSS_NATIVE_ADDITIONAL_SKILLS": os.pathsep.join(additional_skills_tuple),
             "EPFLEMMA_NATIVE_PARALLEL_AGENTS": str(workflow.parallel_agents),
             "OPENGAUSS_NATIVE_PARALLEL_AGENTS": str(workflow.parallel_agents),
             "EPFLEMMA_NATIVE_USER_APPROVED_SWARM": "1" if workflow.parallel_agents > 1 else "0",
@@ -348,6 +386,7 @@ def resolve_workflow_request(
         child_env=child_env,
         argv=argv,
         active_skill=selected_skill,
+        additional_skills=additional_skills_tuple,
         toolset_name=toolset_name,
         formalization_document=formalization_document,
     )

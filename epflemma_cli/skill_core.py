@@ -156,23 +156,49 @@ def discover_skill_commands(cwd: str | os.PathLike[str] | None = None) -> dict[s
 
 
 def find_skill(name: str, cwd: str | os.PathLike[str] | None = None) -> SkillRecord | None:
-    requested = (name or "").strip().lstrip("/")
+    raw_requested = (name or "").strip()
+    if raw_requested.startswith("/") and Path(raw_requested).expanduser().exists():
+        requested = raw_requested
+    elif raw_requested.startswith(("~", ".")):
+        requested = raw_requested
+    else:
+        requested = raw_requested.lstrip("/")
     if not requested:
         return None
     requested_path = Path(requested).expanduser()
+    candidate_paths = [requested_path]
+    if not requested_path.is_absolute() and cwd is not None:
+        candidate_paths.append((Path(cwd).expanduser() / requested).resolve())
     normalized = requested.lower().replace(" ", "-").replace("_", "-")
     for record in discover_skills(cwd):
         if record.name == requested or record.command_name == normalized:
             return record
         if requested == record.relative_path or requested == str(record.skill_dir.relative_to(record.root)):
             return record
-        if requested_path.is_absolute():
+        for candidate_path in candidate_paths:
             try:
-                resolved = requested_path.resolve()
+                resolved = candidate_path.resolve()
             except Exception:
-                resolved = requested_path
+                resolved = candidate_path
             if resolved == record.skill_md.resolve() or resolved == record.skill_dir.resolve():
                 return record
+    for candidate_path in candidate_paths:
+        try:
+            resolved = candidate_path.resolve()
+        except Exception:
+            resolved = candidate_path
+        skill_md = resolved / "SKILL.md" if resolved.is_dir() else resolved
+        if skill_md.name != "SKILL.md" or not skill_md.is_file():
+            continue
+        name_value, description = _parse_skill_metadata(skill_md)
+        return SkillRecord(
+            name=name_value,
+            description=description,
+            source="path",
+            root=skill_md.parent.parent,
+            skill_dir=skill_md.parent,
+            skill_md=skill_md,
+        )
     return None
 
 

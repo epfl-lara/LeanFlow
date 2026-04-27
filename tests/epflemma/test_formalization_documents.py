@@ -51,10 +51,14 @@ def test_prepare_formalization_document_context_creates_planner_artifacts(tmp_pa
     assert context.source_kind == "latex"
     assert context.target_lean_relative == "Demo/Paper/Main.lean"
     assert context.blueprint_path == project / "Demo" / "Paper" / "Blueprint.md"
+    assert context.blueprint_skill_path == (
+        project / ".epflemma" / "skills" / "formalization-blueprint-Demo-Paper-Main" / "SKILL.md"
+    )
     assert context.context_path.is_file()
     assert context.manifest_path.is_file()
     assert context.extracted_text_path.is_file()
     assert context.blueprint_path.is_file()
+    assert context.blueprint_skill_path.is_file()
     assert context.target_lean_path.is_file()
 
     target_text = context.target_lean_path.read_text(encoding="utf-8")
@@ -68,8 +72,12 @@ def test_prepare_formalization_document_context_creates_planner_artifacts(tmp_pa
     assert "must begin with all `import` commands" in startup_context
     assert "document formalization handoff verifier" in startup_context
     assert "root project module imports the generated target module" in startup_context
+    assert "supplemental blueprint skill" in startup_context
 
     blueprint = context.blueprint_path.read_text(encoding="utf-8")
+    skill = context.blueprint_skill_path.read_text(encoding="utf-8")
+    assert "Blueprint: `Demo/Paper/Blueprint.md`" in skill
+    assert "Source document: `docs/paper.tex`" in skill
     assert "thm:zero_good" in blueprint
     assert "Target Lean entry file" in blueprint
     assert "Replace all `_pending_` entries before drafting Lean" in blueprint
@@ -97,6 +105,36 @@ def test_inspect_formalization_document_extracts_latex_inventory(tmp_path):
     theorem = next(item for item in payload["theorem_blocks"] if item["label"] == "thm:zero_good")
     assert theorem["uses"] == ["def:good"]
     assert "Zero is good" in theorem["statement"]
+
+
+def test_inspect_formalization_document_extracts_plain_tex_profess_blocks(tmp_path):
+    project = tmp_path / "Demo"
+    source = project / "docs" / "plain.tex"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        r"""
+\centerline{\titlefont Plain TeX Result}
+
+\profess{Theorem.}
+Every good number is good.
+\endprofess
+
+\proof
+This follows by unfolding the definition and applying the obvious witness.
+\endproof
+""".strip(),
+        encoding="utf-8",
+    )
+
+    payload = inspect_formalization_document("docs/plain.tex", project_root=project, cwd=project)
+
+    assert payload["title"] == "Plain TeX Result"
+    assert len(payload["theorem_blocks"]) == 1
+    block = payload["theorem_blocks"][0]
+    assert block["label"].startswith("line-")
+    assert block["kind"] == "theorem"
+    assert "Every good number is good" in block["statement"]
+    assert "unfolding the definition" in block["proof"]
 
 
 def test_doc_formalization_demo_fixture_is_parseable():
