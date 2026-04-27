@@ -3979,6 +3979,49 @@ def test_document_formalization_handoff_detects_stale_import_plan(monkeypatch, t
     ) is False
 
 
+def test_document_formalization_handoff_checks_blueprint_inventory_against_target(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    active.write_text("import Mathlib\n\ntheorem t : True := by\n  trivial\n", encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planned\n\n"
+        "## Lean Import Plan\n\n"
+        "`Main.lean` imports:\n"
+        "- `Mathlib`\n\n"
+        "## Source Statement Inventory\n\n"
+        "### thm:demo\n\n"
+        "- Planned Lean declarations: `missing_t`\n"
+        "- Dependencies: none\n"
+        "- Formal statement review: _pending_\n"
+        "- Source proof / prover notes: _pending_\n",
+        encoding="utf-8",
+    )
+    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
+
+    handoff = runner._document_formalization_handoff_verification(str(active), sorry_count=1)
+
+    assert handoff["ok"] is False
+    assert "missing_t" in handoff["summary"]
+    assert "statement-fidelity review" in handoff["summary"]
+    assert "source proof/prover notes" in handoff["summary"]
+
+
 def test_document_formalization_handoff_accepts_synced_blueprint_and_root_import(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     root = project / "Demo.lean"
@@ -3995,6 +4038,7 @@ def test_document_formalization_handoff_accepts_synced_blueprint_and_root_import
         "## Lean Import Plan\n\n"
         "`Main.lean` imports:\n"
         "- `Mathlib`\n\n"
+        "## Source Statement Inventory\n\n"
         "### thm:demo\n"
         "- Planned Lean declarations: `t`\n"
         "- Dependencies: none\n"
@@ -4002,11 +4046,18 @@ def test_document_formalization_handoff_accepts_synced_blueprint_and_root_import
         "- Source proof / prover notes: prove by `trivial`\n",
         encoding="utf-8",
     )
+    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem"}]}),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
 
     handoff = runner._document_formalization_handoff_verification(
         str(active),
