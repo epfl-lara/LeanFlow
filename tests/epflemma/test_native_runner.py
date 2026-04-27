@@ -4597,9 +4597,11 @@ def test_document_formalization_handoff_requires_proof_notes_in_lean_comment(mon
 def test_document_formalization_handoff_accepts_synced_blueprint_and_root_import(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     root = project / "Demo.lean"
+    parent = project / "Demo" / "Paper.lean"
     active = project / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
-    root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    root.write_text("import Demo.Paper\n", encoding="utf-8")
+    parent.write_text("import Demo.Paper.Main\n", encoding="utf-8")
     active.write_text(
         "import Mathlib\n\n"
         "/-- Source proof: the source proof closes the toy claim directly; prover notes: use `trivial`. -/\n"

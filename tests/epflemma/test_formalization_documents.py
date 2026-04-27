@@ -62,7 +62,9 @@ def test_prepare_formalization_document_context_creates_planner_artifacts(tmp_pa
     assert context.target_lean_path.is_file()
 
     target_text = context.target_lean_path.read_text(encoding="utf-8")
-    assert target_text == "import Demo\n"
+    assert target_text == "import Mathlib\n"
+    assert (project / "Demo" / "Paper.lean").read_text(encoding="utf-8") == "import Demo.Paper.Main\n"
+    assert (project / "Demo.lean").read_text(encoding="utf-8") == "import Demo.Paper\n"
 
     startup_context = context.context_path.read_text(encoding="utf-8")
     assert "document formalization run" in startup_context
@@ -71,7 +73,7 @@ def test_prepare_formalization_document_context_creates_planner_artifacts(tmp_pa
     assert "reread it easily" in startup_context
     assert "must begin with all `import` commands" in startup_context
     assert "document formalization handoff verifier" in startup_context
-    assert "root project module imports the generated target module" in startup_context
+    assert "root project module imports the generated target module path" in startup_context
     assert "supplemental blueprint skill" in startup_context
 
     blueprint = context.blueprint_path.read_text(encoding="utf-8")
@@ -87,6 +89,25 @@ def test_prepare_formalization_document_context_creates_planner_artifacts(tmp_pa
     env = context.to_env()
     assert env["EPFLEMMA_WORKFLOW_CONTEXT"] == str(context.context_path)
     assert env["EPFLEMMA_FORMALIZATION_TARGET_FILE"] == "Demo/Paper/Main.lean"
+
+
+def test_prepare_formalization_document_context_extends_existing_root_imports(tmp_path):
+    project = tmp_path / "Demo"
+    (project / "Demo").mkdir(parents=True)
+    (project / "Demo.lean").write_text("import Demo.Existing\n\n/-! Existing root module. -/\n", encoding="utf-8")
+    source = project / "docs" / "paper.tex"
+    _write_sample_tex(source)
+
+    prepare_formalization_document_context(
+        project_root=project,
+        cwd=project,
+        workflow_args="docs/paper.tex",
+        project_label="Demo",
+    )
+
+    assert (project / "Demo" / "Paper.lean").read_text(encoding="utf-8") == "import Demo.Paper.Main\n"
+    root_text = (project / "Demo.lean").read_text(encoding="utf-8")
+    assert root_text.startswith("import Demo.Existing\nimport Demo.Paper\n\n/-! Existing root module. -/")
 
 
 def test_inspect_formalization_document_extracts_latex_inventory(tmp_path):

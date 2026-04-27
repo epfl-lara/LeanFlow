@@ -578,7 +578,7 @@ def _render_context_markdown(
         "5. Create or update the planner blueprint before drafting Lean, recording definitions, lemmas, theorem dependencies, source pointers, formal-statement review, and natural-language proof/prover notes. The initial `_pending_` blueprint is only a placeholder and does not satisfy the workflow.",
         "6. Draft Lean files in small units with stable names, minimal imports, and `sorry` placeholders for theorem/lemma proofs that the prover queue should solve. Do not do deep proof repair in the planner draft.",
         "7. Lean import discipline is mandatory: every generated Lean file must begin with all `import` commands before any `/-! ... -/` module doc comment or declaration.",
-        "8. Before handing declarations to the managed prover queue, satisfy the document formalization handoff verifier: replace scaffold root imports with direct dependencies, ensure the root project module imports the generated target module so plain `lake build` covers it, and keep the blueprint import plan aligned with the target Lean imports.",
+        "8. Before handing declarations to the managed prover queue, satisfy the document formalization handoff verifier: keep target imports as direct dependencies, ensure the root project module imports the generated target module path so plain `lake build` covers it, and keep the blueprint import plan aligned with the target Lean imports.",
         "9. Verify draft readiness with `lean_inspect` and `lean_verify` (module or file_exact); do not fall back to terminal `lake env lean` just to decide whether the draft is ready.",
         "10. Stop after the source map, blueprint, theorem statements, and `sorry` skeletons are ready. Ask for an independent statement/source verification pass before the prover queue starts.",
         "",
@@ -685,8 +685,77 @@ def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata
     return "\n".join(lines).strip() + "\n"
 
 
-def _initial_target_lean(_source_relative: str, _blueprint_relative: str, import_module: str) -> str:
-    return f"import {import_module}\n"
+def _lean_module_for_relative_path(relative: str | Path) -> str:
+    path = Path(relative)
+    parts = list(path.parts)
+    if not parts or parts[-1] == "":
+        return ""
+    if parts[-1].endswith(".lean"):
+        parts[-1] = parts[-1][:-5]
+    if any(not re.match(r"^[A-Za-z_][A-Za-z0-9_']*$", part) for part in parts):
+        return ""
+    return ".".join(parts)
+
+
+def _ensure_lean_import(path: Path, module: str) -> bool:
+    if not module:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    import_line = f"import {module}"
+    if not path.exists():
+        path.write_text(import_line + "\n", encoding="utf-8")
+        return True
+
+    text = path.read_text(encoding="utf-8")
+    if re.search(rf"^\s*import\s+{re.escape(module)}\s*$", text, flags=re.MULTILINE):
+        return False
+
+    lines = text.splitlines()
+    insert_at = 0
+    while insert_at < len(lines) and not lines[insert_at].strip():
+        insert_at += 1
+    while insert_at < len(lines) and lines[insert_at].lstrip().startswith("import "):
+        insert_at += 1
+    lines.insert(insert_at, import_line)
+    if insert_at == 0 and len(lines) > 1 and lines[1].strip():
+        lines.insert(1, "")
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return True
+
+
+def _ensure_formalization_import_chain(root: Path, target_lean_path: Path, target_lean_relative: str) -> dict[str, str]:
+    target_module = _lean_module_for_relative_path(target_lean_relative)
+    if not target_module or "." not in target_module:
+        return {}
+
+    modules = target_module.split(".")
+    root_module = modules[0]
+    root_file = root / f"{root_module}.lean"
+    artifacts: dict[str, str] = {
+        "target_module": target_module,
+        "root_module": root_module,
+        "root_module_path": str(root_file),
+    }
+
+    if len(modules) >= 3 and target_lean_path.name == "Main.lean":
+        parent_module = ".".join(modules[:-1])
+        parent_relative = Path(*modules[:-1]).with_suffix(".lean")
+        parent_path = root / parent_relative
+        _ensure_lean_import(parent_path, target_module)
+        _ensure_lean_import(root_file, parent_module)
+        artifacts.update(
+            {
+                "parent_module": parent_module,
+                "parent_module_path": str(parent_path),
+            }
+        )
+    else:
+        _ensure_lean_import(root_file, target_module)
+    return artifacts
+
+
+def _initial_target_lean(_source_relative: str, _blueprint_relative: str, _import_module: str) -> str:
+    return "import Mathlib\n"
 
 
 def prepare_formalization_document_context(
@@ -706,7 +775,7 @@ def prepare_formalization_document_context(
     state_dir = root / ".epflemma" / "workflow-state" / "formalization" / slug
     target_lean_path = _default_target_lean_path(root, project_label, source_path)
     module_name = _safe_name(project_label or root.name, "Formalization")
-    import_module = module_name if (root / f"{module_name}.lean").exists() or (root / module_name).is_dir() else "Mathlib"
+    import_module = "Mathlib"
     target_lean_relative = _relative_to_project(target_lean_path, root) if target_lean_path.exists() else str(target_lean_path.relative_to(root))
     context_path = state_dir / "context.md"
     manifest_path = state_dir / "manifest.json"
@@ -759,6 +828,8 @@ def prepare_formalization_document_context(
             _initial_target_lean(source_relative, blueprint_relative, import_module),
             encoding="utf-8",
         )
+    import_chain = _ensure_formalization_import_chain(root, target_lean_path, target_lean_relative)
+    metadata.update({f"formalization_{key}": value for key, value in import_chain.items()})
     context_path.write_text(
         _render_context_markdown(
             source_relative=source_relative,
