@@ -25,6 +25,7 @@ Typical inputs:
 - a specific Lean file
 - a project-wide proving run
 - a resumed proving session with existing queue state
+- optional supplemental skills via `--additional-skill path/to/SKILL.md`, including generated formalization blueprint skills
 
 ## What Not To Use This Workflow For
 

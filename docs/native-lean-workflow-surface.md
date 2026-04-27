@@ -20,7 +20,7 @@ EPFLemma normalizes the public Lean workflow commands to these internal workflow
 
 The auto-prefixed forms are aliases only. They are not separate runtimes or policy bundles.
 
-`/formalize` and `/autoformalize` require a project-local `.tex` or `.pdf` source document path. The resolver prepares document preflight artifacts and an active Lean target file before the native runner starts.
+`/formalize` and `/autoformalize` require a project-local `.tex` or `.pdf` source document path. The resolver prepares document preflight artifacts, a generated supplemental blueprint skill, and an active Lean target file before the native runner starts. Once the drafting pass has a compilable `sorry` skeleton and only statement/source approval is missing, the native runner starts a fresh independent verifier pass over the source document, blueprint, and Lean draft. `/prove SomeFile.lean` auto-attaches the generated skill when `SomeFile.lean` has a nearby `Blueprint.md`; users can also pass `--additional-skill path/to/SKILL.md`.
 
 ## Specs Are The Contract
 

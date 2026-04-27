@@ -34,6 +34,16 @@ def test_parse_workflow_command_extracts_swarm_options():
     assert spec.explicit_goal == "finish theorem Foo"
 
 
+def test_parse_workflow_command_extracts_additional_skills():
+    spec = parse_workflow_command(
+        "/prove Demo/Main.lean --additional-skill .epflemma/skills/paper/SKILL.md --additional_skill extra-skill"
+    )
+
+    assert spec.workflow_args == "Demo/Main.lean"
+    assert spec.backend_command == "/prove Demo/Main.lean"
+    assert spec.additional_skills == (".epflemma/skills/paper/SKILL.md", "extra-skill")
+
+
 def test_parse_workflow_command_defaults_to_single_agent():
     spec = parse_workflow_command("autoformalize \"formalize theorem\"")
 
@@ -303,6 +313,44 @@ def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(mo
     assert plan.formalization_document is not None
     assert plan.child_env["EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE"] == "docs/paper.tex"
     assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/Paper/Main.lean"
+    assert plan.formalization_document.blueprint_skill_path.is_file()
+    assert str(plan.formalization_document.blueprint_skill_path) in plan.additional_skills
+    assert plan.child_env["EPFLEMMA_NATIVE_ADDITIONAL_SKILLS"] == str(plan.formalization_document.blueprint_skill_path)
+
+
+def test_resolve_workflow_request_auto_adds_blueprint_skill_for_prove(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    target = project / "Demo" / "Paper" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("theorem t : True := by\n  sorry\n", encoding="utf-8")
+    (target.parent / "Blueprint.md").write_text(
+        "# Formalization Blueprint\n\n- Source: `docs/paper.tex`\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_epflemma_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": project})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "local",
+            "api_mode": "responses",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "sk-test",
+            "model": "google/gemma-4-31B-it",
+        },
+    )
+
+    plan = resolve_workflow_request("/prove Demo/Paper/Main.lean", active_cwd=project)
+
+    assert len(plan.additional_skills) == 1
+    skill_path = Path(plan.additional_skills[0])
+    assert skill_path.is_file()
+    assert "Blueprint: `Demo/Paper/Blueprint.md`" in skill_path.read_text(encoding="utf-8")
+    assert plan.child_env["EPFLEMMA_NATIVE_ADDITIONAL_SKILLS"] == str(skill_path)
 
 
 def test_resolve_workflow_request_requires_document_for_formalize(monkeypatch, tmp_path):

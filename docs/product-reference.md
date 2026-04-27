@@ -435,10 +435,14 @@ The resolver prepares a document formalization workspace before the native runne
 - source-document preflight manifest under `.epflemma/workflow-state/formalization/`
 - bounded extracted-text cache
 - Markdown planner blueprint
+- generated supplemental blueprint skill under `.epflemma/skills/`
 - active Lean target file for drafted declarations
-- startup context that tells the agent to plan definitions, lemmas, theorem splits, source comments, source pointers, and statement-fidelity checks before proof repair
 
-The deterministic preflight is intentionally modest. LaTeX documents get theorem-like environments, labels, references, citations, and sections extracted. PDFs use installed local tools such as `pdftotext`, `pdfinfo`, and `pdfimages` when available, and record degraded extraction reasons when they are not. The planner agent can then use the normal file, terminal, web, and Lean tools to inspect the document more deeply, pull referenced material, draft Lean files with `sorry`, and hand the resulting queue to the prover loop.
+`/prove SomeFile.lean` auto-attaches that generated blueprint skill when the file has a nearby `Blueprint.md`, so prover turns can recover the source map after context compaction. Any workflow can also receive extra persistent guidance with `--additional-skill path/to/SKILL.md`.
+- startup context that tells the drafting agent to plan definitions, lemmas, theorem splits, source comments, source pointers, and statement-fidelity checks before proof repair
+- an automatic independent statement/source verifier pass once the draft is otherwise ready and only approval statuses are missing
+
+The deterministic preflight is intentionally modest. LaTeX documents get theorem-like environments, labels, references, citations, and sections extracted. PDFs use installed local tools such as `pdftotext`, `pdfinfo`, and `pdfimages` when available, and record degraded extraction reasons when they are not. The planner agent can then use the normal file, terminal, web, and Lean tools to inspect the document more deeply, pull referenced material, and draft Lean files with `sorry`. The independent verifier then checks the source fidelity and marks approved blueprint entries before the resulting queue is handed to `/prove`.
 
 EPFLemma writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.epflemma/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
 
