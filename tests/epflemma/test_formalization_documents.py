@@ -104,30 +104,22 @@ def test_doc_formalization_demo_fixture_is_parseable():
     project = repo_root / "testdata" / "workflow_projects" / "DocFormalizationDemo"
 
     payload = inspect_formalization_document(
-        "docs/RecountingTheRationals.tex",
+        "docs/QuantizingPythagoreanTriples/Pythagore2.tex",
         project_root=project,
         cwd=project,
     )
 
     assert payload["success"] is True
     assert payload["source_kind"] == "latex"
-    assert payload["title"] == "Hyperbinary Representations and the Calkin-Wilf Enumeration"
-    labels = [item["label"] for item in payload["theorem_blocks"]]
-    assert labels == [
-        "def:hyperbinary_representation",
-        "def:hyperbinary_count",
-        "def:calkin_wilf_fraction",
-        "lem:hyperbinary_zero",
-        "lem:hyperbinary_odd",
-        "lem:hyperbinary_even",
-        "lem:consecutive_coprime",
-        "def:calkin_wilf_children",
-        "lem:left_child_recurrence",
-        "lem:right_child_recurrence",
-        "lem:parent_step_decreases",
-        "thm:calkin_wilf_enumeration",
-        "cor:explicit_positive_rational_listing",
-    ]
+    assert payload["title"] == "Quantizing Pythagorean triples"
+    section_titles = [section["title"] for section in payload["sections"]]
+    assert "The $q$-deformed Pythagoras equation" in section_titles
+    assert "Classical Pythagorean triples" in section_titles
+    assert "A construction of $q$-Pythagorean triples" in section_titles
+    assert any(
+        item["kind"] == "defn" and "\\cC_{\\frac{m}{n}}" in item["statement"]
+        for item in payload["theorem_blocks"]
+    )
 
 
 def test_resolve_formalization_document_requires_project_local_supported_file(tmp_path):

@@ -7,7 +7,7 @@ These projects are not part of the default pytest or CI path. They exist so we c
 Current contents:
 
 - `GaussTest/`: small mathlib-based proving project with `sorry` targets and extra text prompts for future workflow expansion.
-- `DocFormalizationDemo/`: small mathlib-based document formalization project with a LaTeX source paper.
+- `DocFormalizationDemo/`: small mathlib-based document formalization project with real LaTeX source papers.
 
 Typical usage:
 
@@ -25,7 +25,8 @@ cd testdata/workflow_projects/DocFormalizationDemo
 lake update
 lake build
 epflemma project init
-epflemma workflow formalize docs/RecountingTheRationals.tex
+epflemma workflow formalize docs/PythagoreanPolynomialParametrization/pyth.tex
+epflemma workflow formalize docs/QuantizingPythagoreanTriples/Pythagore2.tex
 ```
 
 Commit guard:

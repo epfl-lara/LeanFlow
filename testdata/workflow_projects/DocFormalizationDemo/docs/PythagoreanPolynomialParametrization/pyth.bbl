@@ -1,0 +1,38 @@
+\begin{thebibliography}{1}
+
+\bibitem{AnCaChSm95FP}
+{\sc D.~F. Anderson, P.-J. Cahen, S.~Chapman, and W.~W. Smith}, {\em Some
+  factorization properties of the ring of integer-valued polynomials}, in
+  Anderson and Dobbs \cite{Knox94}, 125--142.
+
+\bibitem{Knox94}
+{\sc D.~F. Anderson and D.~Dobbs}, eds., {\em Zero-dimensional commutative
+  rings (Knoxville, TN, 1994)}, vol.~171 of Lecture Notes in pure and applied
+  mathematics, Dekker, 1995.
+
+\bibitem{CahCha95El}
+{\sc P.-J. Cahen and J.-L. Chabert}, {\em Elasticity for integral-valued
+  polynomials}, J. Pure Appl. Algebra 103 (1995), 303--311.
+
+\bibitem{CaCh97ivp}
+{\sc P.-J. Cahen and J.-L. Chabert}, {\em Integer-valued polynomials}, vol.~48
+  of Mathematical Surveys and Monographs, Amer.~Math.~Soc., 1997.
+
+\bibitem{ChaMcC05IPFE}
+{\sc S.~Chapman and B.~A. McClain}, {\em Irreducible polynomials and full
+  elasticity in rings of integer-valued polynomials}, J. Algebra 293 (2005),
+  595--610.
+
+\bibitem{Fri--RPP}
+{\sc S.~Frisch}, {\em Remarks on polynomial parametrization of sets of integer
+  points}, to appear in Comm.\ Algebra.
+
+\bibitem{HlaSch79ZT}
+{\sc E.~Hlawka and J.~Schoi{\ss}engeier}, {\em Zahlentheorie. Eine
+  {E}inf{\"u}hrung}, Manz, Vienna, 1979.
+
+\bibitem{Vas--PPDE}
+{\sc L.~Vaserstein}, {\em Polynomial parametrization for the solutions of
+  {D}iophantine equations and arithmetic groups}, to appear in Ann. of Math.
+
+\end{thebibliography}
