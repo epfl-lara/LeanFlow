@@ -35,12 +35,14 @@ pty = [
   "pywinpty>=2.0.0; sys_platform == 'win32'",
 ]
 web = ["firecrawl-py"]
+lean-explore = ["lean-explore[local]"]
 local-vllm = ["vllm>=0.8.0"]
 all = [
   "epflemma-agent[dev]",
   "epflemma-agent[mcp]",
   "epflemma-agent[pty]",
   "epflemma-agent[web]",
+  "epflemma-agent[lean-explore]",
 ]
 
 [project.scripts]

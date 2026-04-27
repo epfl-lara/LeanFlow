@@ -1279,7 +1279,9 @@ Installer/bootstrap-managed default Lean MCP backends:
   - EPFLemma uses it through native wrappers and now degrades cleanly when backend lookup misses a declaration that exists in the local file
 - `lean-explore`
   - optional semantic declaration-search backend
-  - installed and configured disabled by default because the API backend requires `LEANEXPLORE_API_KEY`; enable it in `~/.epflemma/config.yaml` or switch its args to the local backend after fetching LeanExplore data
+  - `lean_search` prefers the local backend when `lean-explore[local]` is installed and `lean-explore data fetch` has prepared the index
+  - `lean_search` uses the hosted API only when `LEANEXPLORE_API_KEY` is present and local search is unavailable or disabled
+  - installed and configured disabled by default as an MCP server because the API backend requires credentials; enable it in `~/.epflemma/config.yaml` for MCP tools or switch its args to the local backend after fetching LeanExplore data
 
 The install script bootstraps these backends by default under `~/.epflemma/mcp/venvs/`. To repair or recreate them later, run:
 
