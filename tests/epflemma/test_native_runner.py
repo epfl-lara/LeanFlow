@@ -3556,12 +3556,7 @@ def test_live_state_is_verified_for_file_scope_even_if_project_has_other_sorries
 def test_document_formalization_scaffold_is_not_verified_before_planner_drafts(monkeypatch, tmp_path):
     active = tmp_path / "Formalization" / "Paper.lean"
     active.parent.mkdir(parents=True)
-    active.write_text(
-        "/-!\n"
-        "EPFLemma created this file as the active formalization target.\n"
-        "-/\n",
-        encoding="utf-8",
-    )
+    active.write_text("import Demo\n", encoding="utf-8")
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
 
@@ -3727,6 +3722,107 @@ def test_promote_document_formalization_scaffold_waits_for_planner(monkeypatch, 
     assert calls == []
     assert promoted["verification_ok"] is False
     assert "planner has not drafted" in promoted["blocker_summary"]
+
+
+def test_document_formalization_placeholder_blueprint_blocks_verified(monkeypatch, tmp_path):
+    active = tmp_path / "Formalization" / "Paper.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    blueprint = tmp_path / ".epflemma" / "workflow-state" / "formalization" / "paper" / "blueprint.md"
+    blueprint.parent.mkdir(parents=True)
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planner preflight created; replace this with the agent's dependency plan.\n\n"
+        "### thm:demo\n"
+        "- Planned Lean declarations: _pending_\n"
+        "- Dependencies: _pending_\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+
+    live_state = {
+        "active_file": str(active),
+        "declaration_scope": "file",
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake env lean Formalization/Paper.lean succeeded",
+        "verification_ok": True,
+        "sorry_count": 0,
+        "project_sorry_count": 0,
+    }
+
+    assert runner._live_state_is_verified(live_state) is False
+
+    calls = []
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda *args, **kwargs: calls.append(args) or (True, "ok"),
+    )
+    promoted = runner._promote_live_state_to_verified(live_state)
+
+    assert calls == []
+    assert promoted["verification_ok"] is False
+    assert "blueprint has not been updated" in promoted["blocker_summary"]
+
+
+def test_document_formalization_write_target_requires_blueprint_plan(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Formalization" / "Paper.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("import Demo\n", encoding="utf-8")
+    blueprint = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "blueprint.md"
+    blueprint.parent.mkdir(parents=True)
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planner preflight created; replace this with the agent's dependency plan.\n\n"
+        "### thm:demo\n"
+        "- Planned Lean declarations: _pending_\n"
+        "- Dependencies: _pending_\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Formalization/Paper.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+
+    result = runner._managed_pre_tool_call(
+        _FakeAgent(),
+        "write_file",
+        {
+            "path": "Demo/Formalization/Paper.lean",
+            "content": "import Demo\n\ntheorem t : True := by\n  trivial\n",
+        },
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["success"] is False
+    assert "must update the planner blueprint before editing" in payload["error"]
+
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planned\n\n"
+        "### thm:demo\n"
+        "- Planned Lean declarations: `t`\n"
+        "- Dependencies: none\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        runner._managed_pre_tool_call(
+            _FakeAgent(),
+            "write_file",
+            {
+                "path": "Demo/Formalization/Paper.lean",
+                "content": "import Demo\n\ntheorem t : True := by\n  trivial\n",
+            },
+        )
+        is None
+    )
 
 
 def test_promote_live_state_accepts_warning_only_final_file_sweep(monkeypatch, tmp_path):

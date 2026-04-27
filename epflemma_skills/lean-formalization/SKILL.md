@@ -32,7 +32,8 @@ Primary specs:
 - In managed queue workflows, prefer `patch`/`write_file` because the runner records the automatic post-edit `lean_incremental_check(check_target)` result and falls back to Lake only when needed. Use `apply_verified_patch` for compatibility or when its pre-edit checkpoint payload is specifically useful.
 - Prefer focused `lean_verify` module checks when close to clean; reserve full-project verification for milestone checks.
 - Prefer explicit intermediate lemmas over brittle proof scripts.
-- For document formalization, add a source comment immediately above every generated declaration with the informal statement, source pointer, and useful proof/dependency notes.
+- Every generated Lean file must begin with imports. Do not put module doc comments, file overviews, namespaces, or declarations above imports.
+- For document formalization, update the planner blueprint before writing the main Lean draft. Replace `_pending_` source inventory entries with declaration names, dependencies, split lemmas, and proof notes.
 - Keep the generated blueprint aligned with declaration names, split lemmas, source labels, and statement-fidelity decisions.
 - Do not declare success while the requested scope still has diagnostics, open goals, warnings, or `sorry`.
 - Surface missing assumptions or ambiguous math instead of hiding them.

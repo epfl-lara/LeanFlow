@@ -1783,7 +1783,80 @@ def _queue_edit_snapshot_required(function_name: str, args: Mapping[str, Any] | 
     return False
 
 
+def _resolve_project_path(raw_path: str) -> Path | None:
+    path_text = str(raw_path or "").strip()
+    if not path_text:
+        return None
+    try:
+        path = Path(path_text).expanduser()
+        if not path.is_absolute():
+            path = Path(_project_root()) / path
+        return path.resolve()
+    except Exception:
+        return None
+
+
+def _document_formalization_target_path() -> Path | None:
+    if not _document_formalization_requested():
+        return None
+    return _resolve_project_path(_read_text_env("EPFLEMMA_FORMALIZATION_TARGET_FILE", ""))
+
+
+def _tool_edit_paths(function_name: str, args: Mapping[str, Any] | None) -> list[Path]:
+    data = dict(args or {})
+    raw_paths: list[str] = []
+    if function_name in {"write_file", "apply_verified_patch"}:
+        raw_paths.append(str(data.get("path", "") or ""))
+    elif function_name == "patch":
+        mode = str(data.get("mode", "replace") or "replace")
+        if mode == "replace":
+            raw_paths.append(str(data.get("path", "") or ""))
+        elif mode == "patch":
+            patch_text = str(data.get("patch", "") or "")
+            raw_paths.extend(
+                match.group(1).strip()
+                for match in re.finditer(
+                    r"^\*\*\* (?:Add|Update|Delete) File: (.+)$",
+                    patch_text,
+                    flags=re.MULTILINE,
+                )
+            )
+    resolved = [_resolve_project_path(raw) for raw in raw_paths if raw]
+    return [path for path in resolved if path is not None]
+
+
+def _document_formalization_pre_tool_guard(function_name: str, args: Mapping[str, Any] | None) -> str | None:
+    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+        return None
+    target_path = _document_formalization_target_path()
+    if target_path is None:
+        return None
+    try:
+        touches_target = any(path.resolve() == target_path for path in _tool_edit_paths(function_name, args))
+    except Exception:
+        touches_target = False
+    if not touches_target or not _document_formalization_needs_blueprint_plan():
+        return None
+    blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                "Document formalization must update the planner blueprint before editing the target Lean file. "
+                "Replace the preflight `_pending_` entries with planned declaration names, dependencies, split "
+                "lemmas, and proof notes, then retry the Lean draft."
+            ),
+            "target": _relative_project_file_label(target_path),
+            "blueprint": blueprint,
+        },
+        ensure_ascii=False,
+    )
+
+
 def _managed_pre_tool_call(agent: Any, function_name: str, args: Mapping[str, Any] | None) -> str | None:
+    formalization_guard = _document_formalization_pre_tool_guard(function_name, args)
+    if formalization_guard:
+        return formalization_guard
     if not _single_queue_item_turn_enabled() or _agent_interrupted(agent):
         return None
     if not _queue_edit_snapshot_required(function_name, args):
@@ -2441,7 +2514,7 @@ def _formalization_document_startup_block() -> str:
         [
             "",
             "Start in planner mode: read the document context, inspect the source document, create/update the blueprint, "
-            "draft well-scoped Lean declarations with source comments, verify statement fidelity, then let the normal "
+            "draft well-scoped Lean declarations, verify statement fidelity, then let the normal "
             "proof queue eliminate the resulting `sorry` placeholders.",
         ]
     )
@@ -5776,6 +5849,8 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
         return False
     if _document_formalization_needs_planner_draft(active_file):
         return False
+    if _document_formalization_needs_blueprint_plan():
+        return False
     # The final-sweep warning-cleanup gate granted a one-shot cleanup turn;
     # the file is NOT fully verified until that turn runs (or is bypassed
     # by the no-regression path on the next promote pass). Without this
@@ -5829,7 +5904,32 @@ def _document_formalization_needs_planner_draft(active_file: str) -> bool:
     )
     if has_declaration:
         return False
-    return "EPFLemma created this file as the active formalization target" in text
+    non_import_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("--") and not line.lstrip().startswith("import ")
+    ]
+    if not non_import_lines:
+        return True
+    return "EPFLemma formalization target scaffold" in text or "EPFLemma created this file as the active formalization target" in text
+
+
+def _document_formalization_needs_blueprint_plan() -> bool:
+    if not _document_formalization_requested():
+        return False
+    blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    if not blueprint:
+        return True
+    try:
+        text = Path(blueprint).read_text(encoding="utf-8")
+    except Exception:
+        return True
+    lowered = text.lower()
+    return (
+        "planner preflight created" in lowered
+        or "planned lean declarations: _pending_" in lowered
+        or "dependencies: _pending_" in lowered
+    )
 
 
 def _module_name_for_file(active_file: str) -> str:
@@ -5997,6 +6097,10 @@ def _promote_live_state_to_verified(
     if _document_formalization_needs_planner_draft(active_file):
         normalized["blocker_summary"] = "document formalization planner has not drafted Lean declarations yet"
         normalized["build_status"] = normalized.get("build_status") or "waiting for document formalization draft"
+        return normalized
+    if _document_formalization_needs_blueprint_plan():
+        normalized["blocker_summary"] = "document formalization blueprint has not been updated from the preflight placeholder"
+        normalized["build_status"] = normalized.get("build_status") or "waiting for document formalization blueprint plan"
         return normalized
     declaration_scope = str(normalized.get("declaration_scope", "") or _declaration_queue_scope())
     diagnostics = str(normalized.get("diagnostics", "") or "")

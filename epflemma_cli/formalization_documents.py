@@ -441,19 +441,19 @@ def _render_context_markdown(
         "2. Use `formalization_document_inspect` for deterministic re-inspection when the source is a .tex or .pdf file.",
         "3. Search local project facts and Mathlib before inventing names or definitions.",
         "4. Use web search only for references or surrounding literature that the source document actually points to.",
-        "5. Create or update the planner blueprint first, recording definitions, lemmas, theorem dependencies, source pointers, and proof notes.",
+        "5. Create or update the planner blueprint before drafting Lean, recording definitions, lemmas, theorem dependencies, source pointers, and proof notes. The initial `_pending_` blueprint is only a placeholder and does not satisfy the workflow.",
         "6. Draft Lean files in small units with stable names, minimal imports, and `sorry` only where the prover queue should take over.",
-        "7. Verify that the drafted declarations typecheck and that each formal statement matches the original source claim before moving into proof repair.",
+        "7. Lean import discipline is mandatory: every generated Lean file must begin with all `import` commands before any `/-! ... -/` module doc comment or declaration.",
+        "8. Verify that the drafted declarations typecheck and that each formal statement matches the original source claim before moving into proof repair.",
         "",
-        "Required source comments above every generated Lean declaration:",
-        "- a short natural-language statement copied or paraphrased from the document",
-        "- the source pointer, such as section, theorem label, page, or equation number",
-        "- dependency/proof notes from the blueprint when useful",
-        "- any intentional scope changes; do not silently weaken or strengthen the source theorem",
+        "Statement fidelity:",
+        "- keep source pointers, ambiguity notes, dependencies, and proof notes in the planner blueprint",
+        "- do not silently weaken or strengthen the source theorem",
+        "- avoid adding Lean comments unless they clarify a concrete formalization choice",
         "",
         "Proof phase:",
         "- After the declaration skeleton is stable, use the normal managed Lean queue to eliminate `sorry` one declaration at a time.",
-        "- Keep comments and blueprint entries aligned when a theorem is split or renamed.",
+        "- Keep blueprint entries aligned when a theorem is split or renamed.",
         "- Completion still requires clean diagnostics, no open goals, no `sorry` in the requested scope, and final Lean verification.",
         "",
         "Blueprint format:",
@@ -502,6 +502,9 @@ def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata
         "- [ ] Verify drafted Lean statements match the source document.",
         "- [ ] Hand stable `sorry` declarations to the managed prover queue.",
         "",
+        "Replace all `_pending_` entries before drafting Lean. The managed workflow treats this initial",
+        "blueprint as a placeholder, not as a completed plan.",
+        "",
         "## Source Statement Inventory",
         "",
     ]
@@ -525,17 +528,8 @@ def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata
     return "\n".join(lines).strip() + "\n"
 
 
-def _initial_target_lean(source_relative: str, blueprint_relative: str) -> str:
-    return (
-        "/-!\n"
-        "# Document formalization draft\n\n"
-        f"Source document: `{source_relative}`\n"
-        f"Planner blueprint: `{blueprint_relative}`\n\n"
-        "EPFLemma created this file as the active formalization target. The planner should\n"
-        "replace this scaffold with definitions, lemmas, and theorems. Every generated\n"
-        "declaration should have a source comment immediately above it.\n"
-        "-/\n"
-    )
+def _initial_target_lean(_source_relative: str, _blueprint_relative: str, import_module: str) -> str:
+    return f"import {import_module}\n"
 
 
 def prepare_formalization_document_context(
@@ -554,6 +548,8 @@ def prepare_formalization_document_context(
     slug = _safe_slug(Path(source_relative).with_suffix("").as_posix().replace("/", "-"))
     state_dir = root / ".epflemma" / "workflow-state" / "formalization" / slug
     target_lean_path = _default_target_lean_path(root, project_label, source_path)
+    module_name = _safe_name(project_label or root.name, "Formalization")
+    import_module = module_name if (root / module_name).is_dir() else "Mathlib"
     target_lean_relative = _relative_to_project(target_lean_path, root) if target_lean_path.exists() else str(target_lean_path.relative_to(root))
     context_path = state_dir / "context.md"
     manifest_path = state_dir / "manifest.json"
@@ -586,7 +582,10 @@ def prepare_formalization_document_context(
             blueprint_relative = str(blueprint_path.resolve().relative_to(root.resolve()))
         except Exception:
             blueprint_relative = str(blueprint_path)
-        target_lean_path.write_text(_initial_target_lean(source_relative, blueprint_relative), encoding="utf-8")
+        target_lean_path.write_text(
+            _initial_target_lean(source_relative, blueprint_relative, import_module),
+            encoding="utf-8",
+        )
     context_path.write_text(
         _render_context_markdown(
             source_relative=source_relative,

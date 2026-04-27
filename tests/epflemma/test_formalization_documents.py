@@ -56,14 +56,19 @@ def test_prepare_formalization_document_context_creates_planner_artifacts(tmp_pa
     assert context.blueprint_path.is_file()
     assert context.target_lean_path.is_file()
 
+    target_text = context.target_lean_path.read_text(encoding="utf-8")
+    assert target_text == "import Demo\n"
+
     startup_context = context.context_path.read_text(encoding="utf-8")
     assert "document formalization run" in startup_context
     assert "`thm:zero_good`" in startup_context
-    assert "source comments above every generated Lean declaration" in startup_context
+    assert "keep source pointers, ambiguity notes, dependencies, and proof notes in the planner blueprint" in startup_context
+    assert "must begin with all `import` commands" in startup_context
 
     blueprint = context.blueprint_path.read_text(encoding="utf-8")
     assert "thm:zero_good" in blueprint
     assert "Target Lean entry file" in blueprint
+    assert "Replace all `_pending_` entries before drafting Lean" in blueprint
 
     env = context.to_env()
     assert env["EPFLEMMA_WORKFLOW_CONTEXT"] == str(context.context_path)

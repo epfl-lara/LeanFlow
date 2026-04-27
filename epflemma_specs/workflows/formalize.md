@@ -50,7 +50,7 @@ The workflow resolver prepares:
 - an active Lean target file for the generated declarations
 - startup context that points to all of the above
 
-The active Lean target file is only the entry point. The planner may split work into additional Lean files when the blueprint justifies it, but it must keep imports, source comments, and blueprint references coherent.
+The active Lean target file is only the entry point. The planner may split work into additional Lean files when the blueprint justifies it, but it must keep imports and blueprint references coherent.
 
 ## Tool Order
 
@@ -69,9 +69,11 @@ The active Lean target file is only the entry point. The planner may split work 
 5. create or update the planner blueprint
    - list source statements, dependencies, planned Lean names, split lemmas, and proof notes
    - if a `blueprint/` directory or `leanblueprint` setup exists, keep a compatible TeX blueprint in sync where practical
+   - replace the preflight `_pending_` entries before drafting Lean; the initial blueprint is only an inventory placeholder
 6. draft or revise declarations in small verifiable steps
    - prefer one declaration or one local helper at a time
    - keep imports and dependencies minimal and explicit
+   - every generated Lean file must start with all `import` commands before any module doc comment, file overview, namespace, or declaration
 7. `lean_worker_dispatch`
    - use only when the route points to `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
 8. `lean_verify`
@@ -93,9 +95,9 @@ Prefer:
 - explicit intermediate lemmas over brittle monolithic tactics
 - local project naming and import patterns over fresh ad hoc style
 - small draft-and-verify increments over large speculative file rewrites
-- source comments immediately above every generated definition, lemma, theorem, or instance
 - stable source pointers: section, label, page, equation, or bibliography reference
 - a blueprint dependency plan before deep proof work
+- imports first in every generated Lean file; do not put `/-! ... -/` module docs above imports
 
 Avoid:
 
@@ -104,16 +106,20 @@ Avoid:
 - declaring victory after only drafting statements without proving them
 - silent theorem weakening or strengthening relative to the source document
 
-## Source Comments And Statement Fidelity
+## Statement Fidelity
 
-Every generated Lean declaration should be preceded by a short comment that includes:
+The planner blueprint should record:
 
 - the natural-language mathematical statement or definition from the document
 - the source pointer, such as theorem label, section, page, or equation number
 - relevant dependency/proof notes from the planner blueprint
 - any intentional scope change, generalization, specialization, or assumption added for Lean
 
-Before moving from planning to proving, verify that each Lean statement still matches the source claim. If the document statement is ambiguous, record the ambiguity in the blueprint and in the source comment rather than hiding it in the Lean signature.
+Before moving from planning to proving, verify that each Lean statement still matches the source claim. If the document statement is ambiguous, record the ambiguity in the blueprint rather than hiding it in the Lean signature.
+
+The preflight blueprint is not a completed plan. Update it with planned Lean declaration names, dependencies, split lemmas, and proof notes before writing the main Lean draft.
+
+Do not place generated module-level documentation before imports. It is acceptable, and usually preferred, to omit generated Lean documentation entirely and keep planning prose in the blueprint.
 
 ## Header Stability And Redraft
 
