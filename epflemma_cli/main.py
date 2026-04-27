@@ -1006,6 +1006,16 @@ class InteractiveShell:
             "snapshot_present": bool(current_status.get("snapshot_present", False)),
             "held_locks": int(current_status.get("held_locks", 0) or 0),
         }
+        if plan.formalization_document is not None:
+            status_payload.update(
+                {
+                    "formalization_document": plan.formalization_document.source_relative,
+                    "formalization_document_kind": plan.formalization_document.source_kind,
+                    "formalization_context": str(plan.formalization_document.context_path),
+                    "formalization_blueprint": str(plan.formalization_document.blueprint_path),
+                    "formalization_target_file": plan.formalization_document.target_lean_relative,
+                }
+            )
         save_workflow_live_status(status_payload)
         _, process = spawn_workflow(
             raw,

@@ -86,7 +86,7 @@ def build_welcome_banner(
         right.add_row(f"[bold {BRAND_COLORS['primary']}]Start Here[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/project init[/]  [dim]register this Lean repo[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/prove Main.lean[/]  [dim]autonomous proving loop[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/formalize \"statement\"[/]  [dim]autonomous formalization[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/formalize docs/paper.tex[/]  [dim]document formalization[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/project[/]  [dim]current Lean workspace[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/help[/]  [dim]all commands[/]")
     else:
@@ -94,7 +94,7 @@ def build_welcome_banner(
         right.add_row(f"[{BRAND_COLORS['text']}]/project init[/]  [dim]register an existing Lean 4 repo[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/prove Main.lean[/]  [dim]autonomous proving loop[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/prove Main.lean --agents 3[/]  [dim]user-approved Lean swarm[/]")
-        right.add_row(f"[{BRAND_COLORS['text']}]/formalize \"statement\"[/]  [dim]autonomous formalization[/]")
+        right.add_row(f"[{BRAND_COLORS['text']}]/formalize docs/paper.tex[/]  [dim]document formalization[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/project[/]  [dim]show current Lean workspace[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/status[/]  [dim]live project and runner state[/]")
         right.add_row(f"[{BRAND_COLORS['text']}]/swarm[/]  [dim]active workflow agents and recent output[/]")
@@ -352,6 +352,10 @@ def render_workflow_launch(console: Console, *, launch_summary: dict[str, str]) 
     table.add_row("Model", launch_summary.get("model", ""))
     table.add_row("Skill", launch_summary.get("skill", ""))
     table.add_row("Agents", launch_summary.get("agents", "1"))
+    if launch_summary.get("document"):
+        table.add_row("Document", launch_summary.get("document", ""))
+    if launch_summary.get("target_file"):
+        table.add_row("Target file", launch_summary.get("target_file", ""))
     table.add_row("Base URL", launch_summary.get("base_url", ""))
     console.print(Panel(table, title=f"[bold {BRAND_COLORS['primary']}]Launching Workflow[/]", subtitle="[dim]managed Lean execution plan[/]", border_style=BRAND_COLORS["panel"], box=box.SQUARE))
 

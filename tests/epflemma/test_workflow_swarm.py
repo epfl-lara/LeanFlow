@@ -12,6 +12,17 @@ from epflemma_cli.workflow import (
     rewrite_forgiving_workflow_command,
 )
 from epflemma_cli.config import save_config
+from epflemma_cli.formalization_documents import FormalizationDocumentError
+
+
+def _write_formalization_source(project: Path, relative: str = "docs/paper.tex") -> Path:
+    path = project / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\\section{Main}\\begin{theorem}\\label{thm:toy}True.\\end{theorem}\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def test_parse_workflow_command_extracts_swarm_options():
@@ -267,6 +278,7 @@ def test_parse_workflow_command_no_workflow_args_when_only_command():
 # --- skill selection ---
 
 def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(monkeypatch, tmp_path):
+    _write_formalization_source(tmp_path)
     monkeypatch.setattr(
         workflow_mod,
         "discover_epflemma_project",
@@ -284,10 +296,63 @@ def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(mo
         },
     )
 
-    plan = resolve_workflow_request("/formalize \"state Lipschitz theorem\"", active_cwd=tmp_path)
+    plan = resolve_workflow_request("/formalize docs/paper.tex", active_cwd=tmp_path)
 
     assert plan.active_skill == "lean-formalization"
     assert plan.toolset_name == "epflemma-native"
+    assert plan.formalization_document is not None
+    assert plan.child_env["EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE"] == "docs/paper.tex"
+    assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Formalization/Paper.lean"
+
+
+def test_resolve_workflow_request_requires_document_for_formalize(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_epflemma_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "local",
+            "api_mode": "responses",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "sk-test",
+            "model": "google/gemma-4-31B-it",
+        },
+    )
+
+    with pytest.raises(FormalizationDocumentError, match="requires a project-local"):
+        resolve_workflow_request("/formalize \"state Lipschitz theorem\"", active_cwd=tmp_path)
+
+
+def test_resolve_workflow_request_preserves_explicit_swarm_for_document_formalize(monkeypatch, tmp_path):
+    _write_formalization_source(tmp_path)
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_epflemma_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "local",
+            "api_mode": "responses",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "sk-test",
+            "model": "google/gemma-4-31B-it",
+        },
+    )
+
+    plan = resolve_workflow_request("/autoformalize docs/paper.tex --agents 3", active_cwd=tmp_path)
+
+    assert plan.workflow.workflow_kind == "formalize"
+    assert plan.workflow.parallel_agents == 3
+    assert plan.active_skill == "lean-autonomous-swarm"
+    assert plan.toolset_name == "epflemma-native-swarm"
+    assert plan.child_env["EPFLEMMA_NATIVE_USER_APPROVED_SWARM"] == "1"
 
 
 def test_all_workflow_aliases_are_covered_by_alias_map():

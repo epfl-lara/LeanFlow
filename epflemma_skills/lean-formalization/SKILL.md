@@ -13,15 +13,17 @@ Primary specs:
 
 ## Tool Order
 
-1. `lean_capabilities`
-2. `lean_inspect`
-3. `lean_search`
-4. `lean_proof_context`, `lean_auto_probe`, `lean_auto_search`, or `lean_auto_try` only when a drafted declaration is blocked and theorem-local automation is justified
-5. draft the declaration or helper lemma
-6. `patch` or `write_file` for managed Lean file edits; the queue manager verifies successful edits against the current gate
-7. `apply_verified_patch` only when you specifically need a single atomic patch/checkpoint/verification result
-8. `lean_verify` for final broader verification when the manager gate did not cover the requested scope
-9. `lean_worker_dispatch` when the router recommends `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
+1. `formalization_document_inspect` when `/formalize` provided a source `.tex` or `.pdf`
+2. `lean_capabilities`
+3. `lean_inspect`
+4. `lean_search`
+5. create or update the planner blueprint before deep proof work
+6. `lean_proof_context`, `lean_auto_probe`, `lean_auto_search`, or `lean_auto_try` only when a drafted declaration is blocked and theorem-local automation is justified
+7. draft the declaration or helper lemma
+8. `patch` or `write_file` for managed Lean file edits; the queue manager verifies successful edits against the current gate
+9. `apply_verified_patch` only when you specifically need a single atomic patch/checkpoint/verification result
+10. `lean_verify` for final broader verification when the manager gate did not cover the requested scope
+11. `lean_worker_dispatch` when the router recommends `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
 
 ## Guardrails
 
@@ -30,5 +32,7 @@ Primary specs:
 - In managed queue workflows, prefer `patch`/`write_file` because the runner records the automatic post-edit `lean_incremental_check(check_target)` result and falls back to Lake only when needed. Use `apply_verified_patch` for compatibility or when its pre-edit checkpoint payload is specifically useful.
 - Prefer focused `lean_verify` module checks when close to clean; reserve full-project verification for milestone checks.
 - Prefer explicit intermediate lemmas over brittle proof scripts.
+- For document formalization, add a source comment immediately above every generated declaration with the informal statement, source pointer, and useful proof/dependency notes.
+- Keep the generated blueprint aligned with declaration names, split lemmas, source labels, and statement-fidelity decisions.
 - Do not declare success while the requested scope still has diagnostics, open goals, warnings, or `sorry`.
 - Surface missing assumptions or ambiguous math instead of hiding them.

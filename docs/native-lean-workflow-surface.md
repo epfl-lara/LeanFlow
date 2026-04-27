@@ -20,6 +20,8 @@ EPFLemma normalizes the public Lean workflow commands to these internal workflow
 
 The auto-prefixed forms are aliases only. They are not separate runtimes or policy bundles.
 
+`/formalize` and `/autoformalize` require a project-local `.tex` or `.pdf` source document path. The resolver prepares document preflight artifacts and an active Lean target file before the native runner starts.
+
 ## Specs Are The Contract
 
 The canonical contract lives in markdown-backed specs under:
@@ -48,9 +50,11 @@ Worker specs currently shipped:
 
 Skills remain the routing layer, but the prompt builder, doctor, router, and Lean tools all read the same spec metadata. `epflemma_cli/lean_workflow_specs.py` validates alias collisions and unknown worker references in tests.
 
-## Native Lean Tools
+## Native Lean And Document Tools
 
 The repo-owned Lean tool surface is defined in `tools/lean_tool.py` and backed by `epflemma_cli/lean_services.py`.
+
+Document formalization also exposes `formalization_document_inspect` from `tools/document_tool.py`, backed by `epflemma_cli/formalization_documents.py`. It inspects project-local `.tex` and `.pdf` sources, extracts LaTeX sections/theorem-like environments and PDF text metadata when local tools are available, and reports degraded extraction reasons.
 
 - `lean_capabilities`
   - project validity
@@ -206,6 +210,23 @@ Parallelism policy:
 - default `/prove` uses one managed agent and one assigned file at a time
 - parallel agents are only enabled by explicit user flags such as `--agents 3`
 - explicit file workflows with a file argument continue to force file-local handling instead of becoming project scheduling runs
+
+## Document Formalization Preflight
+
+`/formalize docs/paper.tex` and `/autoformalize docs/paper.pdf` normalize to the same `formalize` workflow.
+
+Before launch, the resolver:
+
+1. requires the source path to exist inside the active EPFLemma project
+2. accepts only `.tex` and `.pdf`
+3. creates `.epflemma/workflow-state/formalization/<source>/manifest.json`
+4. creates `.epflemma/workflow-state/formalization/<source>/extracted.txt`
+5. creates `.epflemma/workflow-state/formalization/<source>/blueprint.md`
+6. creates an active Lean target file if it does not already exist
+7. sets `EPFLEMMA_WORKFLOW_CONTEXT` so the runner prompt includes the document contract
+8. sets `EPFLEMMA_NATIVE_ACTIVE_FILE` to the generated target file so the normal theorem queue can take over once the planner drafts `sorry` declarations
+
+The generated Markdown blueprint is the default planning artifact. If a project already has `blueprint/` or `leanblueprint` available, the planner should keep that TeX blueprint in sync with the generated declaration names and dependency labels.
 
 ## Doctor And MCP
 

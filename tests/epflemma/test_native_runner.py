@@ -3553,6 +3553,32 @@ def test_live_state_is_verified_for_file_scope_even_if_project_has_other_sorries
     assert runner._live_state_is_verified(live_state) is True
 
 
+def test_document_formalization_scaffold_is_not_verified_before_planner_drafts(monkeypatch, tmp_path):
+    active = tmp_path / "Formalization" / "Paper.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text(
+        "/-!\n"
+        "EPFLemma created this file as the active formalization target.\n"
+        "-/\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+
+    live_state = {
+        "active_file": str(active),
+        "declaration_scope": "file",
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake env lean Formalization/Paper.lean succeeded",
+        "verification_ok": True,
+        "sorry_count": 0,
+        "project_sorry_count": 0,
+    }
+
+    assert runner._live_state_is_verified(live_state) is False
+
+
 def test_live_state_is_not_verified_without_explicit_verification_result():
     live_state = {
         "active_file": "/tmp/project/Main.lean",
@@ -3666,6 +3692,41 @@ def test_promote_live_state_uses_focused_build_before_full_project_build(monkeyp
     assert promoted["build_status"] == "lake build Main reported errors: unresolved import"
     assert promoted["verification_ok"] is False
     assert runner._live_state_is_verified(promoted) is False
+
+
+def test_promote_document_formalization_scaffold_waits_for_planner(monkeypatch, tmp_path):
+    active = tmp_path / "Formalization" / "Paper.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text(
+        "/-!\n"
+        "EPFLemma created this file as the active formalization target.\n"
+        "-/\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+
+    calls = []
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda *args, **kwargs: calls.append(args) or (True, "ok"),
+    )
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "",
+            "sorry_count": 0,
+        }
+    )
+
+    assert calls == []
+    assert promoted["verification_ok"] is False
+    assert "planner has not drafted" in promoted["blocker_summary"]
 
 
 def test_promote_live_state_accepts_warning_only_final_file_sweep(monkeypatch, tmp_path):

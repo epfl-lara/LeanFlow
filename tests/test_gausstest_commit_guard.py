@@ -37,6 +37,27 @@ def test_pre_commit_blocks_gausstest_fixture_changes(tmp_path):
     assert "ALLOW_GAUSSTEST_COMMIT=1" in result.stderr
 
 
+def test_pre_commit_blocks_doc_formalization_demo_fixture_changes(tmp_path):
+    repo = _init_temp_repo(tmp_path)
+    target = (
+        repo
+        / "testdata"
+        / "workflow_projects"
+        / "DocFormalizationDemo"
+        / "docs"
+        / "Hamming74SingleErrorCorrection.tex"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\\title{changed}\n", encoding="utf-8")
+
+    assert _run(["git", "add", str(target.relative_to(repo))], repo).returncode == 0
+    result = _run(["git", "commit", "-m", "test"], repo)
+
+    assert result.returncode != 0
+    assert "DocFormalizationDemo" in result.stderr
+    assert "ALLOW_DOCFORMALIZATIONDEMO_COMMIT=1" in result.stderr
+
+
 def test_pre_commit_allows_explicit_override(tmp_path):
     repo = _init_temp_repo(tmp_path)
     target = repo / "testdata" / "workflow_projects" / "GaussTest" / "GaussTest" / "RealTheorems.lean"
@@ -46,6 +67,27 @@ def test_pre_commit_allows_explicit_override(tmp_path):
     assert _run(["git", "add", str(target.relative_to(repo))], repo).returncode == 0
     env = dict(os.environ)
     env["ALLOW_GAUSSTEST_COMMIT"] = "1"
+    result = _run(["git", "commit", "-m", "test"], repo, env=env)
+
+    assert result.returncode == 0
+
+
+def test_pre_commit_allows_doc_formalization_demo_explicit_override(tmp_path):
+    repo = _init_temp_repo(tmp_path)
+    target = (
+        repo
+        / "testdata"
+        / "workflow_projects"
+        / "DocFormalizationDemo"
+        / "docs"
+        / "Hamming74SingleErrorCorrection.tex"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\\title{changed}\n", encoding="utf-8")
+
+    assert _run(["git", "add", str(target.relative_to(repo))], repo).returncode == 0
+    env = dict(os.environ)
+    env["ALLOW_DOCFORMALIZATIONDEMO_COMMIT"] = "1"
     result = _run(["git", "commit", "-m", "test"], repo, env=env)
 
     assert result.returncode == 0

@@ -61,7 +61,7 @@ Run the main workflows:
 
 ```bash
 epflemma workflow prove Main.lean
-epflemma workflow formalize "Define the object and prove the first lemma"
+epflemma workflow formalize docs/paper.tex
 ```
 
 Start the interactive shell:
@@ -75,7 +75,7 @@ Inside the shell, the most useful commands are:
 ```text
 /prove
 /prove Main.lean
-/formalize "state the theorem"
+/formalize docs/paper.tex
 /goals
 /diagnostics
 /proof-state
@@ -93,7 +93,7 @@ The shell also accepts forgiving forms without the leading slash:
 
 ```text
 prove Main.lean
-formalize "formalize this statement"
+formalize docs/paper.tex
 ```
 
 ## What EPFLemma Tries To Guarantee
@@ -108,12 +108,14 @@ formalize "formalize this statement"
 
 For project-scoped work, `/prove` without a file starts the project prove manager. It scans Lean files with remaining `sorry`, ranks them with candidate-to-candidate dependency analysis, theorem difficulty, local hints/examples, bounded source context, and length signals, asks the configured LLM for a prioritized file order when available, records that plan, and then assigns one file at a time to the existing `/prove SomeFile.lean` path. Parallel agents stay disabled unless the user explicitly opts into swarm mode.
 
+For document formalization, `/formalize` requires a project-local `.tex` or `.pdf` source path. EPFLemma creates a preflight manifest, extracted-text cache, Markdown planner blueprint, and active Lean target file under the project, then asks the agent to plan definitions/lemmas/theorems with source comments before handing stable `sorry` declarations to the normal proof queue.
+
 For file-scoped work, EPFLemma drives the agent one declaration at a time. The runner owns the queue, refreshes diagnostics after edits, records failed attempts per theorem, and advances only when Lean verification says the current target is clean. Same-file queue steps use the LeanInteract-backed incremental verifier first, so imports/header state and prior declaration environments stay warm; Lake remains the final file/project sweep and fallback gate. If a theorem turn exhausts its API-step budget, the runner records that as a failed attempt, comments the failed declaration in the Lean file, and restores the original safe `sorry` body when it has an exact baseline slice; the theorem remains pending for the next queue cycle.
 
 ## Main Workflows
 
 - `prove`: repair and complete existing Lean proofs.
-- `formalize`: turn mathematical intent into Lean declarations and verified proofs.
+- `formalize`: turn a project-local LaTeX/PDF source document into planned Lean declarations and verified proofs.
 - `draft`: create Lean declarations and proof skeletons.
 - `review`: inspect blockers, diagnostics, goals, and remaining `sorry`.
 - `checkpoint`: summarize workflow state for resume or handoff.
@@ -198,7 +200,7 @@ Use swarm mode only when you explicitly want concurrent Lean work:
 
 ```bash
 epflemma workflow prove Main.lean --agents 3
-epflemma workflow formalize "formalize theorem X" --agents 3
+epflemma workflow formalize docs/paper.tex --agents 3
 ```
 
 Swarm mode activates file-lock-aware delegation. Locks are stored in `.epflemma/workflow-state/file_locks.json`, and normal file write tools reject edits when another agent owns the file.
