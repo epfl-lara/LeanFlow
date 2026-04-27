@@ -25,7 +25,7 @@ cd testdata/workflow_projects/DocFormalizationDemo
 lake update
 lake build
 epflemma project init
-epflemma workflow formalize docs/Hamming74SingleErrorCorrection.tex
+epflemma workflow formalize docs/RecountingTheRationals.tex
 ```
 
 Commit guard:

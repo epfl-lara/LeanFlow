@@ -93,25 +93,28 @@ def test_doc_formalization_demo_fixture_is_parseable():
     project = repo_root / "testdata" / "workflow_projects" / "DocFormalizationDemo"
 
     payload = inspect_formalization_document(
-        "docs/Hamming74SingleErrorCorrection.tex",
+        "docs/RecountingTheRationals.tex",
         project_root=project,
         cwd=project,
     )
 
     assert payload["success"] is True
     assert payload["source_kind"] == "latex"
-    assert payload["title"] == "A Hamming(7,4) Single-Error-Correction Target"
+    assert payload["title"] == "A Calkin-Wilf Tree Formalization Target"
     labels = [item["label"] for item in payload["theorem_blocks"]]
     assert labels == [
-        "def:binary_word",
-        "def:hamming_distance",
-        "def:hamming74_encoder",
-        "lem:encoded_syndrome_zero",
-        "lem:no_small_nonzero_codeword",
-        "thm:hamming74_min_distance",
-        "lem:radius_one_balls_disjoint",
-        "thm:single_error_correction_unique",
-        "cor:message_unique",
+        "def:reduced_positive_fraction",
+        "def:calkin_wilf_children",
+        "def:calkin_wilf_node",
+        "def:calkin_wilf_parent",
+        "lem:children_reduced",
+        "lem:unique_parent",
+        "lem:parent_decreases_sum",
+        "lem:parent_iterates_to_root",
+        "thm:every_fraction_has_address",
+        "thm:calkin_wilf_address_unique",
+        "thm:calkin_wilf_bijection",
+        "cor:breadth_first_enumeration",
     ]
 
 
