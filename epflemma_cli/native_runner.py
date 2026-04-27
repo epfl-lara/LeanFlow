@@ -6196,7 +6196,7 @@ def _valid_lean_module_name(value: str) -> bool:
 
 def _blueprint_import_plan_section(text: str) -> str:
     match = re.search(
-        r"^##+\s+Lean Import Plan\s*$\n(?P<body>.*?)(?=^##+\s+|\Z)",
+        r"^##\s+Lean Import Plan\s*$\n(?P<body>.*?)(?=^##\s+|\Z)",
         str(text or ""),
         flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
     )
@@ -6254,6 +6254,137 @@ def _document_formalization_manifest_labels() -> list[str]:
         if label and label not in labels:
             labels.append(label)
     return labels
+
+
+def _document_formalization_manifest_blocks() -> list[dict[str, str]]:
+    manifest = _read_text_env("EPFLEMMA_FORMALIZATION_MANIFEST", "").strip()
+    if not manifest:
+        return []
+    try:
+        payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    blocks: list[dict[str, str]] = []
+    for block in payload.get("theorem_blocks", []) or []:
+        if not isinstance(block, Mapping):
+            continue
+        label = str(block.get("label", "") or "").strip()
+        if not label:
+            continue
+        blocks.append(
+            {
+                "label": label,
+                "kind": str(block.get("kind", "") or "").strip().lower(),
+            }
+        )
+    return blocks
+
+
+def _blueprint_source_inventory_entries(text: str) -> dict[str, str]:
+    section = re.search(
+        r"^##\s+Source Statement Inventory\s*$\n(?P<body>.*?)(?=^##\s+|\Z)",
+        str(text or ""),
+        flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    if not section:
+        return {}
+    body = str(section.group("body") or "")
+    entries: dict[str, str] = {}
+    matches = list(
+        re.finditer(
+            r"^###\s+(?P<label>[^\n]+?)\s*$",
+            body,
+            flags=re.MULTILINE,
+        )
+    )
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        label = str(match.group("label") or "").strip()
+        if label:
+            entries[label] = body[start:end].strip()
+    return entries
+
+
+def _blueprint_bullet_value(entry: str, label: str) -> str:
+    match = re.search(
+        rf"^\s*-\s*{re.escape(label)}\s*:\s*(?P<value>.*?)\s*$",
+        str(entry or ""),
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    return str(match.group("value") or "").strip() if match else ""
+
+
+def _blueprint_value_missing(value: str) -> bool:
+    lowered = str(value or "").strip().lower()
+    return not lowered or lowered in {"_pending_", "pending", "todo", "tbd"}
+
+
+def _lean_decl_names_from_planned_value(value: str) -> list[str]:
+    names: list[str] = []
+
+    def _add(raw: str) -> None:
+        candidate = str(raw or "").strip()
+        candidate = candidate.split(":", 1)[0].strip()
+        candidate = candidate.split(" ", 1)[0].strip()
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_'.]*$", candidate) and candidate not in names:
+            names.append(candidate)
+
+    for span in re.findall(r"`([^`]+)`", str(value or "")):
+        _add(span)
+    if not names:
+        for chunk in re.split(r"[,;]|\band\b", str(value or "")):
+            _add(chunk)
+    return names
+
+
+def _declaration_names_from_text(text: str) -> set[str]:
+    return {
+        str(entry.get("name", "") or "").strip()
+        for entry in _declaration_line_index_from_text(text)
+        if str(entry.get("name", "") or "").strip()
+    }
+
+
+def _document_formalization_blueprint_inventory_issues(
+    blueprint_text: str,
+    target_text: str,
+) -> list[str]:
+    issues: list[str] = []
+    entries = _blueprint_source_inventory_entries(blueprint_text)
+    target_decl_names = _declaration_names_from_text(target_text)
+    for block in _document_formalization_manifest_blocks():
+        label = block["label"]
+        kind = block["kind"]
+        entry = entries.get(label, "")
+        if not entry:
+            issues.append(f"blueprint is missing source inventory entry `{label}`")
+            continue
+        planned = _blueprint_bullet_value(entry, "Planned Lean declarations")
+        if _blueprint_value_missing(planned):
+            issues.append(f"blueprint entry `{label}` has no concrete planned Lean declarations")
+        else:
+            planned_names = _lean_decl_names_from_planned_value(planned)
+            if not planned_names:
+                issues.append(f"blueprint entry `{label}` planned declarations are not parseable")
+            else:
+                missing = [name for name in planned_names if name not in target_decl_names]
+                if missing:
+                    issues.append(
+                        f"blueprint entry `{label}` names declarations missing from target Lean file: "
+                        + ", ".join(f"`{name}`" for name in missing)
+                    )
+
+        review = _blueprint_bullet_value(entry, "Formal statement review")
+        if _blueprint_value_missing(review):
+            issues.append(f"blueprint entry `{label}` is missing a statement-fidelity review")
+
+        notes = _blueprint_bullet_value(entry, "Source proof / prover notes")
+        if _blueprint_value_missing(notes):
+            issues.append(f"blueprint entry `{label}` is missing source proof/prover notes")
+        if kind in {"theorem", "lemma", "proposition", "corollary"} and notes.lower() in {"none", "none needed", "n/a"}:
+            issues.append(f"blueprint entry `{label}` needs prover notes for its {kind}")
+    return issues
 
 
 def _root_module_file_for_module(module_name: str) -> tuple[str, Path] | None:
@@ -6322,9 +6453,7 @@ def _document_formalization_handoff_verification(
             )
 
     if blueprint_text:
-        for label in _document_formalization_manifest_labels():
-            if label not in blueprint_text:
-                issues.append(f"blueprint is missing source inventory entry `{label}`")
+        issues.extend(_document_formalization_blueprint_inventory_issues(blueprint_text, target_text))
 
         planned_imports = _blueprint_import_plan_imports(blueprint_text)
         if planned_imports:
