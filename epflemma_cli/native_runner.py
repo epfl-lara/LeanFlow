@@ -1825,7 +1825,41 @@ def _tool_edit_paths(function_name: str, args: Mapping[str, Any] | None) -> list
     return [path for path in resolved if path is not None]
 
 
-def _document_formalization_pre_tool_guard(function_name: str, args: Mapping[str, Any] | None) -> str | None:
+def _tool_proposed_edit_text(function_name: str, args: Mapping[str, Any] | None) -> str:
+    data = dict(args or {})
+    if function_name == "write_file":
+        return str(data.get("content", "") or "")
+    if function_name == "patch":
+        mode = str(data.get("mode", "replace") or "replace")
+        if mode == "replace":
+            return str(data.get("new_string", "") or "")
+        if mode == "patch":
+            return str(data.get("patch", "") or "")
+    if function_name == "apply_verified_patch":
+        return str(data.get("patch", "") or "")
+    return ""
+
+
+def _text_has_theorem_or_lemma(text: str) -> bool:
+    sanitized = _strip_lean_comments_and_strings(str(text or ""))
+    return bool(re.search(r"^\s*(?:@[A-Za-z0-9_.]+\s+)*(?:theorem|lemma|example)\b", sanitized, flags=re.MULTILINE))
+
+
+def _text_has_sorry(text: str) -> bool:
+    return bool(re.search(r"\bsorry\b", _strip_lean_comments_and_strings(str(text or ""))))
+
+
+def _document_formalization_planner_phase(agent: Any) -> bool:
+    autonomy_state = getattr(agent, "_managed_autonomy_state", {}) or {}
+    assignment = dict(dict(autonomy_state or {}).get("current_queue_assignment") or {})
+    return not bool(str(assignment.get("target_symbol", "") or "").strip())
+
+
+def _document_formalization_pre_tool_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+) -> str | None:
     if function_name not in {"patch", "write_file", "apply_verified_patch"}:
         return None
     target_path = _document_formalization_target_path()
@@ -1835,26 +1869,49 @@ def _document_formalization_pre_tool_guard(function_name: str, args: Mapping[str
         touches_target = any(path.resolve() == target_path for path in _tool_edit_paths(function_name, args))
     except Exception:
         touches_target = False
-    if not touches_target or not _document_formalization_needs_blueprint_plan():
+    if not touches_target:
         return None
     blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
-    return json.dumps(
-        {
-            "success": False,
-            "error": (
-                "Document formalization must update the planner blueprint before editing the target Lean file. "
-                "Replace the preflight `_pending_` entries with planned declaration names, dependencies, split "
-                "lemmas, and proof notes, then retry the Lean draft."
-            ),
-            "target": _relative_project_file_label(target_path),
-            "blueprint": blueprint,
-        },
-        ensure_ascii=False,
-    )
+    if _document_formalization_needs_blueprint_plan():
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    "Document formalization must update the planner blueprint before editing the target Lean file. "
+                    "Replace the preflight `_pending_` entries with planned declaration names, dependencies, split "
+                    "lemmas, statement-fidelity reviews, and source proof/prover notes, then retry the Lean draft."
+                ),
+                "target": _relative_project_file_label(target_path),
+                "blueprint": blueprint,
+            },
+            ensure_ascii=False,
+        )
+    proposed = _tool_proposed_edit_text(function_name, args)
+    if (
+        proposed
+        and _document_formalization_planner_phase(agent)
+        and _document_formalization_needs_planner_draft(str(target_path))
+        and _text_has_theorem_or_lemma(proposed)
+        and not _text_has_sorry(proposed)
+    ):
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    "The document formalization planner draft must leave theorem/lemma proofs as `sorry`. "
+                    "Put source proof strategy and prover hints in the nearby Blueprint.md, draft stable "
+                    "statements with `by sorry`, then let the managed prover queue solve them one at a time."
+                ),
+                "target": _relative_project_file_label(target_path),
+                "blueprint": blueprint,
+            },
+            ensure_ascii=False,
+        )
+    return None
 
 
 def _managed_pre_tool_call(agent: Any, function_name: str, args: Mapping[str, Any] | None) -> str | None:
-    formalization_guard = _document_formalization_pre_tool_guard(function_name, args)
+    formalization_guard = _document_formalization_pre_tool_guard(agent, function_name, args)
     if formalization_guard:
         return formalization_guard
     if not _single_queue_item_turn_enabled() or _agent_interrupted(agent):
@@ -1873,7 +1930,8 @@ def _managed_pre_tool_call(agent: Any, function_name: str, args: Mapping[str, An
                 "success": False,
                 "error": (
                     "Managed theorem queues do not allow terminal-based file edits. "
-                    "Use `patch` for a targeted edit inside the assigned declaration only."
+                    "Use `patch` for Lean edits; helper lemmas for the assigned theorem are allowed, "
+                    "but pre-existing future queue declarations must not be edited."
                 ),
             },
             ensure_ascii=False,
@@ -1885,6 +1943,16 @@ def _managed_pre_tool_call(agent: Any, function_name: str, args: Mapping[str, An
     entry = _find_declaration_entry(active_file, target_symbol)
     if not entry:
         return None
+    guard_key = _queue_edit_guard_key(target_symbol, active_file)
+    guard_state = dict(getattr(agent, "_managed_queue_edit_guard_state", {}) or {})
+    if guard_state.get("key") != guard_key:
+        guard_state = {
+            "key": guard_key,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "protected_declarations": _queue_edit_protected_declarations(before_text, target_symbol),
+        }
+        setattr(agent, "_managed_queue_edit_guard_state", guard_state)
     setattr(
         agent,
         "_managed_queue_edit_snapshot",
@@ -1894,9 +1962,117 @@ def _managed_pre_tool_call(agent: Any, function_name: str, args: Mapping[str, An
             "before_text": before_text,
             "start": int(entry.get("line", 0) or 0),
             "end": int(entry.get("end_line", 0) or 0),
+            "guard_key": guard_key,
+            "protected_declarations": guard_state.get("protected_declarations") or (),
         },
     )
     return None
+
+
+def _queue_edit_guard_key(target_symbol: str, active_file: str) -> str:
+    try:
+        resolved = str(Path(active_file).resolve())
+    except Exception:
+        resolved = str(active_file or "")
+    return f"{target_symbol}\0{resolved}"
+
+
+def _declaration_matches_target(entry: Mapping[str, Any], target_symbol: str) -> bool:
+    name = str(entry.get("name", "") or "").strip()
+    wanted = str(target_symbol or "").strip()
+    short = wanted.split(".")[-1]
+    return bool(name and wanted and name in {wanted, short})
+
+
+def _declaration_stable_key(entry: Mapping[str, Any]) -> tuple[str, str] | None:
+    kind = str(entry.get("kind", "") or "").strip()
+    name = str(entry.get("name", "") or "").strip()
+    if not kind or not name or name.startswith("[anonymous "):
+        return None
+    return (kind, name)
+
+
+def _queue_edit_protected_declarations(content: str, target_symbol: str) -> list[dict[str, Any]]:
+    protected: list[dict[str, Any]] = []
+    for entry in _declaration_line_index_from_text(content):
+        key = _declaration_stable_key(entry)
+        if key is None or _declaration_matches_target(entry, target_symbol):
+            continue
+        protected.append(
+            {
+                "kind": key[0],
+                "name": key[1],
+                "text": str(entry.get("text", "") or "").strip(),
+                "line": int(entry.get("line", 0) or 0),
+            }
+        )
+    return protected
+
+
+def _queue_edit_changed_protected_declarations(
+    protected_declarations: Sequence[Mapping[str, Any]],
+    current_text: str,
+) -> list[dict[str, Any]]:
+    current_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in _declaration_line_index_from_text(current_text):
+        key = _declaration_stable_key(entry)
+        if key is not None and key not in current_by_key:
+            current_by_key[key] = entry
+
+    changed: list[dict[str, Any]] = []
+    for protected in protected_declarations:
+        key = (str(protected.get("kind", "") or ""), str(protected.get("name", "") or ""))
+        if not key[0] or not key[1]:
+            continue
+        current = current_by_key.get(key)
+        if current is None:
+            changed.append({"reason": "missing", "protected": dict(protected)})
+            continue
+        if str(current.get("text", "") or "").strip() != str(protected.get("text", "") or "").strip():
+            changed.append({"reason": "changed", "protected": dict(protected), "current": current})
+    return changed
+
+
+def _restore_changed_protected_declarations(current_text: str, changed: Sequence[Mapping[str, Any]]) -> str | None:
+    if not changed:
+        return current_text
+    if any(str(item.get("reason", "") or "") == "missing" for item in changed):
+        return None
+    lines = current_text.splitlines()
+    replacements = sorted(
+        (dict(item) for item in changed),
+        key=lambda item: int(dict(item.get("current") or {}).get("line", 0) or 0),
+        reverse=True,
+    )
+    for item in replacements:
+        current = dict(item.get("current") or {})
+        protected = dict(item.get("protected") or {})
+        start = int(current.get("line", 0) or 0)
+        end = int(current.get("end_line", 0) or 0)
+        if start <= 0 or end < start:
+            return None
+        replacement_lines = str(protected.get("text", "") or "").splitlines()
+        lines = lines[: start - 1] + replacement_lines + lines[end:]
+    restored = "\n".join(lines)
+    if current_text.endswith("\n"):
+        restored += "\n"
+    return restored
+
+
+def _restore_assigned_declaration_against_before_text(
+    before_text: str,
+    current_slice: str,
+    *,
+    start: int,
+    end: int,
+) -> str:
+    before_lines = before_text.splitlines()
+    replacement_lines = current_slice.splitlines()
+    restored_lines = before_lines[: start - 1] + replacement_lines + before_lines[end:]
+    restored_text = "\n".join(restored_lines)
+    if before_text.endswith("\n"):
+        restored_text += "\n"
+    return restored_text
 
 
 def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
@@ -1912,6 +2088,10 @@ def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
     before_text = str(snapshot.get("before_text", "") or "")
     start = int(snapshot.get("start", 0) or 0)
     end = int(snapshot.get("end", 0) or 0)
+    if "protected_declarations" in snapshot:
+        protected_declarations = list(snapshot.get("protected_declarations") or ())
+    else:
+        protected_declarations = _queue_edit_protected_declarations(before_text, target_symbol)
     if not active_file or not target_symbol or not before_text or start <= 0 or end < start:
         return ""
     path = Path(active_file)
@@ -1930,28 +2110,43 @@ def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
         return (
             "[EPFLEMMA-NATIVE QUEUE EDIT GUARD]\n"
             f"The `{function_name}` edit removed or obscured the assigned declaration `{target_symbol}`. "
-            "The manager restored the file to its pre-tool state. Edit only the assigned declaration."
+            "The manager restored the file to its pre-tool state. Keep the assigned declaration present; "
+            "helper lemmas may be added without removing or renaming it."
         )
     current_slice = str(current_entry.get("text", "") or "").strip()
     if not current_slice:
         return ""
-    before_lines = before_text.splitlines()
-    replacement_lines = current_slice.splitlines()
-    restored_lines = before_lines[: start - 1] + replacement_lines + before_lines[end:]
-    restored_text = "\n".join(restored_lines)
-    if before_text.endswith("\n"):
-        restored_text += "\n"
+    changed_protected = _queue_edit_changed_protected_declarations(protected_declarations, current_text)
+    if not changed_protected:
+        return ""
+    restored_text = _restore_changed_protected_declarations(current_text, changed_protected)
+    restore_reason = "changed protected declarations outside the assigned declaration"
+    if restored_text is None:
+        restored_text = _restore_assigned_declaration_against_before_text(
+            before_text,
+            current_slice,
+            start=start,
+            end=end,
+        )
+        restore_reason = "removed or obscured protected declarations outside the assigned declaration"
     if restored_text == current_text:
         return ""
     try:
         path.write_text(restored_text, encoding="utf-8")
     except Exception:
         return ""
+    changed_names = ", ".join(
+        str(dict(item.get("protected") or {}).get("name", "") or "")
+        for item in changed_protected[:4]
+        if str(dict(item.get("protected") or {}).get("name", "") or "").strip()
+    )
+    detail = f" ({changed_names})" if changed_names else ""
     return (
         "[EPFLEMMA-NATIVE QUEUE EDIT GUARD]\n"
-        f"The `{function_name}` edit changed content outside the assigned declaration `{target_symbol}`. "
-        "The manager preserved the current assigned declaration body and restored all other declarations "
-        "to their pre-tool state. Do not edit future queue items in this theorem turn."
+        f"The `{function_name}` edit {restore_reason}{detail} while solving `{target_symbol}`. "
+        "The manager preserved the current assigned declaration body and restored those protected declarations. "
+        "Adding and iterating on new helper lemmas for this theorem is allowed; do not edit pre-existing "
+        "future queue items in this theorem turn."
     )
 
 
@@ -2514,8 +2709,9 @@ def _formalization_document_startup_block() -> str:
         [
             "",
             "Start in planner mode: read the document context, inspect the source document, create/update the blueprint, "
-            "draft well-scoped Lean declarations, verify statement fidelity, then let the normal "
-            "proof queue eliminate the resulting `sorry` placeholders.",
+            "draft well-scoped Lean declarations with `sorry` proofs for nontrivial theorem/lemma statements, "
+            "verify statement fidelity, then let the normal proof queue eliminate the resulting `sorry` placeholders. "
+            "During proof repair, reread the blueprint and original source document for proof strategy when needed.",
         ]
     )
     return "\n".join(lines)
@@ -3614,13 +3810,19 @@ def _declaration_line_index(active_file: str) -> list[dict[str, Any]]:
         return []
     path = Path(active_file)
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        content = path.read_text(encoding="utf-8")
     except Exception:
         return []
+    return _declaration_line_index_from_text(content)
+
+
+def _declaration_line_index_from_text(content: str) -> list[dict[str, Any]]:
+    lines = str(content or "").splitlines()
 
     entries: list[dict[str, Any]] = []
     pattern = re.compile(
-        r"^\s*(?:@[A-Za-z0-9_.]+\s+)*(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
+        r"^\s*(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial)\s+)*"
+        r"(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
     )
     for line_number, line in enumerate(lines, start=1):
         stripped = line.strip()
@@ -5927,8 +6129,7 @@ def _document_formalization_needs_blueprint_plan() -> bool:
     lowered = text.lower()
     return (
         "planner preflight created" in lowered
-        or "planned lean declarations: _pending_" in lowered
-        or "dependencies: _pending_" in lowered
+        or "_pending_" in lowered
     )
 
 

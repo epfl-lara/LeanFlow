@@ -45,12 +45,12 @@ Use `prove`, `review`, `checkpoint`, or `golf` for those cases. Use `draft` when
 The workflow resolver prepares:
 
 - a source-document preflight manifest
-- a Markdown planner blueprint
+- a Markdown planner blueprint next to the generated Lean files
 - a bounded extracted-text cache
 - an active Lean target file for the generated declarations
 - startup context that points to all of the above
 
-The active Lean target file is only the entry point. The planner may split work into additional Lean files when the blueprint justifies it, but it must keep imports and blueprint references coherent.
+The active Lean target file is only the entry point. By default a document gets its own project-local workspace such as `ProjectName/PaperName/Main.lean` plus `ProjectName/PaperName/Blueprint.md`, and the planner may split work into additional Lean files in that same directory when the blueprint justifies it. Keep imports and blueprint references coherent.
 
 ## Tool Order
 
@@ -67,12 +67,14 @@ The active Lean target file is only the entry point. The planner may split work 
    - search local project facts, imports, and Mathlib before inventing names or structures
    - use it both for statement design and proof search
 5. create or update the planner blueprint
-   - list source statements, dependencies, planned Lean names, split lemmas, and proof notes
+   - list source statements, dependencies, planned Lean names, split lemmas, statement-fidelity checks, and proof notes
+   - include natural-language source proof strategy useful to the prover: relevant paper paragraphs, induction variables, reductions, important intermediate facts, and likely Mathlib dependencies
    - if a `blueprint/` directory or `leanblueprint` setup exists, keep a compatible TeX blueprint in sync where practical
    - replace the preflight `_pending_` entries before drafting Lean; the initial blueprint is only an inventory placeholder
 6. draft or revise declarations in small verifiable steps
    - prefer one declaration or one local helper at a time
    - keep imports and dependencies minimal and explicit
+   - in the planner draft, theorem/lemma proofs should normally be `by sorry`; do not start deep proof repair until the statement skeleton is stable and the prover queue is handling the resulting `sorry`s
    - every generated Lean file must start with all `import` commands before any module doc comment, file overview, namespace, or declaration
 7. `lean_worker_dispatch`
    - use only when the route points to `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
@@ -97,6 +99,7 @@ Prefer:
 - small draft-and-verify increments over large speculative file rewrites
 - stable source pointers: section, label, page, equation, or bibliography reference
 - a blueprint dependency plan before deep proof work
+- natural-language proof/prover notes in the blueprint, not long explanatory comments in Lean
 - imports first in every generated Lean file; do not put `/-! ... -/` module docs above imports
 
 Avoid:
@@ -105,6 +108,7 @@ Avoid:
 - repeated header rewrites when the blocker is actually proof search or compilation
 - declaring victory after only drafting statements without proving them
 - silent theorem weakening or strengthening relative to the source document
+- doing deep proof repair during the planner draft; leave `sorry` and let the prover queue work one declaration at a time
 
 ## Statement Fidelity
 
@@ -112,12 +116,13 @@ The planner blueprint should record:
 
 - the natural-language mathematical statement or definition from the document
 - the source pointer, such as theorem label, section, page, or equation number
-- relevant dependency/proof notes from the planner blueprint
+- relevant dependency/proof notes from the source document or reconstructed proof plan
 - any intentional scope change, generalization, specialization, or assumption added for Lean
+- a statement-fidelity review comparing the planned Lean type to the source claim
 
-Before moving from planning to proving, verify that each Lean statement still matches the source claim. If the document statement is ambiguous, record the ambiguity in the blueprint rather than hiding it in the Lean signature.
+Before moving from planning to proving, verify that each Lean statement still matches the source claim. If the document statement is ambiguous, record the ambiguity in the blueprint rather than hiding it in the Lean signature. The prover phase may and should reread both `Blueprint.md` and the source `.tex`/`.pdf` when the proof needs the paper's argument.
 
-The preflight blueprint is not a completed plan. Update it with planned Lean declaration names, dependencies, split lemmas, and proof notes before writing the main Lean draft.
+The preflight blueprint is not a completed plan. Update it with planned Lean declaration names, dependencies, split lemmas, statement-fidelity reviews, and proof/prover notes before writing the main Lean draft.
 
 Do not place generated module-level documentation before imports. It is acceptable, and usually preferred, to omit generated Lean documentation entirely and keep planning prose in the blueprint.
 

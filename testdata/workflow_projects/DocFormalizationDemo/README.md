@@ -40,13 +40,14 @@ epflemma workflow autoformalize docs/RecountingTheRationals.tex
 Expected preflight artifacts after starting the workflow:
 
 - `.epflemma/workflow-state/formalization/docs-RecountingTheRationals/context.md`
-- `.epflemma/workflow-state/formalization/docs-RecountingTheRationals/blueprint.md`
 - `.epflemma/workflow-state/formalization/docs-RecountingTheRationals/manifest.json`
-- `DocFormalizationDemo/Formalization/RecountingTheRationals.lean`
+- `DocFormalizationDemo/RecountingTheRationals/Blueprint.md`
+- `DocFormalizationDemo/RecountingTheRationals/Main.lean`
 
-`DocFormalizationDemo/Formalization/RecountingTheRationals.lean` should not
-exist in the clean base fixture. EPFLemma creates it when the formalization
-workflow starts. There is no pre-written Lean formalization of the target in
+`DocFormalizationDemo/RecountingTheRationals/` should not exist in the clean
+base fixture. EPFLemma creates it when the formalization workflow starts. The
+blueprint lives beside the generated Lean files so planner and prover turns can
+reread it easily. There is no pre-written Lean formalization of the target in
 this fixture.
 
 Commit guard:
