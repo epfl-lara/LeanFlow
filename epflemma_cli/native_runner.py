@@ -7026,6 +7026,12 @@ def _root_module_file_for_module(module_name: str) -> tuple[str, Path] | None:
     return root_module, Path(_project_root()) / f"{root_module}.lean"
 
 
+def _module_file_for_module(module_name: str) -> Path | None:
+    if not _valid_lean_module_name(module_name):
+        return None
+    return Path(_project_root()) / Path(*module_name.split(".")).with_suffix(".lean")
+
+
 def _document_formalization_handoff_verification(
     active_file: str,
     *,
@@ -7085,10 +7091,34 @@ def _document_formalization_handoff_verification(
             issues.append(
                 f"root module file `{root_file.name}` is missing, so plain `lake build` will not include `{module_name}`"
             )
-        elif module_name not in _lean_imports_from_file(root_file):
-            issues.append(
-                f"root module `{root_module}` does not import `{module_name}`, so plain `lake build` can skip it"
+        else:
+            root_imports = _lean_imports_from_file(root_file)
+            root_imports_target = module_name in root_imports
+            parent_module = module_name.rsplit(".", 1)[0] if "." in module_name else ""
+            parent_file = _module_file_for_module(parent_module) if parent_module else None
+            root_imports_parent = bool(parent_module and parent_module in root_imports and parent_file)
+            parent_imports_target = bool(
+                root_imports_parent
+                and parent_file is not None
+                and parent_file.is_file()
+                and module_name in _lean_imports_from_file(parent_file)
             )
+            if root_imports_parent and parent_file is not None and not parent_file.is_file():
+                issues.append(
+                    f"root module `{root_module}` imports parent module `{parent_module}`, "
+                    f"but parent module file `{parent_file.name}` is missing"
+                )
+            elif root_imports_parent and not parent_imports_target:
+                issues.append(
+                    f"parent module `{parent_module}` does not import `{module_name}`, so plain `lake build` can skip it"
+                )
+            elif not root_imports_target and not parent_imports_target:
+                expected = f"`{module_name}`"
+                if parent_module:
+                    expected += f" or parent module `{parent_module}`"
+                issues.append(
+                    f"root module `{root_module}` does not import {expected}, so plain `lake build` can skip it"
+                )
 
     if blueprint_text:
         issues.extend(_document_formalization_blueprint_inventory_issues(blueprint_text, target_text))
