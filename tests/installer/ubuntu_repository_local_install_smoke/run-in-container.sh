@@ -133,7 +133,7 @@ assert config["terminal"]["backend"] == "local"
 assert config["terminal"]["cwd"] == str(workspace_dir)
 assert config["gauss"]["autoformalize"]["backend"] == "claude-code"
 assert config["gauss"]["autoformalize"]["auth_mode"] == "auto"
-assert config["agent"]["max_turns"] == 120
+assert config["agent"]["max_turns"] == 180
 assert config["model"]["provider"] == "custom"
 assert config["model"]["default"] == "gpt-5.4"
 assert config["model"]["base_url"] == "https://api.openai.com/v1"
