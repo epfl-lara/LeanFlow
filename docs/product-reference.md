@@ -7,7 +7,7 @@ EPFLemma is a Lean AI for Math shell focused on automated Lean coding agents. Th
 The product is optimized for two main jobs:
 
 - `prove`: drive Lean proof repair and completion until the code compiles cleanly
-- `formalize`: translate mathematical intent into Lean declarations and verified proofs
+- `formalize`: translate a project-local LaTeX/PDF source document into planned Lean declarations and verified proofs
 
 Internally, `/prove` and `/autoprove` normalize to the same native workflow, and `/formalize` and `/autoformalize` normalize to the same native workflow. The auto-prefixed forms are compatibility aliases, not separate product surfaces.
 
@@ -50,7 +50,7 @@ Built-in skills:
   - emphasizes: current blockers, open goals, verification state, and project-wide remaining `sorry`
 - `lean-formalization`
   - formalization and declaration-building skill for `formalize` and `draft`
-  - emphasizes: small verifiable steps, dependency order, and zero build errors / zero `sorry`
+  - emphasizes: source-document inspection, blueprint planning, source comments, small verifiable steps, dependency order, and zero build errors / zero `sorry`
 - `lean-project-search`
   - local project search helper used before editing proofs
   - emphasizes: nearby declarations, imports, naming/style reuse, and file-local context
@@ -321,14 +321,14 @@ Run a workflow:
 epflemma workflow prove Main.lean
 epflemma workflow prove Main.lean --agents 3
 epflemma workflow prove Main.lean --no-parallel
-epflemma workflow formalize "Define the object and prove the first lemma"
+epflemma workflow formalize docs/paper.tex
 ```
 
 ## Workflow Example Projects
 
 The repo also carries opt-in Lean workflow projects under `testdata/workflow_projects/`.
 
-These are for manual workflow runs and future targeted integration coverage, not for the default pytest or CI path. The current example project is `testdata/workflow_projects/GaussTest`, a small mathlib-based repo with `sorry` targets and extra text examples for proving/formalization workflows.
+These are for manual workflow runs and future targeted integration coverage, not for the default pytest or CI path. `testdata/workflow_projects/GaussTest` is the proof-repair fixture, and `testdata/workflow_projects/DocFormalizationDemo` is the document-formalization fixture.
 
 Interactive mode:
 
@@ -357,10 +357,11 @@ Inside the shell:
 /cd path/to/project
 /project init
 /project create DemoProject --template-source https://github.com/example/lean-template.git
+/prove
 /prove Main.lean
 /prove Main.lean --agents 3
 /prove Main.lean --no-parallel
-/formalize "state the theorem"
+/formalize docs/paper.tex
 /doctor
 /doctor search --json
 /mcp bootstrap lean
@@ -374,10 +375,11 @@ Inside the shell:
 Workflow commands also accept forgiving forms without the leading slash:
 
 ```text
+prove
 prove Main.lean
 prove Main.lean --agents 3
 prove Main.lean --no-parallel
-formalize "formalize this statement"
+formalize docs/paper.tex
 ```
 
 The interactive shell starts with an EPFLemma banner that shows the current route and the main Lean commands you are expected to use.
@@ -424,9 +426,86 @@ What counts as success:
 
 Autonomous workflows are intentionally stricter than a local file-only loop. `prove` and `formalize` should keep going until the project is clean, not merely until the current theorem looks finished.
 
+### Document Formalization
+
+`/formalize` and `/autoformalize` require a project-local `.tex` or `.pdf` source document path. They remain the same workflow; `autoformalize` is only a compatibility alias.
+
+The resolver prepares a document formalization workspace before the native runner starts:
+
+- source-document preflight manifest under `.epflemma/workflow-state/formalization/`
+- bounded extracted-text cache
+- Markdown planner blueprint
+- generated supplemental blueprint skill under `.epflemma/skills/`
+- active Lean target file for drafted declarations
+
+`/prove SomeFile.lean` auto-attaches that generated blueprint skill when the file has a nearby `Blueprint.md`, so prover turns can recover the source map after context compaction. Any workflow can also receive extra persistent guidance with `--additional-skill path/to/SKILL.md`.
+- startup context that tells the drafting agent to plan definitions, lemmas, theorem splits, source comments, source pointers, and statement-fidelity checks before proof repair
+- an automatic independent statement/source verifier pass once the draft is otherwise ready and only approval statuses are missing
+
+The deterministic preflight is intentionally modest. LaTeX documents get theorem-like environments, labels, references, citations, and sections extracted. PDFs use installed local tools such as `pdftotext`, `pdfinfo`, and `pdfimages` when available, and record degraded extraction reasons when they are not. The planner agent can then use the normal file, terminal, web, and Lean tools to inspect the document more deeply, pull referenced material, and draft Lean files with `sorry`. The independent verifier then checks the source fidelity and marks approved blueprint entries before the resulting queue is handed to `/prove`.
+
 EPFLemma writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.epflemma/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
 
 That state now also includes structured capability snapshots, route decisions, and workflow/worker outcomes in `.epflemma/workflow-state/outcomes.jsonl`, so resumed runs can reuse prior blocker classification and worker history instead of starting blind.
+
+### Project-Scoped `/prove`
+
+`/prove SomeFile.lean` remains the direct file-scoped proof-repair workflow. `/prove` with no Lean file is the project-scoped manager workflow.
+
+The project prove manager pipeline is:
+
+1. Detect that the command is `prove` and has no explicit `.lean` argument.
+2. Scan project Lean files for remaining `sorry` placeholders.
+3. Build one candidate record per file with relative file label, absolute path, module name, `sorry_count`, `line_count`, declaration count, pending declaration names, theorem excerpts, hint/example counts, theorem-difficulty scores, candidate-to-candidate import/dependent counts, project-wide import/dependent counts, and import count.
+4. Include source context in the planner payload: full source for small files, and selected headers, imports, hints, checked lemmas, and pending theorem excerpts for larger files.
+5. Compute a deterministic fallback order: files with more unresolved candidate files depending on them first, then files with fewer unresolved candidate-file dependencies of their own, then project-wide downstream importance, lower theorem-difficulty score, lower first-pending-declaration difficulty, fewer `sorry` placeholders, shorter files, fewer declarations, and path label as the stable tie-breaker.
+6. Ask the configured LLM to rank the bounded candidate list using the same policy: dependency importance, theorem difficulty, actual source context, local hints/examples, and length.
+7. Sanitize the LLM output so only known candidate labels survive, append any missing fallback files, and keep deterministic dependency/difficulty buckets as guardrails around the model order.
+8. Persist the resulting queue and assign the first file by setting the native active file.
+9. Hand execution to the existing file-scoped theorem queue, exactly as if the user had run `/prove SomeFile.lean`.
+10. When that file verifies and other project files still contain `sorry`, mark the file complete, refresh the queue against the current filesystem, and assign the next file.
+
+This keeps the manager responsible for file order only. The existing theorem queue remains responsible for theorem-level repair, diagnostics, failed-attempt history, incremental verification, final file sweeps, and blocker handling.
+
+Parallel agents are disabled by default. The manager assigns one file at a time unless the user explicitly starts a swarm workflow with an agent-count flag such as `--agents 3`.
+
+### Logging And Inspection
+
+Project prove-manager state is visible in the same surfaces as other managed workflows:
+
+- `/workflow status` reads `.epflemma/workflow-state/live_status.json`
+- `/workflow activity` reads structured JSONL events under `.epflemma/workflow-state/activity/runs/`
+- `/workflow log 120` tails the saved raw runner transcript from `.epflemma/workflow-state/latest-run.log` or the timestamped file under `.epflemma/workflow-state/runs/`
+- `/proof-state` includes the live proof-state message that is also sent back into autonomous continuation prompts
+
+For fileless `/prove`, `live_status.json` includes:
+
+- `project_prove_manager`
+- `project_prove_file_queue`
+- `project_prove_completed_files`
+- `project_prove_plan_source`
+- `project_prove_plan_reason`
+- the normal active-file, target theorem, declaration queue, diagnostics, goals, build, route, checkpoint, and model/provider fields
+
+The structured activity stream records manager events suitable for detailed inspection and offline trace curation:
+
+- `project-prove-file-queue-planned`: candidate metrics, final file order, plan source, and plan reason
+- `project-prove-file-assigned`: assigned file, absolute path, remaining queue, plan source, and plan reason
+- `project-prove-file-queue-empty`: no project files with `sorry` were found
+- `project-prove-file-queue-complete`: the project prove queue has no remaining candidate files
+
+Those events sit alongside the existing theorem-level and runner-level events:
+
+- `queue-item-assigned`
+- `manager-incremental-warmup`
+- `assistant-plan`
+- `tool-start`
+- `tool-result`
+- `autonomous-followup`
+- `checkpoint`
+- `runner-start` / `runner-exit`
+
+The structured activity feed is the right source for programmatic inspection and training-data curation because it preserves event types and details as JSON. The raw workflow log is the right source when a human needs the chronological transcript, provider previews, tool output head/tail, token usage, and cost estimates. Preview sizes are bounded and configurable through `logging.preview_lines`, `logging.preview_chars`, `logging.tool_output_head_lines`, `logging.tool_output_tail_lines`, and `logging.activity_preview_chars`.
 
 The verification loop is intentionally Lean-LSP-first:
 
@@ -522,7 +601,7 @@ What the runner does each cycle:
 3. Select one current queue item.
    - If the queue is non-empty, store the assignment in `current_queue_assignment` as `(target_symbol, active_file, slice)`.
    - While this assignment is active, the runner switches the active skill to `lean-theorem-queue-worker`.
-   - The assignment is the worker boundary. The model owns only that declaration, not the rest of the file.
+   - The assignment is the worker boundary. The model owns the assigned proof task, may add small helper declarations that directly support it, and must not modify pre-existing non-assigned declarations or future queue items.
 
 4. Build the model-facing handoff.
    - The manager keeps the full queue internally for status, resume, and next-target selection.
@@ -540,7 +619,8 @@ What the runner does each cycle:
 5. Let the model work one theorem turn.
    - The model may inspect the file, search, ask for proof context, or edit with `patch`, `write_file`, or `apply_verified_patch`.
    - During a theorem queue turn, terminal-based file edits are rejected. Shell verification is allowed, but edits must go through file tools so the manager can check the assigned-declaration boundary.
-   - If a file tool changes content outside the assigned declaration, the manager restores the out-of-scope declarations to their pre-tool state and reports the queue edit guard in the tool result.
+   - New helper declarations are allowed when they directly help the assigned theorem; the manager does not restore them merely because they are outside the assigned declaration body.
+   - If a file tool changes a pre-existing non-assigned declaration or future queue item, the manager restores those protected declarations to their assignment-start state and reports the queue edit guard in the tool result.
    - `patch` and `write_file` are preferred in managed queue workflows; the manager warms LeanInteract with `prepare_file` at assignment time, and after a successful edit it first runs `lean_incremental_check(check_target)` for the assigned declaration.
    - If LeanInteract is unavailable, crashes, times out, or cannot rebuild a valid cache, the manager falls back to the canonical file verification gate.
    - Direct terminal verification commands are not the normal managed path because the manager cannot classify them as precisely, but they remain available as an emergency/manual fallback if the Lean tool surface is broken.
@@ -574,7 +654,7 @@ What the runner does each cycle:
      - this is not a single API step and not a new workflow run; the model continues the same theorem turn using the remaining workflow budget
      - the opportunity is evaluated at the next manager gate for that same theorem: successful `patch` / `write_file` LeanInteract auto-verification, `apply_verified_patch`, explicit `lean_incremental_check(check_target)`, explicit `lean_verify(mode=file_exact)`, or manager review of a final "solved" report
      - do not record a failed proof attempt
-     - tell the model to fix only the assigned declaration and not edit future queued declarations
+     - tell the model to fix only the assigned-declaration warning context and not edit future queued declarations; helper declarations created for this theorem remain part of this turn's proof work
      - if that next manager gate sees no warnings, accept the theorem and advance
      - if that next manager gate still sees only assigned-declaration warnings and no hard blockers, accept the theorem and advance
      - if that next manager gate sees an error, open goal, or assigned-declaration `sorry`, switch to the hard-blocker branch
@@ -662,7 +742,7 @@ Queue handoff invariants:
 - The manager owns the full queue; the model sees only the assigned theorem horizon.
 - Future theorem `sorry` warnings are not model-facing proof obligations until assigned.
 - Raw diagnostics from future declarations are not classified as current-theorem manager feedback after the assigned declaration's target-level check has succeeded.
-- Queue turns are edit-scoped to the assigned declaration. Broad shell replacements, whole-file rewrites, and accidental edits to future queue items are blocked or restored by the manager.
+- Queue turns are scoped to the assigned proof task. New helper declarations that directly support the assigned theorem are allowed, while broad shell replacements, whole-file rewrites, and accidental edits to pre-existing future queue items are blocked or restored by the manager.
 - The assigned theorem is successful when that declaration has no `sorry`, no open goals, no errors, and either no warning-only cleanup remains or its one focused warning-cleanup opportunity has already been spent.
 - Hard blockers keep the same theorem turn alive and become theorem-local failed-attempt context.
 - Warning-only cleanup never becomes a failed proof attempt and cannot stall the queue indefinitely.
@@ -770,7 +850,7 @@ Explicit swarm behavior:
 
 ```bash
 epflemma workflow prove Main.lean --agents 3
-epflemma workflow formalize "formalize theorem X" --agents 3
+epflemma workflow formalize docs/paper.tex --agents 3
 ```
 
 What `--agents N` does:
@@ -1013,10 +1093,13 @@ There are now three important internal workflow surfaces:
 - `lean`
   - shared typed Lean capability surface
   - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_incremental_check`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_probe`, `lean_auto_search`, `lean_auto_try`, `apply_verified_patch`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
+- `document`
+  - project-local source-document inspection for formalization
+  - includes `formalization_document_inspect`
 
 - `epflemma-native`
   - default single-agent Lean workflow runtime
-  - includes the shared `lean` toolset plus file, terminal, web, session search, skills, and file-lock coordination
+  - includes the shared `lean` and `document` toolsets plus file, terminal, web, session search, skills, and file-lock coordination
   - does not include delegation
 - `epflemma-native-swarm`
   - enabled only for user-approved `--agents N` workflows
@@ -1131,10 +1214,12 @@ provider request as timed out; override with `GAUSS_API_TIMEOUT` if needed.
 
 Lean declaration edits are guarded by default. File write and patch tools block
 deleting, renaming, moving, or changing existing `theorem`, `lemma`, and
-`example` statements; proof-body edits and new declarations are allowed. For an
-intentional statement refactor, set `EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS=1` in
-the process environment or `~/.epflemma/.env`, then unset it again after the
-refactor.
+`example` statements; proof-body edits and new declarations are allowed. In a
+managed theorem queue turn, the queue guard additionally restores edits to
+pre-existing non-assigned declarations while allowing new helper declarations
+for the assigned theorem. For an intentional statement refactor, set
+`EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS=1` in the process environment or
+`~/.epflemma/.env`, then unset it again after the refactor.
 
 Compression defaults are tuned for long Lean sessions:
 
@@ -1198,7 +1283,9 @@ Installer/bootstrap-managed default Lean MCP backends:
   - EPFLemma uses it through native wrappers and now degrades cleanly when backend lookup misses a declaration that exists in the local file
 - `lean-explore`
   - optional semantic declaration-search backend
-  - installed and configured disabled by default because the API backend requires `LEANEXPLORE_API_KEY`; enable it in `~/.epflemma/config.yaml` or switch its args to the local backend after fetching LeanExplore data
+  - `lean_search` prefers the local backend when `lean-explore[local]` is installed and `lean-explore data fetch` has prepared the index
+  - `lean_search` uses the hosted API only when `LEANEXPLORE_API_KEY` is present and local search is unavailable or disabled
+  - installed and configured disabled by default as an MCP server because the API backend requires credentials; enable it in `~/.epflemma/config.yaml` for MCP tools or switch its args to the local backend after fetching LeanExplore data
 
 The install script bootstraps these backends by default under `~/.epflemma/mcp/venvs/`. To repair or recreate them later, run:
 

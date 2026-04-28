@@ -28,7 +28,7 @@ Use search when the blocker is missing knowledge, not missing syntax:
 2. `lean_search(mode=local)`
    - first choice when the answer may already be in the current project, imports, or nearby files
 3. `lean_search(mode=semantic)`
-   - use for library-level discovery by meaning
+   - use for library-level discovery by meaning; this prefers local LeanExplore when its index is available, then hosted LeanExplore when `LEANEXPLORE_API_KEY` is set, then other semantic providers
 4. `lean_search(mode=type-pattern)`
    - use when the goal shape matters more than words
 5. `lean_search(mode=natural-language)`

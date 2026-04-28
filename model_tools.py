@@ -78,6 +78,7 @@ def _discover_tools():
         "tools.terminal_tool",
         "tools.session_search_tool",
         "tools.skills_tool",
+        "tools.document_tool",
         "tools.lean_tool",
         "tools.delegate_tool",
     ]

@@ -13,15 +13,18 @@ Primary specs:
 
 ## Tool Order
 
-1. `lean_capabilities`
-2. `lean_inspect`
-3. `lean_search`
-4. `lean_proof_context`, `lean_auto_probe`, `lean_auto_search`, or `lean_auto_try` only when a drafted declaration is blocked and theorem-local automation is justified
-5. draft the declaration or helper lemma
-6. `patch` or `write_file` for managed Lean file edits; the queue manager verifies successful edits against the current gate
-7. `apply_verified_patch` only when you specifically need a single atomic patch/checkpoint/verification result
-8. `lean_verify` for final broader verification when the manager gate did not cover the requested scope
-9. `lean_worker_dispatch` when the router recommends `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
+1. `formalization_document_inspect` when `/formalize` provided a source `.tex` or `.pdf`
+2. `lean_capabilities`
+3. `lean_inspect`
+4. `lean_search`
+5. create or update the planner blueprint before deep proof work
+6. satisfy the document formalization handoff verifier before the managed prover queue starts
+7. `lean_proof_context`, `lean_auto_probe`, `lean_auto_search`, or `lean_auto_try` only when a drafted declaration is blocked and theorem-local automation is justified
+8. draft the declaration or helper lemma
+9. `patch` or `write_file` for managed Lean file edits; the queue manager verifies successful edits against the current gate
+10. `apply_verified_patch` only when you specifically need a single atomic patch/checkpoint/verification result
+11. `lean_verify` for final broader verification when the manager gate did not cover the requested scope
+12. `lean_worker_dispatch` when the router recommends `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
 
 ## Guardrails
 
@@ -30,5 +33,15 @@ Primary specs:
 - In managed queue workflows, prefer `patch`/`write_file` because the runner records the automatic post-edit `lean_incremental_check(check_target)` result and falls back to Lake only when needed. Use `apply_verified_patch` for compatibility or when its pre-edit checkpoint payload is specifically useful.
 - Prefer focused `lean_verify` module checks when close to clean; reserve full-project verification for milestone checks.
 - Prefer explicit intermediate lemmas over brittle proof scripts.
+- Every generated Lean file must begin with imports. Do not put module doc comments, file overviews, namespaces, or declarations above imports.
+- For document formalization, update the nearby `Blueprint.md` before writing the main Lean draft. Replace `_pending_` source inventory entries with declaration names, dependencies, split lemmas, statement-fidelity reviews, and proof/prover notes.
+- For each source theorem or lemma, put a compact source-aware proof sketch in the Lean doc comment immediately above the generated declaration. Use clear labels such as `Source proof`, `Proof sketch`, or `Prover notes`; do not leave the prover to rediscover the paper proof from scratch. The generated supplemental blueprint skill carries the durable `Blueprint.md` reference for prover turns.
+- In the planner draft, leave theorem/lemma/example proofs as `by sorry`; do not fill proofs during `/formalize`, even if they look easy. The managed prover queue should solve them one declaration at a time after statement/source verification is approved.
+- Verify planner draft readiness with `lean_inspect` and `lean_verify` (module or file_exact), plus the document formalization handoff verifier. Do not use terminal Lake commands as the normal readiness check.
+- Before handoff to the prover queue, let the runner's independent statement/source verification pass review the blueprint and Lean draft. The reviewer must approve or correct the planned declarations, source locators, theorem statements, and prover notes before the handoff verifier passes.
+- The statement/source verifier must check concrete fidelity axes, not just plausibility. Every source entry should record `Source qualifiers`, `Lean coverage`, and `Scope changes`. Qualifiers include mathematical object class, quantifier order, parameter domain, output codomain, equality/image condition, side conditions, and follow-on claims. Every explicit qualifier must appear in the Lean theorem, be covered by a companion declaration, or be recorded as an intentional scope change.
+- To make the handoff verifier pass after review: replace scaffold root imports with direct Mathlib/project dependencies, add the generated target module to the root project module so plain `lake build` checks it, keep the blueprint import plan identical to the target Lean imports, ensure the draft has no hard Lean diagnostics, and record `Statement verification status: approved` for each source theorem/lemma inventory entry.
+- During proof repair, consult the nearby `Blueprint.md` and original `.tex`/`.pdf` source for the paper's proof strategy before inventing a proof.
+- Keep the generated blueprint aligned with declaration names, split lemmas, source labels, and statement-fidelity decisions.
 - Do not declare success while the requested scope still has diagnostics, open goals, warnings, or `sorry`.
 - Surface missing assumptions or ambiguous math instead of hiding them.

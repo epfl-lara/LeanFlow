@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from difflib import unified_diff
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, Sequence
+from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -80,11 +80,17 @@ LIVE_PROOF_STATE_PREFIX = (
     "for the active workflow. Treat it as current unless newer tool results contradict it."
 )
 AUTONOMOUS_WORKFLOW_KINDS = {"prove", "formalize"}
-PROJECT_SCAN_SKIP_DIRS = {".git", ".lake", ".epflemma", ".opengauss", ".gauss", "build"}
+PROJECT_SCAN_SKIP_DIRS = {".artifacts", ".git", ".lake", ".epflemma", ".opengauss", ".gauss", "build"}
 WORKFLOW_STEP_BOUNDARY_INTERRUPT = "[epflemma-native workflow step boundary]"
 STARTUP_SKILL_CONTRACT_MAX_CHARS = 7000
 MANAGER_WARNING_RETRY_LIMIT = 1
 MANAGER_HARD_RETRY_LIMIT = 2
+PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT = 40
+PROJECT_PROVE_MANAGER_FULL_FILE_MAX_CHARS = 6000
+PROJECT_PROVE_MANAGER_SELECTED_FILE_MAX_CHARS = 5000
+PROJECT_PROVE_MANAGER_DECL_CONTEXT_MAX_CHARS = 1600
+PROJECT_PROVE_MANAGER_HINT_CONTEXT_MAX_CHARS = 1600
+PROJECT_PROVE_MANAGER_PENDING_DECL_LIMIT = 8
 ACTIVE_AGENT_STATUSES = {"active"}
 LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
@@ -172,6 +178,19 @@ def _base_active_skill() -> str:
     return _read_native_env("ACTIVE_SKILL", "").strip()
 
 
+def _additional_skill_names() -> list[str]:
+    raw = (
+        _read_native_env("ADDITIONAL_SKILLS", "")
+        or _read_text_env("OPENGAUSS_NATIVE_ADDITIONAL_SKILLS", "")
+    )
+    values: list[str] = []
+    for part in re.split(rf"[{re.escape(os.pathsep)}\n]+", str(raw or "")):
+        normalized = part.strip()
+        if normalized and normalized not in values:
+            values.append(normalized)
+    return values
+
+
 def _effective_skill_name(live_state: Mapping[str, Any] | None = None) -> str:
     configured = _base_active_skill()
     state = dict(live_state or {})
@@ -197,6 +216,62 @@ def _is_step_boundary_interrupt(result: Mapping[str, Any] | None) -> bool:
     if not result:
         return False
     return str(result.get("interrupt_message", "") or "").strip() == WORKFLOW_STEP_BOUNDARY_INTERRUPT
+
+
+def _document_formalization_waiting_for_independent_review(live_state: Mapping[str, Any] | None) -> bool:
+    if _workflow_kind() != "formalize" or not _document_formalization_requested():
+        return False
+    handoff = dict((live_state or {}).get("document_formalization_handoff", {}) or {})
+    if bool(handoff.get("ok", True)):
+        return False
+    issues = [str(issue or "") for issue in handoff.get("issues", []) or []]
+    if not issues:
+        return False
+    review_markers = ("statement/source verification", "statement verification")
+    if not any(any(marker in issue.lower() for marker in review_markers) for issue in issues):
+        return False
+    planner_fix_markers = (
+        "planner has not drafted",
+        "preflight",
+        "hard diagnostics",
+        "blueprint file",
+        "target lean file",
+        "root module",
+        "scaffold import",
+        "import plan",
+        "source locator",
+        "planned declarations",
+        "statement-fidelity review",
+        "source proof/prover notes",
+        "lean doc comment",
+        "missing from target lean file",
+        "not parseable",
+    )
+    return not any(
+        any(marker in issue.lower() for marker in planner_fix_markers)
+        for issue in issues
+    )
+
+
+def _document_formalization_handoff_blocked_state(live_state: Mapping[str, Any] | None) -> bool:
+    if _workflow_kind() != "formalize" or not _document_formalization_requested():
+        return False
+    handoff = dict((live_state or {}).get("document_formalization_handoff", {}) or {})
+    return bool(handoff) and not bool(handoff.get("ok", True))
+
+
+def _document_formalization_ready_for_prover_handoff(live_state: Mapping[str, Any] | None) -> bool:
+    if _workflow_kind() != "formalize" or not _document_formalization_requested():
+        return False
+    current = dict(live_state or {})
+    handoff = dict(current.get("document_formalization_handoff", {}) or {})
+    if not handoff or not bool(handoff.get("ok", False)):
+        return False
+    try:
+        sorry_count = int(current.get("sorry_count", 0) or 0)
+    except Exception:
+        sorry_count = 0
+    return sorry_count > 0
 
 
 def _swarm_enabled() -> bool:
@@ -398,6 +473,16 @@ def _persist_live_status(
         "proof_state_message": str(live_state.get("message", "") or ""),
         "sorry_count": live_state.get("sorry_count"),
         "project_sorry_count": live_state.get("project_sorry_count"),
+        "project_prove_manager": bool(live_state.get("project_prove_manager", False)),
+        "project_prove_file_queue": list(live_state.get("project_prove_file_queue", []) or []),
+        "project_prove_completed_files": list(live_state.get("project_prove_completed_files", []) or []),
+        "project_prove_plan_source": str(live_state.get("project_prove_plan_source", "") or ""),
+        "project_prove_plan_reason": str(live_state.get("project_prove_plan_reason", "") or ""),
+        "formalization_document": _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", ""),
+        "formalization_document_kind": _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_KIND", ""),
+        "formalization_context": _read_text_env("EPFLEMMA_FORMALIZATION_CONTEXT", ""),
+        "formalization_blueprint": _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", ""),
+        "formalization_target_file": _read_text_env("EPFLEMMA_FORMALIZATION_TARGET_FILE", ""),
         "capability_report": dict(live_state.get("capability_report", {}) or {}),
         "route_decision": dict(live_state.get("route_decision", {}) or {}),
         "checkpoint_count": int(checkpoint_state.get("count", 0) or 0),
@@ -448,6 +533,8 @@ def _record_queue_assignment(
     cycle: int | None = None,
     phase: str = "",
 ) -> None:
+    if _document_formalization_handoff_blocked_state(live_state):
+        return
     item = dict(live_state.get("current_queue_item") or {})
     if not item:
         return
@@ -772,6 +859,12 @@ def _prepare_managed_turn_state(agent: Any, autonomy_state: dict[str, Any]) -> N
     agent._managed_pending_theorem_feedback = None
     agent._managed_step_boundary_recorded_attempt = False
     agent._managed_step_boundary_closed = False
+
+
+def _disable_generic_lean_statement_guard_for_native_runner() -> None:
+    # Native managed workflows have a contextual queue guard below. The generic
+    # file-tool guard is intentionally broader and blocks formalization drafting.
+    os.environ["EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS"] = "1"
 
 
 def _agent_interrupted(agent: Any) -> bool:
@@ -1338,8 +1431,9 @@ def _manager_final_report_feedback(
         lines.append("- next step: accept this report and refresh the queue.")
     elif blocker_kind == "warning":
         lines.append(
-            "- next step: fix the warning(s) in the assigned declaration only; "
-            "do not solve unrelated future queue items just because their `sorry` warnings appear in file output."
+            "- next step: fix the warning(s) in the assigned declaration context; "
+            "helper declarations created for this theorem may be adjusted, but do not solve unrelated future "
+            "queue items just because their `sorry` warnings appear in file output."
         )
     elif blocker_kind == "sorry":
         lines.append(
@@ -1767,7 +1861,176 @@ def _queue_edit_snapshot_required(function_name: str, args: Mapping[str, Any] | 
     return False
 
 
+def _resolve_project_path(raw_path: str) -> Path | None:
+    path_text = str(raw_path or "").strip()
+    if not path_text:
+        return None
+    try:
+        path = Path(path_text).expanduser()
+        if not path.is_absolute():
+            path = Path(_project_root()) / path
+        return path.resolve()
+    except Exception:
+        return None
+
+
+def _document_formalization_target_path() -> Path | None:
+    if not _document_formalization_requested():
+        return None
+    return _resolve_project_path(_read_text_env("EPFLEMMA_FORMALIZATION_TARGET_FILE", ""))
+
+
+def _tool_edit_paths(function_name: str, args: Mapping[str, Any] | None) -> list[Path]:
+    data = dict(args or {})
+    raw_paths: list[str] = []
+    if function_name in {"write_file", "apply_verified_patch"}:
+        raw_paths.append(str(data.get("path", "") or ""))
+    elif function_name == "patch":
+        mode = str(data.get("mode", "replace") or "replace")
+        if mode == "replace":
+            raw_paths.append(str(data.get("path", "") or ""))
+        elif mode == "patch":
+            patch_text = str(data.get("patch", "") or "")
+            raw_paths.extend(
+                match.group(1).strip()
+                for match in re.finditer(
+                    r"^\*\*\* (?:Add|Update|Delete) File: (.+)$",
+                    patch_text,
+                    flags=re.MULTILINE,
+                )
+            )
+    resolved = [_resolve_project_path(raw) for raw in raw_paths if raw]
+    return [path for path in resolved if path is not None]
+
+
+def _tool_proposed_edit_text(function_name: str, args: Mapping[str, Any] | None) -> str:
+    data = dict(args or {})
+    if function_name == "write_file":
+        return str(data.get("content", "") or "")
+    if function_name == "patch":
+        mode = str(data.get("mode", "replace") or "replace")
+        if mode == "replace":
+            return str(data.get("new_string", "") or "")
+        if mode == "patch":
+            return str(data.get("patch", "") or "")
+    if function_name == "apply_verified_patch":
+        return str(data.get("patch", "") or "")
+    return ""
+
+
+def _text_has_theorem_or_lemma(text: str) -> bool:
+    sanitized = _strip_lean_comments_and_strings(str(text or ""))
+    return bool(re.search(r"^\s*(?:@[A-Za-z0-9_.]+\s+)*(?:theorem|lemma|example)\b", sanitized, flags=re.MULTILINE))
+
+
+def _text_has_sorry(text: str) -> bool:
+    return bool(re.search(r"\bsorry\b", _strip_lean_comments_and_strings(str(text or ""))))
+
+
+def _text_has_theorem_or_lemma_without_sorry(text: str) -> bool:
+    for entry in _declaration_line_index_from_text(str(text or "")):
+        kind = str(entry.get("kind", "") or "").strip().lower()
+        if kind in {"theorem", "lemma", "example"} and not _text_has_sorry(str(entry.get("text", "") or "")):
+            return True
+    return False
+
+
+def _tool_edit_removes_sorry(function_name: str, args: Mapping[str, Any] | None) -> bool:
+    data = dict(args or {})
+    if function_name in {"patch", "apply_verified_patch"}:
+        old_text = str(data.get("old_string", "") or "")
+        new_text = str(data.get("new_string", "") or data.get("patch", "") or "")
+        return _text_has_sorry(old_text) and not _text_has_sorry(new_text)
+    return False
+
+
+def _text_has_any_completed_theorem_or_lemma(text: str) -> bool:
+    return any(
+        str(entry.get("kind", "") or "").strip().lower() in {"theorem", "lemma", "example"}
+        and not _text_has_sorry(str(entry.get("text", "") or ""))
+        for entry in _declaration_line_index_from_text(str(text or ""))
+    )
+
+
+def _document_formalization_planner_phase(agent: Any) -> bool:
+    if _workflow_kind() == "formalize" and _document_formalization_requested():
+        return True
+    autonomy_state = getattr(agent, "_managed_autonomy_state", {}) or {}
+    assignment = dict(dict(autonomy_state or {}).get("current_queue_assignment") or {})
+    return not bool(str(assignment.get("target_symbol", "") or "").strip())
+
+
+def _document_formalization_pre_tool_guard(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+) -> str | None:
+    if function_name not in {"patch", "write_file", "apply_verified_patch"}:
+        return None
+    target_path = _document_formalization_target_path()
+    if target_path is None:
+        return None
+    try:
+        touches_target = any(path.resolve() == target_path for path in _tool_edit_paths(function_name, args))
+    except Exception:
+        touches_target = False
+    if not touches_target:
+        return None
+    blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    if _document_formalization_needs_blueprint_plan():
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    "Document formalization must update the planner blueprint before editing the target Lean file. "
+                    "Replace the preflight `_pending_` entries with planned declaration names, dependencies, split "
+                    "lemmas, statement-fidelity reviews, and source proof/prover notes, then retry the Lean draft. "
+                    "The Lean draft must also carry compact source proof/prover notes in theorem/lemma doc comments."
+                ),
+                "target": _relative_project_file_label(target_path),
+                "blueprint": blueprint,
+            },
+            ensure_ascii=False,
+        )
+    proposed = _tool_proposed_edit_text(function_name, args)
+    if (
+        proposed
+        and _document_formalization_planner_phase(agent)
+        and (
+            (
+                _document_formalization_needs_planner_draft(str(target_path))
+                and _text_has_theorem_or_lemma_without_sorry(proposed)
+            )
+            or (
+                not _document_formalization_needs_planner_draft(str(target_path))
+                and _text_has_any_completed_theorem_or_lemma(proposed)
+                and not _text_has_sorry(proposed)
+            )
+            or _tool_edit_removes_sorry(function_name, args)
+        )
+    ):
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    "The document formalization planner draft must leave theorem/lemma proofs as `sorry`. "
+                    "Put source proof strategy and prover hints in the nearby Blueprint.md and in compact Lean "
+                    "doc comments above source theorem/lemma declarations, draft stable statements with `by sorry`, "
+                    "then request independent statement/source verification before the managed prover queue solves "
+                    "them one at a time."
+                ),
+                "target": _relative_project_file_label(target_path),
+                "blueprint": blueprint,
+            },
+            ensure_ascii=False,
+        )
+    return None
+
+
 def _managed_pre_tool_call(agent: Any, function_name: str, args: Mapping[str, Any] | None) -> str | None:
+    formalization_guard = _document_formalization_pre_tool_guard(agent, function_name, args)
+    if formalization_guard:
+        return formalization_guard
     if not _single_queue_item_turn_enabled() or _agent_interrupted(agent):
         return None
     if not _queue_edit_snapshot_required(function_name, args):
@@ -1784,7 +2047,8 @@ def _managed_pre_tool_call(agent: Any, function_name: str, args: Mapping[str, An
                 "success": False,
                 "error": (
                     "Managed theorem queues do not allow terminal-based file edits. "
-                    "Use `patch` for a targeted edit inside the assigned declaration only."
+                    "Use `patch` for Lean edits; helper lemmas for the assigned theorem are allowed, "
+                    "but pre-existing future queue declarations must not be edited."
                 ),
             },
             ensure_ascii=False,
@@ -1796,6 +2060,20 @@ def _managed_pre_tool_call(agent: Any, function_name: str, args: Mapping[str, An
     entry = _find_declaration_entry(active_file, target_symbol)
     if not entry:
         return None
+    guard_key = _queue_edit_guard_key(target_symbol, active_file)
+    guard_state = dict(getattr(agent, "_managed_queue_edit_guard_state", {}) or {})
+    if guard_state.get("key") != guard_key:
+        assigned_statement_signature = ""
+        if _queue_edit_protect_assigned_statement(agent, before_text, target_symbol, active_file):
+            assigned_statement_signature = _queue_edit_assigned_statement_signature(before_text, target_symbol)
+        guard_state = {
+            "key": guard_key,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "assigned_statement_signature": assigned_statement_signature,
+            "protected_declarations": _queue_edit_protected_declarations(before_text, target_symbol),
+        }
+        setattr(agent, "_managed_queue_edit_guard_state", guard_state)
     setattr(
         agent,
         "_managed_queue_edit_snapshot",
@@ -1805,9 +2083,259 @@ def _managed_pre_tool_call(agent: Any, function_name: str, args: Mapping[str, An
             "before_text": before_text,
             "start": int(entry.get("line", 0) or 0),
             "end": int(entry.get("end_line", 0) or 0),
+            "guard_key": guard_key,
+            "assigned_statement_signature": str(guard_state.get("assigned_statement_signature", "") or ""),
+            "protected_declarations": guard_state.get("protected_declarations") or (),
         },
     )
     return None
+
+
+def _queue_edit_guard_key(target_symbol: str, active_file: str) -> str:
+    try:
+        resolved = str(Path(active_file).resolve())
+    except Exception:
+        resolved = str(active_file or "")
+    return f"{target_symbol}\0{resolved}"
+
+
+def _declaration_matches_target(entry: Mapping[str, Any], target_symbol: str) -> bool:
+    name = str(entry.get("name", "") or "").strip()
+    wanted = str(target_symbol or "").strip()
+    short = wanted.split(".")[-1]
+    return bool(name and wanted and name in {wanted, short})
+
+
+def _declaration_stable_key(entry: Mapping[str, Any]) -> tuple[str, str] | None:
+    kind = str(entry.get("kind", "") or "").strip()
+    name = str(entry.get("name", "") or "").strip()
+    if not kind or not name or name.startswith("[anonymous "):
+        return None
+    return (kind, name)
+
+
+def _queue_edit_initial_declaration_keys(
+    agent: Any,
+    active_file: str,
+    before_text: str,
+) -> set[tuple[str, str]]:
+    file_key = _queue_edit_guard_key("__file__", active_file)
+    state = dict(getattr(agent, "_managed_initial_declaration_keys_by_file", {}) or {})
+    stored = state.get(file_key)
+    if isinstance(stored, list):
+        return {tuple(item) for item in stored if isinstance(item, (list, tuple)) and len(item) == 2}
+    keys = {
+        key
+        for entry in _declaration_line_index_from_text(before_text)
+        if (key := _declaration_stable_key(entry)) is not None
+    }
+    state[file_key] = [list(key) for key in sorted(keys)]
+    setattr(agent, "_managed_initial_declaration_keys_by_file", state)
+    return keys
+
+
+def _document_formalization_source_declaration_names() -> set[str]:
+    manifest_blocks = _document_formalization_manifest_blocks()
+    if not manifest_blocks:
+        return set()
+    blueprint_path = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    if not blueprint_path:
+        return set()
+    try:
+        blueprint_text = Path(blueprint_path).read_text(encoding="utf-8")
+    except Exception:
+        return set()
+    entries = _blueprint_source_inventory_entries(blueprint_text)
+    names: set[str] = set()
+    for block in manifest_blocks:
+        entry = entries.get(str(block.get("label", "") or "").strip(), "")
+        if not entry:
+            continue
+        planned = _blueprint_first_bullet_value(
+            entry,
+            (
+                "Planned Lean declarations",
+                "Planned Lean declaration",
+                "Formal names",
+                "Formal name",
+                "Lean declarations",
+                "Lean declaration",
+            ),
+        )
+        names.update(_lean_decl_names_from_planned_value(planned))
+    return names
+
+
+def _queue_edit_protect_assigned_statement(
+    agent: Any,
+    before_text: str,
+    target_symbol: str,
+    active_file: str,
+) -> bool:
+    target = str(target_symbol or "").strip()
+    short_target = target.split(".")[-1]
+    if not target:
+        return False
+    if _document_formalization_requested():
+        source_names = _document_formalization_source_declaration_names()
+        return bool(source_names) and (target in source_names or short_target in source_names)
+    for entry in _declaration_line_index_from_text(before_text):
+        if not _declaration_matches_target(entry, target):
+            continue
+        key = _declaration_stable_key(entry)
+        if key is None:
+            return False
+        return key in _queue_edit_initial_declaration_keys(agent, active_file, before_text)
+    return False
+
+
+def _find_assignment_marker_for_statement(text: str) -> int:
+    depth = 0
+    in_line_comment = False
+    in_string = False
+    escaped = False
+    i = 0
+    while i < len(text) - 1:
+        ch = text[i]
+        nxt = text[i + 1]
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+            i += 1
+            continue
+        if depth:
+            if ch == "/" and nxt == "-":
+                depth += 1
+                i += 2
+                continue
+            if ch == "-" and nxt == "/":
+                depth -= 1
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == "-" and nxt == "-":
+            in_line_comment = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "-":
+            depth = 1
+            i += 2
+            continue
+        if ch == '"':
+            in_string = True
+            i += 1
+            continue
+        if ch == ":" and nxt == "=":
+            return i
+        i += 1
+    return -1
+
+
+def _queue_edit_statement_signature(entry: Mapping[str, Any]) -> str:
+    text = str(entry.get("text", "") or "")
+    idx = _find_assignment_marker_for_statement(text)
+    statement = text[:idx] if idx >= 0 else text
+    return re.sub(r"\s+", " ", _strip_lean_comments_and_strings(statement)).strip()
+
+
+def _queue_edit_assigned_statement_signature(content: str, target_symbol: str) -> str:
+    for entry in _declaration_line_index_from_text(content):
+        if _declaration_matches_target(entry, target_symbol):
+            return _queue_edit_statement_signature(entry)
+    return ""
+
+
+def _queue_edit_protected_declarations(content: str, target_symbol: str) -> list[dict[str, Any]]:
+    protected: list[dict[str, Any]] = []
+    for entry in _declaration_line_index_from_text(content):
+        key = _declaration_stable_key(entry)
+        if key is None or _declaration_matches_target(entry, target_symbol):
+            continue
+        protected.append(
+            {
+                "kind": key[0],
+                "name": key[1],
+                "text": str(entry.get("text", "") or "").strip(),
+                "line": int(entry.get("line", 0) or 0),
+            }
+        )
+    return protected
+
+
+def _queue_edit_changed_protected_declarations(
+    protected_declarations: Sequence[Mapping[str, Any]],
+    current_text: str,
+) -> list[dict[str, Any]]:
+    current_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in _declaration_line_index_from_text(current_text):
+        key = _declaration_stable_key(entry)
+        if key is not None and key not in current_by_key:
+            current_by_key[key] = entry
+
+    changed: list[dict[str, Any]] = []
+    for protected in protected_declarations:
+        key = (str(protected.get("kind", "") or ""), str(protected.get("name", "") or ""))
+        if not key[0] or not key[1]:
+            continue
+        current = current_by_key.get(key)
+        if current is None:
+            changed.append({"reason": "missing", "protected": dict(protected)})
+            continue
+        if str(current.get("text", "") or "").strip() != str(protected.get("text", "") or "").strip():
+            changed.append({"reason": "changed", "protected": dict(protected), "current": current})
+    return changed
+
+
+def _restore_changed_protected_declarations(current_text: str, changed: Sequence[Mapping[str, Any]]) -> str | None:
+    if not changed:
+        return current_text
+    if any(str(item.get("reason", "") or "") == "missing" for item in changed):
+        return None
+    lines = current_text.splitlines()
+    replacements = sorted(
+        (dict(item) for item in changed),
+        key=lambda item: int(dict(item.get("current") or {}).get("line", 0) or 0),
+        reverse=True,
+    )
+    for item in replacements:
+        current = dict(item.get("current") or {})
+        protected = dict(item.get("protected") or {})
+        start = int(current.get("line", 0) or 0)
+        end = int(current.get("end_line", 0) or 0)
+        if start <= 0 or end < start:
+            return None
+        replacement_lines = str(protected.get("text", "") or "").splitlines()
+        lines = lines[: start - 1] + replacement_lines + lines[end:]
+    restored = "\n".join(lines)
+    if current_text.endswith("\n"):
+        restored += "\n"
+    return restored
+
+
+def _restore_assigned_declaration_against_before_text(
+    before_text: str,
+    current_slice: str,
+    *,
+    start: int,
+    end: int,
+) -> str:
+    before_lines = before_text.splitlines()
+    replacement_lines = current_slice.splitlines()
+    restored_lines = before_lines[: start - 1] + replacement_lines + before_lines[end:]
+    restored_text = "\n".join(restored_lines)
+    if before_text.endswith("\n"):
+        restored_text += "\n"
+    return restored_text
 
 
 def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
@@ -1823,6 +2351,10 @@ def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
     before_text = str(snapshot.get("before_text", "") or "")
     start = int(snapshot.get("start", 0) or 0)
     end = int(snapshot.get("end", 0) or 0)
+    if "protected_declarations" in snapshot:
+        protected_declarations = list(snapshot.get("protected_declarations") or ())
+    else:
+        protected_declarations = _queue_edit_protected_declarations(before_text, target_symbol)
     if not active_file or not target_symbol or not before_text or start <= 0 or end < start:
         return ""
     path = Path(active_file)
@@ -1841,28 +2373,58 @@ def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
         return (
             "[EPFLEMMA-NATIVE QUEUE EDIT GUARD]\n"
             f"The `{function_name}` edit removed or obscured the assigned declaration `{target_symbol}`. "
-            "The manager restored the file to its pre-tool state. Edit only the assigned declaration."
+            "The manager restored the file to its pre-tool state. Keep the assigned declaration present; "
+            "helper lemmas may be added without removing or renaming it."
         )
     current_slice = str(current_entry.get("text", "") or "").strip()
     if not current_slice:
         return ""
-    before_lines = before_text.splitlines()
-    replacement_lines = current_slice.splitlines()
-    restored_lines = before_lines[: start - 1] + replacement_lines + before_lines[end:]
-    restored_text = "\n".join(restored_lines)
-    if before_text.endswith("\n"):
-        restored_text += "\n"
+    assigned_statement_signature = str(snapshot.get("assigned_statement_signature", "") or "")
+    if assigned_statement_signature:
+        current_signature = _queue_edit_statement_signature(current_entry)
+        if current_signature != assigned_statement_signature:
+            try:
+                path.write_text(before_text, encoding="utf-8")
+            except Exception:
+                return ""
+            return (
+                "[EPFLEMMA-NATIVE QUEUE STATEMENT GUARD]\n"
+                f"The `{function_name}` edit changed the protected source statement for `{target_symbol}`. "
+                "The manager restored the file to its pre-tool state. During the prover queue, keep the "
+                "assigned original/source theorem statement fixed; helper lemmas created by the model may "
+                "be added and revised."
+            )
+    changed_protected = _queue_edit_changed_protected_declarations(protected_declarations, current_text)
+    if not changed_protected:
+        return ""
+    restored_text = _restore_changed_protected_declarations(current_text, changed_protected)
+    restore_reason = "changed protected declarations outside the assigned declaration"
+    if restored_text is None:
+        restored_text = _restore_assigned_declaration_against_before_text(
+            before_text,
+            current_slice,
+            start=start,
+            end=end,
+        )
+        restore_reason = "removed or obscured protected declarations outside the assigned declaration"
     if restored_text == current_text:
         return ""
     try:
         path.write_text(restored_text, encoding="utf-8")
     except Exception:
         return ""
+    changed_names = ", ".join(
+        str(dict(item.get("protected") or {}).get("name", "") or "")
+        for item in changed_protected[:4]
+        if str(dict(item.get("protected") or {}).get("name", "") or "").strip()
+    )
+    detail = f" ({changed_names})" if changed_names else ""
     return (
         "[EPFLEMMA-NATIVE QUEUE EDIT GUARD]\n"
-        f"The `{function_name}` edit changed content outside the assigned declaration `{target_symbol}`. "
-        "The manager preserved the current assigned declaration body and restored all other declarations "
-        "to their pre-tool state. Do not edit future queue items in this theorem turn."
+        f"The `{function_name}` edit {restore_reason}{detail} while solving `{target_symbol}`. "
+        "The manager preserved the current assigned declaration body and restored those protected declarations. "
+        "Adding and iterating on new helper lemmas for this theorem is allowed; do not edit pre-existing "
+        "future queue items in this theorem turn."
     )
 
 
@@ -2388,6 +2950,9 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
         f"Workflow request: {workflow_command or '[missing workflow command]'}\n"
         f"Execution guidance: {detail}"
     )
+    document_block = _formalization_document_startup_block()
+    if workflow_kind == "formalize" and document_block:
+        guidance += f"\n\n{document_block}"
     if _swarm_enabled():
         agent_count = _parallel_agents()
         guidance += (
@@ -2397,6 +2962,38 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
             "If you delegate, assign concrete Lean goals, avoid duplicate file ownership, and keep one verifier path focused on final compilation."
         )
     return guidance
+
+
+def _formalization_document_startup_block() -> str:
+    document = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip()
+    if not document:
+        return ""
+    kind = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_KIND", "").strip() or "document"
+    target = _read_text_env("EPFLEMMA_FORMALIZATION_TARGET_FILE", "").strip()
+    context = _read_text_env("EPFLEMMA_FORMALIZATION_CONTEXT", "").strip()
+    blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    lines = [
+        "Document formalization source:",
+        f"- document: {document}",
+        f"- kind: {kind}",
+    ]
+    if target:
+        lines.append(f"- target Lean file: {target}")
+    if context:
+        lines.append(f"- planner context: {context}")
+    if blueprint:
+        lines.append(f"- planner blueprint: {blueprint}")
+    lines.extend(
+        [
+            "",
+            "Start in planner mode: read the document context, inspect the source document, create/update the blueprint, "
+            "draft well-scoped Lean declarations with `sorry` proofs for nontrivial theorem/lemma statements, "
+            "put compact source proof/prover notes in Lean doc comments above source theorem/lemma declarations, "
+            "then stop at the statement/source verification gate. Do not prove theorem/lemma skeletons in the formalizer. "
+            "After a review workflow approves or corrects the blueprint and statements, the normal proof queue can eliminate the resulting `sorry` placeholders.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _print_runner_help() -> None:
@@ -2701,10 +3298,18 @@ def _project_lean_files(project_root: str) -> list[Path]:
     if not root.is_dir():
         return []
     paths: list[Path] = []
-    for path in root.rglob("*.lean"):
-        if any(part in PROJECT_SCAN_SKIP_DIRS for part in path.parts):
-            continue
-        paths.append(path)
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [
+                name for name in dirnames
+                if name not in PROJECT_SCAN_SKIP_DIRS
+            ]
+            base = Path(dirpath)
+            for filename in filenames:
+                if filename.endswith(".lean"):
+                    paths.append(base / filename)
+    except OSError:
+        return []
     return sorted(paths)
 
 
@@ -2727,6 +3332,697 @@ def _count_project_sorries(project_root: str) -> tuple[int | None, list[str]]:
     except Exception:
         return None, []
     return total, files[:8]
+
+
+def _workflow_command_has_explicit_lean_file() -> bool:
+    return bool(_extract_active_files(_read_native_env("WORKFLOW_COMMAND")))
+
+
+def _project_prove_manager_requested() -> bool:
+    return _workflow_kind() == "prove" and not _workflow_command_has_explicit_lean_file()
+
+
+def _project_prove_manager_active(autonomy_state: Mapping[str, Any] | None = None) -> bool:
+    return isinstance(autonomy_state, Mapping) and bool(autonomy_state.get("project_prove_manager_enabled"))
+
+
+def _set_project_prove_manager_active(value: bool) -> None:
+    return None
+
+
+def _relative_project_file_label(path: str | os.PathLike[str], project_root: str | os.PathLike[str] | None = None) -> str:
+    raw = Path(path)
+    root = Path(project_root or _project_root())
+    try:
+        return str(raw.resolve().relative_to(root.resolve()))
+    except Exception:
+        return str(raw)
+
+
+def _set_native_active_file(file_label: str) -> None:
+    normalized = str(file_label or "").strip()
+    os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] = normalized
+
+
+def _lean_import_modules(file_path: str | os.PathLike[str]) -> list[str]:
+    try:
+        lines = Path(file_path).read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    modules: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("import "):
+            continue
+        body = stripped[len("import ") :].split("--", 1)[0].strip()
+        for token in body.split():
+            module = token.strip()
+            if module and module not in modules:
+                modules.append(module)
+    return modules
+
+
+def _module_name_for_project_path(path: Path, project_root: Path) -> str:
+    try:
+        relative = path.resolve().relative_to(project_root.resolve())
+    except Exception:
+        relative = path
+    parts = list(relative.parts)
+    if not parts or not parts[-1].endswith(".lean"):
+        return ""
+    parts[-1] = parts[-1][:-5]
+    return ".".join(parts)
+
+
+def _project_prove_bounded_excerpt(text: str, max_chars: int) -> str:
+    raw = str(text or "").strip()
+    if max_chars <= 0 or len(raw) <= max_chars:
+        return raw
+    marker = "\n\n-- [epflemma: excerpt truncated; middle omitted]\n\n"
+    head_chars = max(0, (max_chars - len(marker)) * 2 // 3)
+    tail_chars = max(0, max_chars - len(marker) - head_chars)
+    return (raw[:head_chars].rstrip() + marker + raw[-tail_chars:].lstrip()).strip()
+
+
+def _project_prove_declaration_context(
+    lines: Sequence[str],
+    entry: Mapping[str, Any],
+    *,
+    max_chars: int = PROJECT_PROVE_MANAGER_DECL_CONTEXT_MAX_CHARS,
+) -> str:
+    line = int(entry.get("line", 0) or 0)
+    end_line = int(entry.get("end_line", line) or line)
+    if line <= 0 or end_line <= 0:
+        return ""
+    start = max(1, line)
+    doc_end_idx = line - 2
+    if 0 <= doc_end_idx < len(lines) and lines[doc_end_idx].strip().endswith("-/"):
+        idx = doc_end_idx
+        while idx >= 0 and doc_end_idx - idx < 40:
+            if lines[idx].strip().startswith("/-"):
+                start = idx + 1
+                break
+            idx -= 1
+    else:
+        idx = line - 2
+        while idx >= 0 and line - idx <= 16:
+            stripped = lines[idx].strip()
+            if not stripped:
+                start = idx + 1
+                idx -= 1
+                continue
+            if stripped.startswith("--"):
+                start = idx + 1
+                idx -= 1
+                continue
+            break
+    start = max(1, start)
+    end = min(len(lines), max(end_line, line))
+    return _project_prove_bounded_excerpt("\n".join(lines[start - 1 : end]), max_chars)
+
+
+def _project_prove_header_excerpt(text: str, entries: Sequence[Mapping[str, Any]]) -> str:
+    lines = str(text or "").splitlines()
+    first_line = min((int(entry.get("line", 0) or 0) for entry in entries), default=0)
+    if first_line <= 1:
+        first_line = min(len(lines) + 1, 35)
+    return _project_prove_bounded_excerpt("\n".join(lines[: max(0, first_line - 1)]), 1200)
+
+
+def _project_prove_hint_excerpt(text: str) -> str:
+    lines = str(text or "").splitlines()
+    selected: list[str] = []
+    patterns = ("#check", "hint", "todo", "useful lemma", "useful mathlib")
+    for idx, line in enumerate(lines):
+        lowered = line.lower()
+        if not any(pattern in lowered for pattern in patterns):
+            continue
+        start = max(0, idx - 1)
+        end = min(len(lines), idx + 2)
+        block = "\n".join(lines[start:end]).strip()
+        if block and block not in selected:
+            selected.append(block)
+    return _project_prove_bounded_excerpt("\n\n".join(selected), PROJECT_PROVE_MANAGER_HINT_CONTEXT_MAX_CHARS)
+
+
+def _project_prove_file_context_excerpt(
+    text: str,
+    entries: Sequence[Mapping[str, Any]],
+) -> tuple[str, str]:
+    raw = str(text or "").strip()
+    if len(raw) <= PROJECT_PROVE_MANAGER_FULL_FILE_MAX_CHARS:
+        return "full", raw
+    parts: list[str] = []
+    header = _project_prove_header_excerpt(raw, entries)
+    if header:
+        parts.append("File header/imports:\n" + header)
+    hints = _project_prove_hint_excerpt(raw)
+    if hints:
+        parts.append("Hints and checked lemmas:\n" + hints)
+    pending = [dict(entry) for entry in entries if bool(entry.get("has_sorry"))]
+    lines = raw.splitlines()
+    for entry in pending[:2]:
+        context = _project_prove_declaration_context(lines, entry, max_chars=1200)
+        if context:
+            parts.append(f"Pending declaration near line {entry.get('line', '[unknown]')}:\n{context}")
+    return "selected", _project_prove_bounded_excerpt("\n\n".join(parts), PROJECT_PROVE_MANAGER_SELECTED_FILE_MAX_CHARS)
+
+
+def _project_prove_declaration_difficulty(entry: Mapping[str, Any]) -> int:
+    name = str(entry.get("name", "") or "").lower()
+    text = str(entry.get("text", "") or "").lower()
+    combined = f"{name}\n{text}"
+    score = 4
+    hard_tokens = {
+        "putnam": 5,
+        "imo": 4,
+        "aime": 3,
+        "amc": 2,
+        "numbertheory": 2,
+        "olympiad": 3,
+        "convexhull": 2,
+        "euclideanspace": 2,
+        "volume": 2,
+        "polynomial": 1,
+        "finset": 1,
+        "strictmono": 1,
+    }
+    easy_tokens = {
+        "mathd": 2,
+        "linear": 1,
+        "lipschitz": 1,
+        "abs": 1,
+    }
+    for token, weight in hard_tokens.items():
+        if token in combined:
+            score += weight
+    for token, weight in easy_tokens.items():
+        if token in combined:
+            score -= weight
+    line = int(entry.get("line", 0) or 0)
+    end_line = int(entry.get("end_line", line) or line)
+    span = max(1, end_line - line + 1)
+    if span > 12:
+        score += 1
+    if span > 24:
+        score += 1
+    return max(0, score)
+
+
+def _project_prove_file_hint_count(text: str) -> int:
+    lowered = str(text or "").lower()
+    return (
+        len(re.findall(r"^\s*#check\b", str(text or ""), flags=re.MULTILINE))
+        + lowered.count("hint")
+        + lowered.count("useful lemma")
+        + lowered.count("useful mathlib")
+    )
+
+
+def _project_prove_worked_example_count(entries: Sequence[Mapping[str, Any]], first_pending_line: int) -> int:
+    return sum(
+        1
+        for entry in entries
+        if int(entry.get("line", 0) or 0) < first_pending_line
+        and not bool(entry.get("has_sorry"))
+        and str(entry.get("kind", "") or "") in {"example", "theorem", "lemma"}
+    )
+
+
+def _project_prove_file_difficulty(
+    entries: Sequence[Mapping[str, Any]],
+    text: str,
+) -> dict[str, Any]:
+    pending = [dict(entry) for entry in entries if bool(entry.get("has_sorry"))]
+    file_context_kind, file_context_excerpt = _project_prove_file_context_excerpt(text, entries)
+    if not pending:
+        return {
+            "difficulty_score": 0,
+            "first_pending_difficulty_score": 0,
+            "hint_count": _project_prove_file_hint_count(text),
+            "worked_example_count": 0,
+            "pending_declarations": [],
+            "file_context_kind": file_context_kind,
+            "file_context_excerpt": file_context_excerpt,
+        }
+    lines = str(text or "").splitlines()
+    pending_declarations = [
+        {
+            "name": str(entry.get("name", "") or ""),
+            "kind": str(entry.get("kind", "") or ""),
+            "line": int(entry.get("line", 0) or 0),
+            "difficulty_score": _project_prove_declaration_difficulty(entry),
+            "context_excerpt": _project_prove_declaration_context(lines, entry),
+        }
+        for entry in pending[:PROJECT_PROVE_MANAGER_PENDING_DECL_LIMIT]
+    ]
+    first_line = int(pending[0].get("line", 0) or 0)
+    hint_count = _project_prove_file_hint_count(text)
+    worked_example_count = _project_prove_worked_example_count(entries, first_line)
+    first_score = int(pending_declarations[0].get("difficulty_score", 0) or 0)
+    average_score = round(
+        sum(int(item.get("difficulty_score", 0) or 0) for item in pending_declarations) / len(pending_declarations),
+        2,
+    )
+    support_discount = min(4, hint_count // 2 + worked_example_count // 3)
+    difficulty_score = max(0, int(round((first_score * 2 + average_score) / 3)) - support_discount)
+    return {
+        "difficulty_score": difficulty_score,
+        "first_pending_difficulty_score": first_score,
+        "hint_count": hint_count,
+        "worked_example_count": worked_example_count,
+        "pending_declarations": pending_declarations,
+        "file_context_kind": file_context_kind,
+        "file_context_excerpt": file_context_excerpt,
+    }
+
+
+def _project_prove_dependency_graph(
+    lean_files: Sequence[Path],
+    module_to_path: Mapping[str, Path],
+) -> tuple[dict[Path, set[Path]], dict[Path, set[Path]], dict[Path, list[str]]]:
+    imports_by_path: dict[Path, set[Path]] = {path.resolve(): set() for path in lean_files}
+    imported_by_path: dict[Path, set[Path]] = {path.resolve(): set() for path in lean_files}
+    import_modules_by_path: dict[Path, list[str]] = {}
+    for path in lean_files:
+        resolved = path.resolve()
+        modules = _lean_import_modules(path)
+        import_modules_by_path[resolved] = modules
+        for module in modules:
+            imported = module_to_path.get(module)
+            if imported is None:
+                continue
+            imported_resolved = imported.resolve()
+            if imported_resolved == resolved:
+                continue
+            imports_by_path.setdefault(resolved, set()).add(imported_resolved)
+            imported_by_path.setdefault(imported_resolved, set()).add(resolved)
+    return imports_by_path, imported_by_path, import_modules_by_path
+
+
+def _project_prove_transitive_paths(start: Path, graph: Mapping[Path, set[Path]]) -> set[Path]:
+    root = start.resolve()
+    seen: set[Path] = set()
+    stack = list(graph.get(root, set()))
+    while stack:
+        current = stack.pop()
+        if current in seen or current == root:
+            continue
+        seen.add(current)
+        stack.extend(path for path in graph.get(current, set()) if path not in seen)
+    return seen
+
+
+def _project_prove_label_list(paths: Iterable[Path], root: Path, *, limit: int = 8) -> list[str]:
+    labels = [_relative_project_file_label(path, root) for path in sorted(paths, key=lambda value: str(value))]
+    return [label for label in labels if label][:limit]
+
+
+def _collect_project_prove_file_candidates(project_root: str | os.PathLike[str] | None = None) -> list[dict[str, Any]]:
+    root = Path(project_root or _project_root())
+    if not root.is_dir():
+        return []
+    lean_files = _project_lean_files(str(root))
+    module_to_path = {
+        module: path.resolve()
+        for path in lean_files
+        for module in [_module_name_for_project_path(path, root)]
+        if module
+    }
+    imports_by_path, imported_by_path, import_modules_by_path = _project_prove_dependency_graph(lean_files, module_to_path)
+    sorry_files: list[Path] = []
+    for path in lean_files:
+        count = _count_sorries(str(path))
+        if isinstance(count, int) and count > 0:
+            sorry_files.append(path.resolve())
+
+    sorry_path_set = {path.resolve() for path in sorry_files}
+
+    candidates: list[dict[str, Any]] = []
+    for path in sorry_files:
+        resolved = path.resolve()
+        try:
+            text = path.read_text(encoding="utf-8")
+            line_count = len(text.splitlines())
+        except Exception:
+            text = ""
+            line_count = 0
+        declarations = _declaration_line_index(str(path))
+        difficulty = _project_prove_file_difficulty(declarations, text)
+        direct_imports = set(imports_by_path.get(resolved, set()))
+        direct_imported_by = set(imported_by_path.get(resolved, set()))
+        transitive_imports = _project_prove_transitive_paths(resolved, imports_by_path)
+        transitive_imported_by = _project_prove_transitive_paths(resolved, imported_by_path)
+        candidate_imports = direct_imports & sorry_path_set
+        candidate_imported_by = direct_imported_by & sorry_path_set
+        candidate_upstream = transitive_imports & sorry_path_set
+        candidate_downstream = transitive_imported_by & sorry_path_set
+        candidates.append(
+            {
+                "label": _relative_project_file_label(path, root),
+                "path": str(path),
+                "module_name": _module_name_for_project_path(path, root),
+                "sorry_count": int(_count_sorries(str(path)) or 0),
+                "line_count": line_count,
+                "declaration_count": len(declarations),
+                "import_count": int(len(import_modules_by_path.get(resolved, []) or [])),
+                "project_import_count": int(len(direct_imports)),
+                "imported_by_count": int(len(direct_imported_by)),
+                "project_downstream_count": int(len(transitive_imported_by)),
+                "candidate_import_count": int(len(candidate_imports)),
+                "candidate_imports": _project_prove_label_list(candidate_imports, root),
+                "candidate_imported_by_count": int(len(candidate_imported_by)),
+                "candidate_imported_by": _project_prove_label_list(candidate_imported_by, root),
+                "candidate_upstream_count": int(len(candidate_upstream)),
+                "candidate_downstream_count": int(len(candidate_downstream)),
+                "candidate_downstream": _project_prove_label_list(candidate_downstream, root),
+                "project_imports": _project_prove_label_list(direct_imports, root),
+                "project_imported_by": _project_prove_label_list(direct_imported_by, root),
+                **difficulty,
+            }
+        )
+    return candidates
+
+
+def _project_prove_fallback_order(candidates: Sequence[Mapping[str, Any]]) -> list[str]:
+    ordered = sorted(
+        (dict(item) for item in candidates),
+        key=lambda item: (
+            -int(item.get("candidate_downstream_count", 0) or 0),
+            int(item.get("candidate_import_count", 0) or 0),
+            -int(item.get("project_downstream_count", 0) or 0),
+            -int(item.get("imported_by_count", 0) or 0),
+            int(item.get("difficulty_score", 0) or 0),
+            int(item.get("first_pending_difficulty_score", 0) or 0),
+            int(item.get("sorry_count", 0) or 0),
+            int(item.get("line_count", 0) or 0),
+            int(item.get("declaration_count", 0) or 0),
+            str(item.get("label", "") or ""),
+        ),
+    )
+    return [str(item.get("label", "") or "") for item in ordered if str(item.get("label", "") or "")]
+
+
+def _project_prove_priority_bucket(candidate: Mapping[str, Any]) -> tuple[int, ...]:
+    return (
+        -int(candidate.get("candidate_downstream_count", 0) or 0),
+        int(candidate.get("candidate_import_count", 0) or 0),
+        -int(candidate.get("project_downstream_count", 0) or 0),
+        -int(candidate.get("imported_by_count", 0) or 0),
+        int(candidate.get("difficulty_score", 0) or 0) // 3,
+        int(candidate.get("first_pending_difficulty_score", 0) or 0) // 3,
+    )
+
+
+def _guard_project_prove_llm_order(
+    labels: Sequence[str],
+    candidates: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    fallback = _project_prove_fallback_order(candidates)
+    if not labels:
+        return fallback
+    candidate_by_label = {str(item.get("label", "") or ""): dict(item) for item in candidates}
+    llm_rank = {str(label): idx for idx, label in enumerate(labels)}
+    fallback_rank = {str(label): idx for idx, label in enumerate(fallback)}
+    return sorted(
+        fallback,
+        key=lambda label: (
+            _project_prove_priority_bucket(candidate_by_label.get(label, {})),
+            llm_rank.get(label, len(llm_rank) + fallback_rank.get(label, 0)),
+            fallback_rank.get(label, 0),
+        ),
+    )
+
+
+def _extract_json_payload(text: str) -> Any:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = raw.find(opener)
+        end = raw.rfind(closer)
+        if start >= 0 and end > start:
+            try:
+                return json.loads(raw[start : end + 1])
+            except Exception:
+                continue
+    return None
+
+
+def _ordered_labels_from_llm_payload(payload: Any, valid_labels: set[str]) -> list[str]:
+    if isinstance(payload, Mapping):
+        raw_items = (
+            payload.get("files")
+            or payload.get("queue")
+            or payload.get("ordered_files")
+            or payload.get("order")
+            or []
+        )
+    else:
+        raw_items = payload if isinstance(payload, list) else []
+    labels: list[str] = []
+    for item in raw_items:
+        if isinstance(item, Mapping):
+            label = str(item.get("label") or item.get("file") or item.get("path") or "").strip()
+        else:
+            label = str(item or "").strip()
+        if label in valid_labels and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _llm_prioritize_project_prove_files(candidates: Sequence[Mapping[str, Any]]) -> tuple[list[str], str, str]:
+    fallback = _project_prove_fallback_order(candidates)
+    if not candidates:
+        return [], "fallback", "no candidate files"
+    valid_labels = {str(item.get("label", "") or "") for item in candidates}
+    summaries = [
+        {
+            "label": str(item.get("label", "") or ""),
+            "sorry_count": int(item.get("sorry_count", 0) or 0),
+            "line_count": int(item.get("line_count", 0) or 0),
+            "declaration_count": int(item.get("declaration_count", 0) or 0),
+            "imported_by_count": int(item.get("imported_by_count", 0) or 0),
+            "import_count": int(item.get("import_count", 0) or 0),
+            "module_name": str(item.get("module_name", "") or ""),
+            "dependency": {
+                "candidate_downstream_count": int(item.get("candidate_downstream_count", 0) or 0),
+                "candidate_downstream": list(item.get("candidate_downstream", []) or []),
+                "candidate_import_count": int(item.get("candidate_import_count", 0) or 0),
+                "candidate_imports": list(item.get("candidate_imports", []) or []),
+                "candidate_imported_by_count": int(item.get("candidate_imported_by_count", 0) or 0),
+                "candidate_imported_by": list(item.get("candidate_imported_by", []) or []),
+                "project_downstream_count": int(item.get("project_downstream_count", 0) or 0),
+                "project_imported_by": list(item.get("project_imported_by", []) or []),
+                "project_imports": list(item.get("project_imports", []) or []),
+            },
+            "difficulty_score": int(item.get("difficulty_score", 0) or 0),
+            "first_pending_difficulty_score": int(item.get("first_pending_difficulty_score", 0) or 0),
+            "hint_count": int(item.get("hint_count", 0) or 0),
+            "worked_example_count": int(item.get("worked_example_count", 0) or 0),
+            "pending_declarations": list(item.get("pending_declarations", []) or [])[:5],
+            "file_context": {
+                "kind": str(item.get("file_context_kind", "") or ""),
+                "excerpt": str(item.get("file_context_excerpt", "") or ""),
+            },
+        }
+        for item in list(candidates)[:PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT]
+    ]
+    prompt = (
+        "Rank Lean files for an EPFLemma `/prove` project run.\n\n"
+        "Priority policy:\n"
+        "1. Prefer candidate files that other candidate files transitively depend on. "
+        "Use `dependency.candidate_downstream_count` and `dependency.candidate_downstream` for this.\n"
+        "2. Prefer files with fewer unresolved candidate-file dependencies of their own. "
+        "Use `dependency.candidate_import_count` and `dependency.candidate_imports`.\n"
+        "3. Use project-wide import data as secondary dependency evidence, because top-level aggregator files may import many peers.\n"
+        "4. Prefer easier files, especially lower `difficulty_score` and lower `first_pending_difficulty_score`.\n"
+        "5. Read the provided file excerpt and pending declaration contexts. Full source is included for small files; large files include selected headers, hints, and pending theorem excerpts.\n"
+        "6. Treat files with local hints, checked lemmas, worked examples, and simple first pending declarations as easier.\n"
+        "7. Treat competition-style names such as Putnam, IMO, AIME, AMC, and deep number theory as harder unless the excerpt shows a simple proof path.\n"
+        "8. Prefer fewer `sorry`s and shorter files only when dependency and difficulty are similar.\n\n"
+        "Return only JSON in this shape: {\"files\": [\"relative/File.lean\", ...], \"reason\": \"short reason\"}.\n"
+        "Use only labels from the candidate list.\n\n"
+        f"Candidates:\n{json.dumps(summaries, ensure_ascii=False)}"
+    )
+    try:
+        response = call_llm(
+            task="prove_manager",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=2000,
+            timeout=20.0,
+        )
+        content = response.choices[0].message.content
+        payload = _extract_json_payload(content if isinstance(content, str) else str(content or ""))
+        labels = _ordered_labels_from_llm_payload(payload, valid_labels)
+        for label in fallback:
+            if label not in labels:
+                labels.append(label)
+        labels = _guard_project_prove_llm_order(labels, candidates)
+        if labels:
+            reason = str(payload.get("reason", "") if isinstance(payload, Mapping) else "").strip()
+            return labels, "llm", reason or "LLM-ranked by dependency, theorem difficulty, and length"
+    except Exception as exc:
+        return fallback, "fallback", f"LLM ranking unavailable: {type(exc).__name__}: {exc}"
+    return fallback, "fallback", "LLM ranking returned no usable file order"
+
+
+def _refresh_project_prove_file_queue(autonomy_state: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = _collect_project_prove_file_candidates(_project_root())
+    candidate_by_label = {str(item.get("label", "") or ""): dict(item) for item in candidates}
+    existing_queue = [
+        str(label or "")
+        for label in autonomy_state.get("project_prove_file_queue", [])
+        if str(label or "") in candidate_by_label
+    ]
+    planned_new_queue = not existing_queue
+    if existing_queue:
+        ordered_labels = existing_queue
+        fallback = _project_prove_fallback_order(candidates)
+        for label in fallback:
+            if label not in ordered_labels:
+                ordered_labels.append(label)
+        source = str(autonomy_state.get("project_prove_plan_source", "") or "existing")
+        reason = str(autonomy_state.get("project_prove_plan_reason", "") or "kept existing file queue")
+    else:
+        ordered_labels, source, reason = _llm_prioritize_project_prove_files(candidates)
+    ordered_candidates = [candidate_by_label[label] for label in ordered_labels if label in candidate_by_label]
+    autonomy_state["project_prove_file_queue"] = [str(item["label"]) for item in ordered_candidates]
+    autonomy_state["project_prove_file_candidates"] = ordered_candidates[:PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT]
+    autonomy_state["project_prove_plan_source"] = source
+    autonomy_state["project_prove_plan_reason"] = reason
+    if planned_new_queue and ordered_candidates:
+        _record_activity(
+            "project-prove-file-queue-planned",
+            f"Project prove manager planned {len(ordered_candidates)} file(s)",
+            total_candidates=len(candidates),
+            candidate_limit=PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT,
+            ordered_files=[str(item.get("label", "") or "") for item in ordered_candidates],
+            candidates=ordered_candidates[:PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT],
+            plan_source=source,
+            plan_reason=reason,
+        )
+    return ordered_candidates
+
+
+def _assign_project_prove_file(
+    autonomy_state: dict[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    phase: str,
+) -> bool:
+    label = str(candidate.get("label", "") or "").strip()
+    path = str(candidate.get("path", "") or "").strip()
+    if not label or not path:
+        return False
+    _set_native_active_file(label)
+    _set_project_prove_manager_active(True)
+    autonomy_state["project_prove_manager_enabled"] = True
+    autonomy_state["project_prove_active_file"] = label
+    autonomy_state["project_prove_active_file_path"] = path
+    autonomy_state.pop("final_file_sweep_announcement", None)
+    for key in _FINAL_SWEEP_AUTONOMY_KEYS:
+        autonomy_state.pop(key, None)
+    queue = [str(value or "") for value in autonomy_state.get("project_prove_file_queue", [])]
+    _record_activity(
+        "project-prove-file-assigned",
+        f"Project prove manager assigned {label}",
+        phase=phase,
+        active_file=label,
+        active_file_path=path,
+        remaining_files=queue[:PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT],
+        plan_source=str(autonomy_state.get("project_prove_plan_source", "") or ""),
+        plan_reason=str(autonomy_state.get("project_prove_plan_reason", "") or ""),
+    )
+    print("")
+    print(f"Project prove manager assigned file: {label}")
+    return True
+
+
+def _ensure_project_prove_manager_started(
+    autonomy_state: dict[str, Any],
+    *,
+    phase: str,
+) -> bool:
+    if not _project_prove_manager_requested():
+        return False
+    autonomy_state["project_prove_manager_enabled"] = True
+    _set_project_prove_manager_active(True)
+    if _read_native_env("ACTIVE_FILE", "").strip():
+        return False
+    candidates = _refresh_project_prove_file_queue(autonomy_state)
+    if not candidates:
+        _record_activity(
+            "project-prove-file-queue-empty",
+            "Project prove manager found no files with sorry placeholders",
+            phase=phase,
+        )
+        return False
+    return _assign_project_prove_file(autonomy_state, candidates[0], phase=phase)
+
+
+def _advance_project_prove_manager_if_needed(
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+    *,
+    phase: str,
+) -> bool:
+    if not _project_prove_manager_active(autonomy_state):
+        return False
+    current = dict(live_state or {})
+    if not _live_state_is_verified(current):
+        return False
+    active_label = _display_file_label(current) or str(autonomy_state.get("project_prove_active_file", "") or "")
+    if active_label:
+        completed = [str(value or "") for value in autonomy_state.get("project_prove_completed_files", [])]
+        if active_label not in completed:
+            completed.append(active_label)
+        autonomy_state["project_prove_completed_files"] = completed
+    candidates = _refresh_project_prove_file_queue(autonomy_state)
+    if not candidates:
+        autonomy_state["project_prove_file_queue"] = []
+        _record_activity(
+            "project-prove-file-queue-complete",
+            "Project prove manager has no remaining files with sorry placeholders",
+            phase=phase,
+            completed_files=list(autonomy_state.get("project_prove_completed_files", []) or []),
+        )
+        return False
+    for candidate in candidates:
+        label = str(candidate.get("label", "") or "")
+        if label and label != active_label:
+            return _assign_project_prove_file(autonomy_state, candidate, phase=phase)
+    return False
+
+
+def _project_prove_manager_summary(autonomy_state: Mapping[str, Any] | None) -> str:
+    if not _project_prove_manager_active(autonomy_state):
+        return ""
+    state = dict(autonomy_state or {})
+    queue = [str(item or "") for item in state.get("project_prove_file_queue", []) if str(item or "")]
+    active = str(state.get("project_prove_active_file", "") or _read_native_env("ACTIVE_FILE", "") or "").strip()
+    completed = [str(item or "") for item in state.get("project_prove_completed_files", []) if str(item or "")]
+    lines = [
+        "Project prove manager:",
+        f"- active file: {active or '[none assigned]'}",
+        f"- queue source: {state.get('project_prove_plan_source', '[unknown]')}",
+    ]
+    reason = str(state.get("project_prove_plan_reason", "") or "").strip()
+    if reason:
+        lines.append(f"- prioritization reason: {_single_line(reason, 220)}")
+    if queue:
+        shown = queue[:8]
+        lines.append("- file queue: " + ", ".join(shown) + (f", ... plus {len(queue) - len(shown)} more" if len(queue) > len(shown) else ""))
+    else:
+        lines.append("- file queue: [empty]")
+    if completed:
+        lines.append("- completed files: " + ", ".join(completed[-6:]))
+    return "\n".join(lines)
 
 
 def _failed_attempt_history_limit() -> int:
@@ -2801,13 +4097,19 @@ def _declaration_line_index(active_file: str) -> list[dict[str, Any]]:
         return []
     path = Path(active_file)
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        content = path.read_text(encoding="utf-8")
     except Exception:
         return []
+    return _declaration_line_index_from_text(content)
+
+
+def _declaration_line_index_from_text(content: str) -> list[dict[str, Any]]:
+    lines = str(content or "").splitlines()
 
     entries: list[dict[str, Any]] = []
     pattern = re.compile(
-        r"^\s*(?:@[A-Za-z0-9_.]+\s+)*(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
+        r"^\s*(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial)\s+)*"
+        r"(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
     )
     for line_number, line in enumerate(lines, start=1):
         stripped = line.strip()
@@ -3370,6 +4672,13 @@ def _prepare_queue_assignment_state(
     live_state: Mapping[str, Any] | None,
 ) -> None:
     current = dict(live_state or {})
+    if _document_formalization_handoff_blocked_state(current):
+        mgr = _queue_manager_from_state(autonomy_state, current)
+        mgr.clear_assignment()
+        _flush_queue_manager(autonomy_state, mgr)
+        autonomy_state.pop("current_queue_assignment", None)
+        _assert_queue_invariants(autonomy_state, live_state, event="prepare-formalization-gate")
+        return
     item = dict(current.get("current_queue_item") or {})
     label = str(item.get("label", "") or current.get("target_symbol", "") or "").strip()
     active_file = str(current.get("active_file", "") or current.get("active_file_label", "") or "").strip()
@@ -4070,16 +5379,20 @@ def _theorem_transition_handoff_message(
 
 
 def _theorem_transition_active_skill_message(live_state: Mapping[str, Any] | None) -> str:
+    if not _single_queue_item_turn_enabled():
+        return ""
     skill_contract = _startup_active_skill_contract(_effective_skill_name(live_state))
-    if not skill_contract:
+    additional_skill_contracts = _startup_additional_skill_contracts(_effective_skill_name(live_state))
+    combined_skill_contract = "\n\n".join(part for part in (skill_contract, additional_skill_contracts) if part)
+    if not combined_skill_contract:
         return ""
     return "\n".join(
         [
             "[EPFLEMMA-NATIVE THEOREM TRANSITION ACTIVE SKILL]",
             "",
-            "The active skill contract is preserved after clearing theorem-local context.",
+            "The active and supplemental skill contracts are preserved after clearing theorem-local context.",
             "",
-            skill_contract,
+            combined_skill_contract,
         ]
     ).strip()
 
@@ -4090,6 +5403,8 @@ def _rebuild_history_for_theorem_transition(
     autonomy_state: dict[str, Any],
     live_state: Mapping[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], dict[str, str]] | tuple[None, None]:
+    if _document_formalization_handoff_blocked_state(live_state):
+        return None, None
     transition = _queue_assignment_transition(autonomy_state, live_state)
     if not transition:
         return None, None
@@ -4136,6 +5451,8 @@ def _print_theorem_transition_handoff(history: list[dict[str, Any]]) -> None:
 
 def _queue_needs_final_file_sweep(live_state: Mapping[str, Any] | None) -> bool:
     current = dict(live_state or {})
+    if _document_formalization_waiting_for_independent_review(current):
+        return False
     return (
         _single_queue_item_turn_enabled()
         and str(current.get("declaration_scope", "") or "") == "file"
@@ -4159,6 +5476,27 @@ def _maybe_announce_final_file_sweep_state(
     )
     if not queue_empty:
         autonomy_state.pop("final_file_sweep_announcement", None)
+        return
+
+    if _document_formalization_waiting_for_independent_review(current):
+        announcement = f"deferred-review:{active_file}"
+        if autonomy_state.get("final_file_sweep_announcement") == announcement:
+            return
+        autonomy_state["final_file_sweep_announcement"] = announcement
+        autonomy_state["continuation_blocked_runs"] = 0
+        autonomy_state["continuation_stable_cycles"] = 0
+        blocker = str(current.get("current_blocker", "") or "").strip()
+        print("")
+        print(
+            "Document formalization review gate: declaration queue is empty; waiting for independent "
+            "statement/source verification before proof cleanup."
+        )
+        _record_activity(
+            "final-file-sweep-deferred-for-document-review",
+            "Declaration queue empty but document formalization is waiting for statement/source verification",
+            active_file=active_file,
+            blocker=blocker,
+        )
         return
 
     if _live_state_is_verified(current):
@@ -4196,6 +5534,130 @@ def _maybe_announce_final_file_sweep_state(
             active_file=active_file,
             blocker=str(current.get("current_blocker", "") or current.get("diagnostics", "") or ""),
         )
+
+
+def _document_formalization_review_signature(live_state: Mapping[str, Any] | None) -> str:
+    current = dict(live_state or {})
+    handoff = dict(current.get("document_formalization_handoff", {}) or {})
+    payload = {
+        "active_file": str(current.get("active_file_label", "") or current.get("active_file", "") or ""),
+        "blueprint": _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip(),
+        "source": _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip(),
+        "issues": [str(issue or "") for issue in handoff.get("issues", []) or []],
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+
+
+def _document_formalization_review_due(
+    live_state: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any] | None,
+) -> bool:
+    if not _document_formalization_waiting_for_independent_review(live_state):
+        return False
+    signature = _document_formalization_review_signature(live_state)
+    previous = str((autonomy_state or {}).get("document_formalization_review_signature", "") or "")
+    return bool(signature) and signature != previous
+
+
+def _document_formalization_review_prompt(live_state: Mapping[str, Any]) -> str:
+    source = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip()
+    source_kind = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_KIND", "").strip() or "document"
+    target = str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or "").strip()
+    blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    context = _read_text_env("EPFLEMMA_FORMALIZATION_CONTEXT", "").strip()
+    handoff = dict(live_state.get("document_formalization_handoff", {}) or {})
+    issues = "\n".join(f"- {issue}" for issue in handoff.get("issues", []) or []) or "- [none]"
+    return (
+        "Run the independent statement/source verification pass for this document formalization.\n\n"
+        "You are a fresh reviewer, not the drafting formalizer. Do not rely on the previous conversation. "
+        "Inspect the source document, blueprint, and Lean target directly, then correct the plan or Lean statements "
+        "when the draft does not match the source.\n\n"
+        f"- source {source_kind}: {source or '[missing]'}\n"
+        f"- planner blueprint: {blueprint or '[missing]'}\n"
+        f"- target Lean file: {target or '[missing]'}\n"
+        f"- planner context: {context or '[missing]'}\n\n"
+        "Current handoff issues:\n"
+        f"{issues}\n\n"
+        "Required review actions:\n"
+        "1. Use `formalization_document_inspect`, `lean_capabilities`, and `lean_inspect` before editing.\n"
+        "2. Compare every source theorem/lemma entry against the Lean declaration and nearby Lean doc comment.\n"
+        "3. For each entry, fill `Source qualifiers`, `Lean coverage`, and `Scope changes`. Source qualifiers should "
+        "cover mathematical object class, quantifier order, parameter domain, output codomain, equality/image condition, "
+        "side conditions, and follow-on claims that are part of the source statement.\n"
+        "4. Treat every explicit source qualifier as statement content, not proof commentary. The Lean theorem must "
+        "assert it, a companion declaration must cover it, or the blueprint must mark an intentional scope change.\n"
+        "5. If the source gives a parameter-domain conversion, representation bridge, or follow-on equivalence, "
+        "formalize that as a separate declaration or record the omission as unapproved.\n"
+        "6. Fix mismatched Lean statements, missing source locators, wrong import plans, or weak prover notes.\n"
+        "7. Leave theorem/lemma/example proofs as `by sorry`; do not solve proofs in this review pass.\n"
+        "8. Only after checking all fidelity axes for a source entry, record `Statement verification status: approved` "
+        "in the blueprint. Do not approve an entry because a build succeeds.\n"
+        "9. Run `lean_verify(mode=module)` or the narrowest available Lean verification for draft readiness.\n"
+        "10. Stop with a concise report: approved entries, corrected entries, remaining blockers, and whether `/prove` may start.\n"
+    )
+
+
+def _run_document_formalization_review_agent(
+    parent_agent: Any,
+    system_prompt: str,
+    live_state: Mapping[str, Any],
+    autonomy_state: dict[str, Any],
+) -> dict[str, Any]:
+    global _CURRENT_AGENT_ACTIVITY_DETAILS
+
+    signature = _document_formalization_review_signature(live_state)
+    autonomy_state["document_formalization_review_signature"] = signature
+    autonomy_state["document_formalization_review_attempted"] = True
+    _record_agent_activity(
+        parent_agent,
+        "formalization-review-start",
+        "Starting independent document formalization statement/source review",
+        active_file=str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or ""),
+        blocker=str(live_state.get("current_blocker", "") or ""),
+    )
+    parent_details = dict(_CURRENT_AGENT_ACTIVITY_DETAILS)
+    parent_owner = _read_native_env("RUNNER_OWNER", "")
+    reviewer = _build_agent()
+    reviewer._parent_session_id = str(getattr(parent_agent, "session_id", "") or "")
+    reviewer._delegate_depth = int(getattr(parent_agent, "_delegate_depth", 0) or 0) + 1
+    reviewer._managed_autonomy_state = autonomy_state
+    reviewer._managed_queue_edit_guard_state = {}
+    reviewer._managed_initial_declaration_keys_by_file = {}
+    reviewer._managed_step_boundary_closed = False
+
+    _CURRENT_AGENT_ACTIVITY_DETAILS = _agent_activity_details(reviewer)
+    try:
+        result = _run_managed_conversation(
+            reviewer,
+            user_message=_attach_live_proof_state(_document_formalization_review_prompt(dict(live_state)), live_state),
+            system_message=system_prompt,
+            conversation_history=[],
+            persist_user_message="[epflemma-native independent formalization statement/source review]",
+        )
+        _record_turn_activity([], list(result.get("messages", []) or []), phase="formalization-review")
+        _record_agent_activity(
+            reviewer,
+            "formalization-review-complete",
+            "Independent document formalization statement/source review completed",
+            interrupted=bool(result.get("interrupted")),
+        )
+        return result
+    finally:
+        _CURRENT_AGENT_ACTIVITY_DETAILS = parent_details
+        if parent_owner:
+            os.environ["EPFLEMMA_NATIVE_RUNNER_OWNER"] = parent_owner
+
+
+def _maybe_run_document_formalization_review_agent(
+    agent: Any,
+    system_prompt: str,
+    live_state: Mapping[str, Any],
+    autonomy_state: dict[str, Any],
+) -> bool:
+    if not _document_formalization_review_due(live_state, autonomy_state):
+        return False
+    _run_document_formalization_review_agent(agent, system_prompt, live_state, autonomy_state)
+    return True
 
 
 def _final_file_sweep_block(live_state: Mapping[str, Any]) -> str:
@@ -4669,9 +6131,22 @@ def _build_live_proof_state(
                     merged["blocker_signature"] = f"{label or 'queue'}:{merged.get('line', '?')}"
                 enriched_queue.append(merged)
         declaration_queue = enriched_queue
+    document_handoff = _document_formalization_handoff_verification(
+        active_file,
+        diagnostics=diagnostics,
+        sorry_count=sorry_count if isinstance(sorry_count, int) else None,
+    )
+    document_handoff_blocked = _document_formalization_requested() and not bool(document_handoff.get("ok"))
+    if document_handoff_blocked:
+        declaration_queue = []
     current_queue_item = _current_queue_item(declaration_queue, active_file)
     current_queue_label = str((current_queue_item or {}).get("label", "") or "").strip()
-    queue_needs_final_file_sweep = declaration_scope == "file" and bool(active_file) and not declaration_queue
+    queue_needs_final_file_sweep = (
+        declaration_scope == "file"
+        and bool(active_file)
+        and not declaration_queue
+        and not document_handoff_blocked
+    )
     if declaration_scope == "file" and current_queue_label:
         target_symbol = current_queue_label
     elif queue_needs_final_file_sweep:
@@ -4679,7 +6154,12 @@ def _build_live_proof_state(
     current_queue_prefix = _declaration_prefix_text(active_file, current_queue_label) if current_queue_label else ""
     current_queue_slice = _declaration_slice_text(active_file, current_queue_label) if current_queue_label else ""
     declaration_queue_summary = _format_declaration_queue(declaration_queue)
+    if document_handoff_blocked:
+        declaration_queue_summary = str(document_handoff.get("summary", "") or declaration_queue_summary)
     current_blocker = blocker_summary or ", ".join((current_queue_item or {}).get("reasons", []) or [])
+    if document_handoff_blocked:
+        current_blocker = str(document_handoff.get("summary", "") or current_blocker)
+        blocker_summary = current_blocker
     active_file_label = ""
     verification_hint = _recommended_verification_command(active_file)
     if active_file:
@@ -4719,6 +6199,7 @@ def _build_live_proof_state(
         "capability_report": capability_report,
         "recent_empty_search_streak": empty_search_streak,
         "search_exhausted": search_exhausted,
+        "document_formalization_handoff": dict(document_handoff),
     }
     route_decision = route_workflow_step(
         _workflow_kind(),
@@ -4726,6 +6207,15 @@ def _build_live_proof_state(
         configured_skill=_base_active_skill(),
         cwd=_project_root(),
     ).to_dict()
+    if document_handoff_blocked:
+        route_decision.update(
+            {
+                "skill_name": "lean-formalization",
+                "route_action": "planner-review-gate",
+                "recommended_worker": "",
+                "reason": str(document_handoff.get("summary", "") or "document formalization handoff is blocked"),
+            }
+        )
     if current_queue_item and route_decision.get("recommended_worker"):
         current_queue_item = dict(current_queue_item)
         current_queue_item.setdefault(
@@ -4758,47 +6248,56 @@ def _build_live_proof_state(
         project_sorry_count=project_sorry_count,
         project_sorry_files=list(project_sorry_files),
     )
+    project_prove_summary = _project_prove_manager_summary(autonomy_state)
     body = "\n".join(
-        [
-            LIVE_PROOF_STATE_PREFIX,
-            "",
-            f"Workflow: {_workflow_kind()}",
-            f"Active file: {active_file_label or '[unknown]'}",
-            f"Active file path: {active_file or '[unknown]'}",
-            f"Target theorem: {target_symbol or ('[full-file verification sweep]' if queue_needs_final_file_sweep else '[unknown]')}",
-            "",
-            "Diagnostics:",
-            model_diagnostics,
-            "",
-            "Goals:",
-            goals,
-            "",
-            "Build:",
-            build_status or "no recent manager verification",
-            "",
-            "Queue horizon:",
-            model_queue_summary,
-            "",
-            "Route:",
-            f"{route_action} via {route_decision.get('skill_name', '[unknown]')}",
-            route_summary,
-            "",
-            "Recommended verification path:",
-            verification_hint or "`lean_inspect` first, then `lean_verify` when close to clean",
-            "",
-            "Search state:",
-            (
-                f"empty search streak: {empty_search_streak} (search exhausted for this theorem)"
-                if search_exhausted
-                else f"empty search streak: {empty_search_streak}"
-            ),
-            "",
-            "Capabilities:",
-            f"degraded reasons: {degraded_summary}",
-            "",
-            "Proof status:",
-            *model_proof_status,
-        ]
+        (
+            [
+                LIVE_PROOF_STATE_PREFIX,
+                "",
+                f"Workflow: {_workflow_kind()}",
+                f"Active file: {active_file_label or '[unknown]'}",
+                f"Active file path: {active_file or '[unknown]'}",
+                f"Target theorem: {target_symbol or ('[full-file verification sweep]' if queue_needs_final_file_sweep else '[unknown]')}",
+                "",
+                "Diagnostics:",
+                model_diagnostics,
+                "",
+                "Goals:",
+                goals,
+                "",
+                "Build:",
+                build_status or "no recent manager verification",
+                "",
+                "Queue horizon:",
+                model_queue_summary,
+                "",
+                "Document formalization handoff verifier:",
+                str(document_handoff.get("summary", "") or "[not active]"),
+                "",
+                "Route:",
+                f"{route_action} via {route_decision.get('skill_name', '[unknown]')}",
+                route_summary,
+                "",
+                "Recommended verification path:",
+                verification_hint or "`lean_inspect` first, then `lean_verify` when close to clean",
+                "",
+                "Search state:",
+                (
+                    f"empty search streak: {empty_search_streak} (search exhausted for this theorem)"
+                    if search_exhausted
+                    else f"empty search streak: {empty_search_streak}"
+                ),
+                "",
+            ]
+            + (["Project manager:", project_prove_summary, ""] if project_prove_summary else [])
+            + [
+                "Capabilities:",
+                f"degraded reasons: {degraded_summary}",
+                "",
+                "Proof status:",
+                *model_proof_status,
+            ]
+        )
     ).strip()
     live_state = {
         "active_file": active_file,
@@ -4827,6 +6326,12 @@ def _build_live_proof_state(
         "route_decision": route_decision,
         "recent_empty_search_streak": empty_search_streak,
         "search_exhausted": search_exhausted,
+        "document_formalization_handoff": dict(document_handoff),
+        "project_prove_manager": _project_prove_manager_active(autonomy_state),
+        "project_prove_file_queue": list(dict(autonomy_state or {}).get("project_prove_file_queue", []) or []),
+        "project_prove_completed_files": list(dict(autonomy_state or {}).get("project_prove_completed_files", []) or []),
+        "project_prove_plan_source": str(dict(autonomy_state or {}).get("project_prove_plan_source", "") or ""),
+        "project_prove_plan_reason": str(dict(autonomy_state or {}).get("project_prove_plan_reason", "") or ""),
         "message": body,
     }
     if _workflow_kind() in AUTONOMOUS_WORKFLOW_KINDS:
@@ -4858,47 +6363,57 @@ def _build_live_proof_state(
             project_sorry_count=live_state.get("project_sorry_count"),
             project_sorry_files=list(live_state.get("project_sorry_files", []) or []),
         )
+        live_project_prove_summary = _project_prove_manager_summary(autonomy_state)
+        live_document_handoff = dict(live_state.get("document_formalization_handoff", {}) or {})
         live_state["message"] = "\n".join(
-            [
-                LIVE_PROOF_STATE_PREFIX,
-                "",
-                f"Workflow: {_workflow_kind()}",
-                f"Active file: {live_state.get('active_file_label') or '[unknown]'}",
-                f"Active file path: {live_state.get('active_file') or '[unknown]'}",
-                f"Target theorem: {live_state.get('target_symbol') or '[unknown]'}",
-                "",
-                "Diagnostics:",
-                live_diagnostics,
-                "",
-                "Goals:",
-                str(live_state.get("goals", "") or "unavailable"),
-                "",
-                "Build:",
-                str(live_state.get("build_status", "") or "no recent manager verification"),
-                "",
-                "Queue horizon:",
-                live_queue_summary,
-                "",
-                "Route:",
-                (
-                    f"{dict(live_state.get('route_decision', {}) or {}).get('route_action', '[none]')} "
-                    f"via {dict(live_state.get('route_decision', {}) or {}).get('skill_name', '[unknown]')}"
-                ),
-                str(dict(live_state.get("route_decision", {}) or {}).get("reason", "") or "[none]"),
-                "",
-                "Recommended verification path:",
-                str(live_state.get("verification_hint", "") or "`lean_inspect` first, then `lean_verify` when close to clean"),
-                "",
-                "Capabilities:",
-                "degraded reasons: "
-                + (
-                    ", ".join(dict(live_state.get("capability_report", {}) or {}).get("degraded_reasons", []) or [])
-                    or "[none]"
-                ),
-                "",
-                "Proof status:",
-                *live_proof_status,
-            ]
+            (
+                [
+                    LIVE_PROOF_STATE_PREFIX,
+                    "",
+                    f"Workflow: {_workflow_kind()}",
+                    f"Active file: {live_state.get('active_file_label') or '[unknown]'}",
+                    f"Active file path: {live_state.get('active_file') or '[unknown]'}",
+                    f"Target theorem: {live_state.get('target_symbol') or '[unknown]'}",
+                    "",
+                    "Diagnostics:",
+                    live_diagnostics,
+                    "",
+                    "Goals:",
+                    str(live_state.get("goals", "") or "unavailable"),
+                    "",
+                    "Build:",
+                    str(live_state.get("build_status", "") or "no recent manager verification"),
+                    "",
+                    "Queue horizon:",
+                    live_queue_summary,
+                    "",
+                    "Document formalization handoff verifier:",
+                    str(live_document_handoff.get("summary", "") or "[not active]"),
+                    "",
+                    "Route:",
+                    (
+                        f"{dict(live_state.get('route_decision', {}) or {}).get('route_action', '[none]')} "
+                        f"via {dict(live_state.get('route_decision', {}) or {}).get('skill_name', '[unknown]')}"
+                    ),
+                    str(dict(live_state.get("route_decision", {}) or {}).get("reason", "") or "[none]"),
+                    "",
+                    "Recommended verification path:",
+                    str(live_state.get("verification_hint", "") or "`lean_inspect` first, then `lean_verify` when close to clean"),
+                    "",
+                ]
+                + (["Project manager:", live_project_prove_summary, ""] if live_project_prove_summary else [])
+                + [
+                    "Capabilities:",
+                    "degraded reasons: "
+                    + (
+                        ", ".join(dict(live_state.get("capability_report", {}) or {}).get("degraded_reasons", []) or [])
+                        or "[none]"
+                    ),
+                    "",
+                    "Proof status:",
+                    *live_proof_status,
+                ]
+            )
         ).strip()
     return live_state
 
@@ -4916,9 +6431,13 @@ def _build_live_proof_state_compat(
 
 def _attach_live_proof_state(user_message: str, live_state: Mapping[str, Any]) -> str:
     block = str(live_state.get("message", "") or "").strip()
-    if not block:
-        return user_message
-    return f"{user_message}\n\n{block}".strip()
+    supplemental = _startup_additional_skill_contracts(_effective_skill_name(live_state))
+    parts = [str(user_message or "").strip()]
+    if block:
+        parts.append(block)
+    if supplemental:
+        parts.append(supplemental)
+    return "\n\n".join(part for part in parts if part).strip()
 
 
 def _diagnostics_indicate_failure(diagnostics: str) -> bool:
@@ -5005,7 +6524,7 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     diagnostics = str(live_state.get("diagnostics", "") or "")
     goals = str(live_state.get("goals", "") or "")
     build_status = str(live_state.get("build_status", "") or "")
-    declaration_scope = str(live_state.get("declaration_scope", "") or _declaration_queue_scope())
+    declaration_scope = str(live_state.get("declaration_scope", "") or "project")
     sorry_count = live_state.get("sorry_count")
     project_sorry_count = live_state.get("project_sorry_count")
     verification_ok = live_state.get("verification_ok")
@@ -5014,6 +6533,27 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     declaration_queue_total = int(live_state.get("declaration_queue_total", 0) or 0)
 
     if not active_file:
+        return False
+    if _document_formalization_needs_planner_draft(active_file):
+        return False
+    if _document_formalization_needs_blueprint_plan():
+        return False
+    document_handoff = _document_formalization_handoff_verification(
+        active_file,
+        diagnostics=diagnostics,
+        sorry_count=sorry_count if isinstance(sorry_count, int) else None,
+        completion=True,
+    )
+    if not bool(document_handoff.get("ok")):
+        return False
+    # The final-sweep warning-cleanup gate granted a one-shot cleanup turn;
+    # the file is NOT fully verified until that turn runs (or is bypassed
+    # by the no-regression path on the next promote pass). Without this
+    # check the project-prove manager treats the file as done, advances to
+    # the next file, and pops the cleanup state via `_assign_project_prove_file`
+    # — so the cleanup conversation never gets to drive the model. That's
+    # exactly why warnings persist across multi-file project workflows.
+    if bool(live_state.get("final_sweep_warning_cleanup_pending")):
         return False
     if isinstance(sorry_count, int) and sorry_count > 0:
         return False
@@ -5034,6 +6574,590 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     if _goals_still_open(goals):
         return False
     return verification_passed
+
+
+def _document_formalization_requested() -> bool:
+    return (
+        _workflow_kind() == "formalize"
+        and bool(_read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip())
+    )
+
+
+def _document_formalization_needs_planner_draft(active_file: str) -> bool:
+    if not _document_formalization_requested() or not active_file:
+        return False
+    try:
+        text = Path(active_file).read_text(encoding="utf-8")
+    except Exception:
+        return False
+    has_declaration = bool(
+        re.search(
+            r"^\s*(?:@[A-Za-z0-9_.]+\s+)*(?:theorem|lemma|def|instance|class|structure|inductive)\s+",
+            text,
+            flags=re.MULTILINE,
+        )
+    )
+    if has_declaration:
+        return False
+    non_import_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("--") and not line.lstrip().startswith("import ")
+    ]
+    if not non_import_lines:
+        return True
+    return "EPFLemma formalization target scaffold" in text or "EPFLemma created this file as the active formalization target" in text
+
+
+def _document_formalization_needs_blueprint_plan() -> bool:
+    if not _document_formalization_requested():
+        return False
+    blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    if not blueprint:
+        return True
+    try:
+        text = Path(blueprint).read_text(encoding="utf-8")
+    except Exception:
+        return True
+    lowered = text.lower()
+    return (
+        "planner preflight created" in lowered
+        or "_pending_" in lowered
+    )
+
+
+def _lean_imports_from_text(text: str) -> list[str]:
+    imports: list[str] = []
+    for match in re.finditer(
+        r"^\s*import\s+([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)\b",
+        _strip_lean_comments_and_strings(str(text or "")),
+        flags=re.MULTILINE,
+    ):
+        module = match.group(1).strip()
+        if module and module not in imports:
+            imports.append(module)
+    return imports
+
+
+def _lean_imports_from_file(path: Path) -> list[str]:
+    try:
+        return _lean_imports_from_text(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _valid_lean_module_name(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return all(re.match(r"^[A-Za-z_][A-Za-z0-9_']*$", part) for part in text.split("."))
+
+
+def _blueprint_import_plan_section(text: str) -> str:
+    match = re.search(
+        r"^##\s+(?:Lean\s+)?Import Plan\s*$\n(?P<body>.*?)(?=^##\s+|\Z)",
+        str(text or ""),
+        flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    return str(match.group("body") or "") if match else ""
+
+
+def _blueprint_import_plan_imports(text: str) -> list[str]:
+    section = _blueprint_import_plan_section(text)
+    if not section:
+        return []
+    imports: list[str] = []
+
+    def _add(module: str) -> None:
+        normalized = str(module or "").strip()
+        if normalized.endswith(".lean") or "/" in normalized:
+            return
+        if _valid_lean_module_name(normalized) and normalized not in imports:
+            imports.append(normalized)
+
+    for match in re.finditer(
+        r"^\s*import\s+([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)\b",
+        section,
+        flags=re.MULTILINE,
+    ):
+        _add(match.group(1))
+    for line in section.splitlines():
+        if not line.lstrip().startswith("-"):
+            continue
+        code_span = re.search(r"`([^`]+)`", line)
+        if code_span:
+            _add(code_span.group(1))
+            continue
+        bullet = re.search(
+            r"-\s*([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)\b",
+            line,
+        )
+        if bullet:
+            _add(bullet.group(1))
+    return imports
+
+
+def _document_formalization_manifest_labels() -> list[str]:
+    manifest = _read_text_env("EPFLEMMA_FORMALIZATION_MANIFEST", "").strip()
+    if not manifest:
+        return []
+    try:
+        payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    labels: list[str] = []
+    for block in payload.get("theorem_blocks", []) or []:
+        if not isinstance(block, Mapping):
+            continue
+        label = str(block.get("label", "") or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _document_formalization_manifest_blocks() -> list[dict[str, Any]]:
+    manifest = _read_text_env("EPFLEMMA_FORMALIZATION_MANIFEST", "").strip()
+    if not manifest:
+        return []
+    try:
+        payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    blocks: list[dict[str, Any]] = []
+    for block in payload.get("theorem_blocks", []) or []:
+        if not isinstance(block, Mapping):
+            continue
+        label = str(block.get("label", "") or "").strip()
+        if not label:
+            continue
+        blocks.append(
+            {
+                "label": label,
+                "kind": str(block.get("kind", "") or "").strip().lower(),
+                "has_proof": bool(str(block.get("proof", "") or "").strip()),
+                "statement": str(block.get("statement", "") or ""),
+                "proof": str(block.get("proof", "") or ""),
+            }
+        )
+    return blocks
+
+
+def _blueprint_source_inventory_entries(text: str) -> dict[str, str]:
+    section = re.search(
+        r"^##\s+Source Statement Inventory\s*$\n(?P<body>.*?)(?=^##\s+|\Z)",
+        str(text or ""),
+        flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    if not section:
+        return {}
+    body = str(section.group("body") or "")
+    entries: dict[str, str] = {}
+    matches = list(
+        re.finditer(
+            r"^###\s+(?P<label>[^\n]+?)\s*$",
+            body,
+            flags=re.MULTILINE,
+        )
+    )
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        label = str(match.group("label") or "").strip()
+        if label:
+            entries[label] = body[start:end].strip()
+    return entries
+
+
+def _blueprint_bullet_value(entry: str, label: str) -> str:
+    match = re.search(
+        rf"^\s*-\s*{re.escape(label)}\s*:\s*(?P<value>.*?)\s*$",
+        str(entry or ""),
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    return str(match.group("value") or "").strip() if match else ""
+
+
+def _blueprint_first_bullet_value(entry: str, labels: Sequence[str]) -> str:
+    for label in labels:
+        value = _blueprint_bullet_value(entry, label)
+        if value:
+            return value
+    return ""
+
+
+def _blueprint_bullet_block(entry: str, label: str) -> str:
+    text = str(entry or "")
+    match = re.search(
+        rf"^\s*-\s*{re.escape(label)}\s*:\s*(?P<value>.*?)\s*$",
+        text,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    start = match.start()
+    next_match = re.search(
+        r"^-\s*[A-Za-z][A-Za-z0-9 /_-]{0,80}\s*:\s*",
+        text[match.end():],
+        flags=re.MULTILINE,
+    )
+    end = match.end() + next_match.start() if next_match else len(text)
+    return text[start:end].strip()
+
+
+def _blueprint_value_missing(value: str) -> bool:
+    lowered = str(value or "").strip().lower()
+    return not lowered or lowered in {"_pending_", "pending", "todo", "tbd"}
+
+
+def _blueprint_block_missing(value: str) -> bool:
+    text = str(value or "").strip()
+    if _blueprint_value_missing(text):
+        return True
+    return bool(re.search(r":\s*(_pending_|pending|todo|tbd)\s*$", text, flags=re.IGNORECASE))
+
+
+def _lean_decl_names_from_planned_value(value: str) -> list[str]:
+    names: list[str] = []
+
+    def _add(raw: str) -> None:
+        candidate = str(raw or "").strip()
+        candidate = candidate.split(":", 1)[0].strip()
+        candidate = candidate.split(" ", 1)[0].strip()
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_'.]*$", candidate) and candidate not in names:
+            names.append(candidate)
+
+    for span in re.findall(r"`([^`]+)`", str(value or "")):
+        _add(span)
+    if not names:
+        for chunk in re.split(r"[,;]|\band\b", str(value or "")):
+            _add(chunk)
+    return names
+
+
+def _declaration_names_from_text(text: str) -> set[str]:
+    return {
+        str(entry.get("name", "") or "").strip()
+        for entry in _declaration_line_index_from_text(text)
+        if str(entry.get("name", "") or "").strip()
+    }
+
+
+def _declaration_entries_by_name_from_text(text: str) -> dict[str, dict[str, Any]]:
+    entries: dict[str, dict[str, Any]] = {}
+    for entry in _declaration_line_index_from_text(text):
+        name = str(entry.get("name", "") or "").strip()
+        if name:
+            entries[name] = dict(entry)
+    return entries
+
+
+_BLUEPRINT_UNRESOLVED_FIDELITY_RE = re.compile(
+    r"\b(_pending_|pending|todo|tbd|missing|unresolved|unchecked|unverified|not covered|not formalized|omitted|weakened)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _blueprint_fidelity_field(entry: str, labels: Sequence[str]) -> str:
+    for label in labels:
+        value = _blueprint_bullet_block(entry, label) or _blueprint_bullet_value(entry, label)
+        if value:
+            return value
+    return ""
+
+
+def _blueprint_fidelity_field_unresolved(value: str) -> bool:
+    text = str(value or "").strip()
+    if _blueprint_block_missing(text):
+        return True
+    return bool(_BLUEPRINT_UNRESOLVED_FIDELITY_RE.search(text))
+
+
+def _lean_declaration_preceding_comment_window(
+    target_text: str,
+    entry: Mapping[str, Any],
+    *,
+    max_lines: int = 16,
+) -> str:
+    try:
+        line = int(entry.get("line", 0) or 0)
+    except Exception:
+        line = 0
+    if line <= 1:
+        return ""
+    lines = str(target_text or "").splitlines()
+    start = max(0, line - max_lines - 1)
+    end = max(0, min(line - 1, len(lines)))
+    return "\n".join(lines[start:end]).strip()
+
+
+def _lean_comment_has_source_proof_notes(comment: str) -> bool:
+    lowered = str(comment or "").lower()
+    required_markers = (
+        "source proof",
+        "proof sketch",
+        "proof strategy",
+        "prover notes",
+        "paper proof",
+    )
+    return any(marker in lowered for marker in required_markers)
+
+
+def _document_formalization_blueprint_inventory_issues(
+    blueprint_text: str,
+    target_text: str,
+) -> list[str]:
+    issues: list[str] = []
+    entries = _blueprint_source_inventory_entries(blueprint_text)
+    target_entries = _declaration_entries_by_name_from_text(target_text)
+    target_decl_names = set(target_entries)
+    for block in _document_formalization_manifest_blocks():
+        label = block["label"]
+        kind = block["kind"]
+        requires_proof_notes = bool(block.get("has_proof")) or kind in {"theorem", "lemma", "proposition", "corollary"}
+        entry = entries.get(label, "")
+        if not entry:
+            issues.append(f"blueprint is missing source inventory entry `{label}`")
+            continue
+        locator = _blueprint_first_bullet_value(
+            entry,
+            ("Source locator", "Source location", "Source line/page", "Source lines", "Source page"),
+        )
+        if _blueprint_value_missing(locator):
+            issues.append(f"blueprint entry `{label}` is missing a concrete source locator")
+        elif _document_formalization_requested():
+            source_relative = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip()
+            if source_relative and source_relative not in locator:
+                issues.append(
+                    f"blueprint entry `{label}` source locator should include `{source_relative}` so the prover can reopen the source"
+                )
+        planned = _blueprint_first_bullet_value(
+            entry,
+            (
+                "Planned Lean declarations",
+                "Planned Lean declaration",
+                "Formal names",
+                "Formal name",
+                "Lean declarations",
+                "Lean declaration",
+            ),
+        )
+        planned_block = (
+            _blueprint_bullet_block(entry, "Planned Lean declarations")
+            or _blueprint_bullet_block(entry, "Planned Lean declaration")
+            or _blueprint_bullet_block(entry, "Lean declarations")
+            or _blueprint_bullet_block(entry, "Lean declaration")
+        )
+        if _blueprint_value_missing(planned):
+            planned = planned_block
+        elif planned_block and planned_block not in planned:
+            planned = f"{planned}\n{planned_block}"
+        if _blueprint_value_missing(planned):
+            issues.append(f"blueprint entry `{label}` has no concrete planned Lean declarations")
+            planned_names: list[str] = []
+        else:
+            planned_names = _lean_decl_names_from_planned_value(planned)
+            if not planned_names:
+                issues.append(f"blueprint entry `{label}` planned declarations are not parseable")
+            else:
+                missing = [name for name in planned_names if name not in target_decl_names]
+                if missing:
+                    issues.append(
+                        f"blueprint entry `{label}` names declarations missing from target Lean file: "
+                        + ", ".join(f"`{name}`" for name in missing)
+                    )
+
+        review = _blueprint_bullet_block(entry, "Formal statement review") or _blueprint_bullet_value(entry, "Formal statement review")
+        if _blueprint_block_missing(review):
+            issues.append(f"blueprint entry `{label}` is missing a statement-fidelity review")
+        source_qualifiers = _blueprint_fidelity_field(entry, ("Source qualifiers", "Source qualifier", "Fidelity axes"))
+        if _blueprint_fidelity_field_unresolved(source_qualifiers):
+            issues.append(f"blueprint entry `{label}` is missing resolved source qualifiers / fidelity axes")
+        lean_coverage = _blueprint_fidelity_field(entry, ("Lean coverage", "Formal coverage", "Lean statement coverage"))
+        if _blueprint_fidelity_field_unresolved(lean_coverage):
+            issues.append(f"blueprint entry `{label}` is missing resolved Lean coverage for the source qualifiers")
+        scope_changes = _blueprint_fidelity_field(entry, ("Scope changes", "Intentional scope changes", "Scope change"))
+        if _blueprint_fidelity_field_unresolved(scope_changes):
+            issues.append(f"blueprint entry `{label}` must explicitly record scope changes, or `none`")
+
+        verification = _blueprint_first_bullet_value(
+            entry,
+            (
+                "Statement verification status",
+                "Statement/source verification",
+                "Source verification status",
+                "Verification status",
+            ),
+        )
+        if _blueprint_value_missing(verification):
+            issues.append(
+                f"blueprint entry `{label}` is missing statement/source verification approval; "
+                "run the review workflow to check and correct the planned Lean statements before proving"
+            )
+        elif not re.search(r"\b(approved|verified|reviewed|accepted)\b", verification, flags=re.IGNORECASE):
+            issues.append(
+                f"blueprint entry `{label}` statement/source verification is not approved"
+            )
+
+        notes = _blueprint_first_bullet_value(entry, ("Source proof / prover notes", "Proof strategy", "Prover notes"))
+        if _blueprint_value_missing(notes):
+            issues.append(f"blueprint entry `{label}` is missing source proof/prover notes")
+        if requires_proof_notes and notes.lower() in {"none", "none needed", "n/a"}:
+            issues.append(f"blueprint entry `{label}` needs prover notes for its {kind}")
+        if requires_proof_notes:
+            for name in planned_names:
+                target_entry = target_entries.get(name, {})
+                decl_kind = str(target_entry.get("kind", "") or "").strip().lower()
+                if decl_kind not in {"theorem", "lemma", "example"}:
+                    continue
+                comment = _lean_declaration_preceding_comment_window(target_text, target_entry)
+                if not _lean_comment_has_source_proof_notes(comment):
+                    issues.append(
+                        f"Lean doc comment above `{name}` is missing source proof/prover notes"
+                    )
+    return issues
+
+
+def _root_module_file_for_module(module_name: str) -> tuple[str, Path] | None:
+    if not module_name or "." not in module_name:
+        return None
+    root_module = module_name.split(".", 1)[0]
+    if not _valid_lean_module_name(root_module):
+        return None
+    return root_module, Path(_project_root()) / f"{root_module}.lean"
+
+
+def _module_file_for_module(module_name: str) -> Path | None:
+    if not _valid_lean_module_name(module_name):
+        return None
+    return Path(_project_root()) / Path(*module_name.split(".")).with_suffix(".lean")
+
+
+def _document_formalization_handoff_verification(
+    active_file: str,
+    *,
+    diagnostics: str | None = None,
+    sorry_count: int | None = None,
+    completion: bool = False,
+) -> dict[str, Any]:
+    if not _document_formalization_requested() or not active_file:
+        return {"ok": True, "issues": [], "summary": "document formalization not active"}
+
+    issues: list[str] = []
+    active_path = Path(active_file).expanduser()
+    try:
+        active_path = active_path.resolve()
+    except Exception:
+        pass
+
+    if _document_formalization_needs_planner_draft(str(active_path)):
+        issues.append("planner has not drafted Lean declarations in the target file")
+    if _document_formalization_needs_blueprint_plan():
+        issues.append("blueprint still contains preflight placeholders or `_pending_` entries")
+
+    blueprint_path = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    blueprint_text = ""
+    if blueprint_path:
+        try:
+            blueprint_text = Path(blueprint_path).read_text(encoding="utf-8")
+        except Exception:
+            issues.append("blueprint file could not be read")
+    else:
+        issues.append("blueprint file is not configured")
+
+    target_text = ""
+    try:
+        target_text = active_path.read_text(encoding="utf-8")
+    except Exception:
+        issues.append("target Lean file could not be read")
+
+    diagnostic_text = str(diagnostics or "").strip()
+    if diagnostic_text and _diagnostics_indicate_hard_failure(diagnostic_text):
+        issues.append(
+            "target Lean file has hard diagnostics before prover handoff: "
+            + _single_line(diagnostic_text, 260)
+        )
+
+    target_imports = _lean_imports_from_text(target_text)
+    module_name = _module_name_for_file(str(active_path))
+    root_info = _root_module_file_for_module(module_name)
+    if root_info:
+        root_module, root_file = root_info
+        if root_module in target_imports:
+            issues.append(
+                f"target module `{module_name}` still imports root module `{root_module}`; "
+                "replace the scaffold import with direct dependencies before project-wide inclusion"
+            )
+        elif not root_file.is_file():
+            issues.append(
+                f"root module file `{root_file.name}` is missing, so plain `lake build` will not include `{module_name}`"
+            )
+        else:
+            root_imports = _lean_imports_from_file(root_file)
+            root_imports_target = module_name in root_imports
+            parent_module = module_name.rsplit(".", 1)[0] if "." in module_name else ""
+            parent_file = _module_file_for_module(parent_module) if parent_module else None
+            root_imports_parent = bool(parent_module and parent_module in root_imports and parent_file)
+            parent_imports_target = bool(
+                root_imports_parent
+                and parent_file is not None
+                and parent_file.is_file()
+                and module_name in _lean_imports_from_file(parent_file)
+            )
+            if root_imports_parent and parent_file is not None and not parent_file.is_file():
+                issues.append(
+                    f"root module `{root_module}` imports parent module `{parent_module}`, "
+                    f"but parent module file `{parent_file.name}` is missing"
+                )
+            elif root_imports_parent and not parent_imports_target:
+                issues.append(
+                    f"parent module `{parent_module}` does not import `{module_name}`, so plain `lake build` can skip it"
+                )
+            elif not root_imports_target and not parent_imports_target:
+                expected = f"`{module_name}`"
+                if parent_module:
+                    expected += f" or parent module `{parent_module}`"
+                issues.append(
+                    f"root module `{root_module}` does not import {expected}, so plain `lake build` can skip it"
+                )
+
+    if blueprint_text:
+        issues.extend(_document_formalization_blueprint_inventory_issues(blueprint_text, target_text))
+
+        planned_imports = _blueprint_import_plan_imports(blueprint_text)
+        if planned_imports:
+            missing_from_target = [module for module in planned_imports if module not in target_imports]
+            missing_from_plan = [module for module in target_imports if module not in planned_imports]
+            if missing_from_target:
+                issues.append(
+                    "blueprint import plan mentions modules not imported by the target Lean file: "
+                    + ", ".join(f"`{module}`" for module in missing_from_target)
+                )
+            if missing_from_plan:
+                issues.append(
+                    "target Lean file imports modules missing from the blueprint import plan: "
+                    + ", ".join(f"`{module}`" for module in missing_from_plan)
+                )
+
+        if completion and isinstance(sorry_count, int) and sorry_count == 0:
+            if re.search(r"^\s*-\s*Status:\s*active formalization\s*$", blueprint_text, flags=re.MULTILINE | re.IGNORECASE):
+                issues.append("blueprint status is still `active formalization` after proofs are complete")
+            handoff_match = re.search(
+                r"^\s*-\s*\[(?P<checked>[ xX])\]\s*Hand stable `sorry` declarations to the managed prover queue\.",
+                blueprint_text,
+                flags=re.MULTILINE,
+            )
+            if handoff_match and handoff_match.group("checked") == " ":
+                issues.append("blueprint managed-prover handoff checklist item is still unchecked")
+
+    ok = not issues
+    summary = (
+        "document formalization handoff verifier passed"
+        if ok
+        else "document formalization handoff verifier blocked queue: " + "; ".join(issues[:5])
+    )
+    if len(issues) > 5:
+        summary += f"; plus {len(issues) - 5} more issue(s)"
+    return {"ok": ok, "issues": issues, "summary": summary}
 
 
 def _module_name_for_file(active_file: str) -> str:
@@ -5085,6 +7209,13 @@ def _queue_item_verification_hint(active_file: str) -> str:
 
 def _recommended_verification_command(active_file: str) -> str:
     relative_label = _relative_file_label(active_file)
+    if _workflow_kind() == "formalize" and _document_formalization_requested() and active_file:
+        mode = "module" if _module_name_for_file(active_file) else "file_exact"
+        return (
+            f"`lean_inspect` on {relative_label}, then `lean_verify(mode={mode})` for draft readiness; "
+            "use the document formalization handoff verifier for blueprint/source-review readiness, "
+            "not terminal Lake checks"
+        )
     if _single_queue_item_turn_enabled() and active_file:
         return (
             f"`lean_inspect` on {relative_label}, then `lean_incremental_check(check_target)` "
@@ -5197,6 +7328,26 @@ def _promote_live_state_to_verified(
     if not normalized or not normalized.get("active_file"):
         return normalized
     normalized["verification_ok"] = False
+    active_file = str(normalized.get("active_file", "") or "")
+    if _document_formalization_needs_planner_draft(active_file):
+        normalized["blocker_summary"] = "document formalization planner has not drafted Lean declarations yet"
+        normalized["build_status"] = normalized.get("build_status") or "waiting for document formalization draft"
+        return normalized
+    if _document_formalization_needs_blueprint_plan():
+        normalized["blocker_summary"] = "document formalization blueprint has not been updated from the preflight placeholder"
+        normalized["build_status"] = normalized.get("build_status") or "waiting for document formalization blueprint plan"
+        return normalized
+    document_handoff = _document_formalization_handoff_verification(
+        active_file,
+        diagnostics=str(normalized.get("diagnostics", "") or ""),
+        sorry_count=normalized.get("sorry_count") if isinstance(normalized.get("sorry_count"), int) else None,
+        completion=True,
+    )
+    normalized["document_formalization_handoff"] = dict(document_handoff)
+    if not bool(document_handoff.get("ok")):
+        normalized["blocker_summary"] = str(document_handoff.get("summary", "") or "document formalization handoff blocked")
+        normalized["build_status"] = normalized.get("build_status") or "waiting for document formalization handoff verifier"
+        return normalized
     declaration_scope = str(normalized.get("declaration_scope", "") or _declaration_queue_scope())
     diagnostics = str(normalized.get("diagnostics", "") or "")
     declaration_queue_total = int(normalized.get("declaration_queue_total", 0) or 0)
@@ -5216,7 +7367,6 @@ def _promote_live_state_to_verified(
     project_sorry_count, project_sorry_files = _count_project_sorries(_project_root())
     normalized["project_sorry_count"] = project_sorry_count
     normalized["project_sorry_files"] = project_sorry_files
-    active_file = str(normalized.get("active_file", "") or "")
     ok, build_status = _run_explicit_verification_build(active_file, full_project=False)
     record = _record_manager_verification(
         autonomy_state,
@@ -5822,6 +7972,7 @@ def _build_agent() -> AIAgent:
     except Exception:
         pass
     agent._managed_base_reasoning_config = dict(reasoning_cfg or {}) if reasoning_cfg else None
+    _disable_generic_lean_statement_guard_for_native_runner()
 
     def _pre_tool_call_callback(function_name: str, _args: Mapping[str, Any]) -> str | None:
         return _managed_pre_tool_call(agent, function_name, _args)
@@ -5862,6 +8013,12 @@ def _print_header() -> None:
     print(f"Parallel agents: {_parallel_agents()}")
     if project_root:
         print(f"Project: {project_root}")
+    formalization_document = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip()
+    if formalization_document:
+        print(f"Document: {formalization_document}")
+        target = _read_text_env("EPFLEMMA_FORMALIZATION_TARGET_FILE", "").strip()
+        if target:
+            print(f"Formalization target: {target}")
     print(f"Run log: {_workflow_state_root() / 'latest-run.log'}")
     print("")
     print("Commands: /help, /status, /status <agent> [N], /swarm [agent] [N], /proof-state, /diagnostics, /goals, /history, /checkpoint [note], /rollback <N>, /resume-plan [N], /compact, /exit, Ctrl+C")
@@ -6338,7 +8495,7 @@ def _print_history(entries: list[dict[str, Any]]) -> None:
             print(f"   blocker: {blocker}")
 
 
-def _startup_active_skill_contract(skill_name: str) -> str:
+def _startup_skill_contract(skill_name: str, *, heading: str = "EPFLEMMA ACTIVE SKILL") -> str:
     name = str(skill_name or "").strip()
     if not name:
         return ""
@@ -6369,13 +8526,38 @@ def _startup_active_skill_contract(skill_name: str) -> str:
             "Linked workflow specs available through `skill_view`: " + ", ".join(spec_ids) + "."
         )
     parts = [
-        f"[EPFLEMMA ACTIVE SKILL: {payload.get('name') or name} ({payload.get('source') or 'unknown'})]",
+        f"[{heading}: {payload.get('name') or name} ({payload.get('source') or 'unknown'})]",
         "",
         content,
     ]
     if linked_summary_lines:
         parts.extend(["", "\n".join(linked_summary_lines)])
     return "\n".join(parts).strip()
+
+
+def _startup_active_skill_contract(skill_name: str) -> str:
+    return _startup_skill_contract(skill_name, heading="EPFLEMMA ACTIVE SKILL")
+
+
+def _startup_additional_skill_contracts(active_skill: str = "") -> str:
+    active = str(active_skill or "").strip()
+    blocks: list[str] = []
+    for name in _additional_skill_names():
+        if active and name == active:
+            continue
+        block = _startup_skill_contract(name, heading="EPFLEMMA SUPPLEMENTAL SKILL")
+        if block:
+            blocks.append(block)
+    if not blocks:
+        return ""
+    return "\n\n".join(
+        [
+            "[EPFLEMMA SUPPLEMENTAL SKILLS]",
+            "These supplemental skills are reattached on managed continuations and after context compaction.",
+            "",
+            "\n\n".join(blocks),
+        ]
+    ).strip()
 
 
 def _startup_user_message(
@@ -6389,7 +8571,9 @@ def _startup_user_message(
     workflow_kind = _workflow_kind()
     selected_skill = _effective_skill_name(live_state)
     skill_contract = _startup_active_skill_contract(selected_skill)
-    skill_block = f"\n\n{skill_contract}" if skill_contract else ""
+    additional_skill_contracts = _startup_additional_skill_contracts(selected_skill)
+    combined_skill_contract = "\n\n".join(part for part in (skill_contract, additional_skill_contracts) if part)
+    skill_block = f"\n\n{combined_skill_contract}" if combined_skill_contract else ""
     explicit_goal = _read_native_env("EXPLICIT_GOAL", "")
     goal_block = f"\n\nUser goal: {explicit_goal}" if explicit_goal else ""
     route_block = ""
@@ -6546,6 +8730,24 @@ def _autonomous_stop_reason(
     live_state: Mapping[str, Any] | None,
     autonomy_state: dict[str, Any],
 ) -> str:
+    if _document_formalization_ready_for_prover_handoff(live_state):
+        autonomy_state["continuation_blocked_runs"] = 0
+        autonomy_state["continuation_stable_cycles"] = 0
+        if not autonomy_state.get("document_formalization_prover_handoff_recorded"):
+            autonomy_state["document_formalization_prover_handoff_recorded"] = True
+            _record_activity(
+                "formalization-prover-handoff-ready",
+                "Document formalization statement/source review passed; ready for /prove",
+                active_file=str((live_state or {}).get("active_file_label", "") or (live_state or {}).get("active_file", "") or ""),
+                sorry_count=(live_state or {}).get("sorry_count"),
+            )
+        return "blocked"
+
+    if _document_formalization_waiting_for_independent_review(live_state):
+        autonomy_state["continuation_blocked_runs"] = 0
+        autonomy_state["continuation_stable_cycles"] = 0
+        return "blocked"
+
     signature = (
         str((live_state or {}).get("active_file_label", "") or ""),
         str((live_state or {}).get("target_symbol", "") or ""),
@@ -6594,6 +8796,8 @@ def _autonomous_continuation_prompt(
     autonomy_state: Mapping[str, Any] | None = None,
 ) -> str:
     declaration_scope = str(live_state.get("declaration_scope", "") or _declaration_queue_scope())
+    document_handoff = dict(live_state.get("document_formalization_handoff", {}) or {})
+    document_handoff_blocked = _document_formalization_requested() and not bool(document_handoff.get("ok", True))
     if _runner_lean_prompt_enabled():
         if declaration_scope == "file":
             verification_gate = str(
@@ -6612,6 +8816,13 @@ def _autonomous_continuation_prompt(
             f"Current verification gate: {verification_gate}\n"
             "Do not stop until that gate is satisfied or you have a concrete blocker to report."
         )
+        if document_handoff_blocked:
+            prompt += (
+                "\n\nDocument formalization gate: keep this as planner/review work. "
+                "Use `lean_inspect` and `lean_verify`, update the blueprint and source-aware doc comments, "
+                "and do not fill theorem/lemma `sorry` proofs. If the only remaining blocker is independent "
+                "statement/source approval, report that blocker instead of self-approving it."
+            )
     else:
         if declaration_scope == "file":
             verification_lines = (
@@ -6646,13 +8857,22 @@ def _autonomous_continuation_prompt(
             f"This is autonomous continuation cycle {cycle_number}. Use the refreshed live proof state below, "
             f"{conclusion}"
         )
-    route_decision = route_workflow_step(
-        _workflow_kind(),
-        live_state,
-        configured_skill=_effective_skill_name(live_state),
-        autonomy_state=autonomy_state,
-        cwd=_project_root(),
-    ).to_dict()
+        if document_handoff_blocked:
+            prompt += (
+                "\n\nDocument formalization gate: keep this as planner/review work. "
+                "Use `lean_inspect` and `lean_verify` for draft readiness, update the blueprint and source-aware "
+                "doc comments, and do not fill theorem/lemma `sorry` proofs. If the only remaining blocker is "
+                "independent statement/source approval, report that blocker instead of self-approving it."
+            )
+    route_decision = dict(live_state.get("route_decision", {}) or {})
+    if not route_decision:
+        route_decision = route_workflow_step(
+            _workflow_kind(),
+            live_state,
+            configured_skill=_effective_skill_name(live_state),
+            autonomy_state=autonomy_state,
+            cwd=_project_root(),
+        ).to_dict()
     if route_decision:
         prompt += (
             "\n\nRoute decision:\n"
@@ -6707,6 +8927,10 @@ def _drive_autonomous_followups(
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
         live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
+        if _advance_project_prove_manager_if_needed(autonomy_state, live_state, phase="autonomous"):
+            checkpoint_state = _journal_status()
+            live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
+            live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
         rebuilt_history, transition = _rebuild_history_for_theorem_transition(
             history,
             compaction_state,
@@ -6740,6 +8964,12 @@ def _drive_autonomous_followups(
                 previous_note=str(previous_outcome.get("note", "") or ""),
             )
             _print_theorem_transition_handoff(history)
+        if _maybe_run_document_formalization_review_agent(agent, system_prompt, live_state, autonomy_state):
+            checkpoint_state = _journal_status()
+            live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
+            live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
+            _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="verifying")
+            continue
         _maybe_announce_final_file_sweep_state(autonomy_state, live_state)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="verifying")
         stop_reason = _autonomous_stop_reason(history, live_state, autonomy_state)
@@ -6873,6 +9103,7 @@ def main() -> int:
         resumed_checkpoint = checkpoint_state.get("current")
         if resumed_checkpoint:
             history = _checkpoint_replay_history(resumed_checkpoint)
+        _ensure_project_prove_manager_started(autonomy_state, phase="startup")
         live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="resumed" if resumed_checkpoint else "ready")
         _record_agent_activity(agent, "runner-start", "Managed workflow runner started", resumed=bool(resumed_checkpoint))

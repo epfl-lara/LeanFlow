@@ -1,22 +1,56 @@
 #!/bin/sh
 set -eu
 
-case "${ALLOW_GAUSSTEST_COMMIT:-}" in
+case "${ALLOW_WORKFLOW_FIXTURE_COMMIT:-}" in
   1|true|TRUE|yes|YES|on|ON)
     exit 0
     ;;
 esac
 
-protected_paths="$(git diff --cached --name-only -- testdata/workflow_projects/GaussTest)"
+case "${ALLOW_GAUSSTEST_COMMIT:-}" in
+  1|true|TRUE|yes|YES|on|ON)
+    allow_gausstest=1
+    ;;
+  *)
+    allow_gausstest=0
+    ;;
+esac
 
-if [ -z "${protected_paths}" ]; then
-  exit 0
+case "${ALLOW_DOCFORMALIZATIONDEMO_COMMIT:-}" in
+  1|true|TRUE|yes|YES|on|ON)
+    allow_docformalizationdemo=1
+    ;;
+  *)
+    allow_docformalizationdemo=0
+    ;;
+esac
+
+blocked=0
+
+gausstest_paths="$(git diff --cached --name-only -- testdata/workflow_projects/GaussTest)"
+if [ -n "${gausstest_paths}" ] && [ "${allow_gausstest}" -ne 1 ]; then
+  echo "Commit blocked: staged changes under testdata/workflow_projects/GaussTest are protected." >&2
+  echo "These files are kept as a canonical workflow fixture." >&2
+  echo "Runtime attempts should stay in ignored paths such as .epflemma/ and .lake/." >&2
+  echo "For an intentional fixture refresh, rerun with ALLOW_GAUSSTEST_COMMIT=1." >&2
+  echo >&2
+  printf '%s\n' "${gausstest_paths}" >&2
+  blocked=1
 fi
 
-echo "Commit blocked: staged changes under testdata/workflow_projects/GaussTest are protected." >&2
-echo "These files are kept as a canonical workflow fixture." >&2
-echo "Runtime attempts should stay in ignored paths such as .epflemma/ and .lake/." >&2
-echo "For an intentional fixture refresh, rerun with ALLOW_GAUSSTEST_COMMIT=1." >&2
-echo >&2
-printf '%s\n' "${protected_paths}" >&2
-exit 1
+docformalizationdemo_paths="$(git diff --cached --name-only -- testdata/workflow_projects/DocFormalizationDemo)"
+if [ -n "${docformalizationdemo_paths}" ] && [ "${allow_docformalizationdemo}" -ne 1 ]; then
+  echo "Commit blocked: staged changes under testdata/workflow_projects/DocFormalizationDemo are protected." >&2
+  echo "These files are kept as a canonical document-formalization workflow fixture." >&2
+  echo "Runtime attempts should stay in ignored paths such as .epflemma/, .lake/, and LaTeX build outputs." >&2
+  echo "For an intentional fixture refresh, rerun with ALLOW_DOCFORMALIZATIONDEMO_COMMIT=1." >&2
+  echo >&2
+  printf '%s\n' "${docformalizationdemo_paths}" >&2
+  blocked=1
+fi
+
+if [ "${blocked}" -ne 0 ]; then
+  exit 1
+fi
+
+exit 0

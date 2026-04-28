@@ -1821,7 +1821,8 @@ def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch,
 
     feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
 
-    assert "changed content outside the assigned declaration" in feedback
+    assert "restored those protected declarations" in feedback
+    assert "later" in feedback
     assert active.read_text(encoding="utf-8") == (
         "theorem demo : True := by\n"
         "  trivial\n"
@@ -1829,6 +1830,241 @@ def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch,
         "theorem later : True := by\n"
         "  sorry\n"
     )
+
+
+def test_out_of_scope_queue_edit_guard_allows_new_helper_declarations(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "theorem demo : True := by\n"
+        "  sorry\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    class _Agent:
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "private lemma demo_helper : True := by\n"
+        "  trivial\n"
+        "\n"
+        "theorem demo : True := by\n"
+        "  trivial\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
+
+    assert feedback == ""
+    assert "demo_helper" in active.read_text(encoding="utf-8")
+
+
+def test_out_of_scope_queue_edit_guard_allows_iterating_on_added_helpers(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "theorem demo : True := by\n"
+        "  sorry\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    class _Agent:
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "lemma demo_helper : True := by\n"
+        "  trivial\n"
+        "\n"
+        "theorem demo : True := by\n"
+        "  exact demo_helper\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    assert runner._restore_out_of_scope_queue_edit(agent, "patch") == ""
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "lemma demo_helper : True := by\n"
+        "  exact True.intro\n"
+        "\n"
+        "theorem demo : True := by\n"
+        "  exact demo_helper\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    assert runner._restore_out_of_scope_queue_edit(agent, "patch") == ""
+    assert "exact True.intro" in active.read_text(encoding="utf-8")
+
+
+def test_queue_statement_guard_restores_initial_assigned_statement_change(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    original = "theorem demo : True := by\n  sorry\n"
+    active.write_text(original, encoding="utf-8")
+
+    class _Agent:
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text("theorem demo : False := by\n  trivial\n", encoding="utf-8")
+
+    feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
+
+    assert "QUEUE STATEMENT GUARD" in feedback
+    assert "protected source statement" in feedback
+    assert active.read_text(encoding="utf-8") == original
+
+
+def test_queue_statement_guard_allows_model_created_helper_statement_change(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent:
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "lemma demo_helper : True := by\n"
+        "  trivial\n"
+        "\n"
+        "theorem demo : True := by\n"
+        "  exact demo_helper\n",
+        encoding="utf-8",
+    )
+    assert runner._restore_out_of_scope_queue_edit(agent, "patch") == ""
+
+    agent._managed_autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo_helper",
+            "active_file": str(active),
+        }
+    }
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "lemma demo_helper : And True True := by\n"
+        "  exact And.intro trivial trivial\n"
+        "\n"
+        "theorem demo : True := by\n"
+        "  exact demo_helper\n",
+        encoding="utf-8",
+    )
+
+    assert runner._restore_out_of_scope_queue_edit(agent, "patch") == ""
+    assert "And True True" in active.read_text(encoding="utf-8")
+
+
+def test_formalization_queue_statement_guard_protects_source_declaration(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    original = (
+        "import Mathlib\n\n"
+        "/-- Source proof: the source proof closes the toy claim directly. -/\n"
+        "theorem t : True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(original, encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "## Source Statement Inventory\n\n"
+        "### thm:demo\n"
+        "- Source locator: `docs/paper.tex:1-3`\n"
+        "- Planned Lean declarations: `t`\n"
+        "- Formal statement review: source statement exactly matches `True`\n"
+        "- Source proof / prover notes: prove by `trivial`\n",
+        encoding="utf-8",
+    )
+    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem", "proof": "trivial"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
+
+    class _Agent:
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "t",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(original.replace("theorem t : True", "theorem t : False"), encoding="utf-8")
+
+    feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
+
+    assert "QUEUE STATEMENT GUARD" in feedback
+    assert active.read_text(encoding="utf-8") == original
 
 
 def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
@@ -1847,6 +2083,7 @@ def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://example.test/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_KEY", "key")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "provider")
+    monkeypatch.delenv("EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS", raising=False)
     monkeypatch.setattr(runner, "AIAgent", _Agent)
     monkeypatch.setattr(
         "tools.terminal_tool.register_task_env_overrides",
@@ -1856,6 +2093,7 @@ def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
     agent = runner._build_agent()
 
     assert os.environ["TERMINAL_CWD"] == str(project)
+    assert os.environ["EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS"] == "1"
     assert agent._managed_tool_task_id == "epflemma-native-abc123"
     assert registered == [("epflemma-native-abc123", {"cwd": str(project)})]
 
@@ -2782,6 +3020,302 @@ def test_declaration_work_queue_scans_project_when_scope_is_project(monkeypatch,
     assert queue[0]["reasons"] == ["1 sorry placeholder(s)"]
 
 
+def test_project_prove_manager_uses_llm_file_order(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    first = module_dir / "A.lean"
+    second = module_dir / "B.lean"
+    first.write_text("theorem a : True := by\n  sorry\n", encoding="utf-8")
+    second.write_text("theorem b : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    events: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+
+    class _Message:
+        content = '{"files": ["Demo/B.lean", "Demo/A.lean"], "reason": "B is shorter"}'
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        choices = [_Choice()]
+
+    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: _Response())
+
+    state: dict[str, object] = {}
+    assert runner._ensure_project_prove_manager_started(state, phase="startup") is True
+
+    assert os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/B.lean"
+    assert state["project_prove_file_queue"] == ["Demo/B.lean", "Demo/A.lean"]
+    assert state["project_prove_plan_source"] == "llm"
+    assert [args[0] for args, _ in events] == [
+        "project-prove-file-queue-planned",
+        "project-prove-file-assigned",
+    ]
+    planned = events[0][1]
+    assert planned["ordered_files"] == ["Demo/B.lean", "Demo/A.lean"]
+    assert planned["plan_source"] == "llm"
+    assert planned["total_candidates"] == 2
+
+
+def test_project_prove_manager_llm_prompt_includes_context_and_dependency_data(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    base = module_dir / "Base.lean"
+    later = module_dir / "Later.lean"
+    base.write_text(
+        "import Mathlib\n\n"
+        "/-- Doc for the base theorem. -/\n"
+        "theorem base_easy : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    later.write_text(
+        "import Demo.Base\n\n"
+        "theorem later : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    prompts: list[str] = []
+
+    class _Message:
+        content = '{"files": ["Demo/Base.lean", "Demo/Later.lean"], "reason": "Base unblocks Later"}'
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        choices = [_Choice()]
+
+    def _fake_call_llm(**kwargs):
+        prompts.append(kwargs["messages"][0]["content"])
+        return _Response()
+
+    monkeypatch.setattr(runner, "call_llm", _fake_call_llm)
+
+    state: dict[str, object] = {}
+    assert runner._ensure_project_prove_manager_started(state, phase="startup") is True
+
+    prompt = prompts[0]
+    assert "Doc for the base theorem" in prompt
+    assert "theorem base_easy" in prompt
+    assert "candidate_downstream_count" in prompt
+    assert "Demo/Later.lean" in prompt
+    assert '"kind": "full"' in prompt
+
+
+def test_project_prove_manager_fallback_prefers_upstream_files(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    upstream = module_dir / "Base.lean"
+    downstream = module_dir / "Later.lean"
+    upstream.write_text("theorem base : True := by\n  sorry\n", encoding="utf-8")
+    downstream.write_text("import Demo.Base\n\ntheorem later : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no aux")))
+
+    state: dict[str, object] = {}
+    assert runner._ensure_project_prove_manager_started(state, phase="startup") is True
+
+    assert os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/Base.lean"
+    assert state["project_prove_file_queue"][0] == "Demo/Base.lean"
+    assert state["project_prove_plan_source"] == "fallback"
+
+
+def test_project_prove_manager_fallback_uses_transitive_candidate_dependencies(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    base = module_dir / "Base.lean"
+    middle = module_dir / "Middle.lean"
+    leaf = module_dir / "Leaf.lean"
+    base.write_text("theorem base : True := by\n  sorry\n", encoding="utf-8")
+    middle.write_text("import Demo.Base\n\ntheorem middle : True := by\n  sorry\n", encoding="utf-8")
+    leaf.write_text("import Demo.Middle\n\ntheorem leaf : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+
+    candidates = runner._collect_project_prove_file_candidates(project)
+    by_label = {item["label"]: item for item in candidates}
+
+    assert by_label["Demo/Base.lean"]["candidate_downstream_count"] == 2
+    assert by_label["Demo/Middle.lean"]["candidate_downstream_count"] == 1
+    assert by_label["Demo/Leaf.lean"]["candidate_downstream_count"] == 0
+    assert runner._project_prove_fallback_order(candidates) == [
+        "Demo/Base.lean",
+        "Demo/Middle.lean",
+        "Demo/Leaf.lean",
+    ]
+
+
+def test_project_prove_manager_fallback_prefers_hinted_easy_file(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    homework = module_dir / "Homework.lean"
+    competition = module_dir / "Competition.lean"
+    homework.write_text(
+        "import Mathlib\n\n"
+        "example (x : ℝ) : |x| ≥ 0 := by exact abs_nonneg x\n"
+        "#check abs_nonneg\n"
+        "-- TODO: prove this\n"
+        "theorem absLipschitz1 : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    competition.write_text(
+        "import Mathlib\n\n"
+        "theorem putnam_2020_a1 : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no aux")))
+
+    state: dict[str, object] = {}
+    assert runner._ensure_project_prove_manager_started(state, phase="startup") is True
+
+    assert os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/Homework.lean"
+    assert state["project_prove_file_queue"][0] == "Demo/Homework.lean"
+
+
+def test_project_prove_manager_guards_llm_order_by_difficulty(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    homework = module_dir / "Homework.lean"
+    competition = module_dir / "Competition.lean"
+    homework.write_text(
+        "import Mathlib\n\n"
+        "example (x : ℝ) : |x| ≥ 0 := by exact abs_nonneg x\n"
+        "#check abs_nonneg\n"
+        "-- TODO: prove this\n"
+        "theorem absLipschitz1 : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    competition.write_text(
+        "import Mathlib\n\n"
+        "theorem putnam_2020_a1 : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    class _Message:
+        content = '{"files": ["Demo/Competition.lean", "Demo/Homework.lean"], "reason": "bad model order"}'
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        choices = [_Choice()]
+
+    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: _Response())
+
+    state: dict[str, object] = {}
+    assert runner._ensure_project_prove_manager_started(state, phase="startup") is True
+
+    assert os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/Homework.lean"
+    assert state["project_prove_file_queue"] == ["Demo/Homework.lean", "Demo/Competition.lean"]
+    assert state["project_prove_plan_source"] == "llm"
+
+
+def test_project_prove_manager_skips_artifact_lean_files(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    artifact_dir = project / ".artifacts" / "run1" / "Demo"
+    module_dir.mkdir(parents=True)
+    artifact_dir.mkdir(parents=True)
+    source = module_dir / "A.lean"
+    artifact = artifact_dir / "Old.lean"
+    source.write_text("theorem a : True := by\n  sorry\n", encoding="utf-8")
+    artifact.write_text("theorem old : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+
+    candidates = runner._collect_project_prove_file_candidates(project)
+    labels = {item["label"] for item in candidates}
+
+    assert labels == {"Demo/A.lean"}
+
+
+def test_project_prove_manager_advances_to_next_file_after_verified_file(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    first = module_dir / "A.lean"
+    second = module_dir / "B.lean"
+    first.write_text("theorem a : True := by\n  trivial\n", encoding="utf-8")
+    second.write_text("theorem b : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/A.lean")
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no aux")))
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: bool(live_state.get("verification_ok")))
+
+    state: dict[str, object] = {
+        "project_prove_manager_enabled": True,
+        "project_prove_file_queue": ["Demo/A.lean", "Demo/B.lean"],
+    }
+    live_state = {
+        "active_file": str(first),
+        "active_file_label": "Demo/A.lean",
+        "verification_ok": True,
+        "project_sorry_count": 1,
+    }
+
+    assert runner._advance_project_prove_manager_if_needed(state, live_state, phase="autonomous") is True
+    assert os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/B.lean"
+    assert state["project_prove_completed_files"] == ["Demo/A.lean"]
+
+
+def test_project_prove_manager_does_not_take_over_explicit_file(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "A.lean"
+    active.write_text("theorem a : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/A.lean")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+
+    state: dict[str, object] = {}
+    assert runner._ensure_project_prove_manager_started(state, phase="startup") is False
+    assert "project_prove_manager_enabled" not in state
+
+
 def test_build_live_proof_state_assigns_current_queue_head_as_target(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
@@ -3257,6 +3791,27 @@ def test_live_state_is_verified_for_file_scope_even_if_project_has_other_sorries
     assert runner._live_state_is_verified(live_state) is True
 
 
+def test_document_formalization_scaffold_is_not_verified_before_planner_drafts(monkeypatch, tmp_path):
+    active = tmp_path / "Formalization" / "Paper.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("import Demo\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+
+    live_state = {
+        "active_file": str(active),
+        "declaration_scope": "file",
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake env lean Formalization/Paper.lean succeeded",
+        "verification_ok": True,
+        "sorry_count": 0,
+        "project_sorry_count": 0,
+    }
+
+    assert runner._live_state_is_verified(live_state) is False
+
+
 def test_live_state_is_not_verified_without_explicit_verification_result():
     live_state = {
         "active_file": "/tmp/project/Main.lean",
@@ -3372,6 +3927,830 @@ def test_promote_live_state_uses_focused_build_before_full_project_build(monkeyp
     assert runner._live_state_is_verified(promoted) is False
 
 
+def test_promote_document_formalization_scaffold_waits_for_planner(monkeypatch, tmp_path):
+    active = tmp_path / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("import Demo\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+
+    calls = []
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda *args, **kwargs: calls.append(args) or (True, "ok"),
+    )
+
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "",
+            "sorry_count": 0,
+        }
+    )
+
+    assert calls == []
+    assert promoted["verification_ok"] is False
+    assert "planner has not drafted" in promoted["blocker_summary"]
+
+
+def test_document_formalization_placeholder_blueprint_blocks_verified(monkeypatch, tmp_path):
+    active = tmp_path / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    blueprint = tmp_path / ".epflemma" / "workflow-state" / "formalization" / "paper" / "blueprint.md"
+    blueprint.parent.mkdir(parents=True)
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planner preflight created; replace this with the agent's dependency plan.\n\n"
+        "### thm:demo\n"
+        "- Planned Lean declarations: _pending_\n"
+        "- Dependencies: _pending_\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+
+    live_state = {
+        "active_file": str(active),
+        "declaration_scope": "file",
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake env lean Formalization/Paper.lean succeeded",
+        "verification_ok": True,
+        "sorry_count": 0,
+        "project_sorry_count": 0,
+    }
+
+    assert runner._live_state_is_verified(live_state) is False
+
+    calls = []
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda *args, **kwargs: calls.append(args) or (True, "ok"),
+    )
+    promoted = runner._promote_live_state_to_verified(live_state)
+
+    assert calls == []
+    assert promoted["verification_ok"] is False
+    assert "blueprint has not been updated" in promoted["blocker_summary"]
+
+
+def test_document_formalization_handoff_blocks_queue_without_root_import(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    root.write_text("import Mathlib\n", encoding="utf-8")
+    active.write_text("import Mathlib\n\ntheorem t : True := by\n  sorry\n", encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planned\n\n"
+        "## Import Plan\n\n"
+        "`Main.lean` imports:\n"
+        "- `Mathlib`\n\n"
+        "### thm:demo\n"
+        "- Source locator: `docs/paper.tex:1-3`\n"
+        "- Planned Lean declarations: `t`\n"
+        "- Dependencies: none\n"
+        "- Formal statement review: source statement exactly matches `True` in the fixture\n"
+        "- Source proof / prover notes: prove by `trivial`\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", str(active))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+
+    class _Caps:
+        def to_dict(self):
+            return {"degraded_reasons": []}
+
+    class _Inspection:
+        diagnostics = "no errors found"
+        goals = "no goals"
+        sorry_count = 1
+        project_sorry_count = 1
+        capability_report = {}
+        queue_items = []
+
+    class _Route:
+        def to_dict(self):
+            return {
+                "route_action": "final-sweep",
+                "skill_name": "lean-proof-loop",
+                "reason": "queue is empty",
+            }
+
+    monkeypatch.setattr(runner, "probe_capabilities", lambda root: _Caps())
+    monkeypatch.setattr(runner, "lean_inspect", lambda *args, **kwargs: _Inspection())
+    monkeypatch.setattr(runner, "route_workflow_step", lambda *args, **kwargs: _Route())
+
+    live_state = runner._build_live_proof_state([], {})
+
+    assert live_state["declaration_queue_total"] == 0
+    assert live_state["current_queue_item"] == {}
+    assert live_state["queue_needs_final_file_sweep"] is False
+    assert live_state["route_decision"]["route_action"] == "planner-review-gate"
+    assert live_state["route_decision"]["skill_name"] == "lean-formalization"
+    assert "lean_verify(mode=module)" in live_state["verification_hint"]
+    handoff = live_state["document_formalization_handoff"]
+    assert handoff["ok"] is False
+    assert "root module `Demo` does not import `Demo.Paper.Main`" in handoff["summary"]
+
+
+def test_document_formalization_review_gate_stops_before_proving(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Demo/Paper/Main.lean",
+        "document_formalization_handoff": {
+            "ok": False,
+            "issues": ["blueprint entry `thm:demo` statement/source verification is not approved"],
+            "summary": "document formalization handoff verifier blocked queue: statement/source verification is not approved",
+        },
+    }
+    autonomy_state = {}
+
+    assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "blocked"
+
+    live_state["route_decision"] = {
+        "route_action": "planner-review-gate",
+        "skill_name": "lean-formalization",
+        "reason": "document formalization handoff is blocked",
+    }
+    monkeypatch.setattr(runner, "_runner_lean_prompt_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_swarm_enabled", lambda: False)
+    prompt = runner._autonomous_continuation_prompt(live_state, 1, autonomy_state)
+
+    assert "planner/review work" in prompt
+    assert "lean_verify" in prompt
+    assert "planner-review-gate" in prompt
+    assert "do not fill theorem/lemma `sorry` proofs" in prompt
+
+
+def test_document_formalization_review_due_for_approval_only_gate(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(tmp_path / "Blueprint.md"))
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Demo/Paper/Main.lean",
+        "document_formalization_handoff": {
+            "ok": False,
+            "issues": ["blueprint entry `thm:demo` statement/source verification is not approved"],
+        },
+    }
+
+    assert runner._document_formalization_review_due(live_state, {}) is True
+    autonomy_state = {
+        "document_formalization_review_signature": runner._document_formalization_review_signature(live_state)
+    }
+    assert runner._document_formalization_review_due(live_state, autonomy_state) is False
+
+
+def test_drive_autonomous_followups_runs_independent_document_review_before_block(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(tmp_path / "Blueprint.md"))
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Demo/Paper/Main.lean",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "document_formalization_handoff": {
+            "ok": False,
+            "issues": ["blueprint entry `thm:demo` statement/source verification is not approved"],
+        },
+    }
+    review_calls = []
+    persisted = []
+
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_build_live_proof_state_compat", lambda *args, **kwargs: dict(live_state))
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified_compat", lambda state, autonomy_state=None: state)
+    monkeypatch.setattr(runner, "_advance_project_prove_manager_if_needed", lambda *args, **kwargs: False)
+    monkeypatch.setattr(runner, "_rebuild_history_for_theorem_transition", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(runner, "_maybe_announce_final_file_sweep_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")))
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    def fake_review(agent, system_prompt, current_live_state, autonomy_state):
+        review_calls.append(dict(current_live_state))
+        autonomy_state["document_formalization_review_signature"] = runner._document_formalization_review_signature(current_live_state)
+        return {"messages": [], "interrupted": False}
+
+    monkeypatch.setattr(runner, "_run_document_formalization_review_agent", fake_review)
+
+    history, _, _, final_live_state = runner._drive_autonomous_followups(
+        _FakeAgent(),
+        "system",
+        [],
+        {},
+        {},
+        {},
+    )
+
+    assert history == []
+    assert final_live_state["active_file_label"] == "Demo/Paper/Main.lean"
+    assert len(review_calls) == 1
+    assert persisted[-1] == "blocked"
+
+
+def test_document_formalization_reviewed_draft_stops_ready_for_prove(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    events = []
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Demo/Paper/Main.lean",
+        "sorry_count": 2,
+        "document_formalization_handoff": {"ok": True, "issues": []},
+    }
+    autonomy_state = {}
+
+    assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "blocked"
+    assert events[0][0][0] == "formalization-prover-handoff-ready"
+    assert "ready for /prove" in events[0][0][1]
+
+
+def test_document_formalization_gate_clears_stale_queue_assignment(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("theorem t : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "t",
+            "active_file": str(active),
+        },
+    }
+    live_state = {
+        "active_file": str(active),
+        "current_queue_item": {"label": "t"},
+        "document_formalization_handoff": {
+            "ok": False,
+            "issues": ["blueprint entry `thm:demo` statement/source verification is not approved"],
+            "summary": "document formalization handoff verifier blocked queue",
+        },
+    }
+
+    runner._prepare_queue_assignment_state(autonomy_state, live_state)
+
+    assert "current_queue_assignment" not in autonomy_state
+    rebuilt, transition = runner._rebuild_history_for_theorem_transition([], {}, autonomy_state, live_state)
+    assert rebuilt is None
+    assert transition is None
+
+
+def test_additional_skill_contracts_are_attached_to_continuations(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    skill = project / ".epflemma" / "skills" / "paper-blueprint" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: paper-blueprint\ndescription: Paper blueprint.\n---\n\nRead `Demo/Paper/Blueprint.md`.",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ADDITIONAL_SKILLS", str(skill))
+    live_state = {
+        "message": "live state",
+        "route_decision": {"skill_name": "lean-proof-loop"},
+    }
+
+    attached = runner._attach_live_proof_state("continue", live_state)
+
+    assert "EPFLEMMA SUPPLEMENTAL SKILLS" in attached
+    assert "Read `Demo/Paper/Blueprint.md`" in attached
+
+
+def test_document_formalization_handoff_detects_stale_import_plan(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    active.write_text("import Mathlib\n\ntheorem t : True := by\n  trivial\n", encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: active formalization\n\n"
+        "## Planner Checklist\n\n"
+        "- [ ] Hand stable `sorry` declarations to the managed prover queue.\n\n"
+        "## Lean Import Plan\n\n"
+        "`Main.lean` imports:\n"
+        "- `Mathlib.Data.Nat.Coprime.Basic`\n\n"
+        "### thm:demo\n"
+        "- Planned Lean declarations: `t`\n"
+        "- Dependencies: none\n"
+        "- Formal statement review: source statement exactly matches `True` in the fixture\n"
+        "- Source proof / prover notes: prove by `trivial`\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+
+    handoff = runner._document_formalization_handoff_verification(
+        str(active),
+        sorry_count=0,
+        completion=True,
+    )
+
+    assert handoff["ok"] is False
+    assert "Mathlib.Data.Nat.Coprime.Basic" in handoff["summary"]
+    assert "Mathlib`" in handoff["summary"]
+    assert "active formalization" in handoff["summary"]
+    assert runner._live_state_is_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "lake build succeeded",
+            "verification_ok": True,
+            "sorry_count": 0,
+            "project_sorry_count": 0,
+        }
+    ) is False
+
+
+def test_document_formalization_handoff_checks_blueprint_inventory_against_target(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    active.write_text("import Mathlib\n\ntheorem t : True := by\n  trivial\n", encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planned\n\n"
+        "## Lean Import Plan\n\n"
+        "`Main.lean` imports:\n"
+        "- `Mathlib`\n\n"
+        "## Source Statement Inventory\n\n"
+        "### thm:demo\n\n"
+        "- Planned Lean declarations: `missing_t`\n"
+        "- Dependencies: none\n"
+        "- Formal statement review: _pending_\n"
+        "- Source proof / prover notes: _pending_\n",
+        encoding="utf-8",
+    )
+    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
+
+    handoff = runner._document_formalization_handoff_verification(str(active), sorry_count=1)
+
+    assert handoff["ok"] is False
+    assert "missing_t" in handoff["summary"]
+    assert "statement-fidelity review" in handoff["summary"]
+    assert any("source proof/prover notes" in issue for issue in handoff["issues"])
+
+
+def test_document_formalization_handoff_blocks_approved_without_fidelity_axes(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    active.write_text(
+        "import Mathlib\n\n"
+        "def f_param (x y z w : ℤ) : ℚ := x\n"
+        "def g_param (x y z w : ℤ) : ℚ := y\n"
+        "def h_param (x y z w : ℤ) : ℚ := z\n\n"
+        "/-- Source proof: old weak statement only proves image equality. -/\n"
+        "theorem integer_valued_parametrization : True := by\n"
+        "  sorry\n\n"
+        "def f_pos (x y z w : ℤ) : ℚ := x\n"
+        "def g_pos (x y z w : ℤ) : ℚ := y\n"
+        "def h_pos (x y z w : ℤ) : ℚ := z\n\n"
+        "/-- Source proof: old weak positive statement omits four-square conversion. -/\n"
+        "theorem positive_pythagorean_parametrization : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planned\n\n"
+        "## Lean Import Plan\n\n"
+        "`Main.lean` imports:\n"
+        "- `Mathlib`\n\n"
+        "## Source Statement Inventory\n\n"
+        "### line-194\n"
+        "- Source locator: `docs/paper.tex:194-203`\n"
+        "- Planned Lean declarations:\n"
+        "  - `f_param x y z w`, `g_param x y z w`, `h_param x y z w`\n"
+        "  - `integer_valued_parametrization`\n"
+        "- Dependencies: none\n"
+        "- Formal statement review:\n"
+        "  - Source: There exist `f,g,h ∈ Int(ℤ⁴)` parametrizing all PTs.\n"
+        "  - Lean: set equality for the displayed functions.\n"
+        "  - Fidelity note: proof must verify integer-valuedness.\n"
+        "- Statement verification status: approved\n"
+        "- Source proof / prover notes: use parity and the `T` parametrization.\n\n"
+        "### line-240\n"
+        "- Source locator: `docs/paper.tex:240-253`\n"
+        "- Planned Lean declarations:\n"
+        "  - `f_pos x y z w`, `g_pos x y z w`, `h_pos x y z w`\n"
+        "  - `positive_pythagorean_parametrization`\n"
+        "- Dependencies: none\n"
+        "- Formal statement review:\n"
+        "  - Source: positive parameters plus a four-square conversion to integer parameters.\n"
+        "  - Lean: constrained-domain set equality only.\n"
+        "- Statement verification status: approved\n"
+        "- Source proof / prover notes: use positivity and the four-square theorem.\n",
+        encoding="utf-8",
+    )
+    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "theorem_blocks": [
+                    {
+                        "label": "line-194",
+                        "kind": "theorem",
+                        "statement": "There exist f,g,h in Int(ℤ⁴) parametrizing all Pythagorean triples.",
+                        "proof": "parity proof",
+                    },
+                    {
+                        "label": "line-240",
+                        "kind": "remark",
+                        "statement": "The set of positive triples is parametrized with positive integers and non-negative integers. From this formula, a parametrization with integer parameters can be obtained using the 4-square theorem.",
+                        "proof": "four-square proof",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
+
+    handoff = runner._document_formalization_handoff_verification(str(active), sorry_count=2)
+
+    assert handoff["ok"] is False
+    assert any("source qualifiers / fidelity axes" in issue for issue in handoff["issues"])
+    assert any("Lean coverage" in issue for issue in handoff["issues"])
+    assert any("scope changes" in issue.lower() for issue in handoff["issues"])
+
+
+def test_document_formalization_handoff_accepts_resolved_generic_fidelity_axes(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    active.write_text(
+        "import Mathlib\n\n"
+        "/-- Source proof: fixture proof. -/\n"
+        "theorem t : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planned\n\n"
+        "## Lean Import Plan\n\n"
+        "`Main.lean` imports:\n"
+        "- `Mathlib`\n\n"
+        "## Source Statement Inventory\n\n"
+        "### thm:demo\n"
+        "- Source locator: `docs/paper.tex:1-3`\n"
+        "- Planned Lean declarations: `t`\n"
+        "- Dependencies: none\n"
+        "- Formal statement review: source statement exactly matches `True` in the fixture\n"
+        "- Source qualifiers:\n"
+        "  - object class: proposition\n"
+        "  - quantifier shape: closed theorem\n"
+        "- Lean coverage:\n"
+        "  - proposition: theorem `t : True`\n"
+        "  - quantifier shape: closed theorem\n"
+        "- Scope changes: none\n"
+        "- Statement verification status: approved\n"
+        "- Source proof / prover notes: prove by `trivial`\n",
+        encoding="utf-8",
+    )
+    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem", "statement": "True", "proof": "trivial"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
+
+    handoff = runner._document_formalization_handoff_verification(str(active), sorry_count=1)
+
+    assert handoff["ok"] is True
+
+
+def test_document_formalization_handoff_blocks_hard_draft_diagnostics(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    active.write_text(
+        "import Mathlib\n\n"
+        "/-- Source proof: the fixture proof is `trivial`. -/\n"
+        "theorem t : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planned\n\n"
+        "## Lean Import Plan\n\n"
+        "`Main.lean` imports:\n"
+        "- `Mathlib`\n\n"
+        "## Source Statement Inventory\n\n"
+        "### thm:demo\n"
+        "- Source locator: `docs/paper.tex:1-3`\n"
+        "- Planned Lean declarations: `t`\n"
+        "- Dependencies: none\n"
+        "- Formal statement review: source statement exactly matches `True` in the fixture\n"
+        "- Source proof / prover notes: prove by `trivial`\n",
+        encoding="utf-8",
+    )
+    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
+
+    handoff = runner._document_formalization_handoff_verification(
+        str(active),
+        diagnostics=f"{active}:4:8: error: Type mismatch",
+        sorry_count=1,
+    )
+
+    assert handoff["ok"] is False
+    assert "hard diagnostics" in handoff["summary"]
+    assert "Type mismatch" in handoff["summary"]
+
+
+def test_document_formalization_handoff_requires_proof_notes_in_lean_comment(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    active.write_text("import Mathlib\n\n/-- The source theorem says `True`. -/\ntheorem t : True := by\n  sorry\n", encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planned\n\n"
+        "## Lean Import Plan\n\n"
+        "`Main.lean` imports:\n"
+        "- `Mathlib`\n\n"
+        "## Source Statement Inventory\n\n"
+        "### thm:demo\n"
+        "- Source locator: `docs/paper.tex:1-3`\n"
+        "- Planned Lean declarations: `t`\n"
+        "- Dependencies: none\n"
+        "- Formal statement review: source statement exactly matches `True` in the fixture\n"
+        "- Source proof / prover notes: prove by `trivial`\n",
+        encoding="utf-8",
+    )
+    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
+
+    handoff = runner._document_formalization_handoff_verification(str(active), sorry_count=1)
+
+    assert handoff["ok"] is False
+    assert "Lean doc comment above `t` is missing source proof/prover notes" in handoff["summary"]
+
+
+def test_document_formalization_handoff_accepts_synced_blueprint_and_root_import(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    parent = project / "Demo" / "Paper.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    root.write_text("import Demo.Paper\n", encoding="utf-8")
+    parent.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    active.write_text(
+        "import Mathlib\n\n"
+        "/-- Source proof: the source proof closes the toy claim directly; prover notes: use `trivial`. -/\n"
+        "theorem t : True := by\n"
+        "  trivial\n",
+        encoding="utf-8",
+    )
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: complete; Lean module and project build verified\n\n"
+        "## Planner Checklist\n\n"
+        "- [x] Hand stable `sorry` declarations to the managed prover queue.\n\n"
+        "## Lean Import Plan\n\n"
+        "`Main.lean` imports:\n"
+        "- `Mathlib`\n\n"
+        "## Source Statement Inventory\n\n"
+        "### thm:demo\n"
+        "- Source locator: `docs/paper.tex:1-3`\n"
+        "- Planned Lean declarations: `t`\n"
+        "- Dependencies: none\n"
+        "- Formal statement review: source statement exactly matches `True` in the fixture\n"
+        "- Source qualifiers:\n"
+        "  - object class: proposition\n"
+        "  - quantifier shape: closed theorem\n"
+        "- Lean coverage:\n"
+        "  - proposition: theorem `t : True`\n"
+        "  - quantifier shape: closed theorem\n"
+        "- Scope changes: none\n"
+        "- Statement verification status: approved by review workflow\n"
+        "- Source proof / prover notes: prove by `trivial`\n",
+        encoding="utf-8",
+    )
+    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
+
+    handoff = runner._document_formalization_handoff_verification(
+        str(active),
+        sorry_count=0,
+        completion=True,
+    )
+
+    assert handoff == {
+        "ok": True,
+        "issues": [],
+        "summary": "document formalization handoff verifier passed",
+    }
+
+
+def test_document_formalization_write_target_requires_blueprint_plan(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("import Demo\n", encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.parent.mkdir(parents=True, exist_ok=True)
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planner preflight created; replace this with the agent's dependency plan.\n\n"
+        "### thm:demo\n"
+        "- Planned Lean declarations: _pending_\n"
+        "- Dependencies: _pending_\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+
+    result = runner._managed_pre_tool_call(
+        _FakeAgent(),
+        "write_file",
+        {
+            "path": "Demo/Paper/Main.lean",
+            "content": "import Demo\n\ntheorem t : True := by\n  trivial\n",
+        },
+    )
+
+    assert result is not None
+    payload = json.loads(result)
+    assert payload["success"] is False
+    assert "must update the planner blueprint before editing" in payload["error"]
+
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planned\n\n"
+        "### thm:demo\n"
+        "- Planned Lean declarations: `t`\n"
+        "- Dependencies: none\n"
+        "- Formal statement review: source statement exactly matches `True` in the fixture\n"
+        "- Source proof / prover notes: prove by `trivial`\n",
+        encoding="utf-8",
+    )
+
+    planner_result = runner._managed_pre_tool_call(
+        _FakeAgent(),
+        "write_file",
+        {
+            "path": "Demo/Paper/Main.lean",
+            "content": "import Demo\n\ntheorem t : True := by\n  trivial\n",
+        },
+    )
+    assert planner_result is not None
+    planner_payload = json.loads(planner_result)
+    assert "must leave theorem/lemma proofs as `sorry`" in planner_payload["error"]
+
+    assert (
+        runner._managed_pre_tool_call(
+            _FakeAgent(),
+            "write_file",
+            {
+                "path": "Demo/Paper/Main.lean",
+                "content": "import Demo\n\ntheorem t : True := by\n  sorry\n",
+            },
+        )
+        is None
+    )
+
+    prover_agent = _FakeAgent()
+    prover_agent._managed_autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "t",
+            "active_file": str(active),
+        }
+    }
+    stale_queue_result = runner._managed_pre_tool_call(
+        prover_agent,
+        "write_file",
+        {
+            "path": "Demo/Paper/Main.lean",
+            "content": "import Demo\n\ntheorem t : True := by\n  trivial\n",
+        },
+    )
+    assert stale_queue_result is not None
+    stale_queue_payload = json.loads(stale_queue_result)
+    assert "must leave theorem/lemma proofs as `sorry`" in stale_queue_payload["error"]
+
+
 def test_promote_live_state_accepts_warning_only_final_file_sweep(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
@@ -3402,6 +4781,101 @@ def test_promote_live_state_accepts_warning_only_final_file_sweep(monkeypatch, t
     assert promoted["verification_ok"] is True
     assert runner._live_state_is_verified(promoted) is True
     assert runner._queue_needs_final_file_sweep(promoted) is False
+
+
+def test_live_state_is_verified_blocks_when_warning_cleanup_pending():
+    """Regression: in a multi-file project workflow, the project-prove
+    manager calls ``_advance_project_prove_manager_if_needed`` after every
+    queue-empty cycle and uses ``_live_state_is_verified`` as the "this file
+    is done" gate. If that gate ignores the cleanup-pending flag, the
+    project manager advances to the next file *before* the cleanup
+    conversation runs and ``_assign_project_prove_file`` pops the cleanup
+    state — so warnings persist forever in multi-file mode. Pin the gate."""
+
+    base_state = {
+        "active_file": "/tmp/Demo.lean",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "sorry_count": 0,
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake env lean Demo.lean exits 0",
+        "verification_ok": False,  # promote() set this when cleanup fired
+        "last_verification": {
+            "ok": True,
+            "scope": "file",
+            "tool": "lean_verify",
+            "summary": "lake env lean Demo.lean exits 0",
+        },
+    }
+
+    # Without the cleanup-pending flag, the file is treated as verified
+    # (lake build passed, no sorries, no errors).
+    assert runner._live_state_is_verified(base_state) is True
+
+    # With cleanup pending, the file is NOT yet verified — the cleanup turn
+    # must run first, otherwise the project manager will advance and pop
+    # the cleanup state before the conversation drives.
+    pending_state = dict(base_state, final_sweep_warning_cleanup_pending=True)
+    assert runner._live_state_is_verified(pending_state) is False
+
+
+def test_advance_project_prove_manager_blocks_while_cleanup_pending(monkeypatch):
+    """End-to-end: project-prove manager must NOT advance to the next file
+    while the current file's cleanup conversation is still pending."""
+
+    autonomy_state: dict = {
+        "project_prove_manager_enabled": True,
+        "project_prove_active_file": "Demo/A.lean",
+        "project_prove_active_file_path": "/tmp/Demo/A.lean",
+        "final_sweep_cleanup_attempted": True,
+        "final_sweep_baseline": {
+            "active_file": "/tmp/Demo/A.lean",
+            "content": "theorem t : True := by trivial\n",
+        },
+    }
+    live_state = {
+        "active_file": "/tmp/Demo/A.lean",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "sorry_count": 0,
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "build_status": "lake env lean exits 0",
+        "verification_ok": False,
+        "final_sweep_warning_cleanup_pending": True,
+        "last_verification": {
+            "ok": True,
+            "scope": "file",
+            "tool": "lean_verify",
+            "summary": "lake env lean exits 0",
+        },
+    }
+
+    # If the manager were to advance, it would pop the cleanup state via
+    # `_assign_project_prove_file`. Patch that to fail loudly so the test
+    # also catches a future regression where the gate is bypassed elsewhere.
+    monkeypatch.setattr(
+        runner,
+        "_assign_project_prove_file",
+        lambda *args, **kwargs: pytest.fail(
+            "project manager must not assign a new file while cleanup is pending"
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_refresh_project_prove_file_queue",
+        lambda autonomy_state: [{"label": "Demo/B.lean", "path": "/tmp/Demo/B.lean"}],
+    )
+
+    advanced = runner._advance_project_prove_manager_if_needed(
+        autonomy_state, live_state, phase="autonomous"
+    )
+
+    assert advanced is False
+    # Cleanup state must survive the (non-)advancement.
+    assert autonomy_state["final_sweep_cleanup_attempted"] is True
+    assert "final_sweep_baseline" in autonomy_state
 
 
 def test_promote_live_state_grants_one_final_sweep_warning_cleanup(monkeypatch, tmp_path, capsys):
@@ -5236,6 +6710,10 @@ def test_build_live_proof_state_hides_future_sorries_from_model_message(monkeypa
 def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkeypatch, capsys):
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", raising=False)
+    monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_SKILL", raising=False)
 
     class _LoopAgent(_FakeAgent):
         def __init__(self):
@@ -5398,6 +6876,42 @@ def test_maybe_announce_final_file_sweep_starts_when_queue_empty_but_file_blocke
     output = capsys.readouterr().out
     assert output.count("starting file-level cleanup") == 1
     assert events[0][0][0] == "final-file-sweep-started"
+    assert autonomy_state["continuation_blocked_runs"] == 0
+    assert autonomy_state["continuation_stable_cycles"] == 0
+
+
+def test_maybe_announce_final_file_sweep_defers_for_document_review_gate(monkeypatch, capsys):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "/tmp/project/Demo/Main.lean")
+    events = []
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+
+    autonomy_state = {"continuation_blocked_runs": 2, "continuation_stable_cycles": 2}
+    live_state = {
+        "declaration_scope": "file",
+        "active_file": "/tmp/project/Demo/Main.lean",
+        "declaration_queue_total": 0,
+        "diagnostics": "warning: declaration uses sorry",
+        "goals": "no goals",
+        "build_status": "waiting for document formalization handoff verifier",
+        "sorry_count": 3,
+        "verification_ok": False,
+        "current_blocker": "statement/source verification is not approved",
+        "document_formalization_handoff": {
+            "ok": False,
+            "issues": ["blueprint entry `line-143` statement/source verification is not approved"],
+        },
+    }
+
+    runner._maybe_announce_final_file_sweep_state(autonomy_state, live_state)
+    runner._maybe_announce_final_file_sweep_state(autonomy_state, live_state)
+
+    output = capsys.readouterr().out
+    assert output.count("waiting for independent statement/source verification") == 1
+    assert "starting file-level cleanup" not in output
+    assert runner._queue_needs_final_file_sweep(live_state) is False
+    assert events[0][0][0] == "final-file-sweep-deferred-for-document-review"
     assert autonomy_state["continuation_blocked_runs"] == 0
     assert autonomy_state["continuation_stable_cycles"] == 0
 

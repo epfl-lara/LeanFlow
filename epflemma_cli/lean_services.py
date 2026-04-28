@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -29,6 +30,8 @@ from epflemma_cli.lean_workflow_specs import get_lean_spec, list_specs
 STANDARD_AXIOMS = {"propext", "Quot.sound", "Classical.choice"}
 SEARCH_PROVIDER_LABELS = {
     "local_search": "mcp-local-search",
+    "leanexplore_local": "leanexplore-local",
+    "leanexplore_api": "leanexplore-api",
     "leanfinder": "mcp-leanfinder",
     "leansearch": "mcp-leansearch",
     "loogle": "mcp-loogle",
@@ -528,6 +531,168 @@ def _invoke_json_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, An
     return {"raw": raw}
 
 
+def _leanexplore_api_key() -> str:
+    return str(os.getenv("LEANEXPLORE_API_KEY", "") or "").strip()
+
+
+_LEANEXPLORE_LOCAL_REQUIRED_ENTRIES = (
+    "lean_explore.db",
+    "informalization_faiss.index",
+    "informalization_faiss_ids_map.json",
+    "bm25_ids_map.json",
+    "bm25_name_raw",
+    "bm25_name_spaced",
+)
+
+
+def _leanexplore_backend_preference() -> str:
+    value = str(
+        os.getenv("EPFLEMMA_LEANEXPLORE_BACKEND", "")
+        or os.getenv("LEANEXPLORE_BACKEND", "")
+        or "auto"
+    ).strip().lower()
+    return value if value in {"auto", "local", "api", "off", "disabled"} else "auto"
+
+
+def _leanexplore_cache_root() -> Path:
+    return Path(os.getenv("LEAN_EXPLORE_CACHE_DIR", "~/.lean_explore/cache")).expanduser()
+
+
+def _leanexplore_local_cache_path() -> Path | None:
+    cache_root = _leanexplore_cache_root()
+    candidates: list[Path] = []
+    version = str(os.getenv("LEAN_EXPLORE_VERSION", "") or "").strip()
+    if version:
+        candidates.append(cache_root / version)
+    active_version_file = cache_root.parent / "active_version"
+    try:
+        active_version = active_version_file.read_text(encoding="utf-8").strip()
+    except Exception:
+        active_version = ""
+    if active_version:
+        candidates.append(cache_root / active_version)
+    if cache_root.is_dir():
+        candidates.extend(path for path in cache_root.iterdir() if path.is_dir())
+    for candidate in candidates:
+        if all((candidate / entry).exists() for entry in _LEANEXPLORE_LOCAL_REQUIRED_ENTRIES):
+            return candidate
+    return None
+
+
+def _leanexplore_local_status() -> dict[str, Any]:
+    try:
+        package_available = importlib.util.find_spec("lean_explore.search") is not None
+    except (ImportError, AttributeError, ValueError):
+        package_available = False
+    cache_path = _leanexplore_local_cache_path()
+    return {
+        "package_available": package_available,
+        "data_ready": cache_path is not None,
+        "cache_path": str(cache_path or ""),
+        "available": bool(package_available and cache_path is not None),
+    }
+
+
+def _model_to_plain_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump()
+        return dict(dumped) if isinstance(dumped, Mapping) else {"value": dumped}
+    as_dict = getattr(value, "dict", None)
+    if callable(as_dict):
+        dumped = as_dict()
+        return dict(dumped) if isinstance(dumped, Mapping) else {"value": dumped}
+    return {"value": value}
+
+
+def _leanexplore_local_search(query: str, *, limit: int = 10) -> tuple[list[dict[str, Any]], str]:
+    status = _leanexplore_local_status()
+    if not status["package_available"]:
+        return [], "LeanExplore local backend unavailable; install `lean-explore[local]`"
+    if not status["data_ready"]:
+        return [], "LeanExplore local data unavailable; run `lean-explore data fetch`"
+    try:
+        import asyncio
+
+        from lean_explore.search import Service
+
+        async def _run_search() -> Any:
+            service = Service()
+            return await service.search(
+                query=query,
+                limit=max(1, int(limit or 10)),
+                rerank_top=50,
+            )
+
+        response = asyncio.run(_run_search())
+    except Exception as exc:
+        return [], f"LeanExplore local search failed: {exc}"
+    raw_results = getattr(response, "results", [])
+    if not isinstance(raw_results, list):
+        return [], "LeanExplore local backend returned results in an unexpected format"
+    results: list[dict[str, Any]] = []
+    for item in raw_results[:limit]:
+        payload = _model_to_plain_dict(item)
+        entry = {
+            "provider": SEARCH_PROVIDER_LABELS["leanexplore_local"],
+            "match": _format_search_payload_item(payload)[:400],
+        }
+        for key in ("id", "name", "module", "source_link"):
+            value = payload.get(key)
+            if value not in (None, ""):
+                entry[key] = value
+        results.append(entry)
+    return results, ""
+
+
+def _leanexplore_api_search(query: str, *, limit: int = 10) -> tuple[list[dict[str, Any]], str]:
+    api_key = _leanexplore_api_key()
+    if not api_key:
+        return [], "LEANEXPLORE_API_KEY is not configured"
+    try:
+        import httpx
+
+        response = httpx.get(
+            "https://www.leanexplore.com/api/v2/search",
+            params={"q": query, "limit": max(1, int(limit or 10))},
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return [], f"LeanExplore API search failed: {exc}"
+    if not isinstance(payload, Mapping):
+        return [], "LeanExplore API returned an unexpected payload"
+    raw_results = payload.get("results", [])
+    if not isinstance(raw_results, list):
+        return [], "LeanExplore API returned results in an unexpected format"
+    results: list[dict[str, Any]] = []
+    for item in raw_results[:limit]:
+        if isinstance(item, Mapping):
+            entry = {
+                "provider": SEARCH_PROVIDER_LABELS["leanexplore_api"],
+                "match": _format_search_payload_item(item)[:400],
+            }
+            for key in ("id", "name", "module", "source_link"):
+                value = item.get(key)
+                if value not in (None, ""):
+                    entry[key] = value
+            results.append(entry)
+        else:
+            fragment = str(item).strip()
+            if fragment:
+                results.append(
+                    {
+                        "provider": SEARCH_PROVIDER_LABELS["leanexplore_api"],
+                        "match": fragment[:400],
+                    }
+                )
+    return results, ""
+
+
 def _decode_nested_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     result = payload.get("result")
     if isinstance(result, Mapping):
@@ -716,7 +881,13 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
     binaries = {name: bool(shutil.which(name)) for name in ("lean", "lake", "elan", "git", "rg")}
     mcp_tools = _discover_lean_mcp_tools()
     search_providers: list[str] = []
-    for key in ("leanfinder", "leanexplore", "local_search", "leansearch", "loogle"):
+    leanexplore_preference = _leanexplore_backend_preference()
+    leanexplore_local = _leanexplore_local_status()
+    if leanexplore_preference not in {"api", "off", "disabled"} and leanexplore_local["available"]:
+        search_providers.append(SEARCH_PROVIDER_LABELS["leanexplore_local"])
+    if leanexplore_preference not in {"local", "off", "disabled"} and _leanexplore_api_key():
+        search_providers.append(SEARCH_PROVIDER_LABELS["leanexplore_api"])
+    for key in ("leanexplore", "leanfinder", "local_search", "leansearch", "loogle"):
         if mcp_tools.get(key):
             search_providers.append(SEARCH_PROVIDER_LABELS[key])
     if binaries.get("rg"):
@@ -762,6 +933,13 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
     except Exception:
         power_modes = {}
         remote_search_policy = "public-fallbacks-enabled"
+    power_modes["leanexplore_backend"] = leanexplore_preference
+    power_modes["leanexplore_local_available"] = bool(leanexplore_local["available"])
+    power_modes["leanexplore_local_package_available"] = bool(leanexplore_local["package_available"])
+    power_modes["leanexplore_local_data_ready"] = bool(leanexplore_local["data_ready"])
+    power_modes["leanexplore_local_cache_path"] = str(leanexplore_local["cache_path"])
+    power_modes["leanexplore_api_configured"] = bool(_leanexplore_api_key())
+    power_modes["leanexplore_cli_installed"] = bool(shutil.which("lean-explore"))
     if power_modes:
         if power_modes.get("loogle_local_configured") and not power_modes.get("loogle_local_available"):
             degraded.append("local Loogle configured but unsupported on this platform; public remote Loogle fallback remains enabled")
@@ -1406,30 +1584,73 @@ def lean_search(
     report = probe_capabilities(cwd)
     attempted: list[str] = []
     results: list[dict[str, Any]] = []
+    degraded = list(report.degraded_reasons)
 
     mcp_order = []
     normalized_mode = str(mode or "auto").strip().lower()
-    semantic_provider_keys = ("leanfinder", "leanexplore", "leansearch", "loogle")
+    leanexplore_preference = _leanexplore_backend_preference()
+    leanexplore_local_available = SEARCH_PROVIDER_LABELS["leanexplore_local"] in report.search_providers
+    leanexplore_api_available = SEARCH_PROVIDER_LABELS["leanexplore_api"] in report.search_providers
+    semantic_provider_keys = ("leanexplore", "leanfinder", "leansearch", "loogle")
     semantic_provider_labels = [
         SEARCH_PROVIDER_LABELS[key]
         for key in semantic_provider_keys
         if report.mcp_tools.get(key)
     ]
+    if leanexplore_local_available:
+        semantic_provider_labels.insert(0, SEARCH_PROVIDER_LABELS["leanexplore_local"])
+    if leanexplore_api_available:
+        semantic_provider_labels.insert(
+            0 if not leanexplore_local_available else 1,
+            SEARCH_PROVIDER_LABELS["leanexplore_api"],
+        )
+    def _append_provider(provider_key: str, tool_name: str = "") -> None:
+        if any(existing_key == provider_key for existing_key, _ in mcp_order):
+            return
+        mcp_order.append((provider_key, tool_name))
+
+    def _append_leanexplore_semantic_fallbacks(*, allow_remote_api: bool) -> None:
+        if leanexplore_local_available:
+            _append_provider("leanexplore_local")
+        if allow_remote_api and leanexplore_api_available and leanexplore_preference != "local":
+            _append_provider("leanexplore_api")
+        if report.mcp_tools.get("leanexplore"):
+            _append_provider("leanexplore", report.mcp_tools["leanexplore"])
+
     if normalized_mode in {"auto", "local"} and report.mcp_tools.get("local_search"):
-        mcp_order.append(("local_search", report.mcp_tools["local_search"]))
+        _append_provider("local_search", report.mcp_tools["local_search"])
+    if normalized_mode in {"auto", "semantic", "natural-language", "natural"}:
+        _append_leanexplore_semantic_fallbacks(allow_remote_api=True)
+    if normalized_mode == "local":
+        _append_leanexplore_semantic_fallbacks(allow_remote_api=False)
     if normalized_mode in {"auto", "semantic"} and report.mcp_tools.get("leanfinder"):
-        mcp_order.append(("leanfinder", report.mcp_tools["leanfinder"]))
-    if (
-        normalized_mode in {"auto", "semantic", "natural-language", "natural"}
-        and report.mcp_tools.get("leanexplore")
-    ):
-        mcp_order.append(("leanexplore", report.mcp_tools["leanexplore"]))
+        _append_provider("leanfinder", report.mcp_tools["leanfinder"])
     if normalized_mode in {"auto", "natural-language", "natural"} and report.mcp_tools.get("leansearch"):
-        mcp_order.append(("leansearch", report.mcp_tools["leansearch"]))
+        _append_provider("leansearch", report.mcp_tools["leansearch"])
     if normalized_mode in {"auto", "type-pattern", "type"} and report.mcp_tools.get("loogle"):
-        mcp_order.append(("loogle", report.mcp_tools["loogle"]))
+        _append_provider("loogle", report.mcp_tools["loogle"])
+    if normalized_mode in {"type-pattern", "type"}:
+        _append_leanexplore_semantic_fallbacks(allow_remote_api=True)
     for provider_key, tool_name in mcp_order:
+        if results:
+            break
         attempted.append(SEARCH_PROVIDER_LABELS[provider_key])
+        if provider_key == "leanexplore_local":
+            local_results, local_error = _leanexplore_local_search(query, limit=limit)
+            if local_results:
+                results.extend(local_results[:limit])
+                break
+            if local_error:
+                degraded.append(local_error)
+            continue
+        if provider_key == "leanexplore_api":
+            api_results, api_error = _leanexplore_api_search(query, limit=limit)
+            if api_results:
+                results.extend(api_results[:limit])
+                break
+            if api_error:
+                degraded.append(api_error)
+            continue
         payload = _invoke_json_tool(
             tool_name,
             {
@@ -1464,11 +1685,13 @@ def lean_search(
         for match in _rg_search(mathlib_root, query, limit=limit):
             results.append({"provider": SEARCH_PROVIDER_LABELS["mathlib_rg"], **match})
 
-    degraded = list(report.degraded_reasons)
     if any(provider in attempted for provider in (SEARCH_PROVIDER_LABELS["project_rg"], SEARCH_PROVIDER_LABELS["mathlib_rg"])):
         if not semantic_provider_labels:
             degraded.append("semantic providers unavailable")
-        elif not any(provider in attempted for provider in semantic_provider_labels):
+        elif (
+            normalized_mode in {"auto", "semantic", "natural-language", "natural", "type-pattern", "type"}
+            and not any(provider in attempted for provider in semantic_provider_labels)
+        ):
             degraded.append("semantic providers skipped; falling back to rg")
     if not results:
         degraded.append("search returned no results")

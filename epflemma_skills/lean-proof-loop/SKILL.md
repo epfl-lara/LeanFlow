@@ -29,18 +29,20 @@ Treat the native workflow specs as the contract. This skill is the routing layer
 ## Operating Rules
 
 1. Trust the queue manager and `route_decision` over free-form exploration.
-2. Use one declaration at a time when a queue item is assigned.
+2. Use one assigned theorem goal at a time when a queue item is assigned; small helper declarations are allowed only when they directly support that assigned goal.
 3. Treat failed-attempt history as negative guidance.
 4. Keep work pinned to the requested file or project scope.
 5. Use theorem-context and automation wrappers only after search exhaustion, repeated blockers, or an explicitly automation-suited route.
 6. Treat `lean_reasoning_help` output as advice only; if it is unavailable or returns no answer, continue the main proof workflow and report that the advisor was unavailable if relevant.
 7. In managed queue workflows, prefer `patch`/`write_file` because the runner records the automatic post-edit `lean_incremental_check(check_target)` result and falls back to Lake only when needed. Use `apply_verified_patch` for compatibility or when its pre-edit checkpoint payload is specifically useful.
 8. Treat `lean_auto_try` backend/setup errors as tool or file-level blockers, not theorem proof failures; do not edit unrelated examples or solved declarations just to satisfy the automation backend.
-9. Finish only after explicit verification of the requested scope.
+9. Preserve existing theorem, lemma, and example statements exactly unless the user explicitly requested a refactor. New helper declarations are allowed, but pre-existing future queue declarations are not part of the current turn.
+10. Finish only after explicit verification of the requested scope.
 
 ## Verification Rules
 
 - File-scoped theorem turns: iterate with `lean_inspect`, edit with the managed edit path, and accept success after the automatic post-edit `lean_incremental_check(check_target)` gate or an explicit equivalent succeeds for the assigned declaration. Use `lean_verify(mode=file_exact)` for final Lake sweeps, fallback, or explicit canonical verification.
+- Queue edit scope protects pre-existing non-assigned declarations. Adding and refining new helper declarations for the assigned theorem is allowed; solving or rewriting future queued declarations is not.
 - For stuck file-scoped proofs, request richer LeanInteract feedback with `lean_incremental_check(action=feedback, include_tactics=true)`. Read tactic goals/proof states and `feedback_lean` before changing strategy.
 - Prefer Lean tools for managed queue verification. Terminal-based Lake checks are allowed as an emergency/manual fallback if the Lean tools themselves are broken.
 - Module/project turns: prefer focused `lean_verify` module checks before a final project build.

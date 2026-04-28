@@ -147,6 +147,306 @@ def test_lean_search_uses_leanexplore_summary_results(monkeypatch, tmp_path):
     ]
 
 
+def test_probe_capabilities_reports_direct_leanexplore_api(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    monkeypatch.setenv("LEANEXPLORE_API_KEY", "sk-test")
+    monkeypatch.setattr(lean_services, "_project_root", lambda cwd=None: (project, ""))
+    monkeypatch.setattr(
+        lean_services,
+        "_discover_lean_mcp_tools",
+        lambda: {
+            "diagnostics": "",
+            "goals": "",
+            "code_actions": "",
+            "multi_attempt": "",
+            "run_code": "",
+            "state_search": "",
+            "hammer_premise": "",
+            "hover_info": "",
+            "file_outline": "",
+            "declaration_file": "",
+            "profile_proof": "",
+            "local_search": "",
+            "leanfinder": "",
+            "leansearch": "",
+            "loogle": "",
+            "leanexplore": "",
+            "proof_context": "",
+            "auto_probe": "",
+            "auto_search": "",
+            "auto_try": "",
+        },
+    )
+    monkeypatch.setattr("tools.mcp_tool.get_mcp_status", lambda: [])
+    monkeypatch.setattr(
+        "epflemma_cli.mcp_bootstrap.managed_mcp_power_status",
+        lambda project_root=None: {},
+    )
+
+    report = lean_services.probe_capabilities(project)
+
+    assert "leanexplore-api" in report.search_providers
+    assert "no search providers available" not in report.degraded_reasons
+
+
+def test_probe_capabilities_reports_local_leanexplore_when_data_is_ready(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    home = tmp_path / "lean_explore"
+    cache = home / "cache" / "20260127_103630"
+    cache.mkdir(parents=True)
+    (home / "active_version").write_text("20260127_103630", encoding="utf-8")
+    for entry in (
+        "lean_explore.db",
+        "informalization_faiss.index",
+        "informalization_faiss_ids_map.json",
+        "bm25_ids_map.json",
+    ):
+        (cache / entry).write_text("stub", encoding="utf-8")
+    (cache / "bm25_name_raw").mkdir()
+    (cache / "bm25_name_spaced").mkdir()
+    monkeypatch.setenv("LEAN_EXPLORE_CACHE_DIR", str(home / "cache"))
+    monkeypatch.setattr(lean_services.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(lean_services, "_project_root", lambda cwd=None: (project, ""))
+    monkeypatch.setattr(
+        lean_services,
+        "_discover_lean_mcp_tools",
+        lambda: {
+            "diagnostics": "",
+            "goals": "",
+            "code_actions": "",
+            "multi_attempt": "",
+            "run_code": "",
+            "state_search": "",
+            "hammer_premise": "",
+            "hover_info": "",
+            "file_outline": "",
+            "declaration_file": "",
+            "profile_proof": "",
+            "local_search": "",
+            "leanfinder": "",
+            "leansearch": "",
+            "loogle": "",
+            "leanexplore": "",
+            "proof_context": "",
+            "auto_probe": "",
+            "auto_search": "",
+            "auto_try": "",
+        },
+    )
+    monkeypatch.setattr("tools.mcp_tool.get_mcp_status", lambda: [])
+    monkeypatch.setattr(
+        "epflemma_cli.mcp_bootstrap.managed_mcp_power_status",
+        lambda project_root=None: {},
+    )
+
+    report = lean_services.probe_capabilities(project)
+
+    assert report.search_providers[0] == "leanexplore-local"
+    assert report.power_modes["leanexplore_local_available"] is True
+    assert report.power_modes["leanexplore_local_cache_path"] == str(cache)
+
+
+def test_lean_search_uses_direct_leanexplore_api_before_mcp_semantic_provider(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: LeanCapabilityReport(
+            cwd=str(project),
+            project_root=str(project),
+            project_valid=True,
+            project_error="",
+            binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+            mcp_tools={
+                "leanfinder": "mcp_lean_lsp_leanfinder",
+                "leanexplore": "mcp_lean_explore_search_summary",
+            },
+            search_providers=["leanexplore-api", "mcp-leanexplore", "mcp-leanfinder"],
+            helper_tools={"search_fallback": True},
+            workers=[],
+            degraded_reasons=[],
+        ),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_leanexplore_api_search",
+        lambda query, *, limit=10: (
+            [
+                {
+                    "provider": "leanexplore-api",
+                    "match": "Nat.Prime.dvd_mul - [Mathlib.Data.Nat.Prime.Basic] - Divisibility of a product by a prime",
+                    "id": 12345,
+                    "name": "Nat.Prime.dvd_mul",
+                    "module": "Mathlib.Data.Nat.Prime.Basic",
+                }
+            ],
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("MCP semantic provider should not be called")),
+    )
+    monkeypatch.setattr(lean_services, "_rg_search", lambda root, query, *, limit=10: [])
+
+    result = lean_services.lean_search("prime number divisibility", cwd=project, mode="semantic", limit=3)
+
+    assert result.attempted_providers == ["leanexplore-api"]
+    assert result.results[0]["provider"] == "leanexplore-api"
+    assert result.results[0]["name"] == "Nat.Prime.dvd_mul"
+
+
+def test_lean_search_prefers_local_leanexplore_before_api_and_mcp(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: LeanCapabilityReport(
+            cwd=str(project),
+            project_root=str(project),
+            project_valid=True,
+            project_error="",
+            binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+            mcp_tools={
+                "leanfinder": "mcp_lean_lsp_leanfinder",
+                "leanexplore": "mcp_lean_explore_search_summary",
+            },
+            search_providers=["leanexplore-local", "leanexplore-api", "mcp-leanexplore", "mcp-leanfinder"],
+            helper_tools={"search_fallback": True},
+            workers=[],
+            degraded_reasons=[],
+        ),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_leanexplore_local_search",
+        lambda query, *, limit=10: (
+            [
+                {
+                    "provider": "leanexplore-local",
+                    "match": "Nat.Prime.dvd_mul - [Mathlib.Data.Nat.Prime.Basic] - Divisibility of a product by a prime",
+                    "id": 12345,
+                    "name": "Nat.Prime.dvd_mul",
+                    "module": "Mathlib.Data.Nat.Prime.Basic",
+                }
+            ],
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_leanexplore_api_search",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API fallback should not be called")),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("MCP semantic provider should not be called")),
+    )
+    monkeypatch.setattr(lean_services, "_rg_search", lambda root, query, *, limit=10: [])
+
+    result = lean_services.lean_search("prime number divisibility", cwd=project, mode="semantic", limit=3)
+
+    assert result.attempted_providers == ["leanexplore-local"]
+    assert result.results[0]["provider"] == "leanexplore-local"
+    assert result.results[0]["name"] == "Nat.Prime.dvd_mul"
+
+
+def test_lean_search_local_mode_uses_local_leanexplore_cache(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: LeanCapabilityReport(
+            cwd=str(project),
+            project_root=str(project),
+            project_valid=True,
+            project_error="",
+            binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+            mcp_tools={},
+            search_providers=["leanexplore-local", "project-rg", "mathlib-rg"],
+            helper_tools={"search_fallback": True},
+            workers=[],
+            degraded_reasons=[],
+        ),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_leanexplore_local_search",
+        lambda query, *, limit=10: (
+            [
+                {
+                    "provider": "leanexplore-local",
+                    "match": "isUnit_gcd_of_eq_mul_gcd - [Mathlib.Algebra.GCDMonoid.Basic]",
+                    "name": "isUnit_gcd_of_eq_mul_gcd",
+                }
+            ],
+            "",
+        ),
+    )
+    monkeypatch.setattr(lean_services, "_rg_search", lambda *args, **kwargs: [])
+
+    result = lean_services.lean_search("isUnit_gcd_of_eq_mul_gcd", cwd=project, mode="local", limit=3)
+
+    assert result.attempted_providers == ["leanexplore-local"]
+    assert result.results[0]["provider"] == "leanexplore-local"
+    assert result.results[0]["name"] == "isUnit_gcd_of_eq_mul_gcd"
+
+
+def test_lean_search_type_pattern_falls_back_to_local_leanexplore(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: LeanCapabilityReport(
+            cwd=str(project),
+            project_root=str(project),
+            project_valid=True,
+            project_error="",
+            binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+            mcp_tools={"loogle": "mcp_lean_lsp_lean_loogle"},
+            search_providers=["leanexplore-local", "mcp-loogle", "project-rg", "mathlib-rg"],
+            helper_tools={"search_fallback": True},
+            workers=[],
+            degraded_reasons=[],
+        ),
+    )
+    monkeypatch.setattr(lean_services, "_invoke_json_tool", lambda *args, **kwargs: {"results": []})
+    monkeypatch.setattr(
+        lean_services,
+        "_leanexplore_local_search",
+        lambda query, *, limit=10: (
+            [
+                {
+                    "provider": "leanexplore-local",
+                    "match": "isUnit_gcd_of_eq_mul_gcd - [Mathlib.Algebra.GCDMonoid.Basic]",
+                    "name": "isUnit_gcd_of_eq_mul_gcd",
+                }
+            ],
+            "",
+        ),
+    )
+    monkeypatch.setattr(lean_services, "_rg_search", lambda *args, **kwargs: [])
+
+    result = lean_services.lean_search(
+        "isUnit_gcd_of_eq_mul_gcd : GCDMonoid",
+        cwd=project,
+        mode="type-pattern",
+        limit=3,
+    )
+
+    assert result.attempted_providers == ["mcp-loogle", "leanexplore-local"]
+    assert result.results[0]["provider"] == "leanexplore-local"
+    assert result.results[0]["name"] == "isUnit_gcd_of_eq_mul_gcd"
+
+
 def test_lean_axioms_reports_custom_axioms(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()

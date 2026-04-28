@@ -8,9 +8,11 @@ EPFLEMMA_HOME="${EPFLEMMA_HOME:-$HOME/.epflemma}"
 EPFLEMMA_BIN_DIR="${EPFLEMMA_BIN_DIR:-${OPENGAUSS_BIN_DIR:-$HOME/.local/bin}}"
 EPFLEMMA_VENV_DIR="${EPFLEMMA_VENV_DIR:-${OPENGAUSS_VENV_DIR:-$REPO_ROOT/.epflemma-venv}}"
 EPFLEMMA_INSTALL_PYTHON="${EPFLEMMA_INSTALL_PYTHON:-${OPENGAUSS_INSTALL_PYTHON:-python3}}"
+EPFLEMMA_FETCH_LEANEXPLORE_DATA="${EPFLEMMA_FETCH_LEANEXPLORE_DATA:-1}"
 INSTALL_MODE="editable"
 RECREATE_VENV=0
 STEP=0
+TOTAL_STEPS=10
 
 banner() {
   printf '\n'
@@ -23,7 +25,7 @@ banner() {
 
 step() {
   STEP=$((STEP + 1))
-  printf '\n[%d/9] %s\n' "$STEP" "$1"
+  printf '\n[%d/%d] %s\n' "$STEP" "$TOTAL_STEPS" "$1"
 }
 
 ok() {
@@ -47,6 +49,8 @@ Options:
   --venv-dir PATH        Virtualenv path (default: ./.epflemma-venv)
   --python BIN           Python interpreter to use (default: python3)
   --recreate-venv        Remove and recreate the virtualenv
+  --skip-leanexplore-data
+                        Skip local LeanExplore index fetch
   --no-editable          Install a wheel instead of editable mode
   -h, --help             Show this help
 
@@ -76,6 +80,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --recreate-venv)
       RECREATE_VENV=1
+      shift
+      ;;
+    --skip-leanexplore-data)
+      EPFLEMMA_FETCH_LEANEXPLORE_DATA=0
       shift
       ;;
     --no-editable)
@@ -117,13 +125,24 @@ fi
 source "$EPFLEMMA_VENV_DIR/bin/activate"
 
 step "Installing EPFLemma package"
-python -m pip install --quiet --quiet --upgrade pip setuptools wheel
+python -m pip install --quiet --quiet --upgrade pip "setuptools<82" wheel
 if [[ "$INSTALL_MODE" == "editable" ]]; then
-  python -m pip install --quiet --quiet -e "$REPO_ROOT[mcp]"
+  python -m pip install --quiet --quiet -e "$REPO_ROOT[mcp,lean-explore]"
   ok "installed editable package"
 else
-  python -m pip install --quiet --quiet "$REPO_ROOT[mcp]"
+  python -m pip install --quiet --quiet "$REPO_ROOT[mcp,lean-explore]"
   ok "installed package wheel"
+fi
+
+step "Fetching local LeanExplore data"
+if [[ "$EPFLEMMA_FETCH_LEANEXPLORE_DATA" == "1" ]]; then
+  if "$EPFLEMMA_VENV_DIR/bin/lean-explore" data fetch; then
+    ok "LeanExplore local data ready"
+  else
+    warn "LeanExplore data fetch failed; semantic search will fall back to hosted API/MCP/rg until you run lean-explore data fetch"
+  fi
+else
+  warn "skipped LeanExplore data fetch"
 fi
 
 # Create/backfill user-visible config before any bootstrap step that may need
