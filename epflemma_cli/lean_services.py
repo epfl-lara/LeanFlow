@@ -1604,27 +1604,33 @@ def lean_search(
             0 if not leanexplore_local_available else 1,
             SEARCH_PROVIDER_LABELS["leanexplore_api"],
         )
+    def _append_provider(provider_key: str, tool_name: str = "") -> None:
+        if any(existing_key == provider_key for existing_key, _ in mcp_order):
+            return
+        mcp_order.append((provider_key, tool_name))
+
+    def _append_leanexplore_semantic_fallbacks(*, allow_remote_api: bool) -> None:
+        if leanexplore_local_available:
+            _append_provider("leanexplore_local")
+        if allow_remote_api and leanexplore_api_available and leanexplore_preference != "local":
+            _append_provider("leanexplore_api")
+        if report.mcp_tools.get("leanexplore"):
+            _append_provider("leanexplore", report.mcp_tools["leanexplore"])
+
     if normalized_mode in {"auto", "local"} and report.mcp_tools.get("local_search"):
-        mcp_order.append(("local_search", report.mcp_tools["local_search"]))
-    if normalized_mode in {"auto", "semantic", "natural-language", "natural"} and leanexplore_local_available:
-        mcp_order.append(("leanexplore_local", ""))
-    if (
-        normalized_mode in {"auto", "semantic", "natural-language", "natural"}
-        and leanexplore_api_available
-        and leanexplore_preference != "local"
-    ):
-        mcp_order.append(("leanexplore_api", ""))
-    if (
-        normalized_mode in {"auto", "semantic", "natural-language", "natural"}
-        and report.mcp_tools.get("leanexplore")
-    ):
-        mcp_order.append(("leanexplore", report.mcp_tools["leanexplore"]))
+        _append_provider("local_search", report.mcp_tools["local_search"])
+    if normalized_mode in {"auto", "semantic", "natural-language", "natural"}:
+        _append_leanexplore_semantic_fallbacks(allow_remote_api=True)
+    if normalized_mode == "local":
+        _append_leanexplore_semantic_fallbacks(allow_remote_api=False)
     if normalized_mode in {"auto", "semantic"} and report.mcp_tools.get("leanfinder"):
-        mcp_order.append(("leanfinder", report.mcp_tools["leanfinder"]))
+        _append_provider("leanfinder", report.mcp_tools["leanfinder"])
     if normalized_mode in {"auto", "natural-language", "natural"} and report.mcp_tools.get("leansearch"):
-        mcp_order.append(("leansearch", report.mcp_tools["leansearch"]))
+        _append_provider("leansearch", report.mcp_tools["leansearch"])
     if normalized_mode in {"auto", "type-pattern", "type"} and report.mcp_tools.get("loogle"):
-        mcp_order.append(("loogle", report.mcp_tools["loogle"]))
+        _append_provider("loogle", report.mcp_tools["loogle"])
+    if normalized_mode in {"type-pattern", "type"}:
+        _append_leanexplore_semantic_fallbacks(allow_remote_api=True)
     for provider_key, tool_name in mcp_order:
         if results:
             break
@@ -1682,7 +1688,10 @@ def lean_search(
     if any(provider in attempted for provider in (SEARCH_PROVIDER_LABELS["project_rg"], SEARCH_PROVIDER_LABELS["mathlib_rg"])):
         if not semantic_provider_labels:
             degraded.append("semantic providers unavailable")
-        elif not any(provider in attempted for provider in semantic_provider_labels):
+        elif (
+            normalized_mode in {"auto", "semantic", "natural-language", "natural", "type-pattern", "type"}
+            and not any(provider in attempted for provider in semantic_provider_labels)
+        ):
             degraded.append("semantic providers skipped; falling back to rg")
     if not results:
         degraded.append("search returned no results")
