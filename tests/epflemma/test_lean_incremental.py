@@ -135,6 +135,34 @@ def test_segment_file_keeps_doc_comment_with_declaration():
     assert segments[1].start_line == 7
 
 
+def test_segment_file_ignores_declaration_keywords_inside_comments_and_strings():
+    header, segments = li._segment_file(
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "/-- The source says theorem fake : True := by trivial. -/",
+                "theorem real : True := by",
+                "  have s := \"def also_fake := 1\"",
+                "  trivial",
+                "",
+                "/-",
+                "lemma hidden : True := by trivial",
+                "-/",
+                "def actual : Nat := 1",
+                "",
+            ]
+        )
+    )
+
+    assert header == "import Mathlib\n"
+    assert [segment.name for segment in segments] == ["real", "actual"]
+    assert segments[0].text.startswith("/-- The source says theorem fake")
+    assert "def also_fake" in segments[0].text
+    assert segments[0].start_line == 3
+    assert segments[1].start_line == 11
+
+
 def test_check_target_reuses_header_and_prior_declaration_env(monkeypatch, tmp_path):
     servers = _install_fake_lean_interact(monkeypatch)
     project, target = _write_project(

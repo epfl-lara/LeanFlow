@@ -357,6 +357,96 @@ def test_lean_search_prefers_local_leanexplore_before_api_and_mcp(monkeypatch, t
     assert result.results[0]["name"] == "Nat.Prime.dvd_mul"
 
 
+def test_lean_search_local_mode_uses_local_leanexplore_cache(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: LeanCapabilityReport(
+            cwd=str(project),
+            project_root=str(project),
+            project_valid=True,
+            project_error="",
+            binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+            mcp_tools={},
+            search_providers=["leanexplore-local", "project-rg", "mathlib-rg"],
+            helper_tools={"search_fallback": True},
+            workers=[],
+            degraded_reasons=[],
+        ),
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_leanexplore_local_search",
+        lambda query, *, limit=10: (
+            [
+                {
+                    "provider": "leanexplore-local",
+                    "match": "isUnit_gcd_of_eq_mul_gcd - [Mathlib.Algebra.GCDMonoid.Basic]",
+                    "name": "isUnit_gcd_of_eq_mul_gcd",
+                }
+            ],
+            "",
+        ),
+    )
+    monkeypatch.setattr(lean_services, "_rg_search", lambda *args, **kwargs: [])
+
+    result = lean_services.lean_search("isUnit_gcd_of_eq_mul_gcd", cwd=project, mode="local", limit=3)
+
+    assert result.attempted_providers == ["leanexplore-local"]
+    assert result.results[0]["provider"] == "leanexplore-local"
+    assert result.results[0]["name"] == "isUnit_gcd_of_eq_mul_gcd"
+
+
+def test_lean_search_type_pattern_falls_back_to_local_leanexplore(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    monkeypatch.setattr(
+        lean_services,
+        "probe_capabilities",
+        lambda cwd=None: LeanCapabilityReport(
+            cwd=str(project),
+            project_root=str(project),
+            project_valid=True,
+            project_error="",
+            binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+            mcp_tools={"loogle": "mcp_lean_lsp_lean_loogle"},
+            search_providers=["leanexplore-local", "mcp-loogle", "project-rg", "mathlib-rg"],
+            helper_tools={"search_fallback": True},
+            workers=[],
+            degraded_reasons=[],
+        ),
+    )
+    monkeypatch.setattr(lean_services, "_invoke_json_tool", lambda *args, **kwargs: {"results": []})
+    monkeypatch.setattr(
+        lean_services,
+        "_leanexplore_local_search",
+        lambda query, *, limit=10: (
+            [
+                {
+                    "provider": "leanexplore-local",
+                    "match": "isUnit_gcd_of_eq_mul_gcd - [Mathlib.Algebra.GCDMonoid.Basic]",
+                    "name": "isUnit_gcd_of_eq_mul_gcd",
+                }
+            ],
+            "",
+        ),
+    )
+    monkeypatch.setattr(lean_services, "_rg_search", lambda *args, **kwargs: [])
+
+    result = lean_services.lean_search(
+        "isUnit_gcd_of_eq_mul_gcd : GCDMonoid",
+        cwd=project,
+        mode="type-pattern",
+        limit=3,
+    )
+
+    assert result.attempted_providers == ["mcp-loogle", "leanexplore-local"]
+    assert result.results[0]["provider"] == "leanexplore-local"
+    assert result.results[0]["name"] == "isUnit_gcd_of_eq_mul_gcd"
+
+
 def test_lean_axioms_reports_custom_axioms(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()

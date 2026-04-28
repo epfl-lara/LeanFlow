@@ -78,6 +78,71 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _lean_code_mask(text: str) -> list[bool]:
+    """Return a per-character mask for positions outside Lean comments/strings."""
+    mask = [True] * len(text)
+    i = 0
+    block_depth = 0
+    in_string = False
+    in_line_comment = False
+    while i < len(text):
+        if in_line_comment:
+            if text[i] == "\n":
+                in_line_comment = False
+            else:
+                mask[i] = False
+            i += 1
+            continue
+        if block_depth:
+            mask[i] = False
+            if text.startswith("/-", i):
+                if i + 1 < len(mask):
+                    mask[i + 1] = False
+                block_depth += 1
+                i += 2
+                continue
+            if text.startswith("-/", i):
+                if i + 1 < len(mask):
+                    mask[i + 1] = False
+                block_depth -= 1
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_string:
+            mask[i] = False
+            if text[i] == "\\":
+                if i + 1 < len(mask):
+                    mask[i + 1] = False
+                i += 2
+                continue
+            if text[i] == '"':
+                in_string = False
+            i += 1
+            continue
+        if text.startswith("--", i):
+            mask[i] = False
+            if i + 1 < len(mask):
+                mask[i + 1] = False
+            in_line_comment = True
+            i += 2
+            continue
+        if text.startswith("/-", i):
+            mask[i] = False
+            if i + 1 < len(mask):
+                mask[i + 1] = False
+            block_depth = 1
+            i += 2
+            continue
+        if text[i] == '"':
+            mask[i] = False
+            in_string = True
+            i += 1
+            continue
+        i += 1
+    return mask
+
+
 def _import_lean_interact() -> tuple[Any, Any, Any, Any, str]:
     try:
         from lean_interact import Command, LeanREPLConfig, LeanServer, LocalProject
@@ -125,8 +190,8 @@ def _doc_boundary_start(text: str, declaration_start: int) -> int:
     while cursor > 0 and text[cursor - 1] in " \t\r\n":
         cursor -= 1
     if cursor >= 2 and text[:cursor].endswith("-/"):
-        start = text.rfind("/--", 0, cursor)
-        if start >= 0 and text[cursor:declaration_start].strip() == "":
+        start = text.rfind("/-", 0, cursor)
+        if start >= 0 and text.startswith("/--", start) and text[cursor:declaration_start].strip() == "":
             return text.rfind("\n", 0, start) + 1
     return declaration_start
 
@@ -136,7 +201,8 @@ def _line_number(text: str, offset: int) -> int:
 
 
 def _segment_file(text: str) -> tuple[str, list[LeanIncrementalSegment]]:
-    matches = list(DECLARATION_PATTERN.finditer(text))
+    code_mask = _lean_code_mask(text)
+    matches = [match for match in DECLARATION_PATTERN.finditer(text) if code_mask[match.start()]]
     if not matches:
         return text, []
 
@@ -326,6 +392,28 @@ def _message_payloads(response: Any, *, line_offset: int = 0, limit: int = 12) -
     return payloads
 
 
+def _format_message_summary(messages: list[dict[str, Any]], *, limit: int = 3) -> str:
+    parts: list[str] = []
+    for item in messages[:limit]:
+        pos = item.get("file_start") if isinstance(item.get("file_start"), Mapping) else item.get("start")
+        location = ""
+        if isinstance(pos, Mapping):
+            line = pos.get("line")
+            column = pos.get("column")
+            if line:
+                location = f"line {line}"
+                if column is not None:
+                    location += f":{column}"
+        severity = str(item.get("severity", "") or "").strip()
+        message = " ".join(str(item.get("message", "") or "").split())
+        prefix = f"{location} " if location else ""
+        if severity:
+            prefix += f"{severity}: "
+        if message:
+            parts.append((prefix + message)[:240])
+    return "; ".join(parts)
+
+
 def _tactic_payloads(response: Any, *, line_offset: int = 0, limit: int = 20) -> list[dict[str, Any]]:
     payloads = []
     for tactic in list(getattr(response, "tactics", []) or [])[:limit]:
@@ -501,7 +589,10 @@ def _ensure_env_before(
         if error:
             return None, error, total_elapsed, cache_hit
         if response is None or bool(response.has_errors()):
-            return None, f"failed to build env before target at {segment.name or segment.index}", total_elapsed, cache_hit
+            messages = _message_payloads(response, line_offset=segment.start_line - 1, limit=4) if response is not None else []
+            summary = _format_message_summary(messages)
+            detail = f": {summary}" if summary else ""
+            return None, f"failed to build env before target at {segment.name or segment.index}{detail}", total_elapsed, cache_hit
         after_env = getattr(response, "env", None)
         session.checkpoints[segment.index] = _Checkpoint(before_env=env, after_env=after_env, text_hash=segment.text_hash)
         session.segment_names[segment.index] = segment.name
