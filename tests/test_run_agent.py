@@ -798,12 +798,12 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
 
     def test_reasoning_config_default_openrouter(self, agent):
-        """Default reasoning config for OpenRouter should be medium."""
+        """Default reasoning config for OpenRouter should be high."""
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         reasoning = kwargs["extra_body"]["reasoning"]
         assert reasoning["enabled"] is True
-        assert reasoning["effort"] == "medium"
+        assert reasoning["effort"] == "high"
 
     def test_reasoning_config_custom(self, agent):
         agent.reasoning_config = {"enabled": False}
@@ -821,14 +821,14 @@ class TestBuildApiKwargs:
         agent.model = "qwen/qwen3.5-plus-02-15"
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
-        assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
+        assert kwargs["extra_body"]["reasoning"]["effort"] == "high"
 
     def test_reasoning_sent_for_nous_route(self, agent):
         agent.base_url = "https://inference-api.nousresearch.com/v1"
         agent.model = "minimax/minimax-m2.5"
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
-        assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
+        assert kwargs["extra_body"]["reasoning"]["effort"] == "high"
 
     def test_reasoning_sent_for_rcp_route(self, agent):
         agent.base_url = "https://inference.rcp.epfl.ch/v1"
@@ -836,16 +836,16 @@ class TestBuildApiKwargs:
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
-        assert kwargs["extra_body"]["reasoning_effort"] == "medium"
+        assert kwargs["extra_body"]["reasoning_effort"] == "high"
 
-    def test_auto_reasoning_defaults_to_medium_for_rcp_route(self, agent):
+    def test_auto_reasoning_defaults_to_high_for_rcp_route(self, agent):
         agent.base_url = "https://inference.rcp.epfl.ch/v1"
         agent.model = "Qwen/Qwen3-30B-A3B"
         agent.reasoning_config = {"mode": "auto"}
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
-        assert kwargs["extra_body"]["reasoning_effort"] == "medium"
+        assert kwargs["extra_body"]["reasoning_effort"] == "high"
 
     def test_reasoning_disabled_for_rcp_route(self, agent):
         agent.base_url = "https://inference.rcp.epfl.ch/v1"
@@ -1381,7 +1381,7 @@ class TestRunConversation:
         assert result["completed"] is True
         assert "Starting conversation" in output
         assert "verified proof milestone" in output
-        assert "API step 1/120" in output
+        assert "API step 1/180" in output
         assert "Tokens: input 1,234 · output 56 · total 1,290" in output
         assert "Cost estimate: step $" in output
 
@@ -2100,19 +2100,19 @@ class TestBudgetPressure:
         assert len(messages) == 1
 
     def test_advisor_budget_refresh_resets_to_half_budget(self, agent):
-        agent.max_iterations = 120
-        agent.iteration_budget = run_agent.IterationBudget(120)
-        for _ in range(110):
+        agent.max_iterations = 180
+        agent.iteration_budget = run_agent.IterationBudget(180)
+        for _ in range(160):
             assert agent.iteration_budget.consume()
 
-        refreshed = agent._maybe_refresh_api_step_budget_after_advisor(100)
+        refreshed = agent._maybe_refresh_api_step_budget_after_advisor(160)
 
-        assert refreshed == 60
-        assert agent.iteration_budget.used == 60
+        assert refreshed == 90
+        assert agent.iteration_budget.used == 90
 
     def test_advisor_budget_refresh_does_not_reset_early_calls(self, agent):
-        agent.max_iterations = 120
-        agent.iteration_budget = run_agent.IterationBudget(120)
+        agent.max_iterations = 180
+        agent.iteration_budget = run_agent.IterationBudget(180)
         for _ in range(40):
             assert agent.iteration_budget.consume()
 

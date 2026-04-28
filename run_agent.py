@@ -510,7 +510,7 @@ class AIAgent:
         provider: str = None,
         api_mode: str = None,
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
-        max_iterations: int = 120,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int = 180,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -565,7 +565,7 @@ class AIAgent:
             provider (str): Provider identifier (optional; used for telemetry/routing hints)
             api_mode (str): API mode override: "chat_completions" or "codex_responses"
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
-            max_iterations (int): Maximum number of tool calling iterations (default: 120)
+            max_iterations (int): Maximum number of tool calling iterations (default: 180)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
@@ -595,7 +595,7 @@ class AIAgent:
                 Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
-                If None, defaults to {"enabled": True, "effort": "medium"} for OpenRouter. Set to disable/customize reasoning.
+                If None, defaults to {"enabled": True, "effort": "high"} for OpenRouter. Set to disable/customize reasoning.
             seed (int): Optional generation seed for reproducible sampling on compatible routes.
             temperature (float): Optional sampling temperature override.
             top_p (float): Optional nucleus sampling override for compatible routes.
@@ -682,7 +682,7 @@ class AIAgent:
         
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
-        self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
+        self.reasoning_config = reasoning_config  # None = use default (high for reasoning-capable routes)
         self.seed = seed
         self.temperature = temperature
         self.top_p = top_p
@@ -3295,8 +3295,8 @@ class AIAgent:
             if not instructions:
                 instructions = DEFAULT_AGENT_IDENTITY
 
-            # Resolve reasoning effort: config > default (medium)
-            reasoning_effort = "medium"
+            # Resolve reasoning effort: config > default (high)
+            reasoning_effort = "high"
             reasoning_enabled = True
             if self.reasoning_config and isinstance(self.reasoning_config, dict):
                 if self.reasoning_config.get("enabled") is False:
@@ -3417,7 +3417,7 @@ class AIAgent:
             else:
                 extra_body["reasoning"] = {
                     "enabled": True,
-                    "effort": "medium"
+                    "effort": "high"
                 }
         elif self._is_rcp_route():
             # EPFL AIaaS forwards extra_body to LiteLLM/vLLM. Qwen hybrid
@@ -3478,28 +3478,28 @@ class AIAgent:
     def _reasoning_effort_state(self) -> tuple[bool, str]:
         """Resolve whether reasoning is enabled and the requested effort."""
         reasoning_enabled = True
-        reasoning_effort = "medium"
+        reasoning_effort = "high"
         if self.reasoning_config and isinstance(self.reasoning_config, dict):
             if self.reasoning_config.get("enabled") is False:
                 reasoning_enabled = False
             elif self.reasoning_config.get("mode") == "auto":
-                reasoning_effort = "medium"
+                reasoning_effort = "high"
             elif self.reasoning_config.get("effort"):
                 requested = str(self.reasoning_config["effort"]).lower()
-                reasoning_effort = "medium" if requested == "auto" else requested
+                reasoning_effort = "high" if requested == "auto" else requested
         return reasoning_enabled, reasoning_effort
 
     @staticmethod
     def _map_rcp_reasoning_effort(effort: str) -> str:
         """Map EPFLemma effort names onto AIaaS/vLLM-compatible values."""
-        normalized = str(effort or "medium").lower()
+        normalized = str(effort or "high").lower()
         if normalized in {"low", "medium", "high"}:
             return normalized
         if normalized == "minimal":
             return "low"
         if normalized == "xhigh":
             return "high"
-        return "medium"
+        return "high"
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Build a normalized assistant message dict from an API response message.
@@ -5055,7 +5055,7 @@ class AIAgent:
                 else:
                     summary_extra_body["reasoning"] = {
                         "enabled": True,
-                        "effort": "medium"
+                        "effort": "high"
                     }
             if _is_nous:
                 summary_extra_body["tags"] = ["product=epflemma-agent"]

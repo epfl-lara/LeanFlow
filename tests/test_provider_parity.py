@@ -232,7 +232,7 @@ class TestBuildApiKwargsCodex:
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "reasoning" in kwargs
-        assert kwargs["reasoning"]["effort"] == "medium"
+        assert kwargs["reasoning"]["effort"] == "high"
 
     def test_includes_encrypted_content_in_include(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
@@ -702,19 +702,19 @@ class TestCodexReasoningPreflight:
 # ── Reasoning effort consistency tests ───────────────────────────────────────
 
 class TestReasoningEffortDefaults:
-    """Verify reasoning effort defaults to medium across all provider paths."""
+    """Verify reasoning effort defaults to high across all provider paths."""
 
-    def test_openrouter_default_medium(self, monkeypatch):
+    def test_openrouter_default_high(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         reasoning = kwargs["extra_body"]["reasoning"]
-        assert reasoning["effort"] == "medium"
+        assert reasoning["effort"] == "high"
 
-    def test_codex_default_medium(self, monkeypatch):
+    def test_codex_default_high(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
                             base_url="https://chatgpt.com/backend-api/codex")
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
-        assert kwargs["reasoning"]["effort"] == "medium"
+        assert kwargs["reasoning"]["effort"] == "high"
 
     def test_codex_reasoning_disabled(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",

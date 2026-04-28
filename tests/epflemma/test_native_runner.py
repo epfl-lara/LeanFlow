@@ -2712,7 +2712,7 @@ def test_build_agent_uses_swarm_toolset_when_user_enabled_swarm(monkeypatch):
     assert os.getenv("EPFLEMMA_NATIVE_RUNNER_OWNER", "") == "runner-session"
 
 
-def test_resolve_managed_reasoning_config_auto_defaults_to_medium_for_new_theorem():
+def test_resolve_managed_reasoning_config_auto_defaults_to_high_for_new_theorem():
     resolved = runner._resolve_managed_reasoning_config(
         {"mode": "auto"},
         {
@@ -2724,7 +2724,7 @@ def test_resolve_managed_reasoning_config_auto_defaults_to_medium_for_new_theore
         {"failed_attempts": []},
     )
 
-    assert resolved == {"enabled": True, "effort": "medium"}
+    assert resolved == {"enabled": True, "effort": "high"}
 
 
 def test_resolve_managed_reasoning_config_auto_escalates_after_five_failed_attempts():
@@ -2754,7 +2754,7 @@ def test_resolve_managed_reasoning_config_auto_escalates_after_five_failed_attem
     assert resolved == {"enabled": True, "effort": "high"}
 
 
-def test_resolve_managed_reasoning_config_auto_uses_medium_below_default_threshold():
+def test_resolve_managed_reasoning_config_auto_stays_high_below_default_threshold():
     resolved = runner._resolve_managed_reasoning_config(
         {"mode": "auto"},
         {
@@ -2778,7 +2778,7 @@ def test_resolve_managed_reasoning_config_auto_uses_medium_below_default_thresho
         },
     )
 
-    assert resolved == {"enabled": True, "effort": "medium"}
+    assert resolved == {"enabled": True, "effort": "high"}
 
 
 def test_resolve_managed_reasoning_config_auto_uses_configured_threshold(monkeypatch):
@@ -2827,7 +2827,7 @@ def test_resolve_managed_reasoning_config_auto_uses_high_for_final_file_sweep(mo
     assert resolved == {"enabled": True, "effort": "high"}
 
 
-def test_apply_managed_reasoning_policy_resets_to_medium_on_theorem_transition():
+def test_apply_managed_reasoning_policy_keeps_high_on_theorem_transition():
     class _Agent:
         def __init__(self):
             self._managed_base_reasoning_config = {"mode": "auto"}
@@ -2870,8 +2870,8 @@ def test_apply_managed_reasoning_policy_resets_to_medium_on_theorem_transition()
     )
 
     assert first == {"enabled": True, "effort": "high"}
-    assert second == {"enabled": True, "effort": "medium"}
-    assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
+    assert second == {"enabled": True, "effort": "high"}
+    assert agent.reasoning_config == {"enabled": True, "effort": "high"}
 
 
 def test_tool_progress_callback_persists_structured_events(monkeypatch, tmp_path):
@@ -6311,7 +6311,7 @@ def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(mo
     events = []
 
     class _Agent:
-        max_iterations = 120
+        max_iterations = 180
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
     monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda path: {"ok": True, "command": f"lake env lean {path}"})
@@ -6322,7 +6322,7 @@ def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(mo
 
     history, updated_live_state, attempt_recorded = runner._handle_api_step_budget_exhaustion(
         _Agent(),
-        {"completed": False, "exit_reason": "max_iterations", "api_calls": 120},
+        {"completed": False, "exit_reason": "max_iterations", "api_calls": 180},
         [{"role": "assistant", "content": "failed attempt"}],
         autonomy_state,
         live_state,

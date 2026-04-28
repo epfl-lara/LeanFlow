@@ -53,7 +53,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "toolsets": ["epflemma-cli"],
     "agent": {
-        "max_turns": 120,
+        "max_turns": 180,
         "reasoning_effort": "auto",
         "seed": 42,
         "temperature": 0.3,

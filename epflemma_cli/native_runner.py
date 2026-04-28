@@ -750,19 +750,12 @@ def _resolve_managed_reasoning_config(
         return base
 
     current = dict(live_state or {})
-    autonomy = dict(autonomy_state or {})
     if _queue_needs_final_file_sweep(current):
         return {"enabled": True, "effort": "high"}
 
     target_symbol, active_file = _queue_assignment_identity(current)
     if target_symbol and active_file:
-        attempts = _failed_attempt_count_for_theorem(
-            autonomy,
-            target_symbol=target_symbol,
-            active_file=active_file,
-        )
-        effort = "high" if attempts >= _failed_attempt_reasoning_threshold() else "medium"
-        return {"enabled": True, "effort": effort}
+        return {"enabled": True, "effort": "high"}
 
     return {"enabled": True, "effort": "high"}
 
@@ -5287,7 +5280,7 @@ class HandoffView:
             f"- file: {self.current_file_label}",
             f"- exact tool path: {self.current_file or '[unknown]'}",
             f"- pending count: {self.pending_count} pending",
-            f"- reasoning effort: {self.reasoning_effort or 'medium'}",
+            f"- reasoning effort: {self.reasoning_effort or 'high'}",
             "",
             "Queue horizon:",
             self.queue_horizon,
@@ -7920,11 +7913,11 @@ def _build_agent() -> AIAgent:
     api_key = _read_native_env("API_KEY")
     provider = _read_native_env("PROVIDER")
     api_mode = _read_native_env("API_MODE")
-    max_turns_raw = _read_text_env("AGENT_MAX_TURNS", "120")
+    max_turns_raw = _read_text_env("AGENT_MAX_TURNS", "180")
     try:
         max_turns = max(1, int(max_turns_raw))
     except ValueError:
-        max_turns = 120
+        max_turns = 180
 
     if not model:
         raise SystemExit("epflemma-native: EPFLEMMA_NATIVE_MODEL is not configured")
