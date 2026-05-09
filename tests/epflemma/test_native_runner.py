@@ -2554,6 +2554,26 @@ def test_startup_user_message_snapshot_with_runner_lean_prompt(monkeypatch):
     )
 
 
+def test_startup_user_message_surfaces_effective_prompt(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_EFFECTIVE_PROMPT", "use abs_abs_sub first")
+    monkeypatch.setattr(runner, "_runner_lean_prompt_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_startup_active_skill_contract", lambda _name: "")
+    monkeypatch.setattr(runner, "_startup_additional_skill_contracts", lambda _name: "")
+    monkeypatch.setattr(runner, "_queue_assignment_block", lambda *args, **kwargs: "")
+    monkeypatch.setattr(runner, "_swarm_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "route_workflow_step",
+        lambda *args, **kwargs: type("Route", (), {"to_dict": lambda self: {}})(),
+    )
+
+    prompt = runner._startup_user_message(live_state={}, autonomy_state={})
+
+    assert "User prompt: use abs_abs_sub first" in prompt
+
+
 def test_autonomous_continuation_prompt_snapshot_with_runner_lean_prompt(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_RUNNER_LEAN_PROMPT", "1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
@@ -4102,6 +4122,57 @@ def test_document_formalization_review_gate_stops_before_proving(monkeypatch, tm
     assert "do not fill theorem/lemma `sorry` proofs" in prompt
 
 
+def test_document_formalization_pending_blueprint_blocks_final_sweep(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("/-- Source proof: pending. -/\ntheorem demo : True := by\n  sorry\n", encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "\n".join(
+            [
+                "# Blueprint",
+                "",
+                "## Source Inventory",
+                "",
+                "### line-1",
+                "- Source locator: `docs/paper.tex:1`",
+                "- Planned Lean declarations: `demo`",
+                "- Formal statement review: planner self-check complete",
+                "- Source qualifiers: none",
+                "- Lean coverage: covers statement",
+                "- Scope changes: none",
+                "- Statement verification status: pending review",
+                "- Source proof / prover notes: source proof is trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_document_formalization_manifest_blocks",
+        lambda: [{"label": "line-1", "kind": "theorem", "has_proof": True}],
+    )
+
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Demo/Paper/Main.lean",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "sorry_count": 1,
+        "document_formalization_handoff": {"ok": True, "issues": []},
+    }
+
+    assert runner._document_formalization_waiting_for_independent_review(live_state) is True
+    assert runner._queue_needs_final_file_sweep(live_state) is False
+    assert runner._autonomous_stop_reason([], live_state, {}) == "blocked"
+
+
 def test_document_formalization_review_due_for_approval_only_gate(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     active = project / "Demo" / "Paper" / "Main.lean"
@@ -4192,14 +4263,31 @@ def test_document_formalization_reviewed_draft_stops_ready_for_prove(monkeypatch
     live_state = {
         "active_file": str(active),
         "active_file_label": "Demo/Paper/Main.lean",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
         "sorry_count": 2,
         "document_formalization_handoff": {"ok": True, "issues": []},
     }
-    autonomy_state = {}
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "T1_T2_relation",
+            "active_file": str(active),
+        },
+    }
 
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    assert runner._queue_needs_final_file_sweep(live_state) is False
+    runner._maybe_announce_final_file_sweep_state(autonomy_state, live_state)
     assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "blocked"
-    assert events[0][0][0] == "formalization-prover-handoff-ready"
-    assert "ready for /prove" in events[0][0][1]
+    runner._prepare_queue_assignment_state(autonomy_state, live_state)
+    rebuilt, transition = runner._rebuild_history_for_theorem_transition([], {}, autonomy_state, live_state)
+
+    assert events[0][0][0] == "final-file-sweep-deferred-for-prover-handoff"
+    assert events[1][0][0] == "formalization-prover-handoff-ready"
+    assert "ready for /prove" in events[1][0][1]
+    assert "current_queue_assignment" not in autonomy_state
+    assert rebuilt is None
+    assert transition is None
 
 
 def test_document_formalization_gate_clears_stale_queue_assignment(monkeypatch, tmp_path):

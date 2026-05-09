@@ -4,21 +4,19 @@
 
 ### Autoformalization Inputs
 
-- Make `/autoformalize` accept a directory as input, especially a TeX project directory.
-- Preserve support for a single `.tex` file and a single `.pdf` file.
-- Add deterministic document discovery for directories:
-  - identify main TeX entrypoint
-  - collect included `.tex` files
-  - collect bibliography and local assets
-  - handle multiple candidate roots with a clear prompt/error
-- Store the selected source document and extracted blueprint path in workflow state.
+Implemented:
+
+- `/autoformalize` accepts project-local TeX directories while preserving single `.tex` and `.pdf` inputs.
+- Directory preflight deterministically selects a main TeX entrypoint, records included `.tex` files, bibliography files, local assets, and rejects ambiguous roots with an explicit error.
+- Workflow state, launch summaries, and runner startup prompts distinguish the original request from the selected source document and keep the generated blueprint path visible.
 
 ### User Prompt Overrides
 
-- Add an optional `--prompt` flag for `/prove` and `/autoformalize`.
-- Thread the prompt through workflow resolution, prompt assembly, logs, and resume state.
-- Treat this as scoped task guidance, not as a replacement for Lean-first system guidance.
-- Record the effective prompt in workflow metadata so resumed runs are reproducible.
+Implemented:
+
+- `/prove` and `/autoformalize` accept `--prompt`; legacy `--goal` remains a compatibility alias for the same scoped guidance field.
+- The effective prompt is threaded through workflow resolution, child runner environment, startup prompt assembly, live status, activity logs, and run metadata.
+- Prompt guidance is appended as scoped user guidance and does not replace the Lean-first workflow/skill contracts.
 
 ### Sandboxed Runtime
 

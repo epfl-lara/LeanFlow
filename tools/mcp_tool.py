@@ -78,6 +78,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -123,6 +124,7 @@ except ImportError:
 
 _DEFAULT_TOOL_TIMEOUT = 120      # seconds for tool calls
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
+_LOCAL_LOOGLE_CONNECT_TIMEOUT = 600
 _MAX_RECONNECT_RETRIES = 5
 _MAX_BACKOFF_SECONDS = 60
 
@@ -130,6 +132,8 @@ _MAX_BACKOFF_SECONDS = 60
 _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
 })
+_LOOGLE_STALE_ARTIFACT_SCAN_LIMIT = 80
+_LEAN_MODULE_PART_PATTERN = re.compile(r"^[A-Z_][A-Za-z0-9_']*$")
 
 # Regex for credential patterns to strip from error messages
 _CREDENTIAL_PATTERN = re.compile(
@@ -263,6 +267,104 @@ def _resolve_stdio_cwd(server_name: str, config: dict) -> str | None:
             if os.path.isdir(path):
                 return path
     return None
+
+
+def _truthy_env_value(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _augment_lean_stdio_env(server_name: str, env: dict, cwd: str | None) -> dict:
+    """Add project-local Lean runtime env expected by managed Lean MCP servers."""
+    updated = dict(env or {})
+    if not str(server_name or "").startswith("lean-") or not cwd:
+        return updated
+
+    updated.setdefault("LEAN_PROJECT_PATH", cwd)
+    updated.setdefault("EPFLEMMA_PROJECT_ROOT", cwd)
+    updated.setdefault("OPENGAUSS_PROJECT_ROOT", cwd)
+    return updated
+
+
+def _repair_loogle_cache_if_needed(server_name: str, env: dict) -> None:
+    """Repair stale local Loogle cache artifacts before the MCP server starts."""
+    if str(server_name or "") != "lean-lsp":
+        return
+    if not _truthy_env_value((env or {}).get("LEAN_LOOGLE_LOCAL")):
+        return
+    cache_dir = Path(str((env or {}).get("LEAN_LOOGLE_CACHE_DIR", "") or "")).expanduser()
+    if not cache_dir:
+        return
+    repo_dir = cache_dir / "repo"
+    binary = repo_dir / ".lake" / "build" / "bin" / ("loogle.exe" if os.name == "nt" else "loogle")
+    if not binary.is_file():
+        return
+
+    packages_dir = repo_dir / ".lake" / "packages"
+    if not packages_dir.is_dir():
+        return
+
+    missing_modules: list[str] = []
+    for package_dir in sorted(packages_dir.iterdir(), key=lambda item: item.name):
+        if not package_dir.is_dir():
+            continue
+        build_lib = package_dir / ".lake" / "build" / "lib" / "lean"
+        for source in package_dir.rglob("*.lean"):
+            try:
+                relative = source.relative_to(package_dir)
+            except ValueError:
+                continue
+            if relative.parts and relative.parts[0] in {".lake", ".git"}:
+                continue
+            if not (build_lib / relative.with_suffix(".olean")).is_file():
+                module = ".".join(relative.with_suffix("").parts)
+                valid_module = all(
+                    _LEAN_MODULE_PART_PATTERN.match(part)
+                    for part in relative.with_suffix("").parts
+                )
+                if valid_module and "Test" not in module and module not in missing_modules:
+                    missing_modules.append(module)
+                if len(missing_modules) >= _LOOGLE_STALE_ARTIFACT_SCAN_LIMIT:
+                    break
+        if len(missing_modules) >= _LOOGLE_STALE_ARTIFACT_SCAN_LIMIT:
+            break
+    if not missing_modules:
+        return
+
+    try:
+        result = subprocess.run(
+            ["lake", "build", *missing_modules],
+            cwd=str(repo_dir),
+            env=dict(os.environ, LAKE_ARTIFACT_CACHE="false"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=900,
+            check=False,
+        )
+    except Exception as exc:
+        logger.warning("Failed to repair stale local Loogle cache: %s", exc)
+        return
+    if result.returncode != 0:
+        logger.warning(
+            "Failed to repair stale local Loogle cache (exit %s): %s",
+            result.returncode,
+            ((result.stderr or result.stdout or "").strip())[:500],
+        )
+
+
+def _effective_connect_timeout(name: str, config: dict) -> float:
+    try:
+        timeout = float(config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT))
+    except Exception:
+        timeout = float(_DEFAULT_CONNECT_TIMEOUT)
+    env = config.get("env")
+    if (
+        str(name or "") == "lean-lsp"
+        and isinstance(env, dict)
+        and _truthy_env_value(env.get("LEAN_LOOGLE_LOCAL"))
+    ):
+        timeout = max(timeout, float(_LOCAL_LOOGLE_CONNECT_TIMEOUT))
+    return timeout
 
 
 def _format_connect_error(exc: BaseException) -> str:
@@ -816,6 +918,8 @@ class MCPServerTask:
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)
         cwd = _resolve_stdio_cwd(self.name, config)
+        safe_env = _augment_lean_stdio_env(self.name, safe_env, cwd)
+        _repair_loogle_cache_if_needed(self.name, safe_env)
         server_params = StdioServerParameters(
             command=command,
             args=args,
@@ -1494,7 +1598,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     from tools.registry import registry
     from toolsets import create_custom_toolset
 
-    connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+    connect_timeout = _effective_connect_timeout(name, config)
     server = await asyncio.wait_for(
         _connect_server(name, config),
         timeout=connect_timeout,
@@ -1655,8 +1759,13 @@ def discover_mcp_tools() -> List[str]:
                 failed_count += 1
 
     # Per-server timeouts are handled inside _discover_and_register_server.
-    # The outer timeout is generous: 120s total for parallel discovery.
-    _run_on_mcp_loop(_discover_all(), timeout=120)
+    # The outer timeout must be at least as large as the slowest managed Lean
+    # startup path, because first-run local Loogle indexing can take minutes.
+    outer_timeout = max(
+        120.0,
+        *(float(_effective_connect_timeout(name, cfg)) for name, cfg in new_servers.items()),
+    )
+    _run_on_mcp_loop(_discover_all(), timeout=outer_timeout + 5)
 
     # Print summary
     total_servers = len(new_servers)

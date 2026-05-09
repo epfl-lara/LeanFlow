@@ -13,7 +13,7 @@ Primary specs:
 
 ## Tool Order
 
-1. `formalization_document_inspect` when `/formalize` provided a source `.tex` or `.pdf`
+1. `formalization_document_inspect` when `/formalize` provided a source `.tex`, `.pdf`, or TeX project directory
 2. `lean_capabilities`
 3. `lean_inspect`
 4. `lean_search`
@@ -40,6 +40,7 @@ Primary specs:
 - Verify planner draft readiness with `lean_inspect` and `lean_verify` (module or file_exact), plus the document formalization handoff verifier. Do not use terminal Lake commands as the normal readiness check.
 - Before handoff to the prover queue, let the runner's independent statement/source verification pass review the blueprint and Lean draft. The reviewer must approve or correct the planned declarations, source locators, theorem statements, and prover notes before the handoff verifier passes.
 - The statement/source verifier must check concrete fidelity axes, not just plausibility. Every source entry should record `Source qualifiers`, `Lean coverage`, and `Scope changes`. Qualifiers include mathematical object class, quantifier order, parameter domain, output codomain, equality/image condition, side conditions, and follow-on claims. Every explicit qualifier must appear in the Lean theorem, be covered by a companion declaration, or be recorded as an intentional scope change.
+- Do not treat a simpler Lean encoding as full coverage for a source claim about a richer object class or representation. Add a bridge declaration, or mark the coverage as partial and record the representation change in the blueprint.
 - To make the handoff verifier pass after review: replace scaffold root imports with direct Mathlib/project dependencies, add the generated target module to the root project module so plain `lake build` checks it, keep the blueprint import plan identical to the target Lean imports, ensure the draft has no hard Lean diagnostics, and record `Statement verification status: approved` for each source theorem/lemma inventory entry.
 - During proof repair, consult the nearby `Blueprint.md` and original `.tex`/`.pdf` source for the paper's proof strategy before inventing a proof.
 - Keep the generated blueprint aligned with declaration names, split lemmas, source labels, and statement-fidelity decisions.

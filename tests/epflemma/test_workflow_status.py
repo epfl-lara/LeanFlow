@@ -311,6 +311,7 @@ def test_workflow_activity_writes_run_and_agent_jsonl_streams(monkeypatch, tmp_p
 def test_workflow_activity_marks_runner_start_as_top_level(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_EFFECTIVE_PROMPT", "use abs_abs_sub first")
     project_root = tmp_path / "project"
     project_root.mkdir()
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project_root))
@@ -326,8 +327,10 @@ def test_workflow_activity_marks_runner_start_as_top_level(monkeypatch, tmp_path
     assert event["run_scope"] == "top-level"
     assert event["details"]["run_scope"] == "top-level"
     assert event["details"]["project_root"] == str(project_root)
+    assert event["details"]["effective_prompt"] == "use abs_abs_sub first"
     assert metadata["run_scope"] == "top-level"
     assert metadata["project_root"] == str(project_root)
+    assert metadata["effective_prompt"] == "use abs_abs_sub first"
 
 
 def test_workflow_latest_run_activity_path_prefers_top_level_run(monkeypatch, tmp_path):
