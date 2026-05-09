@@ -15,7 +15,7 @@ Current behavior summary:
 - failed-attempt memory is recorded at each failed `edit -> verification feedback -> still blocked` boundary
 - the latest failed proof stays in the file; older failed attempts are shown through structured `PREVIOUS ATTEMPTS`
 - failed-attempt memory is cleared when the workflow advances to a different theorem
-- model context fallback is now conservative (`200,000` tokens when provider metadata is unknown), so 50% compaction triggers around `100,000`, not `1,000,000`
+- model context fallback is now conservative (`200,000` tokens when provider metadata is unknown), so 75% compaction triggers around `150,000`, not `1,000,000`
 - stale runner snapshots in `.epflemma/workflow-state/live_status.json` are normalized to `phase: dead` / `process_id: 0` instead of appearing live forever
 
 Reference run:
@@ -88,7 +88,7 @@ That compaction only fires when the global token threshold is crossed.
 
 In `run_agent.py`, the compressor is initialized with:
 
-- `threshold = 0.50`
+- `threshold = 0.75`
 - `protect_first_n = 3`
 - `protect_last_n = 4`
 

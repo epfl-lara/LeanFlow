@@ -37,7 +37,7 @@ def test_load_config_returns_defaults_on_fresh_home(monkeypatch, tmp_path):
     assert config["auxiliary"]["lean_reasoning"]["provider"] == "main"
     assert config["auxiliary"]["lean_reasoning"]["model"] == "moonshotai/Kimi-K2.6-int4"
     assert config["auxiliary"]["lean_reasoning"]["reasoning_effort"] == "high"
-    assert config["agent"]["max_turns"] == 180
+    assert config["agent"]["max_turns"] == 200
     assert config["agent"]["reasoning_effort"] == "auto"
     assert config["agent"]["seed"] == 42
     assert config["agent"]["temperature"] == 0.3
@@ -45,6 +45,7 @@ def test_load_config_returns_defaults_on_fresh_home(monkeypatch, tmp_path):
     assert config["compression"]["prune_tool_output"] is True
     assert config["compression"]["prune_keep_recent_user_turns"] == 2
     assert config["compression"]["reserved_output_tokens"] == 20000
+    assert config["compression"]["threshold"] == 0.75
     assert config["logging"]["preview_lines"] == 8
     assert config["logging"]["preview_chars"] == 1600
     assert config["logging"]["activity_preview_chars"] == 420

@@ -810,7 +810,7 @@ EPFLemma now defaults to:
 
 ```yaml
 agent:
-  max_turns: 120
+  max_turns: 200
   reasoning_effort: "auto"
   seed: 42
   temperature: 0.3
@@ -1167,7 +1167,7 @@ auxiliary:
     api_key: ""
 
 agent:
-  max_turns: 120
+  max_turns: 200
   reasoning_effort: "auto"
   seed: 42
   temperature: 0.3
@@ -1177,7 +1177,7 @@ agent:
 
 compression:
   enabled: true
-  threshold: 0.5
+  threshold: 0.75
   summary_model: moonshotai/Kimi-K2.6
   reserved_output_tokens: 20000
   prune_tool_output: true
