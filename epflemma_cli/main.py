@@ -67,6 +67,13 @@ from epflemma_cli.runtime_provider import (
     list_runtime_provider_targets,
     resolve_runtime_provider,
 )
+from epflemma_cli.sandbox_runtime import (
+    SandboxRuntimeError,
+    build_sandbox_image,
+    format_sandbox_status,
+    run_sandbox,
+    sandbox_status,
+)
 from epflemma_cli.skill_core import discover_skill_commands, discover_skills, load_skill
 from epflemma_cli.mcp_bootstrap import bootstrap_lean_mcp
 from epflemma_cli.workflow import FORGIVING_WORKFLOW_ALIAS_MAP, describe_launch_plan, resolve_workflow_request, run_workflow, spawn_workflow
@@ -132,6 +139,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("version", help="Show version")
 
+    status_parser = subparsers.add_parser("status", help="Show workflow and sandbox status")
+    status_parser.add_argument("--json", action="store_true", dest="json_output")
+
     config_parser = subparsers.add_parser("config", help="Inspect or modify config")
     config_sub = config_parser.add_subparsers(dest="config_command")
     config_sub.add_parser("show", help="Print merged config")
@@ -170,6 +180,30 @@ def _build_parser() -> argparse.ArgumentParser:
     workflow_parser = subparsers.add_parser("workflow", help="Run a Lean workflow in the native runtime")
     workflow_parser.add_argument("workflow")
     workflow_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    sandbox_parser = subparsers.add_parser("sandbox", help="Run EPFLemma inside an isolated container worktree")
+    sandbox_sub = sandbox_parser.add_subparsers(dest="sandbox_command")
+    sandbox_status_parser = sandbox_sub.add_parser("status", help="Show sandbox engine, image, cache, and recent runs")
+    sandbox_status_parser.add_argument("--json", action="store_true", dest="json_output")
+    sandbox_status_parser.add_argument("--engine", default=None, choices=["auto", "docker", "podman"])
+    sandbox_status_parser.add_argument("--image", default=None)
+    sandbox_status_parser.add_argument("--env-file", default=None)
+    sandbox_doctor = sandbox_sub.add_parser("doctor", help="Check whether the sandbox runtime is ready")
+    sandbox_doctor.add_argument("--json", action="store_true", dest="json_output")
+    sandbox_doctor.add_argument("--engine", default=None, choices=["auto", "docker", "podman"])
+    sandbox_doctor.add_argument("--image", default=None)
+    sandbox_doctor.add_argument("--env-file", default=None)
+    sandbox_build = sandbox_sub.add_parser("build", help="Build or update the local EPFLemma sandbox image")
+    sandbox_build.add_argument("--engine", default=None, choices=["auto", "docker", "podman"])
+    sandbox_build.add_argument("--image", default=None)
+    sandbox_build.add_argument("--pull", action="store_true")
+    sandbox_build.add_argument("--no-cache", action="store_true")
+    sandbox_run = sandbox_sub.add_parser("run", help="Run an EPFLemma command in a copied project sandbox")
+    sandbox_run.add_argument("--engine", default=None, choices=["auto", "docker", "podman"])
+    sandbox_run.add_argument("--image", default=None)
+    sandbox_run.add_argument("--env-file", default=None)
+    sandbox_run.add_argument("--no-network", action="store_true")
+    sandbox_run.add_argument("args", nargs=argparse.REMAINDER)
 
     provider_parser = subparsers.add_parser("provider", help="Show the resolved runtime provider")
     provider_parser.add_argument("--requested", default=None)
@@ -295,6 +329,25 @@ def _handle_config(args: argparse.Namespace) -> int:
     raise SystemExit("Unknown config command")
 
 
+def _handle_status(args: argparse.Namespace) -> int:
+    workflow = load_workflow_live_status()
+    sandbox = sandbox_status()
+    payload = {
+        "workflow": workflow or {"phase": "idle", "workflow_kind": "[none]"},
+        "sandbox": sandbox,
+    }
+    if getattr(args, "json_output", False):
+        _print_json(payload)
+        return 0
+    render_workflow_status_panel(
+        Console(),
+        status=payload["workflow"],
+        activities=read_workflow_activity(limit=8),
+    )
+    print(format_sandbox_status(sandbox))
+    return 0
+
+
 def _mcp_status_payload() -> dict[str, Any]:
     servers = list(get_mcp_status())
     return {
@@ -378,6 +431,44 @@ def _handle_mcp(args: argparse.Namespace) -> int:
             _print_mcp_bootstrap(payload)
         return 0
     raise SystemExit("Unknown MCP command")
+
+
+def _handle_sandbox(args: argparse.Namespace) -> int:
+    command = getattr(args, "sandbox_command", None) or "status"
+    try:
+        if command in {"status", "doctor"}:
+            payload = sandbox_status(
+                engine=getattr(args, "engine", None),
+                image=getattr(args, "image", None),
+                env_file=getattr(args, "env_file", None),
+            )
+            if getattr(args, "json_output", False):
+                _print_json(payload)
+            else:
+                print(format_sandbox_status(payload))
+            if command == "doctor":
+                return 0 if payload.get("engine_ready") and payload.get("image_ready") else 1
+            return 0
+        if command == "build":
+            return build_sandbox_image(
+                engine=getattr(args, "engine", None),
+                image=getattr(args, "image", None),
+                pull=bool(getattr(args, "pull", False)),
+                no_cache=bool(getattr(args, "no_cache", False)),
+            )
+        if command == "run":
+            return run_sandbox(
+                command_args=getattr(args, "args", []) or [],
+                active_cwd=Path.cwd(),
+                engine=getattr(args, "engine", None),
+                image=getattr(args, "image", None),
+                env_file=getattr(args, "env_file", None),
+                network=not bool(getattr(args, "no_network", False)),
+            )
+    except SandboxRuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    raise SystemExit("Unknown sandbox command")
 
 
 class InteractiveShell:
@@ -1313,6 +1404,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "version":
         print(__version__)
         return 0
+    if args.command == "status":
+        return _handle_status(args)
     if args.command == "config":
         return _handle_config(args)
     if args.command == "doctor":
@@ -1324,6 +1417,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if not issues else 1
     if args.command == "project":
         return _handle_project(args)
+    if args.command == "sandbox":
+        return _handle_sandbox(args)
     if args.command == "workflow":
         if args.workflow in {"status", "history", "activity", "log"}:
             payload = load_workflow_live_status()
