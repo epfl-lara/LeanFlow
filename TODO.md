@@ -1,27 +1,5 @@
 # EPFLemma TODO
 
-## Current Phase 1 Commit Candidate
-
-- Commit the verified Lean proof artifacts separately from local workflow state.
-- Include:
-  - `testdata/workflow_projects/DocFormalizationDemo/DocFormalizationDemo/Pyth/Main.lean`
-  - `testdata/workflow_projects/GaussTest/GaussTest/RealTheorems.lean`
-- Do not include `.epflemma/workflow-state/` logs, checkpoints, live status, or run metadata in the proof commit.
-- Decide whether `.epflemma/project.yaml` should become tracked project config or remain local generated state.
-- Keep any unfinished autoformalization experiment notes/artifacts out of the commit until they are intentionally curated.
-
-Verification already run:
-
-- `lake env lean GaussTest/RealTheorems.lean` from `testdata/workflow_projects/GaussTest`: passes.
-- `lake env lean DocFormalizationDemo/Pyth/Main.lean` from `testdata/workflow_projects/DocFormalizationDemo`: passes with warnings only.
-- `rg "\bsorry\b"` on the two modified Lean files: no proof `sorry`; only one instructional comment in `RealTheorems.lean`.
-
-Known warnings in the Pythagorean formalization:
-
-- Some unreachable/unused tactic lint warnings.
-- Deprecated `push_neg`; migrate to `push Not`.
-- A few unnecessary sequencing warnings for `<;>`.
-
 ## Product TODOs
 
 ### Autoformalization Inputs
