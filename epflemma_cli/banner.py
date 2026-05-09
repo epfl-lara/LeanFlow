@@ -394,6 +394,14 @@ def render_workflow_status_panel(console: Console, *, status: dict[str, object],
             suffix = f", +{len(queue) - len(shown)} more" if len(queue) > len(shown) else ""
             table.add_row("File queue", ", ".join(shown) + suffix)
     table.add_row("Build", str(status.get("build_status", "unknown")))
+    warning_cleanup_status = str(status.get("warning_cleanup_status", "") or "").strip()
+    if warning_cleanup_status:
+        warning_count = int(status.get("warning_cleanup_warning_count", 0) or 0)
+        attempted = "attempted" if bool(status.get("warning_cleanup_attempted")) else "not attempted"
+        if bool(status.get("warning_cleanup_verified")):
+            terminal = "accepted" if warning_cleanup_status == "accepted" else "verified"
+            attempted = f"{attempted}, {terminal}"
+        table.add_row("Warning cleanup", f"{warning_cleanup_status}; {attempted}; warnings {warning_count}")
     table.add_row("Project sorries", str(status.get("project_sorry_count", "[unknown]")))
     table.add_row("Checkpoint", str(status.get("latest_checkpoint_label", "[none]")))
     table.add_row("Locks", str(status.get("held_locks", 0)))

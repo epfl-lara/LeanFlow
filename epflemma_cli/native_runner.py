@@ -108,6 +108,8 @@ _QUEUE_MANAGER_STATE_KEYS = TheoremQueueManager.OWNED_AUTONOMY_KEYS
 _FINAL_SWEEP_AUTONOMY_KEYS = frozenset(
     {
         "final_sweep_cleanup_attempted",
+        "final_sweep_cleanup_turn_started",
+        "final_sweep_cleanup_outcome_recorded",
         "final_sweep_baseline",
         "final_sweep_warning_summary",
     }
@@ -442,10 +444,15 @@ def _persist_live_status(
     checkpoint_state = dict(checkpoint_state or _journal_status())
     live_state = dict(live_state or _build_live_proof_state(history, checkpoint_state))
     current_checkpoint = dict(checkpoint_state.get("current") or {})
+    resolved_phase = _workflow_phase(live_state, explicit=phase, compaction_state=compaction_state)
+    if resolved_phase == "exited":
+        owner_id = _runner_owner_id()
+        if owner_id:
+            release_all_file_locks(owner_id=owner_id)
     payload = {
         "version": 1,
         "updated_at": _utc_now_isoformat(),
-        "phase": _workflow_phase(live_state, explicit=phase, compaction_state=compaction_state),
+        "phase": resolved_phase,
         "workflow_kind": _workflow_kind(),
         "workflow_command": _read_native_env("WORKFLOW_COMMAND", "[unset]"),
         "project_root": _project_root(),
@@ -470,6 +477,16 @@ def _persist_live_status(
         "goals": str(live_state.get("goals", "") or "unavailable"),
         "build_status": str(live_state.get("build_status", "") or ""),
         "last_verification": dict(live_state.get("last_verification", {}) or {}),
+        "proof_solved": bool(live_state.get("proof_solved", False)),
+        "warning_cleanup_status": str(live_state.get("warning_cleanup_status", "") or ""),
+        "warning_cleanup_attempted": bool(live_state.get("warning_cleanup_attempted", False)),
+        "warning_cleanup_verified": bool(live_state.get("warning_cleanup_verified", False)),
+        "warning_cleanup_skipped": bool(live_state.get("warning_cleanup_skipped", False)),
+        "warning_cleanup_blocked": bool(live_state.get("warning_cleanup_blocked", False)),
+        "warning_cleanup_warning_count": int(live_state.get("warning_cleanup_warning_count", 0) or 0),
+        "warning_cleanup_warning_summary": str(live_state.get("warning_cleanup_warning_summary", "") or ""),
+        "warning_cleanup_diagnostics": str(live_state.get("warning_cleanup_diagnostics", "") or ""),
+        "warning_cleanup": dict(live_state.get("warning_cleanup", {}) or {}),
         "proof_state_message": str(live_state.get("message", "") or ""),
         "sorry_count": live_state.get("sorry_count"),
         "project_sorry_count": live_state.get("project_sorry_count"),
@@ -1171,6 +1188,86 @@ def _final_sweep_warning_cleanup_due(
     if count <= 0:
         return False, 0, ""
     return True, count, summary
+
+
+def _with_warning_cleanup_state(
+    live_state: Mapping[str, Any] | None,
+    *,
+    status: str,
+    proof_solved: bool,
+    warning_count: int = 0,
+    warning_summary: str = "",
+    diagnostics: str = "",
+    attempted: bool | None = None,
+    verified: bool | None = None,
+) -> dict[str, Any]:
+    """Attach the shell-visible post-prove warning-cleanup state machine."""
+    normalized = dict(live_state or {})
+    normalized["proof_solved"] = bool(proof_solved)
+    normalized["warning_cleanup_status"] = str(status or "unknown")
+    normalized["warning_cleanup_attempted"] = bool(attempted) if attempted is not None else status in {
+        "pending",
+        "verified",
+        "blocked",
+    }
+    normalized["warning_cleanup_verified"] = bool(verified) if verified is not None else status == "verified"
+    normalized["warning_cleanup_skipped"] = status == "skipped"
+    normalized["warning_cleanup_blocked"] = status == "blocked"
+    normalized["warning_cleanup_warning_count"] = int(warning_count or 0)
+    normalized["warning_cleanup_warning_summary"] = str(warning_summary or "")
+    normalized["warning_cleanup_diagnostics"] = str(diagnostics or "")
+    normalized["warning_cleanup"] = {
+        "status": normalized["warning_cleanup_status"],
+        "proof_solved": normalized["proof_solved"],
+        "attempted": normalized["warning_cleanup_attempted"],
+        "verified": normalized["warning_cleanup_verified"],
+        "skipped": normalized["warning_cleanup_skipped"],
+        "blocked": normalized["warning_cleanup_blocked"],
+        "warning_count": normalized["warning_cleanup_warning_count"],
+        "warning_summary": normalized["warning_cleanup_warning_summary"],
+        "diagnostics": normalized["warning_cleanup_diagnostics"],
+    }
+    return normalized
+
+
+def _record_final_sweep_cleanup_outcome_once(
+    autonomy_state: Mapping[str, Any] | None,
+    *,
+    status: str,
+    active_file: str,
+    warning_count: int = 0,
+    diagnostics: str = "",
+) -> None:
+    if not isinstance(autonomy_state, dict):
+        return
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"verified", "accepted", "skipped", "blocked"}:
+        return
+    signature = json.dumps(
+        {
+            "status": normalized_status,
+            "active_file": str(active_file or ""),
+            "warning_count": int(warning_count or 0),
+            "diagnostics": _single_line(diagnostics, 220),
+        },
+        sort_keys=True,
+    )
+    if str(autonomy_state.get("final_sweep_cleanup_outcome_recorded", "") or "") == signature:
+        return
+    autonomy_state["final_sweep_cleanup_outcome_recorded"] = signature
+    messages = {
+        "verified": "Final-sweep warning cleanup verified",
+        "accepted": "Final-sweep warning cleanup accepted with remaining warnings",
+        "skipped": "Final-sweep warning cleanup skipped",
+        "blocked": "Final-sweep warning cleanup blocked",
+    }
+    _record_activity(
+        f"final-sweep-warning-cleanup-{normalized_status}",
+        messages[normalized_status],
+        active_file=active_file,
+        warning_count=int(warning_count or 0),
+        diagnostics=_single_line(diagnostics, 520),
+    )
 
 
 def _store_last_verification(
@@ -5689,7 +5786,8 @@ def _final_file_sweep_block(live_state: Mapping[str, Any]) -> str:
                 "- this is your one focused whole-file warning-cleanup opportunity",
                 (
                     "- expected effort: read the file with `read_file`, then make at least one safe edit "
-                    "before bailing. Low-risk fixes include: removing a `try { ... }` or `<;> try { ... }` "
+                    "through `apply_verified_patch` before bailing. Low-risk fixes include: replacing "
+                    "deprecated `push_neg` with `push Not`; removing a `try { ... }` or `<;> try { ... }` "
                     "whose tactic is reported as never executed; deleting an `all_goals X`/`<;> X` reported "
                     "as doing nothing; renaming an unused parameter to `_` (or dropping it from the proof "
                     "body if it's a `have`); removing a `simp`/`linarith`/`omega` reported as unused."
@@ -7401,6 +7499,13 @@ def _promote_live_state_to_verified(
             build_status=build_status,
         )
     normalized["build_status"] = build_status
+    proof_solved_for_cleanup = (
+        bool(verification_ok)
+        and declaration_scope == "file"
+        and declaration_queue_total == 0
+        and not _goals_still_open(str(normalized.get("goals", "") or ""))
+        and not (isinstance(sorry_count, int) and sorry_count > 0)
+    )
 
     # Spec line 672: the final file sweep is the canonical place for the
     # worker to clean whole-file residual warnings. Lake build does not see
@@ -7414,6 +7519,12 @@ def _promote_live_state_to_verified(
         isinstance(autonomy_state, dict)
         and autonomy_state.get("final_sweep_cleanup_attempted")
     )
+    final_sweep_cleanup_turn_started = bool(
+        isinstance(autonomy_state, dict)
+        and autonomy_state.get("final_sweep_cleanup_turn_started")
+    )
+    final_sweep_baseline = dict(autonomy_state.get("final_sweep_baseline") or {}) if isinstance(autonomy_state, dict) else {}
+    final_sweep_baseline_captured = final_sweep_baseline.get("content") is not None
     if (
         verification_ok
         and not final_sweep_cleanup_already_attempted
@@ -7425,6 +7536,16 @@ def _promote_live_state_to_verified(
             if _capture_final_sweep_baseline(autonomy_state, active_file):
                 autonomy_state["final_sweep_cleanup_attempted"] = True
                 autonomy_state["final_sweep_warning_summary"] = warning_summary
+                normalized = _with_warning_cleanup_state(
+                    normalized,
+                    status="pending",
+                    proof_solved=True,
+                    warning_count=warning_count,
+                    warning_summary=warning_summary,
+                    diagnostics=diagnostics,
+                    attempted=True,
+                    verified=False,
+                )
                 normalized["final_sweep_warning_cleanup_pending"] = True
                 normalized["final_sweep_warning_count"] = warning_count
                 normalized["final_sweep_warning_summary"] = warning_summary
@@ -7452,9 +7573,73 @@ def _promote_live_state_to_verified(
                 normalized["last_verification"] = _last_verification_record(autonomy_state, normalized)
                 normalized["verification_ok"] = False
                 return normalized
+            normalized = _with_warning_cleanup_state(
+                normalized,
+                status="skipped",
+                proof_solved=True,
+                warning_count=warning_count,
+                warning_summary=warning_summary,
+                diagnostics="warning cleanup skipped because the active file baseline could not be captured",
+                attempted=False,
+                verified=False,
+            )
+            _record_activity(
+                "final-sweep-warning-cleanup-skipped",
+                "Skipped final-sweep warning cleanup because the active file baseline could not be captured",
+                active_file=active_file,
+                warning_count=warning_count,
+            )
 
     if (
         final_sweep_cleanup_already_attempted
+        and final_sweep_baseline_captured
+        and not final_sweep_cleanup_turn_started
+        and declaration_scope == "file"
+        and declaration_queue_total == 0
+        and isinstance(autonomy_state, dict)
+    ):
+        # The cleanup window was granted on a previous promote pass, but the
+        # model has not yet received that cleanup turn. Keep the workflow open
+        # instead of interpreting "granted" as "already attempted".
+        warning_count, warning_summary = _active_file_warning_summary(normalized)
+        if warning_count <= 0:
+            autonomy_state.pop("final_sweep_baseline", None)
+            normalized = _with_warning_cleanup_state(
+                normalized,
+                status="verified",
+                proof_solved=True,
+                warning_count=0,
+                warning_summary="",
+                diagnostics="warning cleanup verified; no warnings remain",
+                attempted=True,
+                verified=True,
+            )
+        else:
+            warning_summary = warning_summary or str(autonomy_state.get("final_sweep_warning_summary", "") or "")
+            normalized = _with_warning_cleanup_state(
+                normalized,
+                status="pending",
+                proof_solved=True,
+                warning_count=warning_count,
+                warning_summary=warning_summary,
+                diagnostics=diagnostics,
+                attempted=True,
+                verified=False,
+            )
+            normalized["final_sweep_warning_cleanup_pending"] = True
+            normalized["final_sweep_warning_count"] = warning_count
+            normalized["final_sweep_warning_summary"] = warning_summary
+            normalized["queue_needs_final_file_sweep"] = True
+            normalized["blocker_summary"] = (
+                f"final-sweep warning cleanup pending: {warning_count} warning(s) remain"
+            )
+            normalized["last_verification"] = _last_verification_record(autonomy_state, normalized)
+            normalized["verification_ok"] = False
+            return normalized
+
+    if (
+        final_sweep_cleanup_already_attempted
+        and final_sweep_cleanup_turn_started
         and declaration_scope == "file"
         and declaration_queue_total == 0
         and isinstance(autonomy_state, dict)
@@ -7463,9 +7648,11 @@ def _promote_live_state_to_verified(
         # Cleanup turn happened. If lake/lean is now unhappy, the model broke
         # the file trying to clean style warnings — restore to the captured
         # baseline and proceed as warning-tolerant accept.
+        cleanup_blocked_diagnostics = ""
         if not verification_ok:
             restored = _restore_final_sweep_baseline(autonomy_state, active_file)
             if restored:
+                cleanup_blocked_diagnostics = build_status
                 _record_activity(
                     "final-sweep-warning-cleanup-restored",
                     "Restored active file from final-sweep baseline after cleanup attempt regressed",
@@ -7479,11 +7666,81 @@ def _promote_live_state_to_verified(
                 ok, build_status = _run_explicit_verification_build(active_file, full_project=False)
                 verification_ok = bool(ok)
                 normalized["build_status"] = build_status
+            else:
+                cleanup_blocked_diagnostics = build_status
         # One-shot complete; drop the heavy baseline payload from autonomy_state.
         autonomy_state.pop("final_sweep_baseline", None)
+        autonomy_state.pop("final_sweep_cleanup_turn_started", None)
+        if cleanup_blocked_diagnostics:
+            normalized = _with_warning_cleanup_state(
+                normalized,
+                status="blocked",
+                proof_solved=bool(verification_ok),
+                warning_count=_active_file_warning_summary(normalized)[0],
+                warning_summary=_active_file_warning_summary(normalized)[1],
+                diagnostics=cleanup_blocked_diagnostics,
+                attempted=True,
+                verified=False,
+            )
+        elif verification_ok:
+            remaining_warning_count, remaining_warning_summary = _active_file_warning_summary(normalized)
+            cleanup_status = "verified" if remaining_warning_count == 0 else "accepted"
+            normalized = _with_warning_cleanup_state(
+                normalized,
+                status=cleanup_status,
+                proof_solved=True,
+                warning_count=remaining_warning_count,
+                warning_summary=remaining_warning_summary,
+                diagnostics=(
+                    "warning cleanup verified; no warnings remain"
+                    if remaining_warning_count == 0
+                    else "warning cleanup accepted; remaining warnings accepted after one cleanup pass"
+                ),
+                attempted=True,
+                verified=True,
+            )
+    elif final_sweep_cleanup_already_attempted and proof_solved_for_cleanup:
+        remaining_warning_count, remaining_warning_summary = _active_file_warning_summary(normalized)
+        cleanup_status = "verified" if remaining_warning_count == 0 else "accepted"
+        normalized = _with_warning_cleanup_state(
+            normalized,
+            status=cleanup_status,
+            proof_solved=True,
+            warning_count=remaining_warning_count,
+            warning_summary=remaining_warning_summary,
+            diagnostics=(
+                "warning cleanup verified; no warnings remain"
+                if remaining_warning_count == 0
+                else "warning cleanup accepted; remaining warnings accepted after one cleanup pass"
+            ),
+            attempted=True,
+            verified=True,
+        )
+    elif proof_solved_for_cleanup and declaration_scope == "file" and declaration_queue_total == 0:
+        warning_count, warning_summary = _active_file_warning_summary(normalized)
+        if warning_count <= 0:
+            normalized = _with_warning_cleanup_state(
+                normalized,
+                status="skipped",
+                proof_solved=True,
+                warning_count=0,
+                warning_summary="",
+                diagnostics="warning cleanup skipped because the solved file has no warnings",
+                attempted=False,
+                verified=False,
+            )
 
     normalized["last_verification"] = _last_verification_record(autonomy_state, normalized)
     normalized["verification_ok"] = bool(verification_ok)
+    cleanup_status = str(normalized.get("warning_cleanup_status", "") or "").strip().lower()
+    if cleanup_status in {"verified", "accepted", "skipped", "blocked"}:
+        _record_final_sweep_cleanup_outcome_once(
+            autonomy_state,
+            status=cleanup_status,
+            active_file=active_file,
+            warning_count=int(normalized.get("warning_cleanup_warning_count", 0) or 0),
+            diagnostics=str(normalized.get("warning_cleanup_diagnostics", "") or ""),
+        )
     if verification_ok:
         normalized["queue_needs_final_file_sweep"] = False
     if declaration_scope != "file" and isinstance(project_sorry_count, int) and project_sorry_count > 0:
@@ -8980,6 +9237,16 @@ def _drive_autonomous_followups(
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
         _record_queue_assignment(live_state, cycle=cycle, phase="autonomous")
         _prepare_queue_assignment_state(autonomy_state, live_state)
+        if bool(live_state.get("final_sweep_warning_cleanup_pending")) and not bool(
+            autonomy_state.get("final_sweep_cleanup_turn_started")
+        ):
+            autonomy_state["final_sweep_cleanup_turn_started"] = True
+            _record_activity(
+                "final-sweep-warning-cleanup-started",
+                "Started final-sweep warning cleanup model turn",
+                active_file=str(live_state.get("active_file", "") or ""),
+                warning_count=int(live_state.get("final_sweep_warning_count", 0) or 0),
+            )
         augmented_text = _attach_live_proof_state(
             _autonomous_continuation_prompt(live_state, cycle, autonomy_state),
             live_state,

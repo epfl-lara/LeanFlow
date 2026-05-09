@@ -1473,7 +1473,13 @@ def lean_inspect(
     sorry_count = _count_sorries(file_path)
     project_sorry_count, _ = _project_sorry_stats(project_root)
     queue_items: list[dict[str, Any]] = []
-    diagnostic_lines = actionable_diagnostic_line_numbers(diagnostics)
+    diagnostic_lines: list[int] = []
+    for diagnostic in diagnostic_items(diagnostics):
+        if str(diagnostic.get("severity", "") or "").strip().lower() != "error":
+            continue
+        line = diagnostic.get("line")
+        if isinstance(line, int) and line > 0 and line not in diagnostic_lines:
+            diagnostic_lines.append(line)
     for entry in _declaration_index(file_path):
         reasons: list[str] = []
         text = str(entry.get("text", "") or "")

@@ -24,22 +24,6 @@ Known warnings in the Pythagorean formalization:
 
 ## Product TODOs
 
-### High Priority: Post-Prove Warning Cleanup
-
-- After `/prove somefile.lean` completes with an empty declaration queue and no remaining proof obligations, run a quick warning-cleanup pass before reporting the workflow as fully done.
-- This is currently missing and should be prioritized because generated Lean can be kernel-valid while still noisy under the default linter.
-- The cleanup pass should:
-  - run Lean on the solved target file and collect warnings
-  - target mechanical safe fixes first, such as unreachable/unused tactics, deprecated `push_neg` to `push Not`, and unnecessary `<;>` sequencing
-  - apply changes through the same verified-patch/checkpoint path as proof edits
-  - re-run Lean after cleanup and require the file to remain proof-complete
-  - stop without changing theorem statements or reopening solved proof goals
-- Workflow state should distinguish:
-  - proof solved
-  - warning cleanup attempted
-  - warning cleanup verified
-  - warning cleanup skipped or blocked with diagnostics
-
 ### Autoformalization Inputs
 
 - Make `/autoformalize` accept a directory as input, especially a TeX project directory.

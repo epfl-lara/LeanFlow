@@ -535,6 +535,7 @@ class TheoremQueueManager:
             # Transition: drop retry counters belonging to the outgoing theorem.
             self._warning_retries.pop(previous_key, None)
             self._hard_retries.pop(previous_key, None)
+            self._last_verification = None
 
         self._current = QueueAssignment(
             key=new_key,
