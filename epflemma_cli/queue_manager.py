@@ -535,6 +535,7 @@ class TheoremQueueManager:
             # Transition: drop retry counters belonging to the outgoing theorem.
             self._warning_retries.pop(previous_key, None)
             self._hard_retries.pop(previous_key, None)
+            self._last_verification = None
 
         self._current = QueueAssignment(
             key=new_key,
@@ -954,27 +955,11 @@ class TheoremQueueManager:
     # ----- reasoning effort (replaces _resolve_managed_reasoning_config core) -
 
     def reasoning_effort_for_current(self) -> str:
-        """Return ``"medium"`` or ``"high"`` based on failed-attempt count.
-
-        Spec: managed theorem-queue turns start at ``medium``; after N failed
-        attempts on the same ``(theorem, file)`` pair, escalate to ``high``;
-        on transition to a new theorem, reset to ``medium``.
-
-        The reset is automatic here because attempts are scoped per-key and a
-        new assignment has zero attempts under its own key. The legacy code
-        relied on key normalization being consistent across the failed-attempt
-        store and the assignment store; in this class the same ``TheoremKey``
-        is used for both, so they cannot drift.
-        """
-        if self._current is None:
-            return "medium"
-        attempts = self.attempts_for_current()
-        if attempts >= self._reasoning_escalation_threshold:
-            return "high"
-        return "medium"
+        """Return the managed theorem-queue default reasoning effort."""
+        return "high"
 
     def remembered_reasoning_effort_for(self, key: TheoremKey) -> str:
-        return self._reasoning_effort_by_key.get(key, "medium") if key.is_valid() else "medium"
+        return self._reasoning_effort_by_key.get(key, "high") if key.is_valid() else "high"
 
     def remember_reasoning_effort_for(self, key: TheoremKey, effort: str) -> str:
         previous = self.remembered_reasoning_effort_for(key)
@@ -1126,7 +1111,7 @@ class TheoremQueueManager:
                 file_part, _, target_part = str(storage_key).partition("::")
                 key = TheoremKey.make(target_part, file_part)
                 if key.is_valid():
-                    mgr._reasoning_effort_by_key[key] = str(effort or "medium")
+                    mgr._reasoning_effort_by_key[key] = str(effort or "high")
 
         return mgr
 

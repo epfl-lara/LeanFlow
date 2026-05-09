@@ -88,6 +88,15 @@ def test_assign_transition_clears_retry_counters_atomically(tmp_path) -> None:
     mgr.assign(QueueItem(label="first"), active_file=str(active))
     mgr.consume_warning_retry()
     mgr.consume_hard_retry()
+    mgr.record_verification(
+        VerificationRecord(
+            scope=VerificationScope.TARGET,
+            ok=True,
+            tool="lean_incremental_check",
+            target="first",
+            summary="target first passed",
+        )
+    )
     mgr.record_attempt(cycle=1, proof_shape="exact ?x", reason="unsolved goals")
 
     transition = mgr.assign(QueueItem(label="second"), active_file=str(active))
@@ -97,6 +106,7 @@ def test_assign_transition_clears_retry_counters_atomically(tmp_path) -> None:
     assert mgr.current.key == TheoremKey.make("second", str(active))
     assert mgr.warning_retries_for_current() == 0
     assert mgr.hard_retries_for_current() == 0
+    assert mgr.last_verification is None
     mgr.check_invariants()
 
 

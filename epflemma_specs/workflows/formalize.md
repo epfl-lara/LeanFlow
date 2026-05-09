@@ -2,7 +2,7 @@
 id: formalize
 kind: workflow
 title: Formalize
-summary: Autonomous Lean formalization that drafts source-backed declarations and proof plans, then stops at a statement/source verification gate before proving.
+summary: Autonomous Lean formalization that drafts source-backed declarations and proof plans, verifies source fidelity, and hands the result to proving.
 aliases: [autoformalize]
 skills: [lean-formalization, lean-proof-loop, lean-theorem-queue-worker]
 tools: [formalization_document_inspect, lean_capabilities, lean_inspect, lean_search, lean_verify, lean_sorries, lean_axioms, lean_worker_dispatch]
@@ -23,6 +23,7 @@ Use this workflow when the input is a project-local mathematical source document
 Typical inputs:
 
 - a LaTeX source document inside the project, for example `docs/paper.tex`
+- a TeX project directory inside the project, for example `docs/paper`
 - a PDF source document inside the project, for example `docs/paper.pdf`
 - a partially drafted document-backed Lean file that still needs formalization and proof completion
 
@@ -40,7 +41,7 @@ Use `prove`, `review`, `checkpoint`, or `golf` for those cases. Use `draft` when
 
 ## Document Input Contract
 
-`/formalize` and `/autoformalize` require a project-local `.tex` or `.pdf` path.
+`/formalize` and `/autoformalize` require a project-local `.tex` source, `.pdf` source, or directory containing a TeX project.
 
 The workflow resolver prepares:
 
@@ -49,6 +50,8 @@ The workflow resolver prepares:
 - a bounded extracted-text cache
 - an active Lean target file for the generated declarations
 - startup context that points to all of the above
+
+For directory inputs, the resolver deterministically selects the main `.tex` entrypoint, records included `.tex` files, bibliography files, and local assets, and fails ambiguous roots with a clear error before launch.
 
 The active Lean target file is only the entry point. By default a document gets its own project-local workspace such as `ProjectName/PaperName/Main.lean` plus `ProjectName/PaperName/Blueprint.md`, and the planner may split work into additional Lean files in that same directory when the blueprint justifies it. Keep imports and blueprint references coherent.
 
@@ -130,6 +133,8 @@ Draft readiness is checked with `lean_inspect`, `lean_verify`, and the document 
 Before moving from planning to proving, the runner starts a fresh independent statement/source verification pass when the draft is otherwise ready and only approval statuses are missing. The review must check that each Lean statement matches the source claim, correct the blueprint or Lean draft when it does not, and record `Statement verification status: approved` for each source theorem/lemma entry before the prover queue starts. Each source theorem/lemma doc comment should include compact proof notes; the generated supplemental blueprint skill carries the durable `Blueprint.md` reference for prover turns after compaction. If the document statement is ambiguous, record the ambiguity in the blueprint rather than hiding it in the Lean signature. The prover phase may and should reread both `Blueprint.md` and the source `.tex`/`.pdf` when the proof needs the paper's argument.
 
 The verifier must treat source qualifiers as theorem-statement content, not proof commentary. Every explicit qualifier must be covered in Lean, covered by a companion declaration, or recorded as an intentional scope change. If the source includes a parameter-domain conversion, representation bridge, or follow-on equivalence, either formalize that bridge as its own declaration or leave the entry unapproved with the omission recorded.
+
+Object-class qualifiers need particular care. A theorem about a richer source representation is not fully covered by a simpler Lean encoding with matching output values unless the bridge is explicit. Either add a definition or companion declaration that witnesses the representation bridge, or mark `Lean coverage` as partial and list the representation change under `Scope changes`.
 
 The preflight blueprint is not a completed plan. Update it with planned Lean declaration names, dependencies, split lemmas, statement-fidelity reviews, and proof/prover notes before writing the main Lean draft.
 

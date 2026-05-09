@@ -89,6 +89,9 @@ def test_prepare_formalization_document_context_creates_planner_artifacts(tmp_pa
     env = context.to_env()
     assert env["EPFLEMMA_WORKFLOW_CONTEXT"] == str(context.context_path)
     assert env["EPFLEMMA_FORMALIZATION_TARGET_FILE"] == "Demo/Paper/Main.lean"
+    assert env["EPFLEMMA_FORMALIZATION_REQUEST_KIND"] == "file"
+    assert env["EPFLEMMA_FORMALIZATION_REQUEST_RELATIVE"] == "docs/paper.tex"
+    assert env["EPFLEMMA_FORMALIZATION_SELECTED_SOURCE"] == "docs/paper.tex"
 
 
 def test_prepare_formalization_document_context_extends_existing_root_imports(tmp_path):
@@ -158,6 +161,72 @@ This follows by unfolding the definition and applying the obvious witness.
     assert "unfolding the definition" in block["proof"]
 
 
+def test_directory_formalization_selects_main_tex_and_records_project_inventory(tmp_path):
+    project = tmp_path / "Demo"
+    source_dir = project / "docs" / "paper"
+    source_dir.mkdir(parents=True)
+    (source_dir / "macros.tex").write_text("\\def\\good{good}\n", encoding="utf-8")
+    (source_dir / "refs.bbl").write_text("\\begin{thebibliography}{1}\\end{thebibliography}\n", encoding="utf-8")
+    (source_dir / "style.bst").write_text("ENTRY {}{}{}\n", encoding="utf-8")
+    (source_dir / "main.tex").write_text(
+        r"""
+\documentclass{article}
+\input{macros}
+\begin{document}
+\title{Directory Source}
+\section{Main}
+\begin{theorem}\label{thm:dir}Directory input works.\end{theorem}
+\bibliography{refs}
+\bibliographystyle{style}
+\end{document}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    resolved, relative, kind = resolve_formalization_document(project, project, "docs/paper")
+    assert resolved == (source_dir / "main.tex").resolve()
+    assert relative == "docs/paper/main.tex"
+    assert kind == "latex"
+
+    context = prepare_formalization_document_context(
+        project_root=project,
+        cwd=project,
+        workflow_args="docs/paper",
+        project_label="Demo",
+    )
+
+    assert context.source_relative == "docs/paper/main.tex"
+    assert context.metadata["document_request_kind"] == "directory"
+    assert context.metadata["document_request_relative"] == "docs/paper"
+    assert context.metadata["tex_project_entrypoint"] == "docs/paper/main.tex"
+    assert context.metadata["tex_project_included_tex_files"] == ["docs/paper/macros.tex"]
+    assert context.metadata["tex_project_bibliography_files"] == ["docs/paper/refs.bbl"]
+    assert context.metadata["tex_project_local_asset_files"] == ["docs/paper/style.bst"]
+    env = context.to_env()
+    assert env["EPFLEMMA_FORMALIZATION_REQUEST_KIND"] == "directory"
+    assert env["EPFLEMMA_FORMALIZATION_REQUEST_RELATIVE"] == "docs/paper"
+    assert env["EPFLEMMA_FORMALIZATION_SELECTED_SOURCE"] == "docs/paper/main.tex"
+    manifest = context.manifest_path.read_text(encoding="utf-8")
+    assert "selected_source_document_relative" in manifest
+    startup_context = context.context_path.read_text(encoding="utf-8")
+    assert "## TeX Project Discovery" in startup_context
+    assert "`docs/paper/macros.tex`" in startup_context
+
+
+def test_directory_formalization_rejects_ambiguous_tex_roots(tmp_path):
+    project = tmp_path / "Demo"
+    source_dir = project / "docs" / "paper"
+    source_dir.mkdir(parents=True)
+    for name in ("alpha.tex", "beta.tex"):
+        (source_dir / name).write_text(
+            "\\documentclass{article}\\begin{document}\\title{Same}\\end{document}\n",
+            encoding="utf-8",
+        )
+
+    with pytest.raises(FormalizationDocumentError, match="multiple possible TeX entrypoints"):
+        resolve_formalization_document(project, project, "docs/paper")
+
+
 def test_doc_formalization_demo_fixture_is_parseable():
     repo_root = Path(__file__).resolve().parents[2]
     project = repo_root / "testdata" / "workflow_projects" / "DocFormalizationDemo"
@@ -181,6 +250,29 @@ def test_doc_formalization_demo_fixture_is_parseable():
     )
 
 
+def test_doc_formalization_demo_pythagorean_directory_is_parseable():
+    repo_root = Path(__file__).resolve().parents[2]
+    project = repo_root / "testdata" / "workflow_projects" / "DocFormalizationDemo"
+
+    payload = inspect_formalization_document(
+        "docs/PythagoreanPolynomialParametrization",
+        project_root=project,
+        cwd=project,
+    )
+
+    assert payload["success"] is True
+    assert payload["source_relative"] == "docs/PythagoreanPolynomialParametrization/pyth.tex"
+    assert payload["document_request_kind"] == "directory"
+    assert payload["tex_project_bibliography_files"] == [
+        "docs/PythagoreanPolynomialParametrization/pyth.bbl"
+    ]
+    assert payload["tex_project_local_asset_files"] == [
+        "docs/PythagoreanPolynomialParametrization/siamese.bst"
+    ]
+    assert "Parametrization of Pythagorean triples" in payload["title"]
+    assert any(item["kind"] == "theorem" for item in payload["theorem_blocks"])
+
+
 def test_resolve_formalization_document_requires_project_local_supported_file(tmp_path):
     project = tmp_path / "Demo"
     source = project / "paper.tex"
@@ -195,7 +287,7 @@ def test_resolve_formalization_document_requires_project_local_supported_file(tm
 
     with pytest.raises(FormalizationDocumentError, match="inside the EPFLemma project"):
         resolve_formalization_document(project, project, str(outside))
-    with pytest.raises(FormalizationDocumentError, match=".tex or .pdf"):
+    with pytest.raises(FormalizationDocumentError, match="TeX project directory"):
         resolve_formalization_document(project, project, "")
     with pytest.raises(FormalizationDocumentError, match="Use `/prove`"):
         resolve_formalization_document(project, project, "Main.lean")

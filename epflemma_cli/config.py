@@ -35,6 +35,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "managed_state_dir": "",
             "autonomous_followups": 6,
         },
+        "sandbox": {
+            "engine": "auto",
+            "image": "epflemma/sandbox:local",
+            "env_file": "",
+            "cache_dir": "",
+            "runs_dir": "",
+            "network": True,
+            "read_only_root": True,
+            "bootstrap_mcp": True,
+        },
     },
     "model": {
         "default": "moonshotai/Kimi-K2.6",
@@ -53,7 +63,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "toolsets": ["epflemma-cli"],
     "agent": {
-        "max_turns": 120,
+        "max_turns": 200,
         "reasoning_effort": "auto",
         "seed": 42,
         "temperature": 0.3,
@@ -70,7 +80,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "compression": {
         "enabled": True,
-        "threshold": 0.50,
+        "threshold": 0.75,
         "summary_model": "moonshotai/Kimi-K2.6",
         "reserved_output_tokens": 20000,
         "prune_tool_output": True,
@@ -131,6 +141,7 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 #   - agent.max_turns controls the managed workflow API-step budget.
 #   - logging.preview_lines and logging.preview_chars control how much
 #     prompt, assistant, and reasoning context appears in run logs.
+#   - epflemma.sandbox controls the optional container sandbox runtime.
 #
 """
 

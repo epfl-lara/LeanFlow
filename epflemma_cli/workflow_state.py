@@ -192,6 +192,7 @@ def _persist_workflow_run_metadata(
     task_label: str = "",
     workflow_kind: str = "",
     workflow_command: str = "",
+    effective_prompt: str = "",
     active_skill: str = "",
     project_root: str = "",
     process_id: int = 0,
@@ -213,6 +214,8 @@ def _persist_workflow_run_metadata(
         payload["workflow_kind"] = workflow_kind
     if workflow_command:
         payload["workflow_command"] = workflow_command
+    if effective_prompt:
+        payload["effective_prompt"] = effective_prompt
     if active_skill:
         payload["active_skill"] = active_skill
     if project_root:
@@ -315,6 +318,17 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
     normalized_details.setdefault("workflow_kind", env_workflow_kind)
     normalized_details.setdefault("workflow_command", str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")))
     normalized_details.setdefault(
+        "effective_prompt",
+        str(
+            os.getenv("EPFLEMMA_NATIVE_EFFECTIVE_PROMPT", "")
+            or os.getenv("OPENGAUSS_NATIVE_EFFECTIVE_PROMPT", "")
+            or os.getenv("EPFLEMMA_NATIVE_USER_PROMPT", "")
+            or os.getenv("OPENGAUSS_NATIVE_USER_PROMPT", "")
+            or os.getenv("EPFLEMMA_NATIVE_EXPLICIT_GOAL", "")
+            or os.getenv("OPENGAUSS_NATIVE_EXPLICIT_GOAL", "")
+        ),
+    )
+    normalized_details.setdefault(
         "active_skill",
         str(os.getenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "") or os.getenv("OPENGAUSS_NATIVE_ACTIVE_SKILL", "")) if env_workflow_kind else "",
     )
@@ -351,6 +365,7 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
         task_label=task_label,
         workflow_kind=str(normalized_details.get("workflow_kind", "") or ""),
         workflow_command=str(normalized_details.get("workflow_command", "") or ""),
+        effective_prompt=str(normalized_details.get("effective_prompt", "") or ""),
         active_skill=str(normalized_details.get("active_skill", "") or ""),
         project_root=str(normalized_details.get("project_root", "") or ""),
         process_id=process_id,

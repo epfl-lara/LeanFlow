@@ -62,7 +62,26 @@ Run the main workflows:
 ```bash
 epflemma workflow prove Main.lean
 epflemma workflow formalize docs/paper.tex
+epflemma workflow autoformalize docs/paper-directory
 ```
+
+Run those workflows in a host-isolated sandbox when you want the model to edit
+freely without touching your working tree:
+
+```bash
+./scripts/install-sandbox.sh
+cd /path/to/lean-project
+epflemma-sandbox workflow prove Main.lean
+epflemma status
+epflemma sandbox status
+```
+
+The sandbox runner builds a local Docker/Podman image, copies the active
+EPFLemma project into a per-run worktree, mounts only that worktree plus
+EPFLemma sandbox cache directories, and exports the final diff as
+`changes.patch` under `~/.epflemma/sandbox/runs/<run-id>/`. Re-run
+`./scripts/update-sandbox.sh` after pulling repository changes to reinstall and
+rebuild the sandbox image.
 
 Start the interactive shell:
 
@@ -76,6 +95,7 @@ Inside the shell, the most useful commands are:
 /prove
 /prove Main.lean
 /formalize docs/paper.tex
+/autoformalize docs/paper-directory
 /goals
 /diagnostics
 /proof-state
@@ -94,11 +114,12 @@ The shell also accepts forgiving forms without the leading slash:
 ```text
 prove Main.lean
 formalize docs/paper.tex
+autoformalize docs/paper-directory
 ```
 
 ## What EPFLemma Tries To Guarantee
 
-`prove` and `formalize` are not considered done because the agent made a plausible edit. A successful autonomous run should end with:
+`prove` is not considered done because the agent made a plausible edit. A successful proof run should end with:
 
 - the relevant Lean code building successfully
 - clean diagnostics
@@ -106,16 +127,18 @@ formalize docs/paper.tex
 - no `sorry` in the active target
 - no remaining project `sorry` outside dependencies
 
+Document formalization has a separate handoff boundary. `/formalize` and `/autoformalize` first produce a buildable Lean draft with source-linked declarations and intentional `sorry` proofs. That draft is considered ready when the module builds and the blueprint's statement/source review is approved; proof filling is then the next phase, either through `/prove SomeFile.lean` or the managed proof queue after handoff.
+
 For project-scoped work, `/prove` without a file starts the project prove manager. It scans Lean files with remaining `sorry`, ranks them with candidate-to-candidate dependency analysis, theorem difficulty, local hints/examples, bounded source context, and length signals, asks the configured LLM for a prioritized file order when available, records that plan, and then assigns one file at a time to the existing `/prove SomeFile.lean` path. Parallel agents stay disabled unless the user explicitly opts into swarm mode.
 
-For document formalization, `/formalize` requires a project-local `.tex` or `.pdf` source path. EPFLemma creates a preflight manifest, extracted-text cache, Markdown planner blueprint, generated blueprint skill, and active Lean target file under the project, then asks the drafting agent to plan definitions/lemmas/theorems with source comments. When the draft is otherwise ready and only source-review approval is missing, the runner starts a fresh independent statement/source verifier agent; after that review-approved handoff, `/prove SomeFile.lean` handles the remaining `sorry`s. `/prove SomeFile.lean` auto-attaches the generated blueprint skill when the file has a nearby `Blueprint.md`; you can also pass `--additional-skill path/to/SKILL.md`.
+For document formalization, `/formalize` accepts a project-local `.tex` file, `.pdf` file, or directory containing a TeX project. Directory inputs are resolved deterministically to a main `.tex` source, with included `.tex`, bibliography, and local asset files recorded in the preflight manifest; ambiguous TeX roots fail before launch. EPFLemma creates a preflight manifest, extracted-text cache, Markdown planner blueprint, generated blueprint skill, and active Lean target file under the project, then asks the drafting agent to plan definitions/lemmas/theorems with source comments. When the draft is otherwise ready and only source-review approval is missing, the runner starts a fresh independent statement/source verifier agent; after that review-approved handoff, the managed proof queue can handle the remaining `sorry`s. `/prove SomeFile.lean` auto-attaches the generated blueprint skill when the file has a nearby `Blueprint.md`; you can also pass `--additional-skill path/to/SKILL.md`.
 
 For file-scoped work, EPFLemma drives the agent one declaration at a time. The runner owns the queue, refreshes diagnostics after edits, records failed attempts per theorem, and advances only when Lean verification says the current target is clean. Same-file queue steps use the LeanInteract-backed incremental verifier first, so imports/header state and prior declaration environments stay warm; Lake remains the final file/project sweep and fallback gate. If a theorem turn exhausts its API-step budget, the runner records that as a failed attempt, comments the failed declaration in the Lean file, and restores the original safe `sorry` body when it has an exact baseline slice; the theorem remains pending for the next queue cycle.
 
 ## Main Workflows
 
 - `prove`: repair and complete existing Lean proofs.
-- `formalize`: turn a project-local LaTeX/PDF source document into planned Lean declarations and verified proofs.
+- `formalize`: turn a project-local LaTeX/PDF source document or TeX project directory into statement-verified Lean declarations; `/prove` fills the resulting `sorry`s.
 - `draft`: create Lean declarations and proof skeletons.
 - `review`: inspect blockers, diagnostics, goals, and remaining `sorry`.
 - `checkpoint`: summarize workflow state for resume or handoff.
@@ -205,6 +228,15 @@ epflemma workflow formalize docs/paper.tex --agents 3
 
 Swarm mode activates file-lock-aware delegation. Locks are stored in `.epflemma/workflow-state/file_locks.json`, and normal file write tools reject edits when another agent owns the file.
 
+Use `--prompt` for run-specific task guidance without replacing the Lean-first workflow contract:
+
+```bash
+epflemma workflow prove Main.lean --prompt "try abs_abs_sub before ring_nf"
+epflemma workflow autoformalize docs/paper-directory --prompt "focus on the main theorem only"
+```
+
+`--goal` is still accepted as a compatibility alias for the same scoped prompt field.
+
 ## Repository Map
 
 - `epflemma_cli/`: CLI, shell UX, workflow orchestration, providers, local runtimes, locks, workflow state
@@ -222,6 +254,7 @@ Swarm mode activates file-lock-aware delegation. Locks are stored in `.epflemma/
 The README is now the human entry point. Deeper operational details live in:
 
 - [Product reference](docs/product-reference.md): full detailed documentation that used to live in the README.
+- [Sandbox runtime](docs/sandbox-runtime.md): isolated container runtime, patch export, install, and update flow.
 - [Native Lean workflow surface](docs/native-lean-workflow-surface.md): native Lean workflow and tool contract.
 - [Autonomous workflow context carryover](docs/autonomous-workflow-context-carryover-analysis.md): historical analysis and current context-reset behavior.
 

@@ -449,10 +449,101 @@ class TestMCPServerTask:
                 await server.start({"command": "lean-proof-auto-mcp"})
 
                 assert mock_params.call_args.kwargs["cwd"] == str(tmp_path)
+                env_arg = mock_params.call_args.kwargs["env"]
+                assert env_arg["LEAN_PROJECT_PATH"] == str(tmp_path)
+                assert env_arg["EPFLEMMA_PROJECT_ROOT"] == str(tmp_path)
 
                 await server.shutdown()
 
         asyncio.run(_test())
+
+    def test_configured_lean_project_path_wins_over_project_root_env(self, tmp_path, monkeypatch):
+        """User-provided LEAN_PROJECT_PATH remains authoritative."""
+        from tools.mcp_tool import MCPServerTask
+
+        project = tmp_path / "project"
+        explicit = tmp_path / "explicit"
+        project.mkdir()
+        explicit.mkdir()
+        monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params, p_stdio, p_cs:
+                server = MCPServerTask("lean-lsp")
+                await server.start(
+                    {
+                        "command": "lean-lsp-mcp",
+                        "env": {"LEAN_PROJECT_PATH": str(explicit)},
+                    }
+                )
+
+                assert mock_params.call_args.kwargs["cwd"] == str(project)
+                assert mock_params.call_args.kwargs["env"]["LEAN_PROJECT_PATH"] == str(explicit)
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+
+    def test_lean_lsp_repairs_stale_loogle_cache_before_start(self, tmp_path, monkeypatch):
+        """Missing Loogle dependency artifacts trigger one cached repo rebuild."""
+        from tools.mcp_tool import MCPServerTask
+
+        project = tmp_path / "project"
+        project.mkdir()
+        cache = tmp_path / "cache"
+        repo = cache / "repo"
+        source = repo / ".lake/packages/batteries/Batteries/Data/List/Lemmas.lean"
+        binary = repo / ".lake/build/bin/loogle"
+        source.parent.mkdir(parents=True)
+        source.write_text("-- source\n", encoding="utf-8")
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        binary.chmod(0o755)
+        monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters"), p_stdio, p_cs, patch(
+                "tools.mcp_tool.subprocess.run"
+            ) as mock_run:
+                mock_run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+                server = MCPServerTask("lean-lsp")
+                await server.start(
+                    {
+                        "command": "lean-lsp-mcp",
+                        "env": {
+                            "LEAN_LOOGLE_LOCAL": "true",
+                            "LEAN_LOOGLE_CACHE_DIR": str(cache),
+                        },
+                    }
+                )
+
+                mock_run.assert_called_once()
+                assert mock_run.call_args.args[0] == ["lake", "build", "Batteries.Data.List.Lemmas"]
+                assert mock_run.call_args.kwargs["cwd"] == str(repo)
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+
+    def test_local_loogle_connect_timeout_allows_first_index_build(self):
+        """Local Loogle startup gets a longer connect window than normal MCP servers."""
+        from tools.mcp_tool import _effective_connect_timeout
+
+        assert _effective_connect_timeout(
+            "lean-lsp",
+            {"connect_timeout": 10, "env": {"LEAN_LOOGLE_LOCAL": "true"}},
+        ) == 600
+        assert _effective_connect_timeout("other", {"connect_timeout": 10}) == 10
 
     def test_explicit_stdio_cwd_wins_over_project_root(self, tmp_path, monkeypatch):
         """A configured MCP cwd remains authoritative for nonstandard servers."""

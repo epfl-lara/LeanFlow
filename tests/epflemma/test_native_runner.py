@@ -2554,6 +2554,26 @@ def test_startup_user_message_snapshot_with_runner_lean_prompt(monkeypatch):
     )
 
 
+def test_startup_user_message_surfaces_effective_prompt(monkeypatch):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_EFFECTIVE_PROMPT", "use abs_abs_sub first")
+    monkeypatch.setattr(runner, "_runner_lean_prompt_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_startup_active_skill_contract", lambda _name: "")
+    monkeypatch.setattr(runner, "_startup_additional_skill_contracts", lambda _name: "")
+    monkeypatch.setattr(runner, "_queue_assignment_block", lambda *args, **kwargs: "")
+    monkeypatch.setattr(runner, "_swarm_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "route_workflow_step",
+        lambda *args, **kwargs: type("Route", (), {"to_dict": lambda self: {}})(),
+    )
+
+    prompt = runner._startup_user_message(live_state={}, autonomy_state={})
+
+    assert "User prompt: use abs_abs_sub first" in prompt
+
+
 def test_autonomous_continuation_prompt_snapshot_with_runner_lean_prompt(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_RUNNER_LEAN_PROMPT", "1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
@@ -2712,7 +2732,7 @@ def test_build_agent_uses_swarm_toolset_when_user_enabled_swarm(monkeypatch):
     assert os.getenv("EPFLEMMA_NATIVE_RUNNER_OWNER", "") == "runner-session"
 
 
-def test_resolve_managed_reasoning_config_auto_defaults_to_medium_for_new_theorem():
+def test_resolve_managed_reasoning_config_auto_defaults_to_high_for_new_theorem():
     resolved = runner._resolve_managed_reasoning_config(
         {"mode": "auto"},
         {
@@ -2724,7 +2744,7 @@ def test_resolve_managed_reasoning_config_auto_defaults_to_medium_for_new_theore
         {"failed_attempts": []},
     )
 
-    assert resolved == {"enabled": True, "effort": "medium"}
+    assert resolved == {"enabled": True, "effort": "high"}
 
 
 def test_resolve_managed_reasoning_config_auto_escalates_after_five_failed_attempts():
@@ -2754,7 +2774,7 @@ def test_resolve_managed_reasoning_config_auto_escalates_after_five_failed_attem
     assert resolved == {"enabled": True, "effort": "high"}
 
 
-def test_resolve_managed_reasoning_config_auto_uses_medium_below_default_threshold():
+def test_resolve_managed_reasoning_config_auto_stays_high_below_default_threshold():
     resolved = runner._resolve_managed_reasoning_config(
         {"mode": "auto"},
         {
@@ -2778,7 +2798,7 @@ def test_resolve_managed_reasoning_config_auto_uses_medium_below_default_thresho
         },
     )
 
-    assert resolved == {"enabled": True, "effort": "medium"}
+    assert resolved == {"enabled": True, "effort": "high"}
 
 
 def test_resolve_managed_reasoning_config_auto_uses_configured_threshold(monkeypatch):
@@ -2827,7 +2847,7 @@ def test_resolve_managed_reasoning_config_auto_uses_high_for_final_file_sweep(mo
     assert resolved == {"enabled": True, "effort": "high"}
 
 
-def test_apply_managed_reasoning_policy_resets_to_medium_on_theorem_transition():
+def test_apply_managed_reasoning_policy_keeps_high_on_theorem_transition():
     class _Agent:
         def __init__(self):
             self._managed_base_reasoning_config = {"mode": "auto"}
@@ -2870,8 +2890,8 @@ def test_apply_managed_reasoning_policy_resets_to_medium_on_theorem_transition()
     )
 
     assert first == {"enabled": True, "effort": "high"}
-    assert second == {"enabled": True, "effort": "medium"}
-    assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
+    assert second == {"enabled": True, "effort": "high"}
+    assert agent.reasoning_config == {"enabled": True, "effort": "high"}
 
 
 def test_tool_progress_callback_persists_structured_events(monkeypatch, tmp_path):
@@ -4102,6 +4122,57 @@ def test_document_formalization_review_gate_stops_before_proving(monkeypatch, tm
     assert "do not fill theorem/lemma `sorry` proofs" in prompt
 
 
+def test_document_formalization_pending_blueprint_blocks_final_sweep(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("/-- Source proof: pending. -/\ntheorem demo : True := by\n  sorry\n", encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "\n".join(
+            [
+                "# Blueprint",
+                "",
+                "## Source Inventory",
+                "",
+                "### line-1",
+                "- Source locator: `docs/paper.tex:1`",
+                "- Planned Lean declarations: `demo`",
+                "- Formal statement review: planner self-check complete",
+                "- Source qualifiers: none",
+                "- Lean coverage: covers statement",
+                "- Scope changes: none",
+                "- Statement verification status: pending review",
+                "- Source proof / prover notes: source proof is trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_document_formalization_manifest_blocks",
+        lambda: [{"label": "line-1", "kind": "theorem", "has_proof": True}],
+    )
+
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Demo/Paper/Main.lean",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "sorry_count": 1,
+        "document_formalization_handoff": {"ok": True, "issues": []},
+    }
+
+    assert runner._document_formalization_waiting_for_independent_review(live_state) is True
+    assert runner._queue_needs_final_file_sweep(live_state) is False
+    assert runner._autonomous_stop_reason([], live_state, {}) == "blocked"
+
+
 def test_document_formalization_review_due_for_approval_only_gate(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     active = project / "Demo" / "Paper" / "Main.lean"
@@ -4192,14 +4263,31 @@ def test_document_formalization_reviewed_draft_stops_ready_for_prove(monkeypatch
     live_state = {
         "active_file": str(active),
         "active_file_label": "Demo/Paper/Main.lean",
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
         "sorry_count": 2,
         "document_formalization_handoff": {"ok": True, "issues": []},
     }
-    autonomy_state = {}
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "T1_T2_relation",
+            "active_file": str(active),
+        },
+    }
 
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    assert runner._queue_needs_final_file_sweep(live_state) is False
+    runner._maybe_announce_final_file_sweep_state(autonomy_state, live_state)
     assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "blocked"
-    assert events[0][0][0] == "formalization-prover-handoff-ready"
-    assert "ready for /prove" in events[0][0][1]
+    runner._prepare_queue_assignment_state(autonomy_state, live_state)
+    rebuilt, transition = runner._rebuild_history_for_theorem_transition([], {}, autonomy_state, live_state)
+
+    assert events[0][0][0] == "final-file-sweep-deferred-for-prover-handoff"
+    assert events[1][0][0] == "formalization-prover-handoff-ready"
+    assert "ready for /prove" in events[1][0][1]
+    assert "current_queue_assignment" not in autonomy_state
+    assert rebuilt is None
+    assert transition is None
 
 
 def test_document_formalization_gate_clears_stale_queue_assignment(monkeypatch, tmp_path):
@@ -4919,12 +5007,66 @@ def test_promote_live_state_grants_one_final_sweep_warning_cleanup(monkeypatch, 
     assert "this tactic is never executed" in promoted["final_sweep_warning_summary"]
     assert "line 2" in promoted["final_sweep_warning_summary"]
     assert promoted["queue_needs_final_file_sweep"] is True
+    assert promoted["proof_solved"] is True
+    assert promoted["warning_cleanup_status"] == "pending"
+    assert promoted["warning_cleanup_attempted"] is True
+    assert promoted["warning_cleanup_verified"] is False
+    assert promoted["warning_cleanup"]["warning_count"] == 1
     assert autonomy_state["final_sweep_cleanup_attempted"] is True
     baseline = autonomy_state["final_sweep_baseline"]
     assert baseline["content"] == "theorem t : True := by\n  trivial\n"
     output = capsys.readouterr().out
     assert "🟢 Final file sweep — warning cleanup opportunity granted (1/1)" in output
     assert "1 warning(s) remain on the active file" in output
+
+
+def test_promote_live_state_keeps_cleanup_pending_until_model_turn_starts(monkeypatch, tmp_path):
+    """Granting the cleanup window is not the same as spending it.
+
+    Regression coverage for the autonomous loop: after the first promote pass
+    grants final-sweep cleanup, the next live-state rebuild happens before the
+    model receives the cleanup prompt. That rebuild must preserve the pending
+    state instead of accepting the warnings immediately.
+    """
+
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake env lean Demo/Main.lean exits 0"),
+    )
+
+    autonomy_state: dict = {}
+    initial = {
+        "active_file": str(active),
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "diagnostics": f"{active}:2:3: warning: this tactic is never executed",
+        "goals": "no goals",
+        "build_status": "unknown",
+        "sorry_count": 0,
+    }
+
+    first = runner._promote_live_state_to_verified(initial, autonomy_state)
+    assert first["final_sweep_warning_cleanup_pending"] is True
+    assert "final_sweep_baseline" in autonomy_state
+    assert "final_sweep_cleanup_turn_started" not in autonomy_state
+
+    second = runner._promote_live_state_to_verified(initial, autonomy_state)
+
+    assert second["verification_ok"] is False
+    assert second["final_sweep_warning_cleanup_pending"] is True
+    assert second["queue_needs_final_file_sweep"] is True
+    assert second["warning_cleanup_status"] == "pending"
+    assert "final_sweep_baseline" in autonomy_state
+    assert "final_sweep_cleanup_outcome_recorded" not in autonomy_state
 
 
 def test_promote_live_state_skips_final_sweep_cleanup_when_flag_already_set(monkeypatch, tmp_path):
@@ -4962,6 +5104,53 @@ def test_promote_live_state_skips_final_sweep_cleanup_when_flag_already_set(monk
     assert promoted["verification_ok"] is True
     assert "final_sweep_warning_cleanup_pending" not in promoted
     assert autonomy_state.get("final_sweep_cleanup_attempted") is True
+    assert promoted["proof_solved"] is True
+    assert promoted["warning_cleanup_status"] == "accepted"
+    assert promoted["warning_cleanup_attempted"] is True
+    assert promoted["warning_cleanup_verified"] is True
+    assert promoted["warning_cleanup_warning_count"] == 1
+
+
+def test_promote_live_state_records_final_sweep_cleanup_outcome(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake env lean Demo/Main.lean exits 0"),
+    )
+
+    autonomy_state: dict = {"final_sweep_cleanup_attempted": True}
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+    runner._promote_live_state_to_verified(dict(promoted), autonomy_state)
+
+    cleanup_events = [
+        event
+        for event in read_workflow_activity(limit=10)
+        if event["type"] == "final-sweep-warning-cleanup-verified"
+    ]
+    assert len(cleanup_events) == 1
+    assert cleanup_events[0]["details"]["warning_count"] == 0
 
 
 def test_promote_live_state_skips_final_sweep_cleanup_when_no_warnings(monkeypatch, tmp_path):
@@ -4999,6 +5188,10 @@ def test_promote_live_state_skips_final_sweep_cleanup_when_no_warnings(monkeypat
     assert "final_sweep_warning_cleanup_pending" not in promoted
     assert "final_sweep_cleanup_attempted" not in autonomy_state
     assert "final_sweep_baseline" not in autonomy_state
+    assert promoted["proof_solved"] is True
+    assert promoted["warning_cleanup_status"] == "skipped"
+    assert promoted["warning_cleanup_skipped"] is True
+    assert "no warnings" in promoted["warning_cleanup_diagnostics"]
 
 
 def test_promote_live_state_restores_baseline_when_cleanup_attempt_regresses(monkeypatch, tmp_path, capsys):
@@ -5031,6 +5224,7 @@ def test_promote_live_state_restores_baseline_when_cleanup_attempt_regresses(mon
 
     autonomy_state: dict = {
         "final_sweep_cleanup_attempted": True,
+        "final_sweep_cleanup_turn_started": True,
         "final_sweep_baseline": {
             "active_file": str(active.resolve()),
             "content": baseline_content,
@@ -5052,6 +5246,10 @@ def test_promote_live_state_restores_baseline_when_cleanup_attempt_regresses(mon
     assert promoted["verification_ok"] is True, "post-restore lake build should succeed against baseline"
     assert active.read_text(encoding="utf-8") == baseline_content
     assert "final_sweep_baseline" not in autonomy_state, "baseline payload should be released after one shot"
+    assert "final_sweep_cleanup_turn_started" not in autonomy_state
+    assert promoted["warning_cleanup_status"] == "blocked"
+    assert promoted["warning_cleanup_blocked"] is True
+    assert "unknown identifier" in promoted["warning_cleanup_diagnostics"]
     output = capsys.readouterr().out
     assert "↩️" in output and "restored active file to pre-cleanup baseline" in output
 
@@ -5154,6 +5352,7 @@ def test_final_file_sweep_block_renders_warning_cleanup_wording(tmp_path):
     # decline without inspecting the file.
     assert "expected effort" in block.lower()
     assert "at least one safe edit" in block.lower()
+    assert "apply_verified_patch" in block
     assert "bail clause" in block.lower()
     assert "actually inspected the file first" in block.lower()
     assert "do not touch theorem statements" in block.lower()
@@ -6311,7 +6510,7 @@ def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(mo
     events = []
 
     class _Agent:
-        max_iterations = 120
+        max_iterations = 180
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
     monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda path: {"ok": True, "command": f"lake env lean {path}"})
@@ -6322,7 +6521,7 @@ def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(mo
 
     history, updated_live_state, attempt_recorded = runner._handle_api_step_budget_exhaustion(
         _Agent(),
-        {"completed": False, "exit_reason": "max_iterations", "api_calls": 120},
+        {"completed": False, "exit_reason": "max_iterations", "api_calls": 180},
         [{"role": "assistant", "content": "failed attempt"}],
         autonomy_state,
         live_state,

@@ -190,11 +190,23 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
         "agents": str(plan.workflow.parallel_agents),
     }
     if plan.formalization_document is not None:
+        request_relative = str(
+            plan.formalization_document.metadata.get(
+                "document_request_relative",
+                plan.formalization_document.source_relative,
+            )
+            or plan.formalization_document.source_relative
+        )
+        request_kind = str(plan.formalization_document.metadata.get("document_request_kind", "file") or "file")
+        if request_relative != plan.formalization_document.source_relative or request_kind != "file":
+            summary["input"] = f"{request_relative} ({request_kind})"
         summary["document"] = plan.formalization_document.source_relative
         summary["target_file"] = plan.formalization_document.target_lean_relative
         summary["planner_context"] = str(plan.formalization_document.context_path)
     if plan.additional_skills:
         summary["additional_skills"] = ", ".join(plan.additional_skills)
+    if plan.workflow.explicit_goal:
+        summary["prompt"] = plan.workflow.explicit_goal
     return summary
 
 
@@ -239,9 +251,9 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
                 raise ValueError("--agents must be an integer") from exc
             idx += 2
             continue
-        if token == "--goal":
+        if token in {"--prompt", "--goal"}:
             if idx + 1 >= len(remaining):
-                raise ValueError("--goal requires a value")
+                raise ValueError(f"{token} requires a value")
             explicit_goal = " ".join(remaining[idx + 1:]).strip()
             idx = len(remaining)
             continue
@@ -370,6 +382,10 @@ def resolve_workflow_request(
             "OPENGAUSS_NATIVE_USER_APPROVED_SWARM": "1" if workflow.parallel_agents > 1 else "0",
             "EPFLEMMA_NATIVE_EXPLICIT_GOAL": workflow.explicit_goal,
             "OPENGAUSS_NATIVE_EXPLICIT_GOAL": workflow.explicit_goal,
+            "EPFLEMMA_NATIVE_USER_PROMPT": workflow.explicit_goal,
+            "OPENGAUSS_NATIVE_USER_PROMPT": workflow.explicit_goal,
+            "EPFLEMMA_NATIVE_EFFECTIVE_PROMPT": workflow.explicit_goal,
+            "OPENGAUSS_NATIVE_EFFECTIVE_PROMPT": workflow.explicit_goal,
             "EPFLEMMA_NATIVE_TOOLSET": toolset_name,
             "OPENGAUSS_NATIVE_TOOLSET": toolset_name,
             "EPFLEMMA_NATIVE_ACTIVE_FILE": normalized_active_file,
@@ -411,11 +427,11 @@ def load_agent_max_turns() -> str:
     agent_cfg = config.get("agent")
     if isinstance(agent_cfg, Mapping):
         try:
-            value = int(agent_cfg.get("max_turns", 120) or 120)
+            value = int(agent_cfg.get("max_turns", 200) or 200)
         except Exception:
-            value = 120
+            value = 200
         return str(max(1, value))
-    return "120"
+    return "200"
 
 
 def spawn_workflow(

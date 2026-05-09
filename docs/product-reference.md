@@ -7,7 +7,7 @@ EPFLemma is a Lean AI for Math shell focused on automated Lean coding agents. Th
 The product is optimized for two main jobs:
 
 - `prove`: drive Lean proof repair and completion until the code compiles cleanly
-- `formalize`: translate a project-local LaTeX/PDF source document into planned Lean declarations and verified proofs
+- `formalize`: translate a project-local LaTeX/PDF source document or TeX project directory into statement-verified Lean declarations; `/prove` fills the resulting `sorry`s
 
 Internally, `/prove` and `/autoprove` normalize to the same native workflow, and `/formalize` and `/autoformalize` normalize to the same native workflow. The auto-prefixed forms are compatibility aliases, not separate product surfaces.
 
@@ -276,6 +276,25 @@ git pull
 ./scripts/install-internal.sh
 ```
 
+Sandboxed install:
+
+```bash
+./scripts/install-sandbox.sh
+```
+
+The sandbox installer runs the normal install, builds the local Docker/Podman
+image, and writes an `epflemma-sandbox` wrapper. To upgrade that runtime:
+
+```bash
+./scripts/update-sandbox.sh
+```
+
+The sandbox runtime copies the active EPFLemma project into a per-run worktree,
+mounts only that copy plus sandbox cache/home directories, and exports the final
+diff to `~/.epflemma/sandbox/runs/<run-id>/changes.patch`. See
+[sandbox-runtime.md](sandbox-runtime.md) for the isolation and patch-export
+contract.
+
 ## Coexistence And Migration
 
 EPFLemma is designed to coexist with Gauss:
@@ -428,7 +447,7 @@ Autonomous workflows are intentionally stricter than a local file-only loop. `pr
 
 ### Document Formalization
 
-`/formalize` and `/autoformalize` require a project-local `.tex` or `.pdf` source document path. They remain the same workflow; `autoformalize` is only a compatibility alias.
+`/formalize` and `/autoformalize` require a project-local `.tex` source, `.pdf` source, or directory containing a TeX project. They remain the same workflow; `autoformalize` is only a compatibility alias.
 
 The resolver prepares a document formalization workspace before the native runner starts:
 
@@ -437,12 +456,15 @@ The resolver prepares a document formalization workspace before the native runne
 - Markdown planner blueprint
 - generated supplemental blueprint skill under `.epflemma/skills/`
 - active Lean target file for drafted declarations
+- original request metadata, selected source document metadata, and deterministic TeX project discovery metadata when the user provided a directory
 
 `/prove SomeFile.lean` auto-attaches that generated blueprint skill when the file has a nearby `Blueprint.md`, so prover turns can recover the source map after context compaction. Any workflow can also receive extra persistent guidance with `--additional-skill path/to/SKILL.md`.
 - startup context that tells the drafting agent to plan definitions, lemmas, theorem splits, source comments, source pointers, and statement-fidelity checks before proof repair
 - an automatic independent statement/source verifier pass once the draft is otherwise ready and only approval statuses are missing
 
-The deterministic preflight is intentionally modest. LaTeX documents get theorem-like environments, labels, references, citations, and sections extracted. PDFs use installed local tools such as `pdftotext`, `pdfinfo`, and `pdfimages` when available, and record degraded extraction reasons when they are not. The planner agent can then use the normal file, terminal, web, and Lean tools to inspect the document more deeply, pull referenced material, and draft Lean files with `sorry`. The independent verifier then checks the source fidelity and marks approved blueprint entries before the resulting queue is handed to `/prove`.
+The deterministic preflight is intentionally modest. LaTeX documents get theorem-like environments, labels, references, citations, and sections extracted. Directory inputs first select a main TeX entrypoint, collect included `.tex` files, bibliography files, and local assets, and reject ambiguous roots with an explicit error. PDFs use installed local tools such as `pdftotext`, `pdfinfo`, and `pdfimages` when available, and record degraded extraction reasons when they are not. The planner agent can then use the normal file, terminal, web, and Lean tools to inspect the document more deeply, pull referenced material, and draft Lean files with `sorry`. The independent verifier then checks the source fidelity and marks approved blueprint entries before the resulting queue is handed to `/prove`.
+
+Expected document-prep completion is a buildable statement/source-approved draft that may still contain intentional `sorry`s. Proof filling is the next phase: it can be done by `/prove SomeFile.lean` or by the managed proof queue after the review-approved handoff, and it is not part of judging whether the source formalization draft itself is ready.
 
 EPFLemma writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.epflemma/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
 
@@ -788,7 +810,7 @@ EPFLemma now defaults to:
 
 ```yaml
 agent:
-  max_turns: 120
+  max_turns: 200
   reasoning_effort: "auto"
   seed: 42
   temperature: 0.3
@@ -1145,7 +1167,7 @@ auxiliary:
     api_key: ""
 
 agent:
-  max_turns: 120
+  max_turns: 200
   reasoning_effort: "auto"
   seed: 42
   temperature: 0.3
@@ -1155,7 +1177,7 @@ agent:
 
 compression:
   enabled: true
-  threshold: 0.5
+  threshold: 0.75
   summary_model: moonshotai/Kimi-K2.6
   reserved_output_tokens: 20000
   prune_tool_output: true
