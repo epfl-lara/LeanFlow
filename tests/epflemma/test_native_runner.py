@@ -4919,12 +4919,66 @@ def test_promote_live_state_grants_one_final_sweep_warning_cleanup(monkeypatch, 
     assert "this tactic is never executed" in promoted["final_sweep_warning_summary"]
     assert "line 2" in promoted["final_sweep_warning_summary"]
     assert promoted["queue_needs_final_file_sweep"] is True
+    assert promoted["proof_solved"] is True
+    assert promoted["warning_cleanup_status"] == "pending"
+    assert promoted["warning_cleanup_attempted"] is True
+    assert promoted["warning_cleanup_verified"] is False
+    assert promoted["warning_cleanup"]["warning_count"] == 1
     assert autonomy_state["final_sweep_cleanup_attempted"] is True
     baseline = autonomy_state["final_sweep_baseline"]
     assert baseline["content"] == "theorem t : True := by\n  trivial\n"
     output = capsys.readouterr().out
     assert "🟢 Final file sweep — warning cleanup opportunity granted (1/1)" in output
     assert "1 warning(s) remain on the active file" in output
+
+
+def test_promote_live_state_keeps_cleanup_pending_until_model_turn_starts(monkeypatch, tmp_path):
+    """Granting the cleanup window is not the same as spending it.
+
+    Regression coverage for the autonomous loop: after the first promote pass
+    grants final-sweep cleanup, the next live-state rebuild happens before the
+    model receives the cleanup prompt. That rebuild must preserve the pending
+    state instead of accepting the warnings immediately.
+    """
+
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake env lean Demo/Main.lean exits 0"),
+    )
+
+    autonomy_state: dict = {}
+    initial = {
+        "active_file": str(active),
+        "declaration_scope": "file",
+        "declaration_queue_total": 0,
+        "diagnostics": f"{active}:2:3: warning: this tactic is never executed",
+        "goals": "no goals",
+        "build_status": "unknown",
+        "sorry_count": 0,
+    }
+
+    first = runner._promote_live_state_to_verified(initial, autonomy_state)
+    assert first["final_sweep_warning_cleanup_pending"] is True
+    assert "final_sweep_baseline" in autonomy_state
+    assert "final_sweep_cleanup_turn_started" not in autonomy_state
+
+    second = runner._promote_live_state_to_verified(initial, autonomy_state)
+
+    assert second["verification_ok"] is False
+    assert second["final_sweep_warning_cleanup_pending"] is True
+    assert second["queue_needs_final_file_sweep"] is True
+    assert second["warning_cleanup_status"] == "pending"
+    assert "final_sweep_baseline" in autonomy_state
+    assert "final_sweep_cleanup_outcome_recorded" not in autonomy_state
 
 
 def test_promote_live_state_skips_final_sweep_cleanup_when_flag_already_set(monkeypatch, tmp_path):
@@ -4962,6 +5016,53 @@ def test_promote_live_state_skips_final_sweep_cleanup_when_flag_already_set(monk
     assert promoted["verification_ok"] is True
     assert "final_sweep_warning_cleanup_pending" not in promoted
     assert autonomy_state.get("final_sweep_cleanup_attempted") is True
+    assert promoted["proof_solved"] is True
+    assert promoted["warning_cleanup_status"] == "accepted"
+    assert promoted["warning_cleanup_attempted"] is True
+    assert promoted["warning_cleanup_verified"] is True
+    assert promoted["warning_cleanup_warning_count"] == 1
+
+
+def test_promote_live_state_records_final_sweep_cleanup_outcome(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (0, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda active_file="", full_project=False: (True, "lake env lean Demo/Main.lean exits 0"),
+    )
+
+    autonomy_state: dict = {"final_sweep_cleanup_attempted": True}
+    promoted = runner._promote_live_state_to_verified(
+        {
+            "active_file": str(active),
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "unknown",
+            "sorry_count": 0,
+        },
+        autonomy_state,
+    )
+    runner._promote_live_state_to_verified(dict(promoted), autonomy_state)
+
+    cleanup_events = [
+        event
+        for event in read_workflow_activity(limit=10)
+        if event["type"] == "final-sweep-warning-cleanup-verified"
+    ]
+    assert len(cleanup_events) == 1
+    assert cleanup_events[0]["details"]["warning_count"] == 0
 
 
 def test_promote_live_state_skips_final_sweep_cleanup_when_no_warnings(monkeypatch, tmp_path):
@@ -4999,6 +5100,10 @@ def test_promote_live_state_skips_final_sweep_cleanup_when_no_warnings(monkeypat
     assert "final_sweep_warning_cleanup_pending" not in promoted
     assert "final_sweep_cleanup_attempted" not in autonomy_state
     assert "final_sweep_baseline" not in autonomy_state
+    assert promoted["proof_solved"] is True
+    assert promoted["warning_cleanup_status"] == "skipped"
+    assert promoted["warning_cleanup_skipped"] is True
+    assert "no warnings" in promoted["warning_cleanup_diagnostics"]
 
 
 def test_promote_live_state_restores_baseline_when_cleanup_attempt_regresses(monkeypatch, tmp_path, capsys):
@@ -5031,6 +5136,7 @@ def test_promote_live_state_restores_baseline_when_cleanup_attempt_regresses(mon
 
     autonomy_state: dict = {
         "final_sweep_cleanup_attempted": True,
+        "final_sweep_cleanup_turn_started": True,
         "final_sweep_baseline": {
             "active_file": str(active.resolve()),
             "content": baseline_content,
@@ -5052,6 +5158,10 @@ def test_promote_live_state_restores_baseline_when_cleanup_attempt_regresses(mon
     assert promoted["verification_ok"] is True, "post-restore lake build should succeed against baseline"
     assert active.read_text(encoding="utf-8") == baseline_content
     assert "final_sweep_baseline" not in autonomy_state, "baseline payload should be released after one shot"
+    assert "final_sweep_cleanup_turn_started" not in autonomy_state
+    assert promoted["warning_cleanup_status"] == "blocked"
+    assert promoted["warning_cleanup_blocked"] is True
+    assert "unknown identifier" in promoted["warning_cleanup_diagnostics"]
     output = capsys.readouterr().out
     assert "↩️" in output and "restored active file to pre-cleanup baseline" in output
 
@@ -5154,6 +5264,7 @@ def test_final_file_sweep_block_renders_warning_cleanup_wording(tmp_path):
     # decline without inspecting the file.
     assert "expected effort" in block.lower()
     assert "at least one safe edit" in block.lower()
+    assert "apply_verified_patch" in block
     assert "bail clause" in block.lower()
     assert "actually inspected the file first" in block.lower()
     assert "do not touch theorem statements" in block.lower()

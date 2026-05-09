@@ -561,7 +561,7 @@ def test_lean_inspect_queue_includes_diagnostic_declaration_range(monkeypatch, t
     assert inspection.queue_items[1]["label"] == "later"
 
 
-def test_lean_inspect_queue_ignores_info_and_keeps_style_warning(monkeypatch, tmp_path):
+def test_lean_inspect_queue_ignores_info_and_leaves_style_warning_for_final_sweep(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()
     target = project / "Main.lean"
@@ -609,8 +609,7 @@ def test_lean_inspect_queue_ignores_info_and_keeps_style_warning(monkeypatch, tm
 
     inspection = lean_services.lean_inspect(str(target), cwd=project)
 
-    assert [item["label"] for item in inspection.queue_items] == ["style_warning"]
-    assert inspection.queue_items[0]["reasons"] == ["diagnostic near line 6"]
+    assert inspection.queue_items == []
 
 
 def test_route_workflow_step_marks_search_exhausted_from_recent_empty_search_streak(monkeypatch, tmp_path):

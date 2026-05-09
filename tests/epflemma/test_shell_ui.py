@@ -91,6 +91,40 @@ def test_render_workflow_status_panel_shows_project_prove_manager_queue():
     assert "Demo/Base.lean, Demo/Later.lean" in output
 
 
+def test_render_workflow_status_panel_shows_warning_cleanup_state():
+    console = Console(record=True, width=120)
+
+    render_workflow_status_panel(
+        console,
+        status={
+            "phase": "verified",
+            "workflow_kind": "prove",
+            "workflow_command": "/prove Main.lean",
+            "project_root": "/tmp/project",
+            "provider": "custom",
+            "model": "zai-org/GLM-5.1",
+            "active_skill": "lean-proof-loop",
+            "parallel_agents": 1,
+            "active_file_label": "Main.lean",
+            "target_symbol": "",
+            "build_status": "lake env lean Main.lean succeeded",
+            "warning_cleanup_status": "verified",
+            "warning_cleanup_attempted": True,
+            "warning_cleanup_verified": True,
+            "warning_cleanup_warning_count": 0,
+            "project_sorry_count": 0,
+            "latest_checkpoint_label": "[none]",
+            "held_locks": 0,
+            "updated_at": "2026-04-22T14:33:57+00:00",
+        },
+        activities=[],
+    )
+
+    output = console.export_text()
+    assert "Warning cleanup" in output
+    assert "verified; attempted, verified; warnings 0" in output
+
+
 def test_list_runtime_provider_targets_includes_local_and_zai():
     names = {entry["name"] for entry in list_runtime_provider_targets()}
 

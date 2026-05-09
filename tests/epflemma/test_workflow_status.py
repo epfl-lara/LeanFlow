@@ -61,6 +61,23 @@ def test_persist_live_status_writes_shell_visible_payload(monkeypatch, tmp_path)
             "message": "1 goal remaining",
             "sorry_count": 1,
             "blocker_summary": "remaining sorry",
+            "proof_solved": True,
+            "warning_cleanup_status": "verified",
+            "warning_cleanup_attempted": True,
+            "warning_cleanup_verified": True,
+            "warning_cleanup_warning_count": 0,
+            "warning_cleanup_diagnostics": "warning cleanup verified; no warnings remain",
+            "warning_cleanup": {
+                "status": "verified",
+                "proof_solved": True,
+                "attempted": True,
+                "verified": True,
+                "skipped": False,
+                "blocked": False,
+                "warning_count": 0,
+                "warning_summary": "",
+                "diagnostics": "warning cleanup verified; no warnings remain",
+            },
         },
         phase="busy",
     )
@@ -73,6 +90,49 @@ def test_persist_live_status_writes_shell_visible_payload(monkeypatch, tmp_path)
     assert payload["latest_checkpoint_label"] == "proof milestone"
     assert payload["snapshot_present"] is True
     assert payload["goals"] == "x : Nat\n⊢ x = x"
+    assert payload["proof_solved"] is True
+    assert payload["warning_cleanup_status"] == "verified"
+    assert payload["warning_cleanup_verified"] is True
+    assert payload["warning_cleanup"]["status"] == "verified"
+
+
+def test_persist_live_status_releases_locks_before_exit_payload(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(tmp_path / "project"))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_RUNNER_OWNER", "agent-a")
+
+    released: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "release_all_file_locks",
+        lambda *, owner_id: released.append(owner_id) or {"released": 1},
+    )
+    monkeypatch.setattr(runner, "_held_lock_count", lambda owner_id: 0 if released else 1)
+
+    runner._persist_live_status(
+        [{"role": "assistant", "content": "Done"}],
+        live_state={
+            "active_file": "Main.lean",
+            "active_file_label": "Main.lean",
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "build_status": "lake env lean Main.lean exits 0",
+            "verification_ok": True,
+            "last_verification": {"ok": True, "scope": "file", "tool": "lean_verify"},
+            "declaration_scope": "file",
+            "declaration_queue_total": 0,
+            "sorry_count": 0,
+        },
+        phase="exited",
+    )
+
+    payload = load_workflow_live_status()
+
+    assert released == ["agent-a"]
+    assert payload["phase"] == "exited"
+    assert payload["held_locks"] == 0
 
 
 def test_workflow_state_prefers_project_local_state(monkeypatch, tmp_path):
