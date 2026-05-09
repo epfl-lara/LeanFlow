@@ -20,7 +20,7 @@ EPFLemma normalizes the public Lean workflow commands to these internal workflow
 
 The auto-prefixed forms are aliases only. They are not separate runtimes or policy bundles.
 
-`/formalize` and `/autoformalize` require a project-local `.tex` or `.pdf` source document path. The resolver prepares document preflight artifacts, a generated supplemental blueprint skill, and an active Lean target file before the native runner starts. Once the drafting pass has a compilable `sorry` skeleton and only statement/source approval is missing, the native runner starts a fresh independent verifier pass over the source document, blueprint, and Lean draft. `/prove SomeFile.lean` auto-attaches the generated skill when `SomeFile.lean` has a nearby `Blueprint.md`; users can also pass `--additional-skill path/to/SKILL.md`.
+`/formalize` and `/autoformalize` require a project-local `.tex` source, `.pdf` source, or directory containing a TeX project. The resolver prepares document preflight artifacts, a generated supplemental blueprint skill, and an active Lean target file before the native runner starts. Directory inputs are resolved to a main TeX source and record included `.tex`, bibliography, and local asset files in the manifest. Once the drafting pass has a compilable `sorry` skeleton and only statement/source approval is missing, the native runner starts a fresh independent verifier pass over the source document, blueprint, and Lean draft. After review approval, proof filling is the next phase and may use `/prove SomeFile.lean` or the managed proof queue. `/prove SomeFile.lean` auto-attaches the generated skill when `SomeFile.lean` has a nearby `Blueprint.md`; users can also pass `--additional-skill path/to/SKILL.md`.
 
 ## Specs Are The Contract
 
@@ -217,18 +217,20 @@ Parallelism policy:
 
 ## Document Formalization Preflight
 
-`/formalize docs/paper.tex` and `/autoformalize docs/paper.pdf` normalize to the same `formalize` workflow.
+`/formalize docs/paper.tex`, `/autoformalize docs/paper.pdf`, and `/autoformalize docs/paper-directory` normalize to the same `formalize` workflow.
 
 Before launch, the resolver:
 
 1. requires the source path to exist inside the active EPFLemma project
-2. accepts only `.tex` and `.pdf`
-3. creates `.epflemma/workflow-state/formalization/<source>/manifest.json`
-4. creates `.epflemma/workflow-state/formalization/<source>/extracted.txt`
-5. creates `.epflemma/workflow-state/formalization/<source>/blueprint.md`
-6. creates an active Lean target file if it does not already exist
-7. sets `EPFLEMMA_WORKFLOW_CONTEXT` so the runner prompt includes the document contract
-8. sets `EPFLEMMA_NATIVE_ACTIVE_FILE` to the generated target file so the normal theorem queue can take over once the planner drafts `sorry` declarations
+2. accepts `.tex`, `.pdf`, or a directory containing a TeX project
+3. for directory inputs, deterministically selects the main `.tex` entrypoint, collects included `.tex` files, bibliography files, and local assets, and fails ambiguous roots with a clear error
+4. creates `.epflemma/workflow-state/formalization/<source>/manifest.json`
+5. creates `.epflemma/workflow-state/formalization/<source>/extracted.txt`
+6. creates `.epflemma/workflow-state/formalization/<source>/blueprint.md`
+7. creates an active Lean target file if it does not already exist
+8. records both the original request path and the selected source document in workflow state
+9. sets `EPFLEMMA_WORKFLOW_CONTEXT` so the runner prompt includes the document contract
+10. sets `EPFLEMMA_NATIVE_ACTIVE_FILE` to the generated target file so statement/source review and later proof work have a stable Lean entrypoint
 
 The generated Markdown blueprint is the default planning artifact. If a project already has `blueprint/` or `leanblueprint` available, the planner should keep that TeX blueprint in sync with the generated declaration names and dependency labels.
 

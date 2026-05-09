@@ -223,6 +223,8 @@ def _is_step_boundary_interrupt(result: Mapping[str, Any] | None) -> bool:
 def _document_formalization_waiting_for_independent_review(live_state: Mapping[str, Any] | None) -> bool:
     if _workflow_kind() != "formalize" or not _document_formalization_requested():
         return False
+    if _document_formalization_blueprint_waiting_for_review():
+        return True
     handoff = dict((live_state or {}).get("document_formalization_handoff", {}) or {})
     if bool(handoff.get("ok", True)):
         return False
@@ -258,6 +260,8 @@ def _document_formalization_waiting_for_independent_review(live_state: Mapping[s
 def _document_formalization_handoff_blocked_state(live_state: Mapping[str, Any] | None) -> bool:
     if _workflow_kind() != "formalize" or not _document_formalization_requested():
         return False
+    if _document_formalization_blueprint_waiting_for_review():
+        return True
     handoff = dict((live_state or {}).get("document_formalization_handoff", {}) or {})
     return bool(handoff) and not bool(handoff.get("ok", True))
 
@@ -271,6 +275,16 @@ def _document_formalization_ready_for_prover_handoff(live_state: Mapping[str, An
         return False
     try:
         sorry_count = int(current.get("sorry_count", 0) or 0)
+    except Exception:
+        sorry_count = 0
+    return sorry_count > 0
+
+
+def _document_formalization_has_draft_sorries(live_state: Mapping[str, Any] | None) -> bool:
+    if _workflow_kind() != "formalize" or not _document_formalization_requested():
+        return False
+    try:
+        sorry_count = int((live_state or {}).get("sorry_count", 0) or 0)
     except Exception:
         sorry_count = 0
     return sorry_count > 0
@@ -455,6 +469,7 @@ def _persist_live_status(
         "phase": resolved_phase,
         "workflow_kind": _workflow_kind(),
         "workflow_command": _read_native_env("WORKFLOW_COMMAND", "[unset]"),
+        "effective_prompt": _read_native_env("EFFECTIVE_PROMPT", _read_native_env("USER_PROMPT", _read_native_env("EXPLICIT_GOAL", ""))),
         "project_root": _project_root(),
         "provider": _read_native_env("PROVIDER"),
         "model": _read_native_env("MODEL"),
@@ -497,8 +512,12 @@ def _persist_live_status(
         "project_prove_plan_reason": str(live_state.get("project_prove_plan_reason", "") or ""),
         "formalization_document": _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", ""),
         "formalization_document_kind": _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_KIND", ""),
+        "formalization_request_kind": _read_text_env("EPFLEMMA_FORMALIZATION_REQUEST_KIND", ""),
+        "formalization_request": _read_text_env("EPFLEMMA_FORMALIZATION_REQUEST_RELATIVE", ""),
+        "formalization_selected_source_document": _read_text_env("EPFLEMMA_FORMALIZATION_SELECTED_SOURCE", ""),
         "formalization_context": _read_text_env("EPFLEMMA_FORMALIZATION_CONTEXT", ""),
         "formalization_blueprint": _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", ""),
+        "formalization_extracted_blueprint_path": _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", ""),
         "formalization_target_file": _read_text_env("EPFLEMMA_FORMALIZATION_TARGET_FILE", ""),
         "capability_report": dict(live_state.get("capability_report", {}) or {}),
         "route_decision": dict(live_state.get("route_decision", {}) or {}),
@@ -519,6 +538,7 @@ def _record_activity(event_type: str, message: str, **details: Any) -> None:
         message,
         workflow_kind=_workflow_kind(),
         workflow_command=_read_native_env("WORKFLOW_COMMAND", "[unset]"),
+        effective_prompt=_read_native_env("EFFECTIVE_PROMPT", _read_native_env("USER_PROMPT", _read_native_env("EXPLICIT_GOAL", ""))),
         active_skill=active_skill,
         **details,
     )
@@ -3059,6 +3079,8 @@ def _formalization_document_startup_block() -> str:
     if not document:
         return ""
     kind = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_KIND", "").strip() or "document"
+    request_kind = _read_text_env("EPFLEMMA_FORMALIZATION_REQUEST_KIND", "").strip()
+    request_relative = _read_text_env("EPFLEMMA_FORMALIZATION_REQUEST_RELATIVE", "").strip()
     target = _read_text_env("EPFLEMMA_FORMALIZATION_TARGET_FILE", "").strip()
     context = _read_text_env("EPFLEMMA_FORMALIZATION_CONTEXT", "").strip()
     blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
@@ -3067,6 +3089,9 @@ def _formalization_document_startup_block() -> str:
         f"- document: {document}",
         f"- kind: {kind}",
     ]
+    if request_relative and (request_relative != document or request_kind == "directory"):
+        label = request_kind or "request"
+        lines.append(f"- original input: {request_relative} ({label})")
     if target:
         lines.append(f"- target Lean file: {target}")
     if context:
@@ -3149,6 +3174,7 @@ def _snapshot_metadata() -> dict[str, Any]:
     return {
         "workflow_kind": _workflow_kind(),
         "workflow_command": _read_native_env("WORKFLOW_COMMAND", "[unset]"),
+        "effective_prompt": _read_native_env("EFFECTIVE_PROMPT", _read_native_env("USER_PROMPT", _read_native_env("EXPLICIT_GOAL", ""))),
         "project_root": _project_root(),
         "model": _read_native_env("MODEL"),
     }
@@ -4762,7 +4788,7 @@ def _prepare_queue_assignment_state(
     live_state: Mapping[str, Any] | None,
 ) -> None:
     current = dict(live_state or {})
-    if _document_formalization_handoff_blocked_state(current):
+    if _document_formalization_handoff_blocked_state(current) or _document_formalization_ready_for_prover_handoff(current):
         mgr = _queue_manager_from_state(autonomy_state, current)
         mgr.clear_assignment()
         _flush_queue_manager(autonomy_state, mgr)
@@ -5495,6 +5521,8 @@ def _rebuild_history_for_theorem_transition(
 ) -> tuple[list[dict[str, Any]], dict[str, str]] | tuple[None, None]:
     if _document_formalization_handoff_blocked_state(live_state):
         return None, None
+    if _document_formalization_ready_for_prover_handoff(live_state):
+        return None, None
     transition = _queue_assignment_transition(autonomy_state, live_state)
     if not transition:
         return None, None
@@ -5543,6 +5571,10 @@ def _queue_needs_final_file_sweep(live_state: Mapping[str, Any] | None) -> bool:
     current = dict(live_state or {})
     if _document_formalization_waiting_for_independent_review(current):
         return False
+    if _document_formalization_ready_for_prover_handoff(current):
+        return False
+    if _document_formalization_has_draft_sorries(current):
+        return False
     return (
         _single_queue_item_turn_enabled()
         and str(current.get("declaration_scope", "") or "") == "file"
@@ -5586,6 +5618,46 @@ def _maybe_announce_final_file_sweep_state(
             "Declaration queue empty but document formalization is waiting for statement/source verification",
             active_file=active_file,
             blocker=blocker,
+        )
+        return
+
+    if _document_formalization_ready_for_prover_handoff(current):
+        announcement = f"deferred-prover-handoff:{active_file}"
+        if autonomy_state.get("final_file_sweep_announcement") == announcement:
+            return
+        autonomy_state["final_file_sweep_announcement"] = announcement
+        autonomy_state["continuation_blocked_runs"] = 0
+        autonomy_state["continuation_stable_cycles"] = 0
+        print("")
+        print(
+            "Document formalization handoff: declaration queue is empty and statement/source review "
+            "passed; stopping before proof cleanup."
+        )
+        _record_activity(
+            "final-file-sweep-deferred-for-prover-handoff",
+            "Declaration queue empty and document formalization is ready for /prove",
+            active_file=active_file,
+            sorry_count=current.get("sorry_count"),
+        )
+        return
+
+    if _document_formalization_has_draft_sorries(current):
+        announcement = f"deferred-document-formalization:{active_file}"
+        if autonomy_state.get("final_file_sweep_announcement") == announcement:
+            return
+        autonomy_state["final_file_sweep_announcement"] = announcement
+        autonomy_state["continuation_blocked_runs"] = 0
+        autonomy_state["continuation_stable_cycles"] = 0
+        print("")
+        print(
+            "Document formalization handoff: declaration queue is empty but draft declarations still "
+            "contain `sorry`; staying in planner/review handoff instead of proof cleanup."
+        )
+        _record_activity(
+            "final-file-sweep-deferred-for-document-formalization",
+            "Declaration queue empty but document formalization draft still has sorry declarations",
+            active_file=active_file,
+            sorry_count=current.get("sorry_count"),
         )
         return
 
@@ -5678,12 +5750,15 @@ def _document_formalization_review_prompt(live_state: Mapping[str, Any]) -> str:
         "assert it, a companion declaration must cover it, or the blueprint must mark an intentional scope change.\n"
         "5. If the source gives a parameter-domain conversion, representation bridge, or follow-on equivalence, "
         "formalize that as a separate declaration or record the omission as unapproved.\n"
-        "6. Fix mismatched Lean statements, missing source locators, wrong import plans, or weak prover notes.\n"
-        "7. Leave theorem/lemma/example proofs as `by sorry`; do not solve proofs in this review pass.\n"
-        "8. Only after checking all fidelity axes for a source entry, record `Statement verification status: approved` "
+        "6. In particular, a simpler Lean encoding does not by itself cover a source claim about a richer "
+        "object class or representation. Require a bridge definition/declaration, or mark Lean coverage "
+        "as partial and record the representation scope change.\n"
+        "7. Fix mismatched Lean statements, missing source locators, wrong import plans, or weak prover notes.\n"
+        "8. Leave theorem/lemma/example proofs as `by sorry`; do not solve proofs in this review pass.\n"
+        "9. Only after checking all fidelity axes for a source entry, record `Statement verification status: approved` "
         "in the blueprint. Do not approve an entry because a build succeeds.\n"
-        "9. Run `lean_verify(mode=module)` or the narrowest available Lean verification for draft readiness.\n"
-        "10. Stop with a concise report: approved entries, corrected entries, remaining blockers, and whether `/prove` may start.\n"
+        "10. Run `lean_verify(mode=module)` or the narrowest available Lean verification for draft readiness.\n"
+        "11. Stop with a concise report: approved entries, corrected entries, remaining blockers, and whether `/prove` may start.\n"
     )
 
 
@@ -6227,7 +6302,16 @@ def _build_live_proof_state(
         diagnostics=diagnostics,
         sorry_count=sorry_count if isinstance(sorry_count, int) else None,
     )
-    document_handoff_blocked = _document_formalization_requested() and not bool(document_handoff.get("ok"))
+    document_review_pending = _document_formalization_blueprint_waiting_for_review()
+    if _document_formalization_requested() and document_review_pending and bool(document_handoff.get("ok")):
+        document_handoff = {
+            "ok": False,
+            "issues": ["statement/source verification is pending independent review"],
+            "summary": "document formalization handoff verifier blocked queue: statement/source verification is pending independent review",
+        }
+    document_handoff_blocked = _document_formalization_requested() and (
+        not bool(document_handoff.get("ok")) or document_review_pending
+    )
     if document_handoff_blocked:
         declaration_queue = []
     current_queue_item = _current_queue_item(declaration_queue, active_file)
@@ -6237,6 +6321,13 @@ def _build_live_proof_state(
         and bool(active_file)
         and not declaration_queue
         and not document_handoff_blocked
+        and not document_review_pending
+        and not (
+            _workflow_kind() == "formalize"
+            and _document_formalization_requested()
+            and isinstance(sorry_count, int)
+            and sorry_count > 0
+        )
     )
     if declaration_scope == "file" and current_queue_label:
         target_symbol = current_queue_label
@@ -6991,6 +7082,50 @@ def _lean_comment_has_source_proof_notes(comment: str) -> bool:
         "paper proof",
     )
     return any(marker in lowered for marker in required_markers)
+
+
+def _document_formalization_blueprint_waiting_for_review() -> bool:
+    if _workflow_kind() != "formalize" or not _document_formalization_requested():
+        return False
+    blueprint_path = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    if not blueprint_path:
+        return False
+    try:
+        blueprint_text = Path(blueprint_path).read_text(encoding="utf-8")
+    except Exception:
+        return False
+    lowered = blueprint_text.lower()
+    entries = _blueprint_source_inventory_entries(blueprint_text)
+    if not entries:
+        return "awaiting independent statement/source verification" in lowered or (
+            "pending review" in lowered and "statement" in lowered and "verification" in lowered
+        )
+    saw_inventory_entry = False
+    for block in _document_formalization_manifest_blocks():
+        entry = entries.get(str(block.get("label", "") or ""), "")
+        if not entry:
+            continue
+        saw_inventory_entry = True
+        verification = _blueprint_first_bullet_value(
+            entry,
+            (
+                "Statement verification status",
+                "Statement/source verification",
+                "Source verification status",
+                "Verification status",
+            ),
+        )
+        if _blueprint_value_missing(verification):
+            return True
+        if not re.search(r"\b(approved|verified|reviewed|accepted)\b", verification, flags=re.IGNORECASE):
+            return True
+    if saw_inventory_entry:
+        return False
+    if "awaiting independent statement/source verification" in lowered:
+        return True
+    if "pending review" in lowered and "statement" in lowered and "verification" in lowered:
+        return True
+    return False
 
 
 def _document_formalization_blueprint_inventory_issues(
@@ -8824,8 +8959,8 @@ def _startup_user_message(
     additional_skill_contracts = _startup_additional_skill_contracts(selected_skill)
     combined_skill_contract = "\n\n".join(part for part in (skill_contract, additional_skill_contracts) if part)
     skill_block = f"\n\n{combined_skill_contract}" if combined_skill_contract else ""
-    explicit_goal = _read_native_env("EXPLICIT_GOAL", "")
-    goal_block = f"\n\nUser goal: {explicit_goal}" if explicit_goal else ""
+    explicit_goal = _read_native_env("EFFECTIVE_PROMPT", _read_native_env("USER_PROMPT", _read_native_env("EXPLICIT_GOAL", "")))
+    goal_block = f"\n\nUser prompt: {explicit_goal}" if explicit_goal else ""
     route_block = ""
     route_decision = route_workflow_step(
         workflow_kind,

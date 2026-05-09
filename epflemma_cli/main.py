@@ -983,6 +983,7 @@ class InteractiveShell:
             "phase": "busy",
             "workflow_kind": str(plan.workflow.workflow_kind or "[none]"),
             "workflow_command": str(plan.workflow.frontend_command or raw),
+            "effective_prompt": str(plan.workflow.explicit_goal or ""),
             "project_root": str(plan.project.root),
             "provider": str(plan.runtime.get("provider", "") or "[unknown]"),
             "model": str(plan.runtime.get("model", "") or "[unknown]"),
@@ -1011,8 +1012,20 @@ class InteractiveShell:
                 {
                     "formalization_document": plan.formalization_document.source_relative,
                     "formalization_document_kind": plan.formalization_document.source_kind,
+                    "formalization_request_kind": str(
+                        plan.formalization_document.metadata.get("document_request_kind", "file") or "file"
+                    ),
+                    "formalization_request": str(
+                        plan.formalization_document.metadata.get(
+                            "document_request_relative",
+                            plan.formalization_document.source_relative,
+                        )
+                        or plan.formalization_document.source_relative
+                    ),
+                    "formalization_selected_source_document": plan.formalization_document.source_relative,
                     "formalization_context": str(plan.formalization_document.context_path),
                     "formalization_blueprint": str(plan.formalization_document.blueprint_path),
+                    "formalization_extracted_blueprint_path": str(plan.formalization_document.blueprint_path),
                     "formalization_target_file": plan.formalization_document.target_lean_relative,
                 }
             )

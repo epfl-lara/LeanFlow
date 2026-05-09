@@ -7,6 +7,7 @@ import pytest
 from epflemma_cli import workflow as workflow_mod
 from epflemma_cli.workflow import (
     WORKFLOW_ALIAS_MAP,
+    describe_launch_plan,
     parse_workflow_command,
     resolve_workflow_request,
     rewrite_forgiving_workflow_command,
@@ -32,6 +33,14 @@ def test_parse_workflow_command_extracts_swarm_options():
     assert spec.backend_command == "/prove Main.lean"
     assert spec.parallel_agents == 3
     assert spec.explicit_goal == "finish theorem Foo"
+
+
+def test_parse_workflow_command_accepts_prompt_alias():
+    spec = parse_workflow_command("/prove Main.lean --prompt use lemma abs_abs_sub first")
+
+    assert spec.workflow_kind == "prove"
+    assert spec.backend_command == "/prove Main.lean"
+    assert spec.explicit_goal == "use lemma abs_abs_sub first"
 
 
 def test_parse_workflow_command_extracts_additional_skills():
@@ -401,6 +410,43 @@ def test_resolve_workflow_request_preserves_explicit_swarm_for_document_formaliz
     assert plan.active_skill == "lean-autonomous-swarm"
     assert plan.toolset_name == "epflemma-native-swarm"
     assert plan.child_env["EPFLEMMA_NATIVE_USER_APPROVED_SWARM"] == "1"
+
+
+def test_resolve_workflow_request_accepts_directory_for_autoformalize(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    _write_formalization_source(project, "docs/paper/main.tex")
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_epflemma_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": project})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "local",
+            "api_mode": "responses",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "sk-test",
+            "model": "google/gemma-4-31B-it",
+        },
+    )
+
+    plan = resolve_workflow_request("/autoformalize docs/paper", active_cwd=project)
+
+    assert plan.workflow.workflow_kind == "formalize"
+    assert plan.workflow.workflow_args == "docs/paper/main.tex"
+    assert plan.formalization_document is not None
+    assert plan.formalization_document.metadata["document_request_kind"] == "directory"
+    assert plan.formalization_document.metadata["document_request_relative"] == "docs/paper"
+    assert plan.child_env["EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE"] == "docs/paper/main.tex"
+    assert plan.child_env["EPFLEMMA_FORMALIZATION_REQUEST_KIND"] == "directory"
+    assert plan.child_env["EPFLEMMA_FORMALIZATION_REQUEST_RELATIVE"] == "docs/paper"
+    assert plan.child_env["EPFLEMMA_FORMALIZATION_SELECTED_SOURCE"] == "docs/paper/main.tex"
+    assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/Main/Main.lean"
+    summary = describe_launch_plan(plan)
+    assert summary["input"] == "docs/paper (directory)"
+    assert summary["document"] == "docs/paper/main.tex"
 
 
 def test_all_workflow_aliases_are_covered_by_alias_map():

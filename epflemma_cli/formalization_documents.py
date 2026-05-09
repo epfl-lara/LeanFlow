@@ -23,6 +23,15 @@ MAX_STATEMENT_CHARS = 1_600
 MAX_THEOREM_BLOCKS = 80
 MAX_SECTIONS = 80
 MAX_REFERENCES = 80
+TEX_PROJECT_SKIPPED_DIRS = {
+    ".epflemma",
+    ".git",
+    ".lake",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+}
 
 
 class FormalizationDocumentError(ValueError):
@@ -49,6 +58,16 @@ class FormalizationDocumentContext:
             "OPENGAUSS_FORMALIZATION_DOCUMENT": str(self.source_path),
             "EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE": self.source_relative,
             "OPENGAUSS_FORMALIZATION_DOCUMENT_RELATIVE": self.source_relative,
+            "EPFLEMMA_FORMALIZATION_REQUEST_KIND": str(self.metadata.get("document_request_kind", "file") or "file"),
+            "OPENGAUSS_FORMALIZATION_REQUEST_KIND": str(self.metadata.get("document_request_kind", "file") or "file"),
+            "EPFLEMMA_FORMALIZATION_REQUEST_RELATIVE": str(
+                self.metadata.get("document_request_relative", self.source_relative) or self.source_relative
+            ),
+            "OPENGAUSS_FORMALIZATION_REQUEST_RELATIVE": str(
+                self.metadata.get("document_request_relative", self.source_relative) or self.source_relative
+            ),
+            "EPFLEMMA_FORMALIZATION_SELECTED_SOURCE": self.source_relative,
+            "OPENGAUSS_FORMALIZATION_SELECTED_SOURCE": self.source_relative,
             "EPFLEMMA_FORMALIZATION_DOCUMENT_KIND": self.source_kind,
             "OPENGAUSS_FORMALIZATION_DOCUMENT_KIND": self.source_kind,
             "EPFLEMMA_FORMALIZATION_CONTEXT": str(self.context_path),
@@ -66,6 +85,17 @@ class FormalizationDocumentContext:
             "EPFLEMMA_FORMALIZATION_TARGET_FILE": self.target_lean_relative,
             "OPENGAUSS_FORMALIZATION_TARGET_FILE": self.target_lean_relative,
         }
+
+
+@dataclass(frozen=True)
+class _FormalizationDocumentSelection:
+    source_path: Path
+    source_relative: str
+    source_kind: str
+    request_path: Path
+    request_relative: str
+    request_kind: str
+    discovery_metadata: dict[str, Any]
 
 
 def _bounded(text: str, limit: int) -> str:
@@ -111,6 +141,380 @@ def _candidate_paths(project_root: Path, cwd: Path, raw_path: str) -> list[Path]
     return deduped
 
 
+def _is_inside_directory(path: Path, directory: Path) -> bool:
+    try:
+        path.resolve().relative_to(directory.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _project_local_existing_path(project_root: Path, cwd: Path, raw_path: str) -> tuple[Path, str]:
+    raw = _strip_wrapping_quotes(raw_path)
+    for candidate in _candidate_paths(project_root, cwd, raw):
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            continue
+        if not resolved.exists():
+            continue
+        relative = _relative_to_project(resolved, project_root)
+        return resolved, relative
+    raise FormalizationDocumentError(f"formalization document not found: {raw}")
+
+
+def _tex_files_under(directory: Path) -> list[Path]:
+    files: list[Path] = []
+    for path in directory.rglob("*.tex"):
+        if any(
+            part in TEX_PROJECT_SKIPPED_DIRS or part.startswith(".")
+            for part in path.relative_to(directory).parts
+        ):
+            continue
+        if path.is_file():
+            files.append(path.resolve())
+    return sorted(files, key=lambda item: item.relative_to(directory).as_posix().lower())
+
+
+def _read_text_lossy(path: Path, limit: int = 500_000) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    return text[:limit]
+
+
+def _normalize_tex_reference(value: str, default_suffix: str = ".tex") -> str:
+    raw = str(value or "").strip().strip("{}").strip()
+    raw = raw.split("%", 1)[0].strip()
+    if not raw:
+        return ""
+    if raw.startswith(("http://", "https://")):
+        return ""
+    path = Path(raw)
+    if not path.suffix and default_suffix:
+        raw = f"{raw}{default_suffix}"
+    return raw
+
+
+def _extract_tex_inputs(text: str) -> list[str]:
+    values: list[str] = []
+    command_pattern = re.compile(
+        r"\\(?P<command>input|include|subfile|includeonly)\s*(?:\{(?P<braced>[^{}]+)\}|(?P<plain>[^\s{}]+))",
+        re.IGNORECASE,
+    )
+    for match in command_pattern.finditer(text or ""):
+        raw_value = match.group("braced") or match.group("plain") or ""
+        for part in raw_value.split(","):
+            normalized = _normalize_tex_reference(part)
+            if normalized and normalized not in values:
+                values.append(normalized)
+    return values
+
+
+def _resolve_local_reference(base_file: Path, project_directory: Path, reference: str) -> Path | None:
+    raw = _normalize_tex_reference(reference, default_suffix="")
+    if not raw:
+        return None
+    candidates = [base_file.parent / raw, project_directory / raw]
+    if Path(raw).suffix == "":
+        candidates.extend([base_file.parent / f"{raw}.tex", project_directory / f"{raw}.tex"])
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            continue
+        if resolved.is_file() and _is_inside_directory(resolved, project_directory):
+            return resolved
+    return None
+
+
+def _included_tex_closure(entrypoint: Path, project_directory: Path) -> tuple[list[Path], list[str]]:
+    included: list[Path] = []
+    missing: list[str] = []
+    seen: set[Path] = {entrypoint.resolve()}
+    queue: list[Path] = [entrypoint.resolve()]
+    while queue:
+        current = queue.pop(0)
+        text = _read_text_lossy(current)
+        for reference in _extract_tex_inputs(text):
+            resolved = _resolve_local_reference(current, project_directory, reference)
+            if resolved is None:
+                if reference not in missing:
+                    missing.append(reference)
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            included.append(resolved)
+            queue.append(resolved)
+    return included, missing
+
+
+def _entrypoint_score(path: Path, directory: Path, included_by_other_tex: set[Path]) -> int:
+    text = _read_text_lossy(path)
+    lower_name = path.name.lower()
+    score = 0
+    if path.resolve() not in included_by_other_tex:
+        score += 80
+    else:
+        score -= 40
+    if re.search(r"\\documentclass(?:\[[^\]]*\])?\{", text):
+        score += 120
+    if re.search(r"\\begin\{document\}", text):
+        score += 80
+    if re.search(r"\\bye\b", text):
+        score += 70
+    if re.search(r"\\(?:title|centerline)\b", text):
+        score += 25
+    if re.search(r"\\(?:begin\{(?:theorem|lemma|proposition|corollary|definition|defn)\}|profess\{)", text):
+        score += 25
+    if re.search(r"\\bibliography\{", text):
+        score += 10
+    if lower_name in {"main.tex", "paper.tex", "article.tex", "root.tex", "index.tex"}:
+        score += 35
+    if path.parent.resolve() == directory.resolve():
+        score += 8
+    if re.search(r"(?:preamble|macros|defs|commands|setup)", lower_name):
+        score -= 50
+    return score
+
+
+def _relative_list(paths: list[Path], root: Path) -> list[str]:
+    values: list[str] = []
+    for path in paths:
+        try:
+            value = str(path.resolve().relative_to(root.resolve()))
+        except Exception:
+            value = str(path)
+        if value not in values:
+            values.append(value)
+    return values
+
+
+def _directory_relative_list(paths: list[Path], directory: Path) -> list[str]:
+    values: list[str] = []
+    for path in paths:
+        try:
+            value = str(path.resolve().relative_to(directory.resolve()))
+        except Exception:
+            value = str(path)
+        if value not in values:
+            values.append(value)
+    return values
+
+
+def _extract_bibliography_asset_refs(text: str) -> tuple[list[str], list[str]]:
+    bibliography: list[str] = []
+    assets: list[str] = []
+    for command in ("bibliography", "addbibresource"):
+        for value in _extract_braced_commands(text, command):
+            for part in value.split(","):
+                normalized = _normalize_tex_reference(part, ".bib")
+                if normalized and normalized not in bibliography:
+                    bibliography.append(normalized)
+    for value in _extract_braced_commands(text, "bibliographystyle"):
+        normalized = _normalize_tex_reference(value, ".bst")
+        if normalized and normalized not in assets:
+            assets.append(normalized)
+    graphics_pattern = re.compile(
+        r"\\(?:includegraphics|epsfig)\s*(?:\[[^\]]*\])?\s*\{(?P<path>[^{}]+)\}",
+        re.IGNORECASE,
+    )
+    for match in graphics_pattern.finditer(text or ""):
+        normalized = _normalize_tex_reference(match.group("path"), "")
+        if normalized and normalized not in assets:
+            assets.append(normalized)
+    return bibliography, assets
+
+
+def _resolve_asset_reference(
+    base_file: Path,
+    directory: Path,
+    reference: str,
+    suffixes: tuple[str, ...] = (),
+) -> list[Path]:
+    raw = _normalize_tex_reference(reference, "")
+    if not raw:
+        return []
+    candidates = [base_file.parent / raw, directory / raw]
+    if not Path(raw).suffix:
+        for suffix in suffixes:
+            candidates.extend([base_file.parent / f"{raw}{suffix}", directory / f"{raw}{suffix}"])
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            path = candidate.resolve()
+        except Exception:
+            continue
+        if path in seen or not path.is_file() or not _is_inside_directory(path, directory):
+            continue
+        seen.add(path)
+        resolved.append(path)
+    return resolved
+
+
+def _collect_tex_project_assets(entrypoint: Path, directory: Path, included_tex: list[Path]) -> tuple[list[Path], list[Path]]:
+    bibliography_files: list[Path] = []
+    local_assets: list[Path] = []
+    tex_sources = [entrypoint, *included_tex]
+    for source in tex_sources:
+        text = _read_text_lossy(source)
+        bibliography_refs, asset_refs = _extract_bibliography_asset_refs(text)
+        for reference in bibliography_refs:
+            matches = _resolve_asset_reference(source, directory, reference, (".bib", ".bbl"))
+            stem = str(Path(reference).with_suffix(""))
+            matches.extend(_resolve_asset_reference(source, directory, f"{stem}.bbl", ()))
+            for match in matches:
+                if match not in bibliography_files:
+                    bibliography_files.append(match)
+        for reference in asset_refs:
+            for match in _resolve_asset_reference(source, directory, reference, (".bst", ".png", ".jpg", ".jpeg", ".pdf", ".eps", ".svg")):
+                if match not in local_assets:
+                    local_assets.append(match)
+    for sidecar in sorted(directory.iterdir(), key=lambda item: item.name.lower()):
+        if not sidecar.is_file() or sidecar.suffix.lower() in {".tex", ".pdf"}:
+            continue
+        if sidecar.suffix.lower() in {".bib", ".bbl"}:
+            if sidecar.resolve() not in bibliography_files:
+                bibliography_files.append(sidecar.resolve())
+        elif sidecar.resolve() not in local_assets:
+            local_assets.append(sidecar.resolve())
+    return bibliography_files, local_assets
+
+
+def _discover_tex_project_entrypoint(project_root: Path, directory: Path) -> _FormalizationDocumentSelection:
+    tex_files = _tex_files_under(directory)
+    if not tex_files:
+        raise FormalizationDocumentError(
+            "formalize directory input requires at least one project-local .tex file. "
+            f"No .tex files were found under {_relative_to_project(directory, project_root)}."
+        )
+
+    included_by_other_tex: set[Path] = set()
+    for tex_file in tex_files:
+        for reference in _extract_tex_inputs(_read_text_lossy(tex_file)):
+            resolved = _resolve_local_reference(tex_file, directory, reference)
+            if resolved is not None and resolved != tex_file.resolve():
+                included_by_other_tex.add(resolved)
+
+    scored = sorted(
+        ((tex_file, _entrypoint_score(tex_file, directory, included_by_other_tex)) for tex_file in tex_files),
+        key=lambda item: (-item[1], item[0].relative_to(directory).as_posix().lower()),
+    )
+    best_path, best_score = scored[0]
+    tied = [path for path, score in scored if score == best_score]
+    if len(tied) > 1:
+        choices = ", ".join(_relative_to_project(path, project_root) for path in tied[:8])
+        raise FormalizationDocumentError(
+            "formalize directory input has multiple possible TeX entrypoints. "
+            f"Pass one explicitly instead: {choices}"
+        )
+
+    included_tex, missing_includes = _included_tex_closure(best_path, directory)
+    bibliography_files, local_assets = _collect_tex_project_assets(best_path, directory, included_tex)
+    source_relative = _relative_to_project(best_path, project_root)
+    directory_relative = _relative_to_project(directory, project_root)
+    metadata = {
+        "document_request_kind": "directory",
+        "document_request_path": str(directory),
+        "document_request_relative": directory_relative,
+        "tex_project_directory": str(directory),
+        "tex_project_directory_relative": directory_relative,
+        "selected_source_document": str(best_path),
+        "selected_source_document_relative": source_relative,
+        "tex_project_entrypoint": source_relative,
+        "tex_project_entrypoint_score": best_score,
+        "tex_project_files": _relative_list(tex_files, project_root),
+        "tex_project_files_relative_to_directory": _directory_relative_list(tex_files, directory),
+        "tex_project_included_tex_files": _relative_list(included_tex, project_root),
+        "tex_project_included_tex_files_relative_to_directory": _directory_relative_list(included_tex, directory),
+        "tex_project_missing_includes": missing_includes,
+        "tex_project_bibliography_files": _relative_list(bibliography_files, project_root),
+        "tex_project_local_asset_files": _relative_list(local_assets, project_root),
+        "tex_project_discovery_summary": (
+            f"Selected `{source_relative}` from `{directory_relative}`; "
+            f"{len(included_tex)} included .tex file(s), {len(bibliography_files)} bibliography file(s), "
+            f"{len(local_assets)} local asset file(s)."
+        ),
+    }
+    return _FormalizationDocumentSelection(
+        source_path=best_path,
+        source_relative=source_relative,
+        source_kind="latex",
+        request_path=directory,
+        request_relative=directory_relative,
+        request_kind="directory",
+        discovery_metadata=metadata,
+    )
+
+
+def _select_formalization_document(
+    project_root: str | Path,
+    cwd: str | Path,
+    workflow_args: str,
+) -> _FormalizationDocumentSelection:
+    root = Path(project_root).expanduser().resolve()
+    base = Path(cwd).expanduser().resolve()
+    raw = _strip_wrapping_quotes(workflow_args)
+    if not raw:
+        raise FormalizationDocumentError(
+            "formalize requires a project-local .tex source, .pdf source, or TeX project directory, "
+            "for example `/formalize docs/paper.tex` or `/autoformalize docs/paper`."
+        )
+    if raw.startswith("-"):
+        raise FormalizationDocumentError(
+            "formalize requires the document path before options, for example `/formalize docs/paper.tex --prompt section 2`."
+        )
+
+    raw_suffix = Path(raw).suffix.lower()
+    if raw_suffix == ".lean":
+        raise FormalizationDocumentError(
+            "formalize now expects a source document (.tex or .pdf) or TeX project directory. Use `/prove` for an existing Lean file "
+            "or `/draft` for statement-only skeleton work."
+        )
+    try:
+        requested_path, requested_relative = _project_local_existing_path(root, base, raw)
+    except FormalizationDocumentError:
+        if raw_suffix and raw_suffix not in SUPPORTED_FORMALIZATION_DOCUMENT_EXTENSIONS:
+            raise FormalizationDocumentError(
+                "formalize requires a project-local .tex source, .pdf source, or directory containing a TeX project. "
+                f"Unsupported document extension: {raw_suffix}"
+            ) from None
+        if not raw_suffix:
+            raise FormalizationDocumentError(
+                "formalize requires a project-local .tex source, .pdf source, or directory containing a TeX project, "
+                "for example `/formalize docs/paper.tex` or `/autoformalize docs/paper`."
+            ) from None
+        raise
+    if requested_path.is_dir():
+        return _discover_tex_project_entrypoint(root, requested_path)
+
+    suffix = requested_path.suffix.lower()
+    if suffix not in SUPPORTED_FORMALIZATION_DOCUMENT_EXTENSIONS:
+        raise FormalizationDocumentError(
+            "formalize requires a project-local .tex source, .pdf source, or directory containing a TeX project. "
+            f"Unsupported document extension: {suffix or '[none]'}"
+        )
+    kind = SUPPORTED_FORMALIZATION_DOCUMENT_EXTENSIONS[suffix]
+    return _FormalizationDocumentSelection(
+        source_path=requested_path,
+        source_relative=requested_relative,
+        source_kind=kind,
+        request_path=requested_path,
+        request_relative=requested_relative,
+        request_kind="file",
+        discovery_metadata={
+            "document_request_kind": "file",
+            "document_request_path": str(requested_path),
+            "document_request_relative": requested_relative,
+            "selected_source_document": str(requested_path),
+            "selected_source_document_relative": requested_relative,
+        },
+    )
+
+
 def resolve_formalization_document(
     project_root: str | Path,
     cwd: str | Path,
@@ -118,43 +522,8 @@ def resolve_formalization_document(
 ) -> tuple[Path, str, str]:
     """Resolve and validate the required document path for `/formalize`."""
 
-    root = Path(project_root).expanduser().resolve()
-    base = Path(cwd).expanduser().resolve()
-    raw = _strip_wrapping_quotes(workflow_args)
-    if not raw:
-        raise FormalizationDocumentError(
-            "formalize requires a project-local .tex or .pdf document path, "
-            "for example `/formalize docs/paper.tex`."
-        )
-    if raw.startswith("-"):
-        raise FormalizationDocumentError(
-            "formalize requires the document path before options, for example `/formalize docs/paper.tex --goal section 2`."
-        )
-
-    suffix = Path(raw).suffix.lower()
-    if suffix == ".lean":
-        raise FormalizationDocumentError(
-            "formalize now expects a source document (.tex or .pdf). Use `/prove` for an existing Lean file "
-            "or `/draft` for statement-only skeleton work."
-        )
-    if suffix not in SUPPORTED_FORMALIZATION_DOCUMENT_EXTENSIONS:
-        raise FormalizationDocumentError(
-            "formalize requires a project-local .tex or .pdf document path. "
-            f"Unsupported document extension: {suffix or '[none]'}"
-        )
-
-    for candidate in _candidate_paths(root, base, raw):
-        try:
-            resolved = candidate.resolve()
-        except Exception:
-            continue
-        if not resolved.is_file():
-            continue
-        relative = _relative_to_project(resolved, root)
-        kind = SUPPORTED_FORMALIZATION_DOCUMENT_EXTENSIONS[suffix]
-        return resolved, relative, kind
-
-    raise FormalizationDocumentError(f"formalization document not found: {raw}")
+    selection = _select_formalization_document(project_root, cwd, workflow_args)
+    return selection.source_path, selection.source_relative, selection.source_kind
 
 
 def _safe_name(value: str, default: str = "Formalization") -> str:
@@ -471,14 +840,21 @@ def inspect_formalization_document(
 ) -> dict[str, Any]:
     base = Path(cwd or Path.cwd()).expanduser().resolve()
     root = Path(project_root).expanduser().resolve() if project_root else base
-    source, relative, kind = resolve_formalization_document(root, base, str(path))
+    selection = _select_formalization_document(root, base, str(path))
+    source = selection.source_path
+    relative = selection.source_relative
+    kind = selection.source_kind
     summary = _extract_latex_summary(source) if kind == "latex" else _extract_pdf_summary(source)
+    summary.update(selection.discovery_metadata)
     summary.update(
         {
             "success": True,
             "source_path": str(source),
             "source_relative": relative,
             "source_kind": kind,
+            "document_request_kind": selection.request_kind,
+            "document_request_path": str(selection.request_path),
+            "document_request_relative": selection.request_relative,
             "text_excerpt": _bounded(str(summary.get("extracted_text", "") or ""), MAX_CONTEXT_EXCERPT_CHARS),
         }
     )
@@ -554,11 +930,15 @@ def _render_context_markdown(
     blocks = list(metadata.get("theorem_blocks", []) or [])
     sections = list(metadata.get("sections", []) or [])
     degraded = list(metadata.get("degraded_reasons", []) or [])
+    discovery_summary = str(metadata.get("tex_project_discovery_summary", "") or "").strip()
+    request_relative = str(metadata.get("document_request_relative", "") or "").strip()
+    request_kind = str(metadata.get("document_request_kind", "") or "").strip()
     excerpt = str(metadata.get("text_excerpt", "") or metadata.get("extracted_text", "") or "").strip()
     lines = [
         "# EPFLemma Document Formalization Context",
         "",
         f"Source document: `{source_relative}`",
+        f"Input request: `{request_relative or source_relative}` ({request_kind or 'file'})",
         f"Document kind: `{source_kind}`",
         f"Detected title: {title or '[none]'}",
         f"Target Lean file: `{target_lean_relative}`",
@@ -587,6 +967,8 @@ def _render_context_markdown(
         "- put a compact `Source proof` / `Proof sketch` / `Prover notes` paragraph in the Lean doc comment immediately above each source theorem or lemma when the source contains proof guidance",
         "- the generated supplemental blueprint skill keeps the `Blueprint.md` path available to prover turns after compaction",
         "- explicitly compare each Lean statement against the corresponding source statement before handing it to the prover queue",
+        "- when the source theorem quantifies over a structured object class or representation, do not count a simpler Lean encoding as full coverage unless a definition or companion declaration records the bridge",
+        "- if a representation bridge is intentionally omitted, mark the Lean coverage as partial and record the representation change under `Scope changes`; do not approve the entry as exact source coverage",
         "- record `Statement verification status: approved` only after the verification pass has checked and corrected the blueprint and Lean statements",
         "- do not silently weaken or strengthen the source theorem",
         "- avoid adding Lean comments unless they clarify a concrete formalization choice",
@@ -611,6 +993,30 @@ def _render_context_markdown(
         "",
         _render_blocks_for_markdown(blocks),
     ]
+    if discovery_summary:
+        included_tex = list(metadata.get("tex_project_included_tex_files", []) or [])
+        bibliography_files = list(metadata.get("tex_project_bibliography_files", []) or [])
+        local_assets = list(metadata.get("tex_project_local_asset_files", []) or [])
+        missing_includes = list(metadata.get("tex_project_missing_includes", []) or [])
+        lines.extend(
+            [
+                "",
+                "## TeX Project Discovery",
+                "",
+                discovery_summary,
+                "",
+                "Included TeX files:",
+                *([f"- `{item}`" for item in included_tex] or ["- [none]"]),
+                "",
+                "Bibliography files:",
+                *([f"- `{item}`" for item in bibliography_files] or ["- [none]"]),
+                "",
+                "Local assets:",
+                *([f"- `{item}`" for item in local_assets] or ["- [none]"]),
+            ]
+        )
+        if missing_includes:
+            lines.extend(["", "Missing or external TeX inputs:", *[f"- `{item}`" for item in missing_includes]])
     if degraded:
         lines.extend(["", "## Preflight Degraded Reasons", "", *[f"- {item}" for item in degraded]])
     if excerpt:
@@ -767,8 +1173,12 @@ def prepare_formalization_document_context(
 ) -> FormalizationDocumentContext:
     root = Path(project_root).expanduser().resolve()
     base = Path(cwd).expanduser().resolve()
-    source_path, source_relative, source_kind = resolve_formalization_document(root, base, workflow_args)
+    selection = _select_formalization_document(root, base, workflow_args)
+    source_path = selection.source_path
+    source_relative = selection.source_relative
+    source_kind = selection.source_kind
     metadata = _extract_latex_summary(source_path) if source_kind == "latex" else _extract_pdf_summary(source_path)
+    metadata.update(selection.discovery_metadata)
     metadata["text_excerpt"] = _bounded(str(metadata.get("extracted_text", "") or ""), MAX_CONTEXT_EXCERPT_CHARS)
 
     slug = _safe_slug(Path(source_relative).with_suffix("").as_posix().replace("/", "-"))
@@ -794,6 +1204,11 @@ def prepare_formalization_document_context(
             "source_path": str(source_path),
             "source_relative": source_relative,
             "source_kind": source_kind,
+            "document_request_kind": selection.request_kind,
+            "document_request_path": str(selection.request_path),
+            "document_request_relative": selection.request_relative,
+            "selected_source_document": str(source_path),
+            "selected_source_document_relative": source_relative,
             "target_lean_path": str(target_lean_path),
             "target_lean_relative": target_lean_relative,
             "context_path": str(context_path),
