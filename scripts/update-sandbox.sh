@@ -39,4 +39,8 @@ if [[ "$PULL" == "1" && -d "$REPO_ROOT/.git" ]]; then
   git -C "$REPO_ROOT" pull --ff-only
 fi
 
-"$REPO_ROOT/scripts/install-sandbox.sh" "${INSTALL_ARGS[@]}"
+if ((${#INSTALL_ARGS[@]})); then
+  "$REPO_ROOT/scripts/install-sandbox.sh" "${INSTALL_ARGS[@]}"
+else
+  "$REPO_ROOT/scripts/install-sandbox.sh"
+fi
