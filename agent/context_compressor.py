@@ -39,7 +39,7 @@ class ContextCompressor:
     def __init__(
         self,
         model: str,
-        threshold_percent: float = 0.50,
+        threshold_percent: float = 0.75,
         protect_first_n: int = 3,
         protect_last_n: int = 4,
         summary_target_tokens: int = 2500,

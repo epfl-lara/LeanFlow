@@ -510,7 +510,7 @@ class AIAgent:
         provider: str = None,
         api_mode: str = None,
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
-        max_iterations: int = 180,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int = 200,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -565,7 +565,7 @@ class AIAgent:
             provider (str): Provider identifier (optional; used for telemetry/routing hints)
             api_mode (str): API mode override: "chat_completions" or "codex_responses"
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
-            max_iterations (int): Maximum number of tool calling iterations (default: 180)
+            max_iterations (int): Maximum number of tool calling iterations (default: 200)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
@@ -1043,7 +1043,7 @@ class AIAgent:
         except Exception:
             compression_cfg = {}
 
-        compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", str(compression_cfg.get("threshold", 0.50))))
+        compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", str(compression_cfg.get("threshold", 0.75))))
         compression_enabled = os.getenv(
             "CONTEXT_COMPRESSION_ENABLED",
             str(compression_cfg.get("enabled", True)).lower(),

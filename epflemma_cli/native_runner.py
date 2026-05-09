@@ -8305,11 +8305,11 @@ def _build_agent() -> AIAgent:
     api_key = _read_native_env("API_KEY")
     provider = _read_native_env("PROVIDER")
     api_mode = _read_native_env("API_MODE")
-    max_turns_raw = _read_text_env("AGENT_MAX_TURNS", "180")
+    max_turns_raw = _read_text_env("AGENT_MAX_TURNS", "200")
     try:
         max_turns = max(1, int(max_turns_raw))
     except ValueError:
-        max_turns = 180
+        max_turns = 200
 
     if not model:
         raise SystemExit("epflemma-native: EPFLEMMA_NATIVE_MODEL is not configured")

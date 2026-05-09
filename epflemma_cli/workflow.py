@@ -427,11 +427,11 @@ def load_agent_max_turns() -> str:
     agent_cfg = config.get("agent")
     if isinstance(agent_cfg, Mapping):
         try:
-            value = int(agent_cfg.get("max_turns", 180) or 180)
+            value = int(agent_cfg.get("max_turns", 200) or 200)
         except Exception:
-            value = 180
+            value = 200
         return str(max(1, value))
-    return "180"
+    return "200"
 
 
 def spawn_workflow(
