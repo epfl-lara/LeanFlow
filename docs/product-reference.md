@@ -276,6 +276,25 @@ git pull
 ./scripts/install-internal.sh
 ```
 
+Sandboxed install:
+
+```bash
+./scripts/install-sandbox.sh
+```
+
+The sandbox installer runs the normal install, builds the local Docker/Podman
+image, and writes an `epflemma-sandbox` wrapper. To upgrade that runtime:
+
+```bash
+./scripts/update-sandbox.sh
+```
+
+The sandbox runtime copies the active EPFLemma project into a per-run worktree,
+mounts only that copy plus sandbox cache/home directories, and exports the final
+diff to `~/.epflemma/sandbox/runs/<run-id>/changes.patch`. See
+[sandbox-runtime.md](sandbox-runtime.md) for the isolation and patch-export
+contract.
+
 ## Coexistence And Migration
 
 EPFLemma is designed to coexist with Gauss:

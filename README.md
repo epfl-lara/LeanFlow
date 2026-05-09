@@ -65,6 +65,24 @@ epflemma workflow formalize docs/paper.tex
 epflemma workflow autoformalize docs/paper-directory
 ```
 
+Run those workflows in a host-isolated sandbox when you want the model to edit
+freely without touching your working tree:
+
+```bash
+./scripts/install-sandbox.sh
+cd /path/to/lean-project
+epflemma-sandbox workflow prove Main.lean
+epflemma status
+epflemma sandbox status
+```
+
+The sandbox runner builds a local Docker/Podman image, copies the active
+EPFLemma project into a per-run worktree, mounts only that worktree plus
+EPFLemma sandbox cache directories, and exports the final diff as
+`changes.patch` under `~/.epflemma/sandbox/runs/<run-id>/`. Re-run
+`./scripts/update-sandbox.sh` after pulling repository changes to reinstall and
+rebuild the sandbox image.
+
 Start the interactive shell:
 
 ```bash
@@ -236,6 +254,7 @@ epflemma workflow autoformalize docs/paper-directory --prompt "focus on the main
 The README is now the human entry point. Deeper operational details live in:
 
 - [Product reference](docs/product-reference.md): full detailed documentation that used to live in the README.
+- [Sandbox runtime](docs/sandbox-runtime.md): isolated container runtime, patch export, install, and update flow.
 - [Native Lean workflow surface](docs/native-lean-workflow-surface.md): native Lean workflow and tool contract.
 - [Autonomous workflow context carryover](docs/autonomous-workflow-context-carryover-analysis.md): historical analysis and current context-reset behavior.
 

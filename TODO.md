@@ -20,21 +20,16 @@ Implemented:
 
 ### Sandboxed Runtime
 
-- Design a sandboxed EPFLemma execution mode that works across environments, not only on macOS.
-- Do not assume Docker is automatically the final answer; investigate the best isolation model first. Docker may be the most practical default, but the plan should compare options before committing.
-- Evaluate:
-  - Docker image with Lean, Lake, EPFLemma, tool servers, and Python runtime
-  - devcontainer-compatible setup
-  - Linux namespaces or other host-native sandboxing where available
-  - macOS sandbox as an optional local backend, not the only design
-  - remote/container runner backends for systems where local sandboxing is unavailable
-  - per-run temporary worktrees with file-lock and checkpoint integration
-- Requirements:
-  - isolate arbitrary model/tool edits from the user environment
-  - mount only the selected project/worktree
-  - preserve logs, checkpoints, and final patch export
-  - support reproducible Lean dependency cache
-  - make failure modes visible in `epflemma status`
+Implemented:
+
+- Added `epflemma sandbox build/status/doctor/run` with Docker/Podman auto-detection. Linux prefers usable rootless Podman when present and falls back to Docker when appropriate.
+- Added `containers/epflemma-sandbox.Containerfile` with Python, Lean via elan, Lake, Git, ripgrep, EPFLemma's MCP runtime, and managed MCP bootstrap-on-first-run support.
+- Added per-run copied EPFLemma project worktrees under `~/.epflemma/sandbox/runs/<run-id>/worktree`; the original project is not mounted into the container by default.
+- Added baseline Git commits and exported `changes.patch`, `git-status.txt`, and `status.json` artifacts for each sandbox run.
+- Added persistent sandbox cache/home mounts for Lean, Lake, pip/XDG, and managed MCP backends while keeping arbitrary model edits confined to sandbox-owned directories.
+- Added `scripts/install-sandbox.sh`, `scripts/update-sandbox.sh`, and an `epflemma-sandbox` wrapper for install and upgrade/reinstall flows.
+- Added top-level `epflemma status` reporting for sandbox readiness alongside workflow state.
+- Documented the comparison with devcontainers, native namespace/macOS sandboxing, and direct bind mounts in `docs/sandbox-runtime.md`.
 
 ### Expert Help Providers
 
