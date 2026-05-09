@@ -52,7 +52,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-"$REPO_ROOT/scripts/install-internal.sh" "${INSTALL_ARGS[@]}"
+if ((${#INSTALL_ARGS[@]})); then
+  "$REPO_ROOT/scripts/install-internal.sh" "${INSTALL_ARGS[@]}"
+else
+  "$REPO_ROOT/scripts/install-internal.sh"
+fi
 
 if [[ "$BUILD_IMAGE" == "1" ]]; then
   EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_BIN_DIR/epflemma" sandbox build
