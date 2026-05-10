@@ -7,6 +7,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 EPFLEMMA_BIN_DIR="${EPFLEMMA_BIN_DIR:-${OPENGAUSS_BIN_DIR:-$HOME/.local/bin}}"
 EPFLEMMA_HOME="${EPFLEMMA_HOME:-$HOME/.epflemma}"
 BUILD_IMAGE=1
+BUILD_LOCAL_LEANEXPLORE=0
 INSTALL_ARGS=()
 
 usage() {
@@ -14,7 +15,7 @@ usage() {
 EPFLemma sandbox installer
 
 Usage:
-  ./scripts/install-sandbox.sh [install-internal options] [--no-build]
+  ./scripts/install-sandbox.sh [install-internal options] [--no-build] [--with-local-lean-explore]
 
 This runs the normal EPFLemma installer, builds the local container image, and
 writes an epflemma-sandbox wrapper that runs commands through:
@@ -22,6 +23,9 @@ writes an epflemma-sandbox wrapper that runs commands through:
   epflemma sandbox run -- <command>
 
 Rerun this script after pulling EPFLemma changes to upgrade the sandbox image.
+
+Use --with-local-lean-explore to bake lean-explore[local] and its embedding
+stack into the sandbox image. This makes the image much larger.
 TXT
 }
 
@@ -29,6 +33,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-build)
       BUILD_IMAGE=0
+      shift
+      ;;
+    --with-local-lean-explore)
+      BUILD_LOCAL_LEANEXPLORE=1
       shift
       ;;
     -h|--help)
@@ -59,7 +67,11 @@ else
 fi
 
 if [[ "$BUILD_IMAGE" == "1" ]]; then
-  EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_BIN_DIR/epflemma" sandbox build
+  if [[ "$BUILD_LOCAL_LEANEXPLORE" == "1" ]]; then
+    EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_BIN_DIR/epflemma" sandbox build --with-local-lean-explore
+  else
+    EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_BIN_DIR/epflemma" sandbox build
+  fi
 fi
 
 mkdir -p "$EPFLEMMA_BIN_DIR"
