@@ -9,6 +9,7 @@ import pytest
 from epflemma_cli.project import initialize_epflemma_project
 from epflemma_cli.sandbox_runtime import (
     SandboxSettings,
+    build_sandbox_image,
     container_run_command,
     copy_project_tree,
     export_sandbox_patch,
@@ -188,3 +189,23 @@ def test_sandbox_status_includes_recent_runs(monkeypatch: pytest.MonkeyPatch, tm
     assert payload["engine_ready"] is True
     assert payload["image_ready"] is True
     assert payload["recent_runs"][0]["run_id"] == "run-a"
+
+
+def test_build_sandbox_image_can_bake_local_lean_explore(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "containers").mkdir(parents=True)
+    (repo / "containers" / "epflemma-sandbox.Containerfile").write_text("FROM scratch\n", encoding="utf-8")
+    settings = _settings(tmp_path)
+    captured: dict[str, list[str]] = {}
+
+    monkeypatch.setattr("epflemma_cli.sandbox_runtime.settings_from_config", lambda **_kwargs: settings)
+    monkeypatch.setattr("epflemma_cli.sandbox_runtime.resolve_container_engine", lambda _requested: "docker")
+    monkeypatch.setattr("epflemma_cli.sandbox_runtime.ensure_container_engine_usable", lambda _engine: None)
+    monkeypatch.setattr("epflemma_cli.sandbox_runtime.repository_root", lambda: repo)
+    monkeypatch.setattr("epflemma_cli.sandbox_runtime.subprocess.call", lambda argv: captured.setdefault("argv", argv) and 0)
+
+    assert build_sandbox_image(local_lean_explore=True) == 0
+
+    argv = captured["argv"]
+    assert "--build-arg" in argv
+    assert "EPFLEMMA_SANDBOX_EXTRAS=mcp,lean-explore" in argv

@@ -198,6 +198,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sandbox_build.add_argument("--image", default=None)
     sandbox_build.add_argument("--pull", action="store_true")
     sandbox_build.add_argument("--no-cache", action="store_true")
+    sandbox_build.add_argument("--with-local-lean-explore", action="store_true")
     sandbox_run = sandbox_sub.add_parser("run", help="Run an EPFLemma command in a copied project sandbox")
     sandbox_run.add_argument("--engine", default=None, choices=["auto", "docker", "podman"])
     sandbox_run.add_argument("--image", default=None)
@@ -455,6 +456,7 @@ def _handle_sandbox(args: argparse.Namespace) -> int:
                 image=getattr(args, "image", None),
                 pull=bool(getattr(args, "pull", False)),
                 no_cache=bool(getattr(args, "no_cache", False)),
+                local_lean_explore=bool(getattr(args, "with_local_lean_explore", False)),
             )
         if command == "run":
             return run_sandbox(

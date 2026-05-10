@@ -81,7 +81,8 @@ EPFLemma project into a per-run worktree, mounts only that worktree plus
 EPFLemma sandbox cache directories, and exports the final diff as
 `changes.patch` under `~/.epflemma/sandbox/runs/<run-id>/`. Re-run
 `./scripts/update-sandbox.sh` after pulling repository changes to reinstall and
-rebuild the sandbox image.
+rebuild the sandbox image. Use `./scripts/install-sandbox.sh --with-local-lean-explore`
+when you want the image to include the local LeanExplore embedding stack.
 
 Start the interactive shell:
 

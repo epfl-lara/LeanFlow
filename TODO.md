@@ -24,6 +24,7 @@ Implemented:
 
 - Added `epflemma sandbox build/status/doctor/run` with Docker/Podman auto-detection. Linux prefers usable rootless Podman when present and falls back to Docker when appropriate.
 - Added `containers/epflemma-sandbox.Containerfile` with Python, Lean via elan, Lake, Git, ripgrep, EPFLemma's MCP runtime, and managed MCP bootstrap-on-first-run support.
+- Added `--with-local-lean-explore` for sandbox image builds when users want `lean-explore[local]` and its embedding stack baked into the image.
 - Added per-run copied EPFLemma project worktrees under `~/.epflemma/sandbox/runs/<run-id>/worktree`; the original project is not mounted into the container by default.
 - Added baseline Git commits and exported `changes.patch`, `git-status.txt`, and `status.json` artifacts for each sandbox run.
 - Added persistent sandbox cache/home mounts for Lean, Lake, pip/XDG, and managed MCP backends while keeping arbitrary model edits confined to sandbox-owned directories.

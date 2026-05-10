@@ -288,6 +288,7 @@ def build_sandbox_image(
     image: str | None = None,
     pull: bool = False,
     no_cache: bool = False,
+    local_lean_explore: bool = False,
 ) -> int:
     settings = settings_from_config(engine=engine, image=image)
     resolved_engine = resolve_container_engine(settings.engine)
@@ -301,6 +302,8 @@ def build_sandbox_image(
         command.append("--pull")
     if no_cache:
         command.append("--no-cache")
+    extras = "mcp,lean-explore" if local_lean_explore else "mcp"
+    command.extend(["--build-arg", f"EPFLEMMA_SANDBOX_EXTRAS={extras}"])
     command.append(str(repo))
     return subprocess.call(command)
 
