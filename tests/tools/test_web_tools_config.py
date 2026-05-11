@@ -61,6 +61,13 @@ class TestFirecrawlClientConfig:
                 mock_fc.assert_called_once_with(api_url="http://localhost:3002")
                 assert result is mock_fc.return_value
 
+    def test_availability_accepts_self_hosted_url(self):
+        """URL-only self-hosted Firecrawl should make web tools available."""
+        with patch.dict(os.environ, {"FIRECRAWL_API_URL": "http://localhost:3002"}):
+            from tools.web_tools import check_firecrawl_api_key
+
+            assert check_firecrawl_api_key() is True
+
     def test_no_config_raises_with_helpful_message(self):
         """Neither key nor URL → ValueError with guidance."""
         with patch("tools.web_tools.Firecrawl"):

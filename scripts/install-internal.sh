@@ -127,10 +127,10 @@ source "$EPFLEMMA_VENV_DIR/bin/activate"
 step "Installing EPFLemma package"
 python -m pip install --quiet --quiet --upgrade pip "setuptools<82" wheel
 if [[ "$INSTALL_MODE" == "editable" ]]; then
-  python -m pip install --quiet --quiet -e "$REPO_ROOT[mcp,lean-explore]"
+  python -m pip install --quiet --quiet -e "$REPO_ROOT[mcp,lean-explore,web]"
   ok "installed editable package"
 else
-  python -m pip install --quiet --quiet "$REPO_ROOT[mcp,lean-explore]"
+  python -m pip install --quiet --quiet "$REPO_ROOT[mcp,lean-explore,web]"
   ok "installed package wheel"
 fi
 

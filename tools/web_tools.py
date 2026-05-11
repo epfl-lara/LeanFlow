@@ -1113,12 +1113,15 @@ async def web_crawl_tool(
 # Convenience function to check if API key is available
 def check_firecrawl_api_key() -> bool:
     """
-    Check if the Firecrawl API key is available in environment variables.
+    Check if Firecrawl is configured in environment variables.
+
+    Cloud Firecrawl requires FIRECRAWL_API_KEY. A self-hosted Firecrawl
+    instance can be configured with FIRECRAWL_API_URL and no key.
     
     Returns:
-        bool: True if API key is set, False otherwise
+        bool: True if Firecrawl has enough configuration to run, False otherwise
     """
-    return bool(os.getenv("FIRECRAWL_API_KEY"))
+    return bool(os.getenv("FIRECRAWL_API_KEY") or os.getenv("FIRECRAWL_API_URL"))
 
 
 def check_auxiliary_model() -> bool:
