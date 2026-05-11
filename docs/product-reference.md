@@ -1234,6 +1234,15 @@ proof advice is not prematurely clipped; override with
 Main model calls wait up to `1200` seconds by default before EPFLemma treats the
 provider request as timed out; override with `GAUSS_API_TIMEOUT` if needed.
 
+If an endpoint omits or misreports model context-window metadata, pin the value
+in `~/.epflemma/config.yaml`:
+
+```yaml
+model:
+  context_lengths:
+    vendor/model-id: 200000
+```
+
 Lean declaration edits are guarded by default. File write and patch tools block
 deleting, renaming, moving, or changing existing `theorem`, `lemma`, and
 `example` statements; proof-body edits and new declarations are allowed. In a
@@ -1250,7 +1259,7 @@ Compression defaults are tuned for long Lean sessions:
 - `prune_keep_recent_user_turns` keeps the newest user turns and their nearby tool output intact.
 - the compression gate checks the exact outgoing API payload before every model call, including provider-specific reasoning replay fields such as `reasoning_content`.
 - provider usage accounting can undercount replayed reasoning for some backends; the `Request: ~N tokens` log line is the local payload estimate used for pre-send compression.
-- if provider metadata cannot tell EPFLemma the real context window, EPFLemma now falls back conservatively to `200,000` tokens instead of assuming a multi-million-token window.
+- for custom endpoints, EPFLemma does not use OpenRouter context metadata; it uses config overrides, provider `/models` metadata, curated defaults, or the conservative `200,000` token fallback.
 
 ## Doctor And MCP Status
 

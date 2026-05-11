@@ -34,6 +34,7 @@ def test_load_config_returns_defaults_on_fresh_home(monkeypatch, tmp_path):
 
     assert config["model"]["default"] == DEFAULT_CONFIG["model"]["default"]
     assert config["model"]["default"] == "moonshotai/Kimi-K2.6"
+    assert "context_lengths" not in config["model"]
     assert config["auxiliary"]["lean_reasoning"]["provider"] == "main"
     assert config["auxiliary"]["lean_reasoning"]["model"] == "moonshotai/Kimi-K2.6-int4"
     assert config["auxiliary"]["lean_reasoning"]["reasoning_effort"] == "high"

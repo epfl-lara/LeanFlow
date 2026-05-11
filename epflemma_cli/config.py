@@ -129,6 +129,8 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 #   - Change the primary provider: model.provider
 #   - Change a custom OpenAI-compatible endpoint: model.base_url or
 #     EPFLEMMA_OPENAI_BASE_URL in ~/.epflemma/.env
+#   - Override a model context window when provider metadata is missing or
+#     wrong: model.context_lengths.<model-id>
 #   - Change the theorem advisor model: auxiliary.lean_reasoning.model
 #   - Change the theorem advisor reasoning budget:
 #     auxiliary.lean_reasoning.reasoning_effort

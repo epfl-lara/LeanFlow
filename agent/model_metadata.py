@@ -163,6 +163,46 @@ def _lookup_metadata_context_length(
     return False, None
 
 
+def _lookup_default_context_length(model: str) -> Optional[int]:
+    normalized_model = _normalize_model_name(model)
+    for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
+        if _normalize_model_name(default_model) == normalized_model:
+            return length
+    for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
+        normalized_default = _normalize_model_name(default_model)
+        if normalized_default in normalized_model or normalized_model in normalized_default:
+            return length
+    return None
+
+
+def _lookup_configured_context_length(model: str) -> Optional[int]:
+    try:
+        from epflemma_cli.config import load_config
+
+        config = load_config()
+    except Exception:
+        return None
+    model_cfg = config.get("model") if isinstance(config, dict) else {}
+    if not isinstance(model_cfg, dict):
+        return None
+    configured = model_cfg.get("context_lengths")
+    if not isinstance(configured, dict):
+        return None
+    matched, length = _lookup_metadata_context_length(
+        {
+            str(key): {"context_length": value}
+            for key, value in configured.items()
+        },
+        model,
+    )
+    return length if matched else None
+
+
+def _should_use_openrouter_metadata(base_url: str) -> bool:
+    normalized = str(base_url or "").strip().lower()
+    return not normalized or "openrouter.ai" in normalized
+
+
 def fetch_provider_model_metadata(
     base_url: str,
     api_key: str = "",
@@ -304,10 +344,11 @@ def get_model_context_length(model: str, base_url: str = "", api_key: str = "") 
 
     Resolution order:
     1. Persistent cache (previously discovered via probing)
-    2. Provider /models metadata (when base_url is set)
-    3. OpenRouter API metadata
+    2. User-configured model.context_lengths overrides
+    3. Provider /models metadata (when base_url is set)
     4. Hardcoded DEFAULT_CONTEXT_LENGTHS (case-insensitive exact/fuzzy match)
-    5. Conservative unknown-model fallback (200k)
+    5. OpenRouter API metadata (only for OpenRouter/no-endpoint routes)
+    6. Conservative unknown-model fallback (200k)
     """
     # 1. Check persistent cache (model+provider)
     if base_url:
@@ -315,30 +356,33 @@ def get_model_context_length(model: str, base_url: str = "", api_key: str = "") 
         if cached is not None:
             return cached
 
-    # 2. Provider /models metadata for the active route
+    # 2. Explicit user overrides in ~/.epflemma/config.yaml.
+    configured_length = _lookup_configured_context_length(model)
+    if configured_length is not None:
+        return configured_length
+
+    # 3. Provider /models metadata for the active route
     if base_url:
         provider_metadata = fetch_provider_model_metadata(base_url, api_key=api_key)
         matched, provider_length = _lookup_metadata_context_length(provider_metadata, model)
         if matched and provider_length is not None:
             return provider_length
 
-    # 3. OpenRouter API metadata
-    metadata = fetch_model_metadata()
-    matched, metadata_length = _lookup_metadata_context_length(metadata, model)
-    if matched and metadata_length is not None:
-        return metadata_length
-
     # 4. Hardcoded defaults (case-insensitive exact match first, then fuzzy match)
-    normalized_model = _normalize_model_name(model)
-    for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
-        if _normalize_model_name(default_model) == normalized_model:
-            return length
-    for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
-        normalized_default = _normalize_model_name(default_model)
-        if normalized_default in normalized_model or normalized_model in normalized_default:
-            return length
+    default_length = _lookup_default_context_length(model)
+    if default_length is not None:
+        return default_length
 
-    # 5. Unknown model — be conservative rather than optimistic
+    # 5. OpenRouter metadata is only authoritative for OpenRouter/no-endpoint
+    # routes. A custom endpoint may serve a model id with a different window,
+    # and should use config/provider metadata or conservative fallback instead.
+    if _should_use_openrouter_metadata(base_url):
+        metadata = fetch_model_metadata()
+        matched, metadata_length = _lookup_metadata_context_length(metadata, model)
+        if matched and metadata_length is not None:
+            return metadata_length
+
+    # 6. Unknown model — be conservative rather than optimistic
     return UNKNOWN_CONTEXT_LENGTH_FALLBACK
 
 
