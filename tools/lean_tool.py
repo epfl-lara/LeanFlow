@@ -9,6 +9,12 @@ import subprocess
 from pathlib import Path
 
 from agent.auxiliary_client import call_llm
+from epflemma_cli.expert_help import (
+    is_command_expert_provider,
+    record_expert_help_activity,
+    resolve_expert_provider,
+    run_command_expert_help,
+)
 from epflemma_cli.file_locks import ensure_file_lock, release_file_lock
 from epflemma_cli.lean_incremental import lean_incremental_check
 from epflemma_cli.lean_services import (
@@ -637,8 +643,91 @@ def lean_reasoning_help_tool(
         ]
         if part
     )
+    expert_provider = resolve_expert_provider("lean_reasoning")
+    command_prompt = (
+        f"System instructions:\n{system_prompt}\n\n"
+        f"Advisor request:\n{user_prompt}"
+    )
+
+    if is_command_expert_provider(expert_provider):
+        try:
+            command_result = run_command_expert_help(
+                provider=expert_provider,
+                task="lean_reasoning",
+                prompt=command_prompt,
+                cwd=cwd,
+                timeout_s=max(LEAN_REASONING_HELP_MIN_TIMEOUT_S, int(timeout_s or 0)),
+            )
+        except RuntimeError as exc:
+            return _advisor_failure("unavailable", str(exc), theorem_id=theorem_id, file_path=file_path)
+        except Exception as exc:
+            return _advisor_failure(
+                "error",
+                f"{type(exc).__name__}: {exc}",
+                theorem_id=theorem_id,
+                file_path=file_path,
+            )
+
+        if command_result.timed_out:
+            return _advisor_failure(
+                "timeout",
+                f"{command_result.provider} expert command timed out.",
+                theorem_id=theorem_id,
+                file_path=file_path,
+            )
+        if command_result.exit_status != 0:
+            return _advisor_failure(
+                "error",
+                (
+                    f"{command_result.provider} expert command exited with status "
+                    f"{command_result.exit_status}: {command_result.stderr or '[no stderr]'}"
+                ),
+                theorem_id=theorem_id,
+                file_path=file_path,
+            )
+        advice = command_result.response.strip()
+        if not advice:
+            return _advisor_failure(
+                "no_answer",
+                "the command expert advisor returned no content.",
+                theorem_id=theorem_id,
+                file_path=file_path,
+            )
+        return json.dumps(
+            {
+                "success": True,
+                "status": "answered",
+                "theorem_id": theorem_id,
+                "file_path": file_path,
+                "provider": command_result.provider,
+                "mode": "command",
+                "command": command_result.command,
+                "exit_status": command_result.exit_status,
+                "truncated": command_result.truncated,
+                "response_chars": command_result.response_chars,
+                "max_response_chars": command_result.max_response_chars,
+                "advice": advice,
+                "next_step": (
+                    "Use this as advice only. Ignore any suggestion that changes the declaration "
+                    "or uses a placeholder proof, then apply a concrete proof edit and verify the "
+                    "assigned queue declaration with lean_incremental_check(check_target)."
+                ),
+            },
+            ensure_ascii=False,
+        )
 
     try:
+        record_expert_help_activity(
+            "expert-help-request",
+            "Expert help model request started",
+            provider=expert_provider,
+            mode="model",
+            prompt=command_prompt,
+            command=[],
+            exit_status=None,
+            theorem_id=theorem_id,
+            file_path=file_path,
+        )
         response = call_llm(
             task="lean_reasoning",
             messages=[
@@ -670,6 +759,22 @@ def lean_reasoning_help_tool(
             theorem_id=theorem_id,
             file_path=file_path,
         )
+    record_expert_help_activity(
+        "expert-help-result",
+        "Expert help model request finished",
+        provider=expert_provider,
+        mode="model",
+        prompt=command_prompt,
+        command=[],
+        exit_status=None,
+        response=advice,
+        truncated=False,
+        response_chars=len(advice),
+        max_response_chars=len(advice),
+        model=str(getattr(response, "model", "") or ""),
+        theorem_id=theorem_id,
+        file_path=file_path,
+    )
 
     return json.dumps(
         {
@@ -677,6 +782,8 @@ def lean_reasoning_help_tool(
             "status": "answered",
             "theorem_id": theorem_id,
             "file_path": file_path,
+            "provider": expert_provider,
+            "mode": "model",
             "model": str(getattr(response, "model", "") or ""),
             "advice": advice,
             "next_step": (

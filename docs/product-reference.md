@@ -1165,6 +1165,9 @@ auxiliary:
     reasoning_effort: high
     base_url: ""
     api_key: ""
+    command_template: ""
+    codex_command_template: ""
+    claude_code_command_template: ""
 
 agent:
   max_turns: 200
@@ -1219,6 +1222,8 @@ epflemma config set model.base_url '"https://inference.rcp.epfl.ch/v1"'
 epflemma config set auxiliary.lean_reasoning.model '"moonshotai/Kimi-K2.6-int4"'
 epflemma config set auxiliary.lean_reasoning.provider '"main"'
 epflemma config set auxiliary.lean_reasoning.reasoning_effort '"high"'
+epflemma workflow prove Main.lean --expert-provider codex
+epflemma workflow prove Main.lean --expert-provider claude-code
 epflemma config set agent.reasoning_effort '"auto"'
 epflemma config set agent.seed '42'
 epflemma config set agent.temperature '0.3'
@@ -1233,6 +1238,15 @@ proof advice is not prematurely clipped; override with
 `EPFLEMMA_LEAN_REASONING_HELP_MAX_TOKENS` when a provider needs a lower cap.
 Main model calls wait up to `1200` seconds by default before EPFLemma treats the
 provider request as timed out; override with `GAUSS_API_TIMEOUT` if needed.
+
+For opt-in command advisors, set `auxiliary.lean_reasoning.provider` or pass
+`--expert-provider codex` / `--expert-provider claude-code` on a workflow.
+Command templates may be supplied with `--expert-command-template`,
+`AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE`, or the provider-specific
+`EPFLEMMA_EXPERT_CODEX_COMMAND_TEMPLATE` /
+`EPFLEMMA_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE` variables. Commands are split
+without a shell and receive the full advisor prompt on stdin; workflow activity
+logs record the prompt, command, exit status, response, and truncation metadata.
 
 If an endpoint omits or misreports model context-window metadata, pin the value
 in `~/.epflemma/config.yaml`:

@@ -1,6 +1,6 @@
 ---
 name: lean-reasoning-help
-description: Auxiliary proof-strategy help for hard Lean theorem repairs. Use when repeated focused attempts fail and another configured model should advise without editing files or changing existing statements.
+description: Auxiliary proof-strategy help for hard Lean theorem repairs. Use when repeated focused attempts fail and another configured model or command expert should advise without editing files or changing existing statements.
 ---
 
 # Lean Reasoning Help
@@ -20,7 +20,7 @@ Use this skill for hard theorem-local blockers after normal proof workflow steps
 
 ## Configuration
 
-`lean_reasoning_help` routes through the shared auxiliary client task `lean_reasoning`.
+`lean_reasoning_help` routes through the shared auxiliary client task `lean_reasoning` by default. When explicitly configured with `codex` or `claude-code`, it instead invokes the corresponding command expert in an advisory mode.
 
 Configure it with either:
 
@@ -28,6 +28,9 @@ Configure it with either:
 - `auxiliary.lean_reasoning.model`
 - `auxiliary.lean_reasoning.base_url`
 - `auxiliary.lean_reasoning.api_key`
+- `auxiliary.lean_reasoning.command_template`
+- `auxiliary.lean_reasoning.codex_command_template`
+- `auxiliary.lean_reasoning.claude_code_command_template`
 
 or environment overrides:
 
@@ -35,3 +38,8 @@ or environment overrides:
 - `AUXILIARY_LEAN_REASONING_MODEL`
 - `AUXILIARY_LEAN_REASONING_BASE_URL`
 - `AUXILIARY_LEAN_REASONING_API_KEY`
+- `AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE`
+- `EPFLEMMA_EXPERT_CODEX_COMMAND_TEMPLATE`
+- `EPFLEMMA_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE`
+
+Workflow launches can also pass `--expert-provider codex`, `--expert-provider claude-code`, and `--expert-command-template ...`. Command experts receive the advisor prompt on stdin and must still be treated as unverified advice.
