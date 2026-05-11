@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 from epflemma_cli import lean_services
@@ -143,6 +145,51 @@ def test_lean_search_uses_leanexplore_summary_results(monkeypatch, tmp_path):
         {
             "provider": "mcp-leanexplore",
             "match": "Nat.Prime.dvd_mul - [Mathlib.Data.Nat.Prime.Basic] - Divisibility of a product by a prime",
+        }
+    ]
+
+
+def test_leanexplore_local_search_retries_without_reranker_on_meta_tensor(monkeypatch):
+    monkeypatch.setattr(
+        lean_services,
+        "_leanexplore_local_status",
+        lambda: {"package_available": True, "data_ready": True, "cache_path": "/tmp/cache", "available": True},
+    )
+    calls: list[int | None] = []
+
+    class FakeService:
+        async def search(self, *, query, limit, rerank_top):
+            calls.append(rerank_top)
+            if rerank_top == 50:
+                raise RuntimeError(
+                    "Cannot copy out of meta tensor; no data! Please use "
+                    "torch.nn.Module.to_empty() instead of torch.nn.Module.to()"
+                )
+            return types.SimpleNamespace(
+                results=[
+                    {
+                        "name": "Nat.sum_divisors",
+                        "module": "Mathlib.NumberTheory.ArithmeticFunction.Misc",
+                    }
+                ]
+            )
+
+    fake_package = types.ModuleType("lean_explore")
+    fake_search = types.ModuleType("lean_explore.search")
+    fake_search.Service = FakeService
+    monkeypatch.setitem(sys.modules, "lean_explore", fake_package)
+    monkeypatch.setitem(sys.modules, "lean_explore.search", fake_search)
+
+    results, error = lean_services._leanexplore_local_search("Nat.sumDivisors", limit=3)
+
+    assert error == ""
+    assert calls == [50, 0]
+    assert results == [
+        {
+            "provider": "leanexplore-local",
+            "match": "Nat.sum_divisors - [Mathlib.NumberTheory.ArithmeticFunction.Misc]",
+            "name": "Nat.sum_divisors",
+            "module": "Mathlib.NumberTheory.ArithmeticFunction.Misc",
         }
     ]
 

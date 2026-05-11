@@ -607,6 +607,11 @@ def _model_to_plain_dict(value: Any) -> dict[str, Any]:
     return {"value": value}
 
 
+def _is_leanexplore_reranker_load_error(exc: Exception) -> bool:
+    message = str(exc)
+    return "Cannot copy out of meta tensor" in message and "to_empty()" in message
+
+
 def _leanexplore_local_search(query: str, *, limit: int = 10) -> tuple[list[dict[str, Any]], str]:
     status = _leanexplore_local_status()
     if not status["package_available"]:
@@ -618,15 +623,20 @@ def _leanexplore_local_search(query: str, *, limit: int = 10) -> tuple[list[dict
 
         from lean_explore.search import Service
 
-        async def _run_search() -> Any:
+        async def _run_search(rerank_top: int | None) -> Any:
             service = Service()
             return await service.search(
                 query=query,
                 limit=max(1, int(limit or 10)),
-                rerank_top=50,
+                rerank_top=rerank_top,
             )
 
-        response = asyncio.run(_run_search())
+        try:
+            response = asyncio.run(_run_search(50))
+        except Exception as exc:
+            if not _is_leanexplore_reranker_load_error(exc):
+                raise
+            response = asyncio.run(_run_search(0))
     except Exception as exc:
         return [], f"LeanExplore local search failed: {exc}"
     raw_results = getattr(response, "results", [])
