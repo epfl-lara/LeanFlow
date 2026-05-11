@@ -34,14 +34,13 @@ Implemented:
 
 ### Expert Help Providers
 
-- Extend expert-help configuration beyond RPC/model providers.
-- Add provider modes for command-based expert helpers:
-  - Codex CLI
-  - Claude Code
-  - existing RPC/model providers
-- Provide flags/config such as `--expert-provider codex`, `--expert-provider claude-code`, and provider-specific command templates.
-- Capture expert prompt, command, exit status, response, and truncation metadata in workflow logs.
-- Keep command execution opt-in and clearly sandboxed.
+Implemented:
+
+- Extended `lean_reasoning_help` beyond RPC/model providers while keeping existing model/RPC routing as the default.
+- Added opt-in command expert providers for Codex CLI and Claude Code via `--expert-provider codex` / `--expert-provider claude-code`, `AUXILIARY_LEAN_REASONING_PROVIDER`, or `auxiliary.lean_reasoning.provider`.
+- Added provider-specific command templates through `--expert-command-template`, `AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE`, `EPFLEMMA_EXPERT_CODEX_COMMAND_TEMPLATE`, `EPFLEMMA_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE`, and config keys under `auxiliary.lean_reasoning`.
+- Captured expert prompt, command, exit status, response, and truncation metadata in workflow activity logs.
+- Kept command execution explicit, no-shell, stdin-driven, and defaulted to read-only/planning-oriented CLI modes.
 
 ### Verification Model Configuration
 
@@ -53,6 +52,10 @@ Implemented:
   - deterministic local verifier where possible
 - Keep Lean kernel verification authoritative; model-based verification can only propose or review.
 - Log which verifier was used for each blueprint/formalization decision.
+
+Low priority:
+
+- Investigate Codex CLI / Claude Code as primary workflow model adapters. Do not rush this into the main runner: it needs an explicit bridge for tool calls, streaming, budget accounting, logs, and Lean-kernel orchestration instead of treating command output as a drop-in API model.
 
 ### Refactoring Plan
 

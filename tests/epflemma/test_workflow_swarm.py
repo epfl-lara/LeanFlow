@@ -43,6 +43,16 @@ def test_parse_workflow_command_accepts_prompt_alias():
     assert spec.explicit_goal == "use lemma abs_abs_sub first"
 
 
+def test_parse_workflow_command_extracts_expert_provider_options():
+    spec = parse_workflow_command(
+        "/prove Main.lean --expert-provider codex --expert-command-template 'codex exec --sandbox read-only -'"
+    )
+
+    assert spec.workflow_args == "Main.lean"
+    assert spec.expert_provider == "codex"
+    assert spec.expert_command_template == "codex exec --sandbox read-only -"
+
+
 def test_parse_workflow_command_extracts_additional_skills():
     spec = parse_workflow_command(
         "/prove Demo/Main.lean --additional-skill .epflemma/skills/paper/SKILL.md --additional_skill extra-skill"
@@ -112,6 +122,34 @@ def test_resolve_workflow_request_passes_configured_api_step_budget(monkeypatch,
     plan = resolve_workflow_request("/autoprove Main.lean", active_cwd=tmp_path)
 
     assert plan.child_env["AGENT_MAX_TURNS"] == "145"
+
+
+def test_resolve_workflow_request_exports_expert_provider_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_epflemma_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "local",
+            "api_mode": "responses",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "sk-test",
+            "model": "google/gemma-4-31B-it",
+        },
+    )
+
+    plan = resolve_workflow_request(
+        "/autoprove Main.lean --expert-provider claude-code --expert-command-template 'claude -p'",
+        active_cwd=tmp_path,
+    )
+
+    assert plan.child_env["AUXILIARY_LEAN_REASONING_PROVIDER"] == "claude-code"
+    assert plan.child_env["AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE"] == "claude -p"
+    assert describe_launch_plan(plan)["expert_provider"] == "claude-code"
 
 
 def test_resolve_workflow_request_forces_single_agent_for_file_scoped_prove(monkeypatch, tmp_path):

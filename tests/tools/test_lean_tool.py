@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import model_tools
@@ -402,6 +403,75 @@ def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
     assert "not verification evidence" in system_prompt
     assert "Do not suggest deleting, weakening, renaming, moving, or splitting" in system_prompt
     assert "sorry, admit, axiom, unsafe code, or a placeholder" in system_prompt
+
+
+def test_lean_reasoning_help_tool_uses_command_provider(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    def _fake_run(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="Use `simpa` after proving the helper lemma.",
+            stderr="",
+        )
+
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AUXILIARY_LEAN_REASONING_PROVIDER", "codex")
+    monkeypatch.setenv("AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE", "codex-helper --read-only")
+    monkeypatch.setattr("epflemma_cli.expert_help.subprocess.run", _fake_run)
+
+    payload = json.loads(
+        lean_tool.lean_reasoning_help_tool(
+            "demo",
+            "Demo/Main.lean",
+            theorem_statement="theorem demo : True := by",
+            cwd=str(tmp_path),
+            timeout_s=45,
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["provider"] == "codex"
+    assert payload["mode"] == "command"
+    assert payload["command"] == ["codex-helper", "--read-only"]
+    assert payload["exit_status"] == 0
+    assert payload["truncated"] is False
+    assert "helper lemma" in payload["advice"]
+    assert captured["input"].startswith("System instructions:")
+    assert "theorem demo : True := by" in captured["input"]
+    assert captured["cwd"] == str(tmp_path)
+    assert captured["timeout"] == 1200
+
+
+def test_lean_reasoning_help_codex_default_reads_last_message_file(monkeypatch, tmp_path):
+    def _fake_run(command, **kwargs):
+        output_path = command[command.index("--output-last-message") + 1]
+        Path(output_path).write_text("Final Codex advisor answer.", encoding="utf-8")
+        return SimpleNamespace(
+            returncode=0,
+            stdout="transcript wrapper that should not become advice",
+            stderr="",
+        )
+
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AUXILIARY_LEAN_REASONING_PROVIDER", "codex")
+    monkeypatch.setattr("epflemma_cli.expert_help.subprocess.run", _fake_run)
+
+    payload = json.loads(
+        lean_tool.lean_reasoning_help_tool(
+            "demo",
+            "Demo/Main.lean",
+            theorem_statement="theorem demo : True := by",
+            cwd=str(tmp_path),
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["provider"] == "codex"
+    assert "--output-last-message" in payload["command"]
+    assert payload["advice"] == "Final Codex advisor answer."
 
 
 def test_lean_reasoning_help_tool_clamps_short_timeout(monkeypatch):
