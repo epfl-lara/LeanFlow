@@ -143,6 +143,25 @@ class TestGetModelContextLength:
         assert get_model_context_length("test/model") == 32000
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_provider_model_metadata")
+    def test_custom_endpoint_unknown_model_skips_openrouter_metadata(self, mock_provider_fetch, mock_fetch):
+        mock_provider_fetch.return_value = {}
+        mock_fetch.return_value = {
+            "custom/model": {"context_length": 32000}
+        }
+
+        assert get_model_context_length("custom/model", base_url="https://provider.example/v1") == UNKNOWN_CONTEXT_LENGTH_FALLBACK
+        mock_fetch.assert_not_called()
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_openrouter_endpoint_uses_openrouter_metadata(self, mock_fetch):
+        mock_fetch.return_value = {
+            "custom/model": {"context_length": 32000}
+        }
+
+        assert get_model_context_length("custom/model", base_url="https://openrouter.ai/api/v1") == 32000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_fallback_to_defaults(self, mock_fetch):
         mock_fetch.return_value = {}
         assert get_model_context_length("anthropic/claude-sonnet-4") == 200000
@@ -168,6 +187,32 @@ class TestGetModelContextLength:
     def test_case_insensitive_kimi_int4_default_match(self, mock_fetch):
         mock_fetch.return_value = {}
         assert get_model_context_length("moonshotai/Kimi-K2.6-int4") == 262144
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_provider_model_metadata")
+    def test_configured_context_length_wins_over_provider_and_openrouter_metadata(
+        self,
+        mock_provider_fetch,
+        mock_fetch,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+        from epflemma_cli.config import save_config
+
+        save_config({"model": {"context_lengths": {"moonshotai/Kimi-K2.6": 262144}}})
+        mock_provider_fetch.return_value = {
+            "moonshotai/Kimi-K2.6": {"context_length": 32768}
+        }
+        mock_fetch.return_value = {
+            "moonshotai/kimi-k2.6": {"context_length": 32768}
+        }
+
+        assert get_model_context_length(
+            "moonshotai/Kimi-K2.6",
+            base_url="https://inference.rcp.epfl.ch/v1",
+            api_key="secret",
+        ) == 262144
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_api_missing_context_length_key(self, mock_fetch):
