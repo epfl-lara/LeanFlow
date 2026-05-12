@@ -63,9 +63,7 @@ MANAGED_MCP_TOOL_MAP = {
         "mcp_leanexplore_search",
     ),
     "proof_context": ("mcp_lean_proof_auto_get_proof_context",),
-    "auto_probe": ("mcp_lean_proof_auto_probe",),
     "auto_search": ("mcp_lean_proof_auto_search_automated_proof",),
-    "auto_try": ("mcp_lean_proof_auto_try_automated_proof",),
 }
 INTERNAL_MANAGED_MCP_TOOL_MAP = {
     "scan_theorem": ("mcp_lean_proof_auto_scan_theorem",),
@@ -88,9 +86,7 @@ MCP_CAPABILITY_DISABLED_LABELS = {
     "loogle": "lean loogle MCP",
     "leanexplore": "lean LeanExplore MCP",
     "proof_context": "lean proof context MCP",
-    "auto_probe": "lean automation probe MCP",
     "auto_search": "lean automation search MCP",
-    "auto_try": "lean automation try MCP",
 }
 _DISABLED_MCP_TOOLS_BY_RUN: dict[str, set[str]] = {}
 MULTI_ATTEMPT_MIN_CANDIDATES = 2
@@ -165,7 +161,7 @@ def _disabled_mcp_tools_for_run(cwd: str | os.PathLike[str] | None = None) -> se
 
 def _disable_mcp_tool_for_run(tool_name: str, *, cwd: str | os.PathLike[str] | None = None) -> None:
     normalized = str(tool_name or "").strip()
-    if not normalized or normalized not in _managed_mcp_tool_names():
+    if not normalized:
         return
     run_key = _workflow_run_key(cwd)
     disabled = _DISABLED_MCP_TOOLS_BY_RUN.setdefault(run_key, set())
@@ -797,9 +793,7 @@ def _discover_lean_mcp_tools() -> dict[str, str]:
         "loogle": "",
         "leanexplore": "",
         "proof_context": "",
-        "auto_probe": "",
         "auto_search": "",
-        "auto_try": "",
     }
     for capability, candidates in MANAGED_MCP_TOOL_MAP.items():
         for candidate in candidates:
@@ -854,14 +848,6 @@ def _discover_lean_mcp_tools() -> dict[str, str]:
                 discovered["proof_context"] = tool_name
             if not discovered["auto_search"] and "search_automated_proof" in lowered:
                 discovered["auto_search"] = tool_name
-            if not discovered["auto_try"] and "try_automated_proof" in lowered:
-                discovered["auto_try"] = tool_name
-            if (
-                not discovered["auto_probe"]
-                and "probe_file" not in lowered
-                and (lowered.endswith("_probe") or lowered.split("_")[-1] == "probe")
-            ):
-                discovered["auto_probe"] = tool_name
     return discovered
 
 
@@ -890,6 +876,11 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
     project_root, project_error = _project_root(base)
     binaries = {name: bool(shutil.which(name)) for name in ("lean", "lake", "elan", "git", "rg")}
     mcp_tools = _discover_lean_mcp_tools()
+    # These proof-auto surfaces have repeatedly produced low-signal harness
+    # failures in managed workflows. Keep the lower-level service functions for
+    # compatibility/tests, but do not advertise them through capabilities.
+    mcp_tools.pop("auto_probe", None)
+    mcp_tools.pop("auto_try", None)
     search_providers: list[str] = []
     leanexplore_preference = _leanexplore_backend_preference()
     leanexplore_local = _leanexplore_local_status()
@@ -931,7 +922,7 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         degraded.append("lean diagnostics MCP unavailable")
     if not mcp_tools.get("proof_context"):
         degraded.append("lean proof context MCP unavailable")
-    if not any(mcp_tools.get(key) for key in ("auto_probe", "auto_search", "auto_try")):
+    if not mcp_tools.get("auto_search"):
         degraded.append("lean automation MCP unavailable")
     if not search_providers:
         degraded.append("no search providers available")
@@ -1301,6 +1292,27 @@ def _split_declaration_statement_and_proof(text: str) -> tuple[str, str]:
     return statement_line, remainder
 
 
+def _declaration_text_from_location(file_path: Path, location: Mapping[str, Any]) -> str:
+    try:
+        decl_start = int(location.get("decl_start", 0) or 0)
+        proof_end = int(location.get("proof_end", 0) or 0)
+        decl_end = int(location.get("decl_end", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    end_line = proof_end or decl_end
+    if decl_start <= 0 or end_line < decl_start:
+        return ""
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    if decl_start > len(lines):
+        return ""
+    start_idx = decl_start - 1
+    end_idx = min(end_line, len(lines))
+    return "\n".join(lines[start_idx:end_idx]).strip()
+
+
 def _scan_theorem_by_range(
     file_path: Path,
     *,
@@ -1336,9 +1348,12 @@ def _local_proof_context_payload(
     if not entry:
         return None
     theorem_name = str(entry.get("name", "") or theorem_id).strip()
-    statement, proof = _split_declaration_statement_and_proof(str(entry.get("text", "") or ""))
     theorem = dict(scan_payload.get("theorem") or {}) if isinstance(scan_payload, Mapping) else {}
     location = dict(theorem.get("location") or {}) if isinstance(theorem.get("location"), Mapping) else {}
+    local_text = _declaration_text_from_location(file_path, location) if location else ""
+    if not local_text:
+        local_text = str(entry.get("text", "") or "")
+    statement, proof = _split_declaration_statement_and_proof(local_text)
     metadata = {
         "fallback_source": "local-declaration-slice",
         "declaration_kind": str(entry.get("kind", "") or theorem.get("kind", "")),
@@ -1851,6 +1866,20 @@ def _normalize_native_backend_status(
     payload["degraded_reasons"] = list(dict.fromkeys(degraded_reasons))
 
 
+def _proof_auto_harness_failure_message(payload: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("error_message", "error", "message", "failure", "reason", "status", "text"):
+        value = str(payload.get(key, "") or "").strip()
+        if value:
+            parts.append(value)
+    parts.extend(str(reason) for reason in list(payload.get("degraded_reasons") or []) if str(reason).strip())
+    text = " ".join(" ".join(part.split()) for part in parts)
+    lowered = text.lower()
+    if "failed to construct harness" in lowered or "unsafe value range shape" in lowered:
+        return text[:700] or "proof-auto backend failed to construct a proof harness"
+    return ""
+
+
 UNSUPPORTED_PROOF_AUTO_OPTIONS = {
     "linter.style.longLine": "lean-auto-try backend does not support project-level `set_option linter.style.longLine`",
 }
@@ -2207,6 +2236,21 @@ def lean_proof_context(
     payload.setdefault("similar_proofs", [])
     payload.setdefault("metadata", {})
     payload.setdefault("timing", {})
+    if declaration_entry and not str(payload.get("theorem_statement", "") or "").strip() and not str(
+        payload.get("original_proof", "") or ""
+    ).strip():
+        local_payload = _local_proof_context_payload(
+            target_path,
+            theorem_id,
+            degraded_reasons=[
+                *payload.get("degraded_reasons", []),
+                "using local declaration fallback after proof context backend returned empty declaration context",
+            ],
+            scan_payload=scan_payload,
+        )
+        if local_payload is not None:
+            append_workflow_outcome("lean-proof-context", local_payload)
+            return local_payload
     append_workflow_outcome("lean-proof-context", payload)
     return payload
 
@@ -2232,7 +2276,7 @@ def lean_multi_attempt(
                     [
                         *report.degraded_reasons,
                         *validation_reasons,
-                        "use `lean_auto_try` for one full candidate proof, or patch the file and finish with `lean_verify`",
+                        "use the managed edit path for one full candidate proof, or patch the file and finish with `lean_verify`",
                     ]
                 )
             ),
@@ -2407,7 +2451,17 @@ def lean_auto_try(
             proof_attempt=proof_attempt,
             reason=unsupported_option_reason,
         )
-    return _invoke_native_mcp_wrapper(
+    extra = {"file_path": canonical_file_path, "theorem_id": theorem_id, "proof_attempt": proof_attempt}
+    if not tool_name:
+        payload = _wrapper_unavailable_result(
+            report=report,
+            tool_name="",
+            unavailable_reason="lean automation try MCP unavailable",
+            extra=extra,
+        )
+        append_workflow_outcome("lean-auto-try", payload)
+        return payload
+    raw = _invoke_json_tool(
         tool_name,
         {
             "file": canonical_file_path,
@@ -2416,11 +2470,63 @@ def lean_auto_try(
             "timeout_s": timeout_s,
             "return_proof_state": True,
         },
-        report=report,
-        unavailable_reason="lean automation try MCP unavailable",
-        outcome_kind="lean-auto-try",
-        extra={"file_path": canonical_file_path, "theorem_id": theorem_id, "proof_attempt": proof_attempt},
     )
+    if raw.get("error"):
+        _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
+        payload = _wrapper_unavailable_result(
+            report=report,
+            tool_name=tool_name,
+            unavailable_reason=str(raw.get("error", "lean automation try MCP unavailable")),
+            extra=extra,
+        )
+        payload["degraded_reasons"] = list(
+            dict.fromkeys(
+                [
+                    *payload.get("degraded_reasons", []),
+                    "managed MCP wrapper disabled for current run after previous backend failure",
+                ]
+            )
+        )
+        append_workflow_outcome("lean-auto-try", payload)
+        return payload
+    parsed = _decode_nested_result(raw)
+    payload: dict[str, Any] = {
+        "success": bool(parsed.get("success", True)),
+        "backend_tool": tool_name,
+        "degraded_reasons": list(report.degraded_reasons),
+        **extra,
+    }
+    if isinstance(parsed, Mapping):
+        for key, value in parsed.items():
+            if key not in {"success"}:
+                payload[key] = value
+    _normalize_native_backend_status(
+        payload,
+        outcome_kind="lean-auto-try",
+        tool_name=tool_name,
+        cwd=report.cwd,
+    )
+    harness_failure = _proof_auto_harness_failure_message(payload)
+    if harness_failure:
+        if tool_name:
+            _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
+        payload["success"] = False
+        payload["setup_blocker"] = {
+            "kind": "proof_auto_harness_construction",
+            "scope": "theorem",
+            "message": harness_failure,
+        }
+        payload["degraded_reasons"] = list(
+            dict.fromkeys(
+                [
+                    *payload.get("degraded_reasons", []),
+                    "lean automation try disabled for this run after backend could not construct a proof harness",
+                    "Use lean_incremental_check or managed patch verification for this theorem; treat this as a backend setup failure, not a proof failure.",
+                ]
+            )
+        )
+    append_workflow_outcome("lean-auto-try", payload)
+    return payload
 
 
 def lean_axioms(

@@ -587,12 +587,8 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
   - a theorem-lookup miss does not disable proof-auto for the rest of the run; EPFLemma only sticky-disables proof-auto after transport or systemic backend failures
 - `lean_multi_attempt`
   - screen 2-6 concrete tactic candidates at one proof location through the MCP backend
-- `lean_auto_probe`
-  - probe theorem-local automation methods such as `aesop`, `aesop?`, and `grind`
 - `lean_auto_search`
-  - ask the managed automation backend for one theorem-local automated proof candidate after context/probe data exists
-- `lean_auto_try`
-  - validate one concrete automated proof candidate before patching it into the file
+  - ask the managed automation backend for one theorem-local automated proof candidate after proof context or concrete local evidence exists
 - `apply_verified_patch`
   - compatibility path for one atomic Lean patch, pre-edit checkpoint, and immediate verification payload
   - in managed queue workflows, successful `patch` and `write_file` edits are already verified by the manager before the queue advances
@@ -1114,7 +1110,7 @@ There are now three important internal workflow surfaces:
 
 - `lean`
   - shared typed Lean capability surface
-  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_incremental_check`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_probe`, `lean_auto_search`, `lean_auto_try`, `apply_verified_patch`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
+  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_incremental_check`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_search`, `apply_verified_patch`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
 - `document`
   - project-local source-document inspection for formalization
   - includes `read_pdf` and `formalization_document_inspect`

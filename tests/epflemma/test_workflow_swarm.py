@@ -124,6 +124,41 @@ def test_resolve_workflow_request_passes_configured_api_step_budget(monkeypatch,
     assert plan.child_env["AGENT_MAX_TURNS"] == "145"
 
 
+def test_run_workflow_handles_parent_keyboard_interrupt_after_child_exit(monkeypatch, tmp_path):
+    class _FakeProcess:
+        returncode = None
+
+        def __init__(self):
+            self.wait_calls = 0
+            self.terminated = False
+            self.killed = False
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise KeyboardInterrupt
+            self.returncode = 1
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    process = _FakeProcess()
+    monkeypatch.setattr(
+        workflow_mod,
+        "spawn_workflow",
+        lambda *args, **kwargs: (object(), process),
+    )
+
+    assert workflow_mod.run_workflow("/prove Main.lean", active_cwd=tmp_path) == 1
+    assert process.wait_calls == 2
+    assert process.terminated is False
+    assert process.killed is False
+
+
 def test_resolve_workflow_request_exports_expert_provider_env(monkeypatch, tmp_path):
     monkeypatch.setattr(
         workflow_mod,

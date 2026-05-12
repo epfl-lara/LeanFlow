@@ -184,35 +184,11 @@ def test_lean_proof_context_tool_returns_normalized_payload(monkeypatch):
     assert payload["similar_proofs"][0]["name"] == "demo2"
 
 
-def test_lean_auto_probe_tool_surfaces_degraded_reasons(monkeypatch):
-    captured: dict[str, object] = {}
+def test_unreliable_automation_tools_are_not_model_facing():
+    tool_names = set(lean_tool.registry.get_all_tool_names())
 
-    def _fake_auto_probe(*args, **kwargs):
-        captured.update(kwargs)
-        return {
-            "success": False,
-            "backend_tool": "",
-            "file_path": "Demo/Main.lean",
-            "theorem_id": "demo",
-            "degraded_reasons": [
-                "lean automation MCP unavailable",
-                "lean automation probe MCP unavailable",
-            ],
-        }
-
-    monkeypatch.setattr(
-        lean_tool,
-        "lean_auto_probe",
-        _fake_auto_probe,
-    )
-
-    payload = json.loads(
-        lean_tool.lean_auto_probe_tool("Demo/Main.lean", "demo")
-    )
-
-    assert payload["success"] is False
-    assert "lean automation probe MCP unavailable" in payload["degraded_reasons"]
-    assert captured["timeout_s"] == 60
+    assert "lean_auto_probe" not in tool_names
+    assert "lean_auto_try" not in tool_names
 
 
 def test_apply_verified_patch_tool_applies_patch_and_records_verified_status(tmp_path, monkeypatch):

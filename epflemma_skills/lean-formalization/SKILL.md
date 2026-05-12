@@ -19,7 +19,7 @@ Primary specs:
 4. `lean_search`
 5. create or update the planner blueprint before deep proof work
 6. satisfy the document formalization handoff verifier before the managed prover queue starts
-7. `lean_proof_context`, `lean_auto_probe`, `lean_auto_search`, or `lean_auto_try` only when a drafted declaration is blocked and theorem-local automation is justified
+7. `lean_proof_context` or `lean_auto_search` only when a drafted declaration is blocked and theorem-local automation search is justified
 8. draft the declaration or helper lemma
 9. `patch` or `write_file` for managed Lean file edits; the queue manager verifies successful edits against the current gate
 10. `apply_verified_patch` only when you specifically need a single atomic patch/checkpoint/verification result

@@ -91,12 +91,8 @@ Managed queue turns allow new helper declarations that directly support the assi
   - keeps proof-auto MCP enabled after a theorem-lookup miss; only transport or systemic backend failures are sticky-disabled for the current run
 - `lean_multi_attempt`
   - theorem-local screening for 2-6 concrete tactic candidates at one file position
-- `lean_auto_probe`
-  - theorem-local automation probing
 - `lean_auto_search`
-  - theorem-local automated proof candidate search after context/probe data exists
-- `lean_auto_try`
-  - validate one concrete theorem-local automated proof candidate before patching
+  - theorem-local automated proof candidate search after proof context or concrete local evidence exists
 - `apply_verified_patch`
   - compatibility path for one atomic Lean patch, pre-edit checkpoint, and immediate verification payload
   - managed queue workflows normally use `patch`/`write_file`, because the runner verifies successful edits before advancing the queue

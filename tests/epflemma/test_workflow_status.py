@@ -860,6 +860,7 @@ def test_load_workflow_live_status_preserves_terminal_phase_for_dead_runner(monk
             "phase": "exited",
             "workflow_kind": "prove",
             "process_id": 24680,
+            "held_locks": 1,
         }
     )
     monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: False)
@@ -867,6 +868,49 @@ def test_load_workflow_live_status_preserves_terminal_phase_for_dead_runner(monk
     payload = load_workflow_live_status()
 
     assert payload["phase"] == "exited"
+    assert payload["process_id"] == 0
+    assert payload["stale_process_id"] == 24680
+    assert payload["stale_snapshot"] is True
+    assert payload["held_locks"] == 0
+    assert payload["stale_held_locks"] == 1
+
+
+def test_load_workflow_live_status_clears_legacy_stale_lock_count(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    save_workflow_live_status(
+        {
+            "version": 1,
+            "phase": "verified",
+            "workflow_kind": "prove",
+            "process_id": 0,
+            "stale_process_id": 24680,
+            "stale_snapshot": True,
+            "held_locks": 2,
+        }
+    )
+
+    payload = load_workflow_live_status()
+
+    assert payload["phase"] == "verified"
+    assert payload["held_locks"] == 0
+    assert payload["stale_held_locks"] == 2
+
+
+def test_load_workflow_live_status_preserves_failed_phase_for_dead_runner(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    save_workflow_live_status(
+        {
+            "version": 1,
+            "phase": "failed",
+            "workflow_kind": "prove",
+            "process_id": 24680,
+        }
+    )
+    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: False)
+
+    payload = load_workflow_live_status()
+
+    assert payload["phase"] == "failed"
     assert payload["process_id"] == 0
     assert payload["stale_process_id"] == 24680
     assert payload["stale_snapshot"] is True
