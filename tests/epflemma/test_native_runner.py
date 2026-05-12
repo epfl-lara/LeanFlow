@@ -84,6 +84,28 @@ def test_run_managed_conversation_preserves_explicit_task_id():
     assert result["kwargs"]["task_id"] == "explicit-task"
 
 
+def test_run_managed_conversation_returns_failed_payload_on_provider_error(capsys):
+    class _Agent:
+        _session_messages = [{"role": "assistant", "content": "partial"}]
+
+        def run_conversation(self, **kwargs):
+            raise RuntimeError("Connection error.")
+
+    result = runner._run_managed_conversation(
+        _Agent(),
+        user_message="hello",
+        conversation_history=[{"role": "user", "content": "hello"}],
+    )
+
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert result["partial"] is True
+    assert result["messages"] == [{"role": "assistant", "content": "partial"}]
+    assert "RuntimeError: Connection error." in result["error"]
+    output = capsys.readouterr().out
+    assert "Managed workflow stopped after provider/API error" in output
+
+
 def test_run_managed_conversation_interrupts_on_ctrl_c(monkeypatch, capsys):
     class _Agent:
         def __init__(self):
@@ -283,11 +305,179 @@ def test_handle_managed_tool_result_records_failed_attempt_after_verification_fe
     attempts = agent._managed_autonomy_state["failed_attempts"]
     assert len(attempts) == 1
     assert attempts[0]["attempt"] == 1
-    assert attempts[0]["reason"] == "error: unsolved goals"
+    assert attempts[0]["reason"] == (
+        "file failed | tool: patch+lean_verify | errors: 0, warnings: 0, sorry: 0 | "
+        "lake env lean Demo/Main.lean"
+    )
     assert "THEOREM FEEDBACK" in agent._post_tool_result_appendix
     assert "continue the same theorem turn" in agent._post_tool_result_appendix
     assert agent.interrupt_messages == []
     assert agent._managed_pending_theorem_feedback is None
+
+
+def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                },
+                "failed_attempts": [
+                    {
+                        "attempt": i + 1,
+                        "cycle": i + 1,
+                        "target_symbol": "demo",
+                        "active_file": "Demo/Main.lean",
+                        "proof_shape": "same rewrite shape",
+                        "reason": "type mismatch",
+                    }
+                    for i in range(19)
+                ],
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    live_state = {
+        "target_symbol": "demo",
+        "active_file": "Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "current_queue_item": {"label": "demo", "reasons": ["diagnostic near line 3"]},
+        "current_queue_item_slice": "theorem demo : True := by\n  exact False.elim ?h",
+        "diagnostics": "error: type mismatch",
+        "goals": "⊢ False",
+        "build_status": "unknown",
+        "blocker_summary": "error: type mismatch",
+    }
+    events = []
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state))
+    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda active_file: {"ok": False, "command": "lake env lean Demo/Main.lean"})
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+
+    attempts = agent._managed_autonomy_state["failed_attempts"]
+    assert attempts[-1]["attempt"] == 20
+    assert "[EPFLEMMA-NATIVE FAILED ATTEMPT NUDGE]" in agent._post_tool_result_appendix
+    assert "lean_reasoning_help" in agent._post_tool_result_appendix
+    assert "lean_worker_dispatch" in agent._post_tool_result_appendix
+    assert any(args[0] == "failed-attempt-escalation-nudge" for args, _kwargs in events)
+
+
+def test_handle_managed_incremental_feedback_records_current_output(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    live_state = {
+        "target_symbol": "demo",
+        "active_file": "Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "current_queue_item_slice": "theorem demo : True := by\n  exact False.elim ?h",
+        "blocker_summary": "stale blocker",
+    }
+    payload = {
+        "success": True,
+        "ok": False,
+        "action": "feedback",
+        "backend": "lean_interact",
+        "command": "lean_interact feedback",
+        "target": "demo",
+        "output": "current feedback diagnostic",
+        "messages": [{"severity": "error", "message": "current feedback diagnostic"}],
+    }
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state))
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "lean_incremental_check", {"action": "feedback"}, json.dumps(payload))
+
+    attempts = agent._managed_autonomy_state["failed_attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["reason"] == "current feedback diagnostic"
+    assert "current feedback diagnostic" in agent._post_tool_result_appendix
+
+
+def test_handle_managed_tool_result_nudges_repeated_successful_search(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent:
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    agent = _Agent()
+    result = json.dumps(
+        {
+            "success": True,
+            "query": "padicValNat.pow_sub_pow",
+            "results": [{"provider": "mcp-leanexplore", "match": "padicValNat.pow_sub_pow"}],
+        }
+    )
+
+    for _ in range(3):
+        runner._handle_managed_tool_result(agent, "lean_search", {"query": "padicValNat.pow_sub_pow"}, result)
+
+    appendix = agent._post_tool_result_appendix
+    assert "SEARCH PROGRESS NUDGE" in appendix
+    assert "same lean_search query repeated 3 times" in appendix
+    assert "search providers are responding" in appendix
+    assert "do not call `lean_search` again" in appendix
+
+
+def test_generate_checkpoint_summary_falls_back_on_keyboard_interrupt(monkeypatch):
+    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+    summary = runner._generate_checkpoint_summary(
+        _FakeCompressor(),
+        [{"role": "user", "content": "prove Demo.main"}],
+        label="manual",
+        trigger="exit",
+        note="leaving",
+    )
+
+    assert "manual" in summary
+    assert "exit" in summary
 
 
 def test_handle_managed_tool_result_ignores_failed_patch_result(monkeypatch):
@@ -792,6 +982,38 @@ def test_declaration_diagnostic_feedback_reason_prefers_structured_items_over_te
     assert "all_goals trivial" in structured
 
 
+def test_declaration_diagnostic_feedback_reason_accepts_lean_interact_file_start(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  have h : True := by",
+                "    all_goals trivial",
+                "  trivial",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    structured = runner._declaration_diagnostic_feedback_reason(
+        str(active),
+        "demo",
+        "warning: this tactic is never executed",
+        structured_items=[
+            {
+                "severity": "warning",
+                "message": "this tactic is never executed",
+                "start": {"line": 300, "column": 1},
+                "file_start": {"line": 3, "column": 5},
+            }
+        ],
+    )
+
+    assert "warning near line 3" in structured
+    assert "never executed" in structured
+
+
 def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text(
@@ -958,6 +1180,82 @@ def test_handle_managed_tool_result_yields_after_warning_cleanup_retry(monkeypat
     assert agent._managed_step_boundary_closed is True
     output = capsys.readouterr().out
     assert "warning-only cleanup opportunity already used" in output
+
+
+def test_handle_managed_tool_result_yields_after_hard_retry_limit(monkeypatch, tmp_path, capsys):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    events = []
+
+    class _Agent:
+        quiet_mode = False
+
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            for index in range(runner.MANAGER_POST_EDIT_HARD_RETRY_LIMIT):
+                runner._increment_manager_feedback_retry(
+                    self._managed_autonomy_state,
+                    target_symbol="demo",
+                    active_file=str(active),
+                    kind="error",
+                    signature=f"previous-{index}",
+                )
+            self._managed_pending_theorem_feedback = None
+            self._managed_step_boundary_closed = False
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {
+            "ok": False,
+            "command": "lake env lean Main.lean",
+            "output": f"{active}:2:3: error: unsolved goals",
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "active_file_label": "Main.lean",
+            "current_queue_item": {"label": "demo", "reasons": ["diagnostic near line 2"]},
+            "current_queue_item_slice": "theorem demo : True := by\n  trivial",
+            "diagnostics": f"{active}:2:3: error: unsolved goals",
+            "goals": "unsolved goals",
+            "build_status": "error",
+            "blocker_summary": "error: unsolved goals",
+        },
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(agent, "patch", {}, "")
+
+    output = capsys.readouterr().out
+    text = active.read_text(encoding="utf-8")
+    assert "Manager retry limit reached for demo" in output
+    assert "-- EPFLemma failed attempt preserved after API step budget exhaustion." in text
+    assert "theorem demo : True := by\n  sorry" in text
+    assert not hasattr(agent, "_post_tool_result_appendix")
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_step_boundary_closed is True
+    assert any(kwargs.get("hard_retry_exhausted") is True for _, kwargs in events)
 
 
 def test_manager_feedback_kind_treats_nonzero_verification_as_error(tmp_path):
@@ -1246,6 +1544,37 @@ def test_handle_managed_tool_result_disables_auto_try_schema_for_run(monkeypatch
     assert "lean_auto_try" not in agent.valid_tool_names
     assert [tool["function"]["name"] for tool in agent.tools] == ["lean_inspect"]
     assert agent._managed_autonomy_state["disabled_tools_this_run"][0]["name"] == "lean_auto_try"
+
+
+def test_handle_managed_tool_result_does_not_treat_inspect_as_verification_feedback(monkeypatch):
+    class _Agent:
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_inspect",
+        {},
+        json.dumps({"success": True, "diagnostics": "warning: declaration uses `sorry`"}),
+    )
+
+    assert not hasattr(agent, "_post_tool_result_appendix")
+    assert agent._managed_pending_theorem_feedback is None
+    assert "failed_attempts" not in agent._managed_autonomy_state
 
 
 def test_review_agent_final_report_accepts_claim_only_after_manager_check(monkeypatch, tmp_path, capsys):
@@ -5679,6 +6008,75 @@ def test_write_workflow_checkpoint_persists_index_and_current(monkeypatch, tmp_p
     assert entry["linked_filesystem_checkpoint"] == "abc123def456"
 
 
+def test_current_checkpoint_ignored_for_different_workflow_command(monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+
+    snapshot = project / ".epflemma" / "workflow-state" / "ckpt-old.json"
+    runner._write_json_file(
+        snapshot,
+        {
+            "version": 1,
+            "checkpoint_id": "ckpt-old",
+            "label": "verified proof milestone",
+            "workflow_kind": "prove",
+            "workflow_command": "/prove Other.lean",
+            "project_root": str(project),
+            "summary_text": "old run",
+        },
+    )
+    runner._write_json_file(
+        project / ".epflemma" / "workflow-state" / "current.json",
+        {
+            "version": 1,
+            "checkpoint_id": "ckpt-old",
+            "snapshot_path": str(snapshot),
+        },
+    )
+
+    assert runner._load_current_checkpoint() is None
+    status = runner._journal_status()
+    assert status["current"] is None
+    assert status["latest_label"] == ""
+
+
+def test_current_checkpoint_loads_for_same_workflow_command(monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+
+    snapshot = project / ".epflemma" / "workflow-state" / "ckpt-current.json"
+    runner._write_json_file(
+        snapshot,
+        {
+            "version": 1,
+            "checkpoint_id": "ckpt-current",
+            "label": "verified proof milestone",
+            "workflow_kind": "prove",
+            "workflow_command": "/prove Main.lean",
+            "project_root": str(project),
+            "summary_text": "current run",
+        },
+    )
+    runner._write_json_file(
+        project / ".epflemma" / "workflow-state" / "current.json",
+        {
+            "version": 1,
+            "checkpoint_id": "ckpt-current",
+            "snapshot_path": str(snapshot),
+        },
+    )
+
+    loaded = runner._load_current_checkpoint()
+    assert loaded is not None
+    assert loaded["checkpoint_id"] == "ckpt-current"
+
+
 def test_maybe_checkpoint_before_compaction_emits_pre_compaction_checkpoint(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setattr(runner, "estimate_messages_tokens_rough", lambda messages: 500)
@@ -6091,6 +6489,31 @@ def test_remember_failed_attempt_uses_theorem_delta_for_proof_shape():
     assert "+ intro x" in attempt["proof_shape"] or "- sorry" in attempt["proof_shape"]
     assert attempt["reason"] == "type mismatch"
     assert "intro x" in autonomy_state["current_queue_assignment"]["slice"]
+
+
+def test_remember_failed_attempt_prefers_current_manager_reason():
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": "Demo/Main.lean",
+            "slice": "Assigned declaration slice (10-12):\ntheorem demo : True := by\n  sorry",
+        }
+    }
+
+    runner._remember_failed_attempt(
+        autonomy_state,
+        {
+            "target_symbol": "demo",
+            "active_file_label": "Demo/Main.lean",
+            "current_queue_item_slice": "theorem demo : True := by\n  exact False.elim ?h",
+            "blocker_summary": "stale previous linarith failure",
+        },
+        cycle_number=3,
+        reason="latest rewrite failure",
+    )
+
+    attempt = autonomy_state["failed_attempts"][0]
+    assert attempt["reason"] == "latest rewrite failure"
 
 
 def test_remember_failed_attempt_prefers_restored_assignment_over_live_queue_item(tmp_path, monkeypatch):

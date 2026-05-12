@@ -503,5 +503,17 @@ def run_workflow(
         active_skill=active_skill,
         interactive=True,
     )
-    process.wait()
+    try:
+        process.wait()
+    except KeyboardInterrupt:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        return process.returncode if process.returncode is not None else 130
     return process.returncode

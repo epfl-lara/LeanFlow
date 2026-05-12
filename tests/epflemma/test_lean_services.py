@@ -792,7 +792,7 @@ def test_managed_mcp_wrapper_failure_disables_tool_for_current_run(monkeypatch, 
     assert any("disabled for current run" in reason for reason in report.degraded_reasons)
 
 
-def test_proof_auto_wrappers_use_expected_backend_arguments(monkeypatch, tmp_path):
+def test_proof_context_and_auto_search_use_expected_backend_arguments(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()
     target = project / "Demo" / "Main.lean"
@@ -815,9 +815,7 @@ def test_proof_auto_wrappers_use_expected_backend_arguments(monkeypatch, tmp_pat
             "leansearch": "",
             "loogle": "",
             "proof_context": "mcp_lean_proof_auto_get_proof_context",
-            "auto_probe": "mcp_lean_proof_auto_probe",
             "auto_search": "mcp_lean_proof_auto_search_automated_proof",
-            "auto_try": "mcp_lean_proof_auto_try_automated_proof",
         },
         search_providers=[],
         helper_tools={},
@@ -836,7 +834,6 @@ def test_proof_auto_wrappers_use_expected_backend_arguments(monkeypatch, tmp_pat
 
     lean_services.lean_proof_context("Demo/Main.lean", "demo", cwd=project)
     lean_services.lean_auto_search("Demo/Main.lean", "demo", cwd=project, timeout_s=42, objective="balanced")
-    lean_services.lean_auto_try("Demo/Main.lean", "demo", "exact trivial", cwd=project, timeout_s=17)
 
     proof_context_args = calls[0][1]
     assert proof_context_args == {
@@ -852,14 +849,6 @@ def test_proof_auto_wrappers_use_expected_backend_arguments(monkeypatch, tmp_pat
     assert auto_search_args["search_budget_s"] == 42.0
     assert auto_search_args["search_depth"] == "normal"
     assert "file_path" not in auto_search_args
-
-    auto_try_args = calls[2][1]
-    assert auto_try_args["file"] == str(target.resolve())
-    assert auto_try_args["theorem_id"] == "demo"
-    assert auto_try_args["proof_attempt"] == "exact trivial"
-    assert auto_try_args["timeout_s"] == 17
-    assert auto_try_args["return_proof_state"] is True
-    assert "file_path" not in auto_try_args
 
 
 def test_lean_auto_try_preflights_unsupported_project_option(monkeypatch, tmp_path):
@@ -921,6 +910,68 @@ def test_lean_auto_try_preflights_unsupported_project_option(monkeypatch, tmp_pa
     assert tool_name in lean_services._disabled_mcp_tools_for_run(project)
     assert calls == []
     assert outcomes[-1][1]["success"] is False
+
+
+def test_lean_auto_try_marks_harness_construction_failure_as_setup_blocker(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    tool_name = "mcp_lean_proof_auto_try_automated_proof"
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={
+            "diagnostics": "",
+            "goals": "",
+            "code_actions": "",
+            "multi_attempt": "",
+            "run_code": "",
+            "local_search": "",
+            "leanfinder": "",
+            "leansearch": "",
+            "loogle": "",
+            "proof_context": "",
+            "auto_probe": "",
+            "auto_search": "",
+            "auto_try": tool_name,
+        },
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+    )
+    monkeypatch.setenv("EPFLEMMA_WORKFLOW_RUN_ID", "auto-try-harness-failure")
+    monkeypatch.setattr(lean_services, "_DISABLED_MCP_TOOLS_BY_RUN", {})
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *args, **kwargs: {
+            "result": {
+                "success": False,
+                "status": "error",
+                "error_message": "Validation error: Failed to construct harness: Target theorem 'demo' has unsafe value range shape: empty",
+            }
+        },
+    )
+    outcomes = []
+    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: outcomes.append(args))
+
+    payload = lean_services.lean_auto_try("Demo/Main.lean", "demo", "exact trivial", cwd=project)
+
+    assert payload["success"] is False
+    assert payload["setup_blocker"]["kind"] == "proof_auto_harness_construction"
+    reasons = " ".join(payload["degraded_reasons"])
+    assert "disabled for this run" in reasons
+    assert "managed patch verification" in reasons
+    assert tool_name in lean_services._disabled_mcp_tools_for_run(project)
+    assert len(outcomes) == 1
+    assert outcomes[0][1]["setup_blocker"]["kind"] == "proof_auto_harness_construction"
 
 
 def test_lean_proof_context_prefers_range_scan_when_local_declaration_exists(monkeypatch, tmp_path):
@@ -1002,6 +1053,132 @@ def test_lean_proof_context_prefers_range_scan_when_local_declaration_exists(mon
     assert calls[1][1]["theorem_id"] == "abs_add_diff"
     assert payload["success"] is True
     assert payload["backend_tool"] == "mcp_lean_proof_auto_get_proof_context"
+
+
+def test_lean_proof_context_falls_back_when_backend_returns_empty_context(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    target = project / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "\n".join(
+            [
+                "theorem first : True := by",
+                "  trivial",
+                "",
+                "theorem demo : True := by",
+                "  trivial",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    report = LeanCapabilityReport(
+        cwd=str(project),
+        project_root=str(project),
+        project_valid=True,
+        project_error="",
+        binaries={"lean": True, "lake": True, "elan": True, "git": True, "rg": True},
+        mcp_tools={
+            "diagnostics": "",
+            "goals": "",
+            "code_actions": "",
+            "multi_attempt": "",
+            "run_code": "",
+            "local_search": "",
+            "leanfinder": "",
+            "leansearch": "",
+            "loogle": "",
+            "proof_context": "mcp_lean_proof_auto_get_proof_context",
+            "auto_probe": "",
+            "auto_search": "",
+            "auto_try": "",
+        },
+        search_providers=[],
+        helper_tools={},
+        workers=[],
+        degraded_reasons=[],
+    )
+    monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
+    monkeypatch.setattr(lean_services, "_discover_internal_managed_mcp_tool", lambda capability: "")
+    monkeypatch.setattr(
+        lean_services,
+        "_invoke_json_tool",
+        lambda *args, **kwargs: {
+            "result": {
+                "status": "success",
+                "theorem_statement": "",
+                "original_proof": "",
+                "value_range": {"start": {"line": 1, "column": 0}, "end": {"line": 1, "column": 0}},
+            }
+        },
+    )
+
+    payload = lean_services.lean_proof_context("Demo/Main.lean", "demo", cwd=project)
+
+    assert payload["success"] is True
+    assert payload["status"] == "local-fallback"
+    assert payload["backend_tool"] == "local-declaration-slice"
+    assert payload["theorem_statement"] == "theorem demo : True"
+    assert payload["original_proof"] == "trivial"
+    assert any("empty declaration context" in reason for reason in payload["degraded_reasons"])
+
+
+def test_local_proof_context_uses_scan_location_to_avoid_next_doc_comment(monkeypatch, tmp_path):
+    target = tmp_path / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "\n".join(
+            [
+                "theorem demo : True := by",
+                "  sorry",
+                "",
+                "/-- next theorem doc comment -/",
+                "theorem next_demo : True := by",
+                "  trivial",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        lean_services,
+        "_declaration_index",
+        lambda path: [
+            {
+                "name": "demo",
+                "kind": "theorem",
+                "line": 1,
+                "end_line": 6,
+                "text": (
+                    "theorem demo : True := by\n"
+                    "  sorry\n\n"
+                    "/-- next theorem doc comment -/\n"
+                    "theorem next_demo : True := by\n"
+                    "  trivial"
+                ),
+            },
+            {"name": "next_demo", "kind": "theorem", "line": 5, "end_line": 6, "text": "theorem next_demo : True := by\n  trivial"},
+        ],
+    )
+
+    payload = lean_services._local_proof_context_payload(
+        target,
+        "demo",
+        degraded_reasons=["empty declaration context"],
+        scan_payload={
+            "theorem": {
+                "name": "demo",
+                "kind": "theorem",
+                "location": {"decl_start": 1, "decl_end": 1, "proof_start": 2, "proof_end": 2},
+            }
+        },
+    )
+
+    assert payload is not None
+    assert payload["theorem_statement"] == "theorem demo : True"
+    assert payload["original_proof"] == "sorry"
+    assert "next theorem doc comment" not in payload["original_proof"]
 
 
 def test_lean_proof_context_falls_back_to_local_slice_without_disabling_proof_auto_backend(monkeypatch, tmp_path):
@@ -1100,9 +1277,9 @@ def test_lean_proof_context_falls_back_to_local_slice_without_disabling_proof_au
     assert any("without disabling proof-auto MCP" in reason for reason in payload["degraded_reasons"])
     assert not any("proof-auto backend disabled for current run" in reason for reason in payload["degraded_reasons"])
     assert report.mcp_tools["proof_context"] == "mcp_lean_proof_auto_get_proof_context"
-    assert report.mcp_tools["auto_probe"] == "mcp_lean_proof_auto_probe"
     assert report.mcp_tools["auto_search"] == "mcp_lean_proof_auto_search_automated_proof"
-    assert report.mcp_tools["auto_try"] == "mcp_lean_proof_auto_try_automated_proof"
+    assert "auto_probe" not in report.mcp_tools
+    assert "auto_try" not in report.mcp_tools
     assert not any("disabled for current run" in reason for reason in report.degraded_reasons)
 
 
@@ -1222,7 +1399,7 @@ def test_lean_multi_attempt_rejects_invalid_candidate_count_before_backend_call(
 
     assert payload["success"] is False
     assert any("expects 2-6 concrete tactic candidates" in reason for reason in payload["degraded_reasons"])
-    assert "use `lean_auto_try`" in " ".join(payload["degraded_reasons"])
+    assert "patch the file" in " ".join(payload["degraded_reasons"])
 
 
 def test_lean_multi_attempt_rejects_full_proof_blocks_and_sorry(monkeypatch, tmp_path):

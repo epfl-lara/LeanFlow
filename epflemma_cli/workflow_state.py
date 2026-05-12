@@ -530,7 +530,7 @@ def _process_seems_alive(process_id: int) -> bool:
     return True
 
 
-_LIVE_STATUS_TERMINAL_PHASES = {"completed", "dead", "exited", "interrupted", "stopped", "verified"}
+_LIVE_STATUS_TERMINAL_PHASES = {"completed", "dead", "exited", "failed", "interrupted", "stopped", "verified"}
 
 
 def _normalize_workflow_live_status_payload(payload: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
@@ -538,6 +538,15 @@ def _normalize_workflow_live_status_payload(payload: Mapping[str, Any] | None) -
         return {}, False
     normalized = dict(payload)
     changed = False
+    if normalized.get("stale_snapshot"):
+        try:
+            held_locks = int(normalized.get("held_locks", 0) or 0)
+        except Exception:
+            held_locks = 0
+        if held_locks > 0:
+            normalized.setdefault("stale_held_locks", held_locks)
+            normalized["held_locks"] = 0
+            changed = True
     try:
         process_id = int(normalized.get("process_id", 0) or 0)
     except Exception:
@@ -548,6 +557,13 @@ def _normalize_workflow_live_status_payload(payload: Mapping[str, Any] | None) -
     normalized["stale_snapshot"] = True
     normalized["stale_process_id"] = process_id
     normalized["process_id"] = 0
+    try:
+        stale_held_locks = int(normalized.get("held_locks", 0) or 0)
+    except Exception:
+        stale_held_locks = 0
+    if stale_held_locks > 0:
+        normalized["stale_held_locks"] = stale_held_locks
+    normalized["held_locks"] = 0
     changed = True
 
     phase = str(normalized.get("phase", "") or "").strip().lower()
@@ -807,7 +823,7 @@ def _agent_status_from_live_phase(phase: str) -> str:
     normalized = str(phase or "").strip().lower()
     if normalized in {"busy", "verifying", "in-progress", "compacted"}:
         return "active"
-    if normalized in {"blocked", "stalled"}:
+    if normalized in {"blocked", "failed", "stalled"}:
         return "blocked"
     if normalized == "paused":
         return "paused"
@@ -820,7 +836,7 @@ def _agent_status_from_live_phase(phase: str) -> str:
     return ""
 
 
-_TERMINAL_AGENT_STATUSES = {"completed", "exited", "stopped", "interrupted", "dead"}
+_TERMINAL_AGENT_STATUSES = {"completed", "exited", "stopped", "interrupted", "dead", "failed"}
 
 
 def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]]:
