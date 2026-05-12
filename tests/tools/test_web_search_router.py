@@ -55,6 +55,8 @@ def test_web_search_uses_free_research_providers_and_no_firecrawl(monkeypatch):
             return FakeResponse(text=ARXIV_FEED)
         if url == web_tools.SEMANTIC_SCHOLAR_SEARCH_URL:
             return FakeResponse(status_code=429, payload={})
+        if url == web_tools.CROSSREF_SEARCH_URL:
+            return FakeResponse(payload={"message": {"items": []}})
         raise AssertionError(f"unexpected GET {url}")
 
     def fake_post(url, *, json=None, headers=None, timeout=None):
@@ -89,7 +91,7 @@ def test_web_search_uses_free_research_providers_and_no_firecrawl(monkeypatch):
     monkeypatch.setattr(web_tools.requests, "get", fake_get)
     monkeypatch.setattr(web_tools.requests, "post", fake_post)
 
-    result = json.loads(web_tools.web_search_tool("prime number theorem Nat.Prime", limit=3))
+    result = json.loads(web_tools.web_search_tool("prime number theorem formalization Lean", limit=3))
 
     assert result["success"] is True
     assert "Firecrawl" not in json.dumps(result)
@@ -105,6 +107,60 @@ def test_sourcegraph_code_query_keeps_identifiers_and_drops_filler():
     assert "Nat.Prime" in queries[0][2]
     assert "theorem" not in queries[0][2]
     assert "Lean code" == queries[0][1]
+
+
+def test_code_only_query_skips_paper_providers():
+    assert web_tools._web_search_provider_order("Nat.Prime dvd_mul Lean code") == (
+        web_tools._search_sourcegraph_code,
+    )
+
+
+def test_formal_proof_title_query_keeps_paper_providers():
+    assert web_tools._web_search_provider_order("A Formal Proof of the Irrationality of zeta(3) in Lean 4") == (
+        web_tools._search_arxiv,
+        web_tools._search_semantic_scholar,
+        web_tools._search_crossref,
+        web_tools._search_sourcegraph_code,
+    )
+
+
+def test_coq_query_searches_v_files_only():
+    queries = web_tools._sourcegraph_queries("Coq prime number theorem proof code", limit=3)
+
+    assert queries
+    assert all("file:\\.v$" in query for _language, _source, query in queries)
+    assert all("file:\\.lean$" not in query for _language, _source, query in queries)
+
+
+def test_crossref_result_is_normalized(monkeypatch):
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        assert url == web_tools.CROSSREF_SEARCH_URL
+        return FakeResponse(
+            payload={
+                "message": {
+                    "items": [
+                        {
+                            "title": ["A Formal Proof"],
+                            "URL": "https://doi.org/10.1000/example",
+                            "DOI": "10.1000/example",
+                            "container-title": ["Proceedings"],
+                            "author": [{"given": "Ada", "family": "Lovelace"}],
+                            "published-online": {"date-parts": [[2025, 1, 1]]},
+                        }
+                    ]
+                }
+            }
+        )
+
+    monkeypatch.setattr(web_tools.requests, "get", fake_get)
+
+    results, error = web_tools._search_crossref("formal proof", limit=2)
+
+    assert error == ""
+    assert results[0]["provider"] == "crossref"
+    assert results[0]["kind"] == "paper"
+    assert results[0]["authors"] == ["Ada Lovelace"]
+    assert results[0]["year"] == "2025"
 
 
 def test_semantic_scholar_result_is_normalized(monkeypatch):

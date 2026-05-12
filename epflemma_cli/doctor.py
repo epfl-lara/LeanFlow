@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 from typing import Any
 
 from epflemma_cli.branding import get_cli_command_name, get_product_name
@@ -15,7 +16,8 @@ from epflemma_cli.runtime_provider import (
 from tools.mcp_tool import get_mcp_status
 
 
-DOCTOR_MODES = {"all", "env", "mcp", "search", "migrate", "cleanup"}
+DOCTOR_MODES = {"all", "env", "mcp", "search", "web-search", "migrate", "cleanup"}
+WEB_SEARCH_SMOKE_QUERY = "prime number theorem formalization Lean"
 
 
 def _normalize_mode(mode: str) -> str:
@@ -82,13 +84,113 @@ def _cleanup_payload(cwd: Path) -> dict[str, Any]:
     }
 
 
+def _web_search_payload() -> tuple[dict[str, Any], list[str]]:
+    issues: list[str] = []
+    payload: dict[str, Any] = {
+        "available": False,
+        "tool_exposed": False,
+        "lean_search_guidance": False,
+        "query": WEB_SEARCH_SMOKE_QUERY,
+        "success": False,
+        "result_count": 0,
+        "providers": [],
+        "kinds": [],
+        "degraded_reasons": [],
+        "first_results": [],
+        "firecrawl_error": False,
+    }
+    try:
+        from tools import web_tools  # noqa: F401
+        from tools.registry import registry
+
+        definitions = registry.get_definitions({"web_search"}, quiet=True)
+        payload["tool_exposed"] = any(
+            item.get("function", {}).get("name") == "web_search"
+            for item in definitions
+        )
+        description = ""
+        for item in definitions:
+            function = item.get("function", {})
+            if function.get("name") == "web_search":
+                description = str(function.get("description", "") or "")
+                break
+        payload["lean_search_guidance"] = "prefer lean_search first" in description
+        if not payload["tool_exposed"]:
+            issues.append("web_search is not exposed to the model tool registry.")
+        if not payload["lean_search_guidance"]:
+            issues.append("web_search description is missing the Lean-first lean_search guidance.")
+
+        from tools.web_tools import web_search_tool
+
+        raw_result = web_search_tool(WEB_SEARCH_SMOKE_QUERY, limit=5)
+        parsed = json.loads(raw_result)
+        payload["success"] = bool(parsed.get("success"))
+        payload["degraded_reasons"] = [
+            str(reason)
+            for reason in parsed.get("degraded_reasons", [])
+            if str(reason).strip()
+        ]
+        payload["firecrawl_error"] = "Firecrawl" in raw_result or "FIRECRAWL" in raw_result
+        results = parsed.get("data", {}).get("web", [])
+        if isinstance(results, list):
+            payload["result_count"] = len(results)
+            payload["providers"] = sorted(
+                {str(item.get("provider", "") or "") for item in results if isinstance(item, dict) and item.get("provider")}
+            )
+            payload["kinds"] = sorted(
+                {str(item.get("kind", "") or "") for item in results if isinstance(item, dict) and item.get("kind")}
+            )
+            payload["first_results"] = [
+                {
+                    "provider": str(item.get("provider", "") or ""),
+                    "kind": str(item.get("kind", "") or ""),
+                    "title": str(item.get("title", "") or ""),
+                    "url": str(item.get("url", "") or ""),
+                }
+                for item in results[:3]
+                if isinstance(item, dict)
+            ]
+        if not payload["success"]:
+            issues.append("web_search smoke query did not report success.")
+        if not payload["result_count"]:
+            issues.append("web_search smoke query returned no results.")
+        if payload["firecrawl_error"]:
+            issues.append("web_search smoke query still depends on Firecrawl configuration.")
+        payload["available"] = bool(
+            payload["tool_exposed"]
+            and payload["lean_search_guidance"]
+            and payload["success"]
+            and payload["result_count"]
+            and not payload["firecrawl_error"]
+        )
+    except Exception as exc:
+        issues.append(f"web_search smoke check failed: {exc}")
+        payload["error"] = str(exc)
+    return payload, issues
+
+
 def _doctor_payload(active_cwd: str | Path | None = None, *, mode: str = "all") -> tuple[dict[str, Any], list[str]]:
     ensure_epflemma_home()
     cwd = Path(active_cwd or Path.cwd()).expanduser().resolve()
     normalized_mode = _normalize_mode(mode)
     config = load_config()
-    capability = probe_capabilities(cwd).to_dict()
     cli_name = get_cli_command_name()
+    if normalized_mode == "web-search":
+        web_search, issues = _web_search_payload()
+        payload: dict[str, Any] = {
+            "product": get_product_name(),
+            "command": cli_name,
+            "mode": normalized_mode,
+            "cwd": str(cwd),
+            "home": str(get_epflemma_home()),
+            "config_path": str(get_epflemma_home() / "config.yaml"),
+            "default_model": _default_model(config),
+            "web_search": web_search,
+            "issues": list(dict.fromkeys(issues)),
+        }
+        return payload, payload["issues"]
+
+    capability = probe_capabilities(cwd).to_dict()
 
     issues: list[str] = []
     issues.extend(str(reason) for reason in capability.get("degraded_reasons", []) if str(reason).strip())
@@ -146,6 +248,44 @@ def _doctor_payload(active_cwd: str | Path | None = None, *, mode: str = "all") 
 
 
 def _format_doctor_report(payload: dict[str, Any]) -> str:
+    if payload.get("mode") == "web-search":
+        web_search = dict(payload.get("web_search", {}) or {})
+        lines = [
+            f"{payload.get('product', 'EPFLemma')} Doctor",
+            "Mode: web-search",
+            f"Home: {payload.get('home', '')}",
+            "",
+            "Web search:",
+            f"- available: {'yes' if web_search.get('available') else 'no'}",
+            f"- model tool exposed: {'yes' if web_search.get('tool_exposed') else 'no'}",
+            f"- Lean-first guidance: {'yes' if web_search.get('lean_search_guidance') else 'no'}",
+            f"- smoke query: {web_search.get('query') or '[none]'}",
+            f"- success: {'yes' if web_search.get('success') else 'no'}",
+            f"- result count: {web_search.get('result_count', 0)}",
+            f"- providers: {', '.join(web_search.get('providers', []) or []) or '[none]'}",
+            f"- kinds: {', '.join(web_search.get('kinds', []) or []) or '[none]'}",
+            f"- Firecrawl dependency error: {'yes' if web_search.get('firecrawl_error') else 'no'}",
+        ]
+        first_results = list(web_search.get("first_results", []) or [])
+        if first_results:
+            lines.append("- first results:")
+            for item in first_results:
+                lines.append(
+                    f"  - {item.get('kind') or 'result'} via {item.get('provider') or 'unknown'}: "
+                    f"{item.get('title') or '[untitled]'} ({item.get('url') or '[no url]'})"
+                )
+        degraded = list(web_search.get("degraded_reasons", []) or [])
+        if degraded:
+            lines.append("- degraded:")
+            lines.extend(f"  - {reason}" for reason in degraded)
+        issues = list(payload.get("issues", []) or [])
+        lines.extend(["", "Issues:"])
+        if issues:
+            lines.extend(f"- {issue}" for issue in issues)
+        else:
+            lines.append("- none")
+        return "\n".join(lines)
+
     capability = dict(payload.get("capability_report", {}) or {})
     provider = dict(payload.get("provider", {}) or {})
     lines = [
