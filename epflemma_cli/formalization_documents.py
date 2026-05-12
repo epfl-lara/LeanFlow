@@ -952,7 +952,7 @@ def _render_context_markdown(
         "",
         "Required planner phase:",
         "1. Read the source document and this preflight manifest before drafting Lean.",
-        "2. Use `formalization_document_inspect` for deterministic re-inspection when the source is a .tex or .pdf file.",
+        "2. Use `read_pdf` to read project-local PDF text, and use `formalization_document_inspect` for deterministic re-inspection when the source is a .tex or .pdf file.",
         "3. Search local project facts and Mathlib before inventing names or definitions.",
         "4. Use web search only for references or surrounding literature that the source document actually points to.",
         "5. Create or update the planner blueprint before drafting Lean, recording definitions, lemmas, theorem dependencies, source pointers, formal-statement review, and natural-language proof/prover notes. The initial `_pending_` blueprint is only a placeholder and does not satisfy the workflow.",

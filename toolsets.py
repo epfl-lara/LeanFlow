@@ -11,7 +11,7 @@ _SKILL_TOOLS = ["skills_list", "skill_view"]
 _SESSION_TOOLS = ["session_search"]
 _COORDINATION_TOOLS = ["acquire_file_lock", "release_file_lock", "list_file_locks"]
 _DELEGATION_TOOLS = ["delegate_task"]
-_DOCUMENT_TOOLS = ["formalization_document_inspect"]
+_DOCUMENT_TOOLS = ["formalization_document_inspect", "read_pdf"]
 _LEAN_TOOLS = [
     "lean_capabilities",
     "lean_inspect",

@@ -1117,7 +1117,7 @@ There are now three important internal workflow surfaces:
   - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_incremental_check`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_probe`, `lean_auto_search`, `lean_auto_try`, `apply_verified_patch`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
 - `document`
   - project-local source-document inspection for formalization
-  - includes `formalization_document_inspect`
+  - includes `read_pdf` and `formalization_document_inspect`
 
 - `epflemma-native`
   - default single-agent Lean workflow runtime

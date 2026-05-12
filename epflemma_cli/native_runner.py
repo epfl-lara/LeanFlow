@@ -5741,7 +5741,7 @@ def _document_formalization_review_prompt(live_state: Mapping[str, Any]) -> str:
         "Current handoff issues:\n"
         f"{issues}\n\n"
         "Required review actions:\n"
-        "1. Use `formalization_document_inspect`, `lean_capabilities`, and `lean_inspect` before editing.\n"
+        "1. Use `read_pdf` for project-local PDF text, and use `formalization_document_inspect`, `lean_capabilities`, and `lean_inspect` before editing.\n"
         "2. Compare every source theorem/lemma entry against the Lean declaration and nearby Lean doc comment.\n"
         "3. For each entry, fill `Source qualifiers`, `Lean coverage`, and `Scope changes`. Source qualifiers should "
         "cover mathematical object class, quantifier order, parameter domain, output codomain, equality/image condition, "
