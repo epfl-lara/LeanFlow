@@ -86,7 +86,7 @@ def test_run_doctor_mcp_mode_surfaces_bootstrap_recommendation(monkeypatch, tmp_
 
 def test_run_doctor_supported_modes_cover_readme_surface():
     # README advertises these modes; keeping the set in sync prevents silent drift.
-    assert DOCTOR_MODES == {"all", "env", "mcp", "search", "migrate", "cleanup"}
+    assert DOCTOR_MODES == {"all", "env", "mcp", "search", "web-search", "migrate", "cleanup"}
 
 
 def test_run_doctor_unknown_mode_normalizes_to_all(monkeypatch, tmp_path):
@@ -177,7 +177,46 @@ def test_run_doctor_migrate_mode_reports_legacy_home_presence(monkeypatch, tmp_p
     assert any(path.endswith(".opengauss") for path in legacy_paths)
 
 
-@pytest.mark.parametrize("mode", sorted({"all", "env", "mcp", "search", "migrate", "cleanup"}))
+def test_run_doctor_web_search_mode_uses_real_tool_surface(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "epflemma_cli.doctor._web_search_payload",
+        lambda: (
+            {
+                "available": True,
+                "tool_exposed": True,
+                "lean_search_guidance": True,
+                "query": "prime number theorem formalization Lean",
+                "success": True,
+                "result_count": 2,
+                "providers": ["arxiv", "sourcegraph"],
+                "kinds": ["code", "paper"],
+                "degraded_reasons": [],
+                "first_results": [
+                    {
+                        "provider": "arxiv",
+                        "kind": "paper",
+                        "title": "A Formal Proof",
+                        "url": "https://arxiv.org/abs/2501.00001",
+                    }
+                ],
+                "firecrawl_error": False,
+            },
+            [],
+        ),
+    )
+
+    issues, payload = run_doctor(tmp_path, mode="web-search", json_output=True)
+    _text_issues, text = run_doctor(tmp_path, mode="web-search", json_output=False)
+
+    assert issues == []
+    assert payload["mode"] == "web-search"
+    assert payload["web_search"]["available"] is True
+    assert "Lean-first guidance: yes" in text
+    assert "sourcegraph" in text
+
+
+@pytest.mark.parametrize("mode", sorted({"all", "env", "mcp", "search", "web-search", "migrate", "cleanup"}))
 def test_run_doctor_never_throws_for_each_supported_mode(monkeypatch, tmp_path, mode):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
@@ -185,6 +224,10 @@ def test_run_doctor_never_throws_for_each_supported_mode(monkeypatch, tmp_path, 
         lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
     )
     monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+    monkeypatch.setattr(
+        "epflemma_cli.doctor._web_search_payload",
+        lambda: ({"available": True, "issues": []}, []),
+    )
 
     issues, payload = run_doctor(tmp_path, mode=mode, json_output=True)
 

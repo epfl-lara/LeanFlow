@@ -447,6 +447,7 @@ RESEARCH_SEARCH_TIMEOUT_SECONDS = 12
 SOURCEGRAPH_SEARCH_TIMEOUT_SECONDS = 8
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
 SEMANTIC_SCHOLAR_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+CROSSREF_SEARCH_URL = "https://api.crossref.org/works"
 SOURCEGRAPH_GRAPHQL_URL = "https://sourcegraph.com/.api/graphql"
 CODE_SEARCH_STOPWORDS = {
     "lean",
@@ -616,20 +617,138 @@ def _search_semantic_scholar(query: str, limit: int) -> tuple[list[dict[str, Any
     return results, ""
 
 
+def _crossref_year(item: dict[str, Any]) -> str:
+    for key in ("published-print", "published-online", "published", "created"):
+        date_parts = item.get(key, {}).get("date-parts") if isinstance(item.get(key), dict) else None
+        if date_parts and isinstance(date_parts, list) and date_parts[0]:
+            return str(date_parts[0][0])
+    return ""
+
+
+def _crossref_authors(item: dict[str, Any]) -> list[str]:
+    authors: list[str] = []
+    for author in item.get("author", []) if isinstance(item.get("author"), list) else []:
+        if not isinstance(author, dict):
+            continue
+        given = _normalize_whitespace(author.get("given"))
+        family = _normalize_whitespace(author.get("family"))
+        name = _normalize_whitespace(f"{given} {family}")
+        if name:
+            authors.append(name)
+    return authors
+
+
+def _search_crossref(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
+    try:
+        response = requests.get(
+            CROSSREF_SEARCH_URL,
+            params={"query": query, "rows": max(1, min(limit, 5))},
+            headers=_research_headers(),
+            timeout=RESEARCH_SEARCH_TIMEOUT_SECONDS,
+        )
+        if response.status_code == 429:
+            return [], "Crossref search throttled; retry later"
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return [], f"Crossref search unavailable: {exc}"
+
+    items = payload.get("message", {}).get("items", [])
+    results: list[dict[str, Any]] = []
+    for item in items[:limit]:
+        if not isinstance(item, dict):
+            continue
+        title_values = item.get("title") if isinstance(item.get("title"), list) else []
+        title = _normalize_whitespace(title_values[0] if title_values else "")
+        url = _normalize_whitespace(item.get("URL") or item.get("DOI") and f"https://doi.org/{item.get('DOI')}")
+        container_values = item.get("container-title") if isinstance(item.get("container-title"), list) else []
+        source = _normalize_whitespace(container_values[0] if container_values else item.get("publisher") or "Crossref")
+        abstract = re.sub(r"<[^>]+>", " ", str(item.get("abstract", "") or ""))
+        snippet_parts = [
+            part
+            for part in (
+                source,
+                f"DOI: {item.get('DOI')}" if item.get("DOI") else "",
+                _truncate_text(abstract, 350),
+            )
+            if part
+        ]
+        if title or url:
+            results.append(
+                {
+                    "provider": "crossref",
+                    "kind": "paper",
+                    "title": title,
+                    "url": url,
+                    "snippet": _truncate_text(" - ".join(snippet_parts)),
+                    "authors": _crossref_authors(item)[:8],
+                    "year": _crossref_year(item),
+                    "source": source,
+                    "doi": _normalize_whitespace(item.get("DOI")),
+                }
+            )
+    return results, ""
+
+
+def _web_search_provider_order(query: str) -> tuple:
+    lowered = query.lower()
+    has_code_signal = any(token in lowered for token in (".lean", " coq", " rocq", ".v", " code"))
+    has_identifier = bool(re.search(r"\b[A-Z][A-Za-z0-9]*\.[A-Za-z0-9_.]+|\b[a-zA-Z0-9]+_[a-zA-Z0-9_]+\b", query))
+    has_paper_signal = any(
+        token in lowered
+        for token in (
+            "paper",
+            "article",
+            "arxiv",
+            "doi",
+            "citation",
+            "formal proof",
+            "formalization",
+            "formalisation",
+        )
+    )
+    if has_code_signal and not has_paper_signal:
+        return (_search_sourcegraph_code,)
+    if has_identifier and not has_paper_signal:
+        return (_search_sourcegraph_code,)
+    return (_search_arxiv, _search_semantic_scholar, _search_crossref, _search_sourcegraph_code)
+
+
 def _sourcegraph_queries(query: str, limit: int) -> list[tuple[str, str, str]]:
     cleaned_query = _sourcegraph_code_terms(query)
     count = max(1, min(limit, 5))
-    return [
-        ("lean", "Lean code", f"context:global {cleaned_query} file:\\.lean$ count:{count}"),
-        ("coq-rocq", "Coq/Rocq code", f"context:global {cleaned_query} file:\\.v$ count:{count}"),
-    ]
+    lowered = query.lower()
+    wants_lean = "lean" in lowered or ".lean" in lowered
+    wants_coq = "coq" in lowered or "rocq" in lowered or ".v" in lowered
+    if wants_coq and not wants_lean:
+        languages = [
+            (
+                "coq-rocq",
+                "Coq/Rocq code",
+                "repo:github.com/(rocq|coq|math-comp|rocq-community|coq-community) file:\\.v$",
+            )
+        ]
+    elif wants_lean and not wants_coq:
+        languages = [("lean", "Lean code", "file:\\.lean$")]
+    else:
+        languages = [
+            ("lean", "Lean code", "file:\\.lean$"),
+            ("coq-rocq", "Coq/Rocq code", "file:\\.v$"),
+        ]
+    queries: list[tuple[str, str, str]] = []
+    for language, source, file_filter in languages:
+        queries.append((language, source, f"context:global {cleaned_query} {file_filter} count:{count}"))
+        if " OR " not in cleaned_query and " " in cleaned_query:
+            relaxed = " OR ".join(part for part in cleaned_query.split() if part)
+            queries.append((language, source, f"context:global ({relaxed}) {file_filter} count:{count}"))
+    return queries
 
 
 def _sourcegraph_code_terms(query: str) -> str:
     tokens = re.findall(r"[A-Za-z0-9_.+-]+", query)
     identifiers = [token for token in tokens if "." in token or "_" in token]
     if identifiers:
-        return " ".join(identifiers[:4])
+        return " ".join(identifiers[:3])
     terms = [
         token
         for token in tokens
@@ -760,7 +879,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         degraded_reasons: list[str] = []
         seen_urls: set[str] = set()
         per_provider_limit = max(2, min(5, normalized_limit))
-        for search_fn in (_search_arxiv, _search_semantic_scholar, _search_sourcegraph_code):
+        for search_fn in _web_search_provider_order(query):
             results, error = search_fn(query, per_provider_limit)
             provider_batches.append(results)
             if error:
