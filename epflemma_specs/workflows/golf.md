@@ -4,7 +4,7 @@ kind: workflow
 title: Golf
 summary: Lean proof improvement workflow for directness, brevity, and maintainability without sacrificing correctness or introducing axioms.
 skills: [lean-refactor-golf]
-tools: [lean_capabilities, lean_inspect, lean_search, lean_verify, lean_worker_dispatch, lean_axioms]
+tools: [lean_capabilities, lean_inspect, lean_search, lean_multi_attempt, lean_verify, lean_worker_dispatch, lean_axioms]
 workers: [proof-golfer, axiom-eliminator]
 stop_conditions: [verified, blocked]
 route_actions: [delegate-proof-golfer, delegate-axiom-eliminator]
@@ -44,14 +44,17 @@ Use `prove` first when the theorem does not compile, `formalize` when the statem
    - confirm the target proof already compiles and capture the current local state
 3. `lean_search`
    - search for shorter or more direct local/library proof shapes before inventing them
-4. apply one local simplification batch
+4. `lean_multi_attempt`
+   - use only for 2-6 concrete local simplification candidates at one proof position
+   - do not send theorem-sized proof blocks, statement changes, or candidates containing `sorry`
+5. apply one local simplification batch
    - keep theorem meaning fixed
    - prefer small, reversible edits
-5. `lean_verify`
+6. `lean_verify`
    - verify the simplified proof immediately
-6. `lean_axioms`
+7. `lean_axioms`
    - use when a shorter proof might worsen the axiom profile
-7. `lean_worker_dispatch`
+8. `lean_worker_dispatch`
    - use `proof-golfer` when the route explicitly recommends it
    - use `axiom-eliminator` if the shorter proof is correct but axiom-sensitive
 
