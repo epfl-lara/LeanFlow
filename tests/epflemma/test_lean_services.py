@@ -155,6 +155,8 @@ def test_leanexplore_local_search_retries_without_reranker_on_meta_tensor(monkey
         "_leanexplore_local_status",
         lambda: {"package_available": True, "data_ready": True, "cache_path": "/tmp/cache", "available": True},
     )
+    monkeypatch.setattr(lean_services, "_LEANEXPLORE_LOCAL_SERVICE", None)
+    monkeypatch.setattr(lean_services, "_LEANEXPLORE_LOCAL_RERANK_DISABLED", False)
     calls: list[int | None] = []
 
     class FakeService:
@@ -192,6 +194,56 @@ def test_leanexplore_local_search_retries_without_reranker_on_meta_tensor(monkey
             "module": "Mathlib.NumberTheory.ArithmeticFunction.Misc",
         }
     ]
+
+
+def test_leanexplore_local_search_reuses_service_and_suppresses_noise(monkeypatch, capsys):
+    monkeypatch.setattr(
+        lean_services,
+        "_leanexplore_local_status",
+        lambda: {"package_available": True, "data_ready": True, "cache_path": "/tmp/cache", "available": True},
+    )
+    monkeypatch.setattr(lean_services, "_LEANEXPLORE_LOCAL_SERVICE", None)
+    monkeypatch.setattr(lean_services, "_LEANEXPLORE_LOCAL_RERANK_DISABLED", False)
+    monkeypatch.delenv("EPFLEMMA_LEANEXPLORE_VERBOSE", raising=False)
+    monkeypatch.delenv("LEANEXPLORE_VERBOSE", raising=False)
+    constructed = 0
+    calls: list[int | None] = []
+
+    class FakeService:
+        def __init__(self):
+            nonlocal constructed
+            constructed += 1
+
+        async def search(self, *, query, limit, rerank_top):
+            print("BM25S noisy progress")
+            print("torch cuda warning", file=sys.stderr)
+            calls.append(rerank_top)
+            return types.SimpleNamespace(
+                results=[
+                    {
+                        "name": "Nat.mod_eq_of_lt",
+                        "module": "Init.Data.Nat.Div.Basic",
+                    }
+                ]
+            )
+
+    fake_package = types.ModuleType("lean_explore")
+    fake_search = types.ModuleType("lean_explore.search")
+    fake_search.Service = FakeService
+    monkeypatch.setitem(sys.modules, "lean_explore", fake_package)
+    monkeypatch.setitem(sys.modules, "lean_explore.search", fake_search)
+
+    first_results, first_error = lean_services._leanexplore_local_search("Nat.mod_eq_of_lt", limit=1)
+    second_results, second_error = lean_services._leanexplore_local_search("Nat.mod_eq_of_lt", limit=1)
+    captured = capsys.readouterr()
+
+    assert first_error == ""
+    assert second_error == ""
+    assert first_results == second_results
+    assert constructed == 1
+    assert calls == [50, 50]
+    assert "BM25S noisy progress" not in captured.out
+    assert "torch cuda warning" not in captured.err
 
 
 def test_probe_capabilities_reports_direct_leanexplore_api(monkeypatch, tmp_path):
