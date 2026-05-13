@@ -58,6 +58,9 @@ builds the image with `epflemma[mcp,lean-explore]`, which includes
 installs the configured Lean backends in the sandbox home on first run in both
 modes.
 
+The sandbox image includes the same baseline external workflow tools as the host
+installer: `ripgrep` for local search and Poppler utilities for PDF inspection.
+
 Upgrade from an existing checkout:
 
 ```bash

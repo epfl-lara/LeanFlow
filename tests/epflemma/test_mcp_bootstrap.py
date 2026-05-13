@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
+from epflemma_cli import mcp_bootstrap
 from epflemma_cli.mcp_bootstrap import (
     bootstrap_lean_mcp,
     managed_mcp_command_path,
@@ -89,6 +91,26 @@ def test_managed_mcp_server_status_marks_missing_servers_for_bootstrap(tmp_path)
     assert status["lean-explore"]["configured"] is False
     assert status["lean-explore"]["installed"] is False
     assert status["lean-lsp"]["power_modes"]["remote_search_policy"] == "public-fallbacks-enabled"
+
+
+def test_managed_mcp_bootstrap_pins_setuptools_below_torch_conflict(monkeypatch, tmp_path):
+    python_path = tmp_path / "python"
+    python_path.write_text("#!/usr/bin/env python\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(mcp_bootstrap, "_ensure_venv", lambda *_args, **_kwargs: python_path)
+
+    def _fake_run(argv, *, check):
+        del check
+        calls.append([str(item) for item in argv])
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(mcp_bootstrap.subprocess, "run", _fake_run)
+
+    mcp_bootstrap._install_into_managed_venv(tmp_path / "venv", "demo-mcp")
+
+    assert "setuptools<82" in calls[0]
+    assert "setuptools" not in calls[0]
 
 
 def test_bootstrap_lean_mcp_repairs_missing_managed_command(monkeypatch, tmp_path):

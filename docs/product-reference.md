@@ -255,6 +255,10 @@ Default install locations:
 - wrappers: `~/.local/bin/epflemma`, `~/.local/bin/epflemma-agent`
 - virtualenv: `./.epflemma-venv`
 
+The installer also checks or wires the external CLI tools used by normal
+workflows: `rg` for repository search and Poppler's `pdftotext`, `pdfinfo`, and
+`pdfimages` for PDF source inspection.
+
 The installer does not touch `~/.gauss` or replace an existing `gauss` binary.
 
 Custom install locations:

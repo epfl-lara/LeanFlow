@@ -359,7 +359,7 @@ def _install_into_managed_venv(
     extra_install_specs: tuple[str, ...] = (),
 ) -> None:
     python_path = _ensure_venv(venv_dir, python_bin=python_bin, min_python=min_python)
-    subprocess.run([str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", "pip", "setuptools", "wheel"], check=True)
+    subprocess.run([str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", "pip", "setuptools<82", "wheel"], check=True)
     for spec in (install_spec, *extra_install_specs):
         subprocess.run([str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", spec], check=True)
 
