@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -14,7 +14,7 @@ def _close_sessions():
     li.close_incremental_sessions()
 
 
-def _write_project(tmp_path, text: str):
+def _write_project(tmp_path: Path, text: str):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
     module_dir.mkdir(parents=True)
@@ -22,93 +22,6 @@ def _write_project(tmp_path, text: str):
     target = module_dir / "Main.lean"
     target.write_text(text, encoding="utf-8")
     return project, target
-
-
-def _install_fake_lean_interact(monkeypatch):
-    servers = []
-
-    class _Command:
-        def __init__(self, *, cmd: str, all_tactics: bool = False, env=None):
-            self.cmd = cmd
-            self.all_tactics = all_tactics
-            self.env = env
-
-        def model_copy(self, *, update):
-            copied = _Command(cmd=self.cmd, all_tactics=self.all_tactics, env=self.env)
-            for key, value in update.items():
-                setattr(copied, key, value)
-            return copied
-
-    class _Response:
-        def __init__(self, *, env: int, errors: bool = False, tactics=None):
-            self.env = env
-            self.messages = []
-            self.sorries = []
-            self.tactics = tactics or []
-            self._errors = errors
-            if errors:
-                pos = SimpleNamespace(line=1, column=7)
-                self.messages.append(
-                    SimpleNamespace(
-                        severity="error",
-                        data="unexpected token",
-                        start_pos=pos,
-                        end_pos=pos,
-                    )
-                )
-
-        def has_errors(self):
-            return self._errors
-
-        def lean_code_is_valid(self, *, allow_sorry: bool = False):
-            return not self._errors
-
-    class _Server:
-        def __init__(self, config):
-            self.config = config
-            self.runs = []
-            servers.append(self)
-
-        def run(self, request, timeout=None):
-            self.runs.append(
-                {
-                    "cmd": request.cmd,
-                    "env": request.env,
-                    "all_tactics": request.all_tactics,
-                    "timeout": timeout,
-                }
-            )
-            if "bad" in request.cmd:
-                return _Response(env=900 + len(self.runs), errors=True)
-            tactics = []
-            if request.all_tactics:
-                pos = SimpleNamespace(line=1, column=0)
-                tactics.append(
-                    SimpleNamespace(
-                        tactic="trivial",
-                        goals="⊢ True",
-                        proof_state="⊢ True",
-                        start_pos=pos,
-                        end_pos=pos,
-                        used_constants=["True.intro"],
-                    )
-                )
-            return _Response(env=100 + len(self.runs), tactics=tactics)
-
-        def kill(self):
-            pass
-
-    class _Config:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    class _Project:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    monkeypatch.setattr(li, "_import_lean_interact", lambda: (_Command, _Config, _Server, _Project, ""))
-    monkeypatch.setattr(li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl")
-    return servers
 
 
 def test_segment_file_keeps_doc_comment_with_declaration():
@@ -143,7 +56,7 @@ def test_segment_file_ignores_declaration_keywords_inside_comments_and_strings()
                 "",
                 "/-- The source says theorem fake : True := by trivial. -/",
                 "theorem real : True := by",
-                "  have s := \"def also_fake := 1\"",
+                '  have s := "def also_fake := 1"',
                 "  trivial",
                 "",
                 "/-",
@@ -160,46 +73,68 @@ def test_segment_file_ignores_declaration_keywords_inside_comments_and_strings()
     assert segments[0].text.startswith("/-- The source says theorem fake")
     assert "def also_fake" in segments[0].text
     assert segments[0].start_line == 3
-    assert segments[1].start_line == 11
+    assert segments[1].start_line == 8
+    assert segments[1].declaration_start > segments[1].start
 
 
-def test_check_target_reuses_header_and_prior_declaration_env(monkeypatch, tmp_path):
-    servers = _install_fake_lean_interact(monkeypatch)
-    project, target = _write_project(
-        tmp_path,
+def test_segment_file_uses_leanprobe_extended_declaration_parser():
+    _header, segments = li._segment_file(
         "\n".join(
             [
                 "import Mathlib",
                 "",
-                "theorem first : True := by",
+                "@[simp]",
+                "noncomputable theorem πLemma.{u} : True := by",
                 "  trivial",
                 "",
-                "theorem second : True := by",
-                "  trivial",
+                "abbrev Alias := Nat",
+                "",
+                "structure Box where",
+                "  value : Nat",
+                "",
+                "axiom trusted_fact : True",
                 "",
             ]
-        ),
+        )
     )
 
-    first = li.lean_incremental_check(action="check_target", file_path=str(target), theorem_id="second", cwd=str(project))
-    second = li.lean_incremental_check(action="check_target", file_path=str(target), theorem_id="second", cwd=str(project))
-
-    assert first["ok"] is True
-    assert first["cache"]["cache_hit"] is False
-    assert second["ok"] is True
-    assert second["cache"]["cache_hit"] is True
-    assert [run["cmd"].strip().splitlines()[0] for run in servers[0].runs] == [
-        "import Mathlib",
-        "theorem first : True := by",
-        "theorem second : True := by",
-        "theorem second : True := by",
+    assert [(segment.kind, segment.name) for segment in segments] == [
+        ("theorem", "πLemma"),
+        ("abbrev", "Alias"),
+        ("structure", "Box"),
+        ("axiom", "trusted_fact"),
     ]
-    assert servers[0].runs[2]["env"] == 102
-    assert servers[0].runs[3]["env"] == 102
 
 
-def test_check_target_reports_chunk_and_file_locations_on_failure(monkeypatch, tmp_path):
-    servers = _install_fake_lean_interact(monkeypatch)
+def test_segment_file_keeps_mutual_block_as_single_context_chunk():
+    _header, segments = li._segment_file(
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "mutual",
+                "  def evenish : Nat -> Bool",
+                "    | 0 => true",
+                "    | n + 1 => oddish n",
+                "",
+                "  def oddish : Nat -> Bool",
+                "    | 0 => false",
+                "    | n + 1 => evenish n",
+                "end",
+                "",
+                "theorem after : True := by",
+                "  trivial",
+                "",
+            ]
+        )
+    )
+
+    assert [(segment.kind, segment.name) for segment in segments] == [("mutual", ""), ("theorem", "after")]
+    assert "def evenish" in segments[0].text
+    assert "def oddish" in segments[0].text
+
+
+def test_check_target_delegates_to_leanprobe_and_preserves_epflemma_action(monkeypatch, tmp_path):
     project, target = _write_project(
         tmp_path,
         "\n".join(
@@ -213,72 +148,151 @@ def test_check_target_reports_chunk_and_file_locations_on_failure(monkeypatch, t
         ),
     )
 
-    payload = li.lean_incremental_check(
-        action="check_target",
-        file_path=str(target),
-        theorem_id="demo",
-        cwd=str(project),
-        replacement="theorem demo : True := by\n  bad\n",
-    )
+    class _FakeProbe:
+        def __init__(self):
+            self.calls = []
 
-    assert payload["success"] is True
-    assert payload["ok"] is False
-    assert payload["has_errors"] is True
-    assert payload["messages"][0]["start"] == {"line": 1, "column": 7}
-    assert payload["messages"][0]["file_start"] == {"line": 3, "column": 7}
-    assert "/- <feedback>" in payload["feedback_lean"]
-    assert servers[0].runs[-1]["all_tactics"] is True
+        def check_target(self, *args, **kwargs):
+            self.calls.append(("check_target", args, kwargs))
+            return {
+                "success": True,
+                "ok": True,
+                "backend": "lean_interact",
+                "tool": "lean_probe",
+                "action": "check",
+                "file": str(target),
+                "target": "demo",
+                "command": "lean_probe check",
+                "cache": {"cache_hit": True},
+            }
 
-
-def test_check_target_restarts_dead_lean_server_once(monkeypatch, tmp_path):
-    servers = _install_fake_lean_interact(monkeypatch)
-    project, target = _write_project(
-        tmp_path,
-        "\n".join(
-            [
-                "import Mathlib",
-                "",
-                "theorem demo : True := by",
-                "  trivial",
-                "",
-            ]
-        ),
-    )
-
-    original_run = servers
-    del original_run
-    failures = {"remaining": 1}
-
-    class _DeadOnce:
-        def __init__(self, wrapped):
-            self._wrapped = wrapped
-
-        def __getattr__(self, name):
-            return getattr(self._wrapped, name)
-
-        def run(self, request, timeout=None):
-            if failures["remaining"]:
-                failures["remaining"] -= 1
-                raise RuntimeError("The Lean server is not running.")
-            return self._wrapped.run(request, timeout=timeout)
-
-    original_new_session = li._new_session
-
-    def _new_session(project_root, file_path, repl_dir):
-        session, error = original_new_session(project_root, file_path, repl_dir)
-        if session is not None:
-            session.server = _DeadOnce(session.server)
-        return session, error
-
-    monkeypatch.setattr(li, "_new_session", _new_session)
+    fake = _FakeProbe()
+    monkeypatch.setattr(li, "_probe", lambda: fake)
+    monkeypatch.setattr(li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl")
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
 
     payload = li.lean_incremental_check(
         action="check_target",
         file_path=str(target),
         theorem_id="demo",
         cwd=str(project),
+        replacement="theorem demo : True := by\n  trivial\n",
+        include_tactics=True,
+        timeout_s=7,
     )
 
     assert payload["success"] is True
     assert payload["ok"] is True
-    assert failures["remaining"] == 0
+    assert payload["action"] == "check_target"
+    assert payload["command"] == "lean_probe check_target"
+    assert fake.calls == [
+        (
+            "check_target",
+            (target.resolve(),),
+            {
+                "theorem_id": "demo",
+                "cwd": project.resolve(),
+                "replacement": "theorem demo : True := by\n  trivial\n",
+                "include_tactics": True,
+                "timeout_s": 7,
+            },
+        )
+    ]
+
+
+def test_prepare_and_feedback_delegate_to_matching_leanprobe_methods(monkeypatch, tmp_path):
+    project, target = _write_project(
+        tmp_path,
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "theorem demo : True := by",
+                "  trivial",
+                "",
+            ]
+        ),
+    )
+
+    class _FakeProbe:
+        def __init__(self):
+            self.calls = []
+
+        def prepare_file(self, *args, **kwargs):
+            self.calls.append(("prepare_file", args, kwargs))
+            return {"success": True, "ok": True, "action": "prepare"}
+
+        def feedback(self, *args, **kwargs):
+            self.calls.append(("feedback", args, kwargs))
+            return {"success": True, "ok": False, "action": "feedback", "tactics": []}
+
+    fake = _FakeProbe()
+    monkeypatch.setattr(li, "_probe", lambda: fake)
+    monkeypatch.setattr(li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl")
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    prepare = li.lean_incremental_check(
+        action="prepare_file",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+    )
+    feedback = li.lean_incremental_check(
+        action="feedback",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+        replacement="theorem demo : True := by\n  sorry\n",
+    )
+
+    assert prepare["action"] == "prepare_file"
+    assert feedback["action"] == "feedback"
+    assert [call[0] for call in fake.calls] == ["prepare_file", "feedback"]
+    assert fake.calls[1][2]["replacement"] == "theorem demo : True := by\n  sorry\n"
+
+
+def test_missing_local_repl_rejects_before_probe_call(monkeypatch, tmp_path):
+    project, target = _write_project(tmp_path, "theorem demo : True := by\n  trivial\n")
+
+    def _unexpected_probe():
+        raise AssertionError("LeanProbe should not be called without project-local repl")
+
+    monkeypatch.setattr(li, "_probe", _unexpected_probe)
+    monkeypatch.setattr(li, "_local_repl_dir", lambda project_root: None)
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_check(
+        action="check_target",
+        file_path=str(target),
+        theorem_id="demo",
+        cwd=str(project),
+    )
+
+    assert payload["success"] is False
+    assert payload["ok"] is False
+    assert payload["error_code"] == "local_repl_missing"
+    assert "epflemma project init" in payload["error"]
+
+
+def test_capabilities_keep_epflemma_strict_local_repl_semantics(monkeypatch, tmp_path):
+    project, _target = _write_project(tmp_path, "theorem demo : True := by\n  trivial\n")
+
+    class _FakeProbe:
+        def capabilities(self, cwd):
+            return {
+                "available": True,
+                "active_sessions": [{"project_root": str(cwd), "file": "Demo/Main.lean"}],
+                "code_sessions": ["proof-state"],
+                "max_code_sessions": 16,
+            }
+
+    monkeypatch.setattr(li, "_probe", lambda: _FakeProbe())
+    monkeypatch.setattr(li, "_local_repl_dir", lambda project_root: None)
+    monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
+
+    payload = li.lean_incremental_capabilities(project)
+
+    assert payload["available"] is False
+    assert payload["project_root"] == str(project.resolve())
+    assert payload["active_sessions"] == [{"project_root": str(project.resolve()), "file": "Demo/Main.lean"}]
+    assert "local_repl_missing" in payload["degraded_codes"]

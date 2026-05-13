@@ -15,6 +15,7 @@ requests
 jinja2
 pydantic>=2.0
 PyJWT[crypto]
+lean-probe>=0.2.2,<0.3
 
 # Web tools
 firecrawl-py

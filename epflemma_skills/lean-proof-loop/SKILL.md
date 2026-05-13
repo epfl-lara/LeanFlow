@@ -42,7 +42,7 @@ Treat the native workflow specs as the contract. This skill is the routing layer
 
 - File-scoped theorem turns: iterate with `lean_inspect`, edit with the managed edit path, and accept success after the automatic post-edit `lean_incremental_check(check_target)` gate or an explicit equivalent succeeds for the assigned declaration. Use `lean_verify(mode=file_exact)` for final Lake sweeps, fallback, or explicit canonical verification.
 - Queue edit scope protects pre-existing non-assigned declarations. Adding and refining new helper declarations for the assigned theorem is allowed; solving or rewriting future queued declarations is not.
-- For stuck file-scoped proofs, request richer LeanInteract feedback with `lean_incremental_check(action=feedback, include_tactics=true)`. Read tactic goals/proof states and `feedback_lean` before changing strategy.
+- For stuck file-scoped proofs, request richer LeanProbe feedback with `lean_incremental_check(action=feedback, include_tactics=true)`. Read tactic goals/proof states and `feedback_lean` before changing strategy.
 - Prefer Lean tools for managed queue verification. Terminal-based Lake checks are allowed as an emergency/manual fallback if the Lean tools themselves are broken.
 - Module/project turns: prefer focused `lean_verify` module checks before a final project build.
 - Do not treat `grep`, truncated terminal output, or a disappearing `sorry` as success.
