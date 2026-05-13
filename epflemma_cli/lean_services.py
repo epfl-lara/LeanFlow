@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import contextlib
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -539,6 +542,9 @@ _LEANEXPLORE_LOCAL_REQUIRED_ENTRIES = (
     "bm25_name_raw",
     "bm25_name_spaced",
 )
+_LEANEXPLORE_LOCAL_SERVICE: Any | None = None
+_LEANEXPLORE_LOCAL_SERVICE_LOCK = threading.Lock()
+_LEANEXPLORE_LOCAL_RERANK_DISABLED = False
 
 
 def _leanexplore_backend_preference() -> str:
@@ -608,7 +614,33 @@ def _is_leanexplore_reranker_load_error(exc: Exception) -> bool:
     return "Cannot copy out of meta tensor" in message and "to_empty()" in message
 
 
+def _leanexplore_local_verbose() -> bool:
+    value = str(os.getenv("EPFLEMMA_LEANEXPLORE_VERBOSE", "") or os.getenv("LEANEXPLORE_VERBOSE", "") or "")
+    return value.strip().lower() in {"1", "true", "yes", "on", "debug"}
+
+
+@contextlib.contextmanager
+def _quiet_leanexplore_local_output():
+    if _leanexplore_local_verbose():
+        yield
+        return
+    sink = io.StringIO()
+    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        yield
+
+
+def _leanexplore_local_service() -> Any:
+    global _LEANEXPLORE_LOCAL_SERVICE
+    if _LEANEXPLORE_LOCAL_SERVICE is not None:
+        return _LEANEXPLORE_LOCAL_SERVICE
+    from lean_explore.search import Service
+
+    _LEANEXPLORE_LOCAL_SERVICE = Service()
+    return _LEANEXPLORE_LOCAL_SERVICE
+
+
 def _leanexplore_local_search(query: str, *, limit: int = 10) -> tuple[list[dict[str, Any]], str]:
+    global _LEANEXPLORE_LOCAL_RERANK_DISABLED
     status = _leanexplore_local_status()
     if not status["package_available"]:
         return [], "LeanExplore local backend unavailable; install `lean-explore[local]`"
@@ -617,22 +649,22 @@ def _leanexplore_local_search(query: str, *, limit: int = 10) -> tuple[list[dict
     try:
         import asyncio
 
-        from lean_explore.search import Service
-
         async def _run_search(rerank_top: int | None) -> Any:
-            service = Service()
+            service = _leanexplore_local_service()
             return await service.search(
                 query=query,
                 limit=max(1, int(limit or 10)),
                 rerank_top=rerank_top,
             )
 
-        try:
-            response = asyncio.run(_run_search(50))
-        except Exception as exc:
-            if not _is_leanexplore_reranker_load_error(exc):
-                raise
-            response = asyncio.run(_run_search(0))
+        with _LEANEXPLORE_LOCAL_SERVICE_LOCK, _quiet_leanexplore_local_output():
+            try:
+                response = asyncio.run(_run_search(0 if _LEANEXPLORE_LOCAL_RERANK_DISABLED else 50))
+            except Exception as exc:
+                if not _is_leanexplore_reranker_load_error(exc):
+                    raise
+                _LEANEXPLORE_LOCAL_RERANK_DISABLED = True
+                response = asyncio.run(_run_search(0))
     except Exception as exc:
         return [], f"LeanExplore local search failed: {exc}"
     raw_results = getattr(response, "results", [])
