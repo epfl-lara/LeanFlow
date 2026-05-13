@@ -191,6 +191,14 @@ def test_sandbox_status_includes_recent_runs(monkeypatch: pytest.MonkeyPatch, tm
     assert payload["recent_runs"][0]["run_id"] == "run-a"
 
 
+def test_sandbox_containerfile_installs_workflow_cli_dependencies() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    containerfile = (repo / "containers" / "epflemma-sandbox.Containerfile").read_text(encoding="utf-8")
+
+    assert "ripgrep" in containerfile
+    assert "poppler-utils" in containerfile
+
+
 def test_build_sandbox_image_can_bake_local_lean_explore(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "containers").mkdir(parents=True)

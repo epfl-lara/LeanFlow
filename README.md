@@ -57,6 +57,10 @@ The installer configures local `lean-lsp-mcp` power modes by default:
 - REPL-backed `lean_multi_attempt` for faster tactic screening after `project init` builds `repl`
 - local LeanExplore semantic search when `lean-explore[local]` is installed and `lean-explore data fetch` has prepared the index; hosted LeanExplore API calls remain opt-in via `LEANEXPLORE_API_KEY`
 
+It also checks the external CLI tools used by core workflows: `rg` for local
+search and Poppler's `pdftotext`, `pdfinfo`, and `pdfimages` for PDF source
+inspection.
+
 Run the main workflows:
 
 ```bash

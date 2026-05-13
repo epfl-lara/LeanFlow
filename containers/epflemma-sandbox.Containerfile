@@ -11,6 +11,7 @@ RUN apt-get update \
         curl \
         git \
         openssh-client \
+        poppler-utils \
         ripgrep \
         unzip \
         xz-utils \
