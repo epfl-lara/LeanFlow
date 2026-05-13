@@ -165,6 +165,17 @@ def _native_interactive_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _stdin_is_interactive() -> bool:
+    try:
+        return bool(sys.stdin.isatty())
+    except Exception:
+        return False
+
+
+def _verified_workflow_should_exit_without_prompt(live_state: Mapping[str, Any]) -> bool:
+    return _live_state_is_verified(live_state) and not _stdin_is_interactive()
+
+
 def _is_autonomous_workflow() -> bool:
     return _workflow_kind() in AUTONOMOUS_WORKFLOW_KINDS
 
@@ -9911,6 +9922,12 @@ def main() -> int:
                 checkpoint_state,
                 autonomy_state,
             )
+        if _verified_workflow_should_exit_without_prompt(live_state):
+            _terminate_descendant_agents(agent)
+            _terminate_other_agents(agent)
+            _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
+            _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited after verified completion (non-interactive)")
+            return 0
         if not _native_interactive_enabled():
             if _live_state_is_verified(live_state):
                 _terminate_descendant_agents(agent)

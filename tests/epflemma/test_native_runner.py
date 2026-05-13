@@ -49,6 +49,17 @@ class _FakeAgent:
         self._checkpoint_mgr = _FakeCheckpointManager()
 
 
+def test_verified_workflow_exits_without_prompt_when_stdin_is_not_interactive(monkeypatch):
+    class _Stdin:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr(runner.sys, "stdin", _Stdin())
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: True)
+
+    assert runner._verified_workflow_should_exit_without_prompt({"phase": "verified"}) is True
+
+
 def test_run_managed_conversation_passes_through_result():
     class _Agent:
         def run_conversation(self, **kwargs):
