@@ -11,7 +11,7 @@ usage() {
 EPFLemma sandbox updater
 
 Usage:
-  ./scripts/update-sandbox.sh [install-internal options] [--no-pull]
+  ./scripts/update-sandbox.sh [install-internal options] [--no-pull] [--with-local-lean-explore]
 
 The updater fast-forwards the repository when possible, reinstalls EPFLemma,
 and rebuilds the sandbox image from the current checkout.

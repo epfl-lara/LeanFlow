@@ -35,7 +35,7 @@ Primary specs:
 5. Queue edit scope protects declarations that already existed when this theorem was assigned. Do not edit, reorder, rename, delete, or solve pre-existing non-assigned declarations or future queue items, but adding and iterating on new helper declarations for this theorem is allowed.
 6. Preserve existing theorem, lemma, and example statements exactly unless the user explicitly requested a refactor. This applies to the assigned declaration and to helper declarations after you create them; change proof bodies, not established statements.
 7. After each meaningful edit, re-check the assigned declaration with `lean_inspect` or `lean_incremental_check(check_target)` before making another large change.
-8. For a managed file-scoped assigned theorem, the preferred edit path is `patch` or `write_file`; the queue manager runs the LeanInteract queue-step verifier after successful edits and falls back to Lake if needed. Use `apply_verified_patch(check_mode=file_exact)` only when you specifically need its atomic checkpoint plus verification payload.
+8. For a managed file-scoped assigned theorem, the preferred edit path is `patch` or `write_file`; the queue manager runs the LeanProbe queue-step verifier after successful edits and falls back to Lake if needed. Use `apply_verified_patch(check_mode=file_exact)` only when you specifically need its atomic checkpoint plus verification payload.
 9. When ordinary diagnostics are not enough, call `lean_incremental_check(action=feedback, include_tactics=true)` for the assigned declaration. Use returned `tactics[*].goals`, `tactics[*].proof_state`, file-global message positions, and `feedback_lean` comments as the repair context.
 10. Use Lean tools for normal managed queue verification so the manager can classify the assigned declaration. Terminal-based Lake checks are allowed as an emergency/manual fallback if the Lean tools themselves are broken.
 11. Do not treat `lake build`, `grep`, `head`, or truncated output as proof that the assigned theorem is clean.
@@ -55,15 +55,14 @@ Primary specs:
 1. Search the local project first with `lean_search mode=local`.
 2. Search Mathlib next with `lean_search mode=semantic|type-pattern|natural-language` when the needed fact looks standard. The wrapper may use local/public Loogle, LeanExplore, semantic providers, and rg fallbacks; trust provider provenance in the result.
 3. Use `lean_multi_attempt` when you have 2-6 specific short local tactic candidates at one proof location. This is especially useful before patching small tactic ideas because REPL power mode may screen them quickly.
-4. If search is exhausted or the blocker still looks automation-suited, call `lean_proof_context` before deeper automation.
-5. Use `lean_auto_probe` first, then `lean_auto_search`, then `lean_auto_try` for one concrete candidate when theorem-local automation is justified. These wrappers are optional accelerators, not mandatory steps.
+4. If search is exhausted or the blocker still looks automation-suited, call `lean_proof_context` before deeper automation search.
+5. Use `lean_auto_search` when theorem-local automation search is justified. This wrapper is an optional accelerator, not a mandatory step.
 6. Do not send theorem-sized proof blocks, declaration headers, or candidates containing `sorry` to `lean_multi_attempt`.
-7. If you have one full candidate proof, prefer `lean_auto_try` before editing; then use the managed edit path unless the atomic `apply_verified_patch` payload is specifically useful.
+7. If you have one full candidate proof, use the managed edit path unless the atomic `apply_verified_patch` payload is specifically useful.
 8. Invent helper lemmas or sublemmas when the direct proof is too large or repeated direct attempts fail. Prefer small statements that are easy to verify and directly feed the assigned declaration.
 9. If repeated focused attempts fail while the theorem still looks solvable, call `lean_reasoning_help` with the statement, diagnostics, current attempt, and failed-attempt summary.
 10. If `lean_reasoning_help` reports that the advisor is unavailable or returned no answer, continue with the strongest concrete edit, verification, worker dispatch, or blocker report you have.
 11. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, verification, worker dispatch, or blocker report you have.
-12. If `lean_auto_try` reports a project-level backend/setup error such as an unsupported `set_option`, do not treat that as proof feedback for the assigned theorem and do not edit unrelated examples or solved declarations. Continue with the managed edit path or report the setup issue as a file-level blocker.
 
 ## Success Condition
 

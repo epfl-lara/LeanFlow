@@ -130,6 +130,7 @@ print(json.dumps(sorted(set(entry.toolset for entry in registry._tools.values())
     assert toolsets == [
         "coordination",
         "delegation",
+        "document",
         "file",
         "lean",
         "session_search",

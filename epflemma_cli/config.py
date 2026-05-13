@@ -59,6 +59,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "reasoning_effort": "high",
             "base_url": "",
             "api_key": "",
+            "command_template": "",
+            "codex_command_template": "",
+            "claude_code_command_template": "",
         },
     },
     "toolsets": ["epflemma-cli"],
@@ -129,6 +132,8 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 #   - Change the primary provider: model.provider
 #   - Change a custom OpenAI-compatible endpoint: model.base_url or
 #     EPFLEMMA_OPENAI_BASE_URL in ~/.epflemma/.env
+#   - Override a model context window when provider metadata is missing or
+#     wrong: model.context_lengths.<model-id>
 #   - Change the theorem advisor model: auxiliary.lean_reasoning.model
 #   - Change the theorem advisor reasoning budget:
 #     auxiliary.lean_reasoning.reasoning_effort
@@ -136,6 +141,12 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 #     auxiliary.lean_reasoning.base_url and auxiliary.lean_reasoning.api_key,
 #     or AUXILIARY_LEAN_REASONING_BASE_URL / AUXILIARY_LEAN_REASONING_API_KEY
 #     in ~/.epflemma/.env
+#   - Use an opt-in command advisor: pass --expert-provider codex or
+#     --expert-provider claude-code on a workflow, or set
+#     auxiliary.lean_reasoning.provider to codex / claude-code. Override the
+#     command with auxiliary.lean_reasoning.command_template or
+#     AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE. Commands receive the full
+#     advisor prompt on stdin and run without a shell.
 #
 # Workflow/runtime tuning:
 #   - agent.max_turns controls the managed workflow API-step budget.
@@ -171,6 +182,9 @@ AUXILIARY_LEAN_REASONING_MODEL=
 AUXILIARY_LEAN_REASONING_REASONING_EFFORT=
 AUXILIARY_LEAN_REASONING_BASE_URL=
 AUXILIARY_LEAN_REASONING_API_KEY=
+AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE=
+EPFLEMMA_EXPERT_CODEX_COMMAND_TEMPLATE=
+EPFLEMMA_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE=
 
 # Escape hatch for intentional Lean statement refactors. Keep empty by default.
 EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS=

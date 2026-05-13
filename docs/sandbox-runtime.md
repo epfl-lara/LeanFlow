@@ -39,16 +39,27 @@ Install the normal CLI plus the sandbox image and wrapper:
 ./scripts/install-sandbox.sh
 ```
 
+To bake the local LeanExplore embedding stack into the image as well:
+
+```bash
+./scripts/install-sandbox.sh --with-local-lean-explore
+```
+
 The installer writes:
 
 - `epflemma`: normal local CLI wrapper
 - `epflemma-sandbox`: convenience wrapper for `epflemma sandbox run --`
 - `epflemma/sandbox:local`: local container image
 
-The base image intentionally installs `epflemma[mcp]`, not the local
-LeanExplore extra, to avoid bundling heavyweight Torch/CUDA packages into every
-sandbox. Managed MCP bootstrap can still install the configured Lean backends in
-the sandbox home on first run.
+The default base image installs `epflemma[mcp]`, not the local LeanExplore extra,
+to keep the image portable and quick to build. Passing `--with-local-lean-explore`
+builds the image with `epflemma[mcp,lean-explore]`, which includes
+`lean-explore[local]` and its embedding dependencies. Managed MCP bootstrap still
+installs the configured Lean backends in the sandbox home on first run in both
+modes.
+
+The sandbox image includes the same baseline external workflow tools as the host
+installer: `ripgrep` for local search and Poppler utilities for PDF inspection.
 
 Upgrade from an existing checkout:
 
@@ -71,6 +82,7 @@ Build or rebuild the image:
 ```bash
 epflemma sandbox build
 epflemma sandbox build --pull
+epflemma sandbox build --with-local-lean-explore
 ```
 
 Check readiness and recent runs:

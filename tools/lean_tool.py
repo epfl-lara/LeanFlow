@@ -9,14 +9,18 @@ import subprocess
 from pathlib import Path
 
 from agent.auxiliary_client import call_llm
+from epflemma_cli.expert_help import (
+    is_command_expert_provider,
+    record_expert_help_activity,
+    resolve_expert_provider,
+    run_command_expert_help,
+)
 from epflemma_cli.file_locks import ensure_file_lock, release_file_lock
 from epflemma_cli.lean_incremental import lean_incremental_check
 from epflemma_cli.lean_services import (
     LeanWorkerRequest,
     dispatch_worker,
-    lean_auto_probe,
     lean_auto_search,
-    lean_auto_try,
     lean_axioms,
     lean_inspect,
     lean_multi_attempt,
@@ -36,6 +40,7 @@ from tools.patch_parser import OperationType, parse_v4a_patch
 from tools.registry import registry
 
 
+LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S = 1200
 LEAN_REASONING_HELP_MIN_TIMEOUT_S = 1200
 
 
@@ -213,26 +218,6 @@ def lean_multi_attempt_tool(
     )
 
 
-def lean_auto_probe_tool(
-    file_path: str,
-    theorem_id: str,
-    *,
-    cwd: str = "",
-    methods: list[str] | None = None,
-    timeout_s: int = 60,
-) -> str:
-    return json.dumps(
-        lean_auto_probe(
-            file_path,
-            theorem_id,
-            cwd=cwd or None,
-            methods=methods,
-            timeout_s=timeout_s,
-        ),
-        ensure_ascii=False,
-    )
-
-
 def lean_auto_search_tool(
     file_path: str,
     theorem_id: str,
@@ -248,26 +233,6 @@ def lean_auto_search_tool(
             cwd=cwd or None,
             timeout_s=timeout_s,
             objective=objective,
-        ),
-        ensure_ascii=False,
-    )
-
-
-def lean_auto_try_tool(
-    file_path: str,
-    theorem_id: str,
-    proof_attempt: str,
-    *,
-    cwd: str = "",
-    timeout_s: int = 10,
-) -> str:
-    return json.dumps(
-        lean_auto_try(
-            file_path,
-            theorem_id,
-            proof_attempt,
-            cwd=cwd or None,
-            timeout_s=timeout_s,
         ),
         ensure_ascii=False,
     )
@@ -589,7 +554,7 @@ def lean_reasoning_help_tool(
     recent_failed_attempts: str = "",
     question: str = "",
     cwd: str = "",
-    timeout_s: int = LEAN_REASONING_HELP_MIN_TIMEOUT_S,
+    timeout_s: int = LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S,
 ) -> str:
     """Ask the configured auxiliary theorem advisor for proof-strategy advice."""
     theorem_id = str(theorem_id or "").strip()
@@ -637,8 +602,91 @@ def lean_reasoning_help_tool(
         ]
         if part
     )
+    expert_provider = resolve_expert_provider("lean_reasoning")
+    command_prompt = (
+        f"System instructions:\n{system_prompt}\n\n"
+        f"Advisor request:\n{user_prompt}"
+    )
+
+    if is_command_expert_provider(expert_provider):
+        try:
+            command_result = run_command_expert_help(
+                provider=expert_provider,
+                task="lean_reasoning",
+                prompt=command_prompt,
+                cwd=cwd,
+                timeout_s=max(LEAN_REASONING_HELP_MIN_TIMEOUT_S, int(timeout_s or 0)),
+            )
+        except RuntimeError as exc:
+            return _advisor_failure("unavailable", str(exc), theorem_id=theorem_id, file_path=file_path)
+        except Exception as exc:
+            return _advisor_failure(
+                "error",
+                f"{type(exc).__name__}: {exc}",
+                theorem_id=theorem_id,
+                file_path=file_path,
+            )
+
+        if command_result.timed_out:
+            return _advisor_failure(
+                "timeout",
+                f"{command_result.provider} expert command timed out.",
+                theorem_id=theorem_id,
+                file_path=file_path,
+            )
+        if command_result.exit_status != 0:
+            return _advisor_failure(
+                "error",
+                (
+                    f"{command_result.provider} expert command exited with status "
+                    f"{command_result.exit_status}: {command_result.stderr or '[no stderr]'}"
+                ),
+                theorem_id=theorem_id,
+                file_path=file_path,
+            )
+        advice = command_result.response.strip()
+        if not advice:
+            return _advisor_failure(
+                "no_answer",
+                "the command expert advisor returned no content.",
+                theorem_id=theorem_id,
+                file_path=file_path,
+            )
+        return json.dumps(
+            {
+                "success": True,
+                "status": "answered",
+                "theorem_id": theorem_id,
+                "file_path": file_path,
+                "provider": command_result.provider,
+                "mode": "command",
+                "command": command_result.command,
+                "exit_status": command_result.exit_status,
+                "truncated": command_result.truncated,
+                "response_chars": command_result.response_chars,
+                "max_response_chars": command_result.max_response_chars,
+                "advice": advice,
+                "next_step": (
+                    "Use this as advice only. Ignore any suggestion that changes the declaration "
+                    "or uses a placeholder proof, then apply a concrete proof edit and verify the "
+                    "assigned queue declaration with lean_incremental_check(check_target)."
+                ),
+            },
+            ensure_ascii=False,
+        )
 
     try:
+        record_expert_help_activity(
+            "expert-help-request",
+            "Expert help model request started",
+            provider=expert_provider,
+            mode="model",
+            prompt=command_prompt,
+            command=[],
+            exit_status=None,
+            theorem_id=theorem_id,
+            file_path=file_path,
+        )
         response = call_llm(
             task="lean_reasoning",
             messages=[
@@ -670,6 +718,22 @@ def lean_reasoning_help_tool(
             theorem_id=theorem_id,
             file_path=file_path,
         )
+    record_expert_help_activity(
+        "expert-help-result",
+        "Expert help model request finished",
+        provider=expert_provider,
+        mode="model",
+        prompt=command_prompt,
+        command=[],
+        exit_status=None,
+        response=advice,
+        truncated=False,
+        response_chars=len(advice),
+        max_response_chars=len(advice),
+        model=str(getattr(response, "model", "") or ""),
+        theorem_id=theorem_id,
+        file_path=file_path,
+    )
 
     return json.dumps(
         {
@@ -677,6 +741,8 @@ def lean_reasoning_help_tool(
             "status": "answered",
             "theorem_id": theorem_id,
             "file_path": file_path,
+            "provider": expert_provider,
+            "mode": "model",
             "model": str(getattr(response, "model", "") or ""),
             "advice": advice,
             "next_step": (
@@ -870,26 +936,6 @@ LEAN_MULTI_ATTEMPT_SCHEMA = {
     },
 }
 
-LEAN_AUTO_PROBE_SCHEMA = {
-    "name": "lean_auto_probe",
-    "description": (
-        "Probe theorem-local automation methods such as `aesop`, `aesop?`, and `grind` before broader search "
-        "or manual proof construction. Useful for goals that look routine or automation-suited; backend setup "
-        "errors are not proof failures."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "file_path": {"type": "string", "description": "Lean file path"},
-            "theorem_id": {"type": "string", "description": "Declaration name to probe"},
-            "methods": {"type": "array", "items": {"type": "string"}, "description": "Automation methods to probe"},
-            "timeout_s": {"type": "integer", "default": 60},
-            "cwd": {"type": "string", "description": "Optional working directory"},
-        },
-        "required": ["file_path", "theorem_id"],
-    },
-}
-
 LEAN_AUTO_SEARCH_SCHEMA = {
     "name": "lean_auto_search",
     "description": (
@@ -907,26 +953,6 @@ LEAN_AUTO_SEARCH_SCHEMA = {
             "cwd": {"type": "string", "description": "Optional working directory"},
         },
         "required": ["file_path", "theorem_id"],
-    },
-}
-
-LEAN_AUTO_TRY_SCHEMA = {
-    "name": "lean_auto_try",
-    "description": (
-        "Validate one concrete theorem-local proof attempt before patching it into the file. Best for a single "
-        "full candidate proof you already believe should work. If the backend rejects project setup/options, "
-        "continue with managed edits or other Lean tools rather than treating the candidate as disproven."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "file_path": {"type": "string", "description": "Lean file path"},
-            "theorem_id": {"type": "string", "description": "Declaration name to test"},
-            "proof_attempt": {"type": "string", "description": "Concrete proof candidate to validate"},
-            "timeout_s": {"type": "integer", "default": 10},
-            "cwd": {"type": "string", "description": "Optional working directory"},
-        },
-        "required": ["file_path", "theorem_id", "proof_attempt"],
     },
 }
 
@@ -1001,7 +1027,11 @@ LEAN_REASONING_HELP_SCHEMA = {
             "recent_failed_attempts": {"type": "string", "description": "Summary of prior failed attempts and errors"},
             "question": {"type": "string", "description": "Specific advice request for the auxiliary model"},
             "cwd": {"type": "string", "description": "Optional project working directory"},
-            "timeout_s": {"type": "integer", "description": "Advisor request timeout in seconds", "default": 1200},
+            "timeout_s": {
+                "type": "integer",
+                "description": "Advisor request timeout in seconds",
+                "default": LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S,
+            },
         },
         "required": ["theorem_id", "file_path"],
     },
@@ -1124,20 +1154,6 @@ registry.register(
     emoji="🎯",
 )
 registry.register(
-    name="lean_auto_probe",
-    toolset="lean",
-    schema=LEAN_AUTO_PROBE_SCHEMA,
-    handler=lambda args, **kw: lean_auto_probe_tool(
-        file_path=args.get("file_path", ""),
-        theorem_id=args.get("theorem_id", ""),
-        cwd=args.get("cwd", ""),
-        methods=list(args.get("methods", []) or []) or None,
-        timeout_s=int(args.get("timeout_s", 60) or 60),
-    ),
-    check_fn=check_lean_requirements,
-    emoji="🧪",
-)
-registry.register(
     name="lean_auto_search",
     toolset="lean",
     schema=LEAN_AUTO_SEARCH_SCHEMA,
@@ -1150,20 +1166,6 @@ registry.register(
     ),
     check_fn=check_lean_requirements,
     emoji="🛰️",
-)
-registry.register(
-    name="lean_auto_try",
-    toolset="lean",
-    schema=LEAN_AUTO_TRY_SCHEMA,
-    handler=lambda args, **kw: lean_auto_try_tool(
-        file_path=args.get("file_path", ""),
-        theorem_id=args.get("theorem_id", ""),
-        proof_attempt=args.get("proof_attempt", ""),
-        cwd=args.get("cwd", ""),
-        timeout_s=int(args.get("timeout_s", 10) or 10),
-    ),
-    check_fn=check_lean_requirements,
-    emoji="🛠️",
 )
 registry.register(
     name="apply_verified_patch",
@@ -1213,7 +1215,10 @@ registry.register(
         recent_failed_attempts=args.get("recent_failed_attempts", ""),
         question=args.get("question", ""),
         cwd=args.get("cwd", ""),
-        timeout_s=int(args.get("timeout_s", LEAN_REASONING_HELP_MIN_TIMEOUT_S) or LEAN_REASONING_HELP_MIN_TIMEOUT_S),
+        timeout_s=int(
+            args.get("timeout_s", LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S)
+            or LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S
+        ),
     ),
     check_fn=check_lean_requirements,
     emoji="💡",

@@ -1,5 +1,6 @@
 FROM python:3.12-bookworm
 
+ARG EPFLEMMA_SANDBOX_EXTRAS=mcp
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
@@ -10,6 +11,7 @@ RUN apt-get update \
         curl \
         git \
         openssh-client \
+        poppler-utils \
         ripgrep \
         unzip \
         xz-utils \
@@ -34,7 +36,7 @@ COPY . /opt/epflemma
 
 RUN python -m venv /opt/epflemma/.venv \
     && /opt/epflemma/.venv/bin/python -m pip install --upgrade pip "setuptools<82" wheel \
-    && /opt/epflemma/.venv/bin/python -m pip install -e '/opt/epflemma[mcp]' \
+    && /opt/epflemma/.venv/bin/python -m pip install -e "/opt/epflemma[${EPFLEMMA_SANDBOX_EXTRAS}]" \
     && /opt/epflemma/.venv/bin/epflemma --help >/dev/null
 
 WORKDIR /workspace

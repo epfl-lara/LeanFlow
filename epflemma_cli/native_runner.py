@@ -85,6 +85,11 @@ WORKFLOW_STEP_BOUNDARY_INTERRUPT = "[epflemma-native workflow step boundary]"
 STARTUP_SKILL_CONTRACT_MAX_CHARS = 7000
 MANAGER_WARNING_RETRY_LIMIT = 1
 MANAGER_HARD_RETRY_LIMIT = 2
+MANAGER_POST_EDIT_HARD_RETRY_LIMIT = 40
+SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT = 3
+SEARCH_PROGRESS_TOTAL_NUDGE_LIMIT = 14
+FAILED_ATTEMPT_ESCALATION_NUDGE_LIMIT = 20
+FAILED_ATTEMPT_ESCALATION_NUDGE_INTERVAL = 8
 PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT = 40
 PROJECT_PROVE_MANAGER_FULL_FILE_MAX_CHARS = 6000
 PROJECT_PROVE_MANAGER_SELECTED_FILE_MAX_CHARS = 5000
@@ -158,6 +163,17 @@ def _workflow_display_name(workflow_kind: str | None = None) -> str:
 def _native_interactive_enabled() -> bool:
     raw = _read_native_env("INTERACTIVE", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
+
+
+def _stdin_is_interactive() -> bool:
+    try:
+        return bool(sys.stdin.isatty())
+    except Exception:
+        return False
+
+
+def _verified_workflow_should_exit_without_prompt(live_state: Mapping[str, Any]) -> bool:
+    return _live_state_is_verified(live_state) and not _stdin_is_interactive()
 
 
 def _is_autonomous_workflow() -> bool:
@@ -358,6 +374,8 @@ def _read_json_file(path: Path) -> dict[str, Any]:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(payload, dict):
                 return payload
+    except KeyboardInterrupt:
+        raise
     except Exception:
         pass
     return {}
@@ -403,6 +421,31 @@ def _load_checkpoint_snapshot(snapshot_path: str) -> dict[str, Any] | None:
     return payload or None
 
 
+def _checkpoint_matches_current_workflow(snapshot: Mapping[str, Any]) -> bool:
+    """Return whether a persisted checkpoint belongs to this workflow launch."""
+    current_kind = _workflow_kind()
+    checkpoint_kind = str(snapshot.get("workflow_kind", "") or "").strip().lower()
+    if current_kind and checkpoint_kind and checkpoint_kind != current_kind:
+        return False
+
+    current_command = " ".join(_read_native_env("WORKFLOW_COMMAND").split())
+    checkpoint_command = " ".join(str(snapshot.get("workflow_command", "") or "").split())
+    if current_command and checkpoint_command and checkpoint_command != current_command:
+        return False
+
+    current_root = str(Path(_project_root()).expanduser().resolve())
+    checkpoint_root_raw = str(snapshot.get("project_root", "") or "").strip()
+    if checkpoint_root_raw:
+        try:
+            checkpoint_root = str(Path(checkpoint_root_raw).expanduser().resolve())
+        except Exception:
+            checkpoint_root = checkpoint_root_raw
+        if checkpoint_root != current_root:
+            return False
+
+    return True
+
+
 def _load_current_checkpoint() -> dict[str, Any] | None:
     payload = _read_json_file(_workflow_state_current_path())
     checkpoint_id = str(payload.get("checkpoint_id", "") or "").strip()
@@ -411,6 +454,8 @@ def _load_current_checkpoint() -> dict[str, Any] | None:
         return None
     snapshot = _load_checkpoint_snapshot(snapshot_path)
     if snapshot is None:
+        return None
+    if not _checkpoint_matches_current_workflow(snapshot):
         return None
     return snapshot
 
@@ -873,7 +918,7 @@ def _record_managed_reasoning_policy(
 
 
 def _tool_result_counts_as_theorem_feedback(function_name: str, args: Mapping[str, Any] | None = None) -> bool:
-    if function_name in {"lean_inspect", "lean_verify", "lean_incremental_check", "apply_verified_patch"}:
+    if function_name in {"lean_verify", "lean_incremental_check", "apply_verified_patch"}:
         return True
     if function_name != "terminal":
         return False
@@ -1948,6 +1993,164 @@ def _managed_tool_result_succeeded(result: str) -> bool:
     return True
 
 
+def _search_progress_assignment(agent: Any) -> tuple[str, str]:
+    autonomy_state = getattr(agent, "_managed_autonomy_state", {}) or {}
+    assignment = dict(dict(autonomy_state or {}).get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    return target_symbol, active_file
+
+
+def _normalized_search_query(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _append_post_tool_result_message(agent: Any, message: str) -> None:
+    text = str(message or "").strip()
+    if not text:
+        return
+    previous = str(getattr(agent, "_post_tool_result_appendix", "") or "").strip()
+    try:
+        setattr(agent, "_post_tool_result_appendix", f"{previous}\n\n{text}".strip() if previous else text)
+    except Exception:
+        pass
+
+
+def _reset_search_progress(agent: Any) -> None:
+    autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+    if isinstance(autonomy_state, dict):
+        autonomy_state.pop("search_progress", None)
+
+
+def _note_non_search_tool_progress(agent: Any, function_name: str) -> None:
+    reset_tools = {
+        "patch",
+        "write_file",
+        "apply_verified_patch",
+        "lean_incremental_check",
+        "lean_verify",
+        "lean_multi_attempt",
+        "terminal",
+    }
+    if function_name in reset_tools:
+        _reset_search_progress(agent)
+        return
+    if function_name not in {"lean_proof_context", "lean_auto_search", "lean_reasoning_help", "lean_inspect"}:
+        return
+    autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+    if not isinstance(autonomy_state, dict):
+        return
+    tracker = dict(autonomy_state.get("search_progress") or {})
+    if not tracker:
+        return
+    used_tools = dict(tracker.get("used_tools") or {})
+    used_tools[function_name] = int(used_tools.get(function_name, 0) or 0) + 1
+    tracker["used_tools"] = used_tools
+    autonomy_state["search_progress"] = tracker
+
+
+def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: str) -> None:
+    autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+    if not isinstance(autonomy_state, dict):
+        return
+    target_symbol, active_file = _search_progress_assignment(agent)
+    if not target_symbol or not active_file:
+        return
+    payload = _json_tool_result_payload(result)
+    query = str(payload.get("query", "") or dict(args or {}).get("query", "") or dict(args or {}).get("q", "") or "")
+    normalized_query = _normalized_search_query(query)
+    if not normalized_query:
+        return
+    tracker = dict(autonomy_state.get("search_progress") or {})
+    if (
+        str(tracker.get("target_symbol", "") or "") != target_symbol
+        or str(tracker.get("active_file", "") or "") != active_file
+    ):
+        tracker = {
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "search_count": 0,
+            "same_query_streak": 0,
+            "last_query": "",
+            "unique_queries": [],
+            "used_tools": {},
+        }
+    search_count = int(tracker.get("search_count", 0) or 0) + 1
+    same_query_streak = (
+        int(tracker.get("same_query_streak", 0) or 0) + 1
+        if str(tracker.get("last_query", "") or "") == normalized_query
+        else 1
+    )
+    unique_queries = [str(item) for item in list(tracker.get("unique_queries") or []) if str(item)]
+    if normalized_query not in unique_queries:
+        unique_queries.append(normalized_query)
+    results = payload.get("results")
+    result_count = len(results) if isinstance(results, list) else 0
+    tracker.update(
+        {
+            "search_count": search_count,
+            "same_query_streak": same_query_streak,
+            "last_query": normalized_query,
+            "last_query_display": query[:240],
+            "unique_queries": unique_queries[-8:],
+            "last_result_count": result_count,
+        }
+    )
+    autonomy_state["search_progress"] = tracker
+
+    nudge_reason = ""
+    if same_query_streak >= SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT:
+        nudge_reason = f"same lean_search query repeated {same_query_streak} times"
+    elif search_count >= SEARCH_PROGRESS_TOTAL_NUDGE_LIMIT:
+        nudge_reason = f"{search_count} lean_search calls on this declaration since the last edit/check"
+    if not nudge_reason:
+        return
+    if int(tracker.get("last_nudged_search_count", 0) or 0) == search_count:
+        return
+    tracker["last_nudged_search_count"] = search_count
+    autonomy_state["search_progress"] = tracker
+    used_tools = dict(tracker.get("used_tools") or {})
+    context_hint = (
+        "- `lean_proof_context` has already been used; prefer a concrete proof draft/check, `lean_reasoning_help`, or `lean_worker_dispatch`."
+        if int(used_tools.get("lean_proof_context", 0) or 0) > 0
+        else "- if you still need context, call `lean_proof_context` once; otherwise draft and check a proof."
+    )
+    _append_post_tool_result_message(
+        agent,
+        "\n".join(
+            [
+                "[EPFLEMMA-NATIVE SEARCH PROGRESS NUDGE]",
+                f"- declaration: {target_symbol}",
+                f"- file: {_relative_file_label(active_file) or active_file}",
+                f"- observed: {nudge_reason}",
+                f"- latest query: {query[:240] or '[unknown]'}",
+                f"- latest result count: {result_count}",
+                "- search providers are responding; this is a route-progress nudge, not a search outage.",
+                "- do not call `lean_search` again in this turn unless the query strategy materially changes.",
+                context_hint,
+                "- next useful action should be a concrete proof edit, `lean_incremental_check(check_target)` on a draft, `lean_multi_attempt`, `lean_reasoning_help`, or `lean_worker_dispatch` if the route still fits.",
+            ]
+        ),
+    )
+    _record_activity(
+        "search-progress-nudge",
+        f"Repeated search-only progress nudge for {target_symbol}",
+        target_symbol=target_symbol,
+        active_file=active_file,
+        search_count=search_count,
+        same_query_streak=same_query_streak,
+        latest_query=query,
+        result_count=result_count,
+    )
+
+
+def _should_emit_failed_attempt_escalation_nudge(attempt_number: int) -> bool:
+    if attempt_number < FAILED_ATTEMPT_ESCALATION_NUDGE_LIMIT:
+        return False
+    interval = max(1, FAILED_ATTEMPT_ESCALATION_NUDGE_INTERVAL)
+    return (attempt_number - FAILED_ATTEMPT_ESCALATION_NUDGE_LIMIT) % interval == 0
+
+
 def _terminal_command_may_edit(command: str) -> bool:
     text = str(command or "")
     if not text.strip():
@@ -2556,10 +2759,18 @@ def _finish_queue_step_boundary(
     cleanup_feedback_reason = ""
     feedback_kind = ""
     warning_retry_accepted = False
+    hard_retry_exhausted = False
+    hard_retry_limit = 0
+    hard_retry_count = 0
+    attempt_number = 0
+    restore_result: dict[str, Any] = {}
+    manager_feedback_reason = ""
+    verification_base_tool = str(verification_tool or "").split("+", 1)[0]
+    post_edit_verification = verification_base_tool in {"patch", "write_file", "apply_verified_patch"}
     try:
         autonomy_state = getattr(agent, "_managed_autonomy_state", None)
         if manager_check:
-            _record_manager_verification(
+            verification_record = _record_manager_verification(
                 autonomy_state if isinstance(autonomy_state, dict) else None,
                 pending_file,
                 pending_target,
@@ -2567,6 +2778,10 @@ def _finish_queue_step_boundary(
                 "lean_incremental_check"
                 if str(manager_check.get("mode", "") or "") == "incremental_target"
                 else verification_tool,
+            )
+            manager_feedback_reason = (
+                str(manager_check.get("output", "") or manager_check.get("error", "") or "").strip()
+                or _verification_status_text(verification_record)
             )
         live_state = _build_live_proof_state_compat(
             list(getattr(agent, "_session_messages", []) or []),
@@ -2655,11 +2870,46 @@ def _finish_queue_step_boundary(
         if still_blocked:
             cleanup_feedback_reason = ""
         if still_blocked:
+            if feedback_kind in {"error", "sorry"} and post_edit_verification and isinstance(autonomy_state, dict):
+                hard_retry_limit = MANAGER_POST_EDIT_HARD_RETRY_LIMIT
+                hard_retry_count = _manager_feedback_retry_count(
+                    autonomy_state,
+                    target_symbol=pending_target,
+                    active_file=pending_file,
+                    kind=feedback_kind,
+                )
+                manager_check["feedback_kind"] = feedback_kind
+                manager_check["feedback_retry_count"] = hard_retry_count
+                manager_check["feedback_retry_limit"] = hard_retry_limit
+                if hard_retry_count >= hard_retry_limit:
+                    restore_result = _restore_queue_assignment_to_baseline_sorry(autonomy_state, live_state)
+                    if restore_result.get("restored"):
+                        restore_result = dict(restore_result)
+                        restore_result["reason"] = (
+                            "reverted current declaration to its baseline `sorry` slice after manager retry exhaustion"
+                        )
+                    manager_check["retry_exhausted"] = True
+                    manager_check["restore"] = restore_result
+                    hard_retry_exhausted = True
+                    still_blocked = False
+                else:
+                    hard_retry_count = _increment_manager_feedback_retry(
+                        autonomy_state,
+                        target_symbol=pending_target,
+                        active_file=pending_file,
+                        kind=feedback_kind,
+                        signature=_manager_feedback_retry_signature(feedback_kind, manager_check),
+                    )
+                    manager_check["feedback_retry_count"] = hard_retry_count
+            if hard_retry_exhausted:
+                cleanup_feedback_reason = ""
+        if still_blocked:
             if isinstance(autonomy_state, dict):
                 _remember_failed_attempt(
                     autonomy_state,
                     live_state,
                     cycle_number=int(autonomy_state.get("current_cycle", 0) or 0),
+                    reason=manager_feedback_reason,
                 )
                 attempt_recorded = True
                 attempt_number = _failed_attempt_count_for_theorem(
@@ -2690,6 +2940,8 @@ def _finish_queue_step_boundary(
                 if still_blocked
                 else "queue-theorem-cleanup-feedback"
                 if cleanup_feedback_reason
+                else "queue-theorem-retry-exhausted"
+                if hard_retry_exhausted
                 else "queue-step-boundary"
             ),
             (
@@ -2697,6 +2949,8 @@ def _finish_queue_step_boundary(
                 if still_blocked
                 else f"Continuing same theorem for local warning cleanup on {pending_target}"
                 if cleanup_feedback_reason
+                else f"Manager retry limit reached for {pending_target}"
+                if hard_retry_exhausted
                 else f"Yielding after verification feedback for {pending_target}"
             ),
             queue_item=item,
@@ -2709,6 +2963,10 @@ def _finish_queue_step_boundary(
             cleanup_feedback_reason=cleanup_feedback_reason,
             feedback_kind=feedback_kind,
             warning_retry_accepted=warning_retry_accepted,
+            hard_retry_exhausted=hard_retry_exhausted,
+            hard_retry_count=hard_retry_count,
+            hard_retry_limit=hard_retry_limit,
+            restore=restore_result,
             yielded=should_yield,
             refresh_error=refresh_error,
         )
@@ -2751,6 +3009,25 @@ def _finish_queue_step_boundary(
                 output = str(manager_check.get("output", "") or manager_check.get("error", "") or "").strip()
                 if output:
                     feedback_lines.append(f"- feedback: {_single_line(output, 500)}")
+            if still_blocked and _should_emit_failed_attempt_escalation_nudge(attempt_number):
+                feedback_lines.extend(
+                    [
+                        "",
+                        "[EPFLEMMA-NATIVE FAILED ATTEMPT NUDGE]",
+                        f"- observed: {attempt_number} verified failed edits/checks on this same declaration",
+                        "- manager checks are working; this is a proof-strategy escalation nudge, not a backend failure",
+                        "- avoid another broad rewrite of the same proof shape unless you can state the concrete new invariant it fixes",
+                        "- next useful action should be `lean_incremental_check(action=feedback, include_tactics=true)` for local goal state, `lean_multi_attempt` for small tactic variants, `lean_reasoning_help` for an external proof plan, or `lean_worker_dispatch` if the blocker still fits the route",
+                    ]
+                )
+                _record_activity(
+                    "failed-attempt-escalation-nudge",
+                    f"Escalation nudge after {attempt_number} failed attempts for {pending_target}",
+                    target_symbol=pending_target,
+                    active_file=pending_file,
+                    attempt=attempt_number,
+                    verification_tool=verification_tool,
+                )
             try:
                 setattr(agent, "_post_tool_result_appendix", "\n".join(feedback_lines))
             except Exception:
@@ -2796,6 +3073,12 @@ def _finish_queue_step_boundary(
                     "warning-only cleanup opportunity already used, selecting the next target..."
                 )
                 _print_queue_step_separator(pending_target)
+            elif hard_retry_exhausted:
+                print(
+                    f"\n⚠️  Manager retry limit reached for {pending_target}; "
+                    "restored safe state when possible and yielding this theorem turn."
+                )
+                _print_queue_step_separator(pending_target, accepted=False)
             elif manager_check and not bool(manager_check.get("ok")):
                 print(
                     f"\n↻ Queue item cleared for {pending_target}; "
@@ -2828,6 +3111,10 @@ def _handle_managed_tool_result(
     _sync_disabled_tools_from_result(agent, function_name, _result)
     if not _single_queue_item_turn_enabled() or _agent_interrupted(agent):
         return
+    if function_name == "lean_search":
+        _track_search_progress(agent, args, _result)
+    else:
+        _note_non_search_tool_progress(agent, function_name)
 
     if function_name == "apply_verified_patch":
         managed_autonomy = getattr(agent, "_managed_autonomy_state", {}) or {}
@@ -2900,7 +3187,7 @@ def _handle_managed_tool_result(
     manager_verification: dict[str, Any] | None = None
     if function_name == "lean_incremental_check":
         payload = _json_tool_result_payload(_result)
-        if str(payload.get("action", "") or "") == "check_target":
+        if str(payload.get("action", "") or "") in {"check_target", "feedback"}:
             manager_verification = payload
     elif function_name == "lean_verify":
         payload = _json_tool_result_payload(_result)
@@ -4429,6 +4716,20 @@ def _declaration_diagnostic_feedback_reason(
     end = int(entry.get("end_line", 0) or start)
     if start <= 0:
         return ""
+
+    def _structured_diagnostic_line(diagnostic: Mapping[str, Any]) -> int | None:
+        for key in ("line", "start_line", "file_line"):
+            value = diagnostic.get(key)
+            if isinstance(value, int):
+                return value
+        for key in ("file_start", "start"):
+            value = diagnostic.get(key)
+            if isinstance(value, Mapping):
+                line = value.get("line")
+                if isinstance(line, int):
+                    return line
+        return None
+
     # Prefer the manager_check's structured messages when available. The text
     # fallbacks below only catch diagnostics that come in `<file>:<line>:<col>:`
     # form (lake / lean_inspect output); `lean_incremental_check` returns
@@ -4438,7 +4739,7 @@ def _declaration_diagnostic_feedback_reason(
     for diagnostic in structured_items or ():
         if not isinstance(diagnostic, Mapping):
             continue
-        line = diagnostic.get("line")
+        line = _structured_diagnostic_line(diagnostic)
         if not (isinstance(line, int) and start <= line <= max(start, end)):
             continue
         severity = str(diagnostic.get("severity", "") or "diagnostic").strip().lower()
@@ -5109,6 +5410,7 @@ def _remember_failed_attempt(
     *,
     cycle_number: int,
     refresh_baseline: bool = True,
+    reason: str = "",
 ) -> None:
     if not live_state:
         return
@@ -5120,14 +5422,15 @@ def _remember_failed_attempt(
     active_file = str(assignment_file or live_state.get("active_file", "") or live_state.get("active_file_label", "") or "").strip()
     if not target_symbol or not active_file:
         return
-    reason = str(
-        live_state.get("blocker_summary", "")
+    failure_reason = str(
+        reason
+        or live_state.get("blocker_summary", "")
         or live_state.get("diagnostics", "")
         or live_state.get("goals", "")
         or live_state.get("build_status", "")
         or ""
     ).strip()
-    if not reason:
+    if not failure_reason:
         return
     record_live_state = dict(live_state)
     record_item = dict(record_live_state.get("current_queue_item") or {})
@@ -5146,7 +5449,7 @@ def _remember_failed_attempt(
         _queue_key(target_symbol, active_file),
         cycle=cycle_number,
         proof_shape=proof_shape,
-        reason=_single_line(reason, 240),
+        reason=_single_line(failure_reason, 240),
     )
     if attempt is None:
         return
@@ -5741,7 +6044,7 @@ def _document_formalization_review_prompt(live_state: Mapping[str, Any]) -> str:
         "Current handoff issues:\n"
         f"{issues}\n\n"
         "Required review actions:\n"
-        "1. Use `formalization_document_inspect`, `lean_capabilities`, and `lean_inspect` before editing.\n"
+        "1. Use `read_pdf` for project-local PDF text, and use `formalization_document_inspect`, `lean_capabilities`, and `lean_inspect` before editing.\n"
         "2. Compare every source theorem/lemma entry against the Lean declaration and nearby Lean doc comment.\n"
         "3. For each entry, fill `Source qualifiers`, `Lean coverage`, and `Scope changes`. Source qualifiers should "
         "cover mathematical object class, quantifier order, parameter domain, output codomain, equality/image condition, "
@@ -8083,6 +8386,8 @@ RECENT SESSION STATE:
         summary = content.strip()
         if summary:
             return summary
+    except (KeyboardInterrupt, InterruptedError):
+        return _fallback_checkpoint_summary(history, label=label, trigger=trigger, note=note, live_state=live_state)
     except Exception:
         pass
     return _fallback_checkpoint_summary(history, label=label, trigger=trigger, note=note, live_state=live_state)
@@ -8478,7 +8783,21 @@ def _run_managed_conversation(
             }
             print("Returned to prover-agent mode after interrupt.")
             return result
-        raise error
+        error_type = type(error).__name__
+        error_text = str(error).strip() or repr(error)
+        summary = f"{error_type}: {_single_line(error_text, 240)}"
+        messages = list(getattr(agent, "_session_messages", []) or kwargs.get("conversation_history") or [])
+        print("")
+        print(f"⚠️  Managed workflow stopped after provider/API error: {summary}")
+        return {
+            "messages": messages,
+            "api_calls": 0,
+            "completed": False,
+            "failed": True,
+            "partial": True,
+            "error": summary,
+            "final_response": f"Managed workflow stopped after provider/API error: {summary}",
+        }
 
     result = result_holder.get("result")
     if interrupt_requested and not isinstance(result, dict):
@@ -8501,6 +8820,23 @@ def _run_managed_conversation(
     if result.get("interrupted") and not _is_step_boundary_interrupt(result):
         print("Returned to prover-agent mode after interrupt.")
     return result
+
+
+def _managed_conversation_failed(result: Mapping[str, Any] | None) -> bool:
+    payload = dict(result or {})
+    return bool(payload.get("failed") or payload.get("error"))
+
+
+def _record_managed_conversation_failure(result: Mapping[str, Any], *, phase: str) -> None:
+    error = _single_line(str(result.get("error", "") or "managed conversation failed"), 520)
+    _record_activity(
+        "managed-conversation-failed",
+        f"Managed conversation failed during {phase}: {error}",
+        error=error,
+        phase=phase,
+    )
+    print("")
+    print(f"⚠️  Managed workflow paused after {phase} failure: {error}")
 
 
 def _history_status_lines(
@@ -9410,6 +9746,13 @@ def _drive_autonomous_followups(
             conversation_history=history,
             persist_user_message=f"[epflemma-native autonomous continuation #{cycle}]",
         )
+        if _managed_conversation_failed(result):
+            history = list(result.get("messages") or history)
+            checkpoint_state = _journal_status()
+            live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
+            _record_managed_conversation_failure(result, phase=f"autonomous continuation #{cycle}")
+            _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="failed")
+            return history, compaction_state, checkpoint_state, live_state
         result = _review_agent_final_report(result, autonomy_state)
         history = result["messages"]
         checkpoint_state = _journal_status()
@@ -9542,6 +9885,14 @@ def main() -> int:
             conversation_history=history,
             persist_user_message="[epflemma-native startup workflow request]",
         )
+        if _managed_conversation_failed(result):
+            history = list(result.get("messages") or history)
+            checkpoint_state = _journal_status()
+            live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
+            _record_managed_conversation_failure(result, phase="startup")
+            _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="failed")
+            _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited after provider/API failure")
+            return 1
         result = _review_agent_final_report(result, autonomy_state)
         previous_history = history[:]
         history = result["messages"]
@@ -9571,6 +9922,12 @@ def main() -> int:
                 checkpoint_state,
                 autonomy_state,
             )
+        if _verified_workflow_should_exit_without_prompt(live_state):
+            _terminate_descendant_agents(agent)
+            _terminate_other_agents(agent)
+            _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="exited")
+            _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited after verified completion (non-interactive)")
+            return 0
         if not _native_interactive_enabled():
             if _live_state_is_verified(live_state):
                 _terminate_descendant_agents(agent)

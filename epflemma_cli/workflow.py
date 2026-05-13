@@ -60,6 +60,8 @@ class NativeWorkflowSpec:
     workflow_args: str
     parallel_agents: int = 1
     explicit_goal: str = ""
+    expert_provider: str = ""
+    expert_command_template: str = ""
     additional_skills: tuple[str, ...] = ()
 
 
@@ -207,6 +209,10 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
         summary["additional_skills"] = ", ".join(plan.additional_skills)
     if plan.workflow.explicit_goal:
         summary["prompt"] = plan.workflow.explicit_goal
+    if plan.workflow.expert_provider:
+        summary["expert_provider"] = plan.workflow.expert_provider
+    if plan.workflow.expert_command_template:
+        summary["expert_command_template"] = plan.workflow.expert_command_template
     return summary
 
 
@@ -233,6 +239,8 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
     parallel_agents = 1
     no_parallel = False
     explicit_goal = ""
+    expert_provider = ""
+    expert_command_template = ""
     additional_skills: list[str] = []
     workflow_tokens: list[str] = []
     idx = 0
@@ -257,6 +265,18 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             explicit_goal = " ".join(remaining[idx + 1:]).strip()
             idx = len(remaining)
             continue
+        if token == "--expert-provider":
+            if idx + 1 >= len(remaining):
+                raise ValueError("--expert-provider requires a value")
+            expert_provider = remaining[idx + 1].strip()
+            idx += 2
+            continue
+        if token == "--expert-command-template":
+            if idx + 1 >= len(remaining):
+                raise ValueError("--expert-command-template requires a value")
+            expert_command_template = remaining[idx + 1].strip()
+            idx += 2
+            continue
         if token in {"--additional-skill", "--additional_skill"}:
             if idx + 1 >= len(remaining):
                 raise ValueError(f"{token} requires a value")
@@ -277,6 +297,8 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         workflow_args=workflow_args.strip(),
         parallel_agents=parallel_agents,
         explicit_goal=explicit_goal,
+        expert_provider=expert_provider,
+        expert_command_template=expert_command_template,
         additional_skills=tuple(additional_skills),
     )
 
@@ -392,6 +414,10 @@ def resolve_workflow_request(
             "OPENGAUSS_NATIVE_ACTIVE_FILE": normalized_active_file,
         }
     )
+    if workflow.expert_provider:
+        child_env["AUXILIARY_LEAN_REASONING_PROVIDER"] = workflow.expert_provider
+    if workflow.expert_command_template:
+        child_env["AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE"] = workflow.expert_command_template
     if formalization_document is not None:
         child_env.update(formalization_document.to_env())
     argv = [sys.executable, "-m", _native_runner_module()]
@@ -477,5 +503,17 @@ def run_workflow(
         active_skill=active_skill,
         interactive=True,
     )
-    process.wait()
+    try:
+        process.wait()
+    except KeyboardInterrupt:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        return process.returncode if process.returncode is not None else 130
     return process.returncode

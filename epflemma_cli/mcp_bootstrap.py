@@ -35,6 +35,7 @@ class ManagedMCPServerSpec:
     default_enabled: bool = True
     timeout: int = 600
     connect_timeout: int = 120
+    min_python: tuple[int, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -60,10 +61,10 @@ MANAGED_LEAN_MCP_SPECS: dict[str, ManagedMCPServerSpec] = {
         name="lean-explore",
         role="semantic-declaration-search",
         venv_name="lean-explore",
-        install_spec="lean-explore",
+        install_spec="lean-explore[local]",
         console_script="lean-explore",
-        args=("mcp", "serve", "--backend", "api"),
-        default_enabled=False,
+        args=("mcp", "serve", "--backend", "local"),
+        min_python=(3, 12),
     ),
 }
 
@@ -194,6 +195,8 @@ def _write_bootstrap_document(path: Path, yaml: YAML, payload: CommentedMap) -> 
 
 
 def _ensure_managed_server_entry(entry: CommentedMap, *, spec: ManagedMCPServerSpec, home: Path) -> None:
+    previous_args = list(entry.get("args") or []) if isinstance(entry.get("args"), list) else []
+    previous_enabled = entry.get("enabled")
     entry["command"] = str(managed_mcp_command_path(spec.name, home))
     entry["args"] = list(spec.args)
     env_defaults = dict(spec.env)
@@ -213,6 +216,12 @@ def _ensure_managed_server_entry(entry: CommentedMap, *, spec: ManagedMCPServerS
     entry["role"] = spec.role
     entry["managed"] = True
     if "enabled" not in entry:
+        entry["enabled"] = spec.default_enabled
+    elif (
+        spec.name == "lean-explore"
+        and previous_enabled is False
+        and previous_args == ["mcp", "serve", "--backend", "api"]
+    ):
         entry["enabled"] = spec.default_enabled
     if "timeout" not in entry:
         entry["timeout"] = spec.timeout
@@ -262,20 +271,58 @@ def write_managed_mcp_config(home: str | os.PathLike[str] | None = None) -> dict
     }
 
 
-def _ensure_venv(venv_dir: Path, *, python_bin: str | None = None) -> Path:
+def _python_version_tuple(python_path: str | os.PathLike[str]) -> tuple[int, int] | None:
+    try:
+        completed = subprocess.run(
+            [
+                str(python_path),
+                "-c",
+                "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except Exception:
+        return None
+    text = completed.stdout.strip()
+    try:
+        major, minor = text.split(".", 1)
+        return int(major), int(minor)
+    except Exception:
+        return None
+
+
+def _ensure_venv(
+    venv_dir: Path,
+    *,
+    python_bin: str | None = None,
+    min_python: tuple[int, int] | None = None,
+) -> Path:
     venv_dir.parent.mkdir(parents=True, exist_ok=True)
     _secure_dir(venv_dir.parent)
     existing_python = _venv_bin_dir(venv_dir) / ("python.exe" if os.name == "nt" else "python")
     if existing_python.exists():
         try:
             subprocess.run([str(existing_python), "-V"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            return existing_python
+            if min_python is None:
+                return existing_python
+            version = _python_version_tuple(existing_python)
+            if version is not None and version >= min_python:
+                return existing_python
+            shutil.rmtree(venv_dir, ignore_errors=True)
         except Exception:
             shutil.rmtree(venv_dir, ignore_errors=True)
     if existing_python.exists():
         return existing_python
 
     candidates: list[str] = []
+    if min_python and min_python >= (3, 12):
+        for name in ("python3.13", "python3.12"):
+            path = shutil.which(name)
+            if path:
+                candidates.append(path)
     for candidate in (
         python_bin,
         sys.executable,
@@ -288,6 +335,10 @@ def _ensure_venv(venv_dir: Path, *, python_bin: str | None = None) -> Path:
 
     last_error: Exception | None = None
     for candidate in candidates:
+        if min_python is not None:
+            version = _python_version_tuple(candidate)
+            if version is None or version < min_python:
+                continue
         try:
             subprocess.run([candidate, "-m", "venv", str(venv_dir)], check=True)
             break
@@ -304,10 +355,11 @@ def _install_into_managed_venv(
     install_spec: str,
     *,
     python_bin: str | None = None,
+    min_python: tuple[int, int] | None = None,
     extra_install_specs: tuple[str, ...] = (),
 ) -> None:
-    python_path = _ensure_venv(venv_dir, python_bin=python_bin)
-    subprocess.run([str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", "pip", "setuptools", "wheel"], check=True)
+    python_path = _ensure_venv(venv_dir, python_bin=python_bin, min_python=min_python)
+    subprocess.run([str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", "pip", "setuptools<82", "wheel"], check=True)
     for spec in (install_spec, *extra_install_specs):
         subprocess.run([str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", spec], check=True)
 
@@ -405,6 +457,7 @@ def bootstrap_lean_mcp(*, home: str | os.PathLike[str] | None = None, python_bin
             venv_dir,
             spec.install_spec,
             python_bin=python_bin,
+            min_python=spec.min_python,
             extra_install_specs=spec.extra_install_specs,
         )
         installed_servers.append(

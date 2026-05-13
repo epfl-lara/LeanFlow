@@ -57,6 +57,10 @@ The installer configures local `lean-lsp-mcp` power modes by default:
 - REPL-backed `lean_multi_attempt` for faster tactic screening after `project init` builds `repl`
 - local LeanExplore semantic search when `lean-explore[local]` is installed and `lean-explore data fetch` has prepared the index; hosted LeanExplore API calls remain opt-in via `LEANEXPLORE_API_KEY`
 
+It also checks the external CLI tools used by core workflows: `rg` for local
+search and Poppler's `pdftotext`, `pdfinfo`, and `pdfimages` for PDF source
+inspection.
+
 Run the main workflows:
 
 ```bash
@@ -81,7 +85,8 @@ EPFLemma project into a per-run worktree, mounts only that worktree plus
 EPFLemma sandbox cache directories, and exports the final diff as
 `changes.patch` under `~/.epflemma/sandbox/runs/<run-id>/`. Re-run
 `./scripts/update-sandbox.sh` after pulling repository changes to reinstall and
-rebuild the sandbox image.
+rebuild the sandbox image. Use `./scripts/install-sandbox.sh --with-local-lean-explore`
+when you want the image to include the local LeanExplore embedding stack.
 
 Start the interactive shell:
 
@@ -131,9 +136,9 @@ Document formalization has a separate handoff boundary. `/formalize` and `/autof
 
 For project-scoped work, `/prove` without a file starts the project prove manager. It scans Lean files with remaining `sorry`, ranks them with candidate-to-candidate dependency analysis, theorem difficulty, local hints/examples, bounded source context, and length signals, asks the configured LLM for a prioritized file order when available, records that plan, and then assigns one file at a time to the existing `/prove SomeFile.lean` path. Parallel agents stay disabled unless the user explicitly opts into swarm mode.
 
-For document formalization, `/formalize` accepts a project-local `.tex` file, `.pdf` file, or directory containing a TeX project. Directory inputs are resolved deterministically to a main `.tex` source, with included `.tex`, bibliography, and local asset files recorded in the preflight manifest; ambiguous TeX roots fail before launch. EPFLemma creates a preflight manifest, extracted-text cache, Markdown planner blueprint, generated blueprint skill, and active Lean target file under the project, then asks the drafting agent to plan definitions/lemmas/theorems with source comments. When the draft is otherwise ready and only source-review approval is missing, the runner starts a fresh independent statement/source verifier agent; after that review-approved handoff, the managed proof queue can handle the remaining `sorry`s. `/prove SomeFile.lean` auto-attaches the generated blueprint skill when the file has a nearby `Blueprint.md`; you can also pass `--additional-skill path/to/SKILL.md`.
+For document formalization, `/formalize` accepts a project-local `.tex` file, `.pdf` file, or directory containing a TeX project. Directory inputs are resolved deterministically to a main `.tex` source, with included `.tex`, bibliography, and local asset files recorded in the preflight manifest; ambiguous TeX roots fail before launch. EPFLemma exposes `read_pdf` as the direct model-facing tool for reading project-local PDF text. EPFLemma creates a preflight manifest, extracted-text cache, Markdown planner blueprint, generated blueprint skill, and active Lean target file under the project, then asks the drafting agent to plan definitions/lemmas/theorems with source comments. When the draft is otherwise ready and only source-review approval is missing, the runner starts a fresh independent statement/source verifier agent; after that review-approved handoff, the managed proof queue can handle the remaining `sorry`s. `/prove SomeFile.lean` auto-attaches the generated blueprint skill when the file has a nearby `Blueprint.md`; you can also pass `--additional-skill path/to/SKILL.md`.
 
-For file-scoped work, EPFLemma drives the agent one declaration at a time. The runner owns the queue, refreshes diagnostics after edits, records failed attempts per theorem, and advances only when Lean verification says the current target is clean. Same-file queue steps use the LeanInteract-backed incremental verifier first, so imports/header state and prior declaration environments stay warm; Lake remains the final file/project sweep and fallback gate. If a theorem turn exhausts its API-step budget, the runner records that as a failed attempt, comments the failed declaration in the Lean file, and restores the original safe `sorry` body when it has an exact baseline slice; the theorem remains pending for the next queue cycle.
+For file-scoped work, EPFLemma drives the agent one declaration at a time. The runner owns the queue, refreshes diagnostics after edits, records failed attempts per theorem, and advances only when Lean verification says the current target is clean. Same-file queue steps use the LeanProbe-backed incremental verifier first, so imports/header state and prior declaration environments stay warm; Lake remains the final file/project sweep and fallback gate. If a theorem turn exhausts its API-step budget, the runner records that as a failed attempt, comments the failed declaration in the Lean file, and restores the original safe `sorry` body when it has an exact baseline slice; the theorem remains pending for the next queue cycle.
 
 ## Main Workflows
 

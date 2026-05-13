@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
+from epflemma_cli import mcp_bootstrap
 from epflemma_cli.mcp_bootstrap import (
     bootstrap_lean_mcp,
     managed_mcp_command_path,
@@ -43,12 +45,36 @@ def test_write_managed_mcp_config_preserves_comments_and_unrelated_keys(tmp_path
     assert "- mcp" in rendered
     assert "- serve" in rendered
     assert "- --backend" in rendered
-    assert "- api" in rendered
+    assert "- local" in rendered
     assert "LEAN_REPL: 'true'" in rendered or "LEAN_REPL: true" in rendered
     assert "LEAN_REPL_TIMEOUT: '60'" in rendered or "LEAN_REPL_TIMEOUT: 60" in rendered
     assert "LEAN_REPL_MEM_MB: '8192'" in rendered or "LEAN_REPL_MEM_MB: 8192" in rendered
     assert "LEAN_LOOGLE_CACHE_DIR:" in rendered
     assert "LEAN_MCP_INSTRUCTIONS:" in rendered
+
+
+def test_write_managed_mcp_config_migrates_leanexplore_to_local_enabled(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    config_path = home / "config.yaml"
+    config_path.write_text(
+        "mcp_servers:\n"
+        "  lean-explore:\n"
+        "    command: /old/lean-explore\n"
+        "    args:\n"
+        "      - mcp\n"
+        "      - serve\n"
+        "      - --backend\n"
+        "      - api\n"
+        "    enabled: false\n",
+        encoding="utf-8",
+    )
+
+    write_managed_mcp_config(home)
+
+    rendered = config_path.read_text(encoding="utf-8")
+    assert "- local" in rendered
+    assert "enabled: true" in rendered
 
 
 def test_managed_mcp_server_status_marks_missing_servers_for_bootstrap(tmp_path):
@@ -67,6 +93,26 @@ def test_managed_mcp_server_status_marks_missing_servers_for_bootstrap(tmp_path)
     assert status["lean-lsp"]["power_modes"]["remote_search_policy"] == "public-fallbacks-enabled"
 
 
+def test_managed_mcp_bootstrap_pins_setuptools_below_torch_conflict(monkeypatch, tmp_path):
+    python_path = tmp_path / "python"
+    python_path.write_text("#!/usr/bin/env python\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(mcp_bootstrap, "_ensure_venv", lambda *_args, **_kwargs: python_path)
+
+    def _fake_run(argv, *, check):
+        del check
+        calls.append([str(item) for item in argv])
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(mcp_bootstrap.subprocess, "run", _fake_run)
+
+    mcp_bootstrap._install_into_managed_venv(tmp_path / "venv", "demo-mcp")
+
+    assert "setuptools<82" in calls[0]
+    assert "setuptools" not in calls[0]
+
+
 def test_bootstrap_lean_mcp_repairs_missing_managed_command(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
@@ -76,9 +122,10 @@ def test_bootstrap_lean_mcp_repairs_missing_managed_command(monkeypatch, tmp_pat
         install_spec: str,
         *,
         python_bin: str | None = None,
+        min_python: tuple[int, int] | None = None,
         extra_install_specs: tuple[str, ...] = (),
     ) -> None:
-        del install_spec, python_bin, extra_install_specs
+        del install_spec, python_bin, min_python, extra_install_specs
         bin_dir = venv_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         script_name = {
