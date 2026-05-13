@@ -536,9 +536,9 @@ The structured activity feed is the right source for programmatic inspection and
 The verification loop is intentionally Lean-LSP-first:
 
 - use diagnostics and proof goals for most iterations
-- for ordered same-file theorem-queue turns, use `lean_incremental_check(check_target)` as the primary queue-step verifier; it keeps a LeanInteract server warm, reuses header/import state, and checks only the assigned declaration chunk
-- keep the canonical `lake env lean <file>` path for final file/project sweeps, explicit canonical checks, and LeanInteract fallback recovery
-- the queue manager performs controlled LeanInteract warmup with `prepare_file` when a theorem assignment is created or changes, so patch verification can reuse the warmed server
+- for ordered same-file theorem-queue turns, use `lean_incremental_check(check_target)` as the primary queue-step verifier; it is backed by LeanProbe, keeps a LeanInteract server warm, reuses header/import state, and checks only the assigned declaration chunk
+- keep the canonical `lake env lean <file>` path for final file/project sweeps, explicit canonical checks, and LeanProbe fallback recovery
+- the queue manager performs controlled LeanProbe warmup with `prepare_file` when a theorem assignment is created or changes, so patch verification can reuse the warmed server
 - agents should use `lean_incremental_check` or `lean_verify` for normal theorem-queue verification so the manager can classify the assigned declaration; terminal-based Lake checks remain available as an emergency/manual fallback when Lean tools themselves are broken
 - do not treat `lake build`, `grep`, `head`, or truncated output as proof that an assigned theorem is clean
 - outside those theorem-scoped turns, avoid repeated `lake env lean <file>` checks because they are slow on large imports
@@ -566,7 +566,7 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
 - `lean_verify`
   - run the canonical verification ladder in `file_exact`, `module`, or `project` mode
 - `lean_incremental_check`
-  - run the fast LeanInteract-backed verifier for ordered same-file theorem queues
+  - run the fast LeanProbe/LeanInteract-backed verifier for ordered same-file theorem queues
   - `prepare_file` warms imports/header and optionally advances cached environments to a target declaration
   - `check_target` verifies the assigned declaration or replacement chunk with `allow_sorry=False`
   - `feedback` returns diagnostics and optional tactic/proof-state annotations for repair prompts
@@ -578,8 +578,8 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
     - inspect `tactics[*].tactic`, `tactics[*].goals`, `tactics[*].proof_state`, `tactics[*].file_start`, `messages[*].file_start`, and `feedback_lean`
     - `feedback_lean` is the model-readable version of the current declaration with inserted feedback comments; use it to repair the proof at the exact failing line
     - failures automatically try to rerun with tactic collection when possible, so blocked proofs usually return richer context without slowing successful checks
-  - trust it for queue-step validity when LeanInteract is available, the project-local REPL matches the current toolchain, the cached environment was built from current file content up to the target, and the checked chunk exactly matches the current declaration replacement
-  - use `lean_verify` instead for final sweeps, unavailable/crashed/stale LeanInteract sessions, header/import/earlier-declaration edits, non-ordered queues, or explicit canonical checks
+  - trust it for queue-step validity when LeanProbe is available, the project-local REPL matches the current toolchain, the cached environment was built from current file content up to the target, and the checked chunk exactly matches the current declaration replacement
+  - use `lean_verify` instead for final sweeps, unavailable/crashed/stale LeanProbe sessions, header/import/earlier-declaration edits, non-ordered queues, or explicit canonical checks
 - `lean_search`
   - search in `auto`, `local`, `semantic`, `type-pattern`, or `natural-language` mode
   - prefers MCP/LSP-backed providers first and falls back to local `rg`/Mathlib search with explicit provider provenance and degraded reasons
@@ -643,8 +643,8 @@ What the runner does each cycle:
    - During a theorem queue turn, terminal-based file edits are rejected. Shell verification is allowed, but edits must go through file tools so the manager can check the assigned-declaration boundary.
    - New helper declarations are allowed when they directly help the assigned theorem; the manager does not restore them merely because they are outside the assigned declaration body.
    - If a file tool changes a pre-existing non-assigned declaration or future queue item, the manager restores those protected declarations to their assignment-start state and reports the queue edit guard in the tool result.
-   - `patch` and `write_file` are preferred in managed queue workflows; the manager warms LeanInteract with `prepare_file` at assignment time, and after a successful edit it first runs `lean_incremental_check(check_target)` for the assigned declaration.
-   - If LeanInteract is unavailable, crashes, times out, or cannot rebuild a valid cache, the manager falls back to the canonical file verification gate.
+   - `patch` and `write_file` are preferred in managed queue workflows; the manager warms LeanProbe with `prepare_file` at assignment time, and after a successful edit it first runs `lean_incremental_check(check_target)` for the assigned declaration.
+   - If LeanProbe is unavailable, crashes, times out, or cannot rebuild a valid cache, the manager falls back to the canonical file verification gate.
    - Direct terminal verification commands are not the normal managed path because the manager cannot classify them as precisely, but they remain available as an emergency/manual fallback if the Lean tool surface is broken.
    - `apply_verified_patch` remains available when the atomic checkpoint plus verification payload is useful.
    - An explicit `lean_incremental_check(check_target)` or `lean_verify(mode=file_exact)` can also close the assigned theorem turn because the manager falls back to the saved assignment even if no pending-feedback flag is set.
@@ -674,7 +674,7 @@ What the runner does each cycle:
      - the opportunity starts when the manager first sees this state and sends warning-only feedback back into the same theorem turn
      - starting the opportunity increments the manager warning-cleanup counter for this `(theorem, file)`
      - this is not a single API step and not a new workflow run; the model continues the same theorem turn using the remaining workflow budget
-     - the opportunity is evaluated at the next manager gate for that same theorem: successful `patch` / `write_file` LeanInteract auto-verification, `apply_verified_patch`, explicit `lean_incremental_check(check_target)`, explicit `lean_verify(mode=file_exact)`, or manager review of a final "solved" report
+     - the opportunity is evaluated at the next manager gate for that same theorem: successful `patch` / `write_file` LeanProbe auto-verification, `apply_verified_patch`, explicit `lean_incremental_check(check_target)`, explicit `lean_verify(mode=file_exact)`, or manager review of a final "solved" report
      - do not record a failed proof attempt
      - tell the model to fix only the assigned-declaration warning context and not edit future queued declarations; helper declarations created for this theorem remain part of this turn's proof work
      - if that next manager gate sees no warnings, accept the theorem and advance
@@ -729,7 +729,7 @@ flowchart TD
     I2 --> J
 
     J --> K{"Model action"}
-    K -- "patch/write_file/apply_verified_patch" --> L["Manager runs LeanInteract queue-step verification"]
+    K -- "patch/write_file/apply_verified_patch" --> L["Manager runs LeanProbe queue-step verification"]
     K -- "explicit lean_incremental_check or lean_verify" --> L
     K -- "claims solved" --> M["Manager final-report review"]
     M --> L
@@ -1317,6 +1317,10 @@ EPFLemma now treats MCP as default backend infrastructure for native Lean tools,
 
 Installer/bootstrap-managed default Lean MCP backends:
 
+- `lean-probe>=0.2.2,<0.3`
+  - Python package dependency powering the EPFLemma `lean_incremental_check` compatibility tool
+  - provides the LeanProbe/LeanInteract-backed queue-step verifier, target feedback, tactic states, and warm same-file declaration cache
+  - used as an internal verifier surface, not exposed as a separate user workflow; final file/project acceptance still goes through Lake
 - `lean-lsp-mcp==0.26.1`
   - primary state/search backend
   - diagnostics, goals, local search, semantic search helpers, state/premise/hover/outline discovery, and `lean_multi_attempt`
