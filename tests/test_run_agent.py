@@ -2123,6 +2123,7 @@ class TestBudgetPressure:
 
     def test_lean_reasoning_help_gets_larger_tool_result_cap(self, agent):
         assert agent._max_tool_result_chars("lean_reasoning_help") > agent._max_tool_result_chars("web_search")
+        assert agent._max_tool_result_chars("lean_decompose_helpers") > agent._max_tool_result_chars("web_search")
 
     def test_precompresses_before_advisor_when_reserved_context_would_overflow(self, agent):
         agent.compression_enabled = True

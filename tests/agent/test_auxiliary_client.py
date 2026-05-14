@@ -16,6 +16,7 @@ from agent.auxiliary_client import (
     _read_codex_access_token,
     _get_auxiliary_provider,
     _build_call_kwargs,
+    _resolve_task_provider_model,
     _resolve_task_reasoning_effort,
     _resolve_forced_provider,
     _resolve_auto,
@@ -38,6 +39,12 @@ def _clean_env(monkeypatch):
         "AUXILIARY_LEAN_REASONING_BASE_URL", "AUXILIARY_LEAN_REASONING_API_KEY",
         "AUXILIARY_LEAN_REASONING_REASONING_EFFORT",
         "AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE",
+        "AUXILIARY_LEAN_DECOMPOSE_HELPERS_PROVIDER",
+        "AUXILIARY_LEAN_DECOMPOSE_HELPERS_MODEL",
+        "AUXILIARY_LEAN_DECOMPOSE_HELPERS_BASE_URL",
+        "AUXILIARY_LEAN_DECOMPOSE_HELPERS_API_KEY",
+        "AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT",
+        "AUXILIARY_LEAN_DECOMPOSE_HELPERS_COMMAND_TEMPLATE",
         "EPFLEMMA_EXPERT_CODEX_COMMAND_TEMPLATE",
         "EPFLEMMA_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE",
         "CONTEXT_COMPRESSION_PROVIDER", "CONTEXT_COMPRESSION_MODEL",
@@ -612,6 +619,76 @@ class TestLeanReasoningBudget:
         )
 
         assert _resolve_task_reasoning_effort("lean_reasoning") == "medium"
+
+    def test_lean_decompose_helpers_inherits_lean_reasoning_config(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.auxiliary_client._load_runtime_config",
+            lambda: {
+                "auxiliary": {
+                    "lean_reasoning": {
+                        "provider": "main",
+                        "model": "reasoner/model",
+                        "reasoning_effort": "high",
+                    },
+                    "lean_decompose_helpers": {},
+                }
+            },
+        )
+
+        assert _resolve_task_provider_model("lean_decompose_helpers") == (
+            "main",
+            "reasoner/model",
+            None,
+            None,
+        )
+        assert _resolve_task_reasoning_effort("lean_decompose_helpers") == "high"
+
+    def test_lean_decompose_helpers_own_config_overrides_fallback(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.auxiliary_client._load_runtime_config",
+            lambda: {
+                "auxiliary": {
+                    "lean_reasoning": {
+                        "provider": "main",
+                        "model": "reasoner/model",
+                        "reasoning_effort": "high",
+                    },
+                    "lean_decompose_helpers": {
+                        "provider": "openrouter",
+                        "model": "planner/model",
+                        "reasoning_effort": "medium",
+                    },
+                }
+            },
+        )
+
+        assert _resolve_task_provider_model("lean_decompose_helpers") == (
+            "openrouter",
+            "planner/model",
+            None,
+            None,
+        )
+        assert _resolve_task_reasoning_effort("lean_decompose_helpers") == "medium"
+
+    def test_lean_decompose_helpers_env_overrides_own_and_fallback_config(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_LEAN_DECOMPOSE_HELPERS_PROVIDER", "custom-provider")
+        monkeypatch.setenv("AUXILIARY_LEAN_DECOMPOSE_HELPERS_MODEL", "env/planner")
+        monkeypatch.setattr(
+            "agent.auxiliary_client._load_runtime_config",
+            lambda: {
+                "auxiliary": {
+                    "lean_reasoning": {"provider": "main", "model": "reasoner/model"},
+                    "lean_decompose_helpers": {"provider": "openrouter", "model": "planner/model"},
+                }
+            },
+        )
+
+        assert _resolve_task_provider_model("lean_decompose_helpers") == (
+            "custom-provider",
+            "env/planner",
+            None,
+            None,
+        )
 
     def test_rcp_main_route_gets_high_reasoning_budget(self):
         kwargs = _build_call_kwargs(

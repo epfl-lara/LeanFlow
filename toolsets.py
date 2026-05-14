@@ -26,6 +26,7 @@ _LEAN_TOOLS = [
     "apply_verified_patch",
     "lean_worker_dispatch",
     "lean_reasoning_help",
+    "lean_decompose_helpers",
 ]
 
 _EPFLEMMA_CORE_TOOLS = [

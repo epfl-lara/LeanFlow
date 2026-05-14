@@ -30,6 +30,10 @@ DEFAULT_COMMAND_TEMPLATES = {
     "claude-code": "claude --print --permission-mode plan --tools '' --no-session-persistence",
 }
 
+TASK_FALLBACKS = {
+    "lean_decompose_helpers": "lean_reasoning",
+}
+
 
 @dataclass(frozen=True)
 class ExpertCommandResult:
@@ -53,29 +57,32 @@ def is_command_expert_provider(value: str) -> bool:
     return normalize_expert_provider(value) in set(DEFAULT_COMMAND_TEMPLATES)
 
 
+def _fallback_task(task: str) -> str:
+    return TASK_FALLBACKS.get(str(task or "").strip(), "")
+
+
 def resolve_expert_provider(task: str = "lean_reasoning", explicit: str | None = None) -> str:
     if explicit and str(explicit).strip():
         return normalize_expert_provider(str(explicit))
 
-    task_key = str(task or "").strip().upper()
-    env_provider = ""
-    if task_key:
-        env_provider = str(os.getenv(f"AUXILIARY_{task_key}_PROVIDER", "") or "").strip()
-        if not env_provider:
-            env_provider = str(get_env_value(f"AUXILIARY_{task_key}_PROVIDER", "") or "").strip()
+    env_provider = _read_task_env(task, "PROVIDER")
     if env_provider:
         return normalize_expert_provider(env_provider)
 
-    try:
-        config = load_config()
-    except Exception:
-        config = {}
-    aux = config.get("auxiliary", {}) if isinstance(config, Mapping) else {}
-    task_config = aux.get(task, {}) if isinstance(aux, Mapping) else {}
-    if isinstance(task_config, Mapping):
-        cfg_provider = str(task_config.get("provider", "") or "").strip()
-        if cfg_provider:
-            return normalize_expert_provider(cfg_provider)
+    task_config = _task_config(task)
+    cfg_provider = str(task_config.get("provider", "") or "").strip()
+    if cfg_provider:
+        return normalize_expert_provider(cfg_provider)
+
+    fallback_task = _fallback_task(task)
+    if fallback_task:
+        fallback_env_provider = _read_task_env(fallback_task, "PROVIDER")
+        if fallback_env_provider:
+            return normalize_expert_provider(fallback_env_provider)
+        fallback_config = _task_config(fallback_task)
+        fallback_cfg_provider = str(fallback_config.get("provider", "") or "").strip()
+        if fallback_cfg_provider:
+            return normalize_expert_provider(fallback_cfg_provider)
     return "auto"
 
 
@@ -116,7 +123,21 @@ def resolve_expert_command_template(provider: str, task: str = "lean_reasoning")
     generic_template = str(task_config.get("command_template", "") or "").strip()
     provider_template_key = f"{provider.replace('-', '_')}_command_template"
     specific_template = str(task_config.get(provider_template_key, "") or "").strip()
-    return specific_template or generic_template or DEFAULT_COMMAND_TEMPLATES[provider]
+    if specific_template or generic_template:
+        return specific_template or generic_template
+
+    fallback_task = _fallback_task(task)
+    if fallback_task:
+        fallback_task_template = _read_task_env(fallback_task, "COMMAND_TEMPLATE")
+        if fallback_task_template:
+            return fallback_task_template
+        fallback_config = _task_config(fallback_task)
+        fallback_generic_template = str(fallback_config.get("command_template", "") or "").strip()
+        fallback_specific_template = str(fallback_config.get(provider_template_key, "") or "").strip()
+        if fallback_specific_template or fallback_generic_template:
+            return fallback_specific_template or fallback_generic_template
+
+    return DEFAULT_COMMAND_TEMPLATES[provider]
 
 
 def _max_response_chars() -> int:
