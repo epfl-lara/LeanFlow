@@ -5,7 +5,7 @@ title: Prove
 summary: Queue-driven autonomous theorem proving with LSP-first inspection, native search fallbacks, worker escalation, and strict verification gates.
 aliases: [autoprove]
 skills: [lean-proof-loop, lean-theorem-queue-worker]
-tools: [lean_capabilities, lean_inspect, lean_search, lean_proof_context, lean_auto_search, lean_multi_attempt, lean_verify, lean_sorries, lean_axioms, lean_worker_dispatch]
+tools: [lean_capabilities, lean_inspect, lean_search, lean_proof_context, lean_auto_search, lean_multi_attempt, lean_decompose_helpers, lean_reasoning_help, lean_verify, lean_sorries, lean_axioms, lean_worker_dispatch]
 workers: [proof-repair, axiom-eliminator, sorry-filler-deep]
 review_actions: [continue, replan, redraft, falsify, stop]
 stop_conditions: [verified, blocked, interrupted, stalled]
@@ -66,16 +66,24 @@ Use `review`, `checkpoint`, `draft`, `refactor`, or `golf` for those cases.
    - use only with a known proof location and 2-6 short local tactic candidates
    - do not use it for vague search, speculative whole-proof generation, declaration headers, or candidates containing `sorry`
    - if you have one full candidate proof, patch the file and finish with `lean_verify`
-7. edit the current target minimally
+7. `lean_decompose_helpers`
+   - use when a theorem is hard because the direct proof needs intermediate invariants, helper lemmas, or an affine/algebraic split before editing will be productive
+   - call it after focused search/proof-context work has identified the obstacle but before inserting theorem-sized comment blocks, placeholder `sorry`, or broad speculative helper declarations
+   - pass the exact theorem statement, current diagnostics/goals, current attempt, and a concise failed-attempt summary
+   - treat returned helpers as checked decomposition advice: insert only `ready_to_insert` skeletons deliberately, then prove each helper without lingering `sorry`
+8. edit the current target minimally
    - queue-driven runs should change one declaration-sized unit at a time
-   - local helper lemmas are allowed when they directly unblock the assigned declaration
-8. `lean_worker_dispatch`
+   - declaring local helper lemmas is allowed/encouraged when they directly unblock the assigned declaration
+9. `lean_reasoning_help`
+   - use for broad proof-strategy advice when the missing piece is conceptual or library-navigation oriented
+   - prefer `lean_decompose_helpers` instead when the useful next step is a structured sublemma split
+10. `lean_worker_dispatch`
    - use only when the route decision or blocker history points to a specialist worker
    - do not delegate by default
-9. `lean_verify`
+11. `lean_verify`
    - use the narrowest verification mode that matches the current gate
    - do not treat `grep`, truncated logs, or disappearing `sorry` text as verification
-10. `lean_sorries` or `lean_axioms`
+12. `lean_sorries` or `lean_axioms`
    - use when the blocker is global `sorry` inventory or axiom risk rather than local proof construction
 
 ## Queue Contract
@@ -131,7 +139,11 @@ Use the blocker kind from `lean_inspect` and the route decision from the runner 
 - search blocker
   - missing lemma or unknown proof shape
   - default route: `lean_search` before rewriting the proof blindly
-  - after repeated empty searches, stop theorem-name fishing and either try the most plausible local step, call `lean_proof_context`, or escalate as stuck
+  - after repeated empty searches, stop theorem-name fishing and either try the most plausible local step, call `lean_proof_context`, call `lean_decompose_helpers` when the proof needs sublemmas, or escalate as stuck
+- decomposition blocker
+  - the proof is mathematically plausible but too large to attack directly, repeated searches are broad, or the next productive edit is a helper lemma/invariant split
+  - default route: call `lean_decompose_helpers` for ordered helper skeletons and proof hints, then patch and verify those helpers one at a time
+  - do not replace this with comments plus `sorry`; if the helper skeleton is not ready to insert, report the failed skeleton diagnostics as blocker context
 - axiom-risk blocker
   - proof compiles but the axiom profile is unacceptable or unknown
   - default route: `lean_axioms`, then `axiom-eliminator` if needed
