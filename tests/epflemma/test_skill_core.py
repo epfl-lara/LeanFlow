@@ -235,6 +235,18 @@ def test_theorem_queue_worker_skill_is_loadable(monkeypatch, tmp_path):
     assert "external workflow manager" in prompt
     assert "Focus only on solving the assigned declaration" in prompt
     assert "adding and iterating on new helper declarations" in prompt
+    assert "lean_decompose_helpers" in prompt
+    assert "sublemma/invariant split" in prompt
+
+
+def test_proof_loop_skill_mentions_helper_decomposition(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+
+    prompt = build_skill_prompt("lean-proof-loop", tmp_path)
+
+    assert "lean_decompose_helpers" in prompt
+    assert "checked sublemma plan" in prompt
 
 
 def test_all_curated_builtin_skills_are_discoverable(monkeypatch, tmp_path):
