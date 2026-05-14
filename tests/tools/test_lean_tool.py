@@ -499,3 +499,183 @@ def test_lean_reasoning_help_tool_reports_unavailable(monkeypatch):
     assert payload["success"] is False
     assert payload["status"] == "unavailable"
     assert "No LLM provider configured" in payload["message"]
+
+
+def test_lean_decompose_helpers_returns_checked_structured_plan(monkeypatch, tmp_path):
+    target = tmp_path / "Demo.lean"
+    original = "theorem demo : True := by\n  sorry\n"
+    target.write_text(original, encoding="utf-8")
+    captured: dict[str, object] = {}
+    replacements: list[str] = []
+
+    def _fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            model="moonshotai/Kimi-K2.6-int4",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "obstacle_summary": "The main proof needs a reusable invariant.",
+                                "recommended_split": "Prove helper_ok first, then use it in demo.",
+                                "insertion_guidance": "Insert helpers immediately before demo.",
+                                "first_concrete_next_edit": "Patch helper_ok skeleton first.",
+                                "helpers": [
+                                    {
+                                        "name": "helper_ok",
+                                        "purpose": "Expose the trivial fact.",
+                                        "lean_skeleton": "private lemma helper_ok : True := by\n  sorry",
+                                        "dependencies": [],
+                                        "proof_hints": ["exact trivial"],
+                                        "insertion_point": "before demo",
+                                    },
+                                    {
+                                        "name": "helper_bad",
+                                        "purpose": "Malformed helper.",
+                                        "lean_skeleton": "private lemma helper_bad : True := by\n  exact missing_name",
+                                        "dependencies": ["helper_ok"],
+                                        "proof_hints": ["fix the missing term"],
+                                    },
+                                ],
+                            }
+                        )
+                    )
+                )
+            ],
+        )
+
+    def _fake_incremental_check(**kwargs):
+        replacements.append(kwargs["replacement"])
+        assert target.read_text(encoding="utf-8") == original
+        if "helper_bad" in kwargs["replacement"]:
+            return {
+                "success": True,
+                "ok": False,
+                "errors": 1,
+                "messages": [{"severity": "error", "message": "unknown identifier 'missing_name'"}],
+                "output": "error: unknown identifier 'missing_name'",
+            }
+        return {
+            "success": True,
+            "ok": False,
+            "errors": 0,
+            "warnings": 1,
+            "sorry": 1,
+            "output": "warning: declaration uses `sorry`",
+        }
+
+    monkeypatch.setattr(lean_tool, "call_llm", _fake_call_llm)
+    monkeypatch.setattr(lean_tool, "lean_incremental_check", _fake_incremental_check)
+
+    payload = json.loads(
+        lean_tool.lean_decompose_helpers_tool(
+            "demo",
+            str(target),
+            theorem_statement="theorem demo : True := by",
+            current_goals="⊢ True",
+            cwd=str(tmp_path),
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["status"] == "answered"
+    assert payload["obstacle_summary"].startswith("The main proof")
+    assert payload["helpers"][0]["check_status"] == "ok"
+    assert payload["helpers"][0]["ready_to_insert"] is True
+    assert payload["helpers"][1]["check_status"] == "failed"
+    assert payload["helpers"][1]["ready_to_insert"] is False
+    assert "unknown identifier" in payload["helpers"][1]["check_diagnostics"]
+    assert payload["skeleton_validation"]["validated_count"] == 2
+    assert payload["skeleton_validation"]["ready_count"] == 1
+    assert payload["skeleton_validation"]["allows_sorry_warnings"] is True
+    assert "theorem demo : True := by\n  sorry" in replacements[0]
+    assert target.read_text(encoding="utf-8") == original
+    assert captured["task"] == "lean_decompose_helpers"
+    assert "Return strict JSON only" in captured["messages"][0]["content"]
+
+
+def test_lean_decompose_helpers_uses_fallback_command_provider(monkeypatch, tmp_path):
+    target = tmp_path / "Demo.lean"
+    target.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+    response_text = json.dumps(
+        {
+            "obstacle_summary": "Split out the trivial fact.",
+            "recommended_split": "Insert helper_ok before demo.",
+            "insertion_guidance": "Before demo.",
+            "first_concrete_next_edit": "Add helper_ok.",
+            "helpers": [
+                {
+                    "name": "helper_ok",
+                    "purpose": "Expose True.",
+                    "lean_skeleton": "private lemma helper_ok : True := by\n  sorry",
+                    "dependencies": [],
+                    "proof_hints": ["exact trivial"],
+                    "insertion_point": "before demo",
+                }
+            ],
+        }
+    )
+
+    def _fake_run_command_expert_help(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            provider=kwargs["provider"],
+            command=["codex-helper"],
+            exit_status=0,
+            response=response_text,
+            stderr="",
+            truncated=False,
+            response_chars=len(response_text),
+            max_response_chars=64000,
+            timed_out=False,
+        )
+
+    monkeypatch.setenv("AUXILIARY_LEAN_REASONING_PROVIDER", "codex")
+    monkeypatch.setenv("AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE", "codex-helper")
+    monkeypatch.setattr(lean_tool, "run_command_expert_help", _fake_run_command_expert_help)
+    monkeypatch.setattr(
+        lean_tool,
+        "lean_incremental_check",
+        lambda **kwargs: {"success": True, "ok": False, "errors": 0, "warnings": 1},
+    )
+
+    payload = json.loads(
+        lean_tool.lean_decompose_helpers_tool(
+            "demo",
+            str(target),
+            theorem_statement="theorem demo : True := by",
+            cwd=str(tmp_path),
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["mode"] == "command"
+    assert payload["provider"] == "codex"
+    assert captured["task"] == "lean_decompose_helpers"
+    assert captured["provider"] == "codex"
+
+
+def test_lean_decompose_helpers_reports_malformed_json(monkeypatch):
+    monkeypatch.setattr(
+        lean_tool,
+        "call_llm",
+        lambda **kwargs: SimpleNamespace(
+            model="moonshotai/Kimi-K2.6-int4",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="not json"))],
+        ),
+    )
+
+    payload = json.loads(
+        lean_tool.lean_decompose_helpers_tool(
+            "demo",
+            "Demo/Main.lean",
+            theorem_statement="theorem demo : True := by",
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["status"] == "invalid_json"
+    assert "did not return a JSON object" in payload["message"]
+    assert payload["raw_response"] == "not json"
