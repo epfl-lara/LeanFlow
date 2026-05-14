@@ -311,29 +311,10 @@ fi
 # explicit installation artifacts instead of hidden first-run side effects.
 step "Creating EPFLemma config"
 EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_VENV_DIR/bin/python" <<'PY'
-from collections.abc import Mapping
-
-import yaml
-
-from epflemma_cli.config import (
-    DEFAULT_CONFIG,
-    _deep_merge,
-    ensure_epflemma_home,
-    get_config_path,
-    save_config,
-)
+from epflemma_cli.config import ensure_epflemma_home, load_config
 
 ensure_epflemma_home()
-path = get_config_path()
-try:
-    current = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-except Exception:
-    current = {}
-if not isinstance(current, Mapping):
-    current = {}
-merged = _deep_merge(DEFAULT_CONFIG, current)
-if merged != current:
-    save_config(merged)
+load_config()
 PY
 ok "config: $EPFLEMMA_HOME/config.yaml"
 
