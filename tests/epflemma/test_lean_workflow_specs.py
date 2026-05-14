@@ -46,6 +46,17 @@ def test_core_workflow_specs_expose_alias_and_worker_contracts():
     assert "autoformalize" in formalize.aliases
     assert "proof-repair" in prove.workers
     assert "axiom-eliminator" in formalize.workers
+    assert "lean_decompose_helpers" in prove.tools
+    assert "lean_reasoning_help" in prove.tools
+
+
+def test_prove_contract_recommends_helper_decomposition_for_hard_theorems():
+    prove = get_lean_spec("prove")
+
+    assert prove is not None
+    assert "lean_decompose_helpers" in prove.content
+    assert "structured sublemma split" in prove.content
+    assert "decomposition blocker" in prove.content
 
 
 def test_specs_for_skill_returns_native_workflow_links():

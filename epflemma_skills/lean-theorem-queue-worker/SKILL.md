@@ -60,9 +60,11 @@ Primary specs:
 6. Do not send theorem-sized proof blocks, declaration headers, or candidates containing `sorry` to `lean_multi_attempt`.
 7. If you have one full candidate proof, use the managed edit path unless the atomic `apply_verified_patch` payload is specifically useful.
 8. Invent helper lemmas or sublemmas when the direct proof is too large or repeated direct attempts fail. Prefer small statements that are easy to verify and directly feed the assigned declaration.
-9. If repeated focused attempts fail while the theorem still looks solvable, call `lean_reasoning_help` with the statement, diagnostics, current attempt, and failed-attempt summary.
-10. If `lean_reasoning_help` reports that the advisor is unavailable or returned no answer, continue with the strongest concrete edit, verification, worker dispatch, or blocker report you have.
-11. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, verification, worker dispatch, or blocker report you have.
+9. If the theorem is hard because the next useful edit is a sublemma/invariant split, call `lean_decompose_helpers` with the exact statement, current diagnostics/goals, current attempt, and failed-attempt summary. Use it before inserting placeholder comments, unchecked theorem-sized helper guesses, or broad speculative patches.
+10. Treat `lean_decompose_helpers` output as structured planning advice: insert only helpers marked `ready_to_insert`, prove them without lingering `sorry`, and keep failed skeleton diagnostics as blocker context rather than hiding them.
+11. If repeated focused attempts fail while the theorem still looks solvable and the blocker is broad strategy/library navigation rather than a split plan, call `lean_reasoning_help` with the statement, diagnostics, current attempt, and failed-attempt summary.
+12. If `lean_reasoning_help` reports that the advisor is unavailable or returned no answer, continue with the strongest concrete edit, verification, worker dispatch, or blocker report you have.
+13. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, `lean_decompose_helpers` when a helper split is the likely next edit, verification, worker dispatch, or blocker report you have.
 
 ## Success Condition
 
