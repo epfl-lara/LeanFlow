@@ -63,6 +63,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "codex_command_template": "",
             "claude_code_command_template": "",
         },
+        "lean_decompose_helpers": {
+            "provider": "",
+            "model": "",
+            "reasoning_effort": "",
+            "base_url": "",
+            "api_key": "",
+            "command_template": "",
+            "codex_command_template": "",
+            "claude_code_command_template": "",
+        },
     },
     "toolsets": ["epflemma-cli"],
     "agent": {
@@ -127,6 +137,12 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 #   moonshotai/Kimi-K2.6-int4 with high reasoning effort when the endpoint
 #   supports explicit reasoning controls.
 #
+# Auxiliary helper decomposer:
+#   auxiliary.lean_decompose_helpers is used by the lean_decompose_helpers tool
+#   when the useful next step is splitting a hard theorem into helper lemmas.
+#   Empty values inherit auxiliary.lean_reasoning, so you can leave this blank
+#   until you want a separate decomposition-planner model/provider.
+#
 # Common model changes:
 #   - Change the primary model: model.default
 #   - Change the primary provider: model.provider
@@ -137,6 +153,9 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 #   - Change the theorem advisor model: auxiliary.lean_reasoning.model
 #   - Change the theorem advisor reasoning budget:
 #     auxiliary.lean_reasoning.reasoning_effort
+#   - Use a separate helper-decomposition planner:
+#     auxiliary.lean_decompose_helpers.model and
+#     auxiliary.lean_decompose_helpers.reasoning_effort
 #   - Use a separate theorem advisor endpoint: set
 #     auxiliary.lean_reasoning.base_url and auxiliary.lean_reasoning.api_key,
 #     or AUXILIARY_LEAN_REASONING_BASE_URL / AUXILIARY_LEAN_REASONING_API_KEY
@@ -183,6 +202,16 @@ AUXILIARY_LEAN_REASONING_REASONING_EFFORT=
 AUXILIARY_LEAN_REASONING_BASE_URL=
 AUXILIARY_LEAN_REASONING_API_KEY=
 AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE=
+
+# Optional per-task overrides for lean_decompose_helpers. Leave empty to
+# inherit auxiliary.lean_reasoning / AUXILIARY_LEAN_REASONING_*.
+AUXILIARY_LEAN_DECOMPOSE_HELPERS_PROVIDER=
+AUXILIARY_LEAN_DECOMPOSE_HELPERS_MODEL=
+AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT=
+AUXILIARY_LEAN_DECOMPOSE_HELPERS_BASE_URL=
+AUXILIARY_LEAN_DECOMPOSE_HELPERS_API_KEY=
+AUXILIARY_LEAN_DECOMPOSE_HELPERS_COMMAND_TEMPLATE=
+
 EPFLEMMA_EXPERT_CODEX_COMMAND_TEMPLATE=
 EPFLEMMA_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE=
 
@@ -277,6 +306,31 @@ def _ensure_default_soul_md(home: Path) -> None:
 def default_config_yaml(config: Mapping[str, Any] | None = None) -> str:
     payload = DEFAULT_CONFIG if config is None else config
     return DEFAULT_CONFIG_HEADER + yaml.safe_dump(dict(payload), sort_keys=False)
+
+
+def _ensure_default_config_file(home: Path) -> None:
+    config_path = home / "config.yaml"
+    if not config_path.exists():
+        config_path.write_text(default_config_yaml(DEFAULT_CONFIG), encoding="utf-8")
+        _secure_file(config_path)
+        return
+
+    try:
+        payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        _secure_file(config_path)
+        return
+    if not isinstance(payload, Mapping):
+        _secure_file(config_path)
+        return
+
+    if any(key in payload for key in ("gauss", "opengauss")) and "epflemma" not in payload:
+        merged = _transform_legacy_config(payload)
+    else:
+        merged = _deep_merge(DEFAULT_CONFIG, payload)
+    if merged != payload:
+        config_path.write_text(default_config_yaml(merged), encoding="utf-8")
+    _secure_file(config_path)
 
 
 def _merge_env_template(existing: str) -> str:
@@ -406,6 +460,7 @@ def ensure_epflemma_home(import_legacy: bool = True) -> Path:
         target = home / subdir
         target.mkdir(parents=True, exist_ok=True)
         _secure_dir(target)
+    _ensure_default_config_file(home)
     _ensure_default_env_file(home)
     return home
 

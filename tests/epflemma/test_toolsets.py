@@ -55,6 +55,7 @@ def test_each_group_present_in_core_tools():
         assert tool in core, f"document tool {tool!r} missing from core"
     assert "apply_verified_patch" in core
     assert "lean_reasoning_help" in core
+    assert "lean_decompose_helpers" in core
 
 
 def test_resolve_toolset_returns_empty_for_unknown_name():

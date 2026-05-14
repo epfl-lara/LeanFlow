@@ -79,6 +79,10 @@ NOUS_EXTRA_BODY = {"tags": ["product=epflemma-agent"]}
 # Set at resolve time — True if the auxiliary client points to Nous Portal
 auxiliary_is_nous: bool = False
 
+_AUXILIARY_TASK_FALLBACKS: Dict[str, str] = {
+    "lean_decompose_helpers": "lean_reasoning",
+}
+
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "gemini-3-flash"
@@ -585,6 +589,25 @@ def _get_auxiliary_env_override(task: str, suffix: str) -> Optional[str]:
         val = os.getenv(f"{prefix}{task.upper()}_{suffix}", "").strip()
         if val:
             return val
+    return None
+
+
+def _auxiliary_fallback_task(task: str = None) -> Optional[str]:
+    return _AUXILIARY_TASK_FALLBACKS.get(str(task or "").strip())
+
+
+def _auxiliary_task_config(config: dict[str, Any], task: str = None) -> dict[str, Any]:
+    if not task:
+        return {}
+    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
+    return task_config if isinstance(task_config, dict) else {}
+
+
+def _task_config_text(config: dict[str, Any], key: str) -> Optional[str]:
+    value = config.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return None
 
 
@@ -1239,19 +1262,19 @@ def _resolve_task_provider_model(
 
     Priority:
       1. Explicit provider/model/base_url/api_key args (always win)
-      2. Env var overrides (AUXILIARY_{TASK}_*, CONTEXT_{TASK}_*)
-      3. Config file (auxiliary.{task}.* or compression.*)
-      4. "auto" (full auto-detection chain)
+      2. Task env var overrides (AUXILIARY_{TASK}_*, CONTEXT_{TASK}_*)
+      3. Task config file (auxiliary.{task}.* or compression.*)
+      4. Fallback task env/config, for tasks with an explicit inheritance rule
+      5. "auto" (full auto-detection chain)
 
     Returns (provider, model, base_url, api_key) where model may be None
     (use provider default). When base_url is set, provider is forced to
     "custom" and the task uses that direct endpoint.
     """
     config = {}
-    cfg_provider = None
-    cfg_model = None
-    cfg_base_url = None
-    cfg_api_key = None
+    task_config: dict[str, Any] = {}
+    fallback_config: dict[str, Any] = {}
+    fallback_task = _auxiliary_fallback_task(task)
 
     if task:
         try:
@@ -1259,23 +1282,26 @@ def _resolve_task_provider_model(
         except Exception:
             config = {}
 
-        aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
-        task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-        if not isinstance(task_config, dict):
-            task_config = {}
-        cfg_provider = str(task_config.get("provider", "")).strip() or None
-        cfg_model = str(task_config.get("model", "")).strip() or None
-        cfg_base_url = str(task_config.get("base_url", "")).strip() or None
-        cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        task_config = _auxiliary_task_config(config, task)
+        if fallback_task:
+            fallback_config = _auxiliary_task_config(config, fallback_task)
 
         # Backwards compat: compression section has its own keys
-        if task == "compression" and not cfg_provider:
+        if task == "compression" and not _task_config_text(task_config, "provider"):
             comp = config.get("compression", {}) if isinstance(config, dict) else {}
             if isinstance(comp, dict):
-                cfg_provider = comp.get("summary_provider", "").strip() or None
+                task_config = dict(task_config)
+                task_config["provider"] = comp.get("summary_provider", "")
 
-    env_model = _get_auxiliary_env_override(task, "MODEL") if task else None
-    resolved_model = model or env_model or cfg_model
+    task_env_model = _get_auxiliary_env_override(task, "MODEL") if task else None
+    fallback_env_model = _get_auxiliary_env_override(fallback_task, "MODEL") if fallback_task else None
+    resolved_model = (
+        model
+        or task_env_model
+        or _task_config_text(task_config, "model")
+        or fallback_env_model
+        or _task_config_text(fallback_config, "model")
+    )
 
     if base_url:
         return "custom", resolved_model, base_url, api_key
@@ -1283,19 +1309,66 @@ def _resolve_task_provider_model(
         return provider, resolved_model, base_url, api_key
 
     if task:
-        env_base_url = _get_auxiliary_env_override(task, "BASE_URL")
-        env_api_key = _get_auxiliary_env_override(task, "API_KEY")
-        if env_base_url:
-            return "custom", resolved_model, env_base_url, env_api_key or cfg_api_key
+        task_env_base_url = _get_auxiliary_env_override(task, "BASE_URL")
+        task_env_api_key = _get_auxiliary_env_override(task, "API_KEY")
+        cfg_base_url = _task_config_text(task_config, "base_url")
+        cfg_api_key = _task_config_text(task_config, "api_key")
+        fallback_env_base_url = _get_auxiliary_env_override(fallback_task, "BASE_URL") if fallback_task else None
+        fallback_env_api_key = _get_auxiliary_env_override(fallback_task, "API_KEY") if fallback_task else None
+        fallback_cfg_base_url = _task_config_text(fallback_config, "base_url")
+        fallback_cfg_api_key = _task_config_text(fallback_config, "api_key")
 
-        env_provider = _get_auxiliary_provider(task)
-        if env_provider != "auto":
-            return env_provider, resolved_model, None, None
+        if task_env_base_url:
+            return (
+                "custom",
+                resolved_model,
+                task_env_base_url,
+                task_env_api_key or cfg_api_key or fallback_env_api_key or fallback_cfg_api_key,
+            )
+
+        task_env_provider = _get_auxiliary_env_override(task, "PROVIDER")
+        if task_env_provider:
+            normalized_env_provider = task_env_provider.strip().lower()
+            if normalized_env_provider != "auto":
+                return normalized_env_provider, resolved_model, None, None
+            return "auto", resolved_model, None, None
 
         if cfg_base_url:
-            return "custom", resolved_model, cfg_base_url, cfg_api_key
-        if cfg_provider and cfg_provider != "auto":
-            return cfg_provider, resolved_model, None, None
+            return "custom", resolved_model, cfg_base_url, task_env_api_key or cfg_api_key
+        cfg_provider = _task_config_text(task_config, "provider")
+        if cfg_provider:
+            if cfg_provider != "auto":
+                return cfg_provider, resolved_model, None, None
+            return "auto", resolved_model, None, None
+
+        if fallback_task:
+            if fallback_env_base_url:
+                return (
+                    "custom",
+                    resolved_model,
+                    fallback_env_base_url,
+                    task_env_api_key or cfg_api_key or fallback_env_api_key or fallback_cfg_api_key,
+                )
+
+            fallback_env_provider = _get_auxiliary_env_override(fallback_task, "PROVIDER")
+            if fallback_env_provider:
+                normalized_fallback_provider = fallback_env_provider.strip().lower()
+                if normalized_fallback_provider != "auto":
+                    return normalized_fallback_provider, resolved_model, None, None
+                return "auto", resolved_model, None, None
+
+            if fallback_cfg_base_url:
+                return (
+                    "custom",
+                    resolved_model,
+                    fallback_cfg_base_url,
+                    task_env_api_key or cfg_api_key or fallback_env_api_key or fallback_cfg_api_key,
+                )
+            fallback_cfg_provider = _task_config_text(fallback_config, "provider")
+            if fallback_cfg_provider:
+                if fallback_cfg_provider != "auto":
+                    return fallback_cfg_provider, resolved_model, None, None
+                return "auto", resolved_model, None, None
         return "auto", resolved_model, None, None
 
     return "auto", resolved_model, None, None
@@ -1380,14 +1453,21 @@ def _resolve_task_reasoning_effort(task: str = None) -> Optional[str]:
     try:
         config = _load_runtime_config()
     except Exception:
-        return None
-    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
-    task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-    if not isinstance(task_config, dict):
-        return None
-    value = task_config.get("reasoning_effort")
-    if isinstance(value, str) and value.strip():
-        return value.strip()
+        config = {}
+    task_config = _auxiliary_task_config(config, task)
+    value = _task_config_text(task_config, "reasoning_effort")
+    if value:
+        return value
+
+    fallback_task = _auxiliary_fallback_task(task)
+    if fallback_task:
+        fallback_env_value = _get_auxiliary_env_override(fallback_task, "REASONING_EFFORT")
+        if fallback_env_value:
+            return fallback_env_value.strip()
+        fallback_config = _auxiliary_task_config(config, fallback_task)
+        fallback_value = _task_config_text(fallback_config, "reasoning_effort")
+        if fallback_value:
+            return fallback_value
     return None
 
 

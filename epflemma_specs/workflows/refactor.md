@@ -4,7 +4,7 @@ kind: workflow
 title: Refactor
 summary: Lean proof refactoring with structure-preserving simplification, search-backed helper reuse, and explicit verification after each meaningful edit.
 skills: [lean-refactor-golf]
-tools: [lean_capabilities, lean_inspect, lean_search, lean_verify, lean_worker_dispatch]
+tools: [lean_capabilities, lean_inspect, lean_search, lean_multi_attempt, lean_verify, lean_worker_dispatch]
 workers: [proof-golfer]
 stop_conditions: [verified, blocked]
 route_actions: [refactor]
@@ -44,12 +44,15 @@ Use `prove` first when the target does not compile, `review` for read-only audit
    - confirm the target proof compiles and identify nearby diagnostics or warnings that would make refactoring unsafe
 3. `lean_search`
    - search for existing Mathlib/project lemmas, reusable APIs, or better proof shapes before rewriting by hand
-4. apply one coherent refactor batch
+4. `lean_multi_attempt`
+   - use only when the refactor has collapsed into 2-6 concrete local simplification candidates at one proof position
+   - do not use it for theorem-sized proof blocks, statement changes, or speculative rewrites
+5. apply one coherent refactor batch
    - prefer one proof or one local helper cluster at a time
    - keep theorem meaning and declaration headers fixed
-5. `lean_verify`
+6. `lean_verify`
    - verify after each meaningful batch
-6. `lean_worker_dispatch`
+7. `lean_worker_dispatch`
    - this workflow is usually handled directly
    - `proof-golfer` is only a fallback when the refactor collapses into local proof simplification rather than structural improvement
 
@@ -66,6 +69,7 @@ Avoid:
 
 - semantic changes to theorem statements
 - new axioms
+- public interface changes unless the user explicitly requested them
 - broad multi-file rewrites unless the workflow explicitly widened scope
 - “refactors” that only hide complexity behind heavier automation
 

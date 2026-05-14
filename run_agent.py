@@ -4399,8 +4399,8 @@ class AIAgent:
                 ),
             )
 
-            # Truncate oversized results. The Lean advisor gets a larger cap
-            # because it may return long proof-strategy notes by design.
+            # Truncate oversized results. Lean advisor/decomposition tools get
+            # a larger cap because long proof-strategy notes are intentional.
             max_tool_result_chars = self._max_tool_result_chars(function_name)
             if len(function_result) > max_tool_result_chars:
                 original_len = len(function_result)
@@ -4672,8 +4672,8 @@ class AIAgent:
 
             # Guard against tools returning absurdly large content that would
             # blow up the context window. Most tools are capped at 100K chars;
-            # the Lean advisor gets a larger cap because long proof-strategy
-            # output is an intentional use case.
+            # Lean advisor/decomposition tools get a larger cap because long
+            # proof-strategy output is an intentional use case.
             max_tool_result_chars = self._max_tool_result_chars(function_name)
             if len(function_result) > max_tool_result_chars:
                 original_len = len(function_result)
@@ -4792,7 +4792,7 @@ class AIAgent:
         return None
 
     def _max_tool_result_chars(self, function_name: str) -> int:
-        if str(function_name or "") == "lean_reasoning_help":
+        if str(function_name or "") in {"lean_reasoning_help", "lean_decompose_helpers"}:
             return _LEAN_REASONING_HELP_MAX_TOOL_RESULT_CHARS
         return _DEFAULT_MAX_TOOL_RESULT_CHARS
 
@@ -4830,12 +4830,12 @@ class AIAgent:
         self.iteration_budget.refund(delta)
         if not self.quiet_mode:
             print(
-                f"{self.log_prefix}↻ lean_reasoning_help returned; refreshed API step budget "
+                f"{self.log_prefix}↻ Lean advisor tool returned; refreshed API step budget "
                 f"from {api_call_count}/{self.max_iterations} to {reset_to}/{self.max_iterations}."
             )
         _emit_workflow_event(
             "api-step-budget-refreshed",
-            "Refreshed API step budget after lean_reasoning_help",
+            "Refreshed API step budget after Lean advisor tool",
             **_workflow_agent_event_details(
                 self,
                 previous_iteration=api_call_count,
@@ -4870,7 +4870,7 @@ class AIAgent:
         if not self.quiet_mode:
             print(
                 f"{self.log_prefix}📦 Pre-advisor compression: reserving ~{reserve:,} tokens "
-                "so lean_reasoning_help advice stays unsummarized."
+                "so Lean advisor output stays unsummarized."
             )
         for _ in range(3):
             original_len = len(messages)
@@ -6465,8 +6465,9 @@ class AIAgent:
                     self._invalid_json_retries = 0
                     
                     _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
+                    _advisor_tool_names = {"lean_reasoning_help", "lean_decompose_helpers"}
                     advisor_suffix_start = None
-                    if "lean_reasoning_help" in _tc_names:
+                    if _tc_names & _advisor_tool_names:
                         messages, active_system_prompt = self._maybe_precompress_before_advisor_tool(
                             messages,
                             system_message,
@@ -6500,7 +6501,7 @@ class AIAgent:
                     # cheap RPC-style calls that shouldn't eat the budget.
                     if _tc_names == {"execute_code"}:
                         self.iteration_budget.refund()
-                    if "lean_reasoning_help" in _tc_names:
+                    if _tc_names & _advisor_tool_names:
                         refreshed_count = self._maybe_refresh_api_step_budget_after_advisor(api_call_count)
                         if refreshed_count != api_call_count:
                             api_call_count = refreshed_count

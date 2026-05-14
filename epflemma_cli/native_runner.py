@@ -2111,9 +2111,9 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
     autonomy_state["search_progress"] = tracker
     used_tools = dict(tracker.get("used_tools") or {})
     context_hint = (
-        "- `lean_proof_context` has already been used; prefer a concrete proof draft/check, `lean_reasoning_help`, or `lean_worker_dispatch`."
+        "- `lean_proof_context` has already been used; prefer a concrete proof draft/check, `lean_decompose_helpers` for a sublemma split, `lean_reasoning_help`, or `lean_worker_dispatch`."
         if int(used_tools.get("lean_proof_context", 0) or 0) > 0
-        else "- if you still need context, call `lean_proof_context` once; otherwise draft and check a proof."
+        else "- if you still need context, call `lean_proof_context` once; if the proof needs intermediate invariants, use `lean_decompose_helpers`; otherwise draft and check a proof."
     )
     _append_post_tool_result_message(
         agent,
@@ -2128,7 +2128,7 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
                 "- search providers are responding; this is a route-progress nudge, not a search outage.",
                 "- do not call `lean_search` again in this turn unless the query strategy materially changes.",
                 context_hint,
-                "- next useful action should be a concrete proof edit, `lean_incremental_check(check_target)` on a draft, `lean_multi_attempt`, `lean_reasoning_help`, or `lean_worker_dispatch` if the route still fits.",
+                "- next useful action should be a concrete proof edit, `lean_incremental_check(check_target)` on a draft, `lean_multi_attempt`, `lean_decompose_helpers` for a helper-lemma split, `lean_reasoning_help`, or `lean_worker_dispatch` if the route still fits.",
             ]
         ),
     )
@@ -3017,7 +3017,7 @@ def _finish_queue_step_boundary(
                         f"- observed: {attempt_number} verified failed edits/checks on this same declaration",
                         "- manager checks are working; this is a proof-strategy escalation nudge, not a backend failure",
                         "- avoid another broad rewrite of the same proof shape unless you can state the concrete new invariant it fixes",
-                        "- next useful action should be `lean_incremental_check(action=feedback, include_tactics=true)` for local goal state, `lean_multi_attempt` for small tactic variants, `lean_reasoning_help` for an external proof plan, or `lean_worker_dispatch` if the blocker still fits the route",
+                        "- next useful action should be `lean_incremental_check(action=feedback, include_tactics=true)` for local goal state, `lean_multi_attempt` for small tactic variants, `lean_decompose_helpers` when the proof needs sublemmas/intermediate invariants, `lean_reasoning_help` for an external proof plan, or `lean_worker_dispatch` if the blocker still fits the route",
                     ]
                 )
                 _record_activity(

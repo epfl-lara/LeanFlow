@@ -189,7 +189,7 @@ The canonical workflow contract lives in markdown specs under:
 - `epflemma_specs/workflows/`
 - `epflemma_specs/workers/`
 
-Skills route the agent to the right workflow behavior. Specs define the native tool order, verification gates, doctor reporting, and worker recommendations.
+Skills route the agent to the right workflow behavior. Specs define the native tool order, verification gates, doctor reporting, and worker recommendations. Keep skills thin: if a rule changes the workflow contract, put it in the linked spec and let the skill point to that contract instead of duplicating the full procedure.
 
 ## Provider And Runtime Setup
 

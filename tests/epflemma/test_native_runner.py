@@ -381,6 +381,7 @@ def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypat
     attempts = agent._managed_autonomy_state["failed_attempts"]
     assert attempts[-1]["attempt"] == 20
     assert "[EPFLEMMA-NATIVE FAILED ATTEMPT NUDGE]" in agent._post_tool_result_appendix
+    assert "lean_decompose_helpers" in agent._post_tool_result_appendix
     assert "lean_reasoning_help" in agent._post_tool_result_appendix
     assert "lean_worker_dispatch" in agent._post_tool_result_appendix
     assert any(args[0] == "failed-attempt-escalation-nudge" for args, _kwargs in events)
@@ -474,6 +475,7 @@ def test_handle_managed_tool_result_nudges_repeated_successful_search(monkeypatc
     assert "same lean_search query repeated 3 times" in appendix
     assert "search providers are responding" in appendix
     assert "do not call `lean_search` again" in appendix
+    assert "lean_decompose_helpers" in appendix
 
 
 def test_generate_checkpoint_summary_falls_back_on_keyboard_interrupt(monkeypatch):
