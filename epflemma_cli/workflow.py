@@ -62,6 +62,10 @@ class NativeWorkflowSpec:
     explicit_goal: str = ""
     expert_provider: str = ""
     expert_command_template: str = ""
+    blueprint_verifier_provider: str = ""
+    blueprint_verifier_command_template: str = ""
+    autoformalizer_verifier_provider: str = ""
+    autoformalizer_verifier_command_template: str = ""
     additional_skills: tuple[str, ...] = ()
 
 
@@ -213,6 +217,14 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
         summary["expert_provider"] = plan.workflow.expert_provider
     if plan.workflow.expert_command_template:
         summary["expert_command_template"] = plan.workflow.expert_command_template
+    if plan.workflow.blueprint_verifier_provider:
+        summary["blueprint_verifier_provider"] = plan.workflow.blueprint_verifier_provider
+    if plan.workflow.blueprint_verifier_command_template:
+        summary["blueprint_verifier_command_template"] = plan.workflow.blueprint_verifier_command_template
+    if plan.workflow.autoformalizer_verifier_provider:
+        summary["autoformalizer_verifier_provider"] = plan.workflow.autoformalizer_verifier_provider
+    if plan.workflow.autoformalizer_verifier_command_template:
+        summary["autoformalizer_verifier_command_template"] = plan.workflow.autoformalizer_verifier_command_template
     return summary
 
 
@@ -241,6 +253,10 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
     explicit_goal = ""
     expert_provider = ""
     expert_command_template = ""
+    blueprint_verifier_provider = ""
+    blueprint_verifier_command_template = ""
+    autoformalizer_verifier_provider = ""
+    autoformalizer_verifier_command_template = ""
     additional_skills: list[str] = []
     workflow_tokens: list[str] = []
     idx = 0
@@ -277,6 +293,30 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             expert_command_template = remaining[idx + 1].strip()
             idx += 2
             continue
+        if token in {"--blueprint-verifier-provider", "--blueprint_verifier_provider"}:
+            if idx + 1 >= len(remaining):
+                raise ValueError(f"{token} requires a value")
+            blueprint_verifier_provider = remaining[idx + 1].strip()
+            idx += 2
+            continue
+        if token in {"--blueprint-verifier-command-template", "--blueprint_verifier_command_template"}:
+            if idx + 1 >= len(remaining):
+                raise ValueError(f"{token} requires a value")
+            blueprint_verifier_command_template = remaining[idx + 1].strip()
+            idx += 2
+            continue
+        if token in {"--autoformalizer-verifier-provider", "--autoformalizer_verifier_provider"}:
+            if idx + 1 >= len(remaining):
+                raise ValueError(f"{token} requires a value")
+            autoformalizer_verifier_provider = remaining[idx + 1].strip()
+            idx += 2
+            continue
+        if token in {"--autoformalizer-verifier-command-template", "--autoformalizer_verifier_command_template"}:
+            if idx + 1 >= len(remaining):
+                raise ValueError(f"{token} requires a value")
+            autoformalizer_verifier_command_template = remaining[idx + 1].strip()
+            idx += 2
+            continue
         if token in {"--additional-skill", "--additional_skill"}:
             if idx + 1 >= len(remaining):
                 raise ValueError(f"{token} requires a value")
@@ -299,6 +339,10 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         explicit_goal=explicit_goal,
         expert_provider=expert_provider,
         expert_command_template=expert_command_template,
+        blueprint_verifier_provider=blueprint_verifier_provider,
+        blueprint_verifier_command_template=blueprint_verifier_command_template,
+        autoformalizer_verifier_provider=autoformalizer_verifier_provider,
+        autoformalizer_verifier_command_template=autoformalizer_verifier_command_template,
         additional_skills=tuple(additional_skills),
     )
 
@@ -418,6 +462,14 @@ def resolve_workflow_request(
         child_env["AUXILIARY_LEAN_REASONING_PROVIDER"] = workflow.expert_provider
     if workflow.expert_command_template:
         child_env["AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE"] = workflow.expert_command_template
+    if workflow.blueprint_verifier_provider:
+        child_env["AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] = workflow.blueprint_verifier_provider
+    if workflow.blueprint_verifier_command_template:
+        child_env["AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"] = workflow.blueprint_verifier_command_template
+    if workflow.autoformalizer_verifier_provider:
+        child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] = workflow.autoformalizer_verifier_provider
+    if workflow.autoformalizer_verifier_command_template:
+        child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"] = workflow.autoformalizer_verifier_command_template
     if formalization_document is not None:
         child_env.update(formalization_document.to_env())
     argv = [sys.executable, "-m", _native_runner_module()]

@@ -1233,6 +1233,36 @@ def test_local_proof_context_uses_scan_location_to_avoid_next_doc_comment(monkey
     assert "next theorem doc comment" not in payload["original_proof"]
 
 
+def test_declaration_index_recognizes_noncomputable_def_boundaries(tmp_path):
+    target = tmp_path / "Demo" / "Main.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "noncomputable def qRationalNum : Nat := by",
+                "  sorry",
+                "",
+                "/-- Source proof: trivial. -/",
+                "theorem qRationalTheorem : True := by",
+                "  trivial",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entries = lean_services._declaration_index(target)
+
+    assert [entry["name"] for entry in entries] == ["qRationalNum", "qRationalTheorem"]
+    assert entries[0]["kind"] == "def"
+    assert entries[0]["line"] == 3
+    assert entries[0]["end_line"] == 6
+    assert entries[1]["kind"] == "theorem"
+    assert entries[1]["line"] == 7
+
+
 def test_lean_proof_context_falls_back_to_local_slice_without_disabling_proof_auto_backend(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()

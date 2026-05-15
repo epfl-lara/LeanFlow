@@ -69,11 +69,15 @@ def test_prepare_formalization_document_context_creates_planner_artifacts(tmp_pa
     startup_context = context.context_path.read_text(encoding="utf-8")
     assert "document formalization run" in startup_context
     assert "`thm:zero_good`" in startup_context
-    assert "keep source pointers, ambiguity notes, dependencies, and proof notes in the planner blueprint" in startup_context
+    assert "keep source pointers, ambiguity notes, dependencies, complete source proof text, and proof notes" in startup_context
     assert "reread it easily" in startup_context
     assert "must begin with all `import` commands" in startup_context
     assert "document formalization handoff verifier" in startup_context
     assert "root project module imports the generated target module path" in startup_context
+    assert "`## Suggested Search Modules`" in startup_context
+    assert "construction gaps block proof handoff" in startup_context
+    assert "one final organization pass before the formalizer exits" in startup_context
+    assert "run project-level Lean verification" in startup_context
     assert "supplemental blueprint skill" in startup_context
 
     blueprint = context.blueprint_path.read_text(encoding="utf-8")
@@ -82,8 +86,12 @@ def test_prepare_formalization_document_context_creates_planner_artifacts(tmp_pa
     assert "Source document: `docs/paper.tex`" in skill
     assert "thm:zero_good" in blueprint
     assert "Target Lean entry file" in blueprint
+    assert "## Import Plan" in blueprint
+    assert "## Suggested Search Modules" in blueprint
+    assert "## Generated File Layout" in blueprint
     assert "Replace all `_pending_` entries before drafting Lean" in blueprint
     assert "Formal statement review: _pending_" in blueprint
+    assert "Complete source proof: _pending_" in blueprint
     assert "Source proof / prover notes: _pending_" in blueprint
 
     env = context.to_env()
@@ -129,6 +137,119 @@ def test_inspect_formalization_document_extracts_latex_inventory(tmp_path):
     theorem = next(item for item in payload["theorem_blocks"] if item["label"] == "thm:zero_good")
     assert theorem["uses"] == ["def:good"]
     assert "Zero is good" in theorem["statement"]
+
+
+def test_inspect_formalization_document_extracts_custom_newtheorem_blocks(tmp_path):
+    project = tmp_path / "Demo"
+    source = project / "docs" / "custom.tex"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        r"""
+\documentclass{article}
+\newtheorem{thm}{Theorem}
+\newtheorem{prop}[thm]{Proposition}
+\newtheorem*{conj}{Conjecture}
+\begin{document}
+
+\begin{thm}\label{main-thm}
+Every good object is good.
+\end{thm}
+\begin{proof}
+Unfold the definition and close the goal.
+\end{proof}
+
+\begin{prop}
+Every better object is good.
+\end{prop}
+
+\begin{conj}
+Every best object is good.
+\end{conj}
+\end{document}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    payload = inspect_formalization_document("docs/custom.tex", project_root=project, cwd=project)
+
+    blocks = payload["theorem_blocks"]
+    assert [block["kind"] for block in blocks] == ["theorem", "proposition", "conjecture"]
+    assert blocks[0]["label"] == "main-thm"
+    assert "Unfold the definition" in blocks[0]["proof"]
+    assert blocks[1]["label"].startswith("line-")
+    assert blocks[1]["proof"] == ""
+    assert blocks[2]["label"].startswith("line-")
+
+
+def test_inspect_formalization_document_extracts_common_theorem_declaration_families(tmp_path):
+    project = tmp_path / "Demo"
+    source = project / "docs" / "families.tex"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        r"""
+\documentclass{article}
+\usepackage{thmtools}
+\usepackage{mdframed}
+\declaretheorem[name=Claim]{claimbox}
+\newmdtheoremenv[backgroundcolor=gray!10]{boxeddef}{Definition}
+\mdtheorem{boxedrem}{Remark}
+\spnewtheorem{springprop}{Proposition}{\bfseries}{\itshape}
+\newtcbtheorem[number within=section]{tcblemma}{Lemma}{colback=white}{lem}
+\newenvironment{problem}{\par\noindent\textbf{Problem.}}{\par}
+\begin{document}
+
+\begin{claimbox}\label{claim:boxed}
+The boxed claim is true.
+\end{claimbox}
+\proof
+This is a plain proof macro body.
+\endproof
+
+\begin{boxeddef}
+The boxed definition is useful.
+\end{boxeddef}
+
+\begin{boxedrem}
+The boxed remark is useful.
+\end{boxedrem}
+
+\begin{springprop}
+The Springer proposition is useful.
+\end{springprop}
+
+\begin{tcblemma}
+The tcolorbox lemma is useful.
+\end{tcblemma}
+
+\begin{problem}
+Find the useful object.
+\end{problem}
+\end{document}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    payload = inspect_formalization_document("docs/families.tex", project_root=project, cwd=project)
+
+    blocks = payload["theorem_blocks"]
+    assert [block["kind"] for block in blocks] == [
+        "claim",
+        "definition",
+        "remark",
+        "proposition",
+        "lemma",
+        "problem",
+    ]
+    assert blocks[0]["label"] == "claim:boxed"
+    assert "plain proof macro body" in blocks[0]["proof"]
+    assert [block["environment"] for block in blocks] == [
+        "claimbox",
+        "boxeddef",
+        "boxedrem",
+        "springprop",
+        "tcblemma",
+        "problem",
+    ]
 
 
 def test_inspect_formalization_document_extracts_plain_tex_profess_blocks(tmp_path):
@@ -202,6 +323,9 @@ def test_directory_formalization_selects_main_tex_and_records_project_inventory(
     assert context.metadata["tex_project_included_tex_files"] == ["docs/paper/macros.tex"]
     assert context.metadata["tex_project_bibliography_files"] == ["docs/paper/refs.bbl"]
     assert context.metadata["tex_project_local_asset_files"] == ["docs/paper/style.bst"]
+    assert context.metadata["tex_project_pdf_files"] == []
+    assert context.metadata["tex_project_figure_files"] == []
+    assert context.metadata["tex_project_support_files"] == ["docs/paper/refs.bbl", "docs/paper/style.bst"]
     env = context.to_env()
     assert env["EPFLEMMA_FORMALIZATION_REQUEST_KIND"] == "directory"
     assert env["EPFLEMMA_FORMALIZATION_REQUEST_RELATIVE"] == "docs/paper"
@@ -211,6 +335,40 @@ def test_directory_formalization_selects_main_tex_and_records_project_inventory(
     startup_context = context.context_path.read_text(encoding="utf-8")
     assert "## TeX Project Discovery" in startup_context
     assert "`docs/paper/macros.tex`" in startup_context
+
+
+def test_directory_formalization_records_pdf_figure_and_support_files(tmp_path):
+    project = tmp_path / "Demo"
+    source_dir = project / "docs" / "paper"
+    figures = source_dir / "figures"
+    figures.mkdir(parents=True)
+    (source_dir / "main.tex").write_text(
+        "\\documentclass{article}\\begin{document}\\begin{theorem}T.\\end{theorem}\\end{document}\n",
+        encoding="utf-8",
+    )
+    (source_dir / "supplement.pdf").write_bytes(b"%PDF-1.4\n")
+    (figures / "diagram.png").write_bytes(b"png")
+    (source_dir / "macros.sty").write_text("\\newcommand{\\good}{good}\n", encoding="utf-8")
+
+    context = prepare_formalization_document_context(
+        project_root=project,
+        cwd=project,
+        workflow_args="docs/paper",
+        project_label="Demo",
+    )
+
+    assert context.metadata["tex_project_pdf_files"] == ["docs/paper/supplement.pdf"]
+    assert context.metadata["tex_project_figure_files"] == [
+        "docs/paper/figures/diagram.png",
+        "docs/paper/supplement.pdf",
+    ]
+    assert context.metadata["tex_project_support_files"] == ["docs/paper/macros.sty"]
+    startup_context = context.context_path.read_text(encoding="utf-8")
+    assert "Nearby PDF files:" in startup_context
+    assert "`docs/paper/supplement.pdf`" in startup_context
+    assert "Figure/image files:" in startup_context
+    assert "`docs/paper/figures/diagram.png`" in startup_context
+    assert "TeX support files:" in startup_context
 
 
 def test_directory_formalization_rejects_ambiguous_tex_roots(tmp_path):
@@ -245,7 +403,13 @@ def test_doc_formalization_demo_fixture_is_parseable():
     assert "Classical Pythagorean triples" in section_titles
     assert "A construction of $q$-Pythagorean triples" in section_titles
     assert any(
-        item["kind"] == "defn" and "\\cC_{\\frac{m}{n}}" in item["statement"]
+        item["kind"] == "definition"
+        and item.get("environment") == "defn"
+        and "\\cC_{\\frac{m}{n}}" in item["statement"]
+        for item in payload["theorem_blocks"]
+    )
+    assert any(
+        item["label"] == "CalcThm" and item["kind"] == "theorem" and item.get("proof")
         for item in payload["theorem_blocks"]
     )
 

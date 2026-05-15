@@ -32,6 +32,8 @@ TEX_PROJECT_SKIPPED_DIRS = {
     "dist",
     "node_modules",
 }
+TEX_PROJECT_FIGURE_SUFFIXES = {".eps", ".jpg", ".jpeg", ".pdf", ".png", ".svg"}
+TEX_PROJECT_SUPPORT_SUFFIXES = {".bib", ".bbl", ".bst", ".bbx", ".cbx", ".cfg", ".cls", ".clo", ".def", ".sty"}
 
 
 class FormalizationDocumentError(ValueError):
@@ -172,6 +174,20 @@ def _tex_files_under(directory: Path) -> list[Path]:
         ):
             continue
         if path.is_file():
+            files.append(path.resolve())
+    return sorted(files, key=lambda item: item.relative_to(directory).as_posix().lower())
+
+
+def _files_under_by_suffix(directory: Path, suffixes: set[str]) -> list[Path]:
+    files: list[Path] = []
+    for path in directory.rglob("*"):
+        try:
+            relative_parts = path.relative_to(directory).parts
+        except Exception:
+            continue
+        if any(part in TEX_PROJECT_SKIPPED_DIRS or part.startswith(".") for part in relative_parts):
+            continue
+        if path.is_file() and path.suffix.lower() in suffixes:
             files.append(path.resolve())
     return sorted(files, key=lambda item: item.relative_to(directory).as_posix().lower())
 
@@ -414,6 +430,9 @@ def _discover_tex_project_entrypoint(project_root: Path, directory: Path) -> _Fo
 
     included_tex, missing_includes = _included_tex_closure(best_path, directory)
     bibliography_files, local_assets = _collect_tex_project_assets(best_path, directory, included_tex)
+    pdf_files = _files_under_by_suffix(directory, {".pdf"})
+    figure_files = _files_under_by_suffix(directory, TEX_PROJECT_FIGURE_SUFFIXES)
+    support_files = _files_under_by_suffix(directory, TEX_PROJECT_SUPPORT_SUFFIXES)
     source_relative = _relative_to_project(best_path, project_root)
     directory_relative = _relative_to_project(directory, project_root)
     metadata = {
@@ -433,10 +452,14 @@ def _discover_tex_project_entrypoint(project_root: Path, directory: Path) -> _Fo
         "tex_project_missing_includes": missing_includes,
         "tex_project_bibliography_files": _relative_list(bibliography_files, project_root),
         "tex_project_local_asset_files": _relative_list(local_assets, project_root),
+        "tex_project_pdf_files": _relative_list(pdf_files, project_root),
+        "tex_project_figure_files": _relative_list(figure_files, project_root),
+        "tex_project_support_files": _relative_list(support_files, project_root),
         "tex_project_discovery_summary": (
             f"Selected `{source_relative}` from `{directory_relative}`; "
             f"{len(included_tex)} included .tex file(s), {len(bibliography_files)} bibliography file(s), "
-            f"{len(local_assets)} local asset file(s)."
+            f"{len(local_assets)} referenced local asset file(s), {len(pdf_files)} PDF file(s), "
+            f"{len(figure_files)} figure file(s), {len(support_files)} TeX support file(s)."
         ),
     }
     return _FormalizationDocumentSelection(
@@ -639,10 +662,184 @@ def _extract_braced_commands(text: str, command: str) -> list[str]:
     return values
 
 
+_DEFAULT_LATEX_THEOREM_ENV_KINDS = {
+    "assumption": "assumption",
+    "claim": "claim",
+    "construction": "construction",
+    "theorem": "theorem",
+    "thm": "theorem",
+    "lemma": "lemma",
+    "lem": "lemma",
+    "proposition": "proposition",
+    "prop": "proposition",
+    "corollary": "corollary",
+    "cor": "corollary",
+    "definition": "definition",
+    "defn": "definition",
+    "def": "definition",
+    "conjecture": "conjecture",
+    "conj": "conjecture",
+    "example": "example",
+    "ex": "example",
+    "exercise": "exercise",
+    "fact": "fact",
+    "notation": "notation",
+    "observation": "observation",
+    "problem": "problem",
+    "question": "question",
+    "remark": "remark",
+    "rem": "remark",
+}
+
+
+def _normalize_theorem_kind(env: str, title: str = "") -> str:
+    text = f"{title} {env}".strip().lower()
+    for token, kind in (
+        ("theorem", "theorem"),
+        ("lemma", "lemma"),
+        ("proposition", "proposition"),
+        ("corollary", "corollary"),
+        ("definition", "definition"),
+        ("conjecture", "conjecture"),
+        ("example", "example"),
+        ("remark", "remark"),
+        ("claim", "claim"),
+        ("problem", "problem"),
+        ("question", "question"),
+        ("assumption", "assumption"),
+        ("observation", "observation"),
+        ("construction", "construction"),
+        ("fact", "fact"),
+        ("comment", "comment"),
+        ("notation", "notation"),
+        ("exercise", "exercise"),
+    ):
+        if re.search(rf"\b{token}\b", text):
+            return kind
+    fallback = re.sub(r"[^A-Za-z]+", " ", title or env).strip().lower()
+    return fallback.split()[0] if fallback else "statement"
+
+
+def _extract_latex_option_name(options: str) -> str:
+    text = str(options or "")
+    match = re.search(
+        r"(?:^|,)\s*name\s*=\s*(?:\{(?P<braced>[^{}]+)\}|(?P<plain>[^,\]]+))",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    return (match.group("braced") or match.group("plain") or "").strip()
+
+
+def _latex_theorem_environment_kinds(raw: str) -> dict[str, str]:
+    envs = dict(_DEFAULT_LATEX_THEOREM_ENV_KINDS)
+    newtheorem_pattern = re.compile(
+        r"\\newtheorem\*?\s*"
+        r"\{(?P<env>[^{}\s]+)\}"
+        r"(?:\[[^\]]+\])?\s*"
+        r"\{(?P<title>[^{}]+)\}"
+        r"(?:\[[^\]]+\])?",
+        flags=re.IGNORECASE,
+    )
+    for match in newtheorem_pattern.finditer(raw or ""):
+        env = str(match.group("env") or "").strip()
+        title = str(match.group("title") or "").strip()
+        if env:
+            envs[env] = _normalize_theorem_kind(env, title)
+
+    declaretheorem_pattern = re.compile(
+        r"\\declaretheorem\s*(?:\[(?P<options>[^\]]*)\])?\s*\{(?P<env>[^{}\s]+)\}",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for match in declaretheorem_pattern.finditer(raw or ""):
+        env = str(match.group("env") or "").strip()
+        title = _extract_latex_option_name(match.group("options") or "")
+        if env:
+            envs[env] = _normalize_theorem_kind(env, title)
+
+    mdtheorem_pattern = re.compile(
+        r"\\(?:newmdtheoremenv|mdtheorem)\s*(?:\[[^\]]*\])?\s*"
+        r"\{(?P<env>[^{}\s]+)\}\s*\{(?P<title>[^{}]*)\}",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for match in mdtheorem_pattern.finditer(raw or ""):
+        env = str(match.group("env") or "").strip()
+        title = str(match.group("title") or "").strip()
+        if env:
+            envs[env] = _normalize_theorem_kind(env, title)
+
+    spnewtheorem_pattern = re.compile(
+        r"\\spnewtheorem\*?\s*\{(?P<env>[^{}\s]+)\}\s*(?:\[[^\]]+\])?\s*"
+        r"\{(?P<title>[^{}]+)\}",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for match in spnewtheorem_pattern.finditer(raw or ""):
+        env = str(match.group("env") or "").strip()
+        title = str(match.group("title") or "").strip()
+        if env:
+            envs[env] = _normalize_theorem_kind(env, title)
+
+    tcbtheorem_pattern = re.compile(
+        r"\\(?:newtcbtheorem|NewTcbTheorem)\s*(?:\[[^\]]*\])?\s*"
+        r"\{(?P<env>[^{}\s]+)\}\s*\{(?P<title>[^{}]+)\}",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for match in tcbtheorem_pattern.finditer(raw or ""):
+        env = str(match.group("env") or "").strip()
+        title = str(match.group("title") or "").strip()
+        if env:
+            envs[env] = _normalize_theorem_kind(env, title)
+
+    newenvironment_pattern = re.compile(
+        r"\\(?:newenvironment|renewenvironment)\s*\{(?P<env>[^{}\s]+)\}",
+        flags=re.IGNORECASE,
+    )
+    for match in newenvironment_pattern.finditer(raw or ""):
+        env = str(match.group("env") or "").strip()
+        if env and _normalize_theorem_kind(env) != "statement":
+            envs.setdefault(env, _normalize_theorem_kind(env))
+    return envs
+
+
+def _following_latex_proof(raw: str, end_offset: int, theorem_env_pattern: str) -> dict[str, Any]:
+    following = raw[end_offset : end_offset + 20_000]
+    boundary_pattern = re.compile(
+        rf"\\begin\{{(?:{theorem_env_pattern})\}}|\\(?:chapter|section|subsection|subsubsection)\*?\{{",
+        flags=re.IGNORECASE,
+    )
+    proof_pattern = re.compile(
+        r"^\s*(?:%[^\n]*(?:\n|$)\s*)*(?:"
+        r"\\begin\{proof\}(?:\[[^\]]*\])?(?P<braced_body>.*?)\\end\{proof\}"
+        r"|\\proof\b(?P<plain_body>.*?)\\endproof"
+        r")",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    proof_match = proof_pattern.search(following)
+    if not proof_match:
+        return {"proof": "", "proof_line": 0, "proof_end_line": 0}
+    boundary = boundary_pattern.search(following)
+    if boundary and boundary.start() < proof_match.start():
+        return {"proof": "", "proof_line": 0, "proof_end_line": 0}
+    proof_start = end_offset + proof_match.start()
+    proof_end = end_offset + proof_match.end()
+    proof_start_line, proof_end_line = _line_span(raw, proof_start, proof_end)
+    return {
+        "proof": _bounded(
+            _clean_tex_statement(proof_match.group("braced_body") or proof_match.group("plain_body") or ""),
+            MAX_STATEMENT_CHARS,
+        ),
+        "proof_line": proof_start_line,
+        "proof_end_line": proof_end_line,
+    }
+
+
 def _extract_latex_summary(path: Path) -> dict[str, Any]:
     raw = path.read_text(encoding="utf-8", errors="replace")
+    theorem_env_kinds = _latex_theorem_environment_kinds(raw)
+    env_pattern = "|".join(re.escape(env) for env in sorted(theorem_env_kinds, key=len, reverse=True))
     theorem_pattern = re.compile(
-        r"\\begin\{(?P<env>theorem|lemma|proposition|corollary|definition|defn|conjecture|example|remark)\}"
+        rf"\\begin\{{(?P<env>{env_pattern})\}}"
         r"(?P<option>\[[^\]]*\])?"
         r"(?P<body>.*?)"
         r"\\end\{(?P=env)\}",
@@ -654,17 +851,22 @@ def _extract_latex_summary(path: Path) -> dict[str, Any]:
         label_match = re.search(r"\\label\{([^{}]+)\}", body)
         option = (match.group("option") or "").strip()
         start_line, end_line = _line_span(raw, match.start(), match.end())
+        proof_info = _following_latex_proof(raw, match.end(), env_pattern)
+        env = match.group("env")
+        label = label_match.group(1).strip() if label_match else f"line-{start_line}"
         blocks.append(
             {
-                "kind": match.group("env"),
+                "kind": theorem_env_kinds.get(env, _normalize_theorem_kind(env)),
+                "environment": env,
                 "line": start_line,
                 "end_line": end_line,
                 "offset": match.start(),
-                "label": label_match.group(1).strip() if label_match else "",
+                "label": label,
                 "title": option.strip("[]"),
                 "lean": _extract_braced_commands(body, "lean"),
                 "uses": _extract_braced_commands(body, "uses"),
                 "statement": _bounded(_clean_tex_statement(body), MAX_STATEMENT_CHARS),
+                **proof_info,
             }
         )
         if len(blocks) >= MAX_THEOREM_BLOCKS:
@@ -951,31 +1153,38 @@ def _render_context_markdown(
         "This is a document formalization run. Do not treat the request as a proof-only repair.",
         "",
         "Required planner phase:",
-        "1. Read the source document and this preflight manifest before drafting Lean.",
+        "1. Read the source document, nearby PDFs/figures/support files from this manifest, and this preflight manifest before drafting Lean.",
         "2. Use `read_pdf` to read project-local PDF text, and use `formalization_document_inspect` for deterministic re-inspection when the source is a .tex or .pdf file.",
         "3. Search local project facts and Mathlib before inventing names or definitions.",
         "4. Use web search only for references or surrounding literature that the source document actually points to.",
-        "5. Create or update the planner blueprint before drafting Lean, recording definitions, lemmas, theorem dependencies, source pointers, formal-statement review, and natural-language proof/prover notes. The initial `_pending_` blueprint is only a placeholder and does not satisfy the workflow.",
-        "6. Draft Lean files in small units with stable names, minimal imports, and `sorry` placeholders for theorem/lemma proofs that the prover queue should solve. Do not do deep proof repair in the planner draft.",
+        "5. Create or update the planner blueprint before drafting Lean, recording definitions, lemmas, theorem dependencies, source pointers, formal-statement review, complete source proof text when available, and natural-language proof/prover notes. The initial `_pending_` blueprint is only a placeholder and does not satisfy the workflow.",
+        "6. Draft Lean files in small units with stable names, minimal imports, and `sorry` placeholders only for theorem/lemma/example proofs that a later explicit prove workflow should solve. Do not do deep proof repair in the planner draft.",
         "7. Lean import discipline is mandatory: every generated Lean file must begin with all `import` commands before any `/-! ... -/` module doc comment or declaration.",
-        "8. Before handing declarations to the managed prover queue, satisfy the document formalization handoff verifier: keep target imports as direct dependencies, ensure the root project module imports the generated target module path so plain `lake build` covers it, and keep the blueprint import plan aligned with the target Lean imports.",
-        "9. Verify draft readiness with `lean_inspect` and `lean_verify` (module or file_exact); do not fall back to terminal `lake env lean` just to decide whether the draft is ready.",
-        "10. Stop after the source map, blueprint, theorem statements, and `sorry` skeletons are ready. Ask for an independent statement/source verification pass before the prover queue starts.",
+        "8. Before marking the formalization proof-ready, satisfy the document formalization handoff verifier: keep `## Import Plan` to direct Lean imports only, put non-gating search hints under `## Suggested Search Modules`, ensure the root project module imports the generated target module path so plain `lake build` covers it, and keep direct imports aligned with the target Lean files.",
+        "9. Verify draft readiness with `lean_inspect`, then `lean_verify(mode=project)` after the generated files and root imports are in place. Module/file checks are useful while iterating, but they do not satisfy the final formalization gate.",
+        "10. Stop after the source map, blueprint, theorem statements, and proof `sorry` skeletons are ready. Ask for an independent statement/source verification pass; verifier agents are read-only reviewers and drafting agents apply corrections.",
+        "11. Definition, structure, class, and instance construction gaps block proof handoff. A declaration such as `noncomputable def foo := sorry` is not a theorem queue item; either implement the construction or record the blocker instead of launching `/prove`.",
+        "12. During the source-fidelity drafting phase, prefer clarity and correctness over premature file splitting. It is acceptable to stabilize the first draft in one generated Lean file if that helps you read the source carefully and respond to verifier feedback.",
+        "13. After independent statement/source review passes, the runner will give one final organization pass before the formalizer exits. In that pass, decide whether the generated formalization should be split into multiple files, preserve every blueprint declaration/source mapping, update imports and `## Generated File Layout`, and run project-level Lean verification.",
+        "14. Do not check the proof-ready checklist item yourself. Leave it unchecked until independent statement/source review has approved every source entry.",
         "",
         "Statement fidelity:",
-        "- keep source pointers, ambiguity notes, dependencies, and proof notes in the planner blueprint",
-        "- put a compact `Source proof` / `Proof sketch` / `Prover notes` paragraph in the Lean doc comment immediately above each source theorem or lemma when the source contains proof guidance",
+        "- keep source pointers, ambiguity notes, dependencies, complete source proof text, and proof notes in the planner blueprint",
+        "- put a compact `Source proof` / `Proof sketch` / `Prover notes` paragraph in the Lean doc comment immediately above each source theorem or lemma so the prover gets the right proof nudge immediately",
         "- the generated supplemental blueprint skill keeps the `Blueprint.md` path available to prover turns after compaction",
-        "- explicitly compare each Lean statement against the corresponding source statement before handing it to the prover queue",
+        "- explicitly compare each Lean statement against the corresponding source statement before marking the formalization proof-ready",
         "- when the source theorem quantifies over a structured object class or representation, do not count a simpler Lean encoding as full coverage unless a definition or companion declaration records the bridge",
         "- if a representation bridge is intentionally omitted, mark the Lean coverage as partial and record the representation change under `Scope changes`; do not approve the entry as exact source coverage",
-        "- record `Statement verification status: approved` only after the verification pass has checked and corrected the blueprint and Lean statements",
+        "- record `Statement verification status: approved` only after the verification pass has checked source-proof completeness, doc-comment nudges, and Lean statement correctness",
         "- do not silently weaken or strengthen the source theorem",
         "- avoid adding Lean comments unless they clarify a concrete formalization choice",
         "- the blueprint is intentionally next to the Lean files so planner and prover turns can reread it easily",
         "",
         "Proof phase:",
-        "- After the declaration skeleton is stable and statement/source verification is approved, use the normal managed Lean queue to eliminate `sorry` one declaration at a time.",
+        "- After the declaration skeleton is stable and statement/source verification is approved, the formalizer exits. Do not start the prover queue or a fresh prove workflow automatically.",
+        "- Print/log the suggested `/prove` command so the user can review the generated formalization before starting proof search explicitly.",
+        "- The theorem queue includes only `theorem`, `lemma`, and `example` proof obligations; construction stubs block handoff.",
+        "- Do not force suggested search modules into `.lean` imports. The prover may add imports when needed, then update the direct import plan.",
         "- If the handoff verifier blocks the queue, update the root module, target imports, or blueprint first; do not work around the blocker by editing theorem statements opportunistically.",
         "- When proving, consult the nearby blueprint and the original source document for natural-language proof strategy before inventing a proof.",
         "- Keep blueprint entries aligned when a theorem is split or renamed.",
@@ -997,6 +1206,9 @@ def _render_context_markdown(
         included_tex = list(metadata.get("tex_project_included_tex_files", []) or [])
         bibliography_files = list(metadata.get("tex_project_bibliography_files", []) or [])
         local_assets = list(metadata.get("tex_project_local_asset_files", []) or [])
+        pdf_files = list(metadata.get("tex_project_pdf_files", []) or [])
+        figure_files = list(metadata.get("tex_project_figure_files", []) or [])
+        support_files = list(metadata.get("tex_project_support_files", []) or [])
         missing_includes = list(metadata.get("tex_project_missing_includes", []) or [])
         lines.extend(
             [
@@ -1013,6 +1225,15 @@ def _render_context_markdown(
                 "",
                 "Local assets:",
                 *([f"- `{item}`" for item in local_assets] or ["- [none]"]),
+                "",
+                "Nearby PDF files:",
+                *([f"- `{item}`" for item in pdf_files] or ["- [none]"]),
+                "",
+                "Figure/image files:",
+                *([f"- `{item}`" for item in figure_files] or ["- [none]"]),
+                "",
+                "TeX support files:",
+                *([f"- `{item}`" for item in support_files] or ["- [none]"]),
             ]
         )
         if missing_includes:
@@ -1050,16 +1271,33 @@ def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata
         "- [ ] Check local project and Mathlib names before introducing duplicates.",
         "- [ ] Verify drafted Lean statements match the source document.",
         "- [ ] Run independent statement/source verification review and apply corrections.",
+        "- [ ] Attach the complete source proof text when available, or explicitly record why it is unavailable.",
         "- [ ] Record a natural-language proof strategy or source proof pointer for each theorem/lemma.",
-        "- [ ] Hand stable `sorry` declarations to the managed prover queue.",
+        "- [ ] Resolve all construction stubs before proof handoff.",
+        "- [ ] Mark stable theorem/lemma/example `sorry` declarations ready for a user-started prove workflow. (Only check after independent review approves every source entry.)",
         "",
         "Replace all `_pending_` entries before drafting Lean. The managed workflow treats this initial",
         "blueprint as a placeholder, not as a completed plan.",
         "",
-        "For each theorem or lemma, include proof guidance useful to the prover: relevant source proof",
-        "paragraphs, induction variables, reductions, important previously planned lemmas, and any",
-        "known statement-fidelity caveats. Lean doc comments should include compact proof notes;",
+        "For each theorem or lemma, include proof guidance useful to the prover: the complete source proof",
+        "when available, relevant source proof paragraphs, induction variables, reductions, important",
+        "previously planned lemmas, and any known statement-fidelity caveats. Lean doc comments should include compact proof notes;",
         "the generated supplemental blueprint skill carries the durable `Blueprint.md` reference.",
+        "",
+        "## Import Plan",
+        "",
+        "Direct Lean imports expected in generated Lean files only:",
+        "- `Mathlib`",
+        "",
+        "## Suggested Search Modules",
+        "",
+        "Non-gating modules or namespaces to search while proving. Do not force these into `.lean` imports unless the prover actually needs them.",
+        "- [none yet]",
+        "",
+        "## Generated File Layout",
+        "",
+        f"- Aggregator entry file: `{target_lean_relative}`",
+        "- Split into `Basic.lean`, `Constructions.lean`, and `Theorems.lean` when declaration count, proof count, or source sections justify it.",
         "",
         "## Source Statement Inventory",
         "",
@@ -1081,6 +1319,7 @@ def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata
                 "- Lean coverage: _pending_",
                 "- Scope changes: _pending_",
                 "- Statement verification status: _pending_",
+                "- Complete source proof: _pending_",
                 "- Source proof / prover notes: _pending_",
                 f"- Source proof excerpt: {str(block.get('proof', '') or '[none detected by preflight]')}",
                 "",
