@@ -106,6 +106,8 @@ PROJECT_PROVE_MANAGER_SELECTED_FILE_MAX_CHARS = 5000
 PROJECT_PROVE_MANAGER_DECL_CONTEXT_MAX_CHARS = 1600
 PROJECT_PROVE_MANAGER_HINT_CONTEXT_MAX_CHARS = 1600
 PROJECT_PROVE_MANAGER_PENDING_DECL_LIMIT = 8
+MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S = 300
+MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S = 300
 ACTIVE_AGENT_STATUSES = {"active"}
 LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
@@ -159,6 +161,17 @@ def _read_native_env(name: str, default: str = "") -> str:
     )
 
 
+def _read_int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = _read_text_env(name, "")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
 def _managed_home() -> Path:
     return Path(
         _read_text_env(
@@ -177,6 +190,20 @@ def _project_root() -> str:
 
 def _workflow_kind() -> str:
     return _read_native_env("WORKFLOW_KIND", "workflow").strip().lower()
+
+
+def _manager_incremental_prepare_timeout_s() -> int:
+    return _read_int_env(
+        "EPFLEMMA_MANAGER_INCREMENTAL_PREPARE_TIMEOUT_S",
+        MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S,
+    )
+
+
+def _manager_incremental_check_timeout_s() -> int:
+    return _read_int_env(
+        "EPFLEMMA_MANAGER_INCREMENTAL_CHECK_TIMEOUT_S",
+        MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S,
+    )
 
 
 def _workflow_display_name(workflow_kind: str | None = None) -> str:
@@ -1039,7 +1066,7 @@ def _manager_incremental_check_queue_item(active_file: str, target_symbol: str) 
             theorem_id=target,
             cwd=_project_root(),
             include_tactics=False,
-            timeout_s=90,
+            timeout_s=_manager_incremental_check_timeout_s(),
         )
     except Exception as exc:
         return {
@@ -1081,7 +1108,7 @@ def _manager_prepare_incremental_queue_item(active_file: str, target_symbol: str
             theorem_id=target,
             cwd=_project_root(),
             include_tactics=False,
-            timeout_s=90,
+            timeout_s=_manager_incremental_prepare_timeout_s(),
         )
     except Exception as exc:
         return {
