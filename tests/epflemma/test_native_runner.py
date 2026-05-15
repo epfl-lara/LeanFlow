@@ -274,6 +274,37 @@ def test_run_managed_conversation_calls_interrupt_callback(monkeypatch):
     assert callback_hits["count"] == 1
 
 
+def test_interactive_mode_header_uses_formalizer_label(monkeypatch, capsys):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+
+    runner._print_interactive_mode_header(
+        {
+            "build_status": "waiting for document formalization handoff verifier",
+            "active_file_label": "DocFormalizationDemo/Pyth/Main.lean",
+            "target_symbol": "[unknown]",
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "formalizer-agent mode  ·  waiting for document formalization handoff verifier" in output
+    assert "prover-agent mode" not in output
+
+
+def test_interactive_mode_header_keeps_prover_label(monkeypatch, capsys):
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+
+    runner._print_interactive_mode_header(
+        {
+            "build_status": "lake build running",
+            "active_file_label": "Main.lean",
+            "target_symbol": "demo",
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "prover-agent mode  ·  lake build running" in output
+
+
 def test_handle_managed_tool_result_records_failed_attempt_after_verification_feedback(monkeypatch):
     class _Agent:
         def __init__(self):
@@ -4423,7 +4454,7 @@ def test_document_formalization_handoff_blocks_queue_without_root_import(monkeyp
     assert live_state["queue_needs_final_file_sweep"] is False
     assert live_state["route_decision"]["route_action"] == "planner-review-gate"
     assert live_state["route_decision"]["skill_name"] == "lean-formalization"
-    assert "lean_verify(mode=module)" in live_state["verification_hint"]
+    assert "lean_verify(mode=project)" in live_state["verification_hint"]
     handoff = live_state["document_formalization_handoff"]
     assert handoff["ok"] is False
     assert "root module `Demo` does not import `Demo.Paper.Main`" in handoff["summary"]
@@ -4519,10 +4550,14 @@ def test_document_formalization_review_due_for_approval_only_gate(monkeypatch, t
     project = tmp_path / "Demo"
     active = project / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
+    active.write_text("import Mathlib\n\ntheorem t : True := by\n  sorry\n", encoding="utf-8")
+    blueprint = tmp_path / "Blueprint.md"
+    blueprint.write_text("# Blueprint\n", encoding="utf-8")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
-    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(tmp_path / "Blueprint.md"))
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
     live_state = {
         "active_file": str(active),
         "active_file_label": "Demo/Paper/Main.lean",
@@ -4537,6 +4572,120 @@ def test_document_formalization_review_due_for_approval_only_gate(monkeypatch, t
         "document_formalization_review_signature": runner._document_formalization_review_signature(live_state)
     }
     assert runner._document_formalization_review_due(live_state, autonomy_state) is False
+    blueprint.write_text("# Blueprint\n\nupdated\n", encoding="utf-8")
+    assert runner._document_formalization_review_due(live_state, autonomy_state) is True
+
+
+def test_configured_command_blueprint_verifier_runs_without_review_agent(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(tmp_path / "Blueprint.md"))
+    monkeypatch.setenv("AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER", "codex")
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Demo/Paper/Main.lean",
+        "document_formalization_handoff": {
+            "ok": False,
+            "issues": ["blueprint entry `thm:demo` statement/source verification is not approved"],
+        },
+    }
+    calls = []
+    events = []
+
+    def fake_command_review(**kwargs):
+        calls.append(kwargs)
+
+        class Result:
+            task = kwargs["task"]
+            provider = kwargs["provider"]
+            mode = "command"
+            response = "review the blueprint entry before approval"
+            status = "ok"
+            command = ["codex", "exec"]
+            exit_status = 0
+            truncated = False
+            response_chars = len(response)
+            max_response_chars = 64000
+            timed_out = False
+            model = ""
+            error = ""
+
+        return Result()
+
+    monkeypatch.setattr(runner, "run_command_verification_review", fake_command_review)
+    monkeypatch.setattr(
+        runner,
+        "_run_document_formalization_review_agent",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("review agent should not run")),
+    )
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+
+    autonomy_state = {}
+    assert runner._maybe_run_document_formalization_review_agent(_FakeAgent(), "system", live_state, autonomy_state) is True
+
+    assert len(calls) == 1
+    assert calls[0]["task"] == "blueprint_verification"
+    assert calls[0]["provider"] == "codex"
+    assert autonomy_state["document_formalization_review_provider"] == "codex"
+    assert autonomy_state["document_formalization_review_result"]["status"] == "ok"
+    assert "document_formalization_review_signature" in autonomy_state
+
+
+def test_configured_blueprint_verifier_block_queues_drafting_feedback(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(tmp_path / "Blueprint.md"))
+    monkeypatch.setenv("AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER", "codex")
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Demo/Paper/Main.lean",
+        "document_formalization_handoff": {
+            "ok": False,
+            "issues": ["blueprint entry `thm:demo` statement/source verification is not approved"],
+        },
+    }
+
+    def fake_command_review(**kwargs):
+        class Result:
+            task = kwargs["task"]
+            provider = kwargs["provider"]
+            mode = "command"
+            response = "BLOCK\nFindings:\n- add a companion representation bridge theorem"
+            status = "ok"
+            command = ["codex", "exec"]
+            exit_status = 0
+            truncated = False
+            response_chars = len(response)
+            max_response_chars = 64000
+            timed_out = False
+            model = ""
+            error = ""
+
+        return Result()
+
+    monkeypatch.setattr(runner, "run_command_verification_review", fake_command_review)
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    autonomy_state = {}
+    assert runner._maybe_run_document_formalization_review_agent(_FakeAgent(), "system", live_state, autonomy_state) is True
+
+    assert autonomy_state["document_formalization_review_feedback_pending"] is True
+    assert "[EPFLEMMA FORMALIZATION STATEMENT REVIEW BLOCK]" in autonomy_state[
+        "document_formalization_review_feedback_message"
+    ]
+    assert "companion representation bridge theorem" in autonomy_state["document_formalization_review_feedback_message"]
+    assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "continue"
+    assert "document_formalization_review_feedback_pending" not in autonomy_state
 
 
 def test_drive_autonomous_followups_runs_independent_document_review_before_block(monkeypatch, tmp_path):
@@ -4620,16 +4769,120 @@ def test_document_formalization_reviewed_draft_stops_ready_for_prove(monkeypatch
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
     assert runner._queue_needs_final_file_sweep(live_state) is False
     runner._maybe_announce_final_file_sweep_state(autonomy_state, live_state)
-    assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "blocked"
+    assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "continue"
+    assert autonomy_state["document_formalization_organization_turn_started"] is True
+
+    prompt = runner._autonomous_continuation_prompt(live_state, 1, autonomy_state)
+    assert "FINAL ORGANIZATION PASS" in prompt
+    assert "Run `lean_verify(mode=project)` once" in prompt
+
+    assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "formalization-prover-handoff-ready"
     runner._prepare_queue_assignment_state(autonomy_state, live_state)
     rebuilt, transition = runner._rebuild_history_for_theorem_transition([], {}, autonomy_state, live_state)
 
     assert events[0][0][0] == "final-file-sweep-deferred-for-prover-handoff"
-    assert events[1][0][0] == "formalization-prover-handoff-ready"
-    assert "ready for /prove" in events[1][0][1]
+    assert events[1][0][0] == "formalization-organization-pass-started"
+    assert events[2][0][0] == "formalization-organization-pass-completed"
+    assert events[3][0][0] == "formalization-prover-handoff-ready"
+    assert "ready for /prove" in events[3][0][1]
     assert "current_queue_assignment" not in autonomy_state
     assert rebuilt is None
     assert transition is None
+
+
+def test_formalization_handoff_requires_manual_scoped_prove_workflow(monkeypatch, tmp_path, capsys):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("import Mathlib\n\n/-- Source proof: trivial. -/\ntheorem t : True := by\n  sorry\n", encoding="utf-8")
+    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"target_lean_relative": "Demo/Paper/Main.lean"}), encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", str(active))
+
+    events = []
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(
+        runner.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("prove workflow must not auto-start")),
+    )
+
+    runner._record_formalization_manual_prove_handoff(
+        {
+            "active_file": str(active),
+            "active_file_label": "Demo/Paper/Main.lean",
+            "document_formalization_proof_sorry_count": 1,
+        },
+        {},
+    )
+
+    assert [event[0][0] for event in events[:2]] == ["formalizer-ended", "prove-workflow-manual-start-required"]
+    assert events[1][1]["suggested_command"] == "epflemma workflow prove Demo/Paper/Main.lean"
+    output = capsys.readouterr().out
+    assert "Prove workflow not started automatically" in output
+    assert "epflemma workflow prove Demo/Paper/Main.lean" in output
+
+
+def test_project_prove_scope_limits_candidates_in_given_order(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    (project / "Demo").mkdir(parents=True)
+    first = project / "Demo" / "Basic.lean"
+    second = project / "Demo" / "Theorems.lean"
+    unrelated = project / "Demo" / "Other.lean"
+    first.write_text("theorem basic : True := by\n  sorry\n", encoding="utf-8")
+    second.write_text("theorem main : True := by\n  sorry\n", encoding="utf-8")
+    unrelated.write_text("theorem other : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_PROVE_FILE_SCOPE", os.pathsep.join(["Demo/Basic.lean", "Demo/Theorems.lean"]))
+
+    candidates = runner._collect_project_prove_file_candidates(project)
+
+    assert [item["label"] for item in candidates] == ["Demo/Basic.lean", "Demo/Theorems.lean"]
+
+
+def test_document_formalization_handoff_blocks_construction_sorry_and_filters_queue(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    active.write_text(
+        "import Mathlib\n\n"
+        "noncomputable def qRationalNum : Nat := by\n"
+        "  sorry\n\n"
+        "/-- Source proof: the source proof closes the toy claim directly; prover notes: use `trivial`. -/\n"
+        "theorem t : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planned\n\n"
+        "## Import Plan\n\n"
+        "Direct Lean imports:\n"
+        "- `Mathlib`\n\n"
+        "## Suggested Search Modules\n\n"
+        "- `Mathlib.Data.Nat.Basic`\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+
+    queue = runner._declaration_work_queue(str(active), "", project_root=str(project), scope="file")
+    filtered = runner._filter_document_formalization_proof_queue(queue)
+    handoff = runner._document_formalization_handoff_verification(str(active), sorry_count=2)
+
+    assert [item["label"] for item in filtered] == ["t"]
+    assert handoff["ok"] is False
+    assert "construction gap before proof handoff" in handoff["summary"]
+    assert "qRationalNum" in handoff["summary"]
 
 
 def test_document_formalization_gate_clears_stale_queue_assignment(monkeypatch, tmp_path):
@@ -4738,6 +4991,293 @@ def test_document_formalization_handoff_detects_stale_import_plan(monkeypatch, t
     ) is False
 
 
+def test_document_formalization_handoff_ignores_suggested_search_modules(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    active.write_text("import Mathlib\n\n/-- Source proof: prove by `trivial`. -/\ntheorem t : True := by\n  sorry\n", encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planned\n\n"
+        "## Import Plan\n\n"
+        "Direct Lean imports:\n"
+        "- `Mathlib`\n\n"
+        "## Suggested Search Modules\n\n"
+        "- `Mathlib.Data.Nat.Coprime.Basic`\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+
+    handoff = runner._document_formalization_handoff_verification(
+        str(active),
+        sorry_count=1,
+        last_verification={"ok": True, "scope": "project", "tool": "lean_verify"},
+    )
+
+    assert handoff == {
+        "ok": True,
+        "issues": [],
+        "summary": "document formalization handoff verifier passed",
+    }
+
+
+def test_configured_autoformalizer_block_prevents_proof_handoff(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    active.write_text("import Mathlib\n\n/-- Source proof: prove by `trivial`. -/\ntheorem t : True := by\n  sorry\n", encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planned\n\n"
+        "## Import Plan\n\n"
+        "Direct Lean imports:\n"
+        "- `Mathlib`\n\n"
+        "## Source Statement Inventory\n\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+
+    def fake_resolve(task, explicit=None):
+        if task == runner.AUTOFORMALIZER_VERIFICATION_TASK:
+            return "codex"
+        return "local"
+
+    class Result:
+        task = runner.AUTOFORMALIZER_VERIFICATION_TASK
+        provider = "codex"
+        mode = "command"
+        response = "BLOCK\nFindings:\n- theorem statement weakens the source statement\nCorrection steps:\n- revise the Lean statement"
+        status = "ok"
+        command = ["codex", "exec"]
+        exit_status = 0
+        truncated = False
+        response_chars = len(response)
+        max_response_chars = 64000
+        timed_out = False
+        model = ""
+        error = ""
+
+    monkeypatch.setattr(runner, "resolve_verification_provider", fake_resolve)
+    monkeypatch.setattr(runner, "is_command_verification_provider", lambda provider: True)
+    monkeypatch.setattr(runner, "run_command_verification_review", lambda **kwargs: Result())
+
+    handoff = runner._document_formalization_handoff_verification(
+        str(active),
+        sorry_count=1,
+        last_verification={"ok": True, "scope": "project", "tool": "lean_verify"},
+    )
+
+    assert handoff["ok"] is False
+    assert "configured autoformalizer verifier returned BLOCK" in handoff["summary"]
+    assert any("weakens the source statement" in issue for issue in handoff["issues"])
+
+
+def test_formalization_verifier_block_is_appended_to_next_tool_turn(monkeypatch):
+    class Agent:
+        quiet_mode = True
+
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    live_state = {
+        "active_file_label": "Demo/Paper/Main.lean",
+        "document_formalization_handoff": {
+            "ok": False,
+            "issues": [
+                "configured autoformalizer verifier returned BLOCK: blueprint verification is still not approved",
+                "line-240 needs verifier-accepted scope-change recording",
+            ],
+        },
+    }
+    agent = Agent()
+
+    runner._maybe_append_formalization_handoff_feedback(
+        agent,
+        function_name="patch",
+        live_state=live_state,
+    )
+
+    appendix = agent._post_tool_result_appendix
+    assert "[EPFLEMMA FORMALIZATION VERIFIER BLOCK]" in appendix
+    assert "next required correction task" in appendix
+    assert "blueprint verification is still not approved" in appendix
+    assert "line-240 needs verifier-accepted scope-change recording" in appendix
+
+
+def test_document_formalization_raw_lean_edit_runs_immediate_file_check(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("import Mathlib\n", encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "## Source Statement Inventory\n\n"
+        "### line-1\n"
+        "- Planned Lean declarations: `t`\n"
+        "- Formal statement review: drafted\n"
+        "- Source proof / prover notes: use `trivial`\n"
+        "- Statement verification status: drafted, awaiting independent review\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_maybe_append_formalization_handoff_feedback", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    calls = []
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda path: calls.append(path) or {"ok": False, "command": f"lake env lean {path}", "output": "type mismatch"},
+    )
+
+    class Agent:
+        quiet_mode = True
+        _session_messages = []
+        _managed_autonomy_state = {}
+
+    agent = Agent()
+
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        {"path": str(active), "mode": "replace", "new_string": "import Mathlib\n\n"},
+        json.dumps({"success": True}),
+    )
+
+    assert calls == [str(active.resolve())]
+    assert "[EPFLEMMA FORMALIZATION LEAN CHECK FAILED]" in agent._post_tool_result_appendix
+    assert "type mismatch" in agent._post_tool_result_appendix
+    assert runner._document_formalization_pre_tool_guard(
+        agent,
+        "patch",
+        {"path": str(active), "mode": "replace", "new_string": "import Mathlib\n\n"},
+    ) is None
+    assert runner._document_formalization_pre_tool_guard(
+        agent,
+        "apply_verified_patch",
+        {"path": str(active), "patch": "theorem t : True := by\n  sorry\n"},
+    ) is None
+
+
+def test_document_formalization_blocks_drafting_model_blueprint_self_approval(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("import Mathlib\n", encoding="utf-8")
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "## Source Statement Inventory\n\n"
+        "### line-1\n"
+        "- Statement verification status: drafted, awaiting independent review\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+
+    class Agent:
+        _managed_autonomy_state = {}
+
+    blocked = runner._document_formalization_pre_tool_guard(
+        Agent(),
+        "patch",
+        {
+            "path": str(blueprint),
+            "mode": "replace",
+            "old_string": "- Statement verification status: drafted, awaiting independent review\n",
+            "new_string": "- Statement verification status: approved\n",
+        },
+    )
+
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["next_required_step"] == "independent_statement_source_verification"
+    assert "must be written by the independent statement/source verifier" in payload["error"]
+
+
+def test_document_formalization_lean_edit_gate_does_not_apply_to_prove(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Paper" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("import Mathlib\n", encoding="utf-8")
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    calls = []
+    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda path: calls.append(path) or {"ok": True})
+
+    class Agent:
+        quiet_mode = True
+        _session_messages = []
+        _managed_autonomy_state = {}
+
+    assert runner._document_formalization_pre_tool_guard(
+        Agent(),
+        "patch",
+        {"path": str(active), "mode": "replace", "new_string": "import Mathlib\n\n"},
+    ) is None
+    runner._handle_managed_tool_result(
+        Agent(),
+        "patch",
+        {"path": str(active), "mode": "replace", "new_string": "import Mathlib\n\n"},
+        json.dumps({"success": True}),
+    )
+    assert calls == []
+
+
+def test_configured_blueprint_verifier_pass_stamps_readonly_approval(monkeypatch, tmp_path):
+    blueprint = tmp_path / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planner draft in progress\n\n"
+        "- [ ] Verify drafted Lean statements match the source document.\n\n"
+        "- [ ] Run independent statement/source verification review and apply corrections.\n\n"
+        "- [ ] Mark stable theorem/lemma/example `sorry` declarations ready for a user-started prove workflow. (Only check after independent review approves every source entry.)\n\n"
+        "## Source Statement Inventory\n\n"
+        "### line-143\n"
+        "- Statement verification status: pending review\n\n"
+        "### line-194\n"
+        "- Statement verification status: ready for review\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    assert runner._stamp_blueprint_statement_review_approved(provider="codex", active_file="Demo/Paper/Main.lean")
+
+    text = blueprint.read_text(encoding="utf-8")
+    assert "- Status: statement/source review approved; ready for user-started prove workflow" in text
+    assert "- [x] Verify drafted Lean statements match the source document." in text
+    assert "- [x] Run independent statement/source verification review and apply corrections." in text
+    assert "- [x] Mark stable theorem/lemma/example `sorry` declarations ready for a user-started prove workflow." in text
+    assert text.count("Statement verification status: approved by codex verifier") == 2
+
+
 def test_document_formalization_handoff_checks_blueprint_inventory_against_target(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     root = project / "Demo.lean"
@@ -4773,7 +5313,11 @@ def test_document_formalization_handoff_checks_blueprint_inventory_against_targe
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
 
-    handoff = runner._document_formalization_handoff_verification(str(active), sorry_count=1)
+    handoff = runner._document_formalization_handoff_verification(
+        str(active),
+        sorry_count=1,
+        last_verification={"ok": True, "scope": "project", "tool": "lean_verify"},
+    )
 
     assert handoff["ok"] is False
     assert "missing_t" in handoff["summary"]
@@ -4924,7 +5468,11 @@ def test_document_formalization_handoff_accepts_resolved_generic_fidelity_axes(m
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
 
-    handoff = runner._document_formalization_handoff_verification(str(active), sorry_count=1)
+    handoff = runner._document_formalization_handoff_verification(
+        str(active),
+        sorry_count=1,
+        last_verification={"ok": True, "scope": "project", "tool": "lean_verify"},
+    )
 
     assert handoff["ok"] is True
 
@@ -5044,6 +5592,7 @@ def test_document_formalization_handoff_accepts_synced_blueprint_and_root_import
         "# Formalization Blueprint\n\n"
         "- Status: complete; Lean module and project build verified\n\n"
         "## Planner Checklist\n\n"
+        "- [x] Run independent statement/source verification review and apply corrections.\n"
         "- [x] Hand stable `sorry` declarations to the managed prover queue.\n\n"
         "## Lean Import Plan\n\n"
         "`Main.lean` imports:\n"
@@ -5081,6 +5630,7 @@ def test_document_formalization_handoff_accepts_synced_blueprint_and_root_import
     handoff = runner._document_formalization_handoff_verification(
         str(active),
         sorry_count=0,
+        last_verification={"ok": True, "scope": "project", "tool": "lean_verify"},
         completion=True,
     )
 
@@ -5089,6 +5639,90 @@ def test_document_formalization_handoff_accepts_synced_blueprint_and_root_import
         "issues": [],
         "summary": "document formalization handoff verifier passed",
     }
+
+
+def test_document_formalization_handoff_accepts_split_aggregator_layout(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    root = project / "Demo.lean"
+    parent = project / "Demo" / "Paper.lean"
+    main = project / "Demo" / "Paper" / "Main.lean"
+    basic = project / "Demo" / "Paper" / "Basic.lean"
+    theorems = project / "Demo" / "Paper" / "Theorems.lean"
+    main.parent.mkdir(parents=True)
+    root.write_text("import Demo.Paper\n", encoding="utf-8")
+    parent.write_text("import Demo.Paper.Main\n", encoding="utf-8")
+    main.write_text("import Demo.Paper.Basic\nimport Demo.Paper.Theorems\n", encoding="utf-8")
+    basic.write_text("import Mathlib\n\ndef Helper : Prop := True\n", encoding="utf-8")
+    theorems.write_text(
+        "import Mathlib\n"
+        "import Demo.Paper.Basic\n\n"
+        "/-- Source proof: the source proof closes the toy claim directly; prover notes: unfold `Helper`. -/\n"
+        "theorem t : Helper := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    blueprint = project / "Demo" / "Paper" / "Blueprint.md"
+    blueprint.write_text(
+        "# Formalization Blueprint\n\n"
+        "- Status: planner draft complete\n\n"
+        "## Planner Checklist\n\n"
+        "- [x] Run independent statement/source verification review and apply corrections.\n"
+        "- [x] Mark stable theorem/lemma/example `sorry` declarations ready for a user-started prove workflow.\n\n"
+        "## Import Plan\n\n"
+        "Direct Lean imports expected in generated Lean files only:\n"
+        "- `Mathlib`\n\n"
+        "## Generated File Layout\n\n"
+        "- Aggregator entry file: `Demo/Paper/Main.lean`\n"
+        "- `Demo/Paper/Basic.lean` -- definitions\n"
+        "- `Demo/Paper/Theorems.lean` -- theorem statements\n\n"
+        "## Source Statement Inventory\n\n"
+        "### thm:demo\n"
+        "- Source locator: `docs/paper.tex:1-3`\n"
+        "- Planned Lean declarations: `t`\n"
+        "- Dependencies: `Helper`\n"
+        "- Formal statement review: source statement exactly matches `Helper` in the fixture\n"
+        "- Source qualifiers:\n"
+        "  - object class: proposition\n"
+        "  - quantifier shape: closed theorem\n"
+        "- Lean coverage:\n"
+        "  - proposition: theorem `t : Helper`\n"
+        "  - quantifier shape: closed theorem\n"
+        "- Scope changes: none\n"
+        "- Statement verification status: approved by review workflow\n"
+        "- Source proof / prover notes: unfold `Helper`, then prove by `trivial`\n",
+        encoding="utf-8",
+    )
+    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "target_lean_relative": "Demo/Paper/Main.lean",
+                "theorem_blocks": [{"label": "thm:demo", "kind": "theorem", "proof": "trivial"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
+    monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
+    monkeypatch.setattr(runner, "resolve_verification_provider", lambda task, explicit=None: "local")
+
+    handoff = runner._document_formalization_handoff_verification(
+        str(main),
+        sorry_count=1,
+        last_verification={"ok": True, "scope": "project", "tool": "lean_verify"},
+    )
+
+    assert handoff == {
+        "ok": True,
+        "issues": [],
+        "summary": "document formalization handoff verifier passed",
+    }
+    assert runner._document_formalization_needs_planner_draft(str(main)) is False
 
 
 def test_document_formalization_write_target_requires_blueprint_plan(monkeypatch, tmp_path):

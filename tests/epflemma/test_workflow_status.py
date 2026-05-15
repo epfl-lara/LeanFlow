@@ -78,6 +78,9 @@ def test_persist_live_status_writes_shell_visible_payload(monkeypatch, tmp_path)
                 "warning_summary": "",
                 "diagnostics": "warning cleanup verified; no warnings remain",
             },
+            "document_formalization_handoff": {"ok": False, "issues": ["statement/source verification pending"]},
+            "document_formalization_proof_sorry_count": 2,
+            "document_formalization_construction_sorry_count": 1,
         },
         phase="busy",
     )
@@ -94,6 +97,10 @@ def test_persist_live_status_writes_shell_visible_payload(monkeypatch, tmp_path)
     assert payload["warning_cleanup_status"] == "verified"
     assert payload["warning_cleanup_verified"] is True
     assert payload["warning_cleanup"]["status"] == "verified"
+    assert payload["document_formalization_handoff"]["ok"] is False
+    assert payload["document_formalization_handoff"]["issues"] == ["statement/source verification pending"]
+    assert payload["document_formalization_proof_sorry_count"] == 2
+    assert payload["document_formalization_construction_sorry_count"] == 1
 
 
 def test_persist_live_status_releases_locks_before_exit_payload(monkeypatch, tmp_path):

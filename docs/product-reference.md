@@ -466,9 +466,9 @@ The resolver prepares a document formalization workspace before the native runne
 - startup context that tells the drafting agent to plan definitions, lemmas, theorem splits, source comments, source pointers, and statement-fidelity checks before proof repair
 - an automatic independent statement/source verifier pass once the draft is otherwise ready and only approval statuses are missing
 
-The deterministic preflight is intentionally modest. LaTeX documents get theorem-like environments, labels, references, citations, and sections extracted. Directory inputs first select a main TeX entrypoint, collect included `.tex` files, bibliography files, and local assets, and reject ambiguous roots with an explicit error. PDFs use installed local tools such as `pdftotext`, `pdfinfo`, and `pdfimages` when available, and record degraded extraction reasons when they are not. The planner agent can then use the normal file, terminal, web, and Lean tools to inspect the document more deeply, pull referenced material, and draft Lean files with `sorry`. The independent verifier then checks the source fidelity and marks approved blueprint entries before the resulting queue is handed to `/prove`.
+The deterministic preflight is intentionally modest, but it recognizes common math-paper structure. LaTeX documents get sections, labels, references, citations, theorem-like blocks, and adjacent proof excerpts extracted. The theorem scanner covers standard environments, custom `\newtheorem` environments, `thmtools` `\declaretheorem`, `mdframed` `\newmdtheoremenv` / `\mdtheorem`, Springer `\spnewtheorem`, `tcolorbox` `\newtcbtheorem`, theorem-like `\newenvironment` names, and plain-TeX `\profess...\endprofess` blocks. Directory inputs first select a main TeX entrypoint, collect included `.tex` files, bibliography files, local assets, PDFs, figures, and TeX support files, and reject ambiguous roots with an explicit error. PDFs use installed local tools such as `pdftotext`, `pdfinfo`, and `pdfimages` when available, and record degraded extraction reasons when they are not. The planner agent can then use the normal file, terminal, web, and Lean tools to inspect the document more deeply, pull referenced material, and draft Lean files with `sorry`. The independent verifier then checks the source fidelity and marks approved blueprint entries. When that gate passes, the formalizer gets one final generated-file organization pass, exits, and proof filling waits for an explicit user-run `/prove`.
 
-Expected document-prep completion is a buildable statement/source-approved draft that may still contain intentional `sorry`s. Proof filling is the next phase: it can be done by `/prove SomeFile.lean` or by the managed proof queue after the review-approved handoff, and it is not part of judging whether the source formalization draft itself is ready.
+Expected document-prep completion is a buildable statement/source-approved draft that may still contain intentional `sorry`s. Proof filling is the next phase: it starts only when the user explicitly runs `/prove SomeFile.lean` or `/prove` after reviewing the generated formalization, and it is not part of judging whether the source formalization draft itself is ready.
 
 EPFLemma writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.epflemma/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
 
@@ -1168,6 +1168,24 @@ auxiliary:
     command_template: ""
     codex_command_template: ""
     claude_code_command_template: ""
+  blueprint_verification:
+    provider: main
+    model: ""
+    reasoning_effort: ""
+    base_url: ""
+    api_key: ""
+    command_template: ""
+    codex_command_template: ""
+    claude_code_command_template: ""
+  autoformalizer_verification:
+    provider: local
+    model: ""
+    reasoning_effort: ""
+    base_url: ""
+    api_key: ""
+    command_template: ""
+    codex_command_template: ""
+    claude_code_command_template: ""
 
 agent:
   max_turns: 200
@@ -1224,6 +1242,8 @@ epflemma config set auxiliary.lean_reasoning.provider '"main"'
 epflemma config set auxiliary.lean_reasoning.reasoning_effort '"high"'
 epflemma workflow prove Main.lean --expert-provider codex
 epflemma workflow prove Main.lean --expert-provider claude-code
+epflemma config set auxiliary.blueprint_verification.provider '"claude-code"'
+epflemma config set auxiliary.autoformalizer_verification.provider '"local"'
 epflemma config set agent.reasoning_effort '"auto"'
 epflemma config set agent.seed '42'
 epflemma config set agent.temperature '0.3'
@@ -1247,6 +1267,16 @@ Command templates may be supplied with `--expert-command-template`,
 `EPFLEMMA_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE` variables. Commands are split
 without a shell and receive the full advisor prompt on stdin; workflow activity
 logs record the prompt, command, exit status, response, and truncation metadata.
+
+Formalization verification uses two separate auxiliary tasks. `auxiliary.blueprint_verification`
+controls the independent statement/source review for document blueprints. The default
+`main` path preserves the managed reviewer-agent behavior. Setting it to `codex`
+or `claude-code` runs the corresponding command reviewer; setting it to another
+model/RPC provider records an advisory review report. `auxiliary.autoformalizer_verification`
+controls advisory review around the deterministic handoff verifier and defaults
+to `local`. Non-local verifier output can propose corrections or review source
+fidelity, but deterministic local checks and Lean kernel verification remain the
+authoritative acceptance gate.
 
 If an endpoint omits or misreports model context-window metadata, pin the value
 in `~/.epflemma/config.yaml`:

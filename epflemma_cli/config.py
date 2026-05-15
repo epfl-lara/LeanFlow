@@ -73,6 +73,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "codex_command_template": "",
             "claude_code_command_template": "",
         },
+        "blueprint_verification": {
+            "provider": "main",
+            "model": "",
+            "reasoning_effort": "",
+            "base_url": "",
+            "api_key": "",
+            "command_template": "",
+            "codex_command_template": "",
+            "claude_code_command_template": "",
+        },
+        "autoformalizer_verification": {
+            "provider": "local",
+            "model": "",
+            "reasoning_effort": "",
+            "base_url": "",
+            "api_key": "",
+            "command_template": "",
+            "codex_command_template": "",
+            "claude_code_command_template": "",
+        },
     },
     "toolsets": ["epflemma-cli"],
     "agent": {
@@ -143,6 +163,16 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 #   Empty values inherit auxiliary.lean_reasoning, so you can leave this blank
 #   until you want a separate decomposition-planner model/provider.
 #
+# Formalization verifiers:
+#   auxiliary.blueprint_verification controls the independent statement/source
+#   review pass for document formalization blueprints. `main` keeps the existing
+#   managed reviewer-agent behavior; codex / claude-code run command reviewers;
+#   other auxiliary model providers produce advisory review reports.
+#   auxiliary.autoformalizer_verification controls advisory review around the
+#   autoformalization handoff verifier. Its default `local` setting uses the
+#   deterministic local blueprint/Lean checks only. Non-local providers can
+#   review or propose corrections, but cannot override Lean/local verification.
+#
 # Common model changes:
 #   - Change the primary model: model.default
 #   - Change the primary provider: model.provider
@@ -156,6 +186,9 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 #   - Use a separate helper-decomposition planner:
 #     auxiliary.lean_decompose_helpers.model and
 #     auxiliary.lean_decompose_helpers.reasoning_effort
+#   - Use separate formalization verifiers:
+#     auxiliary.blueprint_verification.provider and
+#     auxiliary.autoformalizer_verification.provider
 #   - Use a separate theorem advisor endpoint: set
 #     auxiliary.lean_reasoning.base_url and auxiliary.lean_reasoning.api_key,
 #     or AUXILIARY_LEAN_REASONING_BASE_URL / AUXILIARY_LEAN_REASONING_API_KEY
@@ -211,6 +244,23 @@ AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT=
 AUXILIARY_LEAN_DECOMPOSE_HELPERS_BASE_URL=
 AUXILIARY_LEAN_DECOMPOSE_HELPERS_API_KEY=
 AUXILIARY_LEAN_DECOMPOSE_HELPERS_COMMAND_TEMPLATE=
+
+# Optional formalization verifier overrides. Providers use the same names as
+# expert help: main/auto/openrouter/custom for model-backed review, codex or
+# claude-code for command review, and local for deterministic local checks.
+AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER=
+AUXILIARY_BLUEPRINT_VERIFICATION_MODEL=
+AUXILIARY_BLUEPRINT_VERIFICATION_REASONING_EFFORT=
+AUXILIARY_BLUEPRINT_VERIFICATION_BASE_URL=
+AUXILIARY_BLUEPRINT_VERIFICATION_API_KEY=
+AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE=
+
+AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER=
+AUXILIARY_AUTOFORMALIZER_VERIFICATION_MODEL=
+AUXILIARY_AUTOFORMALIZER_VERIFICATION_REASONING_EFFORT=
+AUXILIARY_AUTOFORMALIZER_VERIFICATION_BASE_URL=
+AUXILIARY_AUTOFORMALIZER_VERIFICATION_API_KEY=
+AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE=
 
 EPFLEMMA_EXPERT_CODEX_COMMAND_TEMPLATE=
 EPFLEMMA_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE=

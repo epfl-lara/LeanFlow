@@ -53,6 +53,22 @@ def test_parse_workflow_command_extracts_expert_provider_options():
     assert spec.expert_command_template == "codex exec --sandbox read-only -"
 
 
+def test_parse_workflow_command_extracts_verifier_provider_options():
+    spec = parse_workflow_command(
+        "/autoformalize docs/paper.tex "
+        "--blueprint-verifier-provider claude-code "
+        "--blueprint-verifier-command-template 'claude --print' "
+        "--autoformalizer-verifier-provider codex "
+        "--autoformalizer-verifier-command-template 'codex exec --sandbox read-only -'"
+    )
+
+    assert spec.workflow_args == "docs/paper.tex"
+    assert spec.blueprint_verifier_provider == "claude-code"
+    assert spec.blueprint_verifier_command_template == "claude --print"
+    assert spec.autoformalizer_verifier_provider == "codex"
+    assert spec.autoformalizer_verifier_command_template == "codex exec --sandbox read-only -"
+
+
 def test_parse_workflow_command_extracts_additional_skills():
     spec = parse_workflow_command(
         "/prove Demo/Main.lean --additional-skill .epflemma/skills/paper/SKILL.md --additional_skill extra-skill"
@@ -185,6 +201,43 @@ def test_resolve_workflow_request_exports_expert_provider_env(monkeypatch, tmp_p
     assert plan.child_env["AUXILIARY_LEAN_REASONING_PROVIDER"] == "claude-code"
     assert plan.child_env["AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE"] == "claude -p"
     assert describe_launch_plan(plan)["expert_provider"] == "claude-code"
+
+
+def test_resolve_workflow_request_exports_verifier_provider_env(monkeypatch, tmp_path):
+    _write_formalization_source(tmp_path)
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_epflemma_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "local",
+            "api_mode": "responses",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "sk-test",
+            "model": "google/gemma-4-31B-it",
+        },
+    )
+
+    plan = resolve_workflow_request(
+        "/autoformalize docs/paper.tex "
+        "--blueprint-verifier-provider claude-code "
+        "--blueprint-verifier-command-template 'claude --print' "
+        "--autoformalizer-verifier-provider codex "
+        "--autoformalizer-verifier-command-template 'codex exec -'",
+        active_cwd=tmp_path,
+    )
+
+    assert plan.child_env["AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] == "claude-code"
+    assert plan.child_env["AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"] == "claude --print"
+    assert plan.child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] == "codex"
+    assert plan.child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"] == "codex exec -"
+    summary = describe_launch_plan(plan)
+    assert summary["blueprint_verifier_provider"] == "claude-code"
+    assert summary["autoformalizer_verifier_provider"] == "codex"
 
 
 def test_resolve_workflow_request_forces_single_agent_for_file_scoped_prove(monkeypatch, tmp_path):

@@ -31,6 +31,10 @@ from epflemma_cli.lean_workflow_specs import get_lean_spec, list_specs
 
 
 STANDARD_AXIOMS = {"propext", "Quot.sound", "Classical.choice"}
+LEAN_DECLARATION_PREAMBLE_RE = (
+    r"^\s*(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial)\s+)*"
+    r"(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
+)
 SEARCH_PROVIDER_LABELS = {
     "local_search": "mcp-local-search",
     "leanexplore_local": "leanexplore-local",
@@ -1051,9 +1055,7 @@ def _declaration_index(path: Path) -> list[dict[str, Any]]:
         lines = path.read_text(encoding="utf-8").splitlines()
     except Exception:
         return []
-    pattern = re.compile(
-        r"^\s*(?:@[A-Za-z0-9_.]+\s+)*(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
-    )
+    pattern = re.compile(LEAN_DECLARATION_PREAMBLE_RE)
     entries: list[dict[str, Any]] = []
     for line_number, line in enumerate(lines, start=1):
         match = pattern.match(line)

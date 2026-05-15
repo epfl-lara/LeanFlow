@@ -226,6 +226,8 @@ def test_ensure_epflemma_home_creates_expected_subdirectories(monkeypatch, tmp_p
     config_text = (home / "config.yaml").read_text(encoding="utf-8")
     assert "Auxiliary helper decomposer" in config_text
     assert "lean_decompose_helpers:" in config_text
+    assert "blueprint_verification:" in config_text
+    assert "autoformalizer_verification:" in config_text
     env_text = (home / ".env").read_text(encoding="utf-8")
     assert "EPFLEMMA_OPENAI_BASE_URL=" in env_text
     assert "KIMI_API_KEY=" in env_text
@@ -233,6 +235,8 @@ def test_ensure_epflemma_home_creates_expected_subdirectories(monkeypatch, tmp_p
     assert "AUXILIARY_LEAN_REASONING_REASONING_EFFORT=" in env_text
     assert "AUXILIARY_LEAN_DECOMPOSE_HELPERS_MODEL=" in env_text
     assert "AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT=" in env_text
+    assert "AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER=" in env_text
+    assert "AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER=" in env_text
 
 
 def test_ensure_epflemma_home_backfills_missing_env_template_keys(monkeypatch, tmp_path):
@@ -250,6 +254,8 @@ def test_ensure_epflemma_home_backfills_missing_env_template_keys(monkeypatch, t
     assert "AUXILIARY_LEAN_REASONING_REASONING_EFFORT=" in env_text
     assert "AUXILIARY_LEAN_DECOMPOSE_HELPERS_PROVIDER=" in env_text
     assert "AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT=" in env_text
+    assert "AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER=" in env_text
+    assert "AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER=" in env_text
 
 
 def test_ensure_epflemma_home_backfills_missing_config_defaults(monkeypatch, tmp_path):
@@ -285,6 +291,8 @@ def test_ensure_epflemma_home_backfills_missing_config_defaults(monkeypatch, tmp
     assert config["auxiliary"]["lean_reasoning"]["provider"] == "codex"
     assert config["auxiliary"]["lean_decompose_helpers"]["provider"] == ""
     assert config["auxiliary"]["lean_decompose_helpers"]["model"] == ""
+    assert config["auxiliary"]["blueprint_verification"]["provider"] == "main"
+    assert config["auxiliary"]["autoformalizer_verification"]["provider"] == "local"
     assert config["mcp_servers"]["lean-lsp"]["command"] == "/tmp/lean-lsp-mcp"
 
 
