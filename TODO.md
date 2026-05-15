@@ -44,14 +44,13 @@ Implemented:
 
 ### Verification Model Configuration
 
-- Make blueprint verification and autoformalizer verification separately configurable.
-- Support the same provider classes as expert help:
-  - model/RPC provider
-  - Codex CLI command
-  - Claude Code command
-  - deterministic local verifier where possible
-- Keep Lean kernel verification authoritative; model-based verification can only propose or review.
-- Log which verifier was used for each blueprint/formalization decision.
+Implemented:
+
+- Blueprint verification and autoformalizer verification are separately configurable through `auxiliary.blueprint_verification` and `auxiliary.autoformalizer_verification`.
+- Workflow launches accept scoped verifier provider/template overrides for blueprint and autoformalizer verification.
+- Verifiers support model/RPC review, Codex CLI command review, Claude Code command review, and deterministic local verification.
+- Deterministic local/Lean checks remain authoritative; non-local verifier output is advisory review/proposal material only.
+- Workflow activity logs record the verifier task, configured provider, effective local verifier, and decision summary for blueprint and autoformalization handoff decisions.
 
 Low priority:
 

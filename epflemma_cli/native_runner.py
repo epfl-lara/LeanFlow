@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import subprocess
@@ -63,6 +64,15 @@ from epflemma_cli.workflow_state import (
     terminate_workflow_agent_descendants,
     workflow_agent_detail,
 )
+from epflemma_cli.verification_providers import (
+    AUTOFORMALIZER_VERIFICATION_TASK,
+    BLUEPRINT_VERIFICATION_TASK,
+    is_command_verification_provider,
+    is_local_verification_provider,
+    resolve_verification_provider,
+    run_command_verification_review,
+    run_model_verification_review,
+)
 from run_agent import AIAgent
 
 MANAGED_SNAPSHOT_PREFIX = (
@@ -96,12 +106,27 @@ PROJECT_PROVE_MANAGER_SELECTED_FILE_MAX_CHARS = 5000
 PROJECT_PROVE_MANAGER_DECL_CONTEXT_MAX_CHARS = 1600
 PROJECT_PROVE_MANAGER_HINT_CONTEXT_MAX_CHARS = 1600
 PROJECT_PROVE_MANAGER_PENDING_DECL_LIMIT = 8
+MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S = 300
+MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S = 300
 ACTIVE_AGENT_STATUSES = {"active"}
 LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
+PROOF_DECLARATION_KINDS = {"theorem", "lemma", "example"}
+CONSTRUCTION_DECLARATION_KINDS = {"def", "instance", "class", "structure"}
+LEAN_DECLARATION_PREAMBLE_RE = (
+    r"^\s*(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial)\s+)*"
+    r"(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
+)
 _MANAGER_VERIFICATION_LOG_CACHE_LIMIT = 256
 _MANAGER_VERIFICATION_LOG_CACHE_ORDER: deque[tuple[str, str, bool, str]] = deque(maxlen=_MANAGER_VERIFICATION_LOG_CACHE_LIMIT)
 _MANAGER_VERIFICATION_LOG_CACHE: set[tuple[str, str, bool, str]] = set()
+_VERIFICATION_DECISION_LOG_CACHE_LIMIT = 512
+_VERIFICATION_DECISION_LOG_CACHE_ORDER: deque[str] = deque(maxlen=_VERIFICATION_DECISION_LOG_CACHE_LIMIT)
+_VERIFICATION_DECISION_LOG_CACHE: set[str] = set()
+_VERIFICATION_ADVISORY_CACHE_LIMIT = 128
+_VERIFICATION_ADVISORY_CACHE_ORDER: deque[str] = deque(maxlen=_VERIFICATION_ADVISORY_CACHE_LIMIT)
+_VERIFICATION_ADVISORY_CACHE: set[str] = set()
+_VERIFICATION_ADVISORY_RESULT_CACHE: dict[str, dict[str, Any]] = {}
 _QUEUE_MANAGER_STATE_KEYS = TheoremQueueManager.OWNED_AUTONOMY_KEYS
 
 # Final-sweep warning-cleanup state. Lives directly on autonomy_state because
@@ -136,6 +161,17 @@ def _read_native_env(name: str, default: str = "") -> str:
     )
 
 
+def _read_int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = _read_text_env(name, "")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
 def _managed_home() -> Path:
     return Path(
         _read_text_env(
@@ -154,6 +190,20 @@ def _project_root() -> str:
 
 def _workflow_kind() -> str:
     return _read_native_env("WORKFLOW_KIND", "workflow").strip().lower()
+
+
+def _manager_incremental_prepare_timeout_s() -> int:
+    return _read_int_env(
+        "EPFLEMMA_MANAGER_INCREMENTAL_PREPARE_TIMEOUT_S",
+        MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S,
+    )
+
+
+def _manager_incremental_check_timeout_s() -> int:
+    return _read_int_env(
+        "EPFLEMMA_MANAGER_INCREMENTAL_CHECK_TIMEOUT_S",
+        MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S,
+    )
 
 
 def _workflow_display_name(workflow_kind: str | None = None) -> str:
@@ -289,6 +339,14 @@ def _document_formalization_ready_for_prover_handoff(live_state: Mapping[str, An
     handoff = dict(current.get("document_formalization_handoff", {}) or {})
     if not handoff or not bool(handoff.get("ok", False)):
         return False
+    if _document_formalization_blueprint_waiting_for_review():
+        return False
+    try:
+        generated_proof_sorry_count = int(current.get("document_formalization_proof_sorry_count", 0) or 0)
+    except Exception:
+        generated_proof_sorry_count = 0
+    if generated_proof_sorry_count > 0:
+        return True
     try:
         sorry_count = int(current.get("sorry_count", 0) or 0)
     except Exception:
@@ -299,6 +357,12 @@ def _document_formalization_ready_for_prover_handoff(live_state: Mapping[str, An
 def _document_formalization_has_draft_sorries(live_state: Mapping[str, Any] | None) -> bool:
     if _workflow_kind() != "formalize" or not _document_formalization_requested():
         return False
+    try:
+        generated_proof_sorry_count = int((live_state or {}).get("document_formalization_proof_sorry_count", 0) or 0)
+    except Exception:
+        generated_proof_sorry_count = 0
+    if generated_proof_sorry_count > 0:
+        return True
     try:
         sorry_count = int((live_state or {}).get("sorry_count", 0) or 0)
     except Exception:
@@ -555,6 +619,9 @@ def _persist_live_status(
         "project_prove_completed_files": list(live_state.get("project_prove_completed_files", []) or []),
         "project_prove_plan_source": str(live_state.get("project_prove_plan_source", "") or ""),
         "project_prove_plan_reason": str(live_state.get("project_prove_plan_reason", "") or ""),
+        "document_formalization_handoff": dict(live_state.get("document_formalization_handoff", {}) or {}),
+        "document_formalization_proof_sorry_count": int(live_state.get("document_formalization_proof_sorry_count", 0) or 0),
+        "document_formalization_construction_sorry_count": int(live_state.get("document_formalization_construction_sorry_count", 0) or 0),
         "formalization_document": _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", ""),
         "formalization_document_kind": _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_KIND", ""),
         "formalization_request_kind": _read_text_env("EPFLEMMA_FORMALIZATION_REQUEST_KIND", ""),
@@ -999,7 +1066,7 @@ def _manager_incremental_check_queue_item(active_file: str, target_symbol: str) 
             theorem_id=target,
             cwd=_project_root(),
             include_tactics=False,
-            timeout_s=90,
+            timeout_s=_manager_incremental_check_timeout_s(),
         )
     except Exception as exc:
         return {
@@ -1041,7 +1108,7 @@ def _manager_prepare_incremental_queue_item(active_file: str, target_symbol: str
             theorem_id=target,
             cwd=_project_root(),
             include_tactics=False,
-            timeout_s=90,
+            timeout_s=_manager_incremental_prepare_timeout_s(),
         )
     except Exception as exc:
         return {
@@ -2016,6 +2083,204 @@ def _append_post_tool_result_message(agent: Any, message: str) -> None:
         pass
 
 
+FORMALIZATION_HANDOFF_FEEDBACK_TOOLS = {
+    "patch",
+    "write_file",
+    "apply_verified_patch",
+    "lean_verify",
+}
+
+
+def _formalization_lean_edit_paths(function_name: str, args: Mapping[str, Any] | None) -> list[Path]:
+    if _workflow_kind() != "formalize" or not _document_formalization_requested():
+        return []
+    root = Path(_project_root()).expanduser().resolve()
+    target_path = _document_formalization_target_path()
+    target_dir = None
+    if target_path is not None:
+        try:
+            target_dir = target_path.resolve().parent
+        except Exception:
+            target_dir = None
+    paths: list[Path] = []
+    for path in _tool_edit_paths(function_name, args):
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root)
+        except Exception:
+            continue
+        if resolved.suffix != ".lean":
+            continue
+        if target_path is not None:
+            try:
+                if resolved == target_path.resolve():
+                    if resolved not in paths:
+                        paths.append(resolved)
+                    continue
+            except Exception:
+                pass
+        if target_dir is not None:
+            try:
+                resolved.relative_to(target_dir)
+                if resolved not in paths:
+                    paths.append(resolved)
+                continue
+            except Exception:
+                pass
+        generated_paths = {item.resolve() for item in _formalization_generated_lean_paths(str(target_path or ""))}
+        if resolved in generated_paths:
+            if resolved not in paths:
+                paths.append(resolved)
+    return paths
+
+
+def _formalization_raw_lean_check_paths(edit_paths: Sequence[Path]) -> list[Path]:
+    target_path = _document_formalization_target_path()
+    paths: list[Path] = []
+
+    def _add(path: Path | None) -> None:
+        if path is None:
+            return
+        try:
+            resolved = path.resolve()
+        except Exception:
+            return
+        if resolved.suffix == ".lean" and resolved.is_file() and resolved not in paths:
+            paths.append(resolved)
+
+    _add(target_path)
+    for path in edit_paths:
+        _add(path)
+    return paths
+
+
+def _check_formalization_raw_lean_edit_result(
+    agent: Any,
+    function_name: str,
+    args: Mapping[str, Any] | None,
+) -> bool:
+    if function_name not in {"patch", "write_file"}:
+        return False
+    edit_paths = _formalization_lean_edit_paths(function_name, args)
+    if not edit_paths:
+        return False
+    autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+    checked: list[dict[str, Any]] = []
+    failed: tuple[Path, dict[str, Any], dict[str, Any]] | None = None
+    for path in _formalization_raw_lean_check_paths(edit_paths):
+        manager_check = _manager_verify_queue_file(str(path))
+        record = _record_manager_verification(
+            autonomy_state if isinstance(autonomy_state, dict) else None,
+            str(path),
+            "",
+            manager_check,
+            "lean_verify",
+        )
+        label = _relative_file_label(str(path)) or str(path)
+        checked.append({"path": label, "ok": bool(record.get("ok", False)), "summary": record.get("summary", "")})
+        if not bool(record.get("ok", False)) and failed is None:
+            failed = (path, manager_check, record)
+            break
+
+    _record_activity(
+        "formalization-lean-edit-checked",
+        (
+            "Generated Lean edit passed immediate verification"
+            if failed is None
+            else "Generated Lean edit failed immediate verification"
+        ),
+        tool=function_name,
+        checked=checked,
+    )
+    if failed is None:
+        if not bool(getattr(agent, "quiet_mode", False)):
+            labels = ", ".join(str(item.get("path", "")) for item in checked if item.get("path"))
+            print(f"\n✅ Formalization Lean edit verified{f' ({labels})' if labels else ''}.")
+        return True
+
+    path, manager_check, record = failed
+    output = str(manager_check.get("output", "") or manager_check.get("error", "") or "").strip()
+    lines = [
+        "[EPFLEMMA FORMALIZATION LEAN CHECK FAILED]",
+        "- status: a raw generated Lean edit failed immediate file verification",
+        f"- file: {_relative_file_label(str(path)) or str(path)}",
+        f"- verification: {_verification_status_text(record) or 'failed'}",
+        "- next action: fix the generated Lean elaboration before updating blueprint status, requesting review, or reporting completion",
+    ]
+    if output:
+        lines.append(f"- feedback: {_single_line(output, 700)}")
+    _append_post_tool_result_message(agent, "\n".join(lines))
+    if not bool(getattr(agent, "quiet_mode", False)):
+        print(
+            "\n↻ Formalization Lean edit failed immediate verification; "
+            "feeding Lean diagnostics back into the drafting turn."
+        )
+    return True
+
+
+def _formalization_handoff_feedback_text(live_state: Mapping[str, Any] | None) -> str:
+    if not _document_formalization_handoff_blocked_state(live_state):
+        return ""
+    handoff = dict((live_state or {}).get("document_formalization_handoff", {}) or {})
+    issues = [_single_line(issue, 360) for issue in handoff.get("issues", []) or [] if str(issue or "").strip()]
+    if not issues:
+        summary = _single_line(str(handoff.get("summary", "") or ""), 360)
+        issues = [summary] if summary else []
+    if not issues:
+        return ""
+    lines = [
+        "[EPFLEMMA FORMALIZATION VERIFIER BLOCK]",
+        "The formalization verifier blocked handoff. Treat these findings as the next required correction task, not as advisory log text.",
+        "- do not mark the blueprint proof-ready",
+        "- do not report formalization as ready",
+        "- do not start theorem proving or fill theorem/lemma/example proofs",
+        "- edit the Lean statements, blueprint coverage/scope fields, or source-aware doc comments to address the findings",
+        "- if the only remaining blocker is independent source/statement approval, stop and report that instead of self-approving it",
+        "",
+        "Verifier findings to address now:",
+    ]
+    lines.extend(f"- {issue}" for issue in issues[:8])
+    if len(issues) > 8:
+        lines.append(f"- plus {len(issues) - 8} more verifier finding(s) in workflow status")
+    return "\n".join(lines)
+
+
+def _maybe_append_formalization_handoff_feedback(
+    agent: Any,
+    *,
+    function_name: str,
+    live_state: Mapping[str, Any] | None = None,
+) -> None:
+    if function_name not in FORMALIZATION_HANDOFF_FEEDBACK_TOOLS:
+        return
+    if _workflow_kind() != "formalize" or not _document_formalization_requested():
+        return
+    current = dict(live_state or {})
+    if not current:
+        autonomy_state = getattr(agent, "_managed_autonomy_state", {}) or {}
+        try:
+            current = _build_live_proof_state_compat(
+                list(getattr(agent, "_session_messages", []) or []),
+                autonomy_state=autonomy_state if isinstance(autonomy_state, dict) else None,
+            )
+        except Exception:
+            current = {}
+    message = _formalization_handoff_feedback_text(current)
+    if not message:
+        return
+    _append_post_tool_result_message(agent, message)
+    handoff = dict(current.get("document_formalization_handoff", {}) or {})
+    _record_activity(
+        "formalization-verifier-feedback-injected",
+        "Injected formalization verifier BLOCK findings into the next model turn",
+        tool=function_name,
+        active_file=str(current.get("active_file_label", "") or current.get("active_file", "") or ""),
+        issues=[_single_line(issue, 240) for issue in handoff.get("issues", []) or []][:8],
+    )
+    if not bool(getattr(agent, "quiet_mode", False)):
+        print("\n↻ Formalization verifier BLOCK; feeding findings back into the drafting turn.")
+
+
 def _reset_search_progress(agent: Any) -> None:
     autonomy_state = getattr(agent, "_managed_autonomy_state", None)
     if isinstance(autonomy_state, dict):
@@ -2111,9 +2376,9 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
     autonomy_state["search_progress"] = tracker
     used_tools = dict(tracker.get("used_tools") or {})
     context_hint = (
-        "- `lean_proof_context` has already been used; prefer a concrete proof draft/check, `lean_reasoning_help`, or `lean_worker_dispatch`."
+        "- `lean_proof_context` has already been used; prefer a concrete proof draft/check, `lean_decompose_helpers` for a sublemma split, `lean_reasoning_help`, or `lean_worker_dispatch`."
         if int(used_tools.get("lean_proof_context", 0) or 0) > 0
-        else "- if you still need context, call `lean_proof_context` once; otherwise draft and check a proof."
+        else "- if you still need context, call `lean_proof_context` once; if the proof needs intermediate invariants, use `lean_decompose_helpers`; otherwise draft and check a proof."
     )
     _append_post_tool_result_message(
         agent,
@@ -2128,7 +2393,7 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
                 "- search providers are responding; this is a route-progress nudge, not a search outage.",
                 "- do not call `lean_search` again in this turn unless the query strategy materially changes.",
                 context_hint,
-                "- next useful action should be a concrete proof edit, `lean_incremental_check(check_target)` on a draft, `lean_multi_attempt`, `lean_reasoning_help`, or `lean_worker_dispatch` if the route still fits.",
+                "- next useful action should be a concrete proof edit, `lean_incremental_check(check_target)` on a draft, `lean_multi_attempt`, `lean_decompose_helpers` for a helper-lemma split, `lean_reasoning_help`, or `lean_worker_dispatch` if the route still fits.",
             ]
         ),
     )
@@ -2257,6 +2522,31 @@ def _tool_edit_removes_sorry(function_name: str, args: Mapping[str, Any] | None)
     return False
 
 
+def _text_self_approves_document_formalization_blueprint(text: str) -> bool:
+    proposed = str(text or "")
+    if not proposed.strip():
+        return False
+    if re.search(
+        r"Statement verification status\s*:\s*[^\n]*(?:approved|pass(?:ed)?)\b",
+        proposed,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"^\s*-\s*\[[xX]\]\s*Run independent statement/source verification review and apply corrections\.",
+        proposed,
+        flags=re.MULTILINE,
+    ):
+        return True
+    if re.search(
+        r"^\s*-\s*\[[xX]\]\s*(?:Hand stable (?:theorem/lemma/example )?`sorry` declarations to the managed prover queue|Mark stable theorem/lemma/example `sorry` declarations ready for a user-started prove workflow)\.",
+        proposed,
+        flags=re.MULTILINE,
+    ):
+        return True
+    return False
+
+
 def _text_has_any_completed_theorem_or_lemma(text: str) -> bool:
     return any(
         str(entry.get("kind", "") or "").strip().lower() in {"theorem", "lemma", "example"}
@@ -2283,13 +2573,38 @@ def _document_formalization_pre_tool_guard(
     target_path = _document_formalization_target_path()
     if target_path is None:
         return None
+    formalization_lean_paths = _formalization_lean_edit_paths(function_name, args)
+    blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    blueprint_path = _resolve_project_path(blueprint) if blueprint else None
+    try:
+        touches_blueprint = bool(
+            blueprint_path
+            and any(path.resolve() == blueprint_path for path in _tool_edit_paths(function_name, args))
+        )
+    except Exception:
+        touches_blueprint = False
+    proposed = _tool_proposed_edit_text(function_name, args)
+    if touches_blueprint and _text_self_approves_document_formalization_blueprint(proposed):
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    "Document formalization blueprint approval must be written by the independent "
+                    "statement/source verifier pass, not by the drafting formalizer. Leave "
+                    "`Statement verification status` entries pending and keep review/proof-ready "
+                    "checklist items unchecked until a verifier PASS stamps approval."
+                ),
+                "blueprint": blueprint,
+                "next_required_step": "independent_statement_source_verification",
+            },
+            ensure_ascii=False,
+        )
     try:
         touches_target = any(path.resolve() == target_path for path in _tool_edit_paths(function_name, args))
     except Exception:
         touches_target = False
-    if not touches_target:
+    if not touches_target and not formalization_lean_paths:
         return None
-    blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
     if _document_formalization_needs_blueprint_plan():
         return json.dumps(
             {
@@ -2329,8 +2644,8 @@ def _document_formalization_pre_tool_guard(
                     "The document formalization planner draft must leave theorem/lemma proofs as `sorry`. "
                     "Put source proof strategy and prover hints in the nearby Blueprint.md and in compact Lean "
                     "doc comments above source theorem/lemma declarations, draft stable statements with `by sorry`, "
-                    "then request independent statement/source verification before the managed prover queue solves "
-                    "them one at a time."
+                    "then request independent statement/source verification. A later prove workflow must be "
+                    "started explicitly by the user."
                 ),
                 "target": _relative_project_file_label(target_path),
                 "blueprint": blueprint,
@@ -3017,7 +3332,7 @@ def _finish_queue_step_boundary(
                         f"- observed: {attempt_number} verified failed edits/checks on this same declaration",
                         "- manager checks are working; this is a proof-strategy escalation nudge, not a backend failure",
                         "- avoid another broad rewrite of the same proof shape unless you can state the concrete new invariant it fixes",
-                        "- next useful action should be `lean_incremental_check(action=feedback, include_tactics=true)` for local goal state, `lean_multi_attempt` for small tactic variants, `lean_reasoning_help` for an external proof plan, or `lean_worker_dispatch` if the blocker still fits the route",
+                        "- next useful action should be `lean_incremental_check(action=feedback, include_tactics=true)` for local goal state, `lean_multi_attempt` for small tactic variants, `lean_decompose_helpers` when the proof needs sublemmas/intermediate invariants, `lean_reasoning_help` for an external proof plan, or `lean_worker_dispatch` if the blocker still fits the route",
                     ]
                 )
                 _record_activity(
@@ -3116,6 +3431,32 @@ def _handle_managed_tool_result(
     else:
         _note_non_search_tool_progress(agent, function_name)
 
+    if (
+        function_name == "lean_verify"
+        and _workflow_kind() == "formalize"
+        and _document_formalization_requested()
+    ):
+        payload = _json_tool_result_payload(_result)
+        if payload:
+            autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+            target_path = _document_formalization_target_path()
+            active_file = str(target_path or _read_native_env("ACTIVE_FILE", "") or payload.get("target", "") or "")
+            mode = str(dict(args or {}).get("mode", "") or payload.get("mode", "") or "").strip().lower()
+            full_project = mode == "project"
+            record = _record_manager_verification(
+                autonomy_state if isinstance(autonomy_state, dict) else None,
+                active_file,
+                "",
+                payload,
+                "lean_verify",
+                full_project=full_project,
+                log=False,
+            )
+            record["scope"] = "project" if full_project else str(record.get("scope", "") or "file")
+            record["summary"] = str(payload.get("command", "") or payload.get("output", "") or record.get("summary", ""))
+            _store_last_verification(autonomy_state if isinstance(autonomy_state, dict) else None, record)
+        _maybe_append_formalization_handoff_feedback(agent, function_name=function_name)
+
     if function_name == "apply_verified_patch":
         managed_autonomy = getattr(agent, "_managed_autonomy_state", {}) or {}
         baseline = dict(managed_autonomy).get("current_queue_assignment", {})
@@ -3137,25 +3478,36 @@ def _handle_managed_tool_result(
             live_target, live_file = _queue_assignment_identity(live_state)
             target_symbol = target_symbol or live_target
             active_file = active_file or live_file
+            _maybe_append_formalization_handoff_feedback(
+                agent,
+                function_name=function_name,
+                live_state=live_state,
+            )
         if target_symbol and active_file:
             agent._managed_pending_theorem_feedback = {
                 "target_symbol": target_symbol,
                 "active_file": active_file,
             }
+        else:
+            _maybe_append_formalization_handoff_feedback(agent, function_name=function_name)
 
     if function_name in {"patch", "write_file"}:
         if not _managed_tool_result_succeeded(_result):
+            return
+        if _check_formalization_raw_lean_edit_result(agent, function_name, args):
+            _maybe_append_formalization_handoff_feedback(agent, function_name=function_name)
             return
         managed_autonomy = getattr(agent, "_managed_autonomy_state", {}) or {}
         baseline = dict(managed_autonomy).get("current_queue_assignment", {})
         target_symbol = str(dict(baseline or {}).get("target_symbol", "") or "").strip()
         active_file = str(dict(baseline or {}).get("active_file", "") or "").strip()
+        live_state_for_feedback: Mapping[str, Any] | None = None
         if not target_symbol or not active_file:
-            live_state = _build_live_proof_state_compat(
+            live_state_for_feedback = _build_live_proof_state_compat(
                 list(getattr(agent, "_session_messages", []) or []),
                 autonomy_state=managed_autonomy if isinstance(managed_autonomy, dict) else None,
             )
-            target_symbol, active_file = _queue_assignment_identity(live_state)
+            target_symbol, active_file = _queue_assignment_identity(live_state_for_feedback)
         if target_symbol and active_file:
             agent._managed_pending_theorem_feedback = {
                 "target_symbol": target_symbol,
@@ -3170,6 +3522,11 @@ def _handle_managed_tool_result(
                 verification_tool=verification_tool,
                 manager_verification=manager_verification,
             )
+        _maybe_append_formalization_handoff_feedback(
+            agent,
+            function_name=function_name,
+            live_state=live_state_for_feedback,
+        )
         return
 
     pending = dict(getattr(agent, "_managed_pending_theorem_feedback", None) or {})
@@ -3201,6 +3558,7 @@ def _handle_managed_tool_result(
         verification_tool=function_name,
         manager_verification=manager_verification,
     )
+    _maybe_append_formalization_handoff_feedback(agent, function_name=function_name)
 
 
 def _managed_agent_int(value: Any) -> int | None:
@@ -4041,11 +4399,151 @@ def _project_prove_label_list(paths: Iterable[Path], root: Path, *, limit: int =
     return [label for label in labels if label][:limit]
 
 
+def _formalization_manifest_payload() -> dict[str, Any]:
+    manifest = _read_text_env("EPFLEMMA_FORMALIZATION_MANIFEST", "").strip()
+    if not manifest:
+        return {}
+    try:
+        payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _formalization_generated_lean_paths(active_file: str = "") -> list[Path]:
+    root = Path(_project_root()).expanduser().resolve()
+    paths: list[Path] = []
+
+    def _add(candidate: str | os.PathLike[str] | None) -> None:
+        raw = str(candidate or "").strip()
+        if not raw:
+            return
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root)
+        except Exception:
+            return
+        if resolved.suffix == ".lean" and resolved.is_file() and resolved not in paths:
+            paths.append(resolved)
+
+    _add(active_file)
+    payload = _formalization_manifest_payload()
+    _add(payload.get("target_lean_relative"))
+    _add(payload.get("target_lean_path"))
+
+    directory_seeds = [path.parent for path in paths if path.name == "Main.lean"]
+    for seed in list(directory_seeds):
+        if not seed.is_dir():
+            continue
+        for path in sorted(seed.rglob("*.lean"), key=lambda item: str(item.relative_to(seed)).lower()):
+            _add(path)
+        parent_module_file = seed.with_suffix(".lean")
+        _add(parent_module_file)
+
+    return paths
+
+
+def _topologically_order_project_paths(paths: Sequence[Path], root: Path) -> list[Path]:
+    unique_paths: list[Path] = []
+    for path in paths:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            continue
+        if resolved not in unique_paths:
+            unique_paths.append(resolved)
+    if len(unique_paths) <= 1:
+        return unique_paths
+    module_to_path = {
+        module: path
+        for path in unique_paths
+        for module in [_module_name_for_project_path(path, root)]
+        if module
+    }
+    imports_by_path, _imported_by_path, _modules = _project_prove_dependency_graph(unique_paths, module_to_path)
+    path_set = {path.resolve() for path in unique_paths}
+    ordered: list[Path] = []
+    visiting: set[Path] = set()
+    visited: set[Path] = set()
+
+    def _visit(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved in visited:
+            return
+        if resolved in visiting:
+            return
+        visiting.add(resolved)
+        for dependency in sorted(imports_by_path.get(resolved, set()) & path_set, key=lambda item: str(item)):
+            _visit(dependency)
+        visiting.discard(resolved)
+        visited.add(resolved)
+        ordered.append(resolved)
+
+    for path in sorted(unique_paths, key=lambda item: str(item)):
+        _visit(path)
+    return ordered
+
+
+def _formalization_generated_prove_scope(active_file: str = "") -> list[str]:
+    root = Path(_project_root()).expanduser().resolve()
+    paths = _topologically_order_project_paths(_formalization_generated_lean_paths(active_file), root)
+    labels: list[str] = []
+    for path in paths:
+        label = _relative_project_file_label(path, root)
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _prove_file_scope_ordered_paths(project_root: str | os.PathLike[str] | None = None) -> list[Path]:
+    raw = (
+        _read_text_env("EPFLEMMA_PROVE_FILE_SCOPE", "")
+        or _read_text_env("OPENGAUSS_PROVE_FILE_SCOPE", "")
+        or _read_text_env("GAUSS_PROVE_FILE_SCOPE", "")
+    ).strip()
+    if not raw:
+        return []
+    root = Path(project_root or _project_root()).expanduser().resolve()
+    parts: list[str] = []
+    parsed = _extract_json_payload(raw)
+    if isinstance(parsed, list):
+        parts = [str(item or "") for item in parsed]
+    else:
+        parts = [part for part in re.split(rf"[{re.escape(os.pathsep)}\n]+", raw) if part.strip()]
+    scope: list[Path] = []
+    for part in parts:
+        value = str(part or "").strip()
+        if not value:
+            continue
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root)
+        except Exception:
+            continue
+        if resolved.suffix == ".lean" and resolved.is_file() and resolved not in scope:
+            scope.append(resolved)
+    return scope
+
+
+def _prove_file_scope_paths(project_root: str | os.PathLike[str] | None = None) -> set[Path]:
+    return set(_prove_file_scope_ordered_paths(project_root))
+
+
 def _collect_project_prove_file_candidates(project_root: str | os.PathLike[str] | None = None) -> list[dict[str, Any]]:
     root = Path(project_root or _project_root())
     if not root.is_dir():
         return []
     lean_files = _project_lean_files(str(root))
+    scope_order = _prove_file_scope_ordered_paths(root)
+    if scope_order:
+        project_lean_files = {path.resolve() for path in lean_files}
+        lean_files = [path for path in scope_order if path.resolve() in project_lean_files]
     module_to_path = {
         module: path.resolve()
         for path in lean_files
@@ -4293,7 +4791,17 @@ def _refresh_project_prove_file_queue(autonomy_state: dict[str, Any]) -> list[di
         source = str(autonomy_state.get("project_prove_plan_source", "") or "existing")
         reason = str(autonomy_state.get("project_prove_plan_reason", "") or "kept existing file queue")
     else:
-        ordered_labels, source, reason = _llm_prioritize_project_prove_files(candidates)
+        scope_order = [
+            _relative_project_file_label(path, _project_root())
+            for path in _prove_file_scope_ordered_paths(_project_root())
+        ]
+        scoped_labels = [label for label in scope_order if label in candidate_by_label]
+        if scoped_labels:
+            ordered_labels = scoped_labels
+            source = "formalization-scope"
+            reason = "kept generated formalization files in import order"
+        else:
+            ordered_labels, source, reason = _llm_prioritize_project_prove_files(candidates)
     ordered_candidates = [candidate_by_label[label] for label in ordered_labels if label in candidate_by_label]
     autonomy_state["project_prove_file_queue"] = [str(item["label"]) for item in ordered_candidates]
     autonomy_state["project_prove_file_candidates"] = ordered_candidates[:PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT]
@@ -4510,10 +5018,7 @@ def _declaration_line_index_from_text(content: str) -> list[dict[str, Any]]:
     lines = str(content or "").splitlines()
 
     entries: list[dict[str, Any]] = []
-    pattern = re.compile(
-        r"^\s*(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial)\s+)*"
-        r"(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
-    )
+    pattern = re.compile(LEAN_DECLARATION_PREAMBLE_RE)
     for line_number, line in enumerate(lines, start=1):
         stripped = line.strip()
         if not stripped or stripped.startswith("--"):
@@ -5114,6 +5619,15 @@ def _prepare_queue_assignment_state(
         and previous.key.target_symbol == label
         and _same_active_file(previous.key.active_file, active_file)
     )
+    if not same_assignment:
+        _record_activity(
+            "queue-manager-assigned",
+            f"Queue manager assigned {label}",
+            target_symbol=label,
+            active_file=active_file,
+            active_file_label=str(current.get("active_file_label", "") or ""),
+        )
+        print(f"Queue manager assigned {label}")
     if same_assignment and previous_prepare and previous_prepare.success:
         prepare = previous_prepare
     else:
@@ -6004,9 +6518,26 @@ def _maybe_announce_final_file_sweep_state(
 def _document_formalization_review_signature(live_state: Mapping[str, Any] | None) -> str:
     current = dict(live_state or {})
     handoff = dict(current.get("document_formalization_handoff", {}) or {})
+    active_file = str(current.get("active_file", "") or "")
+    blueprint_path = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+
+    def _content_hash(path: str) -> str:
+        if not path:
+            return ""
+        try:
+            return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
+        except Exception:
+            return ""
+
+    generated_hashes: list[tuple[str, str]] = []
+    for path in _formalization_generated_lean_paths(active_file):
+        label = _relative_file_label(str(path)) or str(path)
+        generated_hashes.append((label, _content_hash(str(path))))
     payload = {
         "active_file": str(current.get("active_file_label", "") or current.get("active_file", "") or ""),
-        "blueprint": _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip(),
+        "blueprint": blueprint_path,
+        "blueprint_hash": _content_hash(blueprint_path),
+        "generated_lean_hashes": generated_hashes,
         "source": _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip(),
         "issues": [str(issue or "") for issue in handoff.get("issues", []) or []],
     }
@@ -6036,16 +6567,19 @@ def _document_formalization_review_prompt(live_state: Mapping[str, Any]) -> str:
         "Run the independent statement/source verification pass for this document formalization.\n\n"
         "You are a fresh reviewer, not the drafting formalizer. Do not rely on the previous conversation. "
         "Inspect the source document, blueprint, and Lean target directly, then correct the plan or Lean statements "
-        "when the draft does not match the source.\n\n"
+        "when the draft does not match the source. If you are running as a read-only command/model verifier, "
+        "start the response with exactly `PASS` or `BLOCK`, then give findings and correction steps.\n\n"
         f"- source {source_kind}: {source or '[missing]'}\n"
         f"- planner blueprint: {blueprint or '[missing]'}\n"
         f"- target Lean file: {target or '[missing]'}\n"
         f"- planner context: {context or '[missing]'}\n\n"
+        "Note: the target Lean file may be an aggregator such as `Main.lean`. If so, inspect the generated "
+        "sibling/imported modules listed in the blueprint layout before deciding declarations or imports are missing.\n\n"
         "Current handoff issues:\n"
         f"{issues}\n\n"
         "Required review actions:\n"
         "1. Use `read_pdf` for project-local PDF text, and use `formalization_document_inspect`, `lean_capabilities`, and `lean_inspect` before editing.\n"
-        "2. Compare every source theorem/lemma entry against the Lean declaration and nearby Lean doc comment.\n"
+        "2. Compare every source theorem/lemma/definition/proposition/corollary/conjecture/remark entry against the Lean declaration and nearby Lean doc comment.\n"
         "3. For each entry, fill `Source qualifiers`, `Lean coverage`, and `Scope changes`. Source qualifiers should "
         "cover mathematical object class, quantifier order, parameter domain, output codomain, equality/image condition, "
         "side conditions, and follow-on claims that are part of the source statement.\n"
@@ -6056,13 +6590,505 @@ def _document_formalization_review_prompt(live_state: Mapping[str, Any]) -> str:
         "6. In particular, a simpler Lean encoding does not by itself cover a source claim about a richer "
         "object class or representation. Require a bridge definition/declaration, or mark Lean coverage "
         "as partial and record the representation scope change.\n"
-        "7. Fix mismatched Lean statements, missing source locators, wrong import plans, or weak prover notes.\n"
+        "7. Fix mismatched Lean statements, missing source locators, wrong import plans, missing complete source-proof attachments, or weak prover notes.\n"
         "8. Leave theorem/lemma/example proofs as `by sorry`; do not solve proofs in this review pass.\n"
-        "9. Only after checking all fidelity axes for a source entry, record `Statement verification status: approved` "
-        "in the blueprint. Do not approve an entry because a build succeeds.\n"
-        "10. Run `lean_verify(mode=module)` or the narrowest available Lean verification for draft readiness.\n"
-        "11. Stop with a concise report: approved entries, corrected entries, remaining blockers, and whether `/prove` may start.\n"
+        "9. Require the blueprint to carry the complete source proof when the source contains one, or an explicit "
+        "reason the proof text is unavailable. Require nearby Lean doc comments to give a compact proof nudge "
+        "that the prover sees without reopening the whole paper.\n"
+        "10. Only after checking all fidelity axes, source-proof completeness, doc-comment nudges, and Lean statement "
+        "translation for a source entry, approve it. If this review is running as a read-only command/model verifier, "
+        "return `PASS` when the entries are acceptable; do not return `BLOCK` only because you cannot edit the "
+        "blueprint. The runner will record the approval stamp after a read-only `PASS`. Do not approve an entry "
+        "because a build succeeds.\n"
+        "11. Run `lean_verify(mode=project)` after root imports include the generated formalization. "
+        "Module/file checks are acceptable while iterating, but project-level verification is required for handoff readiness.\n"
+        "12. Stop with a concise report: approved entries, corrected entries, remaining blockers, and whether `/prove` may start.\n"
     )
+
+
+def _bounded_verifier_response(text: str, limit: int = 12000) -> str:
+    raw = str(text or "").strip()
+    if len(raw) <= limit:
+        return raw
+    return raw[: max(0, limit - 48)].rstrip() + "\n\n[truncated by EPFLemma verifier logging]"
+
+
+def _stamp_blueprint_statement_review_approved(
+    *,
+    provider: str,
+    active_file: str = "",
+) -> bool:
+    blueprint_path = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    if not blueprint_path:
+        return False
+    path = Path(blueprint_path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    stamp = f"approved by {provider or 'configured'} verifier"
+    status_re = re.compile(
+        r"^(?P<prefix>\s*-\s*(?:Statement verification status|Statement/source verification|Source verification status|Verification status)\s*:\s*)(?P<value>.*)$",
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+
+    changed = False
+
+    def _replace_status(match: re.Match[str]) -> str:
+        nonlocal changed
+        value = str(match.group("value") or "").strip()
+        if re.search(r"\b(approved|verified|reviewed|accepted)\b", value, flags=re.IGNORECASE):
+            return match.group(0)
+        changed = True
+        return f"{match.group('prefix')}{stamp}"
+
+    updated = status_re.sub(_replace_status, text)
+    checklist_re = re.compile(
+        r"^(?P<prefix>\s*-\s*)\[(?P<checked>[ xX])\](?P<suffix>\s*Run independent statement/source verification review and apply corrections\.\s*)$",
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    statement_match_re = re.compile(
+        r"^(?P<prefix>\s*-\s*)\[(?P<checked>[ xX])\](?P<suffix>\s*Verify drafted Lean statements match the source document\.\s*)$",
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+
+    def _replace_checklist(match: re.Match[str]) -> str:
+        nonlocal changed
+        if str(match.group("checked") or "").lower() == "x":
+            return match.group(0)
+        changed = True
+        return f"{match.group('prefix')}[x]{match.group('suffix')}"
+
+    updated = statement_match_re.sub(_replace_checklist, updated)
+    updated = checklist_re.sub(_replace_checklist, updated)
+    proof_ready_re = re.compile(
+        r"^(?P<prefix>\s*-\s*)\[(?P<checked>[ xX])\](?P<suffix>\s*(?:Hand stable (?:theorem/lemma/example )?`sorry` declarations to the managed prover queue|Mark stable theorem/lemma/example `sorry` declarations ready for a user-started prove workflow)\.\s*(?:\(Only check after independent review approves every source entry\.?\)\s*)?)$",
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    updated = proof_ready_re.sub(_replace_checklist, updated)
+    status_line_re = re.compile(
+        r"^(?P<prefix>\s*-\s*Status\s*:\s*)(?P<value>planner draft in progress|draft in progress|pending review|ready for review)\s*$",
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+
+    def _replace_status_line(match: re.Match[str]) -> str:
+        nonlocal changed
+        changed = True
+        return f"{match.group('prefix')}statement/source review approved; ready for user-started prove workflow"
+
+    updated = status_line_re.sub(_replace_status_line, updated)
+    if not changed or updated == text:
+        return False
+    try:
+        path.write_text(updated, encoding="utf-8")
+    except Exception:
+        return False
+    _record_activity(
+        "formalization-review-approval-stamped",
+        "Stamped blueprint statement/source review approval after configured verifier PASS",
+        provider=provider,
+        blueprint=_relative_file_label(str(path)) or str(path),
+        active_file=active_file,
+    )
+    return True
+
+
+def _verification_task_has_aux_overrides(task: str) -> bool:
+    task_key = str(task or "").strip().upper()
+    if task_key:
+        for suffix in ("MODEL", "BASE_URL", "API_KEY", "REASONING_EFFORT"):
+            if _read_text_env(f"AUXILIARY_{task_key}_{suffix}", "").strip():
+                return True
+    try:
+        config = load_config()
+    except Exception:
+        return False
+    aux = config.get("auxiliary", {}) if isinstance(config, Mapping) else {}
+    task_config = aux.get(task, {}) if isinstance(aux, Mapping) else {}
+    if not isinstance(task_config, Mapping):
+        return False
+    return any(str(task_config.get(key, "") or "").strip() for key in ("model", "base_url", "api_key", "reasoning_effort"))
+
+
+def _cache_once(signature: str, *, cache: set[str], order: deque[str], limit: int) -> bool:
+    key = str(signature or "")
+    if not key:
+        return False
+    if key in cache:
+        return False
+    if len(order) >= limit:
+        old = order.popleft()
+        cache.discard(old)
+    order.append(key)
+    cache.add(key)
+    return True
+
+
+def _record_verifier_decision(
+    *,
+    task: str,
+    provider: str,
+    configured_provider: str,
+    mode: str,
+    ok: bool,
+    summary: str,
+    active_file: str = "",
+    issues: Sequence[str] | None = None,
+) -> None:
+    issue_list = [str(issue or "") for issue in (issues or [])]
+    payload = {
+        "task": task,
+        "provider": provider,
+        "configured_provider": configured_provider,
+        "mode": mode,
+        "ok": bool(ok),
+        "summary": _single_line(summary, 520),
+        "active_file": _relative_file_label(active_file) or active_file,
+        "issues": issue_list[:10],
+    }
+    signature = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    if not _cache_once(
+        signature,
+        cache=_VERIFICATION_DECISION_LOG_CACHE,
+        order=_VERIFICATION_DECISION_LOG_CACHE_ORDER,
+        limit=_VERIFICATION_DECISION_LOG_CACHE_LIMIT,
+    ):
+        return
+    _record_activity(
+        "verification-decision",
+        f"{task.replace('_', ' ').title()} verifier decision {'passed' if ok else 'blocked'}",
+        **payload,
+    )
+
+
+def _verification_review_result_payload(result: Any) -> dict[str, Any]:
+    return {
+        "task": str(getattr(result, "task", "") or ""),
+        "provider": str(getattr(result, "provider", "") or ""),
+        "mode": str(getattr(result, "mode", "") or ""),
+        "status": str(getattr(result, "status", "") or ""),
+        "command": list(getattr(result, "command", []) or []),
+        "exit_status": getattr(result, "exit_status", None),
+        "response": _bounded_verifier_response(str(getattr(result, "response", "") or "")),
+        "response_chars": int(getattr(result, "response_chars", 0) or 0),
+        "max_response_chars": int(getattr(result, "max_response_chars", 0) or 0),
+        "truncated": bool(getattr(result, "truncated", False)),
+        "timed_out": bool(getattr(result, "timed_out", False)),
+        "model": str(getattr(result, "model", "") or ""),
+        "error": str(getattr(result, "error", "") or ""),
+    }
+
+
+def _verification_review_decision(payload: Mapping[str, Any] | None) -> str:
+    response = str((payload or {}).get("response", "") or "").strip()
+    if not response:
+        return ""
+    parsed = _extract_json_payload(response)
+    if isinstance(parsed, Mapping):
+        for key in ("decision", "status", "result"):
+            value = str(parsed.get(key, "") or "").strip().upper()
+            if value in {"PASS", "BLOCK"}:
+                return value
+    match = re.search(
+        r"^\s*(?:[#>*_`\-]+\s*)?(?:Decision\s*[:=-]\s*)?\**(PASS|BLOCK)\**\b",
+        response,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        match = re.search(r"\bDecision\s*[:=-]\s*(PASS|BLOCK)\b", response, flags=re.IGNORECASE)
+    return match.group(1).upper() if match else ""
+
+
+def _verification_review_findings(payload: Mapping[str, Any] | None, *, limit: int = 5) -> list[str]:
+    response = str((payload or {}).get("response", "") or "").strip()
+    if not response:
+        return []
+    parsed = _extract_json_payload(response)
+    findings: list[str] = []
+    if isinstance(parsed, Mapping):
+        raw_findings = parsed.get("findings") or parsed.get("issues") or parsed.get("blockers") or []
+        if isinstance(raw_findings, list):
+            for item in raw_findings:
+                text = _single_line(item, 240)
+                if text:
+                    findings.append(text)
+                    if len(findings) >= limit:
+                        return findings
+    for line in response.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if re.match(r"^(PASS|BLOCK)\b", stripped, flags=re.IGNORECASE):
+            continue
+        bullet = re.match(r"^(?:[-*]|\d+[.)])\s+(.*)$", stripped)
+        if bullet:
+            finding = _single_line(bullet.group(1), 240)
+            if finding:
+                findings.append(finding)
+        elif "block" in stripped.lower() or "missing" in stripped.lower() or "fix" in stripped.lower():
+            findings.append(_single_line(stripped, 240))
+        if len(findings) >= limit:
+            break
+    if findings:
+        return findings
+    return [_single_line(response, 240)] if response else []
+
+
+def _print_verification_review_summary(payload: Mapping[str, Any]) -> None:
+    provider = str(payload.get("provider", "") or "verifier")
+    task = str(payload.get("task", "") or "verification").replace("_", " ")
+    decision = _verification_review_decision(payload) or str(payload.get("status", "") or "reviewed")
+    findings = _verification_review_findings(payload, limit=3)
+    print(f"{task.title()} verifier feedback ({provider}): {decision}")
+    for finding in findings:
+        print(f"- {finding}")
+
+
+def _autoformalizer_advisory_block_issues(payload: Mapping[str, Any] | None) -> list[str]:
+    if not payload:
+        return []
+    if _verification_review_decision(payload) != "BLOCK":
+        return []
+    findings = _verification_review_findings(payload, limit=4)
+    if not findings:
+        findings = ["configured verifier returned BLOCK without detailed findings"]
+    return [f"configured autoformalizer verifier returned BLOCK: {finding}" for finding in findings]
+
+
+def _autoformalizer_advisory_review_due(
+    *,
+    local_ok: bool,
+    issues: Sequence[str],
+    completion: bool,
+) -> bool:
+    # External/source-fidelity reviewers are useful only after deterministic
+    # local gates say the draft is structurally ready. Running a slow configured
+    # verifier while obvious local blockers remain makes the formalizer look
+    # stuck and feeds the model feedback it cannot act on yet.
+    return bool(local_ok)
+
+
+def _verification_review_system_prompt(task: str) -> str:
+    if task == BLUEPRINT_VERIFICATION_TASK:
+        return (
+            "You are an independent EPFLemma statement/source verifier. Review the source document, "
+            "blueprint, and Lean statement plan for fidelity. Start with PASS or BLOCK, then findings "
+            "and correction steps. This is not Lean-kernel proof evidence."
+        )
+    return (
+        "You are an independent EPFLemma autoformalization verifier. Review the handoff state and identify "
+        "source-fidelity, blueprint, import, or Lean-readiness blockers. Start with PASS or BLOCK, then findings "
+        "and correction steps. BLOCK forbids proof launch until the formalizer fixes the draft."
+    )
+
+
+def _run_advisory_verification_review(
+    *,
+    task: str,
+    provider: str,
+    prompt: str,
+    active_file: str = "",
+) -> dict[str, Any]:
+    configured_provider = resolve_verification_provider(task, explicit=provider)
+    if is_local_verification_provider(configured_provider):
+        _record_verifier_decision(
+            task=task,
+            provider="local",
+            configured_provider=configured_provider,
+            mode="local",
+            ok=False,
+            summary="configured local verifier uses deterministic checks only; no advisory review was run",
+            active_file=active_file,
+            issues=[],
+        )
+        return {
+            "task": task,
+            "provider": "local",
+            "mode": "local",
+            "status": "local-only",
+            "response": "",
+        }
+    if is_command_verification_provider(configured_provider):
+        result = run_command_verification_review(
+            provider=configured_provider,
+            task=task,
+            prompt=prompt,
+            cwd=_project_root(),
+            timeout_s=1200,
+        )
+    else:
+        result = run_model_verification_review(
+            provider=configured_provider,
+            task=task,
+            prompt=prompt,
+            system_prompt=_verification_review_system_prompt(task),
+            timeout_s=1200,
+        )
+    payload = _verification_review_result_payload(result)
+    _record_activity(
+        "verification-advisory-review",
+        f"{task.replace('_', ' ').title()} advisory review finished",
+        active_file=active_file,
+        **payload,
+    )
+    _print_verification_review_summary(payload)
+    return payload
+
+
+def _run_configured_blueprint_verification(
+    parent_agent: Any,
+    system_prompt: str,
+    live_state: Mapping[str, Any],
+    autonomy_state: dict[str, Any],
+) -> dict[str, Any]:
+    provider = resolve_verification_provider(BLUEPRINT_VERIFICATION_TASK)
+    if (
+        provider in {"main", "auto"}
+        and not _verification_task_has_aux_overrides(BLUEPRINT_VERIFICATION_TASK)
+    ):
+        return _run_document_formalization_review_agent(parent_agent, system_prompt, live_state, autonomy_state)
+
+    signature = _document_formalization_review_signature(live_state)
+    autonomy_state["document_formalization_review_signature"] = signature
+    autonomy_state["document_formalization_review_attempted"] = True
+    autonomy_state["document_formalization_review_provider"] = provider
+    prompt = _attach_live_proof_state(_document_formalization_review_prompt(dict(live_state)), live_state)
+    active_file = str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or "")
+    _record_agent_activity(
+        parent_agent,
+        "formalization-review-start",
+        "Starting configured document formalization statement/source review",
+        active_file=active_file,
+        provider=provider,
+        blocker=str(live_state.get("current_blocker", "") or ""),
+    )
+    result = _run_advisory_verification_review(
+        task=BLUEPRINT_VERIFICATION_TASK,
+        provider=provider,
+        prompt=prompt,
+        active_file=active_file,
+    )
+    autonomy_state["document_formalization_review_result"] = result
+    approval_stamped = False
+    decision = _verification_review_decision(result)
+    if decision == "PASS":
+        approval_stamped = _stamp_blueprint_statement_review_approved(
+            provider=provider,
+            active_file=active_file,
+        )
+        if approval_stamped:
+            autonomy_state.pop("document_formalization_review_signature", None)
+    elif decision == "BLOCK":
+        findings = _verification_review_findings(result, limit=8)
+        lines = [
+            "[EPFLEMMA FORMALIZATION STATEMENT REVIEW BLOCK]",
+            "The independent statement/source verifier returned BLOCK. Continue formalization and address these findings before stopping again.",
+            "- do not self-approve statement verification statuses",
+            "- do not mark the proof-ready checklist item",
+            "- update Lean statements, companion declarations, source coverage, scope-change records, or doc-comment proof nudges as needed",
+            "",
+            "Verifier findings:",
+        ]
+        lines.extend(f"- {finding}" for finding in findings) if findings else lines.append("- verifier returned BLOCK without detailed findings")
+        autonomy_state["document_formalization_review_feedback_message"] = "\n".join(lines)
+        autonomy_state["document_formalization_review_feedback_pending"] = True
+    _record_agent_activity(
+        parent_agent,
+        "formalization-review-complete",
+        "Configured document formalization statement/source review completed",
+        active_file=active_file,
+        provider=provider,
+        status=str(result.get("status", "") or ""),
+        mode=str(result.get("mode", "") or ""),
+        decision=decision,
+        approval_stamped=approval_stamped,
+    )
+    return {"messages": [], "interrupted": False, "verification_review": result}
+
+
+def _autoformalizer_verification_prompt(
+    *,
+    active_file: str,
+    ok: bool,
+    summary: str,
+    issues: Sequence[str],
+    blueprint_text: str,
+    target_text: str,
+) -> str:
+    issue_lines = "\n".join(f"- {issue}" for issue in issues) or "- [none]"
+    blueprint_excerpt = _bounded_verifier_response(str(blueprint_text or ""), 10000)
+    target_excerpt = _bounded_verifier_response(str(target_text or ""), 10000)
+    return (
+        "Review this EPFLemma document autoformalization handoff decision.\n\n"
+        "The deterministic local verifier and Lean kernel checks remain authoritative. "
+        "Your job is to identify source-fidelity, complete-proof-attachment, doc-comment nudge, blueprint, import, or Lean-readiness issues "
+        "that the formalizer should fix; do not claim proof verification unless Lean did it.\n\n"
+        "Important: the target Lean file may be an aggregator that imports generated sibling modules. "
+        "Judge declarations and imports across the generated Lean excerpt, not only the entry file body.\n\n"
+        "Start your response with exactly `PASS` or `BLOCK` on its own line. "
+        "Use `BLOCK` if proof launch should not start until the formalizer corrects the draft. "
+        "Then include `Findings:` and `Correction steps:` bullets.\n\n"
+        f"- target Lean file: {_relative_file_label(active_file) or active_file or '[missing]'}\n"
+        f"- deterministic local decision: {'passed' if ok else 'blocked'}\n"
+        f"- deterministic summary: {summary or '[none]'}\n\n"
+        "Deterministic issues:\n"
+        f"{issue_lines}\n\n"
+        "Blueprint excerpt:\n"
+        f"```markdown\n{blueprint_excerpt}\n```\n\n"
+        "Generated Lean excerpt:\n"
+        f"```lean\n{target_excerpt}\n```\n\n"
+        "Return concise, actionable feedback. Verifier agents are read-only reviewers; drafting agents apply corrections."
+    )
+
+
+def _maybe_run_autoformalizer_advisory_review(
+    *,
+    active_file: str,
+    ok: bool,
+    summary: str,
+    issues: Sequence[str],
+    blueprint_text: str,
+    target_text: str,
+) -> dict[str, Any] | None:
+    provider = resolve_verification_provider(AUTOFORMALIZER_VERIFICATION_TASK)
+    if is_local_verification_provider(provider):
+        return None
+    payload = {
+        "task": AUTOFORMALIZER_VERIFICATION_TASK,
+        "provider": provider,
+        "active_file": _relative_file_label(active_file) or active_file,
+        "ok": bool(ok),
+        "summary": _single_line(summary, 400),
+        "issues": [str(issue or "") for issue in issues[:10]],
+        "blueprint_len": len(str(blueprint_text or "")),
+        "target_len": len(str(target_text or "")),
+    }
+    signature = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    if signature in _VERIFICATION_ADVISORY_RESULT_CACHE:
+        return dict(_VERIFICATION_ADVISORY_RESULT_CACHE[signature])
+    if not _cache_once(
+        signature,
+        cache=_VERIFICATION_ADVISORY_CACHE,
+        order=_VERIFICATION_ADVISORY_CACHE_ORDER,
+        limit=_VERIFICATION_ADVISORY_CACHE_LIMIT,
+    ):
+        return None
+    prompt = _autoformalizer_verification_prompt(
+        active_file=active_file,
+        ok=ok,
+        summary=summary,
+        issues=issues,
+        blueprint_text=blueprint_text,
+        target_text=target_text,
+    )
+    result = _run_advisory_verification_review(
+        task=AUTOFORMALIZER_VERIFICATION_TASK,
+        provider=provider,
+        prompt=prompt,
+        active_file=active_file,
+    )
+    _VERIFICATION_ADVISORY_RESULT_CACHE[signature] = dict(result)
+    return result
 
 
 def _run_document_formalization_review_agent(
@@ -6124,7 +7150,7 @@ def _maybe_run_document_formalization_review_agent(
 ) -> bool:
     if not _document_formalization_review_due(live_state, autonomy_state):
         return False
-    _run_document_formalization_review_agent(agent, system_prompt, live_state, autonomy_state)
+    _run_configured_blueprint_verification(agent, system_prompt, live_state, autonomy_state)
     return True
 
 
@@ -6600,10 +7626,17 @@ def _build_live_proof_state(
                     merged["blocker_signature"] = f"{label or 'queue'}:{merged.get('line', '?')}"
                 enriched_queue.append(merged)
         declaration_queue = enriched_queue
+    declaration_queue = _filter_document_formalization_proof_queue(declaration_queue)
+    document_formalization_proof_sorry_count = (
+        _document_formalization_generated_proof_sorry_count(active_file)
+        if _document_formalization_requested() and active_file
+        else 0
+    )
     document_handoff = _document_formalization_handoff_verification(
         active_file,
         diagnostics=diagnostics,
         sorry_count=sorry_count if isinstance(sorry_count, int) else None,
+        last_verification=last_verification,
     )
     document_review_pending = _document_formalization_blueprint_waiting_for_review()
     if _document_formalization_requested() and document_review_pending and bool(document_handoff.get("ok")):
@@ -6677,6 +7710,7 @@ def _build_live_proof_state(
         "current_blocker": current_blocker,
         "queue_needs_final_file_sweep": queue_needs_final_file_sweep,
         "sorry_count": sorry_count,
+        "document_formalization_proof_sorry_count": document_formalization_proof_sorry_count,
         "project_sorry_count": project_sorry_count,
         "project_sorry_files": list(project_sorry_files),
         "blocker_summary": blocker_summary,
@@ -7027,6 +8061,7 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
         active_file,
         diagnostics=diagnostics,
         sorry_count=sorry_count if isinstance(sorry_count, int) else None,
+        last_verification=_last_verification_record(live_state=live_state),
         completion=True,
     )
     if not bool(document_handoff.get("ok")):
@@ -7039,6 +8074,8 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     # — so the cleanup conversation never gets to drive the model. That's
     # exactly why warnings persist across multi-file project workflows.
     if bool(live_state.get("final_sweep_warning_cleanup_pending")):
+        return False
+    if _document_formalization_requested() and _document_formalization_generated_proof_sorry_count(active_file) > 0:
         return False
     if isinstance(sorry_count, int) and sorry_count > 0:
         return False
@@ -7071,17 +8108,20 @@ def _document_formalization_requested() -> bool:
 def _document_formalization_needs_planner_draft(active_file: str) -> bool:
     if not _document_formalization_requested() or not active_file:
         return False
+    generated_paths = _formalization_generated_lean_paths(active_file)
+    if generated_paths:
+        for path in generated_paths:
+            try:
+                generated_text = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if re.search(LEAN_DECLARATION_PREAMBLE_RE, generated_text, flags=re.MULTILINE):
+                return False
     try:
         text = Path(active_file).read_text(encoding="utf-8")
     except Exception:
         return False
-    has_declaration = bool(
-        re.search(
-            r"^\s*(?:@[A-Za-z0-9_.]+\s+)*(?:theorem|lemma|def|instance|class|structure|inductive)\s+",
-            text,
-            flags=re.MULTILINE,
-        )
-    )
+    has_declaration = bool(re.search(LEAN_DECLARATION_PREAMBLE_RE, text, flags=re.MULTILINE))
     if has_declaration:
         return False
     non_import_lines = [
@@ -7105,10 +8145,29 @@ def _document_formalization_needs_blueprint_plan() -> bool:
     except Exception:
         return True
     lowered = text.lower()
-    return (
-        "planner preflight created" in lowered
-        or "_pending_" in lowered
-    )
+    if "_pending_" in lowered:
+        return True
+    entries = _blueprint_source_inventory_entries(text)
+    if not entries:
+        return "planner preflight created" in lowered
+    for entry in entries.values():
+        planned = _blueprint_first_bullet_value(
+            entry,
+            (
+                "Planned Lean declarations",
+                "Planned declarations",
+                "Lean declarations",
+                "Declaration mapping",
+            ),
+        )
+        review = _blueprint_bullet_block(entry, "Formal statement review") or _blueprint_bullet_value(
+            entry,
+            "Formal statement review",
+        )
+        notes = _blueprint_first_bullet_value(entry, ("Source proof / prover notes", "Proof strategy", "Prover notes"))
+        if _blueprint_value_missing(planned) or _blueprint_block_missing(review) or _blueprint_value_missing(notes):
+            return True
+    return False
 
 
 def _lean_imports_from_text(text: str) -> list[str]:
@@ -7166,7 +8225,16 @@ def _blueprint_import_plan_imports(text: str) -> list[str]:
         flags=re.MULTILINE,
     ):
         _add(match.group(1))
+    in_non_direct_subsection = False
     for line in section.splitlines():
+        lowered = line.lower()
+        if re.match(r"^\s*#{1,6}\s+", line) or re.match(r"^\s*(?:direct|suggested|search|notes?)\s*:", lowered):
+            in_non_direct_subsection = any(token in lowered for token in ("suggest", "search", "candidate", "transitive", "note"))
+            continue
+        if any(token in lowered for token in ("suggested search", "search module", "candidate module", "transitive", "not required", "prover may")):
+            continue
+        if in_non_direct_subsection:
+            continue
         if not line.lstrip().startswith("-"):
             continue
         code_span = re.search(r"`([^`]+)`", line)
@@ -7336,6 +8404,130 @@ def _declaration_entries_by_name_from_text(text: str) -> dict[str, dict[str, Any
     return entries
 
 
+def _formalization_generated_lean_text(
+    active_file: str,
+    *,
+    active_text: str = "",
+) -> str:
+    chunks: list[str] = []
+    active_path = Path(active_file).expanduser() if active_file else None
+    try:
+        active_resolved = active_path.resolve() if active_path is not None else None
+    except Exception:
+        active_resolved = active_path
+    for path in _formalization_generated_lean_paths(active_file):
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        try:
+            text = (
+                str(active_text or "")
+                if active_resolved is not None and resolved == active_resolved and active_text
+                else path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            continue
+        label = _relative_file_label(str(path)) or str(path)
+        chunks.append(f"/- EPFLemma generated file: {label} -/\n{text}")
+    if chunks:
+        return "\n\n".join(chunks)
+    return str(active_text or "")
+
+
+def _formalization_generated_imports(active_file: str, *, active_text: str = "") -> list[str]:
+    imports: list[str] = []
+    active_path = Path(active_file).expanduser() if active_file else None
+    try:
+        active_resolved = active_path.resolve() if active_path is not None else None
+    except Exception:
+        active_resolved = active_path
+    for path in _formalization_generated_lean_paths(active_file):
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        try:
+            text = (
+                str(active_text or "")
+                if active_resolved is not None and resolved == active_resolved and active_text
+                else path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            continue
+        for module in _lean_imports_from_text(text):
+            if module not in imports:
+                imports.append(module)
+    if not imports and active_text:
+        imports = _lean_imports_from_text(active_text)
+    return imports
+
+
+def _formalization_generated_module_names(active_file: str) -> set[str]:
+    root = Path(_project_root()).expanduser().resolve()
+    modules: set[str] = set()
+    for path in _formalization_generated_lean_paths(active_file):
+        module = _module_name_for_project_path(path, root)
+        if module:
+            modules.add(module)
+    return modules
+
+
+def _document_formalization_construction_sorry_issues(active_file: str, target_text: str = "") -> list[str]:
+    issues: list[str] = []
+    scanned_paths = _formalization_generated_lean_paths(active_file)
+    if not scanned_paths and active_file:
+        scanned_paths = [Path(active_file)]
+    for path in scanned_paths:
+        try:
+            text = (
+                str(target_text or "")
+                if active_file and path.resolve() == Path(active_file).expanduser().resolve() and target_text
+                else path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            continue
+        for entry in _declaration_line_index_from_text(text):
+            kind = str(entry.get("kind", "") or "").strip().lower()
+            if kind not in CONSTRUCTION_DECLARATION_KINDS or not entry.get("has_sorry"):
+                continue
+            name = str(entry.get("name", "") or "").strip() or f"[{kind} at line {entry.get('line', '?')}]"
+            line = int(entry.get("line", 0) or 0)
+            label = _relative_file_label(str(path))
+            location = f"{label}:{line}" if line > 0 else label
+            issues.append(
+                f"construction gap before proof handoff: `{name}` is a {kind} declaration with `sorry` at {location}; "
+                "finish the construction or rewrite it as an explicit theorem/lemma proof obligation before `/prove`"
+            )
+    return issues
+
+
+def _document_formalization_generated_proof_sorry_count(active_file: str = "") -> int:
+    total = 0
+    for path in _formalization_generated_lean_paths(active_file):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        for entry in _declaration_line_index_from_text(text):
+            if str(entry.get("kind", "") or "").strip().lower() in PROOF_DECLARATION_KINDS and entry.get("has_sorry"):
+                total += 1
+    return total
+
+
+def _filter_document_formalization_proof_queue(queue: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    if not (_workflow_kind() == "formalize" and _document_formalization_requested()):
+        return [dict(item) for item in queue if isinstance(item, Mapping)]
+    filtered: list[dict[str, Any]] = []
+    for item in queue:
+        if not isinstance(item, Mapping):
+            continue
+        kind = str(item.get("kind", "") or "").strip().lower()
+        if kind in PROOF_DECLARATION_KINDS:
+            filtered.append(dict(item))
+    return filtered
+
+
 _BLUEPRINT_UNRESOLVED_FIDELITY_RE = re.compile(
     r"\b(_pending_|pending|todo|tbd|missing|unresolved|unchecked|unverified|not covered|not formalized|omitted|weakened)\b",
     flags=re.IGNORECASE,
@@ -7355,6 +8547,33 @@ def _blueprint_fidelity_field_unresolved(value: str) -> bool:
     if _blueprint_block_missing(text):
         return True
     return bool(_BLUEPRINT_UNRESOLVED_FIDELITY_RE.search(text))
+
+
+def _blueprint_checklist_item_checked(text: str, pattern: str) -> bool | None:
+    compiled = re.compile(
+        rf"^\s*-\s*\[(?P<checked>[ xX])\]\s*{pattern}\s*$",
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    match = compiled.search(str(text or ""))
+    if not match:
+        return None
+    return str(match.group("checked") or "").lower() == "x"
+
+
+def _document_formalization_blueprint_checklist_issues(blueprint_text: str) -> list[str]:
+    review_checked = _blueprint_checklist_item_checked(
+        blueprint_text,
+        r"Run independent statement/source verification review and apply corrections\.",
+    )
+    proof_ready_checked = _blueprint_checklist_item_checked(
+        blueprint_text,
+        r"(?:Hand stable (?:theorem/lemma/example )?`sorry` declarations to the managed prover queue|Mark stable theorem/lemma/example `sorry` declarations ready for a user-started prove workflow)\.",
+    )
+    if proof_ready_checked and review_checked is not True:
+        return [
+            "blueprint proof-ready checklist item is checked before independent statement/source review is checked"
+        ]
+    return []
 
 
 def _lean_declaration_preceding_comment_window(
@@ -7491,7 +8710,7 @@ def _document_formalization_blueprint_inventory_issues(
                 missing = [name for name in planned_names if name not in target_decl_names]
                 if missing:
                     issues.append(
-                        f"blueprint entry `{label}` names declarations missing from target Lean file: "
+                        f"blueprint entry `{label}` names declarations missing from generated Lean files: "
                         + ", ".join(f"`{name}`" for name in missing)
                     )
 
@@ -7566,12 +8785,14 @@ def _document_formalization_handoff_verification(
     *,
     diagnostics: str | None = None,
     sorry_count: int | None = None,
+    last_verification: Mapping[str, Any] | None = None,
     completion: bool = False,
 ) -> dict[str, Any]:
     if not _document_formalization_requested() or not active_file:
         return {"ok": True, "issues": [], "summary": "document formalization not active"}
 
     issues: list[str] = []
+    blueprint_local_issues: list[str] = []
     active_path = Path(active_file).expanduser()
     try:
         active_path = active_path.resolve()
@@ -7581,7 +8802,9 @@ def _document_formalization_handoff_verification(
     if _document_formalization_needs_planner_draft(str(active_path)):
         issues.append("planner has not drafted Lean declarations in the target file")
     if _document_formalization_needs_blueprint_plan():
-        issues.append("blueprint still contains preflight placeholders or `_pending_` entries")
+        issue = "blueprint still contains preflight placeholders or `_pending_` entries"
+        issues.append(issue)
+        blueprint_local_issues.append(issue)
 
     blueprint_path = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
     blueprint_text = ""
@@ -7589,15 +8812,22 @@ def _document_formalization_handoff_verification(
         try:
             blueprint_text = Path(blueprint_path).read_text(encoding="utf-8")
         except Exception:
-            issues.append("blueprint file could not be read")
+            issue = "blueprint file could not be read"
+            issues.append(issue)
+            blueprint_local_issues.append(issue)
     else:
-        issues.append("blueprint file is not configured")
+        issue = "blueprint file is not configured"
+        issues.append(issue)
+        blueprint_local_issues.append(issue)
 
     target_text = ""
     try:
         target_text = active_path.read_text(encoding="utf-8")
     except Exception:
         issues.append("target Lean file could not be read")
+    generated_text = _formalization_generated_lean_text(str(active_path), active_text=target_text)
+    construction_issues = _document_formalization_construction_sorry_issues(str(active_path), target_text)
+    issues.extend(construction_issues)
 
     diagnostic_text = str(diagnostics or "").strip()
     if diagnostic_text and _diagnostics_indicate_hard_failure(diagnostic_text):
@@ -7605,8 +8835,20 @@ def _document_formalization_handoff_verification(
             "target Lean file has hard diagnostics before prover handoff: "
             + _single_line(diagnostic_text, 260)
         )
+    verification_record = dict(last_verification or {})
+    project_verification_issue = ""
+    if not (
+        bool(verification_record.get("ok"))
+        and str(verification_record.get("scope", "") or "").strip().lower() == "project"
+        and str(verification_record.get("tool", "") or "").strip() == "lean_verify"
+    ):
+        project_verification_issue = (
+            "project-level Lean verification has not passed; run `lean_verify(mode=project)` "
+            "after the generated formalization files and root imports are in place"
+        )
 
-    target_imports = _lean_imports_from_text(target_text)
+    target_imports = _formalization_generated_imports(str(active_path), active_text=target_text)
+    generated_modules = _formalization_generated_module_names(str(active_path))
     module_name = _module_name_for_file(str(active_path))
     root_info = _root_module_file_for_module(module_name)
     if root_info:
@@ -7650,33 +8892,69 @@ def _document_formalization_handoff_verification(
                 )
 
     if blueprint_text:
-        issues.extend(_document_formalization_blueprint_inventory_issues(blueprint_text, target_text))
+        checklist_issues = _document_formalization_blueprint_checklist_issues(blueprint_text)
+        blueprint_local_issues.extend(checklist_issues)
+        issues.extend(checklist_issues)
+
+        inventory_issues = _document_formalization_blueprint_inventory_issues(blueprint_text, generated_text)
+        blueprint_local_issues.extend(inventory_issues)
+        issues.extend(inventory_issues)
 
         planned_imports = _blueprint_import_plan_imports(blueprint_text)
         if planned_imports:
             missing_from_target = [module for module in planned_imports if module not in target_imports]
-            missing_from_plan = [module for module in target_imports if module not in planned_imports]
+            missing_from_plan = [
+                module for module in target_imports
+                if module not in planned_imports and module not in generated_modules
+            ]
             if missing_from_target:
                 issues.append(
-                    "blueprint import plan mentions modules not imported by the target Lean file: "
+                    "blueprint import plan mentions modules not imported by generated Lean files: "
                     + ", ".join(f"`{module}`" for module in missing_from_target)
                 )
             if missing_from_plan:
                 issues.append(
-                    "target Lean file imports modules missing from the blueprint import plan: "
+                    "generated Lean files import external modules missing from the blueprint import plan: "
                     + ", ".join(f"`{module}`" for module in missing_from_plan)
                 )
+
+        if project_verification_issue:
+            issues.append(project_verification_issue)
 
         if completion and isinstance(sorry_count, int) and sorry_count == 0:
             if re.search(r"^\s*-\s*Status:\s*active formalization\s*$", blueprint_text, flags=re.MULTILINE | re.IGNORECASE):
                 issues.append("blueprint status is still `active formalization` after proofs are complete")
             handoff_match = re.search(
-                r"^\s*-\s*\[(?P<checked>[ xX])\]\s*Hand stable `sorry` declarations to the managed prover queue\.",
+                r"^\s*-\s*\[(?P<checked>[ xX])\]\s*(?:Hand stable (?:theorem/lemma/example )?`sorry` declarations to the managed prover queue|Mark stable theorem/lemma/example `sorry` declarations ready for a user-started prove workflow)\.",
                 blueprint_text,
                 flags=re.MULTILINE,
             )
             if handoff_match and handoff_match.group("checked") == " ":
-                issues.append("blueprint managed-prover handoff checklist item is still unchecked")
+                issues.append("blueprint proof-ready handoff checklist item is still unchecked")
+
+    local_ok = not issues
+    local_summary = (
+        "document formalization handoff verifier passed"
+        if local_ok
+        else "document formalization handoff verifier blocked queue: " + "; ".join(issues[:5])
+    )
+    if len(issues) > 5:
+        local_summary += f"; plus {len(issues) - 5} more issue(s)"
+    advisory_payload = (
+        _maybe_run_autoformalizer_advisory_review(
+            active_file=str(active_path),
+            ok=local_ok,
+            summary=local_summary,
+            issues=issues,
+            blueprint_text=blueprint_text,
+            target_text=generated_text,
+        )
+        if _autoformalizer_advisory_review_due(local_ok=local_ok, issues=issues, completion=completion)
+        else None
+    )
+    advisory_block_issues = _autoformalizer_advisory_block_issues(advisory_payload)
+    if advisory_block_issues:
+        issues.extend(advisory_block_issues)
 
     ok = not issues
     summary = (
@@ -7686,6 +8964,58 @@ def _document_formalization_handoff_verification(
     )
     if len(issues) > 5:
         summary += f"; plus {len(issues) - 5} more issue(s)"
+    blueprint_summary = (
+        "blueprint verifier passed"
+        if not blueprint_local_issues
+        else "blueprint verifier blocked queue: " + "; ".join(blueprint_local_issues[:5])
+    )
+    if len(blueprint_local_issues) > 5:
+        blueprint_summary += f"; plus {len(blueprint_local_issues) - 5} more issue(s)"
+    _record_verifier_decision(
+        task=BLUEPRINT_VERIFICATION_TASK,
+        provider="local",
+        configured_provider=resolve_verification_provider(BLUEPRINT_VERIFICATION_TASK),
+        mode="local",
+        ok=not blueprint_local_issues,
+        summary=blueprint_summary,
+        active_file=str(active_path),
+        issues=blueprint_local_issues,
+    )
+    _record_verifier_decision(
+        task=AUTOFORMALIZER_VERIFICATION_TASK,
+        provider="local",
+        configured_provider=resolve_verification_provider(AUTOFORMALIZER_VERIFICATION_TASK),
+        mode="local",
+        ok=local_ok,
+        summary=local_summary,
+        active_file=str(active_path),
+        issues=issues[: len(issues) - len(advisory_block_issues)] if advisory_block_issues else issues,
+    )
+    if advisory_payload:
+        decision = _verification_review_decision(advisory_payload)
+        advisory_findings = _verification_review_findings(advisory_payload, limit=6)
+        if decision == "PASS" and local_ok:
+            _stamp_blueprint_statement_review_approved(
+                provider=str(advisory_payload.get("provider", "") or "configured"),
+                active_file=str(active_path),
+            )
+        advisory_summary = (
+            f"configured autoformalizer verifier returned {decision}"
+            if decision
+            else "configured autoformalizer verifier returned no explicit PASS/BLOCK decision"
+        )
+        if advisory_findings:
+            advisory_summary += ": " + "; ".join(advisory_findings[:3])
+        _record_verifier_decision(
+            task=AUTOFORMALIZER_VERIFICATION_TASK,
+            provider=str(advisory_payload.get("provider", "") or "configured"),
+            configured_provider=resolve_verification_provider(AUTOFORMALIZER_VERIFICATION_TASK),
+            mode=str(advisory_payload.get("mode", "") or "configured"),
+            ok=decision != "BLOCK",
+            summary=advisory_summary,
+            active_file=str(active_path),
+            issues=advisory_findings,
+        )
     return {"ok": ok, "issues": issues, "summary": summary}
 
 
@@ -7739,9 +9069,9 @@ def _queue_item_verification_hint(active_file: str) -> str:
 def _recommended_verification_command(active_file: str) -> str:
     relative_label = _relative_file_label(active_file)
     if _workflow_kind() == "formalize" and _document_formalization_requested() and active_file:
-        mode = "module" if _module_name_for_file(active_file) else "file_exact"
         return (
-            f"`lean_inspect` on {relative_label}, then `lean_verify(mode={mode})` for draft readiness; "
+            f"`lean_inspect` on {relative_label}, then `lean_verify(mode=project)` for final draft readiness; "
+            "use module/file verification only for intermediate iteration; "
             "use the document formalization handoff verifier for blueprint/source-review readiness, "
             "not terminal Lake checks"
         )
@@ -7870,6 +9200,7 @@ def _promote_live_state_to_verified(
         active_file,
         diagnostics=str(normalized.get("diagnostics", "") or ""),
         sorry_count=normalized.get("sorry_count") if isinstance(normalized.get("sorry_count"), int) else None,
+        last_verification=_last_verification_record(autonomy_state, normalized),
         completion=True,
     )
     normalized["document_formalization_handoff"] = dict(document_handoff)
@@ -8716,14 +10047,24 @@ def _print_header() -> None:
     print("")
 
 
+def _interactive_mode_label(live_state: Mapping[str, Any] | None = None) -> str:
+    workflow_kind = _workflow_kind()
+    if workflow_kind in {"formalize", "autoformalize"}:
+        return "formalizer-agent"
+    if workflow_kind in {"prove", "autoprove"}:
+        return "prover-agent"
+    return "prover-agent"
+
+
 def _print_interactive_mode_header(live_state: Mapping[str, Any] | None = None) -> None:
     live_state = dict(live_state or {})
     phase = str(live_state.get("build_status", "") or "managed session")
     active_file = str(live_state.get("active_file_label", "") or "[unknown file]")
     theorem = str(live_state.get("target_symbol", "") or "[unknown target]")
+    mode_label = _interactive_mode_label(live_state)
     print("")
     print("─" * 78)
-    print(f"prover-agent mode  ·  {phase}")
+    print(f"{mode_label} mode  ·  {phase}")
     print(f"file: {active_file}  ·  target: {theorem}")
     print("commands: /status  /status <agent> [N]  /swarm [agent] [N]  /proof-state  /diagnostics  /goals  /history  /compact  /exit  Ctrl+C")
     print("─" * 78)
@@ -8781,7 +10122,7 @@ def _run_managed_conversation(
                 "interrupted": True,
                 "final_response": "Operation interrupted by user.",
             }
-            print("Returned to prover-agent mode after interrupt.")
+            print(f"Returned to {_interactive_mode_label()} mode after interrupt.")
             return result
         error_type = type(error).__name__
         error_text = str(error).strip() or repr(error)
@@ -8812,13 +10153,13 @@ def _run_managed_conversation(
             "interrupted": True,
             "final_response": "Operation interrupted by user.",
         }
-        print("Returned to prover-agent mode after interrupt.")
+        print(f"Returned to {_interactive_mode_label()} mode after interrupt.")
         return result
     if not isinstance(result, dict):
         raise RuntimeError("Managed conversation did not return a result payload")
 
     if result.get("interrupted") and not _is_step_boundary_interrupt(result):
-        print("Returned to prover-agent mode after interrupt.")
+        print(f"Returned to {_interactive_mode_label()} mode after interrupt.")
     return result
 
 
@@ -9332,6 +10673,9 @@ def _startup_user_message(
             queue_text = _queue_assignment_block(dict(live_state or {}), autonomy_state)
             if queue_text:
                 queue_block = f"\n\n{queue_text}"
+    organization_block = ""
+    if _document_formalization_organization_phase_active(live_state, autonomy_state):
+        organization_block = f"\n\n{_document_formalization_organization_prompt(dict(live_state or {}))}"
     swarm_block = ""
     if _swarm_enabled():
         swarm_block = (
@@ -9346,14 +10690,14 @@ def _startup_user_message(
         label = str(resumed_checkpoint.get("label", "") or "checkpoint")
         resume_text = f"Resume this managed workflow from persisted {label} and continue carefully from the checkpoint handoff."
         if startup_prompt:
-            return f"{resume_text}\n\n{startup_prompt}{goal_block}{route_block}{queue_block}{swarm_block}{skill_block}"
+            return f"{resume_text}\n\n{startup_prompt}{goal_block}{route_block}{queue_block}{organization_block}{swarm_block}{skill_block}"
         if workflow_command:
-            return f"{resume_text}\n\n{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{route_block}{queue_block}{swarm_block}{skill_block}"
+            return f"{resume_text}\n\n{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{route_block}{queue_block}{organization_block}{swarm_block}{skill_block}"
         return f"{resume_text}{skill_block}"
     if startup_prompt:
-        return f"{startup_prompt}{goal_block}{route_block}{queue_block}{swarm_block}{skill_block}"
+        return f"{startup_prompt}{goal_block}{route_block}{queue_block}{organization_block}{swarm_block}{skill_block}"
     if workflow_command:
-        return f"{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{route_block}{queue_block}{swarm_block}{skill_block}"
+        return f"{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{route_block}{queue_block}{organization_block}{swarm_block}{skill_block}"
     return f"Begin the requested managed Lean workflow now.{skill_block}"
 
 
@@ -9446,12 +10790,136 @@ def _maybe_checkpoint_before_compaction(
     )
 
 
+def _record_formalization_manual_prove_handoff(
+    live_state: Mapping[str, Any] | None,
+    autonomy_state: dict[str, Any],
+) -> None:
+    if autonomy_state.get("formalization_manual_prove_handoff_recorded"):
+        return
+    autonomy_state["formalization_manual_prove_handoff_recorded"] = True
+    current = dict(live_state or {})
+    active_file = str(current.get("active_file", "") or current.get("active_file_label", "") or "").strip()
+    scope = _formalization_generated_prove_scope(active_file)
+    active_label = str(current.get("active_file_label", "") or _relative_file_label(active_file) or active_file or "").strip()
+    target = active_label or (scope[0] if scope else "")
+    suggested_command = f"epflemma workflow prove {target}".strip() if target else "epflemma workflow prove"
+
+    _record_activity(
+        "formalizer-ended",
+        "Formalizer ended after source/statement review; prove must be started explicitly by the user",
+        active_file=active_label,
+        proof_obligations=int(current.get("document_formalization_proof_sorry_count", 0) or 0),
+        prove_scope=scope,
+    )
+    _record_activity(
+        "prove-workflow-manual-start-required",
+        "Proof workflow was not started automatically; review generated formalization, then run prove explicitly",
+        suggested_command=suggested_command,
+        prove_scope=scope,
+    )
+    print("")
+    print("Formalizer ended: document source/statement review passed.")
+    print("Prove workflow not started automatically. Review the generated formalization, then run:")
+    print(f"  {suggested_command}")
+    if scope:
+        print("Prove scope: " + ", ".join(scope))
+
+
+def _document_formalization_organization_phase_active(
+    live_state: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any] | None,
+) -> bool:
+    if not _document_formalization_ready_for_prover_handoff(live_state):
+        return False
+    state = dict(autonomy_state or {})
+    return bool(state.get("document_formalization_organization_turn_started")) and not bool(
+        state.get("document_formalization_organization_completed")
+    )
+
+
+def _document_formalization_organization_phase_needed(
+    live_state: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any] | None,
+) -> bool:
+    if not _document_formalization_ready_for_prover_handoff(live_state):
+        return False
+    state = dict(autonomy_state or {})
+    if state.get("document_formalization_organization_completed"):
+        return False
+    return not bool(state.get("document_formalization_organization_turn_started"))
+
+
+def _document_formalization_organization_prompt(live_state: Mapping[str, Any]) -> str:
+    current = dict(live_state or {})
+    active_file = str(current.get("active_file_label", "") or current.get("active_file", "") or "").strip()
+    blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
+    source = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip()
+    generated_scope = _formalization_generated_prove_scope(str(current.get("active_file", "") or ""))
+    generated_lines = "\n".join(f"- `{item}`" for item in generated_scope) or "- [none detected]"
+    proof_obligations = int(current.get("document_formalization_proof_sorry_count", 0) or 0)
+    return (
+        "[EPFLEMMA FORMALIZATION FINAL ORGANIZATION PASS]\n\n"
+        "Statement/source verification has passed. Before the formalizer exits, do exactly one focused "
+        "organization pass over the generated formalization.\n\n"
+        f"- source document: `{source or '[missing]'}`\n"
+        f"- planner blueprint: `{blueprint or '[missing]'}`\n"
+        f"- current entry file: `{active_file or '[missing]'}`\n"
+        f"- proof obligations: {proof_obligations}\n"
+        "- generated Lean scope:\n"
+        f"{generated_lines}\n\n"
+        "Task:\n"
+        "1. Read the blueprint and generated Lean files directly.\n"
+        "2. Decide whether the generated project should stay single-file or be split. Use a multi-file layout "
+        "when declarations exceed 12, proof obligations exceed 8, or the source naturally separates "
+        "definitions/constructions/main results. If staying single-file is better, record that decision in "
+        "`## Generated File Layout`.\n"
+        "3. If splitting, keep `Main.lean` as an aggregator and move content into clear modules such as "
+        "`Basic.lean`, `Constructions.lean`, and `Theorems.lean` only when that improves import order. "
+        "Update parent/root imports so `lake build` still checks the generated formalization.\n"
+        "4. Update `Blueprint.md` so `## Generated File Layout`, `## Import Plan`, planned declaration names, "
+        "source locators, proof notes, and source mappings still match the Lean files. Do not lose any "
+        "blueprint source entry or verifier approval stamp.\n"
+        "5. Do not prove theorem/lemma/example `sorry`s, do not self-approve new statement review statuses, "
+        "and do not change mathematical statements except for namespace/import adjustments needed by a split.\n"
+        "6. Run `lean_verify(mode=project)` once after the organization decision or split. If it fails, fix the "
+        "organization/import issue and rerun the project check.\n\n"
+        "Stop after reporting the layout decision and the project verification result."
+    )
+
+
 def _autonomous_stop_reason(
     history: list[dict[str, Any]],
     live_state: Mapping[str, Any] | None,
     autonomy_state: dict[str, Any],
 ) -> str:
     if _document_formalization_ready_for_prover_handoff(live_state):
+        if _document_formalization_organization_phase_needed(live_state, autonomy_state):
+            autonomy_state["document_formalization_organization_turn_started"] = True
+            autonomy_state["continuation_blocked_runs"] = 0
+            autonomy_state["continuation_stable_cycles"] = 0
+            _record_activity(
+                "formalization-organization-pass-started",
+                "Statement/source review passed; starting final generated-file organization pass",
+                active_file=str(
+                    (live_state or {}).get("active_file_label", "")
+                    or (live_state or {}).get("active_file", "")
+                    or ""
+                ),
+                proof_obligations=(live_state or {}).get("document_formalization_proof_sorry_count"),
+            )
+            return "continue"
+        if _document_formalization_organization_phase_active(live_state, autonomy_state):
+            autonomy_state["document_formalization_organization_completed"] = True
+            _record_activity(
+                "formalization-organization-pass-completed",
+                "Final generated-file organization pass completed; formalizer may exit before proof workflow",
+                active_file=str(
+                    (live_state or {}).get("active_file_label", "")
+                    or (live_state or {}).get("active_file", "")
+                    or ""
+                ),
+                proof_obligations=(live_state or {}).get("document_formalization_proof_sorry_count"),
+            )
         autonomy_state["continuation_blocked_runs"] = 0
         autonomy_state["continuation_stable_cycles"] = 0
         if not autonomy_state.get("document_formalization_prover_handoff_recorded"):
@@ -9461,12 +10929,15 @@ def _autonomous_stop_reason(
                 "Document formalization statement/source review passed; ready for /prove",
                 active_file=str((live_state or {}).get("active_file_label", "") or (live_state or {}).get("active_file", "") or ""),
                 sorry_count=(live_state or {}).get("sorry_count"),
+                proof_obligations=(live_state or {}).get("document_formalization_proof_sorry_count"),
             )
-        return "blocked"
+        return "formalization-prover-handoff-ready"
 
     if _document_formalization_waiting_for_independent_review(live_state):
         autonomy_state["continuation_blocked_runs"] = 0
         autonomy_state["continuation_stable_cycles"] = 0
+        if autonomy_state.pop("document_formalization_review_feedback_pending", False):
+            return "continue"
         return "blocked"
 
     signature = (
@@ -9607,6 +11078,8 @@ def _autonomous_continuation_prompt(
                 f"\n- recommended worker: {route_decision.get('recommended_worker')}\n"
                 "- use `lean_worker_dispatch` if the blocker still fits this route after the next focused attempt"
             )
+    if _document_formalization_organization_phase_active(live_state, autonomy_state):
+        prompt += f"\n\n{_document_formalization_organization_prompt(live_state)}"
     if _queue_needs_final_file_sweep(live_state):
         prompt += f"\n\n{_final_file_sweep_block(live_state)}"
     else:
@@ -9686,6 +11159,14 @@ def _drive_autonomous_followups(
             )
             _print_theorem_transition_handoff(history)
         if _maybe_run_document_formalization_review_agent(agent, system_prompt, live_state, autonomy_state):
+            review_feedback = str(autonomy_state.pop("document_formalization_review_feedback_message", "") or "").strip()
+            if review_feedback:
+                history.append({"role": "user", "content": review_feedback})
+                _record_activity(
+                    "formalization-review-feedback-queued",
+                    "Queued independent statement/source verifier BLOCK findings for the next drafting turn",
+                    active_file=str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or ""),
+                )
             checkpoint_state = _journal_status()
             live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
             live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
@@ -9697,6 +11178,8 @@ def _drive_autonomous_followups(
         if stop_reason != "continue":
             _record_activity("autonomy-stop", f"Autonomous workflow stop reason: {stop_reason}", cycle=cycle)
             _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase=stop_reason)
+            if stop_reason == "formalization-prover-handoff-ready":
+                _record_formalization_manual_prove_handoff(live_state, autonomy_state)
             return history, compaction_state, checkpoint_state, live_state
 
         _maybe_checkpoint_before_compaction(history, agent, live_state=live_state)
@@ -9947,8 +11430,9 @@ def main() -> int:
         _print_interactive_mode_header(live_state)
 
         while True:
+            mode_label = _interactive_mode_label(live_state)
             try:
-                raw = input("\nprover-agent> ")
+                raw = input(f"\n{mode_label}> ")
             except EOFError:
                 print("")
                 if _is_autonomous_workflow() and history:
@@ -9965,7 +11449,7 @@ def main() -> int:
                 _record_agent_activity(agent, "runner-exit", "Managed workflow runner exited via EOF")
                 return 0
             except KeyboardInterrupt:
-                print("\nInterrupted. Use /exit to leave prover-agent mode.")
+                print(f"\nInterrupted. Use /exit to leave {mode_label} mode.")
                 continue
 
             text = raw.strip()

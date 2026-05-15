@@ -1,26 +1,20 @@
 ---
 name: lean-refactor-golf
-description: Native refactor/golf entry. Preserve theorem meaning, use structured verification, and escalate to `proof-golfer` only when the router calls for it.
+description: Native refactor/golf routing entry. Load the linked workflow specs as the contract, preserve theorem meaning, and escalate to `proof-golfer` only when the router calls for it.
 ---
 
 # Native Lean Refactor / Golf
+
+This skill is the routing layer for Lean proof refactoring and golfing. Treat the linked workflow specs as the operational contract for tool order, verification gates, escalation rules, and stop conditions.
 
 Primary specs:
 
 - `epflemma_specs/workflows/refactor.md`
 - `epflemma_specs/workflows/golf.md`
 
-## Tool Order
+## Routing Rules
 
-1. `lean_inspect`
-2. `lean_search` for nearby proof shapes
-3. `lean_multi_attempt` only for 2-6 concrete local simplification candidates at one proof position
-4. minimal cleanup or simplification edit
-5. `lean_verify`
-6. `lean_worker_dispatch` with `proof-golfer` only when the route explicitly recommends it
-
-## Guardrails
-
-- Do not trade maintainability for tiny cosmetic wins unless the user explicitly wants golfing.
-- Stop if the shorter proof becomes materially harder to understand or debug.
-- Do not change theorem statements or public interfaces unless the task explicitly requires it.
+- Use `refactor.md` for structure-preserving proof cleanup, helper layout, and reusable proof-shape improvements.
+- Use `golf.md` for already-compiling proofs that need local directness, brevity, clarity, or lighter proof search burden.
+- Use `proof-golfer` only when the route action or recommended worker explicitly calls for it.
+- Preserve theorem meaning, theorem statements, and public interfaces unless the task explicitly asks for a semantic refactor.
