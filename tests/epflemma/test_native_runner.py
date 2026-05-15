@@ -2157,6 +2157,69 @@ def test_prepare_queue_assignment_state_warms_incremental_once(monkeypatch, tmp_
     assert autonomy_state["current_queue_assignment"]["incremental_prepare"]["success"] is True
 
 
+def test_manager_incremental_prepare_uses_cold_mathlib_timeout(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    active = project / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    calls = []
+
+    def _fake_incremental_check(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "ok": True,
+            "backend": "lean_interact",
+            "action": "prepare_file",
+            "target": "demo",
+            "elapsed_s": 201.196,
+            "cache": {"cache_hit": False},
+        }
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.delenv("EPFLEMMA_MANAGER_INCREMENTAL_PREPARE_TIMEOUT_S", raising=False)
+    monkeypatch.setattr(runner, "lean_incremental_check", _fake_incremental_check)
+
+    result = runner._manager_prepare_incremental_queue_item(str(active), "demo")
+
+    assert result["success"] is True
+    assert calls[0]["action"] == "prepare_file"
+    assert calls[0]["timeout_s"] == runner.MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S
+    assert calls[0]["timeout_s"] >= 240
+
+
+def test_manager_incremental_check_uses_configurable_timeout(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    project.mkdir()
+    active = project / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    calls = []
+
+    def _fake_incremental_check(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "ok": True,
+            "backend": "lean_interact",
+            "command": "lean_probe check_target",
+            "target": "demo",
+            "output": "",
+            "messages": [],
+            "cache": {"cache_hit": True},
+            "elapsed_s": 0.04,
+        }
+
+    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("EPFLEMMA_MANAGER_INCREMENTAL_CHECK_TIMEOUT_S", "180")
+    monkeypatch.setattr(runner, "lean_incremental_check", _fake_incremental_check)
+
+    result = runner._manager_incremental_check_queue_item(str(active), "demo")
+
+    assert result["ok"] is True
+    assert calls[0]["action"] == "check_target"
+    assert calls[0]["timeout_s"] == 180
+
+
 def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text(
