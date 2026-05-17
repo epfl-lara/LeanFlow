@@ -3146,6 +3146,39 @@ def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
     assert callable(captured["step_callback"])
 
 
+def test_build_agent_uses_runtime_reasoning_effort_when_config_auto(monkeypatch):
+    captured = {}
+
+    class DummyAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.reasoning_config = kwargs.get("reasoning_config")
+
+    monkeypatch.setattr(runner, "AIAgent", DummyAgent)
+    monkeypatch.setattr(
+        runner,
+        "_agent_config",
+        lambda: {
+            "reasoning_effort": "auto",
+            "seed": 42,
+            "temperature": 0.3,
+            "top_p": None,
+            "top_k": None,
+            "min_p": None,
+        },
+    )
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "gpt-5.5")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://chatgpt.com/backend-api/codex")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_API_KEY", "codex-token")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "openai-codex")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "codex_responses")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_REASONING_EFFORT", "xhigh")
+
+    runner._build_agent()
+
+    assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
+
 def test_build_agent_uses_swarm_toolset_when_user_enabled_swarm(monkeypatch):
     captured = {}
 

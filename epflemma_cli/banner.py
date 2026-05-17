@@ -295,6 +295,8 @@ def render_provider_panel(console: Console, *, resolved: dict[str, str], request
     current.add_row("API mode", str(resolved.get("api_mode", "")))
     current.add_row("Base URL", str(resolved.get("base_url", "")))
     current.add_row("Model", str(resolved.get("model", "")))
+    if resolved.get("reasoning_effort"):
+        current.add_row("Reasoning", str(resolved.get("reasoning_effort", "")))
     current.add_row("Source", str(resolved.get("source", "")))
 
     table = Table(box=box.SIMPLE_HEAD, pad_edge=False)
@@ -350,6 +352,8 @@ def render_workflow_launch(console: Console, *, launch_summary: dict[str, str]) 
     table.add_row("Root", launch_summary.get("project_root", ""))
     table.add_row("Provider", launch_summary.get("provider", ""))
     table.add_row("Model", launch_summary.get("model", ""))
+    if launch_summary.get("reasoning_effort"):
+        table.add_row("Reasoning", launch_summary.get("reasoning_effort", ""))
     table.add_row("Skill", launch_summary.get("skill", ""))
     table.add_row("Agents", launch_summary.get("agents", "1"))
     if launch_summary.get("document"):

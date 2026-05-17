@@ -2564,6 +2564,86 @@ class AIAgent:
         with self._openai_client_lock():
             return self.client
 
+    @staticmethod
+    def _responses_stream_event_type(event: Any) -> str:
+        event_type = getattr(event, "type", None)
+        if not event_type and isinstance(event, dict):
+            event_type = event.get("type")
+        return str(event_type or "")
+
+    @staticmethod
+    def _responses_stream_event_field(event: Any, name: str) -> Any:
+        value = getattr(event, name, None)
+        if value is None and isinstance(event, dict):
+            value = event.get(name)
+        return value
+
+    def _collect_responses_stream_output_item(self, event: Any, collected_items: dict[int, Any]) -> None:
+        if self._responses_stream_event_type(event) != "response.output_item.done":
+            return
+        item = self._responses_stream_event_field(event, "item")
+        if item is None:
+            return
+        raw_index = self._responses_stream_event_field(event, "output_index")
+        try:
+            output_index = int(raw_index)
+        except (TypeError, ValueError):
+            output_index = len(collected_items)
+        collected_items[output_index] = item
+
+    def _repair_empty_responses_stream_output(self, response: Any, collected_items: dict[int, Any]) -> Any:
+        if response is None or not collected_items:
+            return response
+        output = getattr(response, "output", None)
+        if isinstance(output, list) and output:
+            return response
+
+        repaired_output = [
+            collected_items[index]
+            for index in sorted(collected_items)
+            if collected_items.get(index) is not None
+        ]
+        if not repaired_output:
+            return response
+
+        model_copy = getattr(response, "model_copy", None)
+        if callable(model_copy):
+            try:
+                return model_copy(update={"output": repaired_output})
+            except Exception:
+                pass
+        copy_method = getattr(response, "copy", None)
+        if callable(copy_method):
+            try:
+                return copy_method(update={"output": repaired_output})
+            except Exception:
+                pass
+        try:
+            setattr(response, "output", repaired_output)
+        except Exception:
+            if isinstance(response, dict):
+                response_payload = dict(response)
+            else:
+                try:
+                    response_payload = {
+                        key: value
+                        for key, value in vars(response).items()
+                        if not key.startswith("_")
+                    }
+                except TypeError:
+                    response_payload = {
+                        "status": getattr(response, "status", None),
+                        "model": getattr(response, "model", None),
+                        "usage": getattr(response, "usage", None),
+                    }
+            return SimpleNamespace(
+                **{
+                    **response_payload,
+                    "output": repaired_output,
+                }
+            )
+        return response
+
     def _create_request_openai_client(self, *, reason: str) -> Any:
         from unittest.mock import Mock
 
@@ -2582,11 +2662,13 @@ class AIAgent:
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         max_stream_retries = 1
         for attempt in range(max_stream_retries + 1):
+            collected_items: dict[int, Any] = {}
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
-                    for _ in stream:
-                        pass
-                    return stream.get_final_response()
+                    for event in stream:
+                        self._collect_responses_stream_output_item(event, collected_items)
+                    response = stream.get_final_response()
+                    return self._repair_empty_responses_stream_output(response, collected_items)
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
@@ -2621,19 +2703,17 @@ class AIAgent:
             return stream_or_response
 
         terminal_response = None
+        collected_items: dict[int, Any] = {}
         try:
             for event in stream_or_response:
-                event_type = getattr(event, "type", None)
-                if not event_type and isinstance(event, dict):
-                    event_type = event.get("type")
+                self._collect_responses_stream_output_item(event, collected_items)
+                event_type = self._responses_stream_event_type(event)
                 if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
                     continue
 
-                terminal_response = getattr(event, "response", None)
-                if terminal_response is None and isinstance(event, dict):
-                    terminal_response = event.get("response")
+                terminal_response = self._responses_stream_event_field(event, "response")
                 if terminal_response is not None:
-                    return terminal_response
+                    return self._repair_empty_responses_stream_output(terminal_response, collected_items)
         finally:
             close_fn = getattr(stream_or_response, "close", None)
             if callable(close_fn):
@@ -2653,7 +2733,7 @@ class AIAgent:
         try:
             from epflemma_cli.auth import resolve_codex_runtime_credentials
 
-            creds = resolve_codex_runtime_credentials(force_refresh=force)
+            creds = resolve_codex_runtime_credentials(force_refresh=force, allow_legacy_store=True)
         except Exception as exc:
             logger.debug("Codex credential refresh failed: %s", exc)
             return False

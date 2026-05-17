@@ -127,9 +127,10 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, final_response=None, final_error=None, events=None):
         self._final_response = final_response
         self._final_error = final_error
+        self._events = list(events or [])
 
     def __enter__(self):
         return self
@@ -138,7 +139,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -331,6 +332,74 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_run_codex_stream_repairs_empty_completed_response_from_output_item_events(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    completed_empty = SimpleNamespace(
+        output=[],
+        status="completed",
+        model="gpt-5.5",
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+    )
+    streamed_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="stream item ok")],
+    )
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStream(
+            final_response=completed_empty,
+            events=[
+                SimpleNamespace(type="response.output_item.done", output_index=0, item=streamed_item),
+                SimpleNamespace(type="response.completed", response=completed_empty),
+            ],
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output[0].content[0].text == "stream item ok"
+
+
+def test_run_codex_create_stream_fallback_repairs_empty_completed_response(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    completed_empty = SimpleNamespace(
+        output=[],
+        status="completed",
+        model="gpt-5.5",
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+    )
+    streamed_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="create stream item ok")],
+    )
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.output_item.done", output_index=0, item=streamed_item),
+            SimpleNamespace(type="response.completed", response=completed_empty),
+        ]
+    )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(
+                final_error=RuntimeError("Didn't receive a `response.completed` event.")
+            ),
+            create=lambda **kwargs: create_stream,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert create_stream.closed is True
+    assert response.output[0].content[0].text == "create stream item ok"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
@@ -392,7 +461,7 @@ def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
 
     monkeypatch.setattr(
         "epflemma_cli.auth.resolve_codex_runtime_credentials",
-        lambda force_refresh=True: {
+        lambda force_refresh=True, allow_legacy_store=None: {
             "api_key": "new-codex-token",
             "base_url": "https://chatgpt.com/backend-api/codex",
         },

@@ -389,6 +389,52 @@ def test_interactive_workflow_launch_reuses_existing_matching_runner(monkeypatch
     assert "Workflow already running" in output
 
 
+def test_workflow_cli_provider_override_passes_through(monkeypatch, tmp_path):
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    captured: dict[str, object] = {}
+
+    fake_plan = NativeLaunchPlan(
+        project=type("Project", (), {"label": "Demo", "root": tmp_path})(),
+        workflow=NativeWorkflowSpec(
+            workflow_kind="prove",
+            frontend_command="/prove",
+            canonical_command="/prove",
+            backend_command="/prove Main.lean",
+            workflow_args="Main.lean",
+        ),
+        runtime={
+            "provider": "openai-codex",
+            "model": "gpt-5.5",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "reasoning_effort": "xhigh",
+        },
+        child_env={},
+        argv=["python", "-m", "epflemma_cli.native_runner"],
+        active_skill="lean-proof-loop",
+        toolset_name="epflemma-native",
+    )
+
+    def fake_resolve(command, **kwargs):
+        captured["resolve_command"] = command
+        captured["resolve_provider"] = kwargs.get("requested_provider")
+        return fake_plan
+
+    def fake_run(command, **kwargs):
+        captured["run_command"] = command
+        captured["run_provider"] = kwargs.get("requested_provider")
+        return 0
+
+    monkeypatch.setattr("epflemma_cli.main.resolve_workflow_request", fake_resolve)
+    monkeypatch.setattr("epflemma_cli.main.run_workflow", fake_run)
+
+    assert main(["workflow", "--provider", "codex", "prove", "Main.lean"]) == 0
+    assert captured["resolve_command"] == "/prove Main.lean"
+    assert captured["run_command"] == "/prove Main.lean"
+    assert captured["resolve_provider"] == "codex"
+    assert captured["run_provider"] == "codex"
+
+
 def test_interactive_project_init_reports_already_initialized(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     root = tmp_path / "Demo"
