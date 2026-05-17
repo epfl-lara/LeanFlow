@@ -7,7 +7,15 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 from typing import Any, Mapping, Optional
 
-from epflemma_cli.config import get_env_value, load_config
+from epflemma_cli.auth import (
+    CODEX_BASE_URL,
+    CODEX_MAIN_DEFAULT_MODEL,
+    CODEX_MAIN_DEFAULT_REASONING_EFFORT,
+    read_codex_cli_model,
+    read_codex_cli_reasoning_effort,
+    resolve_codex_runtime_credentials,
+)
+from epflemma_cli.config import DEFAULT_CONFIG, get_env_value, load_config
 from epflemma_cli.local_models import resolve_active_local_runtime
 
 
@@ -86,6 +94,7 @@ PROVIDER_DESCRIPTIONS: dict[str, str] = {
     "local": "Use the active managed local runtime such as vllm, ollama, or llama.cpp.",
     "custom": "Use an OpenAI-compatible remote endpoint such as RCP.",
     "openrouter": "Use the OpenRouter chat-completions endpoint.",
+    "codex": "Use the Codex CLI/ChatGPT OAuth session through the Codex Responses endpoint.",
     "anthropic": "Use Anthropic's native Messages API directly.",
     "zai": "Use ZAI / GLM chat-completions directly.",
     "kimi-coding": "Use Moonshot Kimi Coding through its native API.",
@@ -109,6 +118,7 @@ def list_runtime_provider_targets() -> list[dict[str, str]]:
         {"name": "local", "kind": "managed-local", "description": PROVIDER_DESCRIPTIONS["local"]},
         {"name": "custom", "kind": "openai-compatible", "description": PROVIDER_DESCRIPTIONS["custom"]},
         {"name": "openrouter", "kind": "openai-compatible", "description": PROVIDER_DESCRIPTIONS["openrouter"]},
+        {"name": "codex", "kind": "direct", "description": PROVIDER_DESCRIPTIONS["codex"]},
         {"name": "anthropic", "kind": "direct", "description": PROVIDER_DESCRIPTIONS["anthropic"]},
     ]
     for provider_id, spec in PROVIDER_SPECS.items():
@@ -154,6 +164,8 @@ def _load_named_custom_provider(requested_provider: str) -> Optional[dict[str, s
     if not requested_norm or requested_norm in {
         "auto",
         "openrouter",
+        "codex",
+        "openai-codex",
         "anthropic",
         "custom",
         "local",
@@ -277,6 +289,52 @@ def _resolve_anthropic_runtime() -> dict[str, Any]:
     }
 
 
+def _resolve_codex_model() -> str:
+    env_model = _read_provider_env("EPFLEMMA_CODEX_MODEL", "CODEX_MODEL")
+    if env_model:
+        return env_model
+
+    codex_cli_model = read_codex_cli_model()
+    if codex_cli_model:
+        return codex_cli_model
+
+    configured = str(_get_model_config().get("default", "") or "").strip()
+    install_default = str(DEFAULT_CONFIG.get("model", {}).get("default", "") or "").strip()
+    if configured and configured != install_default:
+        return configured
+    return CODEX_MAIN_DEFAULT_MODEL
+
+
+def _resolve_codex_reasoning_effort() -> str:
+    env_effort = _read_provider_env("EPFLEMMA_CODEX_REASONING_EFFORT", "CODEX_REASONING_EFFORT")
+    if env_effort:
+        return env_effort.strip().lower()
+
+    codex_cli_effort = read_codex_cli_reasoning_effort()
+    if codex_cli_effort:
+        return codex_cli_effort
+    return CODEX_MAIN_DEFAULT_REASONING_EFFORT
+
+
+def _resolve_codex_runtime() -> dict[str, Any]:
+    credentials = resolve_codex_runtime_credentials(allow_legacy_store=True)
+    token = str(credentials.get("api_key", "") or "").strip()
+    if not token:
+        raise RuntimeProviderError(
+            "No Codex OAuth credentials found. Run `codex login` first, or write an EPFLemma "
+            "auth.json entry for provider `openai-codex`."
+        )
+    return {
+        "provider": "openai-codex",
+        "api_mode": "codex_responses",
+        "base_url": str(credentials.get("base_url", "") or CODEX_BASE_URL).rstrip("/"),
+        "api_key": token,
+        "source": "codex-oauth",
+        "model": _resolve_codex_model(),
+        "reasoning_effort": _resolve_codex_reasoning_effort(),
+    }
+
+
 def _resolve_direct_provider(provider: str) -> dict[str, Any]:
     spec = PROVIDER_SPECS[provider]
     api_key = ""
@@ -331,6 +389,11 @@ def resolve_runtime_provider(
         resolved["requested_provider"] = requested_provider
         if not resolved.get("model"):
             resolved["model"] = str(_get_model_config().get("default", "") or "")
+        return resolved
+
+    if requested_provider in {"codex", "openai-codex"}:
+        resolved = _resolve_codex_runtime()
+        resolved["requested_provider"] = requested_provider
         return resolved
 
     custom_provider = _load_named_custom_provider(requested_provider)

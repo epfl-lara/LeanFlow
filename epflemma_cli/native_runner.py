@@ -9955,7 +9955,11 @@ def _build_agent() -> AIAgent:
     toolset_name = _read_native_env("TOOLSET", "epflemma-native") or "epflemma-native"
     logging_cfg = _logging_config()
     agent_cfg = _agent_config()
-    reasoning_cfg = _parse_managed_reasoning_config(str(agent_cfg.get("reasoning_effort", "auto")))
+    configured_reasoning_effort = str(agent_cfg.get("reasoning_effort", "auto") or "auto")
+    runtime_reasoning_effort = _read_native_env("REASONING_EFFORT")
+    if runtime_reasoning_effort and configured_reasoning_effort.strip().lower() == "auto":
+        configured_reasoning_effort = runtime_reasoning_effort
+    reasoning_cfg = _parse_managed_reasoning_config(configured_reasoning_effort)
     agent = AIAgent(
         model=model,
         base_url=base_url,

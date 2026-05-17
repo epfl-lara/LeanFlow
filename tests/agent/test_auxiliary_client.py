@@ -29,6 +29,7 @@ def _clean_env(monkeypatch):
     for key in (
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
+        "CODEX_HOME", "EPFLEMMA_USE_LEGACY_CODEX_AUTH",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
         # Per-task provider/model/direct-endpoint overrides
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
@@ -110,20 +111,28 @@ class TestReadCodexAccessToken:
         result = _read_codex_access_token()
         assert result is None
 
-    def test_malformed_json_returns_none(self, tmp_path):
+    def test_malformed_json_returns_none(self, tmp_path, monkeypatch):
+        epflemma_home = tmp_path / "epflemma"
+        epflemma_home.mkdir()
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
         (codex_dir / "auth.json").write_text("{bad json")
-        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
-            result = _read_codex_access_token()
+        monkeypatch.setenv("EPFLEMMA_HOME", str(epflemma_home))
+        monkeypatch.setenv("CODEX_HOME", str(codex_dir))
+        monkeypatch.setenv("EPFLEMMA_USE_LEGACY_CODEX_AUTH", "1")
+        result = _read_codex_access_token()
         assert result is None
 
-    def test_missing_tokens_key_returns_none(self, tmp_path):
+    def test_missing_tokens_key_returns_none(self, tmp_path, monkeypatch):
+        epflemma_home = tmp_path / "epflemma"
+        epflemma_home.mkdir()
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
         (codex_dir / "auth.json").write_text(json.dumps({"other": "data"}))
-        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
-            result = _read_codex_access_token()
+        monkeypatch.setenv("EPFLEMMA_HOME", str(epflemma_home))
+        monkeypatch.setenv("CODEX_HOME", str(codex_dir))
+        monkeypatch.setenv("EPFLEMMA_USE_LEGACY_CODEX_AUTH", "1")
+        result = _read_codex_access_token()
         assert result is None
 
 

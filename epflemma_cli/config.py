@@ -176,6 +176,8 @@ DEFAULT_CONFIG_HEADER = """# EPFLemma configuration
 # Common model changes:
 #   - Change the primary model: model.default
 #   - Change the primary provider: model.provider
+#   - Use your Codex CLI login as the primary provider:
+#     model.provider=codex, with optional EPFLEMMA_CODEX_MODEL override
 #   - Change a custom OpenAI-compatible endpoint: model.base_url or
 #     EPFLEMMA_OPENAI_BASE_URL in ~/.epflemma/.env
 #   - Override a model context window when provider metadata is missing or
@@ -227,6 +229,11 @@ ZAI_API_KEY=
 ANTHROPIC_API_KEY=
 DEEPSEEK_API_KEY=
 MINIMAX_API_KEY=
+
+# Optional Codex primary overrides. With model.provider=codex, EPFLemma reads
+# the existing Codex CLI login and model settings from ~/.codex.
+EPFLEMMA_CODEX_MODEL=
+EPFLEMMA_CODEX_REASONING_EFFORT=
 
 # Optional per-task theorem-advisor overrides for lean_reasoning_help.
 AUXILIARY_LEAN_REASONING_PROVIDER=

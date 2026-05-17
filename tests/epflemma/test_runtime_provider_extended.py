@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import yaml
 
 import pytest
@@ -32,7 +34,10 @@ PROVIDER_ENV_VARS = (
     "EPFLEMMA_OPENAI_BASE_URL",
     "EPFLEMMA_OPENROUTER_API_KEY",
     "EPFLEMMA_OPENROUTER_BASE_URL",
+    "EPFLEMMA_CODEX_MODEL",
+    "EPFLEMMA_USE_LEGACY_CODEX_AUTH",
     "EPFLEMMA_INFERENCE_PROVIDER",
+    "CODEX_HOME",
     "GLM_BASE_URL",
     "KIMI_BASE_URL",
     "MINIMAX_BASE_URL",
@@ -44,8 +49,10 @@ PROVIDER_ENV_VARS = (
 @pytest.fixture(autouse=True)
 def _isolated_provider_env(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     for name in PROVIDER_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
+        if name not in {"CODEX_HOME"}:
+            monkeypatch.delenv(name, raising=False)
     yield
 
 
@@ -53,7 +60,7 @@ def test_list_runtime_provider_targets_includes_every_direct_provider():
     names = {entry["name"] for entry in list_runtime_provider_targets()}
 
     # Meta selectors
-    assert {"auto", "local", "custom", "openrouter", "anthropic"} <= names
+    assert {"auto", "local", "custom", "openrouter", "codex", "anthropic"} <= names
     # All direct providers are exposed
     assert set(PROVIDER_SPECS.keys()) <= names
 
@@ -76,6 +83,66 @@ def test_resolve_requested_provider_defaults_to_auto():
     assert resolve_requested_provider(None) == "auto"
     assert resolve_requested_provider("") == "auto"
     assert resolve_requested_provider("   ") == "auto"
+
+
+def test_runtime_provider_resolves_codex_from_cli_auth(monkeypatch, tmp_path):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True)
+    (codex_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "codex-access-token",
+                    "refresh_token": "codex-refresh-token",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (codex_home / "config.toml").write_text(
+        'model = "gpt-5.5"\nmodel_reasoning_effort = "xhigh"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    resolved = resolve_runtime_provider(requested="codex")
+
+    assert resolved["provider"] == "openai-codex"
+    assert resolved["requested_provider"] == "codex"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert resolved["api_key"] == "codex-access-token"
+    assert resolved["model"] == "gpt-5.5"
+    assert resolved["reasoning_effort"] == "xhigh"
+
+
+def test_runtime_provider_codex_env_model_override_wins(monkeypatch, tmp_path):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True)
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "codex-access-token"}}),
+        encoding="utf-8",
+    )
+    (codex_home / "config.toml").write_text(
+        'model = "gpt-5.5"\nmodel_reasoning_effort = "xhigh"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("EPFLEMMA_CODEX_MODEL", "gpt-5.4")
+    monkeypatch.setenv("EPFLEMMA_CODEX_REASONING_EFFORT", "medium")
+
+    resolved = resolve_runtime_provider(requested="codex")
+
+    assert resolved["provider"] == "openai-codex"
+    assert resolved["requested_provider"] == "codex"
+    assert resolved["model"] == "gpt-5.4"
+    assert resolved["reasoning_effort"] == "medium"
+
+
+def test_runtime_provider_codex_reports_missing_login():
+    with pytest.raises(RuntimeProviderError, match="codex login"):
+        resolve_runtime_provider(requested="codex")
 
 
 def test_resolve_requested_provider_normalizes_name():
