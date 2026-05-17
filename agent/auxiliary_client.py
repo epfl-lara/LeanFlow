@@ -39,14 +39,16 @@ custom OpenAI-compatible endpoint without touching the main model settings.
 import json
 import logging
 import os
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
 from epflemma_cli.auth import (
+    CODEX_AUX_DEFAULT_MODEL,
+    CODEX_BASE_URL,
     PROVIDER_REGISTRY,
+    _read_codex_tokens,
     _resolve_kimi_base_url,
 )
 from epflemma_cli.config import get_epflemma_home
@@ -90,11 +92,11 @@ _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 # Codex fallback: uses the Responses API (the only endpoint the Codex
 # OAuth token can access) with a fast model for auxiliary tasks.
-# ChatGPT-backed Codex accounts currently reject gpt-5.3-codex for these
-# auxiliary flows, while gpt-5.2-codex remains broadly available and supports
-# vision via Responses.
-_CODEX_AUX_MODEL = "gpt-5.2-codex"
-_CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+# ChatGPT-backed Codex accounts currently reject some newer Codex model slugs
+# for these auxiliary flows, while this default remains broadly available and
+# supports vision via Responses.
+_CODEX_AUX_MODEL = CODEX_AUX_DEFAULT_MODEL
+_CODEX_AUX_BASE_URL = CODEX_BASE_URL
 
 
 # ── Codex Responses → chat.completions adapter ─────────────────────────────
@@ -472,44 +474,9 @@ def _read_codex_access_token() -> Optional[str]:
     fallback is opt-in to avoid unrelated desktop auth state silently changing
     auxiliary routing and tests.
     """
-    auth_path = get_epflemma_home() / "auth.json"
-    try:
-        if auth_path.is_file():
-            data = json.loads(auth_path.read_text())
-            provider = data.get("providers", {}).get("openai-codex", {})
-            tokens = provider.get("tokens", {})
-            access_token = tokens.get("access_token")
-            if isinstance(access_token, str) and access_token.strip():
-                return access_token.strip()
-            return None
-    except Exception as exc:
-        logger.debug(
-            "Could not read Codex auth for auxiliary client from %s: %s",
-            auth_path,
-            exc,
-        )
-        return None
-
-    use_legacy_store = str(os.getenv("EPFLEMMA_USE_LEGACY_CODEX_AUTH", "")).strip().lower()
-    if use_legacy_store not in {"1", "true", "yes", "on"}:
-        return None
-
-    legacy_path = Path.home() / ".codex" / "auth.json"
-    try:
-        if not legacy_path.is_file():
-            return None
-        data = json.loads(legacy_path.read_text())
-        tokens = data.get("tokens", {})
-        access_token = tokens.get("access_token")
-        if isinstance(access_token, str) and access_token.strip():
-            return access_token.strip()
-    except Exception as exc:
-        logger.debug(
-            "Could not read legacy Codex auth for auxiliary client from %s: %s",
-            legacy_path,
-            exc,
-        )
-    return None
+    tokens = _read_codex_tokens()
+    access_token = tokens.get("access_token", "")
+    return access_token or None
 
 
 def _load_runtime_config() -> dict[str, Any]:

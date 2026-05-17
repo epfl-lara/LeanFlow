@@ -43,6 +43,14 @@ def test_parse_workflow_command_accepts_prompt_alias():
     assert spec.explicit_goal == "use lemma abs_abs_sub first"
 
 
+def test_parse_workflow_command_extracts_provider_override():
+    spec = parse_workflow_command("/prove Main.lean --provider codex")
+
+    assert spec.workflow_args == "Main.lean"
+    assert spec.backend_command == "/prove Main.lean"
+    assert spec.provider_override == "codex"
+
+
 def test_parse_workflow_command_extracts_expert_provider_options():
     spec = parse_workflow_command(
         "/prove Main.lean --expert-provider codex --expert-command-template 'codex exec --sandbox read-only -'"
@@ -112,6 +120,35 @@ def test_resolve_workflow_request_uses_swarm_toolset_only_when_user_requests_age
     assert swarm.toolset_name == "epflemma-native-swarm"
     assert swarm.active_skill == "lean-autonomous-swarm"
     assert swarm.child_env["EPFLEMMA_NATIVE_USER_APPROVED_SWARM"] == "1"
+
+
+def test_resolve_workflow_request_uses_inline_provider_override(monkeypatch, tmp_path):
+    captured: dict[str, str | None] = {}
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_epflemma_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+
+    def fake_runtime(requested=None):
+        captured["requested"] = requested
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "sk-test",
+            "model": "gpt-5.5",
+            "reasoning_effort": "xhigh",
+        }
+
+    monkeypatch.setattr(workflow_mod, "resolve_runtime_provider", fake_runtime)
+
+    plan = resolve_workflow_request("/prove Main.lean --provider codex", active_cwd=tmp_path)
+
+    assert captured["requested"] == "codex"
+    assert plan.workflow.workflow_args == "Main.lean"
+    assert plan.runtime["provider"] == "openai-codex"
+    assert plan.child_env["EPFLEMMA_NATIVE_REASONING_EFFORT"] == "xhigh"
 
 
 def test_resolve_workflow_request_passes_configured_api_step_budget(monkeypatch, tmp_path):

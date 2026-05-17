@@ -209,6 +209,24 @@ export EPFLEMMA_OPENAI_API_KEY="..."
 epflemma provider --requested custom
 ```
 
+For an existing Codex CLI login:
+
+```bash
+codex login
+epflemma config set model.provider codex
+epflemma provider --requested codex
+```
+
+When using the Codex provider, EPFLemma reads the Codex CLI model and
+reasoning effort from `~/.codex/config.toml` unless
+`EPFLEMMA_CODEX_MODEL` or `EPFLEMMA_CODEX_REASONING_EFFORT` is set.
+
+To test a single run without changing the saved provider:
+
+```bash
+epflemma workflow --provider codex prove Main.lean
+```
+
 For local runtimes:
 
 ```bash

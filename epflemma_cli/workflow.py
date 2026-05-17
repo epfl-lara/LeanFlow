@@ -60,6 +60,7 @@ class NativeWorkflowSpec:
     workflow_args: str
     parallel_agents: int = 1
     explicit_goal: str = ""
+    provider_override: str = ""
     expert_provider: str = ""
     expert_command_template: str = ""
     blueprint_verifier_provider: str = ""
@@ -195,6 +196,8 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
         "skill": plan.active_skill,
         "agents": str(plan.workflow.parallel_agents),
     }
+    if plan.runtime.get("reasoning_effort"):
+        summary["reasoning_effort"] = str(plan.runtime.get("reasoning_effort", "") or "")
     if plan.formalization_document is not None:
         request_relative = str(
             plan.formalization_document.metadata.get(
@@ -251,6 +254,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
     parallel_agents = 1
     no_parallel = False
     explicit_goal = ""
+    provider_override = ""
     expert_provider = ""
     expert_command_template = ""
     blueprint_verifier_provider = ""
@@ -280,6 +284,12 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
                 raise ValueError(f"{token} requires a value")
             explicit_goal = " ".join(remaining[idx + 1:]).strip()
             idx = len(remaining)
+            continue
+        if token == "--provider":
+            if idx + 1 >= len(remaining):
+                raise ValueError("--provider requires a value")
+            provider_override = remaining[idx + 1].strip()
+            idx += 2
             continue
         if token == "--expert-provider":
             if idx + 1 >= len(remaining):
@@ -337,6 +347,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         workflow_args=workflow_args.strip(),
         parallel_agents=parallel_agents,
         explicit_goal=explicit_goal,
+        provider_override=provider_override,
         expert_provider=expert_provider,
         expert_command_template=expert_command_template,
         blueprint_verifier_provider=blueprint_verifier_provider,
@@ -373,7 +384,7 @@ def resolve_workflow_request(
     workflow = parse_workflow_command(command)
     cwd = Path(active_cwd or os.getcwd()).expanduser().resolve()
     project = discover_epflemma_project(cwd)
-    runtime = resolve_runtime_provider(requested=requested_provider)
+    runtime = resolve_runtime_provider(requested=requested_provider or workflow.provider_override or None)
     formalization_document: FormalizationDocumentContext | None = None
     normalized_workflow_args = _normalize_workflow_args(project.root, cwd, workflow.workflow_args)
     if workflow.workflow_kind == "formalize":
@@ -434,6 +445,8 @@ def resolve_workflow_request(
             "OPENGAUSS_NATIVE_API_KEY": str(runtime.get("api_key", "")),
             "EPFLEMMA_NATIVE_MODEL": str(runtime.get("model") or load_default_model()),
             "OPENGAUSS_NATIVE_MODEL": str(runtime.get("model") or load_default_model()),
+            "EPFLEMMA_NATIVE_REASONING_EFFORT": str(runtime.get("reasoning_effort", "") or ""),
+            "OPENGAUSS_NATIVE_REASONING_EFFORT": str(runtime.get("reasoning_effort", "") or ""),
             "EPFLEMMA_NATIVE_WORKFLOW_KIND": workflow.workflow_kind,
             "OPENGAUSS_NATIVE_WORKFLOW_KIND": workflow.workflow_kind,
             "EPFLEMMA_NATIVE_WORKFLOW_COMMAND": workflow.backend_command,

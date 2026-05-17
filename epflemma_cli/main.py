@@ -178,6 +178,11 @@ def _build_parser() -> argparse.ArgumentParser:
     project_show.add_argument("path", nargs="?", default=".")
 
     workflow_parser = subparsers.add_parser("workflow", help="Run a Lean workflow in the native runtime")
+    workflow_parser.add_argument(
+        "--provider",
+        default=None,
+        help="Override the configured provider for this workflow run",
+    )
     workflow_parser.add_argument("workflow")
     workflow_parser.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -1455,7 +1460,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.args:
             text = f"{text} {' '.join(args.args)}"
         try:
-            plan = resolve_workflow_request(text, active_cwd=Path.cwd())
+            plan = resolve_workflow_request(text, active_cwd=Path.cwd(), requested_provider=args.provider)
         except ProjectNotFoundError as exc:
             print(str(exc), file=sys.stderr)
             print("Use `epflemma project init` inside a Lean repo or `epflemma project create <path>` to clone one.", file=sys.stderr)
@@ -1464,7 +1469,7 @@ def main(argv: list[str] | None = None) -> int:
             print(format_runtime_provider_error(exc), file=sys.stderr)
             return 1
         render_workflow_launch(Console(), launch_summary=describe_launch_plan(plan))
-        return run_workflow(text, active_cwd=Path.cwd())
+        return run_workflow(text, active_cwd=Path.cwd(), requested_provider=args.provider)
     if args.command == "models":
         return _handle_models(args)
     if args.command == "provider":
