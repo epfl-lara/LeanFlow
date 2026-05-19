@@ -495,92 +495,6 @@ def _is_destructive_command(cmd: str) -> bool:
     return False
 
 
-def _classify_api_error(exc: BaseException, stream_chunk_count: int | None = None) -> tuple[str, str]:
-    """Classify an API/network exception into a short label and human explanation.
-
-    Returns (label, explanation) where label is one of:
-      TRANSPORT   — TCP-level drop; the server closed the connection unexpectedly
-      SERVER_5XX  — Server returned an HTTP 5xx error response
-      RATE_LIMIT  — Provider is rate-limiting us (429)
-      TIMEOUT     — We waited past our configured timeout with no response
-      CLIENT_4XX  — Our request was invalid (auth, bad params, payload too large…)
-      MODEL       — Server responded OK but the model output was unusable
-      CODE_BUG    — A Python exception in EPFLemma code (not the API)
-      UNKNOWN     — Doesn't fit any of the above
-
-    The stream_chunk_count argument (when provided) refines TRANSPORT:
-      0   → connection died before any data arrived (clean refusal / server crash)
-      >0  → server started streaming then dropped mid-response
-    """
-    error_msg = str(exc).lower()
-    exc_type = type(exc).__name__
-    status_code = getattr(exc, "status_code", None)
-
-    # ── Transport layer (TCP / HTTP framing) ────────────────────────────────
-    transport_types = {
-        "RemoteProtocolError", "LocalProtocolError",
-        "ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout",
-        "PoolTimeout", "NetworkError", "ConnectionError",
-        "RemoteDisconnected", "IncompleteRead",
-    }
-    transport_phrases = (
-        "peer closed connection", "incomplete chunked read",
-        "connection reset by peer", "connection refused",
-        "broken pipe", "eof occurred", "connection aborted",
-        "network is unreachable", "failed to establish",
-    )
-    is_transport = (
-        exc_type in transport_types
-        or any(p in error_msg for p in transport_phrases)
-        or (hasattr(exc, "__module__") and (
-            (exc.__module__ or "").startswith("httpx")
-            or (exc.__module__ or "").startswith("httpcore")
-        ) and exc_type not in {"HTTPStatusError", "RequestError"})
-    )
-    if is_transport:
-        if stream_chunk_count is None or stream_chunk_count == 0:
-            detail = "server refused or dropped connection before sending data"
-        else:
-            detail = f"server dropped connection mid-stream after {stream_chunk_count} chunks"
-        return "TRANSPORT", f"TCP/HTTP framing failure — {detail}. 100% server-side."
-
-    # ── HTTP status errors ───────────────────────────────────────────────────
-    if status_code is not None:
-        if status_code == 429 or "rate limit" in error_msg or "too many requests" in error_msg:
-            return "RATE_LIMIT", "Provider is rate-limiting requests (429). Server-side; slow down or wait."
-        if 500 <= status_code < 600:
-            return "SERVER_5XX", f"Server returned HTTP {status_code}. Server-side error."
-        if status_code in (401, 403):
-            return "CLIENT_4XX", f"Authentication/authorization failure (HTTP {status_code}). Check API key/endpoint config."
-        if status_code == 413:
-            return "CLIENT_4XX", "Request payload too large (413). Context needs compression."
-        if 400 <= status_code < 500:
-            return "CLIENT_4XX", f"Client request rejected (HTTP {status_code}). Check model name, parameters, or API key."
-
-    # ── Rate limit without status code ───────────────────────────────────────
-    if "rate limit" in error_msg or "too many requests" in error_msg or "429" in error_msg:
-        return "RATE_LIMIT", "Provider is rate-limiting requests. Server-side; slow down or wait."
-
-    # ── Server 5xx without status code ───────────────────────────────────────
-    if any(p in error_msg for p in ("502", "503", "504", "bad gateway", "service unavailable", "internal server error")):
-        return "SERVER_5XX", "Server returned a 5xx-class error. Server-side."
-
-    # ── Timeout (our timeout fired, no server response) ──────────────────────
-    if "timeout" in exc_type.lower() or "timed out" in error_msg or "timeout" in error_msg:
-        return "TIMEOUT", "Request timed out — server never responded within our limit. Likely server overload."
-
-    # ── EPFLemma/Python code bugs ─────────────────────────────────────────────
-    code_bug_types = {
-        "UnboundLocalError", "AttributeError", "TypeError",
-        "NameError", "IndexError", "KeyError", "AssertionError",
-        "NotImplementedError", "RecursionError",
-    }
-    if exc_type in code_bug_types:
-        return "CODE_BUG", f"Python exception ({exc_type}) in EPFLemma code — this is a bug, not a server problem."
-
-    return "UNKNOWN", "Could not classify; inspect the full error message and traceback."
-
-
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -6054,23 +5968,23 @@ class AIAgent:
                     error_msg = str(api_error).lower()
 
                     _sc = getattr(api_error, "_stream_chunk_count", None)
-                    _err_label, _err_explanation = _classify_api_error(api_error, stream_chunk_count=_sc)
-                    self._vprint(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type} [{_err_label}]", force=True)
-                    self._vprint(f"{self.log_prefix}   🏷️  {_err_explanation}", force=True)
-                    self._vprint(f"{self.log_prefix}   ⏱️  Time elapsed before failure: {elapsed_time:.2f}s")
-                    self._vprint(f"{self.log_prefix}   📝 Error: {str(api_error)[:200]}", force=True)
-                    self._vprint(f"{self.log_prefix}   📊 Request context: {len(api_messages)} messages, ~{approx_tokens:,} tokens, {len(self.tools) if self.tools else 0} tools")
-                    # For streaming failures, report how many chunks arrived before the drop
+                    _status = getattr(api_error, "status_code", None)
+                    _module = getattr(type(api_error), "__module__", "") or ""
+                    _src = _module.split(".")[0] if "." in _module else _module
+                    _meta = f"status={_status}" if _status is not None else f"source={_src}"
+                    self._vprint(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type} ({_meta}) elapsed={elapsed_time:.1f}s", force=True)
+                    self._vprint(f"{self.log_prefix}   📝 {str(api_error)[:300]}", force=True)
+                    self._vprint(f"{self.log_prefix}   📊 {len(api_messages)} msgs, ~{approx_tokens:,} tokens, {len(self.tools) if self.tools else 0} tools")
                     if _sc is not None:
                         _rc = getattr(api_error, "_stream_reasoning_chunks", 0)
                         _cc = getattr(api_error, "_stream_content_chunks", 0)
-                        self._vprint(f"{self.log_prefix}   📦 Stream chunks received: {_sc} total ({_rc} reasoning, {_cc} content) before drop", force=True)
+                        self._vprint(f"{self.log_prefix}   📦 stream: {_sc} chunks ({_rc} reasoning, {_cc} content) before drop", force=True)
                     logger.warning(
-                        "API call failed (attempt %s/%s) error_type=%s label=%s %s error=%s",
+                        "API call failed (attempt %s/%s) error_type=%s status=%s %s error=%s",
                         retry_count,
                         max_retries,
                         error_type,
-                        _err_label,
+                        _status,
                         self._client_log_context(),
                         api_error,
                     )
