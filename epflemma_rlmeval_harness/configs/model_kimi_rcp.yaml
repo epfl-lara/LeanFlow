@@ -1,0 +1,11 @@
+model: "moonshotai/Kimi-K2.6"
+base_url: "https://inference-rcp.epfl.ch/v1"
+api_key: ""
+provider: "openai"
+max_turns: 50
+token_budget: null
+max_tokens: null
+temperature: 0.3
+seed: 42
+verbose: false
+max_problems: null

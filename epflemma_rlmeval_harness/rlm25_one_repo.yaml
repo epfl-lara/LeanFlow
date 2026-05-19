@@ -1,0 +1,5 @@
+repositories:
+  - git_url: "https://github.com/teorth/pfr"
+    commit: "f6bdcac2365623d3667d3ff8fd8ddb7f95ce2313"
+    project_name: "PFR"
+    blueprint_cmd: null
