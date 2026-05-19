@@ -224,6 +224,10 @@ class KawaiiSpinner:
             pass
 
     def _animate(self):
+        # Skip animation entirely when stdout is not a TTY (e.g. piped through tee).
+        # This keeps log files clean while preserving the spinner in interactive use.
+        if not getattr(self._out, 'isatty', lambda: False)():
+            return
         # Cache skin wings at start (avoid per-frame imports)
         skin = _get_skin()
         wings = skin.get_spinner_wings() if skin else []

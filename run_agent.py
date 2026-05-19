@@ -495,6 +495,92 @@ def _is_destructive_command(cmd: str) -> bool:
     return False
 
 
+def _classify_api_error(exc: BaseException, stream_chunk_count: int | None = None) -> tuple[str, str]:
+    """Classify an API/network exception into a short label and human explanation.
+
+    Returns (label, explanation) where label is one of:
+      TRANSPORT   — TCP-level drop; the server closed the connection unexpectedly
+      SERVER_5XX  — Server returned an HTTP 5xx error response
+      RATE_LIMIT  — Provider is rate-limiting us (429)
+      TIMEOUT     — We waited past our configured timeout with no response
+      CLIENT_4XX  — Our request was invalid (auth, bad params, payload too large…)
+      MODEL       — Server responded OK but the model output was unusable
+      CODE_BUG    — A Python exception in EPFLemma code (not the API)
+      UNKNOWN     — Doesn't fit any of the above
+
+    The stream_chunk_count argument (when provided) refines TRANSPORT:
+      0   → connection died before any data arrived (clean refusal / server crash)
+      >0  → server started streaming then dropped mid-response
+    """
+    error_msg = str(exc).lower()
+    exc_type = type(exc).__name__
+    status_code = getattr(exc, "status_code", None)
+
+    # ── Transport layer (TCP / HTTP framing) ────────────────────────────────
+    transport_types = {
+        "RemoteProtocolError", "LocalProtocolError",
+        "ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout",
+        "PoolTimeout", "NetworkError", "ConnectionError",
+        "RemoteDisconnected", "IncompleteRead",
+    }
+    transport_phrases = (
+        "peer closed connection", "incomplete chunked read",
+        "connection reset by peer", "connection refused",
+        "broken pipe", "eof occurred", "connection aborted",
+        "network is unreachable", "failed to establish",
+    )
+    is_transport = (
+        exc_type in transport_types
+        or any(p in error_msg for p in transport_phrases)
+        or (hasattr(exc, "__module__") and (
+            (exc.__module__ or "").startswith("httpx")
+            or (exc.__module__ or "").startswith("httpcore")
+        ) and exc_type not in {"HTTPStatusError", "RequestError"})
+    )
+    if is_transport:
+        if stream_chunk_count is None or stream_chunk_count == 0:
+            detail = "server refused or dropped connection before sending data"
+        else:
+            detail = f"server dropped connection mid-stream after {stream_chunk_count} chunks"
+        return "TRANSPORT", f"TCP/HTTP framing failure — {detail}. 100% server-side."
+
+    # ── HTTP status errors ───────────────────────────────────────────────────
+    if status_code is not None:
+        if status_code == 429 or "rate limit" in error_msg or "too many requests" in error_msg:
+            return "RATE_LIMIT", "Provider is rate-limiting requests (429). Server-side; slow down or wait."
+        if 500 <= status_code < 600:
+            return "SERVER_5XX", f"Server returned HTTP {status_code}. Server-side error."
+        if status_code in (401, 403):
+            return "CLIENT_4XX", f"Authentication/authorization failure (HTTP {status_code}). Check API key/endpoint config."
+        if status_code == 413:
+            return "CLIENT_4XX", "Request payload too large (413). Context needs compression."
+        if 400 <= status_code < 500:
+            return "CLIENT_4XX", f"Client request rejected (HTTP {status_code}). Check model name, parameters, or API key."
+
+    # ── Rate limit without status code ───────────────────────────────────────
+    if "rate limit" in error_msg or "too many requests" in error_msg or "429" in error_msg:
+        return "RATE_LIMIT", "Provider is rate-limiting requests. Server-side; slow down or wait."
+
+    # ── Server 5xx without status code ───────────────────────────────────────
+    if any(p in error_msg for p in ("502", "503", "504", "bad gateway", "service unavailable", "internal server error")):
+        return "SERVER_5XX", "Server returned a 5xx-class error. Server-side."
+
+    # ── Timeout (our timeout fired, no server response) ──────────────────────
+    if "timeout" in exc_type.lower() or "timed out" in error_msg or "timeout" in error_msg:
+        return "TIMEOUT", "Request timed out — server never responded within our limit. Likely server overload."
+
+    # ── EPFLemma/Python code bugs ─────────────────────────────────────────────
+    code_bug_types = {
+        "UnboundLocalError", "AttributeError", "TypeError",
+        "NameError", "IndexError", "KeyError", "AssertionError",
+        "NotImplementedError", "RecursionError",
+    }
+    if exc_type in code_bug_types:
+        return "CODE_BUG", f"Python exception ({exc_type}) in EPFLemma code — this is a bug, not a server problem."
+
+    return "UNKNOWN", "Could not classify; inspect the full error message and traceback."
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -2782,12 +2868,26 @@ class AIAgent:
         elapsed_seconds: float,
         timeout_seconds: float,
         streaming: bool,
+        stream_progress: dict | None = None,
     ) -> None:
         mode_label = "streaming" if streaming else "non-streaming"
         message = (
             f"Waiting on provider response ({elapsed_seconds:.0f}s elapsed, "
             f"{timeout_seconds:.0f}s timeout, {mode_label})"
         )
+        # Append chunk progress so we can tell if the server is sending anything.
+        if stream_progress is not None:
+            total = stream_progress.get("total", 0)
+            reasoning = stream_progress.get("reasoning", 0)
+            content = stream_progress.get("content", 0)
+            first_at = stream_progress.get("first_chunk_at")
+            if total == 0:
+                chunk_note = " | server silent — 0 chunks received"
+            else:
+                chunk_note = f" | {total} chunks ({reasoning} reasoning, {content} content)"
+                if first_at is not None:
+                    chunk_note += f", first after {first_at:.1f}s"
+            message += chunk_note
         logger.warning(
             "%s %s",
             message,
@@ -2897,6 +2997,9 @@ class AIAgent:
         request_client_holder = {"client": None}
 
         def _call():
+            chunk_count = 0
+            reasoning_chunk_count = 0
+            content_chunk_count = 0
             try:
                 stream_kwargs = {**api_kwargs, "stream": True}
                 request_client_holder["client"] = self._create_request_openai_client(
@@ -2905,17 +3008,27 @@ class AIAgent:
                 stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
 
                 content_parts: list[str] = []
+                reasoning_parts: list[str] = []
                 tool_calls_acc: dict[int, dict] = {}
                 finish_reason = None
                 model_name = None
                 role = "assistant"
 
+                _stream_start = time.monotonic()
                 for chunk in stream:
                     if not chunk.choices:
                         if hasattr(chunk, "model") and chunk.model:
                             model_name = chunk.model
                         continue
 
+                    chunk_count += 1
+                    stream_progress["total"] = chunk_count
+                    if chunk_count == 1:
+                        stream_progress["first_chunk_at"] = time.monotonic() - _stream_start
+                        self._vprint(
+                            f"{self.log_prefix}   💬 First chunk received after "
+                            f"{stream_progress['first_chunk_at']:.1f}s"
+                        )
                     delta = chunk.choices[0].delta
                     if hasattr(chunk, "model") and chunk.model:
                         model_name = chunk.model
@@ -2926,6 +3039,17 @@ class AIAgent:
                             stream_callback(delta.content)
                         except Exception:
                             pass
+
+                    # Accumulate reasoning content (Kimi/Moonshot, DeepSeek, etc.)
+                    if delta:
+                        rc_delta = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                        if rc_delta:
+                            reasoning_parts.append(rc_delta)
+                            reasoning_chunk_count += 1
+                            stream_progress["reasoning"] = reasoning_chunk_count
+                    if delta and delta.content:
+                        content_chunk_count += 1
+                        stream_progress["content"] = content_chunk_count
 
                     if delta and delta.tool_calls:
                         for tc_delta in delta.tool_calls:
@@ -2976,7 +3100,7 @@ class AIAgent:
                     role=role,
                     content=full_content,
                     tool_calls=mock_tool_calls,
-                    reasoning_content=None,
+                    reasoning_content="".join(reasoning_parts) or None,
                 )
                 mock_choice = SimpleNamespace(
                     index=0,
@@ -2992,11 +3116,19 @@ class AIAgent:
                 result["response"] = mock_response
 
             except Exception as e:
+                e._stream_chunk_count = chunk_count
+                e._stream_reasoning_chunks = reasoning_chunk_count
+                e._stream_content_chunks = content_chunk_count
                 result["error"] = e
             finally:
                 request_client = request_client_holder.get("client")
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="stream_request_complete")
+
+        # Shared progress dict: streaming thread writes, heartbeat loop reads.
+        # CPython GIL makes integer updates to dict values effectively atomic.
+        stream_progress = {"total": 0, "reasoning": 0, "content": 0, "first_chunk_at": None}
+        result["_progress"] = stream_progress
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
@@ -3008,10 +3140,12 @@ class AIAgent:
             t.join(timeout=0.3)
             elapsed_seconds = time.monotonic() - start_time
             if elapsed_seconds >= next_heartbeat_at:
+                _p = result["_progress"]
                 self._emit_provider_wait_heartbeat(
                     elapsed_seconds=elapsed_seconds,
                     timeout_seconds=timeout_seconds,
                     streaming=True,
+                    stream_progress=_p,
                 )
                 next_heartbeat_at += heartbeat_seconds
             if elapsed_seconds >= timeout_seconds:
@@ -5491,8 +5625,27 @@ class AIAgent:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
                     cb = getattr(self, "_stream_callback", None)
-                    if cb is not None and self.api_mode == "chat_completions":
-                        response = self._streaming_api_call(api_kwargs, cb)
+                    if self.api_mode == "chat_completions":
+                        # Always use streaming for chat_completions to keep the
+                        # HTTP connection alive through proxies that time out
+                        # silent connections (e.g. EPFL RCP drops at ~900s).
+                        _last = api_messages[-1] if api_messages else None
+                        if _last is not None:
+                            _last_role = _last.get("role", "?")
+                            _last_content = _last.get("content") or ""
+                            if isinstance(_last_content, list):
+                                # Tool-result messages have content as a list of blocks
+                                _last_content = " | ".join(
+                                    (b.get("text") or b.get("content") or "")[:80]
+                                    for b in _last_content if isinstance(b, dict)
+                                )
+                            _last_content = str(_last_content)[:120].replace("\n", " ")
+                            self._vprint(
+                                f"{self.log_prefix}   📤 Sending to provider "
+                                f"({len(api_messages)} msgs, ~{approx_tokens:,} tokens) | "
+                                f"last msg [{_last_role}]: {_last_content!r}"
+                            )
+                        response = self._streaming_api_call(api_kwargs, cb or (lambda _: None))
                     else:
                         response = self._interruptible_api_call(api_kwargs)
                         # Forward full response to TTS callback for non-streaming providers
@@ -5899,19 +6052,28 @@ class AIAgent:
                     # Enhanced error logging
                     error_type = type(api_error).__name__
                     error_msg = str(api_error).lower()
-                    logger.warning(
-                        "API call failed (attempt %s/%s) error_type=%s %s error=%s",
-                        retry_count,
-                        max_retries,
-                        error_type,
-                        self._client_log_context(),
-                        api_error,
-                    )
 
-                    self._vprint(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}", force=True)
+                    _sc = getattr(api_error, "_stream_chunk_count", None)
+                    _err_label, _err_explanation = _classify_api_error(api_error, stream_chunk_count=_sc)
+                    self._vprint(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type} [{_err_label}]", force=True)
+                    self._vprint(f"{self.log_prefix}   🏷️  {_err_explanation}", force=True)
                     self._vprint(f"{self.log_prefix}   ⏱️  Time elapsed before failure: {elapsed_time:.2f}s")
                     self._vprint(f"{self.log_prefix}   📝 Error: {str(api_error)[:200]}", force=True)
                     self._vprint(f"{self.log_prefix}   📊 Request context: {len(api_messages)} messages, ~{approx_tokens:,} tokens, {len(self.tools) if self.tools else 0} tools")
+                    # For streaming failures, report how many chunks arrived before the drop
+                    if _sc is not None:
+                        _rc = getattr(api_error, "_stream_reasoning_chunks", 0)
+                        _cc = getattr(api_error, "_stream_content_chunks", 0)
+                        self._vprint(f"{self.log_prefix}   📦 Stream chunks received: {_sc} total ({_rc} reasoning, {_cc} content) before drop", force=True)
+                    logger.warning(
+                        "API call failed (attempt %s/%s) error_type=%s label=%s %s error=%s",
+                        retry_count,
+                        max_retries,
+                        error_type,
+                        _err_label,
+                        self._client_log_context(),
+                        api_error,
+                    )
                     
                     # Check for interrupt before deciding to retry
                     if self._interrupt_requested:
@@ -6432,14 +6594,35 @@ class AIAgent:
                         try:
                             json.loads(args)
                         except json.JSONDecodeError as e:
-                            invalid_json_args.append((tc.function.name, str(e)))
+                            # Try to repair common server-side stream truncation: the stream
+                            # closed before the final closing brace(s) were sent.
+                            # Count unclosed braces and try appending the right number of '}'.
+                            repaired = None
+                            opens = args.count("{") - args.count("}")
+                            if opens > 0:
+                                candidate = args.rstrip() + "}" * opens
+                                try:
+                                    json.loads(candidate)
+                                    repaired = candidate
+                                except json.JSONDecodeError:
+                                    pass
+                            if repaired is not None:
+                                self._vprint(
+                                    f"{self.log_prefix}   🔧 Repaired truncated JSON for "
+                                    f"'{tc.function.name}' (appended {opens} '}}'"
+                                    f"{'s' if opens > 1 else ''})"
+                                )
+                                tc.function.arguments = repaired
+                            else:
+                                invalid_json_args.append((tc.function.name, str(e), args))
                     
                     if invalid_json_args:
                         # Track retries for invalid JSON arguments
                         self._invalid_json_retries += 1
                         
-                        tool_name, error_msg = invalid_json_args[0]
+                        tool_name, error_msg, bad_args = invalid_json_args[0]
                         self._vprint(f"{self.log_prefix}⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")
+                        self._vprint(f"{self.log_prefix}   Raw args: {bad_args[:200]!r}")
                         
                         if self._invalid_json_retries < 3:
                             self._vprint(f"{self.log_prefix}🔄 Retrying API call ({self._invalid_json_retries}/3)...")
