@@ -2915,7 +2915,7 @@ class AIAgent:
             reasoning_chunk_count = 0
             content_chunk_count = 0
             try:
-                stream_kwargs = {**api_kwargs, "stream": True}
+                stream_kwargs = {**api_kwargs, "stream": True, "stream_options": {"include_usage": True}}
                 request_client_holder["client"] = self._create_request_openai_client(
                     reason="chat_completion_stream_request"
                 )
@@ -2927,12 +2927,15 @@ class AIAgent:
                 finish_reason = None
                 model_name = None
                 role = "assistant"
+                usage_data = None
 
                 _stream_start = time.monotonic()
                 for chunk in stream:
                     if not chunk.choices:
                         if hasattr(chunk, "model") and chunk.model:
                             model_name = chunk.model
+                        if hasattr(chunk, "usage") and chunk.usage:
+                            usage_data = chunk.usage
                         continue
 
                     chunk_count += 1
@@ -3025,7 +3028,7 @@ class AIAgent:
                     id="stream-" + str(uuid.uuid4()),
                     model=model_name,
                     choices=[mock_choice],
-                    usage=None,
+                    usage=usage_data,
                 )
                 result["response"] = mock_response
 

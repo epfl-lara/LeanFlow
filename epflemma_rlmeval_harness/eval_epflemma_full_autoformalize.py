@@ -151,6 +151,7 @@ def _run_agent(
 	model_cfg: dict[str, Any],
 	dry_run: bool = False,
 	thinking_log_path: str | None = None,
+	trace_log_path: str | None = None,
 ) -> tuple[int, int, int, str | None]:
 	"""Run one EPFLemma attempt and return token usage, turns, and optional error."""
 	if dry_run:
@@ -209,17 +210,21 @@ def _run_agent(
 	# Write per-theorem thinking trace if a log path was requested.
 	# Reasoning is extracted from msg["reasoning"] which _extract_reasoning() populates
 	# from assistant_message.reasoning_content (Moonshot/Kimi), .reasoning (DeepSeek), etc.
-	if thinking_log_path is not None:
+	if thinking_log_path is not None or trace_log_path is not None:
 		try:
 			session_msgs = getattr(agent, "_session_messages", []) or []
-			with open(thinking_log_path, "w", encoding="utf-8") as _tf:
-				turn = 0
-				for msg in session_msgs:
-					if msg.get("role") == "assistant":
-						turn += 1
-						reasoning = msg.get("reasoning") or ""
-						if reasoning.strip():
-							_tf.write(f"=== Turn {turn} thinking ===\n{reasoning.strip()}\n\n")
+			if thinking_log_path is not None:
+				with open(thinking_log_path, "w", encoding="utf-8") as _tf:
+					turn = 0
+					for msg in session_msgs:
+						if msg.get("role") == "assistant":
+							turn += 1
+							reasoning = msg.get("reasoning") or ""
+							if reasoning.strip():
+								_tf.write(f"=== Turn {turn} thinking ===\n{reasoning.strip()}\n\n")
+			if trace_log_path is not None:
+				with open(trace_log_path, "w", encoding="utf-8") as _tj:
+					json.dump(session_msgs, _tj, indent=2, ensure_ascii=False, default=str)
 		except Exception:
 			pass  # Logging failure must never surface as a harness error.
 
@@ -381,6 +386,7 @@ def evaluate_problem(
 	input_tokens, output_tokens, turns_used, error = _run_agent(
 		prompt, project_root, model_cfg, dry_run=dry_run,
 		thinking_log_path=os.path.join(output_dir, "thinking_trace.txt"),
+		trace_log_path=os.path.join(output_dir, "trace.json"),
 	)
 
 	with open(scratch_path, "r", encoding="utf-8") as f:
