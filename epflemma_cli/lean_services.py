@@ -978,7 +978,13 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
     power_modes["leanexplore_api_configured"] = bool(_leanexplore_api_key())
     power_modes["leanexplore_cli_installed"] = bool(shutil.which("lean-explore"))
     if power_modes:
-        if power_modes.get("loogle_local_configured") and not power_modes.get("loogle_local_available"):
+        loogle_status = str(power_modes.get("loogle_local_status", "") or "")
+        if power_modes.get("loogle_local_configured") and loogle_status == "incompatible":
+            degraded.append(
+                "local Loogle disabled for this project because its managed Lean toolchain differs "
+                "from the project; public remote Loogle fallback remains enabled"
+            )
+        elif power_modes.get("loogle_local_configured") and not power_modes.get("loogle_local_available"):
             degraded.append("local Loogle configured but unsupported on this platform; public remote Loogle fallback remains enabled")
         elif power_modes.get("loogle_local_configured") and not power_modes.get("loogle_local_ready"):
             degraded.append("local Loogle configured but cache is not warmed yet; first local query may build it or fall back remotely")

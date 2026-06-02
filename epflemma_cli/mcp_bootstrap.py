@@ -136,6 +136,16 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _read_lean_toolchain(path: str | os.PathLike[str] | None) -> str:
+    if not path:
+        return ""
+    try:
+        root = Path(path).expanduser().resolve()
+        return (root / "lean-toolchain").read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
 def _lean_lsp_power_env(home: Path) -> dict[str, str]:
     env = {
         "LEAN_REPL": "true",
@@ -364,6 +374,47 @@ def _install_into_managed_venv(
         subprocess.run([str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", spec], check=True)
 
 
+def _patch_lean_lsp_loogle_project_paths(venv_dir: Path) -> bool:
+    """Patch lean-lsp-mcp so local Loogle project paths keep Lean/Loogle imports visible."""
+    candidates = [
+        *venv_dir.glob("lib/python*/site-packages/lean_lsp_mcp/loogle.py"),
+        venv_dir / "Lib" / "site-packages" / "lean_lsp_mcp" / "loogle.py",
+    ]
+    target = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if target is None:
+        return False
+    text = target.read_text(encoding="utf-8")
+    marker = "When any --path is passed to loogle"
+    if marker in text:
+        return True
+    needle = (
+        "        paths = []\n"
+        "        # Check packages directory\n"
+    )
+    replacement = (
+        "        paths = []\n"
+        "        # When any --path is passed to loogle, the explicit path list must also\n"
+        "        # include Lean's stdlib and loogle's own build lib; otherwise imports\n"
+        "        # such as Init and Loogle cannot be resolved.\n"
+        "        try:\n"
+        "            lean_lib = self._run([\"lean\", \"--print-libdir\"], timeout=30)\n"
+        "            if lean_lib.returncode == 0:\n"
+        "                lean_lib_path = Path(lean_lib.stdout.strip())\n"
+        "                if lean_lib_path.exists():\n"
+        "                    paths.append(lean_lib_path)\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "        loogle_lib = self.repo_dir / \".lake\" / \"build\" / \"lib\" / \"lean\"\n"
+        "        if loogle_lib.exists():\n"
+        "            paths.append(loogle_lib)\n"
+        "        # Check packages directory\n"
+    )
+    if needle not in text:
+        return False
+    target.write_text(text.replace(needle, replacement, 1), encoding="utf-8")
+    return True
+
+
 def managed_mcp_power_status(
     home: str | os.PathLike[str] | None = None,
     *,
@@ -383,9 +434,23 @@ def managed_mcp_power_status(
     ).expanduser()
     loogle_supported = local_loogle_supported()
     loogle_configured = _truthy(lean_lsp_env.get("LEAN_LOOGLE_LOCAL"))
-    loogle_ready = bool(loogle_cache_dir.is_dir() and any(loogle_cache_dir.iterdir()))
+    loogle_toolchain = _read_lean_toolchain(loogle_cache_dir / "repo")
+    project_toolchain = _read_lean_toolchain(project_root)
+    loogle_toolchain_compatible = bool(
+        not loogle_toolchain or not project_toolchain or loogle_toolchain == project_toolchain
+    )
+    loogle_ready = bool(
+        loogle_configured
+        and loogle_toolchain_compatible
+        and loogle_cache_dir.is_dir()
+        and any(loogle_cache_dir.iterdir())
+    )
     if not loogle_supported:
         loogle_status = "unsupported"
+    elif not loogle_configured:
+        loogle_status = "disabled"
+    elif not loogle_toolchain_compatible:
+        loogle_status = "incompatible"
     elif loogle_ready:
         loogle_status = "ready"
     elif loogle_configured:
@@ -395,10 +460,15 @@ def managed_mcp_power_status(
     return {
         "remote_search_policy": REMOTE_SEARCH_POLICY,
         "loogle_local_configured": loogle_configured,
-        "loogle_local_available": bool(loogle_supported and loogle_configured),
+        "loogle_local_available": bool(
+            loogle_supported and loogle_configured and loogle_toolchain_compatible
+        ),
         "loogle_local_ready": loogle_ready,
         "loogle_local_status": loogle_status,
         "loogle_local_supported": loogle_supported,
+        "loogle_toolchain": loogle_toolchain,
+        "project_toolchain": project_toolchain,
+        "loogle_toolchain_compatible": loogle_toolchain_compatible,
         "loogle_cache_dir": str(loogle_cache_dir),
         "repl_configured": repl_configured,
         "repl_available": repl_available,
@@ -460,6 +530,8 @@ def bootstrap_lean_mcp(*, home: str | os.PathLike[str] | None = None, python_bin
             min_python=spec.min_python,
             extra_install_specs=spec.extra_install_specs,
         )
+        if spec.name == "lean-lsp":
+            _patch_lean_lsp_loogle_project_paths(venv_dir)
         installed_servers.append(
             {
                 "name": spec.name,
