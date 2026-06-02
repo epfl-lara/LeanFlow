@@ -41,7 +41,7 @@ Workflow specs currently shipped:
 - `doctor`
 - `search`
 
-Worker specs currently shipped:
+Dormant worker specs currently shipped:
 
 - `proof-repair`
 - `proof-golfer`
@@ -101,7 +101,6 @@ Managed queue turns allow new helper declarations that directly support the assi
 - `lean_axioms`
   - best-effort `#print axioms` wrapper
   - returns `axioms`, `custom_axioms`, `classical`, and `choice`
-- `lean_worker_dispatch`
   - dispatches native worker presets
   - uses file locks when owner/delegation context is available
   - returns a structured plan instead of hard-failing when delegation is unavailable
@@ -140,7 +139,6 @@ The file/declaration queue is still the core execution model. The runner now sup
 - outputs
   - `skill_name`
   - `route_action`
-  - `recommended_worker`
   - `reason`
 
 Queue items are enriched with:
@@ -149,18 +147,6 @@ Queue items are enriched with:
 - blocker signatures
 - search hints
 - verification gates
-- recommended workers
-
-Current worker recommendation rules:
-
-- `proof-repair`
-  - repeated compiler-style blockers
-- `proof-golfer`
-  - explicit `golf` routes
-- `axiom-eliminator`
-  - axiom-risk cleanup
-- `sorry-filler-deep`
-  - repeated stuck queue items or exhausted search
 
 ## Project Prove Manager
 
@@ -289,4 +275,4 @@ The activity JSONL stream records project prove-manager events:
 
 `project-prove-file-queue-planned` contains the candidate metrics and final ordered file labels. `project-prove-file-assigned` contains the assigned file, absolute path, remaining queue, plan source, and plan reason. These events are intended to be machine-readable enough for detailed inspection and offline training trace curation.
 
-`outcomes.jsonl` records route decisions and worker outcomes so later cycles and resumed sessions can reuse prior blocker classifications, worker recommendations, and search/repair history.
+`outcomes.jsonl` records route decisions so later cycles and resumed sessions can reuse prior blocker classifications and search/repair history.

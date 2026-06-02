@@ -1,6 +1,6 @@
 ---
 name: lean-theorem-queue-worker
-description: Native single-declaration worker entry. Obey the queue handoff exactly, use the shared Lean tools, and escalate through specialist workers only when the route calls for it.
+description: Native single-declaration queue entry. Obey the queue handoff exactly, use the shared Lean tools, and escalate through helper decomposition or reasoning help when local attempts stall.
 ---
 
 # Native Lean Queue Worker
@@ -11,10 +11,6 @@ Primary specs:
 
 - `epflemma_specs/workflows/prove.md`
 - `epflemma_specs/workflows/search.md`
-- `epflemma_specs/workers/proof-repair.md`
-- `epflemma_specs/workers/proof-golfer.md`
-- `epflemma_specs/workers/axiom-eliminator.md`
-- `epflemma_specs/workers/sorry-filler-deep.md`
 
 ## Expected Manager Handoff
 
@@ -22,7 +18,7 @@ Primary specs:
 2. target declaration name and, when possible, line number
 3. why this declaration is still pending
 4. the last `N` failed attempts for this declaration and why they failed
-5. search hints, blocker signature, verification gate, and recommended worker when available
+5. search hints, blocker signature, and verification gate when available
 
 ## Worker Contract
 
@@ -63,8 +59,8 @@ Primary specs:
 9. If the theorem is hard because the next useful edit is a sublemma/invariant split, call `lean_decompose_helpers` with the exact statement, current diagnostics/goals, current attempt, and failed-attempt summary. Use it before inserting placeholder comments, unchecked theorem-sized helper guesses, or broad speculative patches.
 10. Treat `lean_decompose_helpers` output as structured planning advice: insert only helpers marked `ready_to_insert`, prove them without lingering `sorry`, and keep failed skeleton diagnostics as blocker context rather than hiding them.
 11. If repeated focused attempts fail while the theorem still looks solvable and the blocker is broad strategy/library navigation rather than a split plan, call `lean_reasoning_help` with the statement, diagnostics, current attempt, and failed-attempt summary.
-12. If `lean_reasoning_help` reports that the advisor is unavailable or returned no answer, continue with the strongest concrete edit, verification, worker dispatch, or blocker report you have.
-13. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, `lean_decompose_helpers` when a helper split is the likely next edit, verification, worker dispatch, or blocker report you have.
+12. If `lean_reasoning_help` reports that the advisor is unavailable or returned no answer, continue with the strongest concrete edit, verification, or blocker report you have.
+13. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, `lean_decompose_helpers` when a helper split is the likely next edit, verification, or blocker report you have.
 
 ## Success Condition
 

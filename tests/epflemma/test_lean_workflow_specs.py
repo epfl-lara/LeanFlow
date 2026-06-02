@@ -36,7 +36,7 @@ def test_validate_lean_workflow_specs_has_no_contract_errors():
     assert validate_lean_specs() == []
 
 
-def test_core_workflow_specs_expose_alias_and_worker_contracts():
+def test_core_workflow_specs_expose_aliases_without_active_worker_contracts():
     prove = get_lean_spec("prove")
     formalize = get_lean_spec("formalize")
 
@@ -44,8 +44,8 @@ def test_core_workflow_specs_expose_alias_and_worker_contracts():
     assert formalize is not None
     assert "autoprove" in prove.aliases
     assert "autoformalize" in formalize.aliases
-    assert "proof-repair" in prove.workers
-    assert "axiom-eliminator" in formalize.workers
+    assert prove.workers == ()
+    assert formalize.workers == ()
     assert "lean_decompose_helpers" in prove.tools
     assert "lean_reasoning_help" in prove.tools
 

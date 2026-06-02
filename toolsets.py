@@ -24,7 +24,6 @@ _LEAN_TOOLS = [
     "lean_multi_attempt",
     "lean_auto_search",
     "apply_verified_patch",
-    "lean_worker_dispatch",
     "lean_reasoning_help",
     "lean_decompose_helpers",
 ]

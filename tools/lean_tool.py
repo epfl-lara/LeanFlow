@@ -20,6 +20,7 @@ from epflemma_cli.expert_help import (
 from epflemma_cli.file_locks import ensure_file_lock, release_file_lock
 from epflemma_cli.lean_incremental import lean_incremental_check
 from epflemma_cli.lean_services import (
+    LEAN_WORKER_DISPATCH_ENABLED,
     LeanWorkerRequest,
     dispatch_worker,
     lean_auto_search,
@@ -1626,24 +1627,25 @@ registry.register(
     check_fn=check_lean_requirements,
     emoji="✅",
 )
-registry.register(
-    name="lean_worker_dispatch",
-    toolset="lean",
-    schema=LEAN_WORKER_DISPATCH_SCHEMA,
-    handler=lambda args, **kw: lean_worker_dispatch_tool(
-        worker=args.get("worker", ""),
-        goal=args.get("goal", ""),
-        context=args.get("context", ""),
-        file_path=args.get("file_path", ""),
-        line=args.get("line"),
-        allow_delegation=bool(args.get("allow_delegation", False)),
-        use_file_lock=bool(args.get("use_file_lock", True)),
-        parent_agent=kw.get("parent_agent"),
-        owner_id=str(kw.get("owner_id", "") or ""),
-    ),
-    check_fn=check_lean_requirements,
-    emoji="🧠",
-)
+if LEAN_WORKER_DISPATCH_ENABLED:
+    registry.register(
+        name="lean_worker_dispatch",
+        toolset="lean",
+        schema=LEAN_WORKER_DISPATCH_SCHEMA,
+        handler=lambda args, **kw: lean_worker_dispatch_tool(
+            worker=args.get("worker", ""),
+            goal=args.get("goal", ""),
+            context=args.get("context", ""),
+            file_path=args.get("file_path", ""),
+            line=args.get("line"),
+            allow_delegation=bool(args.get("allow_delegation", False)),
+            use_file_lock=bool(args.get("use_file_lock", True)),
+            parent_agent=kw.get("parent_agent"),
+            owner_id=str(kw.get("owner_id", "") or ""),
+        ),
+        check_fn=check_lean_requirements,
+        emoji="🧠",
+    )
 registry.register(
     name="lean_reasoning_help",
     toolset="lean",

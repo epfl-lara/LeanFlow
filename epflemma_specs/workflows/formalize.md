@@ -5,11 +5,11 @@ title: Formalize
 summary: Autonomous Lean formalization that drafts source-backed declarations and proof plans, verifies source fidelity, and hands the result to proving.
 aliases: [autoformalize]
 skills: [lean-formalization, lean-proof-loop, lean-theorem-queue-worker]
-tools: [formalization_document_inspect, lean_capabilities, lean_inspect, lean_search, lean_verify, lean_sorries, lean_axioms, lean_worker_dispatch]
-workers: [proof-repair, axiom-eliminator, sorry-filler-deep]
+tools: [formalization_document_inspect, lean_capabilities, lean_inspect, lean_search, lean_verify, lean_sorries, lean_axioms]
+workers: []
 review_actions: [continue, replan, redraft, falsify, stop]
 stop_conditions: [verified, blocked, interrupted, stalled]
-route_actions: [queue-worker, final-sweep, delegate-proof-repair, delegate-axiom-eliminator, delegate-sorry-filler-deep]
+route_actions: [queue-worker, final-sweep]
 ---
 
 # Native Formalize Spec
@@ -80,11 +80,9 @@ The active Lean target file is only the entry point. By default a document gets 
    - keep imports and dependencies minimal and explicit
    - in the planner draft, theorem/lemma/example proofs must remain `by sorry`; do not start proof repair inside `/formalize`
    - every generated Lean file must start with all `import` commands before any module doc comment, file overview, namespace, or declaration
-7. `lean_worker_dispatch`
-   - use only when the route points to `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
-8. `lean_verify`
+7. `lean_verify`
    - use the narrowest truthful verification gate for the current step
-9. `lean_sorries` / `lean_axioms`
+8. `lean_sorries` / `lean_axioms`
    - use when remaining `sorry` inventory or axiom profile is the real blocker
 
 ## Formalization Policy
@@ -177,22 +175,13 @@ Proving completion is handled by `/prove` after the review-approved handoff.
   - wrong dependencies, malformed signature, or missing imports
   - route: redraft in small steps, then re-inspect
 - compiler-style blocker
-  - route: direct local fix, then `proof-repair` if repeated
+  - route: direct local fix, then richer local feedback if repeated
 - search blocker
   - route: `lean_search` before changing the theorem shape again
 - axiom-risk blocker
-  - route: `lean_axioms`, then `axiom-eliminator` if necessary
+  - route: `lean_axioms`, then direct proof cleanup if necessary
 - stuck formalization queue item
-  - route: bounded escalation to `sorry-filler-deep`
-
-## Worker Escalation
-
-- `proof-repair`
-  - use when the drafted declaration shape is acceptable but proof compilation keeps failing in the same way
-- `axiom-eliminator`
-  - use when the formalized result compiles but the axiom profile is not acceptable
-- `sorry-filler-deep`
-  - use when the current declaration needs multi-step restructuring after repeated local attempts
+  - route: document the blocker and hand off to the proving loop with source-backed notes
 
 ## Stop Conditions
 
