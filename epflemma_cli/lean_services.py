@@ -31,6 +31,7 @@ from epflemma_cli.lean_workflow_specs import get_lean_spec, list_specs
 
 
 STANDARD_AXIOMS = {"propext", "Quot.sound", "Classical.choice"}
+LEAN_WORKER_DISPATCH_ENABLED = False
 LEAN_DECLARATION_PREAMBLE_RE = (
     r"^\s*(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial)\s+)*"
     r"(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
@@ -1012,7 +1013,7 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         mcp_tools=mcp_tools,
         search_providers=search_providers,
         helper_tools=_helper_tools(),
-        workers=[record.spec_id for record in list_specs("worker")],
+        workers=[record.spec_id for record in list_specs("worker")] if LEAN_WORKER_DISPATCH_ENABLED else [],
         degraded_reasons=degraded,
         mcp_server_roles=mcp_server_roles,
         managed_mcp_servers=managed_mcp_servers,
@@ -2720,9 +2721,9 @@ def route_workflow_step(
         return WorkflowRouteDecision(
             workflow_kind=normalized_workflow,
             skill_name="lean-refactor-golf",
-            route_action="delegate-proof-golfer" if normalized_workflow == "golf" else "refactor",
+            route_action="golf" if normalized_workflow == "golf" else "refactor",
             blocker_kind=blocker_kind,
-            recommended_worker="proof-golfer" if normalized_workflow == "golf" else "",
+            recommended_worker="",
             search_exhausted=search_exhausted,
             reason="refactor/golf routes through the dedicated refactor skill",
         )
@@ -2731,18 +2732,19 @@ def route_workflow_step(
         skill_name = "lean-theorem-queue-worker"
         route_action = "queue-worker"
         reason = "file-scoped queue item active"
-    if blocker_kind in {"unknown_ident", "synth_instance", "type_mismatch", "timeout"} and attempt_count >= 2:
-        recommended_worker = "proof-repair"
-        route_action = "delegate-proof-repair"
-        reason = f"compiler-style blocker {blocker_kind} repeated {attempt_count} times"
-    elif blocker_kind == "axiom-risk":
-        recommended_worker = "axiom-eliminator"
-        route_action = "delegate-axiom-eliminator"
-        reason = "axiom-sensitive blocker detected"
-    elif queue_item and (attempt_count >= 3 or (search_exhausted and blocker_kind in {"sorry", "open_goals", "diagnostics"})):
-        recommended_worker = "sorry-filler-deep"
-        route_action = "delegate-sorry-filler-deep"
-        reason = "queue item remains blocked after repeated attempts/search exhaustion"
+    if LEAN_WORKER_DISPATCH_ENABLED:
+        if blocker_kind in {"unknown_ident", "synth_instance", "type_mismatch", "timeout"} and attempt_count >= 2:
+            recommended_worker = "proof-repair"
+            route_action = "delegate-proof-repair"
+            reason = f"compiler-style blocker {blocker_kind} repeated {attempt_count} times"
+        elif blocker_kind == "axiom-risk":
+            recommended_worker = "axiom-eliminator"
+            route_action = "delegate-axiom-eliminator"
+            reason = "axiom-sensitive blocker detected"
+        elif queue_item and (attempt_count >= 3 or (search_exhausted and blocker_kind in {"sorry", "open_goals", "diagnostics"})):
+            recommended_worker = "sorry-filler-deep"
+            route_action = "delegate-sorry-filler-deep"
+            reason = "queue item remains blocked after repeated attempts/search exhaustion"
 
     decision = WorkflowRouteDecision(
         workflow_kind=normalized_workflow,

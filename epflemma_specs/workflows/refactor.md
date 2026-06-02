@@ -4,8 +4,8 @@ kind: workflow
 title: Refactor
 summary: Lean proof refactoring with structure-preserving simplification, search-backed helper reuse, and explicit verification after each meaningful edit.
 skills: [lean-refactor-golf]
-tools: [lean_capabilities, lean_inspect, lean_search, lean_multi_attempt, lean_verify, lean_worker_dispatch]
-workers: [proof-golfer]
+tools: [lean_capabilities, lean_inspect, lean_search, lean_multi_attempt, lean_verify]
+workers: []
 stop_conditions: [verified, blocked]
 route_actions: [refactor]
 ---
@@ -52,10 +52,6 @@ Use `prove` first when the target does not compile, `review` for read-only audit
    - keep theorem meaning and declaration headers fixed
 6. `lean_verify`
    - verify after each meaningful batch
-7. `lean_worker_dispatch`
-   - this workflow is usually handled directly
-   - `proof-golfer` is only a fallback when the refactor collapses into local proof simplification rather than structural improvement
-
 ## Refactor Policy
 
 Prefer:

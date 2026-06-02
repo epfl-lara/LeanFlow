@@ -155,7 +155,7 @@ Workflow specs shipped in the repo:
 - `doctor`
 - `search`
 
-Worker specs shipped in the repo:
+Dormant worker specs shipped in the repo:
 
 - `proof-repair`
 - `proof-golfer`
@@ -167,7 +167,7 @@ These specs are the source of truth for:
 - prompt assembly
 - native Lean tool ordering and fallbacks
 - doctor/capability reporting
-- route decisions and worker recommendations
+- route decisions
 - contract validation in tests
 
 Skills remain important, but they are now the routing layer that points to these specs instead of carrying the whole operational contract alone.
@@ -472,7 +472,7 @@ Expected document-prep completion is a buildable statement/source-approved draft
 
 EPFLemma writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.epflemma/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
 
-That state now also includes structured capability snapshots, route decisions, and workflow/worker outcomes in `.epflemma/workflow-state/outcomes.jsonl`, so resumed runs can reuse prior blocker classification and worker history instead of starting blind.
+That state now also includes structured capability snapshots and route decisions in `.epflemma/workflow-state/outcomes.jsonl`, so resumed runs can reuse prior blocker classification instead of starting blind.
 
 ### Project-Scoped `/prove`
 
@@ -600,9 +600,6 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
   - list remaining `sorry` findings across a project or a single file with declaration names and line numbers
 - `lean_axioms`
   - run a best-effort `#print axioms` check for one declaration and report `axioms`, `custom_axioms`, `classical`, and `choice`
-- `lean_worker_dispatch`
-  - dispatch or describe a native specialist worker with file-lock-aware execution when delegation is available
-
 ## Theorem-By-Theorem Proving Loop
 
 For file-scoped autonomous workflows (`prove` / `formalize` with an active Lean file), EPFLemma drives the agent one declaration at a time instead of letting it roam the whole file. The runner owns the queue; the agent only owns the current assignment.
@@ -793,16 +790,7 @@ Queue items are enriched with:
 - blocker signatures
 - search hints
 - verification gates
-- recommended specialist workers
-
-Current worker recommendations:
-
-- `proof-repair` for repeated compiler-style blockers
-- `proof-golfer` for explicit `golf` routes
-- `axiom-eliminator` for axiom-risk cleanup
-- `sorry-filler-deep` when a queue item stays stuck or search has been exhausted
-
-Route decisions and worker outcomes are persisted into workflow state so later cycles can reuse them.
+Route decisions are persisted into workflow state so later cycles can reuse them.
 
 ## Reasoning / Thinking Policy
 
@@ -1114,7 +1102,7 @@ There are now three important internal workflow surfaces:
 
 - `lean`
   - shared typed Lean capability surface
-  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_incremental_check`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_search`, `apply_verified_patch`, `lean_sorries`, `lean_axioms`, and `lean_worker_dispatch`
+  - includes `lean_capabilities`, `lean_inspect`, `lean_verify`, `lean_incremental_check`, `lean_search`, `lean_proof_context`, `lean_multi_attempt`, `lean_auto_search`, `apply_verified_patch`, `lean_sorries`, `lean_axioms`, `lean_reasoning_help`, and `lean_decompose_helpers`
 - `document`
   - project-local source-document inspection for formalization
   - includes `read_pdf` and `formalization_document_inspect`

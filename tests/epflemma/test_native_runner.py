@@ -414,7 +414,7 @@ def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypat
     assert "[EPFLEMMA-NATIVE FAILED ATTEMPT NUDGE]" in agent._post_tool_result_appendix
     assert "lean_decompose_helpers" in agent._post_tool_result_appendix
     assert "lean_reasoning_help" in agent._post_tool_result_appendix
-    assert "lean_worker_dispatch" in agent._post_tool_result_appendix
+    assert "lean_worker_dispatch" not in agent._post_tool_result_appendix
     assert any(args[0] == "failed-attempt-escalation-nudge" for args, _kwargs in events)
 
 
@@ -2867,7 +2867,7 @@ def test_workflow_startup_guidance_mentions_autonomous_loop():
     assert "autonomous proving session" in text
     assert "/prove Main.lean" in text
     assert "lean_capabilities" in text
-    assert "lean_worker_dispatch" in text
+    assert "lean_worker_dispatch" not in text
 
 
 def test_workflow_startup_guidance_mentions_user_approved_swarm(monkeypatch):
@@ -2972,15 +2972,13 @@ def test_startup_user_message_snapshot_with_runner_lean_prompt(monkeypatch):
         "Begin the requested autonomous proving session now.\n\n"
         "Workflow request: /prove Main.lean\n"
         "Execution guidance: Load the native proving contract from the active skill/spec, begin with `lean_capabilities` and `lean_inspect`, "
-        "use `lean_search` before guessing, and use `lean_worker_dispatch` only when the route recommends it; the live queue, route decision, "
+        "use `lean_search` before guessing; the live queue, route decision, "
         "and verification gate below are the state for this turn.\n\n"
         "Route decision:\n"
         "- skill: lean-theorem-queue-worker\n"
         "- action: queue-worker\n"
         "- blocker kind: compiler\n"
-        "- reason: queue item active\n"
-        "- recommended worker: proof-repair\n"
-        "- use `lean_worker_dispatch` if the next attempt confirms this route\n\n"
+        "- reason: queue item active\n\n"
         "Assigned queue item:\n"
         "- declaration: foo\n\n"
         "[EPFLEMMA ACTIVE SKILL: lean-theorem-queue-worker (builtin)]\n\n"
@@ -3061,9 +3059,7 @@ def test_autonomous_continuation_prompt_snapshot_with_runner_lean_prompt(monkeyp
         "- skill: lean-theorem-queue-worker\n"
         "- action: queue-worker\n"
         "- blocker kind: compiler\n"
-        "- reason: queue item active\n"
-        "- recommended worker: proof-repair\n"
-        "- use `lean_worker_dispatch` if the blocker still fits this route after the next focused attempt\n\n"
+        "- reason: queue item active\n\n"
         "Assigned queue item:\n"
         "- declaration: foo"
     )

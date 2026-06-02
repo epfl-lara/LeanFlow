@@ -27,6 +27,6 @@ Primary specs:
 - Blocking diagnostics
 - Open goals
 - Capability degradations
-- Route action / recommended worker when present
+- Route action when present
 - Project-wide remaining `sorry` or build blockers
 - Whether the session is verified, in progress, or blocked
