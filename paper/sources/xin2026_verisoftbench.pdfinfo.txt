@@ -1,0 +1,18 @@
+Title:           VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+Author:          Yutong Xin; Qiaochu Chen; Greg Durrett; Işil Dillig
+Creator:         arXiv GenPDF (tex2pdf:57610bf)
+Producer:        pikepdf 8.15.1
+Custom Metadata: yes
+Metadata Stream: yes
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           17
+Encrypted:       no
+Page size:       612 x 792 pts (letter)
+Page rot:        0
+File size:       1328087 bytes
+Optimized:       no
+PDF version:     1.7

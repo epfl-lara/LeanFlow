@@ -1,0 +1,26 @@
+page   num  type   width height color comp bpc  enc interp  object ID x-ppi y-ppi size ratio
+--------------------------------------------------------------------------------------------
+   1     0 stencil     1     1  -       1   1  image  no   [inline]   0.182    18    1B   - 
+   1     1 stencil     1     1  -       1   1  image  no   [inline]   0.182    67    1B   - 
+   2     2 stencil     1     1  -       1   1  image  no   [inline]   0.502   150    1B   - 
+   3     3 stencil     1     1  -       1   1  image  no   [inline]   0.183    86    1B   - 
+   3     4 stencil     1     1  -       1   1  image  no   [inline]   0.183   120    1B   - 
+   3     5 stencil     1     1  -       1   1  image  no   [inline]   0.183    86    1B   - 
+   3     6 stencil     1     1  -       1   1  image  no   [inline]   0.465   150    1B   - 
+   3     7 stencil     1     1  -       1   1  image  no   [inline]   0.465   150    1B   - 
+   4     8 stencil     1     1  -       1   1  image  no   [inline]   0.502   150    1B   - 
+   5     9 stencil     1     1  -       1   1  image  no   [inline]       5   150    1B   - 
+   6    10 stencil     1     1  -       1   1  image  no   [inline]   0.591    86    1B   - 
+   6    11 stencil     1     1  -       1   1  image  no   [inline]   0.591   120    1B   - 
+   6    12 stencil     1     1  -       1   1  image  no   [inline]   0.591    86    1B   - 
+   6    13 stencil     1     1  -       1   1  image  no   [inline]   0.580    86    1B   - 
+   6    14 stencil     1     1  -       1   1  image  no   [inline]   0.580   120    1B   - 
+   6    15 stencil     1     1  -       1   1  image  no   [inline]   0.580    86    1B   - 
+   6    16 stencil     1     1  -       1   1  image  no   [inline]   0.622    86    1B   - 
+   6    17 stencil     1     1  -       1   1  image  no   [inline]   0.622   120    1B   - 
+   6    18 stencil     1     1  -       1   1  image  no   [inline]   0.622    86    1B   - 
+   6    19 stencil     1     1  -       1   1  image  no   [inline]   0.502   150    1B   - 
+  18    20 stencil     1     1  -       1   1  image  no   [inline]       4   150    1B   - 
+  18    21 stencil     1     1  -       1   1  image  no   [inline]       4   150    1B   - 
+  18    22 stencil     1     1  -       1   1  image  no   [inline]       3   150    1B   - 
+  18    23 stencil     1     1  -       1   1  image  no   [inline]       5   200    1B   - 

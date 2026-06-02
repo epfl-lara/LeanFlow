@@ -1,0 +1,1100 @@
+                                             VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+
+                                                                         Yutong Xin * 1 Qiaochu Chen * 2 Greg Durrett 2 Işil Dillig 1
+
+
+                                                                    Abstract                               braries (Gladshtein et al., 2024; Rossel, 2024) or integration
+                                                                                                           with external solvers (e.g., SMT/ATP backends) (Mohamed
+                                                 Large language models have achieved striking
+                                                                                                           et al., 2025; Paulson & Blanchette, 2015; Jiang et al., 2022).
+                                                 results in interactive theorem proving, particu-
+                                                                                                           More recently, large language models (LLMs) have enabled
+                                                 larly in Lean. However, most benchmarks for
+
+
+
+
+arXiv:2602.18307v1 [cs.SE] 20 Feb 2026
+                                                                                                           a new class of neural proof automation methods, includ-
+                                                 LLM-based proof automation are drawn from
+                                                                                                           ing systems specialized for Lean proof generation and re-
+                                                 mathematics in the Mathlib ecosystem, whereas
+                                                                                                           pair (Lin et al., 2025; Ren et al., 2025; Varambally et al.,
+                                                 proofs in software verification are developed in-
+                                                                                                           2025). These advances have made high-quality benchmark
+                                                 side definition-rich codebases with substantial
+                                                                                                           datasets crucial for further progress, as improvement de-
+                                                 project-specific libraries. We introduce VeriSoft-
+                                                                                                           pends not only on model quality, but also on benchmarks
+                                                 Bench, a benchmark of 500 Lean 4 proof obli-
+                                                                                                           that reflect the proof settings where automation is ultimately
+                                                 gations drawn from open-source formal-methods
+                                                                                                           needed.
+                                                 developments and packaged to preserve realis-
+                                                 tic repository context and cross-file dependen-           Most widely used Lean benchmarks for LLM-based proof
+                                                 cies. Our evaluation of frontier LLMs and spe-            automation are drawn largely from mathematics and oper-
+                                                 cialized provers yields three observations. First,        ate in a shared ecosystem centered around Mathlib. For
+                                                 provers tuned for Mathlib-style mathematics trans-        example, suites such as MiniF2F (Zheng et al., 2022),
+                                                 fer poorly to this repository-centric setting. Sec-       ProofNet (Azerbayev et al., 2023), LeanDojo (Yang et al.,
+                                                 ond, success is strongly correlated with transi-          2023), and PutnamBench (Tsoukalas et al., 2024) have been
+                                                 tive repository dependence: tasks whose proofs            instrumental in measuring progress and driving rapid im-
+                                                 draw on large, multi-hop dependency closures              provements in proof automation for mathematics. However,
+                                                 are less likely to be solved. Third, providing            in contrast to these benchmarks, proofs in software verifica-
+                                                 curated context restricted to a proof’s depen-            tion and programming-language meta-theory are typically
+                                                 dency closure improves performance relative to            developed inside large repositories that introduce their own
+                                                 exposing the full repository, but nevertheless            core abstractions, definitions, and libraries. Proof obliga-
+                                                 leaves substantial room for improvement. Our              tions in this setting often hinge on nontrivial cross-file struc-
+                                                 benchmark and evaluation suite are released at            ture and on project-specific concepts. This raises a key ques-
+                                                 https://github.com/utopia-group/VeriSoftBench.            tion: How well do current provers generalize when proofs
+                                                                                                           are grounded in large, project-specific libraries rather than
+                                                                                                           a shared ecosystem?
+                                         1. Introduction                                                   To address this gap, this paper introduces VeriSoftBench,
+                                         Interactive theorem provers (ITPs) such as Lean (Moura            a benchmark of 500 Lean 4 proof obligations drawn from
+                                         & Ullrich, 2021), Rocq/Coq (The Coq Development Team,             open-source formal-methods developments and packaged to
+                                         2008), and Isabelle (Wenzel et al., 2008) provide machine-        preserve local context and multi-module structure, includ-
+                                         checked guarantees, but this rigor comes with a well-known        ing cross-file dependencies. The benchmark is designed to
+                                         cost: even routine mathematical arguments require low-            evaluate provers in the regime that is common in verifica-
+                                         level, often tedious formalization, making mechanized proof       tion and PL meta-theory, where proofs are often stated in
+                                         development extremely labor-intensive. To reduce this bur-        terms of project-defined abstractions and typically require
+                                         den, decades of work have pursued automation within ITP           navigating internal libraries.
+                                         workflows, for example, using domain-specific tactic li-          A central goal of VeriSoftBench is to make the role of repos-
+                                             *                      1                                      itory context explicit and measurable. We therefore evaluate
+                                           Equal contribution The University of Texas at Austin
+                                         2
+                                         New York University. Correspondence to: Qiaochu Chen              provers under two context regimes. In the curated regime,
+                                         <qc1127@cs.nyu.edu>, Yutong Xin <maxryeery@utexas.edu>.           the prover is provided with a focused set of repository de-
+                                                                                                           pendencies associated with the ground-truth proof. In the
+                                         Preprint. February 23, 2026.
+
+                                                                                                       1
+                                VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+
+
+
+             (a) PutnamBench                                     (b) Verina                                            (c) VeriSoftBench
+
+       theorem putnam_2025_b3 (S: Set ℕ)          theorem isOddAtIndexOdd_spec_satisfied                  theorem usesLocalWitnessesFlat_iff_extends
+                                                    (a: Array Int)                                          {env : Environment F} (n : ℕ)
+        (hS : S.Nonempty) (h0 : ∀n ∈ S, 0 < n)      (h_precond : isOddAtIndexOdd_precond (a))
+         (h : ∀n ∈ S, ∀d : ℕ, 0 < d → d                                                                     {ops : List (FlatOperation F)} :
+                                                       : isOddAtIndexOdd_postcond                             env.UsesLocalWitnessesFlat n ops ↔
+                   ∣ 2025n - 15n → d ∈ S)                (a)
+         (n : ℕ) (hn : 0 < n): n ∈ S := by                                                                    env.ExtendsVector (localWitnesses env ops) n
+                                                         (isOddAtIndexOdd (a) h_precond)                    := by ...
+         ...                                             h_precond := by ...
+
+                                                                                                                                                     localWitness
+                                                                                     isOddAtIndex        FlatOperation          UsesLocalWitness
+                                                  isOddAtIndex                         Odd_post                                       Flat
+       Nat.totient                                                isOddAtIndex
+                                                  Odd_precond
+                                                                      Odd
+                                                                                                                       induct                 ExtendsVector
+              ...       Nat.strong_induction_on
+                                                        Decidable.imp_
+                                                          iff_not_or      Array.all_iff_                                    Condition
+                                                                                                        ...                                            lookup
+                                                                              forall
+
+
+                        Nat.pow_le_pow_left                                                                      ...       Algebra.Field               Circuit
+                                                    Array.size                   Bool
+                                                                    ...
+
+
+
+
+                                                          Library Dependency             Local/Repo Dependency
+
+
+
+
+Figure 1. Contextual dependencies comparison between (a) mathematical benchmark proofs, (b) lightweight verification tasks, and (c)
+repository-scale verification. PutnamBench proofs rely almost entirely on library (Mathlib) dependencies (purple). Verina introduces
+a small number of project-specific definitions (yellow) but remains largely library-driven. In contrast, proofs from a real-world ZK
+circuit DSL repository (Verified-zkEVM, 2025) depend heavily on interconnected local abstractions, forming a dense repository-level
+dependency graph. Purple denotes library dependencies; yellow denotes local/repository dependencies.
+
+
+full-repository regime, the prover is exposed to the entire                             2. Background and Motivation
+local repository context. These two regimes allow us to
+separate challenges that arise from operating over large                                ITPs such as Lean support tactic-based proof development:
+repositories from those that persist even when the relevant                             the user (or an automated prover) constructs a proof by
+dependencies are provided.                                                              applying a sequence of tactics that transform a proof state
+                                                                                        into simpler subgoals until all goals are discharged. For
+Our experiments yield three main findings. First, provers                               LLM-based provers, the core task is therefore to generate
+that perform well on Mathlib-centric mathematics tasks                                  a tactic script that discharges the goal and is accepted by
+transfer poorly to this repository-grounded setting. Sec-                               Lean under the given local context and imports.
+ond, performance degrades as transitive dependency struc-
+ture increases, such as when discharging a goal requires                                Much of the recent progress in Lean proof automation has
+reasoning over a large, multi-hop closure of project-local                              been evaluated on mathematics-oriented benchmarks. Fig-
+definitions and lemmas. Third, curated context improves                                 ure 1(a) illustrates this regime using a PutnamBench task
+over full-repository context, but there is substantial room                             and a proof generated by SeedProver. While the proof is
+for improvement even when the minimal relevant context is                               lengthy, its key references are primarily to Mathlib defini-
+provided to the prover. This highlights that relevant context                           tions and lemmas, reflecting a setting where the prover can
+retrieval is necessary but not sufficient for successful proof                          rely on a stable, widely shared collection of abstractions.
+automation.                                                                             Proofs arising in software verification and programming-
+In summary, this paper makes the following contributions:                               languages semantics often have a very different character.
+                                                                                        Rather than involving a fixed set of standard abstractions (as
+                                                                                        in Mathlib), these projects introduce custom datatypes, oper-
+• We introduce VeriSoftBench, a benchmark of 500                                        ations, and invariants that formalize the semantics or correct-
+  Lean 4 proof obligations drawn from open-source formal-                               ness criteria of the artifact being verified (e.g., a compiler
+  methods repositories, packaged to preserve repository                                 pass, a program logic, or a domain-specific language). For
+  context and cross-file dependencies.                                                  instance, Figure 1(c) shows a representative example from
+                                                                                        a real Lean formal-methods repository: both the statement
+                                                                                        and the proof are densely populated with project-defined no-
+• We provide an evaluation of frontier LLMs and special-                                tions, and the supporting facts needed to complete the proof
+  ized provers under curated and full-repository context                                are distributed across the surrounding codebase. Existing
+  regimes, analyzing the relationship between prover suc-                               verification-oriented benchmarks move in this direction but
+  cess and structural properties of repository dependence.
+
+                                                                                 2
+                             VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+                                                              Project          Multi-module       Repo-level     Ground-truth
+         Proof domain          Benchmark         Language
+                                                              specific defs    context            retrieval      proofs
+                               MiniF2F             Lean                ✗                ✗             ✗                ✗
+                               ProofNet            Lean                ✗                ✗             ✗                ✗
+         Mathematics
+                               LeanDojo            Lean                ✓                ✓             ✓                ✓
+                               PutnamBench        Multiple             ✗                ✗             ✗                ✗
+         Formally Verified     FVAPPS              Lean                ✗                ✗              ✗               ✗
+         Code Generation       CLEVER              Lean                ✗                ✗              ✗               ✗
+         (Veri-coding)         Verina              Lean                ✓                ✗              ✗
+         Verification          MiniCodeProps       Lean                ✓                ✗              ✗               ✗
+         PL Theory and         VeriSoftBench
+                                                   Lean                ✓                ✓             ✓                ✓
+         Verification          (Ours)
+Table 1. Comparison of theorem proving benchmarks across domains and contextual requirements. Note that while LeanDojo satisfies
+the listed criteria, its scope is confined to the singular environment of Mathlib; on the other hand, VeriSoftBench features 23 diverse
+repositories with bespoke contexts.
+
+often at more modest scale: Figure 1(b) shows an example                                                        Compiler
+                                                                                        3    2
+from a previous dataset called Verina (Ye et al., 2025) that                                                    Applied verif.
+involves limited introduction of project-specific context.
+                                                                                                 6              Framework
+This shift from mathematical proofs to software verifica-                           7                           Semantics
+tion tasks has two practical consequences that make proof                                                       Type systems
+automation more challenging in some respects. First, the                                    5
+prover must adapt to a local logical environment: many of
+the required definitions and lemmas are not part of Math-                     Figure 2. Lean repository distribution across topics
+lib and are specific to the project, so success depends on
+correctly interpreting and using in-repository abstractions.
+Second, the available context is typically large and multi-            3. VeriSoftBench
+module, yet only a small fraction is relevant to the goal. As
+                                                                       VeriSoftBench is a benchmark of 500 Lean 4 proof obliga-
+such, effective proof search hinges on identifying the right
+                                                                       tions drawn from real, open-source formal-methods devel-
+local facts and using them inside the target proof script.
+                                                                       opments. Each task is extracted from a fixed Git commit
+Table 1 gives an overview of existing datasets in light of             and packaged to preserve the original proof environment,
+this discussion. Existing benchmark suites fall short in at            including project-specific abstractions and cross-file depen-
+least one respect, such as lacking project-specific definitions,       dencies. Unlike prior benchmarks that normalize tasks into
+multi-module context, or ground-truth proofs for system-               a shared library setting, VeriSoftBench evaluates provers
+atic evaluation. Mathematics benchmarks such as MiniF2F,               on theorems as they appear in the wild. That is, theorems
+ProofNet, and PutnamBench largely operate within a shared              are phrased in terms of project-defined datatypes and invari-
+Mathlib ecosystem and do not stress project-local abstrac-             ants, and completing the proof requires reasoning within the
+tions. LeanDojo draws from a large formal development and              surrounding codebase.
+provides proofs, but its “project” is Mathlib itself rather than
+a collection of independent verification codebases with be-            3.1. Dataset Construction
+spoke APIs. On the verification side, FVAPPS and CLEVER
+                                                                       Benchmark Collection. The benchmark is drawn from a di-
+focus on verified code generation but are not designed
+                                                                       verse set of 23 Lean repositories, covering compiler correct-
+around project-specific libraries, while Verina and Mini-
+                                                                       ness, programming language semantics and type systems,
+CodeProps introduce some local context but do not model
+                                                                       verification frameworks, and applied verification projects
+the multi-module, codebase-level dependency structure il-
+                                                                       (e.g., zero-knowledge circuits, protocols, and optimization
+lustrated in Figure 1(c). These gaps motivate VeriSoftBench,
+                                                                       problems). Figure 2 shows the distribution of these reposi-
+which is constructed to preserve project-specific definitions
+                                                                       tories across topics.
+and cross-file dependencies and to support evaluation in a
+setting where codebase-local context is crucial for the proof          Benchmark Selection. When selecting benchmarks, we
+task.                                                                  require each task to have a valid proof. This means that the
+                                                                       ground-truth proof script should contain no proof holes (e.g.,
+                                                                       sorry or admit), and any lemmas or theorems it invokes
+
+                                                                   3
+                                  VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+
+                                                        Target Theorem Statement
+                   theorem cexec_to_reds (s s' : store) (c : com) : cexec s c s' → star red (c, s) (.SKIP, s') :=
+
+
+                                           Local File Context                                                            Repository Dependencies
+                                             @[grind] inductive red : com × store →
+       /- 1.1 Arithmetic expressions -/                                                           /- definitions -/
+                                                  com × store → Prop where
+       inductive aexp : Type where                                                                def ident := String deriving BEq, Repr, Hashable
+                                               | red_assign : ∀ x a s,
+         | CONST (n : Int)                                                                        def store : Type := ident → Int
+                                                   red (.ASSIGN x a, s)
+         | VAR (x : ident)                                                                        inductive star (R : α → α → Prop) : α → α → Prop where
+                                                          (.SKIP, update x (aeval s a) s)
+         | PLUS (a1 : aexp) (a2 : aexp)                                                             | star_refl : ∀ x : α, star R x x
+                                               | red_seq_done : ∀ c s,
+         | MINUS (a1 : aexp) (s2 : aexp)                                                            | star_step : ∀ {x y z}, R x y → star R y z → star R x z
+                                                   red (.SEQ .SKIP c, s) (c, s)
+                                                                                                  ...
+                                               | red_seq_step : ∀ c1 c s1 c2 s2,
+       @[grind] def aeval (s : store)              red (c1, s1) (c2, s2) →
+         (a : aexp) : Int :=                                                                      /- lemmas -/
+                                                   red (.SEQ c1 c, s1) (.SEQ c2 c, s2)
+         match a with                                                                             theorem star_one (R : α → α → Prop) {a b : α} (h : R a b) : star R a b
+                                               | red_ifthenelse : ∀ b c1 c2 s,
+         | .CONST n => n                                                                          theorem star_trans {α} (R : α → α → Prop) (a b : α) (sab : star R a b) :
+                                                   red (.IFTHENELSE b c1 c2, s)
+         | .VAR x => s x                                                                              ∀ c : α, star R b c → star R a c
+                                                          ((if beval s b then c1 else c2), s)
+         | ...                                                                                    ...
+                                               | ...
+
+
+          Language Syntax and
+                                                                Semantic Rules                                         Generic Relationship Lemmas
+            Helper De×initions
+
+
+Figure 3. An example task instance from our benchmark. The goal is to synthesize a proof for the target theorem cexec to reds,
+which relates two definitions of program execution in a formalized programming language. The figure illustrates the context that must be
+provided to or retrieved by the prover: Local File Context includes language syntax and semantic rules, while Repository Dependencies
+provides base types and generic lemmas. Ellipses (“...”) indicate that each context source contains many additional definitions. Color
+annotations trace dependencies from the theorem statement to its relevant context, highlighting the challenge: the prover must identify
+relevant definitions from a large local file and connect domain-specific rules with generic library lemmas.
+
+are themselves recursively proven by hole-free scripts. In ad-                                  of this engineering effort precluded scaling to the entire
+dition, the Lean file containing the target theorem must com-                                   500-task benchmark set, we collected a finalized subset of
+pile after replacing the ground-truth proof with by sorry,                                      100 fully-compatible tasks, enabling us to evaluate on the
+ensuring that the statement, imports, and required defini-                                      state-of-the-art specialized prover.
+tions are well-formed independently of the original proof
+                                                                                                Task Composition. Each task consists of the target theorem,
+term. Finally, we exclude trivial goals by requiring that the
+                                                                                                the local file context up to the theorem, all required local-
+theorem is not discharged solely by standard automation
+                                                                                                repository definitions and helpful repository lemma decla-
+(e.g., simp, omega, grind) and that it references at least
+                                                                                                rations for stating and proving the target theorem, and the
+one repository-local definition.
+                                                                                                necessary library imports, as illustrated in Figure 3. Tasks
+Beyond enforcing validity, we select tasks that span a range                                    are extracted without rewriting definitions or replacing local
+of difficulty metrics. To this end, we score each benchmark                                     abstractions with equivalent standard-library formulations,
+along two axes: proof complexity, approximated by the                                           preserving the original dependency structure of each proof.
+length of the repository’s ground-truth tactic script, and
+contextual dependency, measured by how many distinct                                            3.2. Contextual Configurations
+definitions and lemma statements the proof draws from
+repository-local files.                                                                         To study how provers use repository-local context under
+                                                                                                different levels of noise, we evaluate each task under two
+In summary, VeriSoftBench is constructed by first filtering                                     contextual configurations. Both configurations include the
+candidate theorems for validity and non-triviality, and then                                    same base context, which includes: (i) the contents of the
+sampling 500 tasks from the remaining pool to balance                                           local file up to the target theorem (i.e., the definitions in
+repository category and the two difficulty axes described                                       scope) excluding the lemmas, and (ii) the external library
+above.                                                                                          (e.g., Mathlib, Std) imports and declarations required for
+System Specific Subset. Evaluation on Harmonic’s Aristotle                                      the theorem statement to type-check.
+system requires strict adherence to specific library versions,                                  Curated Context. The curated context mode provides the
+namely Mathlib v4.24.0. To ensure our benchmark is com-                                         model with a focused set of dependencies designed to ap-
+patible with such systems, we filtered our full tasks set for                                   proximate the necessary background knowledge with min-
+version alignment and performed targeted manual refactor-                                       imal distraction for completing a proof. In addition to the
+ing to resolve versioning discrepancies. As the complexity                                      base context, it includes only the explicit repository depen-
+
+                              Category            Repos           Tasks     Curated          Full Repo         Trans. Deps           Repo Total
+                              Regular                21            381           5,407           44,934               21                  813
+                              Large                   2            119           6,339          2,928,342             30                 29,112
+Table 2. Dataset statistics across repository categories. Category “Large” contains repositories with a context size exceeding 200k tokens.
+Values for Curated, Full Repo, and Trans. Deps represent the “average of averages”—the mean of individual repository averages for task
+token counts and transitive dependency counts, respectively. Repo Total represents the mean number of total transitive dependencies
+across all repositories within the category.
+                                                                                         4
+                           VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+dencies: the specific definitions and lemmas from other
+files in the same repository that are directly invoked by the                 Task Input             Model
+ground truth target theorem, and the transitively invoked                                                           YES
+
+definitions by any dependency in the context. To ensure the                   Repo Context
+
+integrity of the evaluation and prevent models from mimick-                                         Generated    Repair Budget
+                                                                                                                                 NO
+ing domain-specific proof scripts, we elide the proof bodies                                          Proof        Available?
+
+of all provided lemmas and definitions. This configuration
+                                                                                                                      NO
+represents a best-case scenario where relevant premises have
+been pre-identified without leaking the actual proof, allow-                                                      Compilation
+                                                                                                                                 YES
+                                                                                                                   Succeed?
+ing us to isolate the model’s reasoning capabilities from its
+retrieval performance.                                                                       Figure 4. Evaluation Pipeline.
+Full Context. In this setting, the prover receives the entire            4.2. Evaluation pipeline
+repository library in addition to the base context. This in-
+                                                                         We evaluate general-purpose LLMs using a generation-
+cludes all definitions and lemma/theorem statements across
+                                                                         check-repair loop, as illustrated in Figure 4. For each eval-
+all files in the repository. It is worth noting that the resulting
+                                                                         uation run, the model receives a task associated with the
+context can be extremely long: among the 500 tasks, 119
+                                                                         selected contextual configuration as input, and the evalua-
+come from repositories whose full-repository context ex-
+                                                                         tion proceeds in three stages: (1) we sample k candidate
+ceeds hundreds of thousands of tokens, and one reaches hun-
+                                                                         proof scripts from the model. Each candidate is generated
+dreds of millions of tokens. Such instances are far beyond
+                                                                         as a tactical proof block intended to satisfy the target goal;
+the effective context windows of current models, under-
+                                                                         (2) we wrap each generated script into its original file con-
+scoring the need for reliable context-selection mechanisms.
+                                                                         text and attempt verification using the Lean 4 compiler. To
+In our experiments, whenever the full context exceeds the
+                                                                         ensure a stable and efficient evaluation, the all task environ-
+model’s context window, we truncate it as needed. The
+                                                                         ments are pre-built prior to verification; we use the specific
+detailed statistics in shown in Table 2.
+                                                                         toolchain version associated with the source repository of
+                                                                         each task and enforce a 300-second compilation timeout per
+Preventing data leakage. Importantly, both configurations                candidate1 ; (3) for any failing script, we invoke the model
+are designed to avoid leaking the proof of the target theo-              for up to r repair rounds using the compiler error message,
+rem: we include only preceding context within the local file             corresponding code lines from each error location, and the
+and never provide subsequent lemmas or proofs. Moreover,                 current proof state as feedback. A task is marked as “Solved”
+whenever we provide repository lemmas or definitions (ei-                if any of the k candidates or their subsequent repairs pass
+ther in the curated set or as part of the full repository), we           verification. For specialized theorem-proving systems with
+include only their statements and elide proof bodies. Never-             an internal feedback loop (e.g., Goedel Prover v2 and Aris-
+theless, the Full Context configuration exposes the broader              totle), we evaluate them as end-to-end systems rather than
+module ecosystem in which the theorem lives. As such,                    wrapping them in an external repair loop, as they already
+this ambient structural information can provide cues about               contain their own internal feedback loop.
+recurring abstraction patterns or common proof structure
+that is largely absent in the curated configuration.                     4.3. Data Configurations
+                                                                         We consider two variations of VeriSoftBench that differ in
+4. Experiments                                                           scope and in the degree to which they accommodate prover-
+                                                                         specific engineering constraints.
+4.1. Baselines
+To evaluate performance on VeriSoftBench, we select a                    VeriSoftBench-Full. Our primary evaluation setting is the
+diverse set of models spanning frontier general-purpose                  full VeriSoftBench benchmark, consisting of 500 proof obli-
+LLMs and specialized formal reasoning systems.                           gations. This setting is used for all models and provers that
+                                                                         can consume our standard packaging of repository context.
+We evaluate three primary baseline models that represent the
+current frontier of general-purpose reasoning and code gen-
+                                                                         VeriSoftBench-Aristotle. Aristotle imposes additional
+eration: GPT-5.2, Claude-Opus-4.5, and Gemini-3-Pro. We
+                                                                         constraints on how repository context must be presented,
+also evaluate on Goedel-Prover-V2-32B (Lin et al., 2025)
+                                                                         e.g., requiring a pre-compiled environment rather than an
+to include the perspective of specialized provers. We also
+                                                                         in-prompt presentation of context. We use a restricted
+evaluate Harmonic’s Aristotle Prover (Achim et al., 2025),
+which is currently viewed as the state-of-the-art in formal                 1
+                                                                              Large dependencies such as Mathlib are compiled once and
+mathematical verification.                                               cached per repository toolchain version.
+
+                                                                     5
+                           VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+                                                                                           Context Conditions
+              Data Setting               Model Setting
+                                                                               Curated Context      Full Repo Context
+                                         Claude Opus 4.5 (Pass@8, r = 3)            31.2%                 23.2%
+                                         GPT-5.2 (Pass@8, r = 3)                    12.6%                 10.8%
+              VeriSoftBench-Full
+                                         Gemini-3-Pro (Pass@8, r = 3)               41.0%                 34.8%
+                                         Gödel-Prover-v2 (Pass@8, r = 0)           5.6%†                 0.0%‡
+                                         Aristotle                                     -                  69%∗
+              VeriSoftBench-Aristotle
+                                         Gemini-3-Pro (Pass@8, r = 3)                  -                  65%∗
+Table 3. VeriSoftBench evaluation results. Gödel-Prover-v2 was evaluated on † 496 tasks in the Curated Context configuration and ‡ 44
+tasks in the Full Context configuration to accommodate model-specific context window limitations; ∗ for the VeriSoftBench−Aristotle
+data setting, both models are evaluated on the variation of the Full Context configuration as described in Section 3.2.
+
+VeriSoftBench-Aristotle subset that includes 100 theorems             lower performance at 65%, indicating that this subset is
+curated to support their evaluation pipeline while preserving         substantially easier than the Full set. Quantifying how much
+the repository-grounded nature of the tasks. When evaluat-            of this performance persists when these proof-used local
+ing on VeriSoftBench-Aristotle, we employ a full-context              lemmas are withheld is an important direction for future
+variant that additionally includes local lemmas from the              evaluation.
+same file as the target theorem. We make this choice to
+                                                                      Comparison of Context Conditions. Table 3 shows a consis-
+avoid substantial project-specific engineering: removing
+                                                                      tent performance drop when moving from Curated Context
+same-file lemmas while retaining a pre-compiled environ-
+                                                                      to Full Repo Context, although the gap is smaller than one
+ment typically requires repository restructuring and selective
+                                                                      might expect given the significant increase in contextual
+re-compilation. As a result, VeriSoftBench-Aristotle repre-
+                                                                      scope. In particular, the Curated Context is constructed to
+sents a simpler setting in which all lemma statements used
+                                                                      contain (approximately) the relevant repository dependen-
+by the ground-truth proof are available to the prover.
+                                                                      cies with minimal distraction. As this Curated Context is
+                                                                      synthesized using the ground truth proof (which would not
+5. Results and Analysis                                               be available to a prover at deployment time), the Full Repo
+                                                                      Context may be viewed the more realistic setting: it requires
+Model Performance. Table 3 summarizes the verification
+                                                                      the prover to identify relevant facts on its own without oracle
+success rates across our two data settings (Full Set, Subset)
+                                                                      guidance.
+and two contextual configurations (Curated Context, Full
+Context). Overall, performance is low, highlighting the               The smaller-than-expected gap suggests that Full Context
+inherent difficulty of the VeriSoftBench tasks.                       may provide compensating signals despite its much larger
+                                                                      search space. Upon further analysis, we find that the full
+Under the Curated Context, the best-performing model,
+                                                                      repository exposes additional hints that are absent in the
+Gemini-3-Pro, achieves a success rate of 41.0%, followed
+                                                                      curated setting: Even files that are not directly required
+by Claude Opus 4.5 at 31.2%. In the more challenging
+                                                                      for the target theorem often contain proofs with similar
+Full Repo Context, success rates decrease across all mod-
+                                                                      structure, lemmas, or recurring abstraction patterns. Seeing
+els; Gemini-3-Pro and Claude Opus 4.5 achieve 34.8% and
+                                                                      these nearby patterns may help a model anticipate useful
+23.2%, respectively. GPT-5.2 reaches only 10.8%. No-
+                                                                      intermediate lemmas or recognize common ways in which
+tably, the specialized Gödel-Prover-v2 fails to solve any
+                                                                      project-specific abstractions are typically applied, as illus-
+tasks (0%) in the repository-scale setting. While such sys-
+                                                                      trated in Figure 5.
+tems are highly optimized for solving standard mathematical
+problems, our results suggest they struggle with the tasks            Impact of High Contextual Dependency. The difficulty of
+involving high density of domain specific local-repository            our benchmark is closely tied to its unusually high degree
+abstractions.                                                         of contextual dependency. Table 4 quantifies the size of
+                                                                      the dependency footprint. Theorems in VeriSoftBench di-
+On the VeriSoftBench-Partial split used to evaluate Aris-
+                                                                      rectly reference only a modest number of items (2.3 library
+totle, Aristotle attains a 69% success rate under the Full
+                                                                      and 11.6 project dependencies on average), but their transi-
+Context configuration. However, as noted in Section 4.4,
+                                                                      tive closure expands to 11.2 library dependencies and 37.9
+this evaluation includes same-file helper lemmas that are
+                                                                      project dependencies per theorem. In contrast, Verina tasks
+used by the ground-truth proof. Since such local lemmas
+                                                                      involve only shallow local dependencies (around 3 transitive
+often encode key intermediate steps, their inclusion likely
+                                                                      dependencies on average), while PutnamBench theorems
+contributes substantially to Aristotle’s performance. We
+                                                                      are entirely self-contained with zero project dependencies.
+note that on this subset, Gemini-3-Pro achieves only slightly
+
+                                                                  6
+                            VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+
+                          Provided Context
+     ...
+     theorem soundness_to_u64 {x y z : U64 (F p)}
+       (x_norm : x.Normalized) (y_norm : y.Normalized)
+       (h_eq : z.x0.val = x.x0.val ^^^ y.x0.val ∧
+               z.x1.val = x.x1.val ^^^ y.x1.val ∧
+               z.x2.val = x.x2.val ^^^ y.x2.val ∧
+               z.x3.val = x.x3.val ^^^ y.x3.val ∧
+               z.x4.val = x.x4.val ^^^ y.x4.val ∧
+               z.x5.val = x.x5.val ^^^ y.x5.val ∧
+               z.x6.val = x.x6.val ^^^ y.x6.val ∧
+               z.x7.val = x.x7.val ^^^ y.x7.val
+       ) : Spec { x, y } z
+
+     theorem soundness :
+        Soundness (F p) elaborated Assumptions Spec
+     ...
+
+
+                           Task Theorem                                    Figure 6. Cumulative distribution of theorem dependency depth
+       -- elided local helper lemma                                        (log scale). Line shows mean across repositories; shading indicates
+       theorem soundness_to_u32 {x y z : U32 (F p)}
+         (x_norm : x.Normalized) (y_norm : y.Normalized)
+                                                                           ±1 std.
+         (h_eq : z.x0.val = x.x0.val ^^^ y.x0.val ∧
+                 z.x1.val = x.x1.val ^^^ y.x1.val ∧
+                 z.x2.val = x.x2.val ^^^ y.x2.val ∧
+                                                                           benchmarks in a controlled way, ground-truth proofs are not
+                 z.x3.val = x.x3.val ^^^ y.x3.val                          sufficient: many benchmarks do not provide them, and even
+          ) : Spec { x, y } z
+                                                                           when available, human-written proofs and prover-specific
+     theorem soundness :
+         Soundness (F p) elaborated Assumptions Spec                       proof search can introduce stylistic confounders. We there-
+                                                                           fore perform a cross-dataset comparison (e.g., Verina vs.
+                                                                           VeriSoftBench) using Gemini-3-Pro generated proofs that
+Figure 5. Although the target theorem is for 32-bit unsigned               successfully verify in both datasets. This holds the prover
+integers (U32), the context provides a structurally identical U64          constant and allows observed differences to be attributed
+soundness proof that factors bitwise equalities into a helper lemma
+                                                                           primarily to the theorems themselves.
+and then applies it. Even though the actual soundness to u32
+helper is not provided, this recurring abstraction pattern allows          Under this controlled comparison, Verina and VeriSoft-
+the model to anticipate its existence and shape and to replicate the
+                                                                           Bench exhibit systematically different tactic profiles. In
+same proof structure for the smaller word size.
+                                                                           Verina, 43% of correct Gemini-generated proofs begin with
+However, dependency size alone does not fully capture struc-               unfold, and 81% close goals using simp, reflecting a pat-
+tural difficulty. Figure 6 shows the dependency nesting                    tern of definition unfolding followed by automation. Over-
+depth — i.e., the length of the longest chain in the transi-               all, automation tactics account for 51% of tactic usage in
+tive dependency graph induced by referenced definitions                    Verina proofs, and 21% of proofs are completed by essen-
+and lemmas. The distribution reveals that many theorems                    tially “one-shot” automation. In contrast, Gemini-generated
+require reasoning across long dependency chains: roughly                   proofs for VeriSoftBench rely far less on automation (21%
+half of the theorems have nesting depth ≥ 5, and around                    of tactics). They also more often involve case analysis, with
+10% exceed depth 12. This indicates that relevant infor-                   67% exhibiting branching structure compared to 42% in
+mation is often separated from the theorem statement by                    Verina.
+multiple layers of intermediate abstractions.
+These two observations highlight an important distinction. A               6. Related Work
+theorem may depend on dozens of definitions (large depen-
+                                                                           Automated Formal Verification. Formal verification pro-
+dency size), but the key difficulty arises when those depen-
+                                                                           vides strong assurance for software systems, but proof ef-
+dencies are arranged in long chains, where each step builds
+                                                                           fort remains a significant bottleneck. Some tools, such
+on the previous one. Our correlation analysis supports this
+                                                                           as Dafny (Leino, 2010) and Verus (Lattuada et al., 2023),
+interpretation: transitive dependency count is moderately
+                                                                           allow developers to write programs alongside their specifi-
+negatively correlated with full-repository success (Spear-
+                                                                           cations, which are then discharged using automated SMT
+man r = −0.359, p < 0.001), while direct dependency
+                                                                           solvers. However, as full automation is not always possi-
+count shows no significant correlation . This suggests that
+                                                                           ble, many high-assurance efforts rely on interactive theorem
+models struggle not with the presence of many nearby sym-
+                                                                           provers such as Lean, Rocq/Coq, and Isabelle, where de-
+bols, but with the need to follow multi-step derivation paths
+                                                                           velopers manually construct machine-checked proofs in a
+through layered abstractions.
+                                                                           tactic-guided workflow. This approach has enabled large-
+Comparison of Proof Patterns. Beyond dependency struc-                     scale verified artifacts including CompCert (Leroy, 2009),
+ture, VeriSoftBench also differs from prior datasets in the                seL4 (Klein et al., 2009), and CakeML (Kumar et al., 2014).
+proof patterns it induces. To compare proof styles across                  To reduce the engineering overhead of such efforts, prior
+
+                                                                       7
+                            VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+                                                Avg Lib Total     Avg Lib Total     Avg Proj Deps     Avg Proj Deps
+                                       Thms
+                                                  (Direct)         (Transitive)       (Direct)         (Transitive)
+                     Benchmark
+                     Ours               500          2.31               11.19           11.58              37.93
+                     Verina             189          0.01                0.01             3                  3
+                     PutnamBench        662          3.31                3.31            0.00               0.00
+Table 4. Comparison of dependency footprint across theorem proving benchmarks. Library dependencies count references to external
+libraries (e.g., Mathlib). Project dependencies count references to definitions and lemmas from the same repository (but excluding
+same-file helper lemmas). Direct refers to items explicitly referenced by the theorem statement or proof; transitive includes the recursive
+closure of all such dependencies.
+
+work has proposed domain-specific verification frameworks,               surrounding project context but it remains focused on math-
+such as Iris (Jung et al., 2015) for concurrent separation               ematical theorems rather than repository-scale verification.
+logic, Verdi (Wilcox et al., 2015) for distributed systems,
+                                                                         LLM-based prover systems. Neural proof automation has
+and Loom (Gladshtein et al., 2026) for constructing multi-
+                                                                         progressed from early LLM-guided tactic prediction and
+modal verifiers. While these frameworks provide reusable
+                                                                         search (Lample et al., 2022; Polu et al., 2022; Polu &
+abstractions and automation, they still require significant
+                                                                         Sutskever, 2020) to agentic systems that interact with a
+manual effort.
+                                                                         proof assistant and refine candidates using verifier feed-
+Benchmarks for correctness and verification. Early                       back. For example, COPRA (Thakur et al., 2024) and
+benchmarks such as HumanEval (Chen et al., 2021) and                     AxProver (Breen et al., 2025) run an iterative generate-
+MBPP (Austin et al., 2021) validate LLM-generated code                   check-repair loop, using compiler feedback to correct failed
+by unit tests on standalone, interview-style tasks but do not            steps. DSP (Jiang et al., 2023) complements this paradigm
+offer any formal correctness guarantee. More verification-               by constructing an intermediate sketch aligned with infor-
+oriented suites include DafnyBench (Loughridge et al.,                   mal reasoning. A parallel line of work emphasizes premise
+2024) which targets invariant and contract synthesis in                  selection and retrieval: LeanDojo (Yang et al., 2023) pro-
+Dafny and MiniCodeProps (Lohn & Welleck, 2024) which                     vides a Lean environment and retrieval-based proving over
+evaluates Lean proofs for small functional programs. A                   large libraries and Rango (Thompson et al., 2025) applies
+third line of work targets “veri-coding,” where models                   retrieval-augmented proving in Coq by retrieving both rel-
+generate code together with machine-checked proofs. Ex-                  evant premises and similar proofs. Alongside these agen-
+amples include FVAPPS (Dougherty & Mehta, 2025),                         tic frameworks, specialized prover models combine large-
+CLEVER (Thakur et al., 2025), and Verina (Ye et al., 2025).              scale pretraining on formal corpora with verifier-guided
+Complementing these benchmarks, VeriSoftBench focuses                    reinforcement learning. Examples in this category include
+on proof obligations embedded in repository-scale Lean                   Llemma (Azerbayev et al., 2024), Kimina-Prover (Wang
+developments with substantial project-specific context.                  et al., 2025), DeepSeek-Prover-V2 (Ren et al., 2025), Gödel-
+                                                                         Prover-V2 (Lin et al., 2025), and SeedProver (Chen et al.,
+General ITP benchmarks. A large fraction of widely                       2025). Hilbert-Prover (Varambally et al., 2025) further in-
+used benchmarks for Lean proof automation target formal-                 tegrates hierarchical decomposition with verifier feedback
+ized mathematics, spanning competition-level to textbook-                and informal reasoning. Despite significant advances, these
+style problems. MiniF2F (Zheng et al., 2022) focuses on                  systems are still predominantly evaluated on mathematics-
+Olympiad and contest problems, while ProofNet (Azerbayev                 centric benchmarks, motivating evaluation in repository-
+et al., 2023) pairs Lean 3 theorem statements with natural-              scale verification benchmarks like VeriSoftBench.
+language statements drawn from undergraduate mathemat-
+ics texts. At larger scale, LeanDojo (Yang et al., 2023)                 7. Conclusion
+provides infrastructure and a benchmark extracted from
+Mathlib, and PutnamBench (Tsoukalas et al., 2024) of-                    We introduced VeriSoftBench, a benchmark suite of 500
+fers hand-written formalizations of Putnam Competition                   Lean 4 proof obligations from open-source formal-methods
+problems across multiple proof assistants. These suites are              developments, packaged to preserve project context and
+effective for measuring mathematical reasoning and library-              cross-file dependencies. Our experiments show that current
+based lemma selection, but they largely operate within a                 frontier LLMs and specialized provers achieve only modest
+shared mathematical ecosystem such as MathLib where the                  success, with performance degrading as transitive depen-
+core abstractions are globally available and recur across                dency structure grows. While curated context improves over
+tasks. The miniCTX effort (Hu et al., 2025) moves toward                 full-repository context, the gains are limited and leave sub-
+more realistic, long-context theorem proving by supplying                stantial headroom even under oracle-style context selection.
+
+
+                                                                    8
+                          VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+Overall, these results indicate that verification proofs pose          Chen, M., Tworek, J., Jun, H., Yuan, Q., de Oliveira Pinto,
+challenges that are not well captured by Mathlib-centric                 H. P., Kaplan, J., Edwards, H., Burda, Y., Joseph, N.,
+mathematics benchmarks, and point to the need for methods                Brockman, G., Ray, A., Puri, R., Krueger, G., Petrov,
+that can navigate large repositories and reason effectively              M., Khlaaf, H., Sastry, G., Mishkin, P., Chan, B., Gray,
+through layered, project-specific abstractions.                          S., Ryder, N., Pavlov, M., Power, A., Kaiser, L., Bavar-
+                                                                         ian, M., Winter, C., Tillet, P., Such, F. P., Cummings,
+Impact Statement                                                         D., Plappert, M., Chantzis, F., Barnes, E., Herbert-
+                                                                         Voss, A., Guss, W. H., Nichol, A., Paino, A., Tezak,
+This paper presents work whose goal is to advance the field              N., Tang, J., Babuschkin, I., Balaji, S., Jain, S., Saun-
+of Machine Learning. There are many potential societal                   ders, W., Hesse, C., Carr, A. N., Leike, J., Achiam,
+consequences of our work, none which we feel must be                     J., Misra, V., Morikawa, E., Radford, A., Knight, M.,
+specifically highlighted here.                                           Brundage, M., Murati, M., Mayer, K., Welinder, P., Mc-
+                                                                         Grew, B., Amodei, D., McCandlish, S., Sutskever, I., and
+References                                                               Zaremba, W. Evaluating large language models trained
+                                                                         on code, 2021. URL https://arxiv.org/abs/
+Achim, T., Best, A., Bietti, A., Der, K., Fédérico, M., Gukov,         2107.03374.
+  S., Halpern-Leistner, D., Henningsgard, K., Kudryashov,
+  Y., Meiburg, A., Michelsen, M., Patterson, R., Rodriguez,            Dougherty, Q. and Mehta, R. Proving the coding interview:
+  E., Scharff, L., Shanker, V., Sicca, V., Sowrirajan, H.,               A benchmark for formally verified code generation, 2025.
+  Swope, A., Tamas, M., Tenev, V., Thomm, J., Williams,                  URL https://arxiv.org/abs/2502.05714.
+  H., and Wu, L. Aristotle: Imo-level automated theorem
+                                                                       Gladshtein, V., Pı̂rlea, G., and Sergey, I. Small scale re-
+  proving, 2025. URL https://arxiv.org/abs/
+                                                                         flection for the working lean user, 2024. URL https:
+  2510.01346.
+                                                                         //arxiv.org/abs/2403.12733.
+Austin, J., Odena, A., Nye, M., Bosma, M., Michalewski,                Gladshtein, V., Pı̂rlea, G., Zhao, Q., Kurin, V., and
+  H., Dohan, D., Jiang, E., Cai, C., Terry, M., Le, Q., and              Sergey, I. Foundational multi-modal program verifiers.
+  Sutton, C. Program synthesis with large language mod-                  Proc. ACM Program. Lang., 10(POPL), January 2026.
+  els, 2021. URL https://arxiv.org/abs/2108.                             doi: 10.1145/3776719. URL https://doi.org/10.
+  07732.                                                                 1145/3776719.
+
+Azerbayev, Z., Piotrowski, B., Schoelkopf, H., Ayers, E. W.,           Hu, J., Zhu, T., and Welleck, S. minictx: Neural theorem
+  Radev, D., and Avigad, J. Proofnet: Autoformalizing and                proving with (long-)contexts, 2025. URL https://
+  formally proving undergraduate-level mathematics, 2023.                arxiv.org/abs/2408.03350.
+  URL https://arxiv.org/abs/2302.12433.
+                                                                       Jiang, A. Q., Li, W., Tworkowski, S., Czechowski, K.,
+Azerbayev, Z., Schoelkopf, H., Paster, K., Santos, M. D.,                 Odrzygóźdź, T., Miłoś, P., Wu, Y., and Jamnik, M.
+  McAleer, S., Jiang, A. Q., Deng, J., Biderman, S., and                  Thor: Wielding hammers to integrate language models
+ Welleck, S. Llemma: An open language model for math-                     and automated theorem provers, 2022. URL https:
+  ematics, 2024. URL https://arxiv.org/abs/                               //arxiv.org/abs/2205.10893.
+  2310.10631.
+                                                                       Jiang, A. Q., Welleck, S., Zhou, J. P., Li, W., Liu, J., Jamnik,
+                                                                          M., Lacroix, T., Wu, Y., and Lample, G. Draft, sketch,
+Breen, B., Tredici, M. D., McCarran, J., Mijares, J. A.,
+                                                                          and prove: Guiding formal theorem provers with infor-
+  Yin, W. W., Sulimany, K., Taylor, J. M., Koppens, F.
+                                                                          mal proofs, 2023. URL https://arxiv.org/abs/
+  H. L., and Englund, D. Ax-prover: A deep reasoning
+                                                                          2210.12283.
+  agentic framework for theorem proving in mathematics
+  and quantum physics, 2025. URL https://arxiv.                        Jung, R., Swasey, D., Sieczkowski, F., Svendsen, K., Turon,
+  org/abs/2510.12787.                                                    A., Birkedal, L., and Dreyer, D. Iris: Monoids and invari-
+                                                                         ants as an orthogonal basis for concurrent reasoning. SIG-
+Chen, J., Chen, W., Du, J., Hu, J., Jiang, Z., Jie, A., Jin, X.,         PLAN Not., 50(1):637–650, January 2015. ISSN 0362-
+  Jin, X., Li, C., Shi, W., Wang, Z., Wang, M., Wei, C., Wei,            1340. doi: 10.1145/2775051.2676980. URL https:
+  S., Xin, H., Yang, F., Gao, W., Yuan, Z., Zhan, T., Zheng,             //doi.org/10.1145/2775051.2676980.
+  Z., Zhou, T., and Zhu, T. H. Seed-prover 1.5: Mastering
+  undergraduate-level theorem proving via learning from                Klein, G., Elphinstone, K., Heiser, G., Andronick, J.,
+  experience, 2025. URL https://arxiv.org/abs/                           Cock, D., Derrin, P., Elkaduwe, D., Engelhardt, K.,
+  2512.17260.                                                            Kolanski, R., Norrish, M., Sewell, T., Tuch, H., and
+
+                                                                   9
+                         VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+  Winwood, S. sel4: formal verification of an os ker-                  lean, 2025. URL https://arxiv.org/abs/2505.
+  nel. In Proceedings of the ACM SIGOPS 22nd Sym-                      15796.
+  posium on Operating Systems Principles, SOSP ’09,
+  pp. 207–220, New York, NY, USA, 2009. Associa-                     Moura, L. d. and Ullrich, S. The lean 4 theorem prover and
+  tion for Computing Machinery. ISBN 9781605587523.                   programming language. In Platzer, A. and Sutcliffe, G.
+  doi: 10.1145/1629575.1629596. URL https://doi.                      (eds.), Automated Deduction – CADE 28, pp. 625–635,
+  org/10.1145/1629575.1629596.                                        Cham, 2021. Springer International Publishing. ISBN
+                                                                      978-3-030-79876-5.
+Kumar, R., Myreen, M. O., Norrish, M., and Owens, S.
+                                                                     Paulson, L. and Blanchette, J. Three years of experience
+  CakeML: A verified implementation of ML. In Principles
+                                                                       with sledgehammer, a practical link between automatic
+  of Programming Languages (POPL), pp. 179–191. ACM
+                                                                       and interactive theorem provers. 02 2015. doi: 10.29007/
+  Press, January 2014. doi: 10.1145/2535838.2535841.
+                                                                       tnfd.
+  URL https://cakeml.org/popl14.pdf.
+                                                                     Polu, S. and Sutskever, I. Generative language modeling
+Lample, G., Lachaux, M.-A., Lavril, T., Martinet, X., Hayat,
+                                                                       for automated theorem proving, 2020. URL https:
+  A., Ebner, G., Rodriguez, A., and Lacroix, T. Hypertree
+                                                                       //arxiv.org/abs/2009.03393.
+  proof search for neural theorem proving, 2022. URL
+  https://arxiv.org/abs/2205.11491.                                  Polu, S., Han, J. M., Zheng, K., Baksys, M., Babuschkin,
+                                                                       I., and Sutskever, I. Formal mathematics statement cur-
+Lattuada, A., Hance, T., Cho, C., Brun, M., Subasinghe, I.,
+                                                                       riculum learning, 2022. URL https://arxiv.org/
+  Zhou, Y., Howell, J., Parno, B., and Hawblitzel, C. Verus:
+                                                                       abs/2202.01344.
+  Verifying rust programs using linear ghost types (ex-
+  tended version), 2023. URL https://arxiv.org/                      Ren, Z. Z., Shao, Z., Song, J., Xin, H., Wang, H., Zhao,
+  abs/2303.05491.                                                      W., Zhang, L., Fu, Z., Zhu, Q., Yang, D., Wu, Z. F.,
+                                                                       Gou, Z., Ma, S., Tang, H., Liu, Y., Gao, W., Guo, D.,
+Leino, K. R. M. Dafny: An automatic program verifier for               and Ruan, C. Deepseek-prover-v2: Advancing formal
+  functional correctness. In Clarke, E. M. and Voronkov,               mathematical reasoning via reinforcement learning for
+  A. (eds.), Logic for Programming, Artificial Intelligence,           subgoal decomposition, 2025. URL https://arxiv.
+  and Reasoning, pp. 348–370, Berlin, Heidelberg, 2010.                org/abs/2504.21801.
+  Springer Berlin Heidelberg. ISBN 978-3-642-17511-4.
+                                                                     Rossel, M. lean-egg: An equality saturation tactic for
+Leroy, X. Formal verification of a realistic compiler. Com-            lean. https://github.com/marcusrossel/
+  mun. ACM, 52(7):107–115, July 2009. ISSN 0001-                       lean-egg, 2024. GitHub repository, Apache-2.0 li-
+  0782. doi: 10.1145/1538788.1538814. URL https:                       cense.
+  //doi.org/10.1145/1538788.1538814.
+                                                                     Thakur, A., Tsoukalas, G., Wen, Y., Xin, J., and Chaud-
+Lin, Y., Tang, S., Lyu, B., Yang, Z., Chung, J.-H., Zhao,              huri, S. An in-context learning agent for formal theorem-
+  H., Jiang, L., Geng, Y., Ge, J., Sun, J., Wu, J., Gesi, J.,          proving, 2024. URL https://arxiv.org/abs/
+  Lu, X., Acuna, D., Yang, K., Lin, H., Choi, Y., Chen, D.,            2310.04353.
+  Arora, S., and Jin, C. Goedel-prover-v2: Scaling formal
+  theorem proving with scaffolded data synthesis and self-           Thakur, A., Lee, J., Tsoukalas, G., Sistla, M., Zhao, M.,
+  correction, 2025. URL https://arxiv.org/abs/                         Zetzsche, S., Durrett, G., Yue, Y., and Chaudhuri, S.
+  2508.03613.                                                          Clever: A curated benchmark for formally verified code
+                                                                       generation, 2025. URL https://arxiv.org/abs/
+Lohn, E. and Welleck, S. minicodeprops: a minimal                      2505.13938.
+  benchmark for proving code properties, 2024. URL
+  https://arxiv.org/abs/2406.11915.                                  The Coq Development Team. The Coq Proof Assis-
+                                                                       tant Reference Manual. INRIA, version 8.2 edition,
+Loughridge, C., Sun, Q., Ahrenbach, S., Cassano, F., Sun,              2008.     https://rocq-prover.org/doc/V8.
+  C., Sheng, Y., Mudide, A., Misu, M. R. H., Amin, N.,                 2pl3/refman/Reference-Manual001.html.
+  and Tegmark, M. Dafnybench: A benchmark for formal
+  software verification, 2024. URL https://arxiv.                    Thompson, K., Saavedra, N., Carrott, P., Fisher, K., Sanchez-
+  org/abs/2406.08467.                                                  Stern, A., Brun, Y., Ferreira, J. a. F., Lerner, S., and
+                                                                       First, E. Rango: Adaptive retrieval-augmented proving
+Mohamed, A., Mascarenhas, T., Khan, H., Barbosa, H.,                   for automated software verification. In Proceedings of
+ Reynolds, A., Qian, Y., Tinelli, C., and Barrett, C.                  the IEEE/ACM 47th International Conference on Soft-
+ Lean-smt: An smt tactic for discharging proof goals in                ware Engineering, ICSE ’25, pp. 347–359. IEEE Press,
+
+                                                                10
+                         VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+  2025. ISBN 9798331505691. doi: 10.1109/ICSE55347.                  Zheng, K., Han, J. M., and Polu, S. Minif2f: a cross-system
+  2025.00161. URL https://doi.org/10.1109/                             benchmark for formal olympiad-level mathematics, 2022.
+  ICSE55347.2025.00161.                                                URL https://arxiv.org/abs/2109.00110.
+
+Tsoukalas, G., Lee, J., Jennings, J., Xin, J., Ding, M.,
+  Jennings, M., Thakur, A., and Chaudhuri, S. Putnam-
+  bench: Evaluating neural theorem-provers on the put-
+  nam mathematical competition, 2024. URL https:
+  //arxiv.org/abs/2407.11214.
+
+Varambally, S., Voice, T., Sun, Y., Chen, Z., Yu, R., and Ye,
+  K. Hilbert: Recursively building formal proofs with in-
+  formal reasoning, 2025. URL https://arxiv.org/
+  abs/2509.22819.
+
+Verified-zkEVM.     clean: Lean circuit dsl for zero-
+  knowledge circuits.       https://github.com/
+  Verified-zkEVM/clean, 2025. GitHub repository;
+  an embedded Lean4 DSL for writing and formally
+  verifying ZK circuits (ARB, PLONK, R1CS) as part of
+  the Verified-zkEVM project.
+
+Wang, H., Unsal, M., Lin, X., Baksys, M., Liu, J., San-
+ tos, M. D., Sung, F., Vinyes, M., Ying, Z., Zhu, Z.,
+ Lu, J., Saxcé, H. d., Bailey, B., Song, C., Xiao, C.,
+ Zhang, D., Zhang, E., Pu, F., Zhu, H., Liu, J., Bayer,
+ J., Michel, J., Yu, L., Dreyfus-Schmidt, L., Tunstall,
+ L., Pagani, L., Machado, M., Bourigault, P., Wang, R.,
+ Polu, S., Barroyer, T., Li, W.-D., Niu, Y., Fleureau, Y.,
+ Hu, Y., Yu, Z., Wang, Z., Yang, Z., Liu, Z., and Li, J.
+ Kimina-prover preview: Towards large formal reason-
+ ing models with reinforcement learning. 2025. URL
+ http://arxiv.org/abs/2504.11354.
+
+Wenzel, M., Paulson, L. C., and Nipkow, T. The isabelle
+ framework. In Mohamed, O. A., Muñoz, C., and Tahar, S.
+ (eds.), Theorem Proving in Higher Order Logics, pp. 33–
+ 38, Berlin, Heidelberg, 2008. Springer Berlin Heidelberg.
+ ISBN 978-3-540-71067-7.
+
+Wilcox, J. R., Woos, D., Panchekha, P., Tatlock, Z., Wang,
+ X., Ernst, M. D., and Anderson, T. Verdi: a framework for
+ implementing and formally verifying distributed systems.
+ SIGPLAN Not., 50(6):357–368, June 2015. ISSN 0362-
+ 1340. doi: 10.1145/2813885.2737958. URL https:
+ //doi.org/10.1145/2813885.2737958.
+
+Yang, K., Swope, A. M., Gu, A., Chalamala, R., Song,
+  P., Yu, S., Godil, S., Prenger, R., and Anandkumar, A.
+  Leandojo: Theorem proving with retrieval-augmented
+  language models, 2023. URL https://arxiv.org/
+  abs/2306.15626.
+
+Ye, Z., Yan, Z., He, J., Kasriel, T., Yang, K., and Song, D.
+  Verina: Benchmarking verifiable code generation, 2025.
+  URL https://arxiv.org/abs/2505.23135.
+
+                                                                11
+                     VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+A. Prompts
+ Prompt for Proof Generation (Curated Context Mode)
+
+ You are an expert Lean4 and formal verification agent proving a Lean4 theorem. Your
+     output **must** strictly adhere to the specified format.
+
+ ### Input Information
+ You will receive the following components, relevant to the target theorem:
+ * <used_lib_defs>...</used_lib_defs>: Imported library definitions directly used by the
+      theorem.
+ * <used_repo_defs>...</used_repo_defs>: Definitions from the local project (but outside
+      the current file), directly or transitively used by the theorem.
+ * <lib_lemmas>...</lib_lemmas>: Imported library lemmas/theorems that may assist the
+     proof.
+ * <repo_lemmas>...</repo_lemmas>: Lemmas/theorems defined in the local project outside
+     this file.
+ * <local_ctx>...</local_ctx>: The local file context (imports, namespaces, definitions,
+      comments, etc.) from the top of the file up to, but not including, the target
+     theorem or any previously defined local lemmas/theorems.
+ * <target_theorem>...</target_theorem>: The target theorem statement, ending with ‘:=‘.
+
+ **Notes**
+ 1. Definitions include their full bodies, but for definitions whose bodies contain
+     proofs, the proof parts are replaced by ‘admit‘ (i.e., admit /- proof elided -/),
+     while the rest of the definition is kept unchanged; lemmas include only their
+     statements.
+ 2. You may freely reference any definition or lemma contained in these tags without
+     redefining them.
+ 3. The tags for used definitions and helpful lemmas (used_lib_defs, used_repo_defs,
+     lib_lemmas, repo_lemmas) may be omitted if empty.
+
+ ### Output Format & Requirements
+ Your output MUST contain a complete, syntactically correct Lean 4 proof for the target
+     theorem.
+
+ **Strict Output Structure:**
+ <reasoning>
+ ...
+ </reasoning>
+
+ <lean4_invented_lemmas>
+ -- each lemma is a full Lean 4 declaration with a complete proof
+ ...
+ </lean4_invented_lemmas>
+
+ <lean4_proof>
+ -- Lean 4 proof body of the target theorem
+ ...
+ </lean4_proof>
+
+ **Requirements:**
+ 1. <reasoning> and <lean4_invented_lemmas> are OPTIONAL. Include them only if they aid
+     proof construction.
+ 2. <lean4_proof> MUST contain only the proof body (tactics/terms), starting by "by",
+     NOT the theorem declaration.
+ 3. <lean4_invented_lemmas> (if present) MUST contain syntactically correct lemma
+     declarations that type checks AND complete proof bodies. Defining a lemma using ‘
+     axiom‘ is NOT allowed.
+ 4. <reasoning> contains high-level proof planning.
+
+
+
+
+                                                       12
+                     VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+Prompt for Proof Generation (Curated Context Mode) - Cont
+
+5. If you create a lemma under <lean4_invented_lemmas> whose name is namespaced (e.g.,
+    X.Y.Z), you MUST always refer to it using its fully qualified name. Do NOT rely on
+    shortened names. For example, write rw [X.Y.Z], not rw [Z] for invented lemmas.
+6. All Lean 4 code MUST be syntactically correct. No ‘sorry‘, ‘admit‘, or non-Lean text
+    . Comments allowed using ‘--‘ or ‘/- ... -/‘.
+7. Follow the tags and structure EXACTLY. No extra text before, between, or after the
+    sections.
+8. Do NOT wrap invented lemmas in a ‘mutual‘ block unless they have genuine mutual
+    recursion. Declare each lemma independently.
+
+### Examples are provided here (example input are under "User Prompt", and example
+    assistant response are under "Agent Response"):
+{}
+
+### Your task:
+{}
+
+
+
+
+                                                       13
+                     VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+Prompt for Proof Generation (Full Context Mode)
+
+You are an expert Lean4 and formal verification agent proving a Lean4 theorem. Your
+    output **must** strictly adhere to the specified format.
+
+### Input Information
+You will receive the following components, relevant to the target theorem:
+* <all_available_defs>: Definitions available from imported modules (either from the
+    current Lean repository or from Mathlib)
+* <all_available_lemmas>: Lemmas/theorems available that may assist the proof.
+* <local_ctx>...</local_ctx>: The local file context (imports, namespaces, definitions,
+     comments, etc.) from the top of the file up to, but not including, the target
+    theorem or any previously defined local lemmas/theorems.
+* <target_theorem>...</target_theorem>: The target theorem statement, ending with ‘:=‘.
+
+**Notes**
+1. Definitions include their full bodies, but for definitions whose bodies contain
+    proofs, the proof parts are replaced by ‘admit‘ (i.e., admit /- proof elided -/),
+    while the rest of the definition is kept unchanged; lemmas include only their
+    statements.
+2. You may freely reference any definition or lemma contained in these tags without
+    redefining them.
+3. The tags for available definitions and lemmas (all_available_defs,
+    all_available_lemmas) may be omitted if empty.
+
+### Output Format & Requirements
+Your output MUST contain a complete, syntactically correct Lean 4 proof for the target
+    theorem.
+
+**Strict Output Structure:**
+<reasoning>
+...
+</reasoning>
+
+<lean4_invented_lemmas>
+-- each lemma is a full Lean 4 declaration with a complete proof
+...
+</lean4_invented_lemmas>
+
+<lean4_proof>
+-- Lean 4 proof body of the target theorem
+...
+</lean4_proof>
+
+**Requirements:**
+1. <reasoning> and <lean4_invented_lemmas> are OPTIONAL. Include them only if they aid
+    proof construction.
+2. <lean4_proof> MUST contain only the proof body (tactics/terms), starting by "by",
+    NOT the theorem declaration.
+3. <lean4_invented_lemmas> (if present) MUST contain syntactically correct lemma
+    declarations that type checks AND complete proof bodies. Defining a lemma using ‘
+    axiom‘ is NOT allowed.
+4. <reasoning> contains high-level proof planning.
+5. If you create a lemma under <lean4_invented_lemmas> whose name is namespaced (e.g.,
+    X.Y.Z), you MUST always refer to it using its fully qualified name. Do NOT rely on
+    shortened names. For example, write rw [X.Y.Z], not rw [Z] for invented lemmas.
+6. All Lean 4 code MUST be syntactically correct. No ‘sorry‘, ‘admit‘, or non-Lean text
+    . Comments allowed using ‘--‘ or ‘/- ... -/‘.
+7. Follow the tags and structure EXACTLY. No extra text before, between, or after the
+    sections.
+8. Do NOT wrap invented lemmas in a ‘mutual‘ block unless they have genuine mutual
+    recursion. Declare each lemma independently.
+
+
+
+
+                                                       14
+                     VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+Prompt for Proof Generation (Full Context Mode) - Cont
+
+### Examples are provided here (example input are under "User Prompt", and example
+    assistant response are under "Agent Response"):
+{}
+
+### Your task:
+{}
+
+
+
+
+                                                         15
+                     VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+Prompt for Proof Repair
+
+You are an expert Lean 4 and formal verification agent fixing broken Lean 4 code. Your
+    output **must** strictly adhere to the specified format.
+
+### Input Information
+You will receive the following components:
+* <code_before_error>...</code_before_error>: supporting Lean 4 context, including
+    import statements, variables, and any definitions that precede the broken code.
+* <potential_broken_lemmas>...</potential_broken_lemmas>: one or more lemma
+    declarations and their proofs that may contain errors. This section is optional.
+* <potential_broken_theorem>...</potential_broken_theorem>: the theorem declaration and
+     proof that may contain errors. Exactly one theorem will be provided here.
+* <err_msg>...</err_msg>: one or more error messages. Each error will be wrapped in <
+    err_<id>>...</err_<id>> tags. The content inside is structured as: <Code snippet
+    where the error occurs>\n ErrorMsg: <actual message from the Lean compiler>
+
+*Repair Requirements*
+1. Identify where and why the error occurs based on the text given in each error
+    message.
+2. If an error is in a lemma, you may modify both the lemma statement (declaration) and
+     its proof.
+3. If an error is in the theorem, you MUST NOT change the theorem statement; you may
+    only modify its proof.
+4. The modification should be the minimal, most idiomatic Lean 4 change necessary to
+    resolve the error.
+5. You must prioritize solving the errors instead of avoiding them.
+
+### Output Format & Requirements
+Your output MUST contain Lean 4 code that is syntactically correct.
+
+**Strict Output Structure:**
+<fixed_lean4_lemmas>
+-- All candidate lemmas: each contains a full statement/declaration and proof.
+</fixed_lean4_lemmas>
+
+<fixed_lean4_thm_proof>
+-- Lean 4 proof body (term or tactic block) for the potentially broken theorem,
+-- WITHOUT repeating its declaration.
+</fixed_lean4_thm_proof>
+
+**Output Requirements:**
+1. Omit a section entirely if you make no changes to that component. E.g., if all
+    lemmas are correct, omit <fixed_lean4_lemmas>. If the theorem proof is correct,
+    omit <fixed_lean4_thm_proof>
+2. ‘<fixed_lean4_lemmas>‘ (if present) MUST containfull, type-checking Lean 4 lemma
+    declarations and complete proofs.
+   - You MUST output every candidate lemma provided in <potential_broken_lemmas>
+3. ‘<fixed_lean4_thm_proof>‘ (if present) MUST contain only the proof body (term or
+    tactics), NOT the theorem declaration, because you are NOT allowed to modify the
+    theorem declaration.
+4. Follow the tags and structure EXACTLY. No extra text before, between, or after the
+    sections.
+5. The output MUST NOT use keywords that skip the proof (e.g., admit, sorry).
+
+Here is your error fixing task:
+{}
+
+
+
+
+                                                       16
+                           VeriSoftBench: Repository-Scale Formal Verification Benchmarks for Lean
+
+B. Repository Statistics and Dependency Analysis
+
+                                 Project Dependencies                  Library Dependencies                   Success Rate (%)
+Repository                    Direct             Trans.             Direct             Trans.             Curated         Full Repo
+ArkLib                          8.8               38.0                16.6              79.3                25.0             15.0
+capless-lean                   48.2               91.0                 0.3               3.7                 51.7             46.7
+clean                          12.7               53.9                 6.9              27.9                30.5             25.4
+lean-mlir                      12.5               51.3                 7.6              33.7                 10.2              6.8
+VCV-io                          6.0               17.1                 7.6              18.8                70.8             66.7
+iris-lean                      19.3               46.0                 0.7               8.1                 33.3             20.8
+loom                            8.5               23.5                 5.2              26.8                37.5             25.0
+splean                         13.3               33.5                 8.1              25.7                 29.2             20.8
+TTBFL                          15.5               34.5                 1.1              11.0                63.6             59.1
+FVIntmax                        8.5               38.6                 7.0              25.5                 19.0             14.3
+juvix-lean                     33.1               28.4                 0.8              14.4                 65.0             60.0
+lean-formal-reasoning           7.8               14.2                 0.3               1.6                 90.0             85.0
+wadray verification             9.4               11.3                20.1              24.9                 50.0             50.0
+LeroyCompilerVerif             12.3               25.7                 1.3              14.2                 26.3             21.1
+CvxLean                         5.2               11.3                 9.7              30.3                 55.6             55.6
+pcf-lean                        6.6               25.0                 1.4               8.0                 57.1             71.4
+LeanExprEvaluator              12.3               16.7                 3.3              26.0                100.0            66.7
+veil                           11.0               13.2                 0.7               6.8                100.0            100.0
+verified-compiler               7.7               16.7                 2.0               8.3                 16.7             16.7
+lean-hoare                      9.5                5.5                 0.5               4.0                100.0            100.0
+IntroEffects                    4.7               19.0                 0.7              15.0                  0.0              0.0
+formal-snarks-project          17.0               27.5                78.5              99.0                  0.0              0.0
+Lentil                          5.0               15.0                 2.0               2.0                100.0            100.0
+Table 5. Repository statistics and benchmark evaluation results. Columns 2–5 detail the average direct and transitive dependencies for
+project and library components. The final columns report the success rate under two settings: Curated Context and Full Context.
+
+
+
+
+                                                                 17
+

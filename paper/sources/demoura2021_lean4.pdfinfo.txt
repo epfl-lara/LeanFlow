@@ -1,0 +1,18 @@
+Title:           The Lean 4 Theorem Prover and Programming Language
+Subject:         Automated Deduction – CADE 28, doi:10.1007/978-3-030-79876-5_37
+Keywords:        
+Author:          Leonardo de Moura
+Creator:         LaTeX with hyperref package
+Producer:        Springer
+CreationDate:    Mon Jun 21 13:10:21 2021 CEST
+ModDate:         Tue Jul  6 18:15:43 2021 CEST
+Custom Metadata: yes
+Metadata Stream: yes
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            AcroForm
+JavaScript:      no
+Pages:           11
+Encrypted:       no
+Page size:       439.37 x 666.142 pts

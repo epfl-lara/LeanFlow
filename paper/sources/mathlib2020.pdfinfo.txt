@@ -1,0 +1,18 @@
+Title:           The Lean Mathematical Library
+Subject:         -  Mathematics of computing  ->  Mathematical software; -  Security and privacy  ->  Logic and verification; 
+Keywords:        Lean, mathlib, formal library, formal proof
+Author:          The mathlib Community
+Creator:         LaTeX with acmart 2018/08/12 v1.55 Typesetting articles for the Association for Computing Machinery and hyperref 2016/06/24 v6.83q Hypertext links for LaTeX
+Producer:        pdfTeX-1.40.17
+CreationDate:    Wed Dec 18 03:03:49 2019 CET
+ModDate:         Wed Dec 18 03:03:49 2019 CET
+Custom Metadata: yes
+Metadata Stream: no
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           15
+Encrypted:       no
+Page size:       612 x 792 pts (letter)

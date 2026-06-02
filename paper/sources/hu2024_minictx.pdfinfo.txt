@@ -1,0 +1,18 @@
+Title:           
+Subject:         
+Keywords:        
+Author:          
+Creator:         LaTeX with hyperref
+Producer:        pdfTeX-1.40.25
+CreationDate:    Wed Mar  5 02:18:10 2025 CET
+ModDate:         Wed Mar  5 02:18:10 2025 CET
+Custom Metadata: yes
+Metadata Stream: no
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           25
+Encrypted:       no
+Page size:       612 x 792 pts (letter)

@@ -1,0 +1,18 @@
+Title:           FormalML: A Benchmark for Evaluating Formal Subgoal Completion in Machine Learning Theory
+Author:          Xiao-Wen Yang; Zihao Zhang; Jianuo Cao; Zhi Zhou; Zenan Li; Lan-Zhe Guo; Yuan Yao; Taolue Chen; Yu-Feng Li; Xiaoxing Ma
+Creator:         arXiv GenPDF (tex2pdf:)
+Producer:        pikepdf 8.15.1
+Custom Metadata: yes
+Metadata Stream: yes
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           26
+Encrypted:       no
+Page size:       612 x 792 pts (letter)
+Page rot:        0
+File size:       3225657 bytes
+Optimized:       no
+PDF version:     1.7
