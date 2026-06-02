@@ -1,0 +1,18 @@
+Title:           DeepSeek-Prover-V2: Advancing Formal Mathematical Reasoning via Reinforcement Learning for Subgoal Decomposition
+Author:          Z. Z. Ren; Zhihong Shao; Junxiao Song; Huajian Xin; Haocheng Wang; Wanjia Zhao; Liyue Zhang; Zhe Fu; Qihao Zhu; Dejian Yang; Z. F. Wu; Zhibin Gou; Shirong Ma; Hongxuan Tang; Yuxuan Liu; Wenjun Gao; Daya Guo; Chong Ruan
+Creator:         arXiv GenPDF (tex2pdf:)
+Producer:        pikepdf 8.15.1
+Custom Metadata: yes
+Metadata Stream: yes
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           39
+Encrypted:       no
+Page size:       595.276 x 841.89 pts (A4)
+Page rot:        0
+File size:       1887186 bytes
+Optimized:       no
+PDF version:     1.5

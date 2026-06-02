@@ -1,0 +1,18 @@
+Title:           M2F: Automated Formalization of Mathematical Literature at Scale
+Author:          Zichen Wang; Wanli Ma; Zhenyu Ming; Gong Zhang; Kun Yuan; Zaiwen Wen
+Creator:         arXiv GenPDF (tex2pdf:57610bf)
+Producer:        pikepdf 8.15.1
+Custom Metadata: yes
+Metadata Stream: yes
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           30
+Encrypted:       no
+Page size:       612 x 792 pts (letter)
+Page rot:        0
+File size:       1291329 bytes
+Optimized:       no
+PDF version:     1.7

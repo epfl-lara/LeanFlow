@@ -1,0 +1,18 @@
+Title:           Construction-Verification: A Benchmark for Applied Mathematics in Lean 4
+Author:          Bowen Yang; Yi Yuan; Chenyi Li; Ziyu Wang; Liangqi Li; Bo Zhang; Zhe Li; Zaiwen Wen
+Creator:         arXiv GenPDF (tex2pdf:57610bf)
+Producer:        pikepdf 8.15.1
+Custom Metadata: yes
+Metadata Stream: yes
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           27
+Encrypted:       no
+Page size:       612 x 792 pts (letter)
+Page rot:        0
+File size:       502961 bytes
+Optimized:       no
+PDF version:     1.7

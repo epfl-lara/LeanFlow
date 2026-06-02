@@ -1,0 +1,1658 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <!-- Meta tags for social media banners, these should be filled in appropriatly as they are your "business card" -->
+  <!-- Replace the content tag with appropriate information -->
+  <meta property="og:title" content="MathArena.ai" />
+  <meta property="og:description" content="MathArena: Evaluating LLMs on Uncontaminated Math Benchmarks" />
+  <meta property="description" content="MathArena: Evaluating LLMs on Uncontaminated Math Benchmarks" />
+
+  <meta property="og:url" content="https://matharena.ai/" />
+  <meta property="og:image" content="https://matharena.ai/static/images/social-card.png" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:alt" content="MathArena: Evaluating LLMs on Uncontaminated Math Benchmarks" />
+  <meta property="og:image:width" content="1211" />
+  <meta property="og:image:height" content="827" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://matharena.ai/static/images/social-card.png">
+  <meta name="twitter:title" content="MathArena.ai" />
+  <meta name="twitter:description" content="MathArena: Evaluating LLMs on Uncontaminated Math Benchmarks" />
+  <meta name="keywords"
+    content="Math, LLM, Olympiads, Competitions, Leaderboards, AI, Machine Learning, MathArena, MathArena.ai" />
+  <link rel="icon" type="image/x-icon" href="/static/images/favicon.ico">
+
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+
+
+  <title>
+    
+ArXivLean
+
+  </title>
+  <link rel="stylesheet" href="/static/css/bulma.min.css">
+  <link rel="stylesheet" href="/static/css/index.css">
+  <link rel="stylesheet" href="/static/css/answer.css">
+  <link rel="stylesheet" href="/static/css/tables.css">
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"
+    integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"
+    integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8"
+    crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+
+  <script>
+    function renderMathSafe(scope, attempt = 0) {
+      if (!scope) return;
+      if (typeof renderMathInElement !== "function") {
+        if (attempt < 20) {
+          setTimeout(() => renderMathSafe(scope, attempt + 1), 50);
+        }
+        return;
+      }
+      renderMathInElement(scope, {
+        delimiters: [
+          { left: '$$', right: '$$', display: true },
+          { left: '$', right: '$', display: false },
+          { left: '\\(', right: '\\)', display: false },
+          { left: '\\[', right: '\\]', display: true }
+        ]
+      });
+    }
+
+    function protectMathBlocks(text) {
+      const blocks = [];
+      const protectedText = text.replace(/\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\$(?:\\.|[^$\\\n])+\$/g, (match) => {
+        const token = `CODEXMATHPLACEHOLDER${blocks.length}X`;
+        blocks.push(match);
+        return token;
+      });
+      return { protectedText, blocks };
+    }
+
+    const allowedHtmlTags = new Set([
+      'a', 'b', 'blockquote', 'br', 'code', 'del', 'details', 'div', 'em',
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'li', 'mark',
+      'ol', 'p', 'pre', 's', 'small', 'span', 'strong', 'sub', 'summary',
+      'sup', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'u', 'ul'
+    ]);
+
+    function protectHtmlTags(text) {
+      const tags = [];
+      const protectedText = text.replace(/<\/?([A-Za-z][\w-]*)\b[^>]*>/g, (match, tagName) => {
+        if (!allowedHtmlTags.has(String(tagName).toLowerCase())) {
+          return match;
+        }
+        const token = `CODEXHTMLPLACEHOLDER${tags.length}X`;
+        tags.push(match);
+        return token;
+      });
+      return { protectedText, tags };
+    }
+
+    function escapePlainText(text) {
+      return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function restoreHtmlTags(text, tags) {
+      return text.replace(/CODEXHTMLPLACEHOLDER(\d+)X/g, (_, index) => tags[Number(index)] ?? '');
+    }
+
+    function restoreMathPlaceholders(text) {
+      return text.replace(
+        /CODEXMATHPLACEHOLDER(\d+)X/g,
+        (_, index) => `<span class="codex-math-placeholder" data-math-index="${index}"></span>`
+      );
+    }
+
+    function normalizeMarkdownSource(text) {
+      return text.replace(/```xml\b[^\n\r]*\r?\n([\s\S]*?)\r?\n```/gi, '$1');
+    }
+
+    const markdownSources = new WeakMap();
+
+    function renderMarkedText(element, text = null) {
+      if (!element) return;
+      const rawSource = text ?? markdownSources.get(element) ?? element.textContent ?? '';
+      const source = normalizeMarkdownSource(rawSource);
+      markdownSources.set(element, rawSource);
+      if (window.marked && typeof window.marked.parse === 'function') {
+        const { protectedText: mathProtected, blocks } = protectMathBlocks(source);
+        const { protectedText: htmlProtected, tags } = protectHtmlTags(mathProtected);
+        const rendered = window.marked.parse(escapePlainText(htmlProtected), { breaks: true });
+        element.innerHTML = restoreMathPlaceholders(restoreHtmlTags(rendered, tags));
+        element.querySelectorAll('.codex-math-placeholder').forEach((placeholder) => {
+          const index = Number(placeholder.dataset.mathIndex);
+          placeholder.replaceWith(document.createTextNode(blocks[index] ?? ''));
+        });
+      } else {
+        element.textContent = source;
+      }
+    }
+
+    function renderRichTextSafe(scope) {
+      if (!scope) return;
+      scope.querySelectorAll('.marked-text').forEach((element) => {
+        renderMarkedText(element);
+      });
+      renderMathSafe(scope);
+    }
+
+    const rawLatexBoxSelector = '.trace-viewer-inner .problem-box, .trace-viewer-inner .response-box.assistant, .trace-viewer-inner .cot-box.assistant';
+    const copyIconHtml = '<svg class="copy-raw-latex-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="10" height="10" rx="2"></rect><path d="M5 15V7a2 2 0 0 1 2-2h8"></path></svg>';
+    const copiedIconHtml = '<svg class="copy-raw-latex-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"></path></svg>';
+
+    function getRawLatexForBox(box) {
+      return Array.from(box.querySelectorAll(':scope > .marked-text, :scope > .trace-message-code'))
+        .map((el) => el.matches('.marked-text') ? markdownSources.get(el) ?? el.textContent ?? '' : el.querySelector('code')?.textContent ?? el.textContent ?? '')
+        .filter((source) => source.trim())
+        .join('\n\n');
+    }
+
+    async function copyTextToClipboard(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return;
+        } catch (error) {}
+      }
+      const textarea = Object.assign(document.createElement('textarea'), { readOnly: true, value: text });
+      textarea.style.cssText = 'position:fixed;top:-1000px;left:-1000px';
+      document.body.append(textarea);
+      textarea.select();
+      const copied = document.execCommand('copy');
+      textarea.remove();
+      if (!copied) throw new Error('Copy command failed');
+    }
+
+    function setupRawLatexCopyButtons(scope) {
+      if (!scope) return;
+      scope.querySelectorAll(rawLatexBoxSelector).forEach((box) => {
+        if (box.dataset.rawLatexCopyBound === '1') return;
+        if (!getRawLatexForBox(box)) return;
+        box.dataset.rawLatexCopyBound = '1';
+        box.insertAdjacentHTML('afterbegin', `<button type="button" class="copy-raw-latex-button" aria-label="Copy raw LaTeX" title="Copy raw LaTeX">${copyIconHtml}</button>`);
+      });
+    }
+
+    document.addEventListener('click', async (event) => {
+      const button = event.target.closest?.('.copy-raw-latex-button');
+      const box = button?.closest('.box');
+      const rawLatex = box && getRawLatexForBox(box);
+      if (!rawLatex) return;
+      event.preventDefault();
+      event.stopPropagation();
+      button.disabled = true;
+      try {
+        await copyTextToClipboard(rawLatex);
+        button.innerHTML = copiedIconHtml;
+        button.classList.add('copied');
+        button.title = 'Copied';
+      } catch (error) {
+        button.classList.add('copy-failed');
+        button.title = 'Copy failed';
+      }
+      window.setTimeout(() => {
+        button.innerHTML = copyIconHtml;
+        button.classList.remove('copied', 'copy-failed');
+        button.title = 'Copy raw LaTeX';
+        button.disabled = false;
+      }, 1200);
+    });
+
+    function setupTabPanels(root, preferredRun = null) {
+      if (!root) return;
+      const buttons = Array.from(root.querySelectorAll('.tab button'));
+      const tabs = Array.from(root.querySelectorAll('.tabcontent'));
+      if (!buttons.length || !tabs.length) return;
+      const activate = (button) => {
+        const targetId = button?.dataset?.target;
+        if (!targetId) return;
+        tabs.forEach((tab) => {
+          tab.style.display = tab.id === targetId ? 'block' : 'none';
+        });
+        buttons.forEach((btn) => btn.classList.toggle('active', btn === button));
+      };
+      buttons.forEach((button) => {
+        if (button.dataset.tabsBound === '1') return;
+        button.dataset.tabsBound = '1';
+        button.addEventListener('click', () => activate(button));
+      });
+      const preferred = root.querySelector('.tab button.active')
+        || (preferredRun != null ? root.querySelector(`.tab button[data-run="${preferredRun}"]`) : null)
+        || buttons[0];
+      if (preferred) activate(preferred);
+    }
+
+    function renderTraceHtml(container, html, preferredRun = null) {
+      if (!container) return;
+      container.innerHTML = html;
+      setupTabPanels(container, preferredRun);
+      renderRichTextSafe(container);
+      setupRawLatexCopyButtons(container);
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+      renderRichTextSafe(document);
+      setupTabPanels(document);
+      setupRawLatexCopyButtons(document);
+    });
+  </script>
+
+  
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/image-map-resizer@1.0.10/js/imageMapResizer.min.js"></script>
+  <link rel="stylesheet" href="/static/css/blog.css">
+
+</head>
+
+<body class="has-navbar-fixed-top">
+  <nav class="navbar main-navbar is-fixed-top" role="navigation" aria-label="main navigation">
+    <div class="container navbar-container">
+      <div class="navbar-brand">
+        <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false" data-target="main-navbar-menu">
+          <span aria-hidden="true"></span>
+          <span aria-hidden="true"></span>
+          <span aria-hidden="true"></span>
+        </a>
+        <div class="brand-link">
+          <a class="brand-home" href="/">
+            <img src="/static/images/logo.png" alt="MathArena logo" class="navbar-logo">
+            <span class="brand-name">MathArena</span>
+          </a>
+          <span class="brand-subtitle">
+            Created by
+            <a class="brand-subtitle-link" href="https://www.sri.inf.ethz.ch/" target="_blank" rel="noopener">SRI Lab</a> at 
+            <a class="brand-subtitle-link" href="https://ethz.ch/en.html" target="_blank" rel="noopener">ETH Zurich</a>,
+            and
+            <a class="brand-subtitle-link" href="https://insait.ai/" target="_blank" rel="noopener">INSAIT</a>
+          </span>
+        </div>
+      </div>
+
+      <div id="main-navbar-menu" class="navbar-menu">
+        <div class="navbar-end">
+          <a class="navbar-item nav-link" href="/blogs">Blog Posts</a>
+          <a class="navbar-item nav-link" href="/competitions">Competitions</a>
+          <a class="navbar-item nav-link" href="/models">Models</a>
+          <a class="navbar-item nav-link" href="/models/compare">Compare</a>
+        </div>
+      </div>
+    </div>
+  </nav>
+  <div class="main-content">
+    
+
+
+  <section class="section blog-section">
+    <div class="container blog-container">
+      <h1 class="anchorable title is-1 blog-title">
+        <a href="#">
+          ArXivLean: How Well Can LLMs Formally Prove Research Math?
+        </a>
+      </h1>
+      <div class="metadata">
+        April 21, 2026
+        &nbsp; <b>|</b> &nbsp;
+          <a href="https://people.math.ethz.ch/~timge/" target="_blank">Tim Gehrunger</a>,
+        <a href="https://sri.inf.ethz.ch/people/jasper" target="_blank">Jasper Dekoninck</a>,
+        <a href="https://sri.inf.ethz.ch/people/martin" target="_blank">Martin Vechev</a>
+        <!-- &nbsp; <b>|</b> &nbsp;
+        <a href="https://x.com/j_dekoninck/status/2032458037823483953">Discuss on 𝕏</a> -->
+      </div>
+
+      <img src="/static/images/blog_arxivlean.png" alt="ArXivLean banner"
+        class="main-image" style="width: 600px;" usemap="#arxivlean-map">
+      <map name="arxivlean-map">
+            <area target="" title="" coords="687,236,668,282,664,321,671,353,690,388,708,412,728,431,766,446,820,439,845,418,896,392,899,339,907,296,883,258,853,217,804,208,748,210,716,218" shape="poly"
+          href="/static/images/blog_arxivlean_card.png" alt="Go to homepage">
+      </map>
+
+      <div class="acknowledgement">
+        This work was partially supported by an evaluation grant from Google.
+      </div>
+
+      
+      <div class="content blog-content">
+        <h2 class="anchorable" id="introduction">
+          <a href="#introduction">
+            Introduction
+          </a>
+        </h2>
+
+        <p>
+          Verifying mathematical proofs written by LLMs is both error-prone and demands substantial human time
+          and effort. This verification bottleneck limits the use of LLMs in mathematics and has
+          pushed the AI4Math community toward formal proof assistants such as <a href="https://lean-lang.org/"
+            target="_blank">Lean</a>. In these systems, LLMs express
+          proofs as code that can be checked automatically, bypassing the manual verification bottleneck entirely.
+          Recent progress in this direction, including <a href="https://github.com/AxiomMath/putnam2025" target="_blank">a perfect score on Putnam 2025</a>
+          and <a href="https://www.math.inc/sphere-packing" target="_blank">several large-scale formalization efforts</a>, suggests that this is becoming a valid alternative to natural-language proofs. This
+          naturally raises the question: is Lean already strong enough to enable models to formally prove difficult
+          research-level questions? Existing research-level benchmarks for formal theorem proving, such as <a
+            href="https://www.vals.ai/benchmarks/proof_bench" target="_blank">ProofBench</a>
+          and <a href="https://arxiv.org/abs/2511.02872" target="_blank">FATE</a>, are a step in this direction, but
+          they are not built from real research statements spanning a broad range of mathematical areas.
+        </p>
+
+        <p>
+          <strong>ArXivLean.</strong> To address this, we introduce ArXivLean, a new open benchmark for research-level
+          mathematical theorem proving in Lean. As with <a href="/arxivmath" target="_blank">ArXivMath</a> and <a
+            href="/brokenarxiv" target="_blank">BrokenArXiv</a>, all samples are drawn from recent arXiv papers, which
+          allows the benchmark to be refreshed regularly and helps reduce contamination concerns. Statements are
+          automatically extracted and formalized from paper abstracts, then checked by a member of our team to ensure
+          the formalization is correct. The first release of ArXivLean contains 41 problems, all based on papers posted
+          in March 2026. Models are run with extensive tool access, including Lean verification, semantic search
+          through Lean and <a href="https://leanprover-community.github.io/" target="_blank">Mathlib</a>, and a
+          persistent file of proven Lean lemmas.
+        </p>
+
+        <p>
+          <strong>Results.</strong> As shown in Figure 1, all models, including Harmonic's Lean agent <a
+            href="https://aristotle.harmonic.fun/dashboard" target="_blank">Aristotle</a>, score below 20%. At
+          first glance, this suggests that they perform very poorly on this task. However, the problems in ArXivLean are
+          extremely challenging, often requiring models to formalize deep mathematical statements that have never been
+          formalized before, with a single problem potentially demanding thousands of lines of Lean code. Expecting
+          one-shot solutions to problems of this kind sets a very high bar. What the benchmark currently does show is that,
+          with a reasonable budget, LLMs cannot yet leverage Lean to a sufficient extent to formally prove most
+          research-level mathematics.
+        </p>
+
+        <p>
+          Pushing performance significantly further would likely require much deeper agentic proof search at scale,
+          which is prohibitively expensive. For instance, even on undergraduate-level problems, <a
+            href="https://github.com/project-numina/numina-lean-agent/tree/main" target="_blank">NuminaLeanAgent</a>
+          reported costs of <span>$50</span> to <span>$1000</span> per problem. We therefore also see ArXivLean as a
+          challenge to the
+          formal-proving community: how far can performance be pushed on questions like these?
+        </p>
+
+        <p style="font-size: 0.9em; font-style: italic; margin-bottom: -30px !important;">
+          <strong>Correction 23/04.</strong> 
+          Due to a bug in our code, Aristotle's solution to problem  39 was counted as incorrect, even though it was correct.
+
+          We have now fixed the bug and updated the results accordingly.
+
+          For those interested, the issue was as follows. 
+          Initially, a bug in our code caused Aristotle's postprocessing step to fail. 
+          To avoid rerunning Aristotle on all questions, we automatically downloaded the original submission files for completed questions.
+          However, during this step, we accidentally used Lean 4.29.0 (instead of Lean 4.28.0) to verify those solutions. 
+          Aristotle's proof to problem 39 does not compile in Lean 4.29.0 (and does in Lean 4.28.0), so we incorrectly marked it as incorrect. 
+        </p>
+
+        <figure>
+          <img src="/static/images/results_arxivlean.png" alt="ArXivLean results"
+            class="second-image">
+          <figcaption class="caption">
+            Fig 1. Screenshot of results on the March version of ArXivLean. The screenshot only shows the first 11
+            questions. Full results are available on <a href="/?comp=arxivlean--march&view=problem">our main page</a>.
+          </figcaption>
+        </figure>
+
+        <h2 class="anchorable" id="construction">
+          <a href="#construction">
+            Construction Process
+          </a>
+        </h2>
+
+        <p>
+          To create problems for ArXivLean, we build on the same pipeline used for ArXivMath and BrokenArXiv, with
+          small modifications to extract statements that can be automatically formalized in Lean. Most of the pipeline
+          is automated, with only a final manual review step to ensure quality. The prompts used during construction
+          are included at the end of this blog post.
+        </p>
+
+        <p>
+          <strong>Initial extraction.</strong> We start from recent mathematics papers posted on arXiv and use
+          Gemini-3.1-Pro to create clean theorem-like claims from their abstracts. The model is instructed to keep an
+          extracted theorem only if it is plausibly expressible in Lean using existing Mathlib infrastructure. We
+          then run a second verification pass to confirm that the extracted statement is both self-contained and
+          faithful to the source.
+        </p>
+
+        <p>
+          <strong>Lean formalization.</strong> We next ask an LLM to translate the natural-language statements into
+          Lean theorem statements. We found that the formalizations produced by Gemini-3.1-Pro were often low
+          quality, so we switched to GPT-5.4 for this step. To support this process, we provide access to three
+          separate tools:
+        </p>
+
+        <ul>
+          <li><strong>Lean execution.</strong> Using Axle, the model can execute Lean code in Lean v4.29.0 and receive
+            full feedback, including errors and warnings.</li>
+          <li><strong>Loogle.</strong> <a href="https://github.com/nomeata/loogle" target="_blank">Loogle</a> allows the model to search Lean directly and retrieve the exact
+            signatures of tactics and theorems.</li>
+          <li><strong>LeanExplore.</strong> <a href="https://github.com/justincasher/lean-explore" target="_blank">LeanExplore</a> provides semantic search over Lean and Mathlib, allowing the
+            model to look up relevant theorems or definitions using natural language.</li>
+        </ul>
+
+        <p>
+          The model is explicitly instructed to drop a question if formalization is difficult or requires introducing
+          new definitions not already present in Mathlib. This is meant to reduce the risk of misformalization. Any
+          candidate that fails to compile is discarded. 
+        </p>
+
+        <p>
+          <strong>Post-formalization verification.</strong> After formalization, we run several additional checks.
+          First, we perform semantic verification to ensure that the Lean theorem faithfully captures the
+          natural-language statement and does not distort the claim. Both GPT-5.4 and Gemini-3.1-Pro must accept the
+          statement for this step. We also apply checks that are already part of the BrokenArXiv and ArXivMath
+          pipelines: filtering out statements that are too directly recoverable from prior work, removing cases where
+          the abstract omits conditions stated only in the full text, verifying author credibility, and excluding
+          papers that explicitly mention the use of LLMs.
+        </p>
+
+        <p>
+          <strong>Manual review.</strong> After all automated filtering stages, we manually review the remaining items
+          and discard cases whose mathematical content still appears underspecified or wrong.
+          After running models on the benchmark, we also inspect their outputs to identify any further
+          issues with the statements. We found that several statements were slightly misformalized to make them easier
+          than the original statement, but we kept them to have some easier samples in the benchmark as well.
+        </p>
+
+        <p>
+          <strong>Updates.</strong> Constructing ArXivLean and running models on it is extremely expensive, with
+          GPT-5.4 costing nearly <span>$10</span> per answer. Updating the benchmark every month is therefore neither
+          feasible nor
+          very informative given current model performance. We will instead update ArXivLean once every three months.
+        </p>
+
+        <h2 class="anchorable" id="evaluation">
+          <a href="#evaluation">
+            Evaluation Methodology
+          </a>
+        </h2>
+
+        <p>
+          One of the main advantages of Lean is that it can automatically check whether a produced proof actually
+          compiles. ArXivLean therefore supports fully automatic evaluation. A model counts as successful only if its
+          final submission is accepted by the Lean checker in a fixed environment.
+        </p>
+
+        <p>
+          <strong>Model execution.</strong> Each model is given both a natural-language description of the theorem and
+          the exact formal Lean statement to prove. Models are required to provide a full Lean file containing the theorem statement, its proof, and any necessary lemmas or definitions they need.
+          Models can use the same set of tools as the formalizer, with a maximum of 200 tool calls. Through iterative experimentation with tool support, we also added the following tools:
+        </p>
+
+        <ul>
+          <li><strong>Verification.</strong> Models sometimes made very small changes to the original theorem, for
+            example, by slightly altering notation. These changes were rejected by our verifier, even when the model had
+            essentially proved the intended statement. To reduce such failures, we allow the model to verify its
+            submission before actually submitting it.</li>
+          <li><strong>Persistent file.</strong> Models can add proven lemmas or definitions to a persistent file that
+            is automatically prepended to every call to the Lean execution engine. This avoids repeatedly restating
+            previously proved lemmas and lets the model focus on the next part of the proof.</li>
+        </ul>
+
+        <p>
+          There is one exception to this setup: Aristotle, an agentic tool by Harmonic, is given the same statements as
+          the other models, but runs on its own infrastructure, so we do not know which tools it enables.
+          Additionally, since Aristotle only supports Lean v4.28.0, we allow it to provide proofs in this Lean version
+          rather than v4.29.0.<sup><a href="#fn1" id="ref1">1</a></sup>
+        </p>
+
+        <p> <strong>Proof verification.</strong> In theory, proof verification in Lean is straightforward: if the code compiles without errors or gaps, 
+          then the proof is correct. In practice, however, care is needed to avoid edge cases that can lead to false positives. 
+          For example, models may present partial progress by proving a weaker version of the original statement or by introducing axioms 
+          that make the problem easier. While these cases will compile successfully, they do not represent valid solutions to the original problem. 
+          To guard against this, we explicitly replace the theorem statement in the model's output with the 
+          exact formalized statement we originally provided. 
+          We also use Lean's built-in tooling to detect axioms and reject any proof that introduces assumptions 
+          beyond the standard Lean and Mathlib trust base. 
+        </p> 
+        
+        <p> However, these measures are not sufficient to prevent all false positives. 
+          Models often engage in behavior that can only be described as cheating by changing the meaning of existing, well-known definitions in Lean. 
+           For example, <a href="/?comp=arxivlean--march&amp;model=GPT-5.4+%28xhigh%29&amp;task=2&amp;run=1" target="_blank">in one attempt</a>, GPT-5.4 altered the definition of the norm so that every real number had norm zero.
+           Unlike proving weaker statements or introducing axioms, this behavior is direct benchmark-gaming 
+           since it deliberately changes the meaning of the original statement by redefining familiar notation 
+           in a way that is not mathematically reasonable. 
+           To prevent this, we use the <a href="https://github.com/leanprover/comparator">Comparator tool</a>. 
+           Given the original formalized statement and the model's full proof, Comparator checks that the meaning of the statement has 
+           not been altered anywhere in the proof, thereby ruling out these forms of cheating.
+        </p>
+
+        <h2 class="anchorable" id="results">
+          <a href="#results">
+            Results
+          </a>
+        </h2>
+
+        <p>
+          <strong>Open models lag behind.</strong> As shown in Figure 1, the models split quite cleanly into two groups. Closed models solve
+          6 to 7 problems, while the two open models, Step 3.5 Flash and GLM 5.1, solve only 0 to 1. This points to a
+          substantial capability gap between the open and closed model ecosystems for Lean.
+        </p>
+
+        <p>
+          <strong>Aristotle does not outperform one-shot baselines.</strong> Interestingly, Aristotle does not perform
+          better than our one-shot alternatives. This differs from
+          the conclusions of <a href="https://www.vals.ai/benchmarks/proof_bench" target="_blank">ProofBench</a>, where Aristotle appears stronger. We see two plausible explanations for the
+          discrepancy. First, our tool setup is significantly better than the one used in ProofBench, including both
+          semantic search and submission verification. Since Aristotle is not affected by the choice of tool set, these
+          additions mainly help close the gap between Aristotle and the other models. Second, it may simply be that the
+          unsolved problems in ArXivLean are so difficult that even Aristotle cannot produce a proof, thereby making
+          its increased capabilities not show up in our benchmark.
+        </p>
+
+        <p>
+          <strong>Solutions differ in proof length.</strong> The proof lengths for all solved problems are shown in
+          Figure 2. All solved problems can be handled in under 3000 words (approximately 300 lines), but there are still notable
+          differences across models. For instance, Gemini-3.1-Pro tends to produce the longest proofs, with one
+          exception: on Problem 4, <a href="/?comp=arxivlean--march&model=Claude-Opus-4.7+%28high%29&task=3&run=1" target="_blank">Claude-Opus-4.7 finds a particularly convoluted solution that is quite long</a>.
+        </p>
+
+        <figure>
+          <div style="position: relative; width: 100%; height: 540px; margin: 1rem 0 0.5rem;">
+            <canvas id="arxivlean-solution-length-chart"
+              aria-label="Lean solution lengths for solved ArXivLean problems"></canvas>
+          </div>
+          <figcaption class="caption" style="margin-top: 0;">
+            Fig 2. Proxy Lean word counts for successful solutions on solved ArXivLean March 2026 problems.
+          </figcaption>
+        </figure>
+
+        <p>
+          <strong>Aristotle relies heavily on automated tactics.</strong> Lean includes several tactics that can
+          perform substantial work behind the scenes, including <code>grind</code>, <code>aesop</code>, and
+          <code>simp_all</code>. These tactics can automatically identify useful theorems and apply them directly.
+          Aristotle uses them extensively: across the full benchmark, they appear hundreds of times, and all its correct
+          proofs rely on them. In contrast, all the other models use these tactics only very rarely. We suspect
+          that Harmonic's prompt explicitly encourages these tactics, similar to the prompts of NuminaLeanAgent. Interestingly,
+          despite relying on these tactics far more often, Aristotle's proofs are not noticeably shorter than those
+          produced by GPT-5.4.
+        </p>
+
+        <p>
+          <strong>Tool use varies significantly.</strong> As shown in Figure 3, models also differ in how
+          they use the tool set. For example, Step 3.5 Flash appears to misuse the tools quite badly, rarely using
+          Lean verification even though that is by far the most useful tool. The average number of tool calls also
+          varies widely: GPT-5.4 makes more than 100 calls per problem on average, while Claude-Opus-4.7 uses
+          substantially fewer.
+        </p>
+
+        <figure>
+          <div style="position: relative; width: 100%; height: 500px; margin: 1rem 0 0.5rem;">
+            <canvas id="arxivlean-tool-usage-chart"
+              aria-label="Average tool calls per problem by model on ArXivLean March 2026"></canvas>
+          </div>
+          <figcaption class="caption" style="margin-top: 0;">
+            Fig 3. Average tool calls per problem on ArXivLean March 2026, excluding Aristotle.
+          </figcaption>
+        </figure>
+
+        <p>
+          <strong>Failure cases.</strong> When models fail, they almost always explicitly say that they were unable to
+          find a proof. This stands in sharp contrast to BrokenArXiv and to natural-language problem settings more
+          broadly, where models often claim success even when they have not actually solved the problem. The reason for
+          the difference is quite obvious: in Lean, models can directly verify whether their proof works, so failure is
+          unambiguous. Interestingly, models frequently say that the reason for their failure is that the given
+          statement is very deep, often arguing that a proof would require theorems that have not yet been formalized
+          in Lean. For instance, in Q21, both <a href="/?comp=arxivlean--march&model=Gemini+3.1+Pro+Preview&task=20&run=1" target="_blank">Gemini-3.1-Pro</a> 
+          and <a href="/?comp=arxivlean--march&model=Claude-Opus-4.7+%28high%29&task=20&run=1" target="_blank">Claude-Opus-4.7</a> mention this as the reason for their
+          failure, despite <a href="/?comp=arxivlean--march&model=GPT-5.4+%28xhigh%29&task=20&run=1" target="blank_">GPT-5.4</a> and 
+          <a href="/?comp=arxivlean--march&model=Aristotle&task=20&run=1">Aristotle</a> managing to solve the problem within a couple hundred lines of code.
+        </p>
+
+        <h2 class="anchorable" id="qualitative-analysis">
+          <a href="#qualitative-analysis">
+            Qualitative Analysis
+          </a>
+        </h2>
+
+        <p>
+          Below we highlight several representative ArXivLean questions. For each, we show the benchmark statement, the
+          corresponding Lean theorem statement, and a short qualitative summary of how the models responded.
+        </p>
+
+        <div class="example-container qualitative-card">
+          <div class="title is-4">March Q11</div>
+          <p class="qualitative-source"><strong>Source:</strong> <a href="https://arxiv.org/abs/2603.08675"
+              target="_blank">arXiv:2603.08675</a></p>
+          <p class="qualitative-meta"><strong>Solved by:</strong> no model</p>
+          <div class="qualitative-statement-grid">
+            <div class="qualitative-panel">
+              <div class="qualitative-label">Natural-Language Statement</div>
+              <div class="box problem-box">
+                There exist constants $c &gt; 0$ and $N \in \mathbb{N}$ such that every connected Cayley graph on
+                $n \ge N$ vertices with degree $d \ge n^{1-c}$ contains a Hamilton cycle.
+              </div>
+            </div>
+            <div class="qualitative-panel">
+              <div class="qualitative-label">Formal Lean Statement</div>
+              <div class="box problem-box">
+                <pre style="white-space: pre-wrap; overflow-x: auto; margin: 0;"><code class="language-lean">theorem cayley_hamiltonian_dense_large :
+    ∃ c : ℝ, 0 &lt; c ∧ ∃ N : ℕ,
+      ∀ (G : Type*) [Group G] [Fintype G] [DecidableEq G] (S : Finset G),
+        (∀ s ∈ S, s⁻¹ ∈ S) →
+        1 ∉ S →
+        let Γ : SimpleGraph G := SimpleGraph.fromRel (fun a b => ∃ s ∈ S, b = a * s)
+        Fintype.card G ≥ N →
+        (S.card : ℝ) ≥ Real.rpow (Fintype.card G : ℝ) (1 - c) →
+        Γ.Connected →
+        Γ.IsHamiltonian := by
+  sorry</code></pre>
+              </div>
+            </div>
+          </div>
+          <div class="qualitative-label">Analysis</div>
+          <div class="box response-box qualitative-response-box">
+            <p>
+              This problem asks the models to show that, for sufficiently large $n$, every connected Cayley graph with
+              sufficiently large degree contains a Hamiltonian cycle. This is the main result of the article, and
+              essentially the entire 17-page paper is devoted to proving it.
+            </p>
+            <p>
+              No model comes close to proving this result. While the basic graph-theoretic and group-theoretic language
+              needed to state the theorem is available in Mathlib, the proof itself relies on several deep contemporary
+              ingredients which are not yet included in Mathlib. Still, no model seems to get anywhere near even a
+              convincing natural-language proof sketch of the full argument, so the dominant limiting factors here
+              appear to be the depth and length of the proof rather than the need to express it in Lean.
+            </p>
+          </div>
+        </div>
+
+        <div class="example-container qualitative-card">
+          <div class="title is-4">March Q21</div>
+          <p class="qualitative-source"><strong>Source:</strong> <a href="https://arxiv.org/abs/2603.11196"
+              target="_blank">arXiv:2603.11196</a></p>
+          <p class="qualitative-meta"><strong>Solved by:</strong> <a
+              href="/?comp=arxivlean--march&model=GPT-5.4+%28xhigh%29&task=20&run=1"
+              target="_blank">GPT-5.4</a> and <a href="/?comp=arxivlean--march&model=Aristotle&task=20&run=1"
+              target="_blank">Aristotle</a></p>
+          <div class="qualitative-statement-grid">
+            <div class="qualitative-panel">
+              <div class="qualitative-label">Natural-Language Statement</div>
+              <div class="box problem-box">
+                For a prime $p$, let $c_n(p) = |\{A \in M_n(\mathbb{F}_p) \mid \det(A) \text{ generates }
+                \mathbb{F}_p^\times\}| / p^{n^2}$, and let $c(p) = \inf_{n \ge 1} c_n(p)$. Then
+                $\inf_{p \text{ prime}} c(p) = 0$.
+              </div>
+            </div>
+            <div class="qualitative-panel">
+              <div class="qualitative-label">Formal Lean Statement</div>
+              <div class="box problem-box">
+                <pre style="white-space: pre-wrap; overflow-x: auto; margin: 0;"><code class="language-lean">theorem inf_prime_inf_matrix_det_generators_eq_zero :
+    sInf
+      {c : ℝ |
+        ∃ p : ℕ,
+          Nat.Prime p ∧
+            c =
+              sInf
+                {x : ℝ |
+                  ∃ n : ℕ,
+                    0 &lt; n ∧
+                      x =
+                        ((Nat.card
+                            {A : Matrix (Fin n) (Fin n) (ZMod p) //
+                              IsPrimitiveRoot (Matrix.det A) (p - 1)} : ℕ) : ℝ) /
+                          (p : ℝ) ^ (n ^ 2)}} =
+      0 := by
+  sorry</code></pre>
+              </div>
+            </div>
+          </div>
+          <div class="qualitative-label">Analysis</div>
+          <div class="box response-box qualitative-response-box">
+            <p>
+              In this problem, the models need to show that the quantity $c(p)=\inf_{n\ge 1} c_n(p)$, where $c_n(p)$
+              is the density of $n \times n$ matrices over $\mathbb{F}_p$ with primitive-root determinant, can be made
+              arbitrarily close to $0$ as $p$ varies over the primes. The extracted statement corresponds to Theorem 3
+              of the research article, which is one of its multiple main results. In particular, it answers a question
+              raised in earlier work of the author from 2021.
+            </p>
+            <p>
+              The problem is correctly solved only by <a
+                href="/?comp=arxivlean--march&model=GPT-5.4+%28xhigh%29&task=20&run=1"
+                target="_blank">GPT-5.4</a> and <a href="/?comp=arxivlean--march&model=Aristotle&task=20&run=1"
+                target="_blank">Aristotle</a>.
+              Both successful proofs follow essentially
+              the same number-theoretic strategy and are similar in length. First, they reduce the problem to the
+              $n=1$ case, observing that $c(p)\leq c_1(p)$ and that $c_1(p)$ is exactly $\varphi(p-1)/p$, since
+              $1\times 1$ matrices are just elements of $\mathbb{F}_p$ and primitive-root determinants are precisely
+              primitive roots in $\mathbb{F}_p^\times$. The main remaining step is then to show that
+              $\varphi(p-1)/p$ can be made arbitrarily small along a sequence of primes $p$.
+            </p>
+            <p>
+              Both <a href="/?comp=arxivlean--march&model=Gemini+3.1+Pro+Preview&task=20&run=1" target="_blank">Gemini-3.1-Pro</a> 
+              and <a href="/?comp=arxivlean--march&model=Claude-Opus-4.7+%28high%29&task=20&run=1" target="_blank">Claude-Opus-4.7</a> give up and do not provide a formal proof. Instead, they return
+              natural-language explanations of the argument and indicate that formalizing the result would require
+              substantial number-theoretic infrastructure not yet readily available in Mathlib.
+            </p>
+          </div>
+        </div>
+
+        <div class="example-container qualitative-card">
+          <div class="title is-4">March Q27</div>
+          <p class="qualitative-source"><strong>Source:</strong> <a href="https://arxiv.org/abs/2603.16237"
+              target="_blank">arXiv:2603.16237</a></p>
+          <p class="qualitative-meta"><strong>Solved by:</strong> <a
+              href="/?comp=arxivlean--march&model=Aristotle&task=26&run=1"
+              target="_blank">Aristotle</a>, <a
+              href="/?comp=arxivlean--march&model=GPT-5.4+%28xhigh%29&task=26&run=1"
+              target="_blank">GPT-5.4</a>, <a
+              href="/?comp=arxivlean--march&model=Claude-Opus-4.7+%28high%29&task=26&run=1"
+              target="_blank">Claude-Opus-4.7</a>, <a
+              href="/?comp=arxivlean--march&model=Gemini+3.1+Pro+Preview&task=26&run=1"
+              target="_blank">Gemini-3.1 Pro</a>, and <a
+              href="/?comp=arxivlean--march&model=GLM+5.1&task=26&run=1"
+              target="_blank">GLM-5.1</a></p>
+          <div class="qualitative-statement-grid">
+            <div class="qualitative-panel">
+              <div class="qualitative-label">Natural-Language Statement</div>
+              <div class="box problem-box">
+                Let $F : (0, \infty) \to \mathbb{R}$ be a continuous, nonconstant function such that $F(1) = 0$. Let
+                $P(u, v)$ be a symmetric polynomial in two variables over $\mathbb{R}$ of total degree at most two. If
+                $F(xy) + F(x/y) = P(F(x), F(y))$ for all $x, y \in (0, \infty)$, then there exists a constant
+                $c \in \mathbb{R}$ such that $P(u, v) = 2u + 2v + c u v$ for all $u, v \in \mathbb{R}$.
+              </div>
+            </div>
+            <div class="qualitative-panel">
+              <div class="qualitative-label">Formal Lean Statement</div>
+              <div class="box problem-box">
+                <pre style="white-space: pre-wrap; overflow-x: auto; margin: 0;"><code class="language-lean">theorem functional_equation_polynomial_classification
+    (F : ℝ → ℝ) (P : ℝ → ℝ → ℝ)
+    (hcont : ContinuousOn F (Set.Ioi (0 : ℝ)))
+    (hnc : ∃ x ∈ Set.Ioi (0 : ℝ), ∃ y ∈ Set.Ioi (0 : ℝ), F x ≠ F y)
+    (h1 : F 1 = 0)
+    (hP : ∃ a b d e : ℝ,
+      ∀ u v : ℝ, P u v = a + b * u + b * v + d * u ^ 2 + e * u * v + d * v ^ 2)
+    (hfe : ∀ x &gt; 0, ∀ y &gt; 0, F (x * y) + F (x / y) = P (F x) (F y)) :
+    ∃ c : ℝ, ∀ u v : ℝ, P u v = 2 * u + 2 * v + c * u * v := by
+  sorry</code></pre>
+              </div>
+            </div>
+          </div>
+          <div class="qualitative-label">Analysis</div>
+          <div class="box response-box qualitative-response-box">
+            <p>
+              This statement corresponds to the second, albeit easier, part of Theorem 3.3 of the paper, which is the
+              central structural result of the article.
+            </p>
+            <p>
+              The problem is solved correctly by Aristotle, GPT-5.4, Claude-Opus-4.7, Gemini-3.1 Pro, and GLM-5.1.
+              All five successful proofs follow the same basic strategy. First, they plug in $y=1$ and use $F(1)=0$ to
+              show that every value in the image of $F$ satisfies a quadratic identity, and then they show that the
+              remaining coefficients must vanish. GPT-5.4 and Claude-Opus-4.7 do this through an explicit
+              intermediate-value argument, while Gemini packages the same idea more abstractly via connectedness of the
+              image. GLM-5.1 and Aristotle instead argue by contradiction, showing that if the quadratic were non-trivial
+              then the image of $F$ would be finite, contradicting continuity and nonconstancy.
+            </p>
+          </div>
+        </div>
+
+        <div class="example-container qualitative-card">
+          <div class="title is-4">March Q33</div>
+          <p class="qualitative-source"><strong>Source:</strong> <a href="https://arxiv.org/abs/2603.19669"
+              target="_blank">arXiv:2603.19669</a></p>
+          <p class="qualitative-meta"><strong>Solved by:</strong> <a
+              href="/?comp=arxivlean--march&model=Aristotle&task=32&run=1"
+              target="_blank">Aristotle</a>, <a
+              href="/?comp=arxivlean--march&model=GPT-5.4+%28xhigh%29&task=32&run=1"
+              target="_blank">GPT-5.4</a>, <a
+              href="/?comp=arxivlean--march&model=Claude-Opus-4.7+%28high%29&task=32&run=1"
+              target="_blank">Claude-Opus-4.7</a>, and <a
+              href="/?comp=arxivlean--march&model=Gemini+3.1+Pro+Preview&task=32&run=1"
+              target="_blank">Gemini-3.1 Pro</a></p>
+          <div class="qualitative-statement-grid">
+            <div class="qualitative-panel">
+              <div class="qualitative-label">Natural-Language Statement</div>
+              <div class="box problem-box">
+                Let $G$ be a finite abelian group. Let $\Gamma(G)$ be the simple graph with vertex set $G$ where two
+                distinct vertices $x, y \in G$ are adjacent if and only if the order of $xy$ in $G$ is a prime
+                number. If the order of $G$ is a square-free integer, then $\Gamma(G)$ is a connected graph.
+              </div>
+            </div>
+            <div class="qualitative-panel">
+              <div class="qualitative-label">Formal Lean Statement</div>
+              <div class="box problem-box">
+                <pre style="white-space: pre-wrap; overflow-x: auto; margin: 0;"><code class="language-lean">theorem squarefree_order_graph_connected {G : Type*} [CommGroup G] [Fintype G]
+    (hG : Squarefree (Fintype.card G)) :
+    (let Γ : SimpleGraph G := {
+      Adj := fun x y => x ≠ y ∧ Nat.Prime (orderOf (x * y))
+      symm := by
+        intro x y h
+        rcases h with ⟨hxy, hp⟩
+        refine ⟨?_, ?_⟩
+        · intro hyx
+          exact hxy hyx.symm
+        · simpa [mul_comm] using hp
+    }
+    Γ.Connected) := by
+  sorry</code></pre>
+              </div>
+            </div>
+          </div>
+          <div class="qualitative-label">Analysis</div>
+          <div class="box response-box qualitative-response-box">
+            <p>
+              In this problem, the models need to prove a graph-theoretic structural statement about a graph
+              $\Gamma(G)$ assigned to each finite abelian group $G$. The extracted statement is a direct corollary of
+              Theorems 7.4 and 8.2, which is one of the main results of the article. Note that there are a number of ways of
+              assigning graphs to finite groups, and that results very similar to this are well known in the
+              mathematical literature.
+            </p>
+            <p>
+              The problem is solved correctly by Aristotle, GPT-5.4, Claude-Opus-4.7, and Gemini-3.1 Pro. All four
+              successful proofs show, in one form or another, that every element is connected to the identity. Claude,
+              Gemini, and Aristotle follow a fairly direct inductive strategy on the order of an element. GPT-5.4
+              proves the same result in a more conceptual way: instead of explicitly constructing a path step by step,
+              it studies the subgroup generated by the prime-order elements and shows that square-freeness forces this
+              subgroup to be the whole group, which implies connectivity.
+            </p>
+            <p>
+              Interestingly, Gemini's proof is much longer than the others because it develops a substantial library of
+              helper lemmas. Claude and Aristotle reach a broadly similar inductive proof shape much more efficiently,
+              while GPT-5.4 avoids much of this infrastructure through its subgroup-based argument.
+            </p>
+          </div>
+        </div>
+
+        <div class="example-container qualitative-card">
+          <div class="title is-4">March Q39</div>
+          <p class="qualitative-source"><strong>Source:</strong> <a href="https://arxiv.org/abs/2603.26312"
+              target="_blank">arXiv:2603.26312</a></p>
+          <p class="qualitative-meta"><strong>Solved by:</strong> <a
+              href="/?comp=arxivlean--march&model=GPT-5.4+%28xhigh%29&task=38&run=1"
+              target="_blank">GPT-5.4</a>, <a
+              href="/?comp=arxivlean--march&model=Claude-Opus-4.7+%28high%29&task=38&run=1"
+              target="_blank">Claude-Opus-4.7</a>, and <a
+              href="/?comp=arxivlean--march&model=Gemini+3.1+Pro+Preview&task=38&run=1"
+              target="_blank">Gemini-3.1 Pro</a></p>
+          <div class="qualitative-statement-grid">
+            <div class="qualitative-panel">
+              <div class="qualitative-label">Natural-Language Statement</div>
+              <div class="box problem-box">
+                Let $n$ be a positive integer, and let $M_n(\mathbb{C})$ be the space of $n \times n$ complex matrices
+                equipped with the operator norm. For a linear subspace $V \subseteq M_n(\mathbb{C})$ and
+                $A \in M_n(\mathbb{C})$, define $\mu_V(A) = 1 / \inf\{\|X\| : X \in V, \det(I_n - AX) = 0\}$, where
+                $\mu_V(A) = 0$ if the set $\{X \in V : \det(I_n - AX) = 0\}$ is empty. Let
+                $E = \{cI_n : c \in \mathbb{C}\}$. If $F$ is a linear subspace of $M_n(\mathbb{C})$ containing $E$,
+                then $\mu_E(A) = \mu_F(A)$ for all $A \in M_n(\mathbb{C})$ if and only if $E = F$.
+              </div>
+            </div>
+            <div class="qualitative-panel">
+              <div class="qualitative-label">Formal Lean Statement</div>
+              <div class="box problem-box">
+                <pre style="white-space: pre-wrap; overflow-x: auto; margin: 0;"><code class="language-lean">theorem mu_scalar_subspace_eq_iff
+    (n : ℕ) (hn : 0 &lt; n)
+    (F : Submodule ℂ (Matrix (Fin n) (Fin n) ℂ))
+    (hEF : (ℂ ∙ (1 : Matrix (Fin n) (Fin n) ℂ)) ≤ F) :
+    let E : Submodule ℂ (Matrix (Fin n) (Fin n) ℂ) := ℂ ∙ (1 : Matrix (Fin n) (Fin n) ℂ)
+    let μ := fun (V : Submodule ℂ (Matrix (Fin n) (Fin n) ℂ)) (A : Matrix (Fin n) (Fin n) ℂ) =>
+      by
+        classical
+        exact if h : ∃ X : Matrix (Fin n) (Fin n) ℂ, X ∈ V ∧ Matrix.det (1 - A * X) = 0 then
+          (1 : ℝ) / sInf ((fun X : Matrix (Fin n) (Fin n) ℂ =>
+            ‖((Matrix.toEuclideanLin ≪≫ₗ LinearMap.toContinuousLinearMap) X)‖) ''
+            {X : Matrix (Fin n) (Fin n) ℂ | X ∈ V ∧ Matrix.det (1 - A * X) = 0})
+        else 0
+    (∀ A : Matrix (Fin n) (Fin n) ℂ, μ E A = μ F A) ↔ E = F := by
+  sorry</code></pre>
+              </div>
+            </div>
+          </div>
+          <div class="qualitative-label">Analysis</div>
+          <div class="box response-box qualitative-response-box">
+            <p>
+              For a given linear subspace $V \subset M_n(\mathbb{C})$, one may define the structured singular value
+              $\mu_V$, which is a function from $M_n(\mathbb{C})$ to $\mathbb{R}$. The nontrivial direction here is
+              proving that $\mu_E = \mu_F$ implies $E = F$. The extracted statement corresponds to Theorem 2.2 of the
+              research article, which is one of its multiple main results.
+            </p>
+            <p>
+              The problem is solved correctly by GPT-5.4, Claude-Opus-4.7, Aristotle, and Gemini-3.1 Pro. All successful
+              proofs share the same high-level strategy: assume $F \neq E$, pick a non-scalar matrix
+              $X \in F \setminus E$, and construct from $X$ a matrix $A$ such that $\mu_E(A) = 0$. However,
+              $\mu_F(A) \neq 0$, yielding a contradiction. GPT-5.4 and Claude-Opus-4.7 implement this rather
+              explicitly while doing a case distinction on $X$ being diagonal, while Gemini-3.1 Pro instead uses a
+              more conceptual orthogonality-based characterization of scalar matrices. Generally, the core idea is
+              similar across all three proofs.
+            </p>
+          </div>
+        </div>
+
+        <h2 class="anchorable" id="footnotes">
+          <a href="#footnotes">
+            Footnotes
+          </a>
+        </h2>
+
+        <ol class="footnotes">
+          <li id="fn1">
+            We found that Aristotle sometimes uses the tactic <code>native_decide</code>, which is rejected by our
+            verifier because it introduces a non-standard axiom. To prevent this, we explicitly instruct Aristotle not
+            to use it.
+            <a href="#ref1" class="footnote-backref">↩</a>
+          </li>
+        </ol>
+
+        <h2 class="anchorable" id="prompts">
+          <a href="#prompts">
+            Prompts
+          </a>
+        </h2>
+
+        <p>
+          Below are the benchmark prompts used in the ArXivLean March 2026 pipeline.
+        </p>
+
+        <details class="example-container prompt-details">
+          <summary class="title is-4">Solve</summary>
+          <div class="box problem-box">
+You are given a formal statement and its natural language description. 
+Your task is to generate a proof for the statement using Lean v4.29.0.
+Under no circumstance are you allowed to add any axioms or assumptions. 
+You can use any definitions, lemmas, or theorems that are already present in the Lean mathematical library (mathlib).
+You can also use any helper lemmas or definitions that you create yourself.
+You should not attempt to provide a proof to a weaker statement or attempt to cheat in any way, as this is useless and will be penalized.
+
+## Tools
+You have access to the following tools to assist you in finding a proof:
+- `verify_lean`: Executes the Lean code and returns the result of the proof attempt, including any error messages if the proof fails.
+- `verify_submission`: Can be used to verify whether your final proof passes the check imposed by the grader. Its input requires the same format as the final submission and will check whether the proof compiles and is correct, and whether the formal statement matches the one given in the problem.
+- `add_to_file`: Adds helper Lean code to a persistent file, but only if the whole accumulated file remains valid. Whatever you add here will automatically be prepended to later `verify_lean`, `verify_submission`, and final checking. This can be useful for building up a library of helper lemmas or definitions that you can use across multiple proof attempts, without having to repeat that code in every submission.
+- `loogle`: Searches Mathlib with loogle and returns matching declarations. Good queries are usually either an exact declaration name or a small type pattern with `_` holes.
+- `lean_explore_search`: Searches Lean libraries with LeanExplore using natural-language or fuzzy semantic queries. Use this when you know the concept you need, but not the exact theorem name or type shape.
+
+Good `loogle` examples:
+- Exact name lookup: `Nat.add_comm`
+- Search for a commutativity lemma by shape: `(_ + _ = _ + _)`
+- Search for a monotonicity lemma: `(_ ≤ _ -> _ + _ ≤ _ + _)`
+- Search for a membership-preservation lemma: `(_ ∈ _ -> _ ∈ _)`
+- Search for a more structured statement: `(List.replicate (_ + _) _ = _)`
+
+Common mistakes to avoid in `loogle` queries:
+- For exact-name lookup, pass the bare declaration name with no quotes, for example `Nat.add_comm`, not `"Nat.add_comm"`.
+- For shape search, use only short Lean expressions with `_` holes. Do not put `?f`, `?x`, `⊢`, `∀`, lambdas like `fun x =>`, or whole goal states into `loogle`.
+- If your query is more like words or a mathematical idea than a short Lean expression, use `lean_explore_search` instead of `loogle`.
+
+Good `lean_explore_search` examples:
+- `continuous function`
+- `compact set image`
+- `strict monotone natural numbers`
+- `sum of nonnegative terms`
+
+## Requirements
+- You cannot change anything about the formal statement, including no variable renaming or rephrasing. The statement must be **exactly** as given in the problem.
+- You should follow the output format specified below exactly.
+- `verify_submission` will only verify your submission accurately if you did not attempt to change the meaning of the statement. Making it pass by using things like `notation` or `alias` to change the names of variables or the statement will be penalized, and will not be accepted as a valid proof.
+
+## Output Format
+Your output should consist of a single lean code block containing the main proof of the statement and any helper lemmas or definitions you think are necessary for the proof.
+If you used `add_to_file`, **do not** repeat that helper code in the final answer; it is already prepended automatically during checking.
+If you do, it may cause your submission to be rejected for including duplicated content.
+Your code block should end with the main proof of the statement, which should directly start with the statement you are proving, and needs to be an exact match for the statement given in the problem.
+You are not allowed to change the formal statement in any way, including variable renaming or rephrasing.
+In particular, the theorem statement in the second code block will be replaced with the formal statement from the problem before being checked. 
+If you are unsure, use the `verify_submission` tool to check whether your proof is in the correct format and will compile successfully before submitting your final answer.
+
+For instance, you can output something like this:
+
+```lean
+lemma add_zero_helper (n : ℕ) : n + 0 = n := by
+  exact Nat.add_zero n
+
+theorem my_theorem : ∀ n : ℕ, n + 0 = n := by
+  intro n
+  exact add_zero_helper n
+```
+
+### Natural Language Problem Statement
+{problem}
+
+### Formal Statement
+```lean
+{formal_statement}
+```</div>
+        </details>
+
+        <details class="example-container prompt-details">
+          <summary class="title is-4">Extract Natural Language Statement</summary>
+          <div class="box problem-box">
+# Task Description
+You are constructing benchmark items for research-level mathematics formalization in Lean 4 with Mathlib.
+
+You will be given only:
+- a paper title
+- the paper abstract
+
+Your task is to decide whether the abstract contains a clean theorem-like mathematical claim that can plausibly be formalized in Lean 4 with Mathlib, and if so, extract exactly one such statement.
+
+Keep a candidate only if all of the following hold:
+- **Abstract-Grounded**: the statement is directly supported by the abstract. Do not invent details that are not clearly present in the abstract.
+- **Theorem-Like**: the extracted statement is an actual mathematical claim, not a vague research direction, motivation, or summary sentence.
+- **Self-Contained**: the statement can be read on its own without referring to the paper or the abstract.
+- **Mathlib-Plausible**: the mathematical objects and assumptions look standard enough that a faithful Lean 4 Mathlib formalization is plausible.
+- **Sufficiently Specific**: the abstract gives enough detail to write a precise theorem statement.
+
+Reject the paper if any of the following holds:
+- the abstract is too vague to extract a precise theorem-like statement
+- the abstract relies on paper-specific notation or definitions that are not sufficiently explained
+- the abstract only states empirical, heuristic, or non-theorem-style claims
+- the claim would likely require substantial bespoke infrastructure not already standard in Mathlib
+
+Prefer a central claim from the abstract rather than a minor side remark.
+
+## Output Format
+
+Respond only with JSON:
+
+```json
+{{
+  "keep": boolean,
+  "statement": "self-contained mathematical statement",
+  "rationale": "short explanation of why this abstract claim is or is not a good Lean formalization candidate"
+}}
+```
+
+If no suitable candidate exists, output:
+
+```json
+{{
+  "keep": false,
+  "rationale": "short explanation"
+}}
+```
+
+# Title
+{title}
+
+# Abstract
+{abstract}</div>
+        </details>
+
+        <details class="example-container prompt-details">
+          <summary class="title is-4">Verify Natural Language Statement</summary>
+          <div class="box problem-box">
+# Verification Task
+
+You are verifying whether an abstract-derived mathematical statement is suitable for a benchmark measuring the ability of LLMs to formalize and prove research-level theorems in Lean 4 with Mathlib.
+
+You are given:
+- the paper title
+- the abstract
+- an extracted theorem-like statement
+
+Keep the statement only if all of the following hold:
+- **Faithful to the Abstract**: the statement is genuinely supported by the abstract and does not add important assumptions, definitions, or conclusions that are not clearly present there.
+- **Self-Contained**: it can be understood without the rest of the paper.
+- **Sufficiently Precise**: it is specific enough that a faithful Lean statement can be written from it.
+- **Mathlib-Plausible**: it appears to live in an area and vocabulary that are standard enough for Lean 4 Mathlib.
+- **Not Paper-Local**: it does not fundamentally rely on bespoke paper-specific notation or hidden setup.
+
+Reject the statement if the abstract is too underspecified, the extraction overcommits beyond what the abstract says, or the statement likely needs substantial custom infrastructure before it can even be stated faithfully in Lean.
+
+Be strict.
+
+## Output Format
+
+Respond only with JSON:
+
+```json
+{{
+  "keep": boolean,
+  "rationale": "short justification"
+}}
+```
+
+# Title
+{title}
+
+# Abstract
+{abstract}
+
+# Extracted Statement
+{statement}</div>
+        </details>
+
+        <details class="example-container prompt-details">
+          <summary class="title is-4">Formalize</summary>
+          <div class="box problem-box">
+# Task Description
+
+Formalize the following mathematical statement in Lean 4 using mathlib. You do not need to provide a proof, just the statement. If you are unable to find a suitable candidate for formalization, respond with "No suitable candidate for formalization found." or an empty string. We strongly prefer such a response over a low-quality formalization that does not faithfully capture the original mathematical meaning.
+
+Requirements:
+- **Lean 4 with Mathlib**: The formalization must be in Lean 4 and use the mathlib library. Do not use any other libraries or extensions.
+- **No Imports**: Imports are not required and will be automatically added during testing. Do not include any imports in your response.
+- **Only the Statement**: Only formalize the theorem statement, not the proof. The statement should end with `:= by sorry`.
+- **Faithful Formalization**: The formalization should faithfully capture the mathematical meaning of the original natural-language statement. Do not weaken the claim or add extra assumptions unless they are clearly required by the statement.
+- **Use Mathlib Definitions**: Use actual mathlib definitions and structures whenever standard notions exist. Do not replace core concepts with placeholder predicates, functions, constants, or parameters just to make the file compile.
+- **No New Axioms**: Do not use new `axiom`, `constant`, `opaque`, or `postulate` declarations.
+
+# Tools
+
+To assist you in this task, you have access to the following tools:
+- `verify_lean`: Check whether your formalization compiles and inspect any errors or warnings. Use this iteratively to refine your statement until it compiles without errors. Warnings and infos are acceptable, as your statement will need to contain `sorry` placeholders, but errors are not.
+- `loogle`: Search Mathlib declarations by exact name or by a small type pattern with `_` holes.
+- `leanfinder`: Search Lean libraries using natural-language or fuzzy semantic queries when you know the concept you need, but not the exact theorem or definition name.
+
+Good `loogle` examples:
+- Exact name lookup: `Nat.add_comm`
+- Search for a commutativity lemma by shape: `(_ + _ = _ + _)`
+- Search for a monotonicity lemma: `(_ ≤ _ -> _ + _ ≤ _ + _)`
+- Search for a membership-preservation lemma: `(_ ∈ _ -> _ ∈ _)`
+
+Good `leanfinder` examples:
+- `continuous function`
+- `compact set image`
+- `strict monotone natural numbers`
+- `sum of nonnegative terms`
+
+Focus on a faithful statement formalization, even if the result is not easy to prove. A compilable but vacuous surrogate is not acceptable. If you find the statement is not formalizable in a faithful way, then it is better to respond with "No suitable candidate for formalization found." than to produce a low-quality formalization that does not capture the original mathematical meaning.
+
+Syntax example:
+
+```lean
+theorem syntax_example (x : ℤ) :
+    ‖Finset.sum (Finset.Icc (-x) x) (fun n : ℤ => (n : ℂ))‖ ≤ 1 := by
+  sorry
+```
+
+## Output Format
+
+Respond only with Lean code, without any explanation or commentary. For instance,
+```lean
+theorem syntax_example (x : ℤ) :
+    ‖Finset.sum (Finset.Icc (-x) x) (fun n : ℤ => (n : ℂ))‖ ≤ 1 := by
+  sorry
+```
+
+If you did not find a suitable candidate for formalization, respond with any string not containing a Lean environment, such as "No suitable candidate for formalization found." or even an empty string. 
+
+# Natural-Language Statement
+{statement}</div>
+        </details>
+
+        <details class="example-container prompt-details">
+          <summary class="title is-4">Semantic Judge</summary>
+          <div class="box problem-box">
+# Task Description
+
+You are checking whether a Lean 4 theorem statement faithfully formalizes a natural-language mathematical statement.
+
+Keep the formalization only if:
+- the Lean code clearly states the same theorem as the natural-language statement
+- no essential assumptions have been added or removed
+- the theorem is neither weaker nor stronger in a materially different way
+- the imported framework and encoding choices are mathematically faithful
+
+Be extremely diligent. If there is any meaningful ambiguity, discard the formalization. We much prefer false negatives to false positives. If you are unsure, discard it.
+
+## Output Format
+
+Respond only with JSON:
+
+```json
+{{
+  "keep": boolean,
+  "rationale": "short explanation"
+}}
+```
+
+# Natural-Language Statement
+{natural_statement}
+
+# Lean Code
+{lean_code}</div>
+        </details>
+
+        <details class="example-container prompt-details">
+          <summary class="title is-4">Prior-Work Filter</summary>
+          <div class="box problem-box">
+# Task Description
+I am constructing benchmark items for research-level mathematics.
+In particular, we want to see whether LLMs can generate a Lean proof of a new mathematical result, given its formalization.
+
+I have extracted an original theorem-style statement describing a major contribution from the abstract. You are checking whether the statement as is already appears in prior work, or whether it depends on the new contribution of the paper. To check this, you have access to the full paper text.
+
+Discard the pair if the full paper gives any indication that prior work already proves (very similar variants of) the original statement, or that the original statement can be easily derived from prior work. For instance, if the paper states that the original statement is a straightforward application of a known result, then discard it. 
+
+Discard the statement if there is any uncertainty. It is better to be strict and discard statements that are borderline than to keep statements where prior work clearly already gives the result or makes it easy to derive.
+
+## Output Format
+
+Respond only with a JSON object:
+
+```json
+{{
+  "action": string,
+  "rationale": string,
+}}
+```
+
+- "action": "discard" | "keep"
+- "rationale": short justification grounded in the paper's discussion of prior work
+
+### Original statement ###
+{original_statement}
+
+### Full paper text ###
+{full_text}</div>
+        </details>
+
+        <details class="example-container prompt-details">
+          <summary class="title is-4">Hidden Condition</summary>
+          <div class="box problem-box">
+# Task Description
+I am constructing benchmark items for research-level mathematics.
+In particular, we want to see whether LLMs can generate a Lean proof of a new mathematical result, given its formalization.
+The original statement and its formalization were extracted from the abstract. Unfortunately, we have found that many papers skip essential conditions in the abstract that are only mentioned in the full paper. This makes the original question incomplete, which in turn makes the formalized statement incorrect.
+
+Your task:
+- Discard the question if it is fundamentally flawed due to missing conditions that are only mentioned in the full paper. This can be **any** trivial condition, including not stating that the result only holds for $n > 1$, or that a certain object is nonempty, etc. If you, in any way believe the question is incomplete or incorrect as it stands, discard it. It is better to be strict and discard questions that are borderline than to keep questions that are clearly incomplete or incorrect.
+- Keep the question if it is already accurate and central.
+
+## Output Format
+
+Respond only with a JSON object:
+
+```json
+{{
+  "action": string,
+  "rationale": string,
+}}
+```
+
+- "action": "discard" | "keep"
+- "rationale": short justification grounded in the paper's discussion of prior work
+
+### Original statement ###
+{original_statement}
+
+### Formalized statement ###
+{formalized_statement}
+
+### Full paper text ###
+{full_text}</div>
+        </details>
+
+        <details class="example-container prompt-details">
+          <summary class="title is-4">AI Detection</summary>
+          <div class="box problem-box">
+I am creating a mathematical benchmark for LLMs called ArXivMath. For this purpose, I am extracting questions from recent arXiv papers along with their answers. In particular, I gave an LLM the title and abstract of each paper and asked it to generate a question and answer pair about the paper's main result.
+
+## Problem
+However, many paper on ArXiv are now generated with the aid of LLMs. This gives an unfair advantage to LLMs that were used to generate the paper, since they can easily answer questions about the paper's main result. In contrast, LLMs that were not used to generate the paper would have to understand the paper's content and derive the main result in order to answer questions about it. This creates a bias in favor of LLMs that were involved in the paper generation process, which undermines the goal of testing LLMs' ability to understand and reason about new research contributions.
+
+## Instructions
+Discard any paper that mentions the use of LLMs or AI tools in the paper generation process, in any way. It does not matter how large the acknowledgment of AI is, or whether it is in the main text, acknowledgments, or references. If there is any indication that AI was used in any part of the paper, discard the paper. Take the use of AI liberally: look for any mention of AI tools, include Claude, Anthopric, OpenAI, ChatGPT, LLaMA, Gemini, etc. If there is any mention of these tools in the paper, discard the paper.
+
+## Output format
+Return JSON with keys:
+- "action": "discard" | "keep"
+- "rationale": short justification grounded in the full paper's discussion of prior work
+
+For instance,
+{{
+  "action": "discard",
+  "rationale": "The paper explicitly mentions the use of ChatGPT in the acknowledgments section, indicating that AI tools were involved in the paper generation process."
+}}
+
+### Current question ###
+{question}
+
+### Full paper text ###
+{full_text}</div>
+        </details>
+
+        <details class="example-container prompt-details">
+          <summary class="title is-4">Author Verification</summary>
+          <div class="box problem-box">
+# Task
+Your job is to determine whether at least one author of the given scientific paper has a solid publication record in the relevant field.
+In particular, you need to verify if at least one author is an expert in the field related to the paper, i.e., is a PhD student or has a higher degree in the field of study.
+
+## Output Format
+
+Respond **only** with a JSON object:
+
+```json
+{{
+  "keep": boolean
+}}
+```
+
+If you could not confirm any author satisfies the criteria, output `"keep": false`.
+Otherwise, output `"keep": true`.
+
+---
+
+# Paper Title
+{title}
+
+# Paper Abstract
+{abstract}
+
+# Paper Authors
+{authors}</div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const canvas = document.getElementById('arxivlean-tool-usage-chart');
+      const solutionLengthCanvas = document.getElementById('arxivlean-solution-length-chart');
+      if ((!canvas && !solutionLengthCanvas) || !window.Chart) return;
+
+      const labels = [
+        'Claude-Opus-4.7 (high)',
+        'Gemini 3.1 Pro Preview',
+        'GLM 5.1',
+        'GPT-5.4 (xhigh)',
+        'Step 3.5 Flash',
+      ];
+
+      const datasets = [
+        {
+          label: 'Verify Lean',
+          data: [6.02, 19.61, 15.27, 50.44, 0.51],
+          backgroundColor: 'rgba(90, 126, 184, 0.78)',
+        },
+        {
+          label: 'Loogle',
+          data: [4.46, 4.98, 44.54, 24.93, 49.02],
+          backgroundColor: 'rgba(205, 157, 94, 0.78)',
+        },
+        {
+          label: 'Lean Explore Search',
+          data: [6.44, 5.22, 9.88, 35.73, 5.56],
+          backgroundColor: 'rgba(202, 114, 123, 0.78)',
+        },
+        {
+          label: 'Verify Submission',
+          data: [1.22, 1.51, 2.63, 1.02, 0.0],
+          backgroundColor: 'rgba(101, 112, 128, 0.78)',
+        },
+        {
+          label: 'Add To File',
+          data: [1.0, 0.29, 9.07, 0.41, 0.24],
+          backgroundColor: 'rgba(81, 156, 129, 0.78)',
+        },
+      ].map((dataset) => ({
+        ...dataset,
+        borderWidth: 0,
+        maxBarThickness: 72,
+      }));
+
+      if (canvas) {
+        new Chart(canvas, {
+          type: 'bar',
+          data: { labels, datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+              mode: 'index',
+              intersect: false,
+            },
+            plugins: {
+              legend: {
+                position: 'top',
+                align: 'center',
+                fullSize: false,
+                labels: {
+                  usePointStyle: true,
+                  boxWidth: 10,
+                  boxHeight: 10,
+                  padding: 16,
+                  font: {
+                    size: 15,
+                  },
+                },
+              },
+              tooltip: {
+                titleFont: {
+                  size: 15,
+                },
+                bodyFont: {
+                  size: 14,
+                },
+                footerFont: {
+                  size: 14,
+                },
+                callbacks: {
+                  label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)} calls/problem`,
+                  footer: (items) => {
+                    const total = items.reduce((sum, item) => sum + item.parsed.y, 0);
+                    return `Total: ${total.toFixed(2)} calls/problem`;
+                  },
+                },
+              },
+            },
+            scales: {
+              x: {
+                stacked: true,
+                ticks: {
+                  color: '#334155',
+                  font: {
+                    size: 14,
+                  },
+                },
+                grid: {
+                  display: false,
+                },
+              },
+              y: {
+                stacked: true,
+                beginAtZero: true,
+                title: {
+                  display: true,
+                  text: 'Average tool calls per problem',
+                  color: '#0f172a',
+                  font: {
+                    size: 16,
+                  },
+                },
+                ticks: {
+                  color: '#334155',
+                  font: {
+                    size: 14,
+                  },
+                },
+                grid: {
+                  color: 'rgba(148, 163, 184, 0.18)',
+                },
+              },
+            },
+          },
+        });
+      }
+
+      if (solutionLengthCanvas) {
+        const solutionLengthLabels = ['P4', 'P15', 'P21', 'P27', 'P32', 'P33', 'P39'];
+        const solutionLengthDatasets = [
+          {
+            label: 'Claude-Opus-4.7 (high)',
+            data: [2081, 489, null, 588, 4876, 858, 2541],
+            backgroundColor: 'rgba(140, 126, 175, 0.76)',
+          },
+          {
+            label: 'Gemini 3.1 Pro Preview',
+            data: [207, 1542, null, 1212, 5099, 4082, 3178],
+            backgroundColor: 'rgba(88, 145, 150, 0.76)',
+          },
+          {
+            label: 'GPT-5.4 (xhigh)',
+            data: [196, 509, 1681, 666, 2608, 720, 2114],
+            backgroundColor: 'rgba(90, 126, 184, 0.76)',
+          },
+          {
+            label: 'Aristotle',
+            data: [158, 555, 1502, 443, 2764, 920, null],
+            backgroundColor: 'rgba(113, 120, 134, 0.76)',
+          },
+          {
+            label: 'GLM 5.1',
+            data: [null, null, null, 845, null, null, null],
+            backgroundColor: 'rgba(102, 156, 114, 0.76)',
+          },
+        ].map((dataset) => ({
+          ...dataset,
+          borderWidth: 0,
+          maxBarThickness: 38,
+        }));
+
+        new Chart(solutionLengthCanvas, {
+          type: 'bar',
+          data: {
+            labels: solutionLengthLabels,
+            datasets: solutionLengthDatasets,
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+              mode: 'nearest',
+              intersect: true,
+            },
+            plugins: {
+              legend: {
+                position: 'top',
+                align: 'center',
+                fullSize: false,
+                labels: {
+                  usePointStyle: true,
+                  boxWidth: 10,
+                  boxHeight: 10,
+                  padding: 16,
+                  font: {
+                    size: 15,
+                  },
+                },
+              },
+              tooltip: {
+                titleFont: {
+                  size: 15,
+                },
+                bodyFont: {
+                  size: 14,
+                },
+                footerFont: {
+                  size: 14,
+                },
+                callbacks: {
+                  label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y.toLocaleString()} proxy words`,
+                },
+              },
+            },
+            scales: {
+              x: {
+                ticks: {
+                  color: '#334155',
+                  font: {
+                    size: 14,
+                  },
+                },
+                title: {
+                  display: true,
+                  text: 'Solved problem',
+                  color: '#0f172a',
+                  font: {
+                    size: 16,
+                  },
+                },
+                grid: {
+                  display: false,
+                },
+              },
+              y: {
+                beginAtZero: true,
+                title: {
+                  display: true,
+                  text: 'Proxy Lean word count',
+                  color: '#0f172a',
+                  font: {
+                    size: 16,
+                  },
+                },
+                ticks: {
+                  color: '#334155',
+                  font: {
+                    size: 14,
+                  },
+                  callback: (value) => Number(value).toLocaleString(),
+                },
+                grid: {
+                  color: 'rgba(148, 163, 184, 0.18)',
+                },
+              },
+            },
+          },
+        });
+      }
+    });
+  </script>
+
+
+  </div>
+  <!-- Cloudflare Web Analytics -->
+  
+  <footer class="site-footer">
+    <div class="container footer-container">
+      <div class="footer-brand-block">
+        <p class="footer-brand">MathArena</p>
+        <p class="footer-text">Uncontaminated math benchmarks for LLMs.</p>
+      </div>
+      <div class="footer-created">
+        <div class="footer-created-label">Created by</div>
+        <div class="footer-logos">
+          <a href="https://www.sri.inf.ethz.ch/" class="footer-logo-link" target="_blank" rel="noopener">
+            <img src="/static/images/sri-logo.svg" alt="SRI Logo">
+          </a>
+          <a href="https://ethz.ch/en.html" class="footer-logo-link" target="_blank" rel="noopener">
+            <img src="/static/images/ETH_Z%C3%BCrich.svg" alt="ETH Logo">
+          </a>
+          <a href="https://insait.ai/" class="footer-logo-link" target="_blank" rel="noopener">
+            <img src="/static/images/insait_logo_no_bg.png" alt="INSAIT Logo">
+          </a>
+        </div>
+      </div>
+      <div class="footer-links">
+        <a href="mailto:jasper.dekoninck@inf.ethz.ch">Contact</a>
+        <a href="https://huggingface.co/MathArena" target="_blank" rel="noopener">HuggingFace</a>
+        <a href="https://github.com/eth-sri/matharena" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </footer>
+  <script defer src='https://static.cloudflareinsights.com/beacon.min.js'
+    data-cf-beacon='{"token": "6641e864e9fd47eb9b6369936df12f31"}'></script><!-- End Cloudflare Web Analytics -->
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const burger = document.querySelector('.navbar-burger');
+      const menu = document.getElementById(burger?.dataset.target);
+      if (burger && menu) {
+        burger.addEventListener('click', () => {
+          burger.classList.toggle('is-active');
+          menu.classList.toggle('is-active');
+        });
+      }
+    });
+  
+  </script>
+  
+<script>
+  imageMapResize();
+</script>
+
+</body>
+
+</html>

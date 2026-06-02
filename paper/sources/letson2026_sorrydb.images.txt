@@ -1,0 +1,28 @@
+page   num  type   width height color comp bpc  enc interp  object ID x-ppi y-ppi size ratio
+--------------------------------------------------------------------------------------------
+   2     0 image     240   240  icc     3   8  image  yes      806  0  1047  1047 3138B 1.8%
+   2     1 smask     240   240  gray    1   8  image  no       806  0  1047  1047 2482B 4.3%
+   2     2 image     512   512  icc     3   8  image  yes      807  0  3048  3048 3453B 0.4%
+   2     3 smask     512   512  gray    1   8  image  no       807  0  3048  3048 10.2K 4.0%
+   2     4 image     512   512  icc     3   8  image  yes      807  0  3048  3048 3453B 0.4%
+   2     5 smask     512   512  gray    1   8  image  no       807  0  3048  3048 10.2K 4.0%
+   2     6 image     512   512  icc     3   8  image  yes      807  0  3048  3048 3453B 0.4%
+   2     7 smask     512   512  gray    1   8  image  no       807  0  3048  3048 10.2K 4.0%
+   2     8 image     512   512  icc     3   8  image  yes      807  0  3048  3048 3453B 0.4%
+   2     9 smask     512   512  gray    1   8  image  no       807  0  3048  3048 10.2K 4.0%
+   2    10 image     512   512  icc     3   8  image  yes      807  0  3048  3048 3453B 0.4%
+   2    11 smask     512   512  gray    1   8  image  no       807  0  3048  3048 10.2K 4.0%
+   2    12 image     512   512  icc     3   8  image  yes      807  0  3048  3048 3453B 0.4%
+   2    13 smask     512   512  gray    1   8  image  no       807  0  3048  3048 10.2K 4.0%
+   2    14 image    1178   224  icc     3   8  image  yes      808  0   879   879 27.2K 3.5%
+   2    15 smask    1178   224  gray    1   8  image  no       808  0   879   879 9365B 3.5%
+   2    16 image     512   512  icc     3   8  image  yes      807  0  3048  3048 3453B 0.4%
+   2    17 smask     512   512  gray    1   8  image  no       807  0  3048  3048 10.2K 4.0%
+  16    18 image    3570  1773  rgb     3   8  image  no       521  0   927   927  158K 0.9%
+  16    19 smask    3570  1773  gray    1   8  image  no       521  0   927   927 6169B 0.1%
+  16    20 image    3571  1772  rgb     3   8  image  no       522  0   928   928  122K 0.7%
+  16    21 smask    3571  1772  gray    1   8  image  no       522  0   928   928 6167B 0.1%
+  22    22 image    3564  1764  rgb     3   8  image  no       526  0   926   926  136K 0.7%
+  22    23 smask    3564  1764  gray    1   8  image  no       526  0   926   926 6127B 0.1%
+  22    24 image    3628  2683  rgb     3   8  image  no       525  0   733   733  333K 1.2%
+  22    25 smask    3628  2683  gray    1   8  image  no       525  0   733   733 9480B 0.1%

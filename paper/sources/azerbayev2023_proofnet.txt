@@ -1,0 +1,715 @@
+                                                ProofNet: Autoformalizing and Formally Proving
+                                                      Undergraduate-Level Mathematics
+
+
+                                                           Zhangir Azerbayev                              Bartosz Piotrowski
+                                                              Yale College∗                              University of Warsaw∗
+
+
+
+
+arXiv:2302.12433v1 [cs.CL] 24 Feb 2023
+                                                      zhangir.azerbayev@yale.edu                     bartoszpiotrowski@post.pl
+
+                                                              Hailey Schoelkopf                            Edward W. Ayers
+                                                           EleutherAI, Yale College                    Carnegie Mellon University
+                                                        hailey.schoelkopf@yale.edu                      contact@edayers.com
+
+                                                              Dragomir Radev                               Jeremy Avigad
+                                                               Yale University                        Carnegie Mellon University
+                                                         dragomir.radev@yale.edu                          avigad@cmu.edu
+
+
+
+                                                                                         Abstract
+
+                                                     We introduce ProofNet, a benchmark for autoformalization and formal proving
+                                                     of undergraduate-level mathematics. The ProofNet benchmarks consists of 371
+                                                     examples, each consisting of a formal theorem statement in Lean 3, a natural
+                                                     language theorem statement, and a natural language proof. The problems are pri-
+                                                     marily drawn from popular undergraduate pure mathematics textbooks and cover
+                                                     topics such as real and complex analysis, linear algebra, abstract algebra, and
+                                                     topology. We intend for ProofNet to be a challenging benchmark that will drive
+                                                     progress in autoformalization and automatic theorem proving. We report base-
+                                                     line results on statement autoformalization via in-context learning. Moreover, we
+                                                     introduce two novel statement autoformalization methods: prompt retrieval and
+                                                     distilled backtranslation.
+
+
+                                         1 Introduction
+
+                                         The creation of an automatic mathematician, that is, a system capable of autonomously posing con-
+                                         jectures and proving theorems, is a longstanding challenge in mathematics and artificial intelligence
+                                         [Gelernter, 1959]. In recent years, neural generative language modelling has emerged as a promising
+                                         approach to automating aspects of mathematics [Rabe and Szegedy, 2021].
+                                         One approach to applying language models to mathematics has been to treat mathematical reasoning
+                                         in natural language as a sequence learning task [Welleck et al., 2021, 2022, Lewkowycz et al., 2022].
+                                         A key advantage of mathematical reasoning in natural language is the abundance of natural language
+                                         mathematics data on the internet [Lewkowycz et al., 2022].
+                                         An alternative approach is to use language models to guide formal proof-search in an interactive the-
+                                         orem prover (ITP) [Yang and Deng, 2019, Polu and Sutskever, 2020, Polu et al., 2022, Jiang et al.,
+                                         2022a]. A salient advantage of this method is that the ITP acts as a verifier for the language model’s
+                                         reasoning, enabling the natural implementation of bootstrapping techniques such as expert iteration
+                                         [Silver et al., 2017, Polu et al., 2022].
+                                            ∗
+                                                Work completed while at Carnegie Mellon University
+
+
+                                         Preprint. Under review.
+                                                                ProofNet dataset (ours)
+                                                      Formal theorem statement:
+                                                      theorem exercise_4_5_14 {G : Type*}
+                                                        [group G] [fintype G]
+                                                        (hG : card G = 312) :
+                                                        ∃ (p : N) (P : sylow p G),
+                 Lean mathlib                         P.normal
+Formal theorem statement:                             Natural language theorem statement:
+theorem                                               Prove that a group of order 312 has a normal
+exists_subgroup_card_pow_prime                        Sylow p-subgroup for some prime p dividing its
+  [fintype G] (p : N) {n : N}                         order.
+  [fact p.prime] (hdvd: p ˆ n | card                  Natural language proof:
+G) :
+  ∃ K : subgroup G, fintype.card K =                  Proof. Since |G| = 351 = 32 .13, G has 3-Sylow
+pˆn                                                   subgroup of order 9, as well as 13-Sylow sub-
+                                                      group of order 13. Now, we count the number
+                                                      of such subgroups. Let n13 be the number of 13-
+                                                      Sylow subgroup and n3 be the number of 3-Sylow
+                                                      subgroups. Now n13 = 1 + 13k where 1 + 13k|9.
+                                                      Thus the only possible choice for k is 0. Hence,
+                                                      there is a unique 13-Sylow subgroup and because
+                                                      it is unique it is normal.
+Figure 1: A sample theorem statement from mathlib, show on the left, and a sample theorem state-
+ment from ProofNet, shown on the right. Mathlib emphasizes including the most abstract and
+general formulations of mathematical results, whereas ProofNet predominantly tests the ability of
+models to apply those results to concrete problems.
+
+Autoformalization, the task of automatically formalizing mathematics, seeks to build a bridge be-
+tween informal and formal mathematical reasoning [Wang et al., 2018, Szegedy, 2020, Wu et al.,
+2022a], with the potential of extracting a training signal from vast corpora of natural language math-
+ematics data while still grounding a system’s reasoning in formal logic. However, lack of parallel
+data between informal and formal mathematics means that autoformalization suffers from a lack of
+standard benchmarks to guide progress in the field.
+To remedy this gap, we propose ProofNet,2 a benchmark consisting of parallel natural language
+and formal mathematics that can be used to evaluate autoformalization and theorem proving. The
+ProofNet benchmark consists of 371 parallel formal theorem statements, natural language theo-
+rem statements, and natural language proofs sourced from the exercises of popular undergraduate-
+level pure mathematics textbooks. Formal statements are expressed in the Lean 3 theorem prover
+[de Moura et al., 2015], and depend on Lean’s mathlib [mathlib Community, 2020].
+Language-model-based theorem provers and autoformalization systems have typically been eval-
+uated on benchmarks consisting of competition and olympiad-style problems [Zheng et al., 2022,
+Wu et al., 2022a]. While such problems require complex reasoning, their solutions only depend
+on a relatively small set of elementary facts about integers, real numbers, counting, and geome-
+try. In contrast, modern research mathematics requires the mastery of a massive body of theory
+made up of thousands of definitions, lemmas, and theorems. The Lean 3 formalization of perfectoid
+spaces, an important definition in research-level arithmetic geometry, depends on over 3000 distinct
+theorems and definitions [Buzzard et al., 2020]. How to effectively reason over such a large repos-
+itory of knowledge is an important unsolved problem in applying language models to mathematics
+[Irving et al., 2016, Wu et al., 2022b, Tworkowski et al., 2022] .
+ProofNet falls short of requiring mastery of all of modern mathematics, but poses the still ambitious
+goal of reasoning over the core of an undergraduate mathematics, including basic analysis, algebra,
+number theory, and topology. We hope that this benchmark will spur the development of language
+models that are able to reason effectively over large knowledge bases.
+
+   2
+   Full dataset are available at https://huggingface.co/datasets/hoskinson-center/proofnet.
+Code to replicate experiments available at https://github.com/zhangir-azerbayev/ProofNet
+
+
+                                                  2
+In order to obtain stronger baselines on ProofNet, we train and open-source the PROOF GPT lan-
+guage models at scales of 1.3 billion and 6.7 billion parameters. These models are trained on the
+proof-pile, an 8 billion token dataset of mathematical text. To our knowledge, these are the only
+open-source language models fine-tuned for general mathematics.
+We establish baselines for ProofNet theorem autoformalization using in-context learning
+[Brown et al., 2020]. Moreover we introduce two novel theorem autoformalization methods that
+outperform our few-shot baselines. Prompt retrieval uses nearest-neighbor search against an embed-
+ding database to create a prompt consisting of the mathlib declarations most relevant to a particular
+natural language theorem. Distilled backtranslation is a method inspired by work in unsupervised
+machine translation [Lample et al., 2017, Han et al., 2021a] that finetunes a language model for aut-
+oformalization at a large scale without the need for parallel data.
+
+2 The ProofNet Benchmark
+Dataset collection Problems in the ProofNet benchmark are primarily drawn from exercises in
+popular undergraduate mathematics textbooks. For a complete list of sources, see Appendix B.
+Not all textbook exercises lend themselves naturally to formalization. In particular, we only consider
+for inclusion in ProofNet problems meeting the following criteria:
+       • Self-containment. Problems should only depend on the results commonly taught in an
+         undergraduate curriculum. In particular, this rules out problems that are split into multiple
+         sequentially dependent parts, or those using nonstandard notations.
+       • Naturality of formalization. Not all kinds of mathematical problems can be naturally for-
+         malized, such as word problems, and such problems are excluded. We do not include exer-
+         cises that require computing an unknown quantity. We do not include problems that depend
+         on parts of Lean’s mathlib that are relatively less mature, such as Euclidean geometry or
+         combinatorics.
+       • Low risk of train-test overlap. Because language models are often pre-trained on large
+         corpora mined from the internet that include mathlib, we refrain from including statements
+         that are in mathlib or are likely to be added to mathlib in the future. In practice, this
+         means we avoid the abstract “theory-building” style of theorems that constitute mathlib,
+         and instead choose problems that involve applying general results to specific cases. For
+         more insight into the stylistic differences between mathlib and ProofNet problems, see
+         Figure 1.
+Beyond the above criteria, problems were selected for broad coverage of the undergraduate curricu-
+lum and to range in difficulty from straightforward applications of the definitions to those requiring
+tremendous creativity. Problems statements are transcribed into LATEX and formalized by human
+annotators proficient in Lean. Natural language proofs are adapted from online solutions manuals,
+or in a few cases, written by the annotators.
+
+Supported Tasks As ProofNet includes parallel natural language statements, natural language
+proofs, and formal statements, the dataset supports the evaluation of the following distinct tasks:
+       • Formal theorem proving. Given a formal statement of a theorem, produce a formal proof.
+       • Informal theorem proving. Given an informal statement, produce an informal proof.
+       • Autoformalization and informalization of statements. Given an informal (formal) statement,
+         produce a corresponding formal (informal) statement.
+       • Autoformalization of proofs. Given an informal theorem statement, its informal proof, and
+         its formal statement, produce a formal proof.
+
+3 The PROOF GPT models
+Many approaches to quantitative reasoning with language models depend on pre-training or fine-
+tuning a model on large corpora of mathematical text, which significantly boosts downstream per-
+formance [Hendrycks et al., 2021, Polu and Sutskever, 2020, Lample et al., 2022, Lewkowycz et al.,
+
+                                                  3
+                    Source                                    Size (GB)     Tokens
+                    arXiv.math                                    13.6       4.9B
+                    Stack Exchanges                               0.96       0.3B
+                    Formal math libraries                         0.14       59M
+                    ProofWiki + Wikipedia math articles           0.02       6.6M
+                    Open source books                            0.015       6.5M
+                    MATH                                         0.002       0.9M
+
+                               Table 1: Composition of the proof-pile.
+
+
+                Model                  arXiv.math perplexity      proof-pile perplexity
+                1B parameters:
+                  Pythia 1.4B                   3.82                       4.12
+                  proof-GPT 1.3B                3.17                       3.47
+                6B parameters:
+                  Pythia 6.9B                   3.36                       3.62
+                  proof-GPT 6.7B                3.12                       3.43
+Table 2: Comparison of model perplexities on the test set of the arXiv subset of the proof-pile
+and the entire proof-pile. Documents were joined using two newline characters and perplexity was
+calculated with a stride equal to the model’s context length, which is 2048 for all models shown.
+
+
+
+2022]. Motivated by these results, we train and open-source the PROOF GPT models at sizes of
+1.3 billion and 6.7 billion parameters 3 . The PROOF GPT models are decoder-only causual lan-
+guage models initialized with Pythia weights [Biderman et al., 2023]4 , and then fine-tuned on the
+proof-pile, a corpus of mathematical text whose composition is detailed in Table 1. Fine-tuning was
+performed using the GPT-NeoX library [Andonian et al., 2021]. For training hyperparameters, see
+Appendix A. In Table 2, we show that the PROOF GPT models outperform Pythia base models and
+GPT-2 at standard mathematical reasoning tasks.
+We regard the PROOF GPT model suite as inferior to the Minerva models [Lewkowycz et al., 2022]
+due to the fact that the PROOF GPT models are fine-tuned on an order of magnitude less mathematical
+text and span a smaller parameter range. However, we hope that the research community will benefit
+from PROOF GPT’s open-source weights and dataset.
+
+
+4 Methodology and Experiments
+
+In this work, we evaluate the capabilities of pre-trained language models on autoformalizing and in-
+formalizing theorem statements. Due to the engineering challenges of implementing neural theorem
+proving systems in Lean, we leave an investigation of formal theorem proving and proof autoformal-
+ization to future work.
+
+4.1 Autoformalization methods
+
+We employ in-context learning with large language models as a strong baseline for the autoformal-
+ization of theorem statements [Wu et al., 2022a]. Moreover, we introduce two novel methods for
+boosting autoformalization performance above the few-shot baseline: prompt retrieval and distilled
+backtranslation.
+   3
+     https://huggingface.co/hoskinson-center/proofGPT-v0.1
+https://huggingface.co/hoskinson-center/proofGPT-v0.1-6.7B
+   4
+     The PROOF GPT models were not initialized from the open-sourced weights of the Pythia models, but
+from a development version of the suite with slightly different hyperparameters. This is the cause of the
+small parameter discrepancy between a proofGPT and the similarly sized Pythia model. Performance of the
+development versions of Pythia and the open-source versions are near-identical.
+
+
+                                                   4
+4.1.1 Few-shot autoformalization and informalization
+In-context learning is a simple and powerful method for adapting language models to sequence-to-
+sequence tasks [Brown et al., 2020].
+For our in-context baselines, we perform inference using the OpenAI API’s Code-davinci-002 end-
+point [Chen et al., 2021] and the proofGPT 1.3B and 6.7B models. Prompts are listed are given in
+Appendix C.
+Because there may be multiple ways to formalize the same statement in Lean and no general way
+to automatically verify whether two statements that are not definitionally equal have the same math-
+ematical content, autoformalizations are evaluated for correctness by a human expert. Informaliza-
+tions are also judged by a human expert.
+
+4.1.2 Prompt retrieval
+A blessing and a curse of current language models is that few-shot learning performance is highly
+sensitive to the exact prompt that is used [Kojima et al., 2022]. In particular, it is plausible that
+greater few-shot learning performance can be achieved by retrieving the few-shot examples that are
+most relevant to a particular question.
+We implement a prompt retrieval procedure for statement autoformalization as follows. Suppose
+we have a knowledge-base K of formal statements. First, we generate an autoformalization ŷ of a
+statement x using our standard in-context procedure. Then we produce dense vector representations
+of ŷ and the formal statements in K. We retrieve the k-nearest-neighbors of ŷ in K, and include
+them in the few-shot prompt. For the precise format of the prompt, see Appendix C.
+We opt to retrieve against ŷ instead of against x because this method was significantly more perfor-
+mant in our preliminary experiments.
+In our experiments, we create a knowledge-base K by taking our ys to be 90,530 statements from
+Lean mathlib and use k = 4. We use the OpenAI API’s embedding-ada-002 endpoint to generate
+text embeddings.
+
+4.1.3 Distilled backtranslation
+A significant obstacle to fine-tuning language models on the autoformalization of theorem statements
+is the lack of large parallel corpora of formal and informal mathematics. In the face of this limitation,
+we draw on prior work leveraging generative models for unsupervised translation between natural
+languages. In particular, we use distilled backtranslation, a methodology inspired by Han et al.
+[2021a].
+Distilled backtranslation proceeds as follows. Suppose we have a large language model PLLM (·)
+pre-trained on monolingual data in both the source and target language, a monolingual corpus {Yi }
+in the target language. We wish to fine-tune a “student” model Pθ (Y |X) to translate a sequence X
+in the source language to a corresponding sequence Y in the target language. First, we manually
+construct a few-shot prompt C consisting of X|Y pairs. Then, we sample synthetic backtranslations
+Xi ∼ PLLM (X|C, Yi ). Finally, we fine-tune Pθ (·) on the synthetic pairs to predict P (Y |X).
+In our experiments, we fine-tune proofGPT-1.3B using distilled backtranslation with informal math-
+ematics as the source language and Lean 3 theorems as the target language. We use the theorems
+in Lean’s mathlib as the target language’s monolingual corpus. We use Davinci-codex-002 as our
+teacher LM and proofGPT-1.3B as our student model. Fine-tuning hyperparameters are described
+in Appendix D
+
+5 Results and Discussion
+5.1 In-context learning
+
+In Table 3, we present our experimental results for autoformalization and informalization of
+ProofNet theorem statements. Although conceptually simple and easy to implement, our Code-
+davinci-002 in-context learning baseline achieves highly nontrivial performance, correctly formaliz-
+ing 13.4% of theorems. The PROOF GPT models do not formalize any statements correctly, likely
+
+                                                   5
+                                    Formalization                            Informalization
+  Model                Typecheck rate     BLEU      Accuracy     Compile rate     BLEU         Accuracy
+  Few-shot.
+  proofGPT-1.3B              5.9           8.1           0            0.77          5.1          4.3
+  proofGPT-6.7B              4.3           4.7           0            0.70          6.0          6.5
+  Codex                      23.7          25.1         13.4          100           13.2         62.3
+  Prompt retrieval:
+  Codex                      45.2          14.8         16.1            -            -            -
+  Dist. backtrans.
+  proofGPT-1.3B              19.4          10.7         3.2             -            -            -
+
+Table 3: Results of few-shot learning with LLMs on formalization and informalization of ProofNet
+statements. In addition to reporting autoformalization accuracy, we also report typecheck rate, which
+is the proportion of a model’s samples that are well-formed statements in Lean’s dependent type the-
+ory. If a model simply copies a formal statement from its prompt, we do not consider that a positive
+sample when calculating typecheck rate. For the informalization task, we also report compile rate,
+i.e what proportion of the model’s samples produce LATEX that compiles. The most common reason
+why informal generations fail to compile is that they contain Unicode characters frequently used
+in Lean’s mathlib but not accepted by the pdflatex compiler. To calculate BLEU scores, we split
+on whitespace and use BLEU-4 with smoothing. Note that formalization BLEU scores being higher
+than informalization BLEU scores is likely because natural language contains more lexically distinct
+but semantically equivalent statements.
+
+
+
+owing to their smaller parameter count. However, they demonstrate some signal on the typecheck
+rate and BLEU metrics. Note that even generating statements that typecheck in Lean 3’s strict type
+theory is a nontrivial feat.
+Informalization accuracy is much higher than formalization accuracy for all models, supporting the
+intuitive claim that informalization is an easier task than formalization. This result also suggests that
+large pre-trained language models have a strong grasp of the semantics of formal mathematics, and
+primarily struggle with generating lexically correct and type correct Lean code.
+We further observe that among Code-davinci-002’s generations that typecheck, roughly half are
+correct formalizations. This is consistent with our hypothesis that Code-davinci-002 has a strong
+grasp of the semantics of mathematics, since the model displays high accuracy conditional on having
+generated valid Lean.
+
+
+5.2 Prompt Retrieval and Distilled Backtranslation
+
+In Table 3, we additionally include autoformalization scores for the prompt retrieval and distilled
+backtranslation models. Applying prompt retrieval to the Code-davinci-002 model significantly
+boosts performance, increasing accuracy by 2.7 points and, notably, increasing typecheck rate by
+21.5 points.
+Distilled backtranslation improves the autoformalization performance of the PROOF GPT 1.3B
+model not merely above the in-context performance of PROOF GPT 1.3b, but also above the in-
+context learning performance of PROOF GPT 6.7B.
+
+Automatic metrics Typecheck rate correlates strongly with formalization accuracy, and we recom-
+mend that typecheck rate be used as a predictor of autoformalization performance when evaluating
+accuracy is too costly. The BLEU metric correlates well with performance on many NLP tasks
+[Papineni et al., 2002], but correlates poorly with performance code tasks [Chen et al., 2021]. Our
+findings illustrate that just as with code, BLEU is a poor guide to formalization performance, as
+prompt retrieval increases Code-davinci-002 formalization accuracy but decreases BLEU by over
+10 points.
+
+                                                    6
+5.3 Qualitative Analysis
+We ground our remaining analysis in four case studies: two that demonstrate successful formaliza-
+tions produced by Code-davinci-002, and two that are representative of our methods’ most common
+failure cases.
+
+Case study 1. The following is a correct and idiomatic Lean mathlib formalization of exercise
+10.7.4 in Michael Artin’s Algebra produced by Code-davinci-002:
+
+   NL: Let R be a ring, with M an ideal of R. Suppose that every element of R which is not in
+   M is a unit of R. Prove that M is a maximal ideal and that moreover it is the only maximal
+   ideal of R.
+   Code-davinci-002 output:
+   theorem exercise_10_7_10 {R : Type*} [ring R] (M : ideal R)
+    (hM : ∀ x : R, x ∈    / M → is_unit x) :
+    is_maximal M ∧ ∀ (N : ideal R), is_maximal N → N = M
+
+In this example, Code-davinci-002 demonstrates strong knowledge of mathlib and some reasoning
+capability. For example, the model correctly identifies that ideals are expressed using a typeclass
+ideal R, but maximal ideals are expressed using a predicate is_maximal. Moreover, the model
+correctly recognizes that an instance of the ideal type can be implicitly coerced to a set R in
+order to apply the set-theoretic notation /
+                                          ∈. Finally, the model correctly infers that the best way
+to express “only maximal ideal” is the statement ∀ (N : ideal R), is_maximal N → N = M,
+which demonstrates some logical reasoning ability.
+
+Case study 2. The following problem, exercise 6.4.2 from Michael Artin’s Algebra, is an example
+of vanilla Davinci-code-002 making a mistake that is rectified by prompt retrieval.
+
+   NL: Prove that no group of order pq, where p and q are prime, is simple.
+   Code-davinci-002 output:
+   theorem exercise_6_4_2 {G : Type*} [group G] [fintype G] {p q : N}
+   (hp : nat.prime p) (hq : nat.prime q) (h : fintype.card G = p * q) :
+   ¬ simple_group G
+   Code-davinci-002 + retrieval output:
+   theorem exercise_6_4_2 {G : Type*} [group G] [fintype G] {p q :                     N}
+   [hp : fact(nat.prime p)] [hq : fact(nat.prime q)]
+   (h : fintype.card G = p * q) :
+   ¬ is_simple_group G
+
+Vanilla Davinci-code-002 makes a single lexical error: the model has correctly formalized the hy-
+potheses of the problem, but has tried to use a nonexistent predicate simple_group instead of the
+correct is_simple_group. The retrieval-augmented model uses the correct declaration because
+one of the retrieved mathlib statements explicitly uses is_simple_group.
+
+Case study 3. The following is an incorrect formalization of exercise 6.16 from Sheldon Axler’s
+Linear Algebra produced by Code-davinci-002. The retrieval-augmented Code-davinci-002 autofor-
+malization, not shown here, is also incorrect.
+
+ NL: Suppose U is a subspace of V . Prove that U ⊥ = {0} if and only if U = V
+ Code-davinci-002 output:
+ theorem exercise_6_16 {K : Type*} [field K]
+  {V : Type*} [add_comm_group V] [vector_space K V] {U : subspace V} :
+  U.orthogonal = {0} ↔ U = ⊤
+ ProofNet label:
+ theorem exercise_6_16 {K : Type*} [is_R_or_C K] [inner_product_space K V]
+  (U : submodule K V) :
+  U.orthogonal = ⊥ ↔ U = ⊤
+
+
+                                                7
+Here, Code-davinci-002 makes three straightforward lexical mistakes: in mathlib, vector spaces
+over a field K are denoted by module K V rather than vector_space K V, subspaces of a vector
+space by submodule K V rather than subspace V, and the trivial subspace is denoted by ⊥ rather
+than {0}. However, the model also makes a much more significant logical error. In order for the
+orthogonal complement U ⊥ of a subspace to make sense, the space must be endowed with a inner
+product space structure rather than merely a vector space structure, which is expressed in mathlib as
+inner_product_space K V. Furthermore, inner product spaces are only defined over the real and
+complex fields, so one must also declare [is_R_or_C K]. Reliably inferring these kinds of implicit
+hypotheses is a major challenge for autoformalization systems.
+
+Case Study 4: Looping. When generating formal and natural language theorem statements with
+PROOF GPTs, the model will often repeatedly generate the same short phrase instead of producing
+a plausible theorem. For example, consider the attempted formalization of exercise 10.1.13 from
+Michael Artin’s Algebra generated by PROOF GPT 6.7B via in-context learning.
+
+    NL: An element x of a ring R is called nilpotent if some power of x is zero.
+    Prove that if x is nilpotent, then 1 + x is a unit in R.
+    proofGPT-6.7b output:
+    theorem nilpotent_of_nilpotent_of_nilpotent_of_nilpotent_of_nilpotent
+    nilpotent_of_nilpotent_of_nilpotent_of_nilpotent_of_nilpotent_of. . .
+
+Prior work on decoding methods has shown that the likelihood of a repeated phrase increases with
+each repetition, and that greedy decoding generates text with higher likelihood than natural text
+[Holtzman et al., 2019]. These two findings constitute a plausible explanation for repetitive looping
+if the correct autoformalization is assigned low likelihood by the model. We observe that repetitive
+looping does not occur with Code-davinci-002, suggesting that the problem may disappear with
+scale (although there are many other differences between our small-scale models and Code-davinci-
+002).
+
+
+6 Related Work
+
+Language modeling for theorem proving Language models have found success in theorem prov-
+ing both in the natural language setting [Lewkowycz et al., 2022, Welleck et al., 2021], and within
+many major ITPs such as Metamath [Polu and Sutskever, 2020], Isabelle [Jiang et al., 2022a], and
+Lean [Han et al., 2021b, Polu et al., 2022]. Popular benchmarks for evaluating language model-
+based provers are Hendrycks et al. [2021] and Welleck et al. [2021] for natural language, and
+Zheng et al. [2022] for formal.
+
+Autoformalization Recent work in autoformalization with language models was sparked by
+Wu et al. [2022a], which demonstrated that models can autoformalize Isabelle theorem statements
+via in-context learning. In Jiang et al. [2022b], the authors demonstrate a method for autoformaliz-
+ing proofs in Isabelle. However, their method depends on the availibility of a performant black-box
+automated theorem prover, which is not available for Lean at the time of writing.
+
+Interactive Theorem Proving Work in formal theorem proving and autoformalization depends on
+libraries of formalized mathematics. This work directly depends on Lean’s mathlib, but indirectly
+benefits from lessons learned from other proofs systems such as Coq [Bertot and Castéran, 2004],
+Mizar [Grabowski et al., 2010], and Isabelle [Nipkow et al., 2002].
+
+Unsupervised Machine Translation Because the amount of parallel formal and natural language
+text is negligible, autoformalization faces many of the same challenges as unsupervised machine
+translation [Lample et al., 2017, Han et al., 2021a, Garcia et al., 2023]. Our distilled backtranslation
+method is inspired by the distilled and iterated backtranslation algorithm of Han et al. [2021a]. How-
+ever, the authors of this work regard backtranslation as a temporary hack and foresee that in-context
+learning will be enough to elicit maximal performance from a sufficiently good language model, as
+is now the case for unsupervised translation [Garcia et al., 2023].
+
+                                                   8
+7 Conclusion
+We introduced ProofNet, a benchmarking consisting of parallel natural language theorem state-
+ments, natural language proofs, and formal theorem statements in Lean 3. We have shown that
+pre-trained large language models achieve non-trivial but far from consistent performance via in-
+context learning on the autoformalization of ProofNet statements. Moreover, we have proposed
+prompt retrieval and distilled backtranslation, two methods that improve autoformalization perfor-
+mance above baseline.
+
+Acknowledgments
+The authors would like to thank the Hoskinson Center for Formal Mathematics at Carnegie Mellon
+University for its generous funding and for providing a stimulating work environment. We addi-
+tionally thank EleutherAI for providing compute to train the PROOF GPT models. Piotrowski was
+supported also by the grant of National Science Center, Poland, no. 2018/29/N/ST6/02903, and by
+the Kosciuszko Fundation.
+
+References
+Alex Andonian, Quentin Anthony, Stella Biderman, Sid Black, Preetham Gali, Leo Gao,
+  Eric Hallahan, Josh Levy-Kramer, Connor Leahy, Lucas Nestler, Kip Parker, Michael
+  Pieler, Shivanshu Purohit, Tri Songz, Wang Phil, and Samuel Weinbach.        GPT-
+  NeoX: Large Scale Autoregressive Language Modeling in PyTorch, 8 2021.       URL
+  https://www.github.com/eleutherai/gpt-neox.
+
+Yves Bertot and Pierre Castéran. Interactive Theorem Proving and Program Development - Coq’Art:
+ The Calculus of Inductive Constructions. Springer, 2004.
+
+Stella Biderman, Hailey Schoelkopf, Quentin Anthony, Herbie Bradley, Kyle O’Brien, Eric Halla-
+  han, Mohammad Aflah Khan, Shivanshu Purohit, USVSN Sai Prashanth, Aviya Skowron, Lin-
+  tang Sutawika, and Oskar van der Wal. Pythia: a scaling suite for language model interpretabil-
+  ity research. Computing Research Repository, 2023. doi: 10.48550/arXiv.2201.07311. URL
+  https://arxiv.org/abs/2201.07311v1. version 1.
+
+Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan, Prafulla Dhari-
+  wal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal,
+  Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel M.
+  Ziegler, Jeffrey Wu, Clemens Winter, Christopher Hesse, Mark Chen, Eric Sigler, Mateusz
+  Litwin, Scott Gray, Benjamin Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec
+  Radford, Ilya Sutskever, and Dario Amodei. Language models are few-shot learners, 2020. URL
+  https://arxiv.org/abs/2005.14165.
+
+Kevin Buzzard, Johan Commelin, and Patrick Massot. Formalising perfectoid spaces. In Jas-
+  min Blanchette and Catalin Hritcu, editors, Proceedings of the 9th ACM SIGPLAN Interna-
+  tional Conference on Certified Programs and Proofs, CPP 2020, New Orleans, LA, USA,
+  January 20-21, 2020, pages 299–312. ACM, 2020. doi: 10.1145/3372885.3373830. URL
+  https://doi.org/10.1145/3372885.3373830.
+
+Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde de Oliveira Pinto, Jared
+ Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, Alex Ray, Raul Puri,
+ Gretchen Krueger, Michael Petrov, Heidy Khlaaf, Girish Sastry, Pamela Mishkin, Brooke Chan,
+ Scott Gray, Nick Ryder, Mikhail Pavlov, Alethea Power, Lukasz Kaiser, Mohammad Bavarian,
+ Clemens Winter, Philippe Tillet, Felipe Petroski Such, Dave Cummings, Matthias Plappert, Fo-
+ tios Chantzis, Elizabeth Barnes, Ariel Herbert-Voss, William Hebgen Guss, Alex Nichol, Alex
+ Paino, Nikolas Tezak, Jie Tang, Igor Babuschkin, Suchir Balaji, Shantanu Jain, William Saunders,
+ Christopher Hesse, Andrew N. Carr, Jan Leike, Josh Achiam, Vedant Misra, Evan Morikawa,
+ Alec Radford, Matthew Knight, Miles Brundage, Mira Murati, Katie Mayer, Peter Welinder, Bob
+ McGrew, Dario Amodei, Sam McCandlish, Ilya Sutskever, and Wojciech Zaremba. Evaluating
+ large language models trained on code, 2021. URL https://arxiv.org/abs/2107.03374.
+
+                                                9
+Leonardo Mendonça de Moura, Soonho Kong, Jeremy Avigad, Floris van Doorn, and Jakob von
+  Raumer. The Lean theorem prover (system description). In Amy P. Felty and Aart Middeldorp,
+  editors, Conference on Automated Deduction (CADE) 2015, pages 378–388. Springer, 2015.
+Xavier Garcia, Yamini Bansal, Colin Cherry, George Foster, Maxim Krikun, Fangxiaoyu Feng,
+  Melvin Johnson, and Orhan Firat. The unreasonable effectiveness of few-shot learning for ma-
+  chine translation, 2023. URL https://arxiv.org/abs/2302.01398.
+
+Herbert L. Gelernter. Realization of a geometry theorem proving machine. In IFIP Congress, 1959.
+Adam Grabowski, Artur Kornilowicz, and Adam Naumowicz. Mizar in a nutshell. J. Formalized
+ Reasoning, 3(2):153–245, 2010.
+
+Jesse Michael Han, Igor Babuschkin, Harrison Edwards, Arvind Neelakantan, Tao Xu, Stanis-
+  las Polu, Alex Ray, Pranav Shyam, Aditya Ramesh, Alec Radford, and Ilya Sutskever. Un-
+  supervised neural machine translation with generative language models only, 2021a. URL
+  https://arxiv.org/abs/2110.05448.
+Jesse Michael Han, Jason Rute, Yuhuai Wu, Edward W. Ayers, and Stanislas Polu.
+  Proof artifact co-training for theorem proving with language models, 2021b. URL
+  https://arxiv.org/abs/2102.06203.
+
+Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song,
+  and Jacob Steinhardt. Measuring mathematical problem solving with the math dataset, 2021. URL
+  https://arxiv.org/abs/2103.03874.
+
+Ari Holtzman, Jan Buys, Li Du, Maxwell Forbes, and Yejin Choi. The curious case of neural text
+  degeneration, 2019. URL https://arxiv.org/abs/1904.09751.
+
+Geoffrey Irving, Christian Szegedy, Alexander A Alemi, Niklas Een, Francois Chol-
+  let, and Josef Urban.    Deepmath - deep sequence models for premise selection.   In
+  D. Lee, M. Sugiyama, U. Luxburg, I. Guyon, and R. Garnett, editors, Advances in Neu-
+  ral Information Processing Systems, volume 29. Curran Associates, Inc., 2016.   URL
+  https://proceedings.neurips.cc/paper/2016/file/f197002b9a0853eca5e046d9ca4663d5-Paper.pdf.
+
+Albert Q. Jiang, Wenda Li, Szymon Tworkowski, Konrad Czechowski, Tomasz Odrzygóźdź, Piotr
+  Miłoś, Yuhuai Wu, and Mateja Jamnik. Thor: Wielding hammers to integrate language models
+  and automated theorem provers, 2022a. URL https://arxiv.org/abs/2205.10893.
+Albert Q. Jiang, Sean Welleck, Jin Peng Zhou, Wenda Li, Jiacheng Liu, Mateja Jamnik, Timothée
+  Lacroix, Yuhuai Wu, and Guillaume Lample. Draft, sketch, and prove: Guiding formal theorem
+  provers with informal proofs, 2022b. URL https://arxiv.org/abs/2210.12283.
+
+Takeshi Kojima, Shixiang Shane Gu, Machel Reid, Yutaka Matsuo, and Yusuke Iwasawa. Large
+  language models are zero-shot reasoners, 2022. URL https://arxiv.org/abs/2205.11916.
+
+Guillaume Lample, Alexis Conneau, Ludovic Denoyer, and Marc’Aurelio Ranzato.
+  Unsupervised machine translation using monolingual corpora only, 2017. URL
+  https://arxiv.org/abs/1711.00043.
+Guillaume Lample, Marie-Anne Lachaux, Thibaut Lavril, Xavier Martinet, Amaury Hayat, Gabriel
+  Ebner, Aurélien Rodriguez, and Timothée Lacroix. Hypertree proof search for neural theorem
+  proving, 2022. URL https://arxiv.org/abs/2205.11491.
+
+Aitor Lewkowycz, Anders Andreassen, David Dohan, Ethan Dyer, Henryk Michalewski, Vinay Ra-
+  masesh, Ambrose Slone, Cem Anil, Imanol Schlag, Theo Gutman-Solo, Yuhuai Wu, Behnam
+  Neyshabur, Guy Gur-Ari, and Vedant Misra. Solving quantitative reasoning problems with lan-
+  guage models, 2022. URL https://arxiv.org/abs/2206.14858.
+The mathlib Community. The lean mathematical library. In Proceedings of the 9th ACM SIG-
+  PLAN International Conference on Certified Programs and Proofs. ACM, jan 2020. doi:
+  10.1145/3372885.3373824. URL https://doi.org/10.1145%2F3372885.3373824.
+
+                                              10
+Tobias Nipkow, Lawrence C. Paulson, and Markus Wenzel. Isabelle/HOL - A Proof Assistant for
+  Higher-Order Logic. Springer, 2002.
+
+Kishore Papineni, Salim Roukos, Todd Ward, and Wei-Jing Zhu. Bleu: a method for automatic
+  evaluation of machine translation. In Proceedings of the 40th annual meeting of the Association
+  for Computational Linguistics, pages 311–318, 2002.
+
+Stanislas Polu and Ilya Sutskever. Generative language modeling for automated theorem proving,
+  2020. URL https://arxiv.org/abs/2009.03393.
+
+Stanislas Polu, Jesse Michael Han, Kunhao Zheng, Mantas Baksys, Igor Babuschkin,
+  and Ilya Sutskever.  Formal mathematics statement curriculum learning, 2022. URL
+  https://arxiv.org/abs/2202.01344.
+
+Markus N. Rabe and Christian Szegedy. Towards the automatic mathematician. In André Platzer and
+ Geoff Sutcliffe, editors, Automated Deduction – CADE 28, pages 25–37, Cham, 2021. Springer
+ International Publishing. ISBN 978-3-030-79876-5.
+
+David Silver, Thomas Hubert, Julian Schrittwieser, Ioannis Antonoglou, Matthew Lai, Arthur Guez,
+  Marc Lanctot, L. Sifre, Dharshan Kumaran, Thore Graepel, Timothy P. Lillicrap, Karen Si-
+  monyan, and Demis Hassabis. Mastering chess and shogi by self-play with a general reinforce-
+  ment learning algorithm. ArXiv, abs/1712.01815, 2017.
+
+Christian Szegedy. A promising path towards autoformalization and general artificial intelligence. In
+  Christoph Benzmüller and Bruce Miller, editors, Intelligent Computer Mathematics, pages 3–20,
+  Cham, 2020. Springer International Publishing. ISBN 978-3-030-53518-6.
+
+Szymon Tworkowski, Maciej Mikuła, Tomasz Odrzygóźdź, Konrad Czechowski, Szy-
+  mon Antoniak, Albert Jiang, Christian Szegedy, Łukasz Kuciński, Piotr Miłoś,
+  and Yuhuai Wu.    Formal premise selection with language models, 2022.  URL
+  http://aitp-conference.org/2022/abstract/AITP_2022_paper_32.pdf.
+
+Qingxiang Wang, Cezary Kaliszyk, and Josef Urban. First experiments with neural translation
+  of informal to formal mathematics. In Florian Rabe, William M. Farmer, Grant O. Passmore,
+  and Abdou Youssef, editors, Intelligent Computer Mathematics, pages 255–270, Cham, 2018.
+  Springer International Publishing. ISBN 978-3-319-96812-4.
+
+Sean Welleck, Jiacheng Liu, Ronan Le Bras, Hannaneh Hajishirzi, Yejin Choi, and Kyunghyun
+  Cho. Naturalproofs: Mathematical theorem proving in natural language, 2021. URL
+  https://arxiv.org/abs/2104.01112.
+
+Sean Welleck, Jiacheng Liu, Ximing Lu, Hannaneh Hajishirzi, and Yejin Choi. Natural-
+  prover: Grounded mathematical proof generation with language models, 2022.  URL
+  https://arxiv.org/abs/2205.12910.
+
+Yuhuai Wu, Albert Q. Jiang, Wenda Li, Markus N. Rabe, Charles Staats, Mateja Jamnik,
+  and Christian Szegedy.  Autoformalization with large language models, 2022a. URL
+  https://arxiv.org/abs/2205.12615.
+
+Yuhuai Wu, Markus Norman Rabe, DeLesley Hutchins, and Christian Szegedy. Memoriz-
+  ing transformers. In International Conference on Learning Representations, 2022b. URL
+  https://openreview.net/forum?id=TrjbxzRcnf-.
+
+Kaiyu Yang and Jia Deng. Learning to prove theorems via interacting with proof assistants, 2019.
+  URL https://arxiv.org/abs/1905.09381.
+
+Kunhao Zheng, Jesse Michael Han, and Stanislas Polu. minif2f: a cross-system benchmark
+  for formal olympiad-level mathematics. In The Tenth International Conference on Learning
+  Representations, ICLR 2022, Virtual Event, April 25-29, 2022. OpenReview.net, 2022. URL
+  https://openreview.net/forum?id=9ZPegFuFTFv.
+
+
+                                                 11
+                                                           Setting
+                             Parameter                 1.3B          6.7B
+                             Tokens                        10.5 billion
+                             Epochs                            1.3
+                             Training Steps                  40,000
+                             Learning Rate Max       2 · 10−4 1.2 · 10−4
+                             Learning Rate Min       2 · 10−5 1.2 · 10−5
+                             Optimizer                       Adam
+                             Adam Betas                    (0.9, 0.95)
+                             Adam Eps                       1 · 10−8
+                             Weight Decay                      0.1
+                             LR Scheduler             Cosine w/ warm-up
+                             LR Warm-up Steps                  400
+                             Effective Batch Size              128
+                             Precision                        FP16
+                             Gradient Clipping                 1.0
+
+                            Table 4: PROOF GPT training hyperparameters.
+
+
+A        PROOF GPT training
+
+Table 4 displays hyperparameters for PROOF GPT training on the PROOF - PILE.
+
+B Problem Sources
+The following is a complete list of sources ProofNet draws from:
+
+          • Analysis: Walter Rudin’s Principles of Mathematical Analysis 3rd ed, Charles C. Pugh’s
+            Real Mathematical Analysis 1st ed, Elias M. Stein and Rami Shakarchi’s Complex Analysis
+            1st ed.
+          • Linear Algebra: Sheldon Axler’s Linear Algebra Done Right 2nd ed.
+          • Abstract Algebra: David S. Dummit and Richard M. Foote’s Abstract Algebra 3rd ed, I.N.
+            Herstein’s Abstract Algebra 3rd ed, and Michael Artin’s Algebra 1st ed.
+          • Topology: James Munkres’ Topology 2nd ed.
+          • Examinations: Putnam Competition.
+
+C       Prompts
+Prompts are viewable in the open-source repository5. We use a 12-shot prompt for Code-davinci-
+002 autoformalization and informalization, and a 6-shot prompt for proofGPT autoformalization
+and informalization. We give proofGPT models fewer examples because of its shorter context
+(2048 tokens compared to 8192), we only use the last six examples when prompting proofGPT.
+For retrieval augmented models, we use a 3-shot prompt, where each example consists of 4 reference
+formal statements and one NL-formal pair.
+
+D       Finetuning
+Our fine-tuning dataset of backtranslations consists of 90,530 NL-formal pairs. Both the Pythia-1.4b
+and PROOF GPT-1.3B model are finetuned according to the hyperparameters above. The models
+evaluated in Table 3 are the minimum validation loss checkpoint, which occurs at 15,000 training
+steps.
+
+    5
+        https://github.com/zhangir-azerbayev/ProofNet/tree/main/eval/prompts
+
+
+                                                    12
+     Parameter               Setting
+   Training Steps             20,000
+Learning Rate (LR)           5 · 10−5
+     Optimizer               AdamW
+    Adam Betas             (0.9, 0.999)
+     Adam Eps                1 · 10−8
+   Weight Decay                 0.1
+   LR Scheduler         Cosine w/ warm-up
+LR Warm-up Steps               2000
+Effective Batch Size             24
+     Precision                 FP16
+ Gradient Clipping              1.0
+Table 5: Student training hyperparameters.
+
+
+
+
+                   13
+

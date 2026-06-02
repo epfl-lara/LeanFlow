@@ -1,0 +1,1311 @@
+                                                TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond
+                                                                          MathLib?
+
+                                                Alexander K Taylor * 1 Junyi Zhang * 1 Ethan Ji 1 Vigyan Sahai 2 Haikang Deng 1 Yuanzhou Chen 1
+                                               Yifan Yuan 1 Di Wu 1 Jia-Chen Gu 1 Kai-Wei Chang † 1 Nanyun Peng † 1 Amit Sahai † 1 Wei Wang † 1
+                                                                                  Website: https://TaoBench.github.io
+
+                                                                     Abstract                                                                                         n TaoBench
+                                                                                                                                                TaoBench              n TaoBenchMathLib
+
+
+
+
+arXiv:2603.12744v1 [cs.LG] 13 Mar 2026
+                                              Automated theorem proving (ATP) benchmarks
+                                              largely consist of problems formalized in Math-
+                                              Lib, so current ATP training and evaluation                              MathLib Definitional Framework
+                                              are heavily biased toward MathLib’s definitional
+                                              framework. However, frontier mathematics is                                   Int      Set        Real       ...
+                                              often exploratory and prototype-heavy, relying
+                                                                                                                                                                             ATP Performance
+                                              on bespoke constructions that deviate from stan-                              def Set (α : Type u) := α → Prop
+                                                                                                                                                                                  (Avg.)
+                                                                                                                            --Membership
+                                              dard libraries. In this work, we evaluate the ro-                             x ∈ S := S x
+                                                                                                                            --Union                                    70
+                                                                                                                                                                               Pass Rate (%)
+                                              bustness of current ATP systems when applied                                  S ∪ T := λ x => S x ∨ T x                                  63.5
+                                              to a novel definitional framework, specifically                               ...
+
+                                              examining the performance gap between stan-                                                                                    25.9
+                                                                                                                                  Same Math Problem                    50
+                                              dard library problems and bespoke mathemati-                                 Different Definitional Frameworks
+                                              cal constructions. We introduce TAO B ENCH, an                                                                                   37.6
+                                              undergraduate-level benchmark derived from Ter-
+                                              ence Tao’s Analysis I, which formalizes analy-                             Tao’s Definitional Framework                  30
+
+                                              sis by constructing core mathematical concepts                                                                                TaoBench TaoBench
+                                              from scratch, without relying on standard Math-                               Int       Set       Real       ...                        MathLib
+                                              lib definitions, as well as by mixing from-scratch
+                                              and MathLib constructions. For fair evaluation,                              class SetTheory where
+                                                                                                                             Set : Type u -- Axiom 3.1
+                                              we build an agentic pipeline that automatically                                mem : Object → Set → Prop -- Axiom 3.1
+                                              extracts a compilable, self-contained local en-                                union : Set → Set -- Axiom 3.12
+                                                                                                                           ...
+                                              vironment for each problem. To isolate the ef-
+                                              fect of definitional frameworks, we additionally
+                                              translate every problem into a mathematically                         Figure 1. Tao’s Analysis I constructs several mathematical struc-
+                                              equivalent Mathlib formulation, yielding paired                       tures in LEAN from scratch, often using formulations that diverge
+                                                                                                                    significantly from their equivalents in MathLib. TAO B ENCH pro-
+                                              TAO B ENCH M ATH L IB statements for direct com-
+                                                                                                                    vides mathematically equivalent MathLib counterparts, and reveals
+                                              parison. While state-of-the-art ATP models per-                       a substantial degradation in model performance when navigating
+                                              form capably within the MathLib framework, per-                       Tao’s specific definitional framework.
+                                              formance drops by an average of roughly 26%
+                                              on the definitionally equivalent Tao formulation.                          for developing and testing provers better aligned
+                                              This indicates that the main bottleneck is lim-                            with research mathematics.
+                                              ited generalization across definitional frameworks
+                                              rather than task difficulty. TAO B ENCH thus high-
+                                              lights a gap between benchmark performance and                        1. Introduction
+                                              applicability, and provides a concrete foundation
+                                            * Equal contribution. † Senior authors served as equal advisors         Applying large language reasoning models (LLMs) to for-
+                                         and are listed alphabetically. 1 University of California, Los Ange-       mally verifiable programming languages like Lean 4 has
+                                         les 2 University of California, Santa Barbara. Correspondence to:          emerged as a critical frontier for advancing the mathemat-
+                                         Alexander K Taylor <ataylor2@g.ucla.edu>, Junyi Zhang <juny-
+                                         izhang2002@g.ucla.edu>.                                                    ical reasoning abilities of AI. Accordingly, several recent
+                                                                                                                    works have focused on training specialized automated the-
+                                         Preprint. March 16, 2026.                                                  orem proving (ATP) LLMs to reason in Lean and have
+
+                                                                                                                1
+                       TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+  Agentic Data Construction Framework
+                                                                 File-Lookup                    LEAN
+                              File References                        Tool                      Verifier
+                                Statement       Construct                                                          Minimal Compilable
+     JiXia Tool                 References                       *.lean file
+                                                                                       Tool Call        Error         Lean Context
+                                                                                                       Messages
+                               Text Snippets
+                                                              {References}                                              TaoBench
+                                                            {Dependencies}        Agentic Harness
+    Tao Analysis                     Retrieve                                        (GPT-5)
+                                                                                                                       [Compilable]
+
+     Codebase                                                 {Exercise}
+
+
+Figure 2. Agentic framework for automatically extracting a compilable, self-contained local environment from a formalized textbook. The
+construction of references and dependencies for each exercise is performed using the JiXia tool. An agentic harness, equipped with a
+file-lookup tool and a Lean verifier, then iteratively builds a compilable, self-contained local environment.
+
+achieved high solve rates on formalized benchmarks, such                   We evaluate several state-of-the-art ATP models and find
+as MiniF2F (Lin et al., 2025c; Ren et al., 2025; Wang et al.,              that, while these models solve analysis exercises reli-
+2025; Zheng et al., 2022).                                                 ably on TAO B ENCH M ATH L IB, performance drops by ap-
+                                                                           proximately 26% on average on the same problems in
+Current datasets for training and evaluating ATP mod-
+                                                                           TAO B ENCH. The observed gap implies that training in the
+els (Wang et al., 2025; Xin et al., 2024; Ren et al., 2025;
+                                                                           MathLib definitional framework does not reliably transfer
+Lin et al., 2025b;c; Xin et al., 2025) are built almost en-
+                                                                           to unfamiliar definitional formalisms, even when the under-
+tirely within the definitional framework of MathLib (Zheng
+                                                                           lying mathematics is equivalent. We believe TAO B ENCH
+et al., 2022; Tsoukalas et al., 2024; Azerbayev et al., 2023;
+                                                                           exposes a key hurdle towards applying public SOTA ATP
+AI-MO, 2025; Gao et al., 2025), the largest and de facto stan-
+                                                                           models to research mathematics, and provides a concrete
+dard mathematical library for Lean 4 (Community, 2025).
+                                                                           testbed for aligning future prover models with real-world
+However, exploratory mathematical research often ventures
+                                                                           mathematical workflows.
+beyond the boundaries of MathLib and requires problem-
+specific definitions and constructions to prototype concepts               Our main contributions are as follows: (1) We propose
+and guide proofs (Tao, 2023; Degenne et al., 2025; Harbor-                 TAO B ENCH, the first Lean benchmark targeting generaliza-
+Collins & Hulse, 2025). This introduces a distribution shift               tion beyond MathLib via a new definitional framework. (2)
+between the definitional framework used in public SOTA                     We provide TAO B ENCH M ATH L IB, mathematically equiv-
+ATP model training and the frameworks to which they are                    alent MathLib translations of the problems in TAO B ENCH
+applied. As such, current benchmarks offer limited insight                 and identify a substantial generalization gap in existing
+into whether ATP models can generalize across such defini-                 ATP models. (3) We introduce two pipelines that together
+tional frameworks.                                                         automatically extract self-contained, compilable local envi-
+                                                                           ronments for problems from a large, formalized project and
+We introduce TAO B ENCH, the first benchmark designed to
+                                                                           provide equivalent formalizations in MathLib syntax, which
+measure ATP robustness beyond MathLib by targeting gen-
+                                                                           enables scalable, high-fidelity generation of mathematically
+eralization to a novel definitional framework. TAO B ENCH is
+                                                                           grounded training data for future models.
+grounded in 150 exercises from Terence Tao’s Lean formal-
+ization of Analysis I (Tao, 2025a). This formalization devel-
+ops core concepts of analysis from first principles rather than            2. Benchmark Construction
+relying on standard MathLib definitions, and in some cases
+                                                                           Research in mathematics often requires introducing novel
+combines from-scratch constructions with MathLib com-
+                                                                           axioms, definitions, and constructs that are not yet in for-
+ponents. To ensure fair evaluation, we develop an agentic
+                                                                           malized Lean libraries. Characterizing the efficacy of public
+extraction pipeline that automatically packages each prob-
+                                                                           ATP models in an exploratory research environment requires
+lem with a self-contained, compilable local environment
+                                                                           formalized definitional frameworks distinct from MathLib,
+extracted from the formalized textbook, requiring no exter-
+                                                                           but with enough conceptual overlap to allow models to
+nal imports or references. Moreover, we construct a paired
+                                                                           transfer their proving capacity. Thus, evaluating the robust-
+control: for each Tao-style problem, we construct a mathe-
+                                                                           ness of ATP models to these novel environments requires
+matically equivalent MathLib formulation, which we title
+                                                                           grounding evaluation in a formal framework distinct from
+TAO B ENCH M ATH L IB. This paired representation isolates
+                                                                           MathLib, while preserving enough conceptual overlap to
+the effect of definitional frameworks from the difficulty of
+                                                                           test the transfer of existing proving capabilities.
+each problem, enabling a direct evaluation of impact on
+model performance.                                                         Tao’s Lean formalization of Analysis I defines many stan-
+
+
+                                                                      2
+                        TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+  STAGE 1: Rewriting                                                                                              STAGE 3: Expert Verification
+                     GPT 5.1                TaoBench             LEAN                   TaoBenchMathLib             Judges
+   TaoBench             +
+                    Web Search               MathLib            Verifier                    [Compilable]
+
+
+                                                                                                                   Manual Equivalence Check
+                                               Error Messages
+                                                                                                                  TaoBenchMathLib        TaoBench
+  STAGE 2: Equivalence Checking          Not Mathematically Equivalent
+
+                                                                    GPT 5.1               TaoBenchMathLib               Non-Equivalent Data
+   TaoBenchMathLib                            Target State             +
+                            JiXia Tool                                                    [Equivalence Checked]                      Manual
+      TaoBench                                                     Web Search                                                       Correction
+                                                                                                                          Equivalent Data
+
+Figure 3. Translation pipeline for converting exercises from Tao’s definitional framework to MathLib’s. The rewriting and equivalence
+checking stages ensure the compilability and mathematical equivalence of TAO B ENCH M ATH L IB, followed by expert verification for
+additional assurance.
+
+dard mathematical objects using custom inductive types or                    the objective of compilation may succeed in compilation
+structures for pedagogical clarity, adopts naming schemes                    while silently changing the intended meaning. For instance,
+that differ from MathLib conventions, and organizes def-                     the model may introduce a local alias that collapses one
+initions within section- and subsection-level namespaces.                    or more definitions and, in so doing, trivializes the goal,
+Additionally, some concepts are defined as fields of larger                  e.g., abbrev Sequence.IsCauchy := True. This
+structures rather than as standalone definitions. As a re-                   necessitates a pipeline that provides grounded reference in-
+sult, it becomes possible that even mathematically elemen-                   formation to the model, to avoid hallucinating and trivializ-
+tary statements could become out-of-distribution to models                   ing statements, as well as allowing for multiple compilation
+trained primarily on MathLib-style Lean code.                                attempts. Thus, we introduce an agentic framework that
+                                                                             retrieves the minimal context from the textbook and itera-
+To enable a fair and interpretable evaluation of model capa-
+                                                                             tively attempts compilation and fixes issues until it achieves
+bilities on undergraduate-level analysis, we construct twin
+                                                                             successful compilation.
+versions of the benchmark. The first version, TAO B ENCH,
+evaluates models directly on formalized textbook problems                    Individual textbook exercises typically depend on a non-
+and provides all relevant definitions and references neces-                  trivial subset of previously defined formalized theorems,
+sary to correctly state the problem in a fully compilable,                   lemmas, definitions, and notation, often spread across mul-
+in-context environment. This setting is designed to assess                   tiple subsections. This introduces an issue for context con-
+how well models function on non-MathLib formalizations                       struction for end-to-end proof generation prompts to ATP
+when sufficient1 contextual information is provided. The                     models: providing too little context may result in missing
+second version, TAO B ENCH M ATH L IB consists of MathLib-                   useful information, while providing too much context in-
+syntax translations of the same exercises, enabling an in-                   troduces substantial noise. We approach this by retrieving
+distribution evaluation that isolates mathematical difficulty                only the definitions strictly required to faithfully compile
+from representational mismatch.                                              each exercise2 . We accomplish this using the JiXia static
+                                                                             Lean analysis tool (frenzymath, 2024) to recursively retrieve
+2.1. TAO B ENCH                                                              all references of a benchmark problem.3 These references
+                                                                             are provided in the context-construction prompt for each
+Constructing a benchmark that preserves the exact textbook                   problem along with the file of origin to ground the context
+formalizations while producing a self-contained succinct                     construction to a fixed set of definitions, mitigating model
+compilable Lean snippet presents significant technical chal-                 tendencies to hallucinate or reformulate statements.
+lenges for current LLMs. We find that naïvely importing
+entire chapters or sections of the textbook leads to exces-                  However, retrieval based on the JiXia table alone is insuffi-
+sive context length, compilation failures, and unfaithful                    cient. The JiXia tool extracts information during the elabora-
+reconstructions of the original problem and its intent. We                   tion phase of compilation, and thus does not capture sugared
+observe that without explicit targets, modern frontier LLMs                  syntax (ex. postfixes), as these constructs are reduced into
+struggle to identify all information critical for compilation                their underlying definition when retrieved. Furthermore, the
+over large textbook contexts containing extensive irrelevant                 Lean contexts constructed after single query attempts fre-
+information. Furthermore, querying frontier LLMs with                            2
+                                                                                   We leave defining, identifying, and retrieving all useful con-
+   1
+     Sufficient in the sense that the original intent of the problem         textual information to future work.
+                                                                                 3
+is preserved. Models often have to reference material outside the                  We extend JiXia to support retrieval of structure declara-
+context for successful proofs.                                               tions in addition to constants and theorems.
+
+
+                                                                         3
+                      TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+Table 1. Model Performance on TAO B ENCH and TAO B ENCH M ATH L IB. Results are reported as pass rates on 150 problems.
+For the evaluation results of tree-search-based models, please see Appendix A.4.1 for details.
+
+                                                                     TAO B ENCH                  TAO B ENCH M ATH L IB
+      Model
+                                                         Pass@128                 (%)          Pass@128             (%)
+      DeepSeek-Prover-V2-7B (w/o COT)                      57/150                38.00            82/150           54.67
+      DeepSeek-Prover-V2-7B                                62/150                41.33           104/150           69.33
+      Goedel-Prover-V2-8B                                  56/150                37.33           106/150           70.67
+      Kimina-Prover-8B                                     33/150                22.00            75/150           50.00
+      Goedel-Prover-V2-32B                                 74/150                49.33           109/150           72.67
+
+quently fail compilation checks due to missing information            neously satisfy two constraints: (i) the resulting statement
+or simple syntax errors. Thus, we introduce a file-lookup             must be syntactically valid and compilable within Math-
+tool into the agent that allows the model to retrieve source          Lib, and (ii) it must remain mathematically faithful to the
+files corresponding to one or more JiXia-identified refer-            original textbook formulation.
+ences, enabling access to the local syntactic sugar, notation,
+                                                                      Naïve, end-to-end translation of textbook formalizations
+and declaration structure required to faithfully reconstruct
+                                                                      into MathLib using frontier language models proves unreli-
+compilable Lean contexts.
+                                                                      able. In early experiments, we attempted direct translation
+Lastly, to allow for iterative compilation attempts, we intro-        using GPT-5.1 with prompt engineering and manual inspec-
+duce the Lean-Compilation tool that provides the model a              tion. These attempts yielded poor results: roughly 60% of
+clean local Lean environment in which to test the compila-            outputs were syntactically valid Lean code, and a substan-
+tion of the generated context for each benchmark problem.             tially smaller fraction were mathematically equivalent to the
+The tool returns the stack trace of failed compilation at-            original statements. Inspection of failure cases revealed that
+tempts to improve the agent’s ability to debug failures.              most errors stemmed from mismatches between Tao’s local
+                                                                      definitions and their MathLib counterparts. In particular, the
+The final output of this process is two-fold. First, we con-
+                                                                      model frequently selected incorrect definitions or employed
+struct an agentic pipeline that faithfully retrieves minimal,
+                                                                      non-canonical usage patterns, leading to both compilation
+compilable contexts from a large, custom Lean project. Sec-
+                                                                      failures and subtle semantic deviations.
+ond, we generate TAO B ENCH, a set of textbook-syntax exer-
+cises with minimal, fully compilable Lean context that pre-          These observations indicate that accurate reformulation into
+serves the intent of the original formalization. This bench-         MathLib requires grounding the model in MathLib’s canon-
+mark enables a controlled evaluation of model performance            ical definitions and usage conventions. To this end, we en-
+under a genuine out-of-distribution formal setting, while            able web-search to allow the model to retrieve authoritative
+avoiding confounding factors arising from missing context            documentation and examples for core MathLib constructs.
+or compilation failures.                                             With retrieval enabled, syntactic correctness improves sub-
+                                                                     stantially: under this configuration, approximately 90% of
+2.2. TAO B ENCH M ATH L IB                                           generated statements compile successfully. This improve-
+                                                                     ment suggests that access to curated MathLib usage patterns
+To isolate the effect of definitional frameworks from the            is critical for reliable translation, motivating the design of
+mathematical difficulty of the problems, we translate from           our translation pipeline.
+TAO B ENCH statements, written in Tao’s definitional frame-
+work with in-context local definitions, into statements              Our translation pipeline consists of two stages: a rewriting
+that use standard MathLib definitions, which we title                stage and an equivalence-checking stage. In the rewriting
+TAO B ENCH M ATH L IB. These paired problems enable an               stage, we prompt GPT-5.1 with web search enabled to refor-
+in-distribution evaluation of existing public provers under          mulate the Tao-style statement into a MathLib-compatible
+the MathLib definitional framework. To perform this trans-           version. We explicitly restrict the model from introducing
+lation at scale, we build an automated pipeline and followed         new local definitions or notation and require adherence to
+by expert manual verification of the resulting MathLib state-        a fixed MathLib header, ensuring consistency across trans-
+ments to ensure mathematical equivalence with their Tao              lated problems. The resulting statement is then passed to
+counterparts.                                                        the Lean compiler, and we employ an iterative refinement
+                                                                     loop in which compiler error messages are used to resolve
+Constructing a MathLib counterpart for each exercise in              syntactic and typing errors until the statement compiles
+TAO B ENCH introduces a distinct but related set of technical        successfully.
+challenges. In particular, such a reformulation must simulta-
+
+                                                                 4
+                              TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+                            TaoBench                          TaoBenchMathLib                            Performance Delta
+
+
+
+
+Pass Rate (%)
+
+
+
+
+                Number of Definitions in Context (n)   Number of Definitions in Context (n)        Number of Definitions in Context (n)
+Figure 4. Model Performance vs. Definitions in Context. Performance on TAO B ENCH and TAO B ENCH M ATH L IB as a function of the
+number of in-context definitions. The performance delta is defined as performance (TAO B ENCH) - performance (TAO B ENCH M ATH L IB).
+DS, GD, and KM indicate DeepSeek-Prover-V2, Goedel-Prover-V2, and Kimina-Prover, respectively.
+
+Compilation alone, however, does not guarantee semantic                  Table 2. Model performance on TAO B ENCH with and with-
+faithfulness. To address this, we introduce an equivalence-              out the retrieved context as part of the input.
+checking stage. Using the JiXia tool, we extract the target
+proof states for both the Tao and MathLib formulations,                                                             TAO B ENCH
+                                                                          Model
+grounding the comparison in their respective proof obliga-                                                  Pass@128              (%)
+tions. We then prompt GPT-5.1, again with web search
+enabled, to assess whether the two formulations are mathe-                DeepSeek-7B w/o COT                 57/150             38.00
+matically equivalent given their statements and target states.            - w/o Context                       41/150             27.33
+Candidates that fail this equivalence check are discarded,                DeepSeek-Prover-V2-7B               62/150             41.33
+and the pipeline is restarted to regenerate a valid reformula-            - w/o Context                       44/150             29.33
+tion. Appendix A.4.2 reports detailed statistics on compila-              Goedel-Prover-V2-8B                 56/150             37.33
+tion failures and equivalence-check rejections encountered                - w/o Context                       41/150             27.33
+during this process.                                                      Goedel-Prover-V2-32B                74/150             49.33
+This pipeline generates TAO B ENCH M ATH L IB, a MathLib-                 - w/o Context                       46/150             30.00
+based reformulation of TAO B ENCH that preserves the math-                Kimina-Prover-8B                    33/150             22.00
+ematical intent of the original textbook exercises while re-              - w/o Context                       30/150             20.00
+maining fully compatible with MathLib’s definitional frame-
+work. Together with TAO B ENCH, this paired construction
+enables controlled evaluation of automated theorem provers               3. Experiments
+under definitional shift, isolating the effects of formal frame-
+work differences from confounding factors such as compila-               We conduct comprehensive experiments on our benchmarks.
+tion failures or semantic drift.                                         Section 3.1 describes experimental setup, and Section 3.2
+                                                                         presents our main results and analysis.
+2.2.1. E XPERT M ANUAL V ERIFICATION
+                                                                         3.1. Experimental Setup
+To verify the quality of both versions of the benchmark,
+we had expert human annotators provide determinations                    We evaluate four public SOTA ATP models: DeepSeek-
+on whether the TAO B ENCH faithfully retrieved the context               Prover-v2-7B (Ren et al., 2025), Goedel-Prover-v2-8B (Lin
+for each exercise, and whether each MathLib formalization                et al., 2025c), Goedel-Prover-v2-32B (Lin et al., 2025c), and
+was mathematically equivalent to its Tao counterpart. Each               Kimina-Prover-8B (Wang et al., 2025). We use default in-
+annotator had completed an equivalent Analysis I course                  ference and decoding settings with a temperature of 1.0 and
+and had experience in formal proving in Lean. Issues identi-             reasoning chains of up to 8192 tokens. We report pass@128
+fied by annotators in context retrieval helped us construct              accuracy as the primary metric for each model.
+a final agentic context retrieval pipeline that produces cor-
+rect context for all 150 problems initially chosen to be in              3.2. Main Results
+TAO B ENCH. Human annotators identified 33 often subtle
+                                                                         Table 1 reports pass@128 results on TAO B ENCH and
+issues with the MathLib translations and provided corrected
+                                                                         TAO B ENCH M ATH L IB. Although the two versions of the
+versions of the problems. The full protocol for this is pro-
+                                                                         benchmarks consist of mathematically equivalent problem
+vided in Appendix A.1.
+                                                                         sets, all evaluated provers perform substantially worse on
+
+                                                                     5
+                      TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+         Table 3. Model Performance on TAO B ENCH and TAO B ENCH M ATH L IB for frontier foundation models.
+
+                                                                TAO B ENCH                  TAO B ENCH M ATH L IB
+        Model
+                                                       Pass@8                (%)            Pass@8             (%)
+        GPT-5.1 (OpenAI, 2025)                          78/150              52.00            97/150           64.67
+        Gemini 3 Pro (Google, 2025)                     69/150              46.00            91/150           60.67
+        DeepSeek-V3.2 (DeepSeek-AI, 2025)               71/150              47.33           105/150           70.00
+
+Table 4. Counts of data samples across ranges of different          buckets based on the number of locally introduced defini-
+numbers of local definitions.                                       tions required to state each problem: n = 0, 1 ≤ n < 5,
+                                                                    5 ≤ n < 10, and n ≥ 10. We include the number of
+  # Local Definitions      0      [1, 5)   [5, 10)   10 +           problems in each bucket in Table 4.
+      Data Count           35      40        41       34            A consistent and sharp divergence emerges between per-
+                                                                    formance on the Tao and MathLib formulations as context
+the Tao formulations than on the MathLib formulations.              length increases. Model performance on the TAO B ENCH -
+This consistent degradation highlights the difficulty current       M ATH L IB version decays slowly as the number of defini-
+provers face under a shift in definitional frameworks.              tions in the TAO B ENCH counterpart increases. Averaged
+                                                                    across models, pass@128 decreases only from 68.10% at
+The performance gap persists across model families, param-          n = 0 to 53.43% at n ≥ 10. In contrast, TAO B ENCH ex-
+eter scales, and inference configurations, indicating that it       hibits a significant degradation as context length increases.
+reflects a shared limitation rather than model-specific defi-       Average pass@128 drops from 67.14% at n = 0 to just
+ciencies. On TAO B ENCH, overall performance remains low:           6.37% at n ≥ 10. This collapse is consistent across all
+the strongest result is achieved by Goedel-Prover-V2-32B at         evaluated models, and scales to larger models.
+49.33%, while the best 7B-8B model, DeepSeek-Prover-V2-
+7B, reaches 41.33%. In contrast, on TAO B ENCH M ATH L IB,          We also observe that the performance delta between
+most models achieve accuracies above 65%, with several              TAO B ENCH and TAO B ENCH M ATH L IB performance in-
+exceeding 70%. This uniform gap suggests that current               creases with context length. At n = 0, the average delta
+public ATPs generalize poorly outside the MathLib defini-           across models is near zero, which confirms that Tao prob-
+tional framework on which they are primarily trained and            lems without local definitions are not inherently harder than
+evaluated.                                                          their MathLib counterparts. However, when the number of
+                                                                    in-context definitions increases to 5 ≤ n < 10, the aver-
+Scaling improves performance on both benchmarks but does            age delta exceeds 40 percentage points, and for n ≥ 10,
+not eliminate the discrepancy. Goedel-Prover-V2-32B im-             it approaches or exceeds 50 percentage points for all mod-
+proves by 12 percentage points over Goedel-Prover-V2-8B             els. This pattern suggests that the performance difference
+on TAO B ENCH, compared to only a 2-point improvement               is driven by an inability to effectively integrate and reason
+on TAO B ENCH M ATH L IB. While increasing model scale              over unfamiliar definitions introduced in context.
+provides modest robustness to definitional shift, even the
+strongest model falls well short of matching its performance        Formal theorem provers are routinely expected to operate
+on TAO B ENCH M ATH L IB. TAO B ENCH therefore exposes              in novel definitional environments, where new abstractions
+a clear gap between in-distribution benchmark success and           must be introduced and used within a local context. Our
+robustness to definitional variation.                               results show that, despite having necessary definitions in
+                                                                    context, current models struggle to apply them when those
+                                                                    definitions shift from the MathLib distribution. This sug-
+4. Analysis                                                         gests that fine-tuning improves performance within a fixed
+4.1. Context Length                                                 formal ecosystem, but does not necessarily generalize to
+                                                                    unseen definitional frameworks, exposing a fundamental
+We analyze how model performance is impacted by the                 limitation of current ATP training paradigms.
+number of local definitions provided in each context. Prob-
+lems in TAO B ENCH contain the minimal local environment            4.2. Context Dependency
+(bespoke definitions, notation, and supporting lemmas) to
+ensure the statement compiles, whereas TAO B ENCH M ATH -           To provide insight into the effect of the context provided in
+L IB is evaluated in the standard import Mathlib envi-              the TAO B ENCH versions of the problems, we evaluate model
+ronment and does not contain additional local definitions           performance when local definitions are removed from the
+in the prompt. Figure 4 divides the benchmark into four             prompt. In this setting, models are presented with the prob-
+
+                                                                6
+                       TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+                         TaoBench                  Nat.backwards_induction                 TaoBenchMathLib
+  [...] (Textbook Context)                                             theorem Nat.backwards_induction {n : ℕ } {P : ℕ → Prop}
+                                                                         (hind : ∀ m, P (m + 1) → P m) (hn : P n) :
+  theorem Nat.backwards_induction {n:Nat} {P: Nat → Prop}                ∀ m, m ≤ n → P m := by
+    (hind: ∀ m, P (m++) → P m) (hn: P n) :                               sorry
+      ∀ m, m ≤ n → P m := by
+    sorry
+
+
+                         TaoBench                    Convergesto.squeeze                   TaoBenchMathLib
+
+  [...] (Textbook Context)                                             theorem Convergesto.squeeze {E : Set ℝ } {fgh : ℝ → ℝ }
+                                                                       {Lx₀ : ℝ }
+                                                                           (had : x₀ ∈ closure E)
+  theorem Convergesto.squeeze {E:Set ℝ } {fgh: ℝ → ℝ }
+                                                                           (hfg : ∀ x ∈ E, fx ≤ gx)
+  {L:ℝ } {x₀:ℝ } (had: AdherentPt x₀ E)                                    (hgh : ∀ x ∈ E, gx ≤ hx)
+    (hfg: ∀ x ∈ E, fx ≤ gx) (hgh: ∀ x ∈ E, gx ≤ hx)                        (hf : Tendsto f (nhdsWithin x₀ E) (� L))
+    (hf: Convergesto E f L x₀) (hh: Convergesto E h L x₀) :                (hh : Tendsto h (nhdsWithin x₀ E) (� L)) :
+    Convergesto E g L x₀ := by                                             Tendsto g (nhdsWithin x₀ E) (� L) := by
+                                                                         sorry
+    sorry
+
+
+Figure 5. Case studies: Nat.backwards_induction and Convergesto.squeeze. The textbook context for TaoBench is omitted due to space
+limitations. The full statements of the two exercises are shown in Figures 10 and 11.
+
+lem statements from TAO B ENCH without any accompany-                  As shown in Tables 1 and 3, frontier models underperform
+ing local environment, even when the statements reference              both Goedel-Prover-V2-32B and several 7B parameter ATP
+custom definitions introduced in the textbook formalization.           models on the MathLib problem formulations, which indi-
+                                                                       cates that ATP models excel in definitional frameworks in
+As shown in Table 2, across all models, removing contextual
+                                                                       which they are trained. However, while the performances
+information leads to a consistent, but relatively modest drop
+                                                                       of the frontier models do degrade on the Tao problem for-
+in performance compared to the full-context Tao setting. A
+                                                                       mulations, they achieve performances comparable to – or
+manual review of the problems that models solved without
+                                                                       even in excess of – Goedel-Prover-V2-32B. These results
+context shows that the associated set of references either
+                                                                       indicate that the relative advantage of frontier models on
+contained no additional statements (i.e., context length of
+                                                                       Tao formulations is driven by a superior capability to lever-
+zero) or referenced a small set of statements that were simi-
+                                                                       age in-context examples rather than overall stronger proving
+lar to or in the standard MathLib definitional framework (ex.,
+                                                                       capabilities.
+the rational numbers). Further manual review of the proofs
+associated with these problems found that the problems
+were often made easier by using MathLib constructions to               4.4. Case Studies
+circumvent the crux of the exercise (see 4.4 for examples).            We present two representative instances taken from model
+Taken with the context-length analysis, these results indicate         performance on complementary problem pairs: one where
+that current formal theorem provers do not reliably benefit            the prover succeeds on the MathLib formulation but not on
+from in-context definitional information unless it conforms            the Tao formulation, and one showing the reverse pattern.
+closely to their training distribution. The presence of explicit       Nat.backwards_induction: As shown in Figure 5,
+local definitions is therefore not inherently helpful and can          this pair highlights how prover performance can depend
+be actively harmful, highlighting a limitation in models’              on access to MathLib’s arithmetic and order-theoretic in-
+ability to perform in-context definitional grounding.                  frastructure. Empirically, for Goedel-Prover-V2-32B, the
+                                                                       TAO B ENCH version admits 0/128 verified proofs, while
+4.3. Frontier Models                                                   the TAO B ENCH M ATH L IB version admits 64/128 verified
+                                                                       proofs.
+We also evaluate frontier foundation models in Table 3 to
+provide context for the performance of SOTA ATP models.                In the TAO B ENCH prompt, the prover must reason over a
+Although these models are not explicitly trained for formal            bespoke inductive Nat with addition defined by primitive re-
+theorem proving, they are effective at using in-context in-            cursion and order defined existentially by m ≤ n, ∃a, n =
+formation to solve unfamiliar problems. This comparison                m+a. A backwards-induction argument, therefore, requires
+allows us to assess whether the Tao vs. MathLib perfor-                reconstructing supporting algebraic and order-theoretic lem-
+mance gap reflects issues specific to ATP specialization or a          mas locally. In the TAO B ENCH M ATH L IB prompt, these
+broader difficulty posed by the Tao definitional framework.            obligations can be met using standard lemmas and automa-
+
+
+                                                                   7
+                      TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+tion. The instance-level performance split (0/128 vs. 64/128         and proof search. More recent efforts expand topical cov-
+for Goedel-32B) corresponds with brittleness to definitional         erage beyond contest mathematics (Liu et al., 2025; Jiang
+relocation rather than increased mathematical difficulty.            et al., 2025; Ren et al., 2025).
+Convergesto.squeeze: As shown in Figure 5, this
+pair highlights a representational shift that is common              5.2. Automated Theorem Proving
+throughout analysis formalizations: an explicit ε–δ def-             Automated theorem proving in Lean has evolved rapidly,
+inition of convergence versus a filter-based Tendsto                 with earlier approaches leveraging inference-time strategies
+statement. Empirically, for DeepSeek-Prover-V2-7B, the               (Yang et al., 2023; Lin et al., 2025a; Xin et al., 2025) and
+TAO B ENCH version admits 2/128 verified proofs, while the           more recent approaches using LLMs for end-to-end gen-
+TAO B ENCH M ATH L IBversion admits 0/128 verified proofs.           eration (Ren et al., 2025; Lin et al., 2025c; Wang et al.,
+In the TAO B ENCH prompt, Convergesto is defined di-                 2025). Inference-time strategies such as best-first or expert-
+rectly via CloseNear: for each ε > 0, one produces                   iteration search established strong performance on standard
+a δ > 0 so that |f (x) − L| < ε holds on a punctured                 benchmarks (Xin et al., 2025). Subsequent approaches that
+δ-neighborhood intersected with E. A successful proof                incorporated synthetic data generation and reinforcement
+proceeds by extracting radii δf , δh from the hypotheses             learning further improved the state-of-the-art (Dong & Ma,
+for f and h, choosing δ = min(δf , δh ), and then de-                2025). The DeepSeek-Prover-V2 (Ren et al., 2025), Kimina-
+riving the bound for g by combining the pointwise in-                Prover (Wang et al., 2025), and Goedel-Prover-V2 model
+equalities f ≤ g ≤ h with the two-sided inequalities ob-             (Lin et al., 2025c) families adopt iterative self-improvement
+tained from rewriting abs_sub_lt_iff. In contrast, the               loops that bootstrap from successful proofs and sub-goal
+TAO B ENCH M ATH L IB version expresses the same squeeze             decompositions. However, these pipelines rely largely on
+argument as a filter limit Tendsto g (nhdsWithin                     MathLib formalizations, raising open questions about ro-
+x0 E) (N L). Closing the goal in that setting requires               bustness and generalization under shifts in underlying defi-
+translating pointwise bounds on E into Eventually state-             nitions and formal representations.
+ments in nhdsWithin and then applying an appropriate
+squeeze principle at the level of filters. The observed asym-        6. Conclusion
+metry suggests that, for this model, proof search is more
+reliable when convergence is presented in an explicit, locally       Our work identifies a concrete limitation of current public
+unfolded form than when it is mediated through MathLib’s             LLM-based ATP models. We observe that strong perfor-
+filter abstraction, even when the underlying mathematics is          mance on Mathlib-formulated problems does not reliably
+unchanged.                                                           transfer to definitionally equivalent formalizations outside
+                                                                     the MathLib framework. Across model families and scales,
+                                                                     accuracy degrades substantially when core mathematical
+5. Related Works                                                     concepts are reintroduced through alternative definitions.
+5.1. Formal Mathematical Benchmarks                                  Our analysis of the impact of context features and man-
+                                                                     ual evaluation of the results indicate that this gap is due
+Early benchmarks for ATP models involved large-scale                 more to sensitivity to novel formulations in TAO B ENCH
+extraction of theorems and complementary proofs from                 than to increased mathematical difficulty over TAO B ENCH -
+MathLib (Yang et al., 2023). However, the standard for               M ATH L IB. This poses an acute problem because much of
+benchmarking formal reasoning capabilities has become                exploratory mathematics takes place in novel definitional
+high-school-level competition math exam problems, such               frameworks that are distinct from MathLib. By isolating the
+as the International Math Olympiad (Trinh et al., 2024;              effects of changing definitional frameworks, TAO B ENCH
+Luong & Lockhart, 2025; OpenAI, 2025; Yu et al., 2025;               and TAO B ENCH M ATH L IB show that existing ATP bench-
+Hubert et al., 2025). Competition-style benchmarks such              marks conflate general mathematical ability with famil-
+as MINI F2F (Zheng et al., 2022), AIME (AI-MO, 2025),                iarity with a specific definitional framework. We believe
+and PutnamBench (Tsoukalas et al., 2024) aggregate com-              that TAO B ENCH, TAO B ENCH M ATH L IB, and our agentic
+petition problems from past years and are widely used as             pipelines will provide useful tools for future research into
+standard evaluation targets for end-to-end proving perfor-           public ATP models that can be useful to research mathemat-
+mance. Other datasets focus on translating from informal             ics.
+language to formal languages: ProofNet (Azerbayev et al.,
+2023), the HERALD dataset (Gao et al., 2025), and Lean
+Workbook (Ying et al., 2024) provide natural-language state-
+ments (and often proofs) with mathematically equivalent for-
+malizations, enabling evaluation of both auto-formalization
+
+
+                                                                 8
+                     TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+I MPACT S TATEMENTS                                                Google. Gemini 3 pro. https://deepmind.google/
+                                                                     models/gemini/pro/, 2025. Accessed: 2026-01-
+This paper presents work whose goal is to advance the field
+                                                                     27.
+of machine learning. There are many potential societal
+consequences of our work, none of which we feel must be            Harbor-Collins, G. and Hulse, M. Formalizing class field
+specifically highlighted here.                                       theory. https://leanprover-community.g
+                                                                     ithub.io/blog/posts/cmi-class-field
+7. Acknowledgements                                                 -theory-workshop/, August 2025. Lean prover
+                                                                     community blog post, published 2025-08-22, accessed
+We would like to thank Dr. Terence Tao for providing                 2026-01-24.
+assistance and insight into the construction of his Analy-
+sis I textbook. Additionally, this work was partially sup-         Hubert, T., Mehta, R., Sartran, L., et al. Olympiad-level
+ported by NSF 2312501, 2106859, NIH 1U54HG012517-                    formal mathematical reasoning with reinforcement learn-
+01, U54DK097771, U54OD036472, OT2OD038003, Ama-                      ing. Nature, November 2025. doi: 10.1038/s41586-025
+zon, NEC, and Optum Labs.                                           -09833-y. URL https://www.nature.com/art
+                                                                     icles/s41586-025-09833-y. Published 12 Nov
+                                                                     2025.
+References
+                                                                   Jiang, J., He, W., Wang, Y., Gao, G., Hu, Y., Wang, J., Guan,
+AI-MO. Ai-mo aime dataset. https://huggingface.
+                                                                      N., Wu, P., Dai, C., Xiao, L., and Dong, B. Fate: A
+  co/datasets/AI-MO/aimo-validation-aim
+                                                                      formal benchmark series for frontier algebra of multiple
+  e, 2025.
+                                                                      difficulty levels, 2025. URL https://arxiv.org/
+Azerbayev, Z., Piotrowski, B., Schoelkopf, H., Ayers, E. W.,          abs/2511.02872.
+  Radev, D., and Avigad, J. Proofnet: Autoformalizing and
+  formally proving undergraduate-level mathematics, 2023.          Lin, H., Sun, Z., Welleck, S., and Yang, Y. Lean-star: Learn-
+  URL https://arxiv.org/abs/2302.12433.                              ing to interleave thinking and proving. In The Thirteenth
+                                                                     International Conference on Learning Representations
+Community, T. L. P. mathlib4: The math library of Lean 4.            (ICLR 2025), Singapore, April 24–28, 2025. OpenRe-
+  https://github.com/leanprover-communi                              view.net, 2025a. URL https://openreview.net
+  ty/mathlib4, 2025.                                                 /forum?id=SOWZ59UyNc.
+DeepSeek-AI. Deepseek-v3.2: Pushing the frontier of open           Lin, Y., Tang, S., Lyu, B., Wu, J., Lin, H., Yang, K., Li,
+  large language models, 2025. URL https://arxiv.                    J., Xia, M., Chen, D., Arora, S., and Jin, C. Goedel-
+  org/abs/2512.02556. Accessed: 2026-01-27.                          prover: A frontier model for open-source automated the-
+Degenne, R., Ledvinka, D., Marion, E., and Pfaffelhuber, P.          orem proving. In Second Conference on Language Mod-
+  Formalization of brownian motion in lean, 2025. URL                eling (COLM 2025), 2025b. URL https://openre
+  https://arxiv.org/abs/2511.20118. arXiv                            view.net/forum?id=x2y9i2HDjD.
+  preprint, accessed 2026-01-24.                                   Lin, Y., Tang, S., Lyu, B., Yang, Z., Chung, J.-H., Zhao,
+Dong, K. and Ma, T. STP: Self-play LLM theorem provers               H., Jiang, L., Geng, Y., Ge, J., Sun, J., Wu, J., Gesi, J.,
+ with iterative conjecturing and proving. In Singh, A.,              Lu, X., Acuna, D., Yang, K., Lin, H., Choi, Y., Chen, D.,
+  Fazel, M., Hsu, D., Lacoste-Julien, S., Berkenkamp, F.,            Arora, S., and Jin, C. Goedel-prover-v2: Scaling formal
+  Maharaj, T., Wagstaff, K., and Zhu, J. (eds.), Proceed-            theorem proving with scaffolded data synthesis and self-
+  ings of the 42nd International Conference on Machine               correction, 2025c. URL https://arxiv.org/ab
+  Learning, volume 267 of Proceedings of Machine Learn-              s/2508.03613.
+  ing Research, pp. 14114–14136. PMLR, 13–19 Jul 2025.
+                                                                   Liu, J., Lin, X., Bayer, J., Dillies, Y., Jiang, W., Liang,
+  URL https://proceedings.mlr.press/v2
+                                                                     X., Soletskyi, R., Wang, H., Xie, Y., Xiong, B., Yang,
+  67/dong25h.html.
+                                                                     Z., Zhang, J., Zhi, L., Li, J., and Liu, Z. Combibench:
+frenzymath. jixia: A static analysis tool for lean 4. https:         Benchmarking llm capability for combinatorial mathe-
+   //github.com/frenzymath/jixia, 2024.                              matics, 2025. URL https://arxiv.org/abs/25
+                                                                     05.03171.
+Gao, G., Wang, Y., Jiang, J., Gao, Q., Qin, Z., Xu, T.,
+  and Dong, B. Herald: A natural language annotated                Luong, T. and Lockhart, E. Advanced version of gemini
+  lean 4 dataset. In International Conference on Learning            with deep think officially achieves gold-medal standard
+  Representations (ICLR), 2025. URL https://open                     at the international mathematical olympiad, jul 2025. On-
+  review.net/forum?id=Se6MgCtRhz.                                    line; accessed 2025-10-03.
+
+                                                               9
+                      TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+OpenAI. Gpt-5.1: A smarter, more conversational chat-                   J., Michel, J., Yu, L., Dreyfus-Schmidt, L., Tunstall,
+  gpt. https://openai.com/index/gpt-5-1/,                               L., Pagani, L., Machado, M., Bourigault, P., Wang, R.,
+  November 2025. Accessed: 2026-01-27.                                  Polu, S., Barroyer, T., Li, W.-D., Niu, Y., Fleureau, Y.,
+                                                                        Hu, Y., Yu, Z., Wang, Z., Yang, Z., Liu, Z., and Li, J.
+OpenAI. Openai status update [tweet]. https://x.co                      Kimina-prover preview: Towards large formal reason-
+  m/OpenAI/status/1946594928945148246,                                  ing models with reinforcement learning, 2025. URL
+  2025. Online; accessed 2025-10-03.                                    https://arxiv.org/abs/2504.11354.
+Ren, Z. Z., Shao, Z., Song, J., Xin, H., Wang, H., Zhao,              Xin, H., Guo, D., Shao, Z., Ren, Z., Zhu, Q., Liu, B., Ruan,
+  W., Zhang, L., Fu, Z., Zhu, Q., Yang, D., Wu, Z. F.,                  C., Li, W., and Liang, X. Deepseek-prover: Advancing
+  Gou, Z., Ma, S., Tang, H., Liu, Y., Gao, W., Guo, D.,                 theorem proving in llms through large-scale synthetic
+  and Ruan, C. Deepseek-prover-v2: Advancing formal                     data, 2024. URL https://arxiv.org/abs/2405
+  mathematical reasoning via reinforcement learning for                 .14333.
+  subgoal decomposition, 2025. URL https://arxiv.
+  org/abs/2504.21801.                                                 Xin, R., Zheng, Z., Nie, Y., Yuan, K., and Xiao, X. Scaling
+                                                                        up multi-turn off-policy RL and multi-agent tree search
+Tao, T. Formalizing the proof of pfr in lean4 using blueprint:          for LLM step-provers. CoRR, abs/2509.06493, 2025.
+  a short tour. https://terrytao.wordpress.c                            doi: 10.48550/ARXIV.2509.06493. URL https:
+  om/2023/11/18/formalizing-the-proof                                   //doi.org/10.48550/arXiv.2509.06493.
+ -of-pfr-in-lean4-using-blueprint-a-s
+  hort-tour/, November 2023. Blog post, accessed                      Yang, K., Swope, A. M., Gu, A., Chalamala, R., Song, P.,
+  2026-01-24.                                                           Yu, S., Godil, S., Prenger, R. J., and Anandkumar, A.
+                                                                        Leandojo: Theorem proving with retrieval-augmented
+Tao, T. teorth/analysis: A lean companion to analysis i. ht             language models. In Oh, A., Naumann, T., Globerson, A.,
+  tps://github.com/teorth/analysis, 2025a.                              Saenko, K., Hardt, M., and Levine, S. (eds.), Advances in
+  GitHub repository; Apache-2.0 license; Online; accessed               Neural Information Processing Systems, volume 36, pp.
+  2025-10-03.                                                           21573–21612. Curran Associates, Inc., 2023. doi: 10.555
+                                                                        5/3666122.3667066. URL https://proceedings.
+Tao, T. teorth/analysis (github repository), 2025b. URL                 neurips.cc/paper_files/paper/2023/ha
+  https://github.com/teorth/analysis.                                   sh/4441469427094f8873d0fecb0c4e1cee-A
+Trinh, T. H., Wu, Y., Le, Q. V., He, H., Luong, T., et al.              bstract-Datasets_and_Benchmarks.html.
+  Solving olympiad geometry without human demonstra-                    NeurIPS 2023 Datasets and Benchmarks Track.
+  tions. Nature, 625(7941):476–482, 2024. doi: 10.1038/               Ying, H., Wu, Z., Geng, Y., Wang, J., Lin, D., and Chen, K.
+  s41586-023-06747-5. URL https://www.nature                            Lean workbook: A large-scale lean problem set formal-
+  .com/articles/s41586-023-06747-5. Pub-                                ized from natural language math problems. In Glober-
+  lished January 17, 2024; correction published February                son, A., Mackey, L., Belgrave, D., Fan, A., Paquet, U.,
+  23, 2024.                                                             Tomczak, J., and Zhang, C. (eds.), Advances in Neural
+                                                                        Information Processing Systems, volume 37, pp. 105848–
+Tsoukalas, G., Lee, J., Jennings, J., Xin, J., Ding, M.,
+                                                                        105863, 2024. doi: 10.52202/079017- 3357. URL
+  Jennings, M., Thakur, A., and Chaudhuri, S. Put-
+                                                                        https://proceedings.neurips.cc/paper
+  nambench: Evaluating neural theorem-provers on the
+                                                                        _files/paper/2024/hash/bf236666a2cc5
+  putnam mathematical competition. In Globerson, A.,
+                                                                        f3ae05d2e08485efc4c-Abstract-Dataset
+  Mackey, L., Belgrave, D., Fan, A., Paquet, U., Tom-
+                                                                        s_and_Benchmarks_Track.html.
+  czak, J., and Zhang, C. (eds.), Advances in Neural In-
+  formation Processing Systems, volume 37, pp. 11545–                 Yu, Z., Peng, R., Ding, K., Li, Y., Peng, Z., Liu, M.,
+  11569. Neural Information Processing Systems Foun-                    Zhang, Y., Yuan, Z., Xin, H., Huang, W., Wen, Y.,
+  dation, 2024. doi: 10.52202/079017- 0368. URL                         Zhang, G., and Liu, W. Formalmath: Benchmark-
+  https://proceedings.neurips.cc/paper                                  ing formal mathematical reasoning of large language
+  _files/paper/2024/hash/1582eaf9e0cf3                                  models. arXiv preprint arXiv:2505.02735, 2025. doi:
+  49e1e5a6ee453100aa1-Abstract-Dataset                                  10.48550/arXiv.2505.02735.
+  s_and_Benchmarks_Track.html.
+                                                                      Zheng, K., Han, J. M., and Polu, S. Minif2f: a cross-system
+Wang, H., Unsal, M., Lin, X., Baksys, M., Liu, J., San-                 benchmark for formal olympiad-level mathematics. In
+ tos, M. D., Sung, F., Vinyes, M., Ying, Z., Zhu, Z.,                   International Conference on Learning Representations
+ Lu, J., de Saxcé, H., Bailey, B., Song, C., Xiao, C.,                  (ICLR), 2022. URL https://openreview.net/f
+ Zhang, D., Zhang, E., Pu, F., Zhu, H., Liu, J., Bayer,                 orum?id=9ZPegFuFTFv. Poster.
+
+                                                                 10
+                      TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+A. Appendix                                                                   Table 5. Definitions of four judgment labels.
+
+A.1. Expert Manual Annotation of                                      Label       Description
+     TAO B ENCH M ATH L IB
+                                                                      A           Fully Equivalent. The two versions express the same
+We verified the fidelity of the MathLib equivalent problems                       mathematical statement. They are logically equivalent
+translated from the textbook versions via both manual expert                      under standard mathematical interpretations.
+reviews and LLM-as-evaluator passes. The reviewer qualifi-            B           Nearly Equivalent. The exercise’s intent and proof
+cations were completion of an equivalent Analysis I course                        strategy remain essentially the same. However, due
+and experience in Lean programming. We provided both                              to definitional differences between Tao’s textbook and
+the Tao and MathLib versions of the data to the annotators                        Mathlib, the Mathlib formulation is slightly different
+                                                                                  from the corresponding Tao statement.
+and asked the annotators to gauge mathematical equivalence
+according to the grades outline in Table 5. Annotators were           C           Minor Differences. The exercise’s intent and proof
+asked to provide a manual translation of the Tao example                          strategy are not preserved across the two versions, but
+in MathLib syntax if they identified MathLib translations                         the discrepancy is minor and requires only small ad-
+                                                                                  justments.
+that were graded as a "C" or a "D". The interface for human
+annotation is shown in Figure 9. We also applied an addi-             D           Major Differences. The exercise’s intent and proof
+tional annotation pass by GPT-5-Pro: we provide the model                         strategy are not preserved across the two versions, and
+                                                                                  there is a substantial mismatch in meaning.
+with the annotation guidelines and in-context examples of
+corrections made by human annotators and query the model
+to grade the translation and provide a re-translation if the
+translation grade is a "C" or a "D". One annotator manu-
+ally reviewed the grades given by the LLM and proposed               assigned label B, which is expected given the inherent defi-
+corrections to produce the final version of the benchmark.           nitional differences between Tao’s textbook and MathLib.
+                                                                     We identified 11 MathLib-version data points that required
+Judgment Labels Our labeling scheme is motivated by                  correction; these were manually revised by the judges. We
+an important practical consideration: some definitions in            computed Gwet’s AC2 to quantify inter-judge agreement
+Tao’s Analysis I differ from their MathLib counterparts. In          among the three judges and obtained a score of 0.89, indi-
+the Lean formalization of Analysis I, Tao generally favors           cating high reliability.
+faithful translation over more idiomatic Lean formulations
+when the two diverge (Tao, 2025b). Consequently, certain             A.2. Data Distribution
+textbook exercises do not admit a strictly equivalent state-
+ment in MathLib. We therefore instructed judges to evaluate
+the core intent of each exercise and the corresponding proof
+strategy across the two versions. If these are essentially
+preserved, we regard the pair as acceptable even when the
+MathLib statement differs slightly from the Tao statement.
+Based on these considerations, we define four judgment
+labels, summarized in Table 5.
+
+Judgment Process For each exercise pair, judges first
+identified the core intent of the two versions and consid-
+ered whether their proof strategies align. If the intent and
+proof strategy were essentially the same, the instance was
+labeled A or B; otherwise, it was labeled C or D. For label
+                                                                                  Figure 6. Data Distribution by Chapter.
+B instances, judges were required to explicitly describe the
+differences between the two versions. For labels C and D,
+judges were required to (i) describe the differences and (ii)
+provide a corrected MathLib version of the exercise. Each            Our benchmark comprises ten chapters (Chapters 2-11) and
+judge evaluated 70 data points. To measure inter-judge               sixty-five subsections that follow a standard progression
+agreement, 30 of the 70 data points assigned to each judge           from foundational material (natural numbers, set theory,
+were evaluated by all three judges.                                  and number systems) to core real analysis topics, including
+                                                                     limits, series, continuity, differentiation, and the Riemann
+Annotation Pipeline Results Based on the manual judg-                integral. Figure 6 summarizes the chapter-level composi-
+ments, 108 data points were assigned label A and 31 were             tion.
+
+                                                                11
+                        TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+Table 6. Tree-Search Based Model Performance on TAO B ENCH and TAO B ENCH M ATH L IB. Results are reported as pass
+rates on 150 problems. Models without reported results for a given setting are marked as "–".
+
+                                                                  TAO B ENCH                      TAO B ENCH M ATH L IB
+       Model                                           Tactic Budget          Pass Rate       Tactic Budget         Pass Rate
+                                                        128×2×600                (%)           128×2×600               (%)
+       BFS-Prover-V2-7B (Xin et al., 2025)                    –                   –               103/150              68.67
+       BFS-Prover-V2-32B (Xin et al., 2025)                   –                   –               105/150              70.00
+
+
+
+
+Figure 7. Model Performance by Chapter. For each cell, accuracies on TAO B ENCH and TAO B ENCH M ATH L IB are shown in the upper-right
+and lower-left corners, respectively. The upper-left corner shows the difference (TAO B ENCH M ATH L IB - TAO B ENCH). DS[7B]* indicates
+DeepSeek-Prover-V2-7B (w/o COT).
+
+
+A.3. Model Performance by Chapter                                       lations are not systematically harder. Instead, performance
+                                                                        depends on how closely the local definitions align with the
+Figure 7 breaks down pass rates by chapter and shows that
+                                                                        models’ MathLib-centric priors.
+the overall Tao-MathLib gap is not uniform: it is concen-
+trated in a few chapters where the representation of core
+                                                                        A.4. Additional Discussion
+objects diverges most from MathLib. A large and consistent
+gap appears in Set Theory (Ch. 3), where all five models                A.4.1. T REE -S EARCH BASED M ODEL E VALUATION
+exhibit a substantial MathLib advantage of roughly 42-58
+percentage points. Two pronounced failure modes occur in                The evaluation results of a representative tree-search-based
+The Natural Numbers (Ch. 1) and Series (Ch. 7): for all                 model, BFS-Prover, are shown in Figure 6. BFS-Prover is
+five models, Tao accuracy falls to 0%, while the MathLib                a stepwise prover. At each step, it generates the next tactic
+translation remains solvable, suggesting that the bottleneck            and interacts with LeanDojo to validate the tactic and obtain
+is not the underlying analysis content but rather sensitivity           the next proof state. Our Tao-version exercises require
+to the new definitional framework.                                      Lean v4.23.0-rc2 or newer for compilation, but LeanDojo
+                                                                        currently lacks support for these Lean versions. Therefore,
+Outside these chapters, the picture is more mixed and often             we are unable to evaluate BFS-Prover on the Tao version of
+near parity. Several chapters show small deltas (e.g., Real             our benchmark.
+Numbers (Ch. 5) and Continuous Functions (Ch. 9)), and in
+some cases the gap changes sign, indicating that Tao formu-             For the evaluation on TAO B ENCH M ATH L IB, we adopt a
+
+
+                                                                   12
+                     TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+                                         Table 7. Model Performance by Chapter
+
+ Chapter                 Title               # Data    DS[7B] *      DS[7B]    GD[8B]     GD[32B]    KM[8B]     GPT-5.1     Average
+                                                      TAO B ENCH
+    2           The Natural Numbers            2          0             0         0         0          0           0          0%
+    3                 Set Theory              64         16            19        15        25          8          41         32%
+    4          Integers and Rationals          6          5             6        6         6           4           6         92%
+    5             The Real Numbers            25         17            17        16        19          13         13         63%
+    6            Limits of Sequences          12          3             3         3         4          3           3         26%
+    7                   Series                 6          0             0         0         0          0           0          0%
+    8                Infinite Sets             6          4            3         3         3           0          3          44%
+    9        Continuous Functions on R        16          8             9        10        11          3           9         52%
+   10        Differentiation of Functions      4         1             1         2         2           1           1         33%
+   11           The Riemann integral           9         3             4         1         4           1           2         28%
+                                               TAO B ENCH M ATH L IB
+    2           The Natural Numbers            2          2             2         2         2           2          2        100%
+    3                 Set Theory              64         45            50        52        52          45         51         77%
+    4          Integers and Rationals          6          4             5         6         6           6          6         92%
+    5             The Real Numbers            25         12            16        17        17          14         14         60%
+    6            Limits of Sequences          12          3             6         7         7           2          7         44%
+    7                   Series                 6          3             4         4         4           0          1         44%
+    8                Infinite Sets             6          3             5         4         3           1          4         56%
+    9        Continuous Functions on R        16          5            10         8        12           2          8         47%
+   10        Differentiation of Functions      4         1             2         2         3           1          1         42%
+   11           The Riemann integral           9         4             4         4         3           2          3         37%
+
+
+tactic budget of 128 × 2 × 600, i.e., passes × expand_k ×           errors. This suggests that ensuring mathematical equiva-
+max_expansions. Concretely, we run up to 128 independent            lence is much harder than ensuring compilability during
+passes. In each pass, we expand at most 600 search nodes,           translation.
+and at each expansion we sample up to 2 tactic candidates
+from the model.                                                     A.5. System Prompts and Prompt Templates
+
+A.4.2. M ATH L IB T RANSLATION P IPELINE                            To aid in similar future efforts, we include the prompts used
+                                                                    in the two pipelines detailed in this work. We provide (1)
+During the rewriting stage, we forbid the MathLib version           the final system prompt for the orchestrating agent in the
+from introducing any new local definitions or notation, and         textbook extraction pipeline(A.5.1), (2) the prompt template
+restrict it to using the following fixed header:                    used for each query in the extraction task(A.5.2), (3) the
+                                                                    initial prompt for the rewriting stage of MathLib translation
+import Mathlib                                                      (A.5.3), (4) the prompt for iterative compilation-error cor-
+import Aesop                                                        rection during rewriting (A.5.4), and (5) the prompt for the
+set_option maxHeartbeats 0                                          equivalence-checking stage of MathLib translation (A.5.5).
+open BigOperators Real Nat Topology
+ ,→ Rat Set Filter
+
+For the rewriting and equivalence checking stages of our
+MathLib translation pipeline, we additionally count the num-
+ber of compilation errors and equivalence-check failures for
+each data point, as shown in Figure 8. Out of 150 data
+points, 30 encountered at least one error iteration. Across
+all error iterations, we observe 154 equivalence-check fail-
+ures, which is substantially more than the 79 compilation
+
+                                                               13
+TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+
+
+
+              Figure 8. Number of Error Iterations per Data Point
+
+
+
+
+                    Figure 9. Human Annotation Interface
+
+
+
+
+                                      14
+                  TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+
+
+
+                    TaoBench                                                     TaoBenchMathLib
+
+import Mathlib.Tactic                                            import Mathlib
+namespace Chapter2                                               import Aesop
+                                                                 set_option maxHeartbeats 0
+inductive Nat where                                              open BigOperators Real Nat Topology Rat Set Filter
+  | zero : Nat                                                   namespace New_Namespace
+  | succ : Nat → Nat
+  deriving Repr, DecidableEq                                     theorem Nat.backwards_induction {n : ℕ } {P : ℕ → Prop}
+                                                                   (hind : ∀ m, P (m + 1) → P m) (hn : P n) :
+postfix:100"++" => Chapter2.Nat.succ                               ∀ m, m ≤ n → P m := by
+                                                                   sorry
+namespace Nat
+                                                                 end New_Namespace
+abbrev recurse (f : Nat → Nat → Nat) (c : Nat) : Nat →
+Nat := fun n ↦
+  match n with
+  | Nat.zero => c
+  | Nat.succ n => f n (recurse f c n)
+
+abbrev add (n m : Nat) : Nat :=
+  Nat.recurse (fun _ sum ↦ sum++) m n
+
+instance instAdd : Add Nat where
+  add := add
+
+instance instLE : LE Nat where
+  le n m := ∃ a : Nat, m = n + a
+
+end Nat
+
+theorem Nat.backwards_induction {n:Nat} {P: Nat → Prop}
+  (hind: ∀ m, P (m++) → P m) (hn: P n) :
+    ∀ m, m ≤ n → P m := by
+  sorry
+
+end Chapter2
+
+
+                                       Figure 10. Case Study: Nat.backwards_induction
+
+
+
+
+                                                            15
+                     TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+
+
+
+                     TaoBench                                                    TaoBenchMathLib
+import Mathlib.Tactic                                            import Mathlib
+import Mathlib.Data.Real.Sign                                    import Aesop
+namespace Real                                                   set_option maxHeartbeats 0
+                                                                 open BigOperators Real Nat Topology Rat Set Filter
+abbrev CloseFn (ε : ℝ ) (X : Set ℝ ) (f : ℝ → ℝ ) (L :           namespace New_Namespace
+ℝ ) : Prop :=
+  ∀ x ∈ X, |f x - L| < ε                                         theorem Convergesto.squeeze {E : Set ℝ } {f g h : ℝ → ℝ }
+                                                                 {L x₀ : ℝ }
+abbrev CloseNear (ε : ℝ ) (X : Set ℝ ) (f : ℝ → ℝ ) (L :             (had : x₀ ∈ closure E)
+ℝ ) (x₀ : ℝ ) : Prop :=                                              (hfg : ∀ x ∈ E, f x ≤ g x)
+  ∃ δ > 0, CloseFn ε (X ∩ Set.Ioo (x₀ - δ) (x₀ + δ)) f L             (hgh : ∀ x ∈ E, g x ≤ h x)
+                                                                     (hf : Tendsto f (nhdsWithin x₀ E) (� L))
+abbrev adherent' (ε : ℝ ) (x : ℝ ) (X : Set ℝ ) : Prop :=            (hh : Tendsto h (nhdsWithin x₀ E) (� L)) :
+  ∃ y ∈ X, |x - y| ≤ ε                                               Tendsto g (nhdsWithin x₀ E) (� L) := by
+                                                                   sorry
+end Real
+                                                                 end New_Namespace
+namespace Chapter9
+
+abbrev AdherentPt (x : ℝ ) (X : Set ℝ ) :=
+  ∀ ε > (0 : ℝ ), ε.adherent' x X
+
+abbrev Convergesto (X : Set ℝ ) (f : ℝ → ℝ ) (L : ℝ )
+(x₀ : ℝ ) : Prop :=
+  ∀ ε > (0 : ℝ ), ε.CloseNear X f L x₀
+
+theorem Convergesto.squeeze {E:Set ℝ } {f g h: ℝ → ℝ }
+{L:ℝ } {x₀:ℝ } (had: AdherentPt x₀ E)
+  (hfg: ∀ x ∈ E, f x ≤ g x) (hgh: ∀ x ∈ E, g x ≤ h x)
+  (hf: Convergesto E f L x₀) (hh: Convergesto E h L x₀) :
+  Convergesto E g L x₀ := by
+  sorry
+
+end Chapter9
+
+
+                                       Figure 11. Case Study: Convergesto.squeeze
+
+
+
+
+                                                            16
+                       TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+A.5.1. O RCHESTRATING AGENT S YSTEM P ROMPT FOR T EXTBOOK E XTRACTION
+   Orchestrating Agent System Prompt for Textbook Extraction
+
+  You are a Lean compiler agent working inside an existing textbook project.
+  Your job is NOT to design new mathematics. Your job is to EXTRACT a faithful, self-contained Lean file so that one target
+  theorem from a chapter can be compiled and typechecked in isolation, WITHOUT importing any ‘Analysis.Section_*‘ modules.
+  There is no length limit. “Minimal” means dependency-minimal, not short.
+  ——————————–
+   PRIMARY OBJECTIVES (IN ORDER)
+  ——————————–
+  1. Faithfulness
+   Use the textbook’s actual definitions, structures, and interfaces. Do not redesign them.
+   2. Completeness
+   Include all declarations needed so the TARGET THEOREM parses and typechecks in a fresh project (Lean + Mathlib only).
+   3. Dependency-minimality
+   Include only declarations in the TRANSITIVE DEPENDENCY of the target theorem (statement + typechecking), not unrelated
+   chapter material.
+  4. Compilation
+  The final snippet must be a single Lean file that compiles under the pinned Lean + Mathlib version.
+  ———————
+   GIVEN / TOOLS
+  ———————
+  You are always given:
+  - The full Lean source file for the chapter defining the target theorem.
+  - A textual “reference summary” of earlier declarations. This summary is DOCUMENTATION ONLY: you must never synthesize
+   code from it.
+  You can call:
+  - ‘file_look_up_tool‘ to fetch exact Lean source of other sections/chapters.
+  - ‘compile_lean_code_tool‘ to test compilation of your current snippet.
+  All code you include for textbook symbols must ultimately be copied from real source files, never invented from the summary.
+  —————————————
+   USAGE-BASED DEPENDENCY RULE
+  —————————————
+   Let the “target theorem” be the one explicitly requested.
+   Define the USED NAME SET as:
+  - Every non-notation name in the target theorem’s statement.
+  - Every name appearing in the transitive dependency of declarations you already included, where that dependency is required for
+   parsing, typechecking, instance/coercion / notation resolution, or unfolding to the level used by the textbook.
+   For ANY textbook name N in the USED NAME SET:
+  - You MUST obtain its real declaration from the project (current chapter file or via ‘file_look_up_tool‘).
+  - You MUST copy its full Lean declaration: name, binders, type, body, attributes, and any ‘sorry‘ in the original.
+  This includes core chapter objects like ‘Sequence‘, ‘Sequence.ofNatFun‘, ‘Sequence.from‘, ‘Sequence.IsCauchy‘, ‘Cauchy-
+  Sequence‘, ‘Real‘, ‘LIM‘, the order/abs structure on ‘Real‘, and any instances/coercions they depend on. Do NOT simplify
+  signatures (e.g. do NOT redefine ‘Sequence.Equiv‘ with a different domain, and do NOT replace quotient-based ‘Real‘ with ‘Q‘).
+
+
+
+
+                                                                  17
+                     TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+
+You must NOT import ‘Analysis.Section_*‘. Every textbook declaration you need must be physically copied into the snippet.
+—————-
+STRICT RULES
+—————-
+1. No fake textbook content
+- Never invent placeholder implementations for textbook names (e.g. ‘def Real := Q‘, ‘def foo := 0‘, ‘abbrev bar := fun _ => 0‘,
+etc.).
+- Never change the type of a textbook symbol. Copied declarations must match source tokens (up to harmless whitespace).
+2. Source of truth
+- For any textbook symbol you include, the body must come from the real Lean source, not from the textual summary and not
+from your own reconstruction.
+- You may reorder declarations slightly if needed for dependencies, but not modify their content.
+3. Handling tactic-based proofs
+- If a textbook declaration comes with a proof term (including ‘by aesop‘, ‘by grind‘, etc.), you should:
+* Prefer copying the proof term EXACTLY as in source, AND copy any additional textbook lemmas/instances it depends on (also
+verbatim) when that does not explode the snippet.
+* If that proof relies on a large in-context lemma ecosystem that would balloon the context, you MAY replace ONLY THE
+PROOF TERM with ‘by sorry‘ **provided**:
+- The declaration’s type is a proposition (‘theorem‘ / ‘lemma‘ / ‘example‘), not a data definition.
+- The type (statement) is copied exactly from the source.
+- You MUST NOT replace the bodies of core data/structure/definition declarations (like the definition of ‘Real‘, ‘Sequence‘,
+‘LIM‘, etc.) with ‘sorry‘ or trivial placeholders.
+4. Allowed and disallowed ‘sorry‘
+- You must preserve any ‘sorry‘ that appears in the textbook source.
+- You MAY introduce NEW ‘sorry‘ **only** as proof terms of propositions (lemmas/theorems) where the original file gave a real
+ proof and including its full dependency tree would be too large.
+- You must NOT introduce new ‘sorry‘ inside definitions/structures/instances that define data or operations.
+5. New auxiliary declarations
+- You may add NEW auxiliaries only if:
+- Their names clearly indicate they are new (e.g. ‘Aux_*‘),
+- They do not shadow textbook names,
+- They are used solely to glue existing textbook declarations into a compilable file.
+- New auxiliaries must be fully defined without ‘sorry‘.
+6. Imports
+- You may import only Mathlib modules actually used (e.g. ‘Mathlib.Tactic‘, ‘Mathlib.Data.Real.Basic‘, etc.).
+- You must NOT import any textbook modules such as ‘Analysis.Section_*‘.
+- Assume no textbook code exists except what you copy into this single file.
+7. No “I give up” prose
+- Your final answer MUST be a single Lean file inside one “‘lean code block and NOTHING ELSE.
+- Do NOT output meta-text like “we could not assemble a self-contained slice”, “this exceeds the scope”, or any similar “I give
+up” header.
+- If tool limits prevent full resolution, still output the best faithful Lean snippet you can under the above rules.
+—————-
+WORKFLOW
+
+
+
+
+                                                                  18
+                      TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+
+—————-
+1. Analyze the target theorem
+- List all non-notation names in its statement. Initialize the USED NAME SET with them.
+- Classify each as:
+(a) from the current chapter file,
+(b) from earlier textbook sections,
+(c) from Mathlib / core Lean.
+2. Pull declarations from the current chapter
+- For each (a) in the USED NAME SET, locate its declaration and copy it verbatim.
+- Add any newly required names (from their types/bodies/instances/notation) into the USED NAME SET.
+3. Pull declarations from other chapters
+- For each (b) in the USED NAME SET, call ‘file_look_up_tool‘ for the relevant section and copy only the needed declarations
+verbatim.
+- Again, extend the USED NAME SET with whatever is needed to parse/typecheck those declarations.
+4. Imports and namespaces
+- Add minimal Mathlib imports required for the copied code.
+- Recreate the namespace structure exactly as in the source (‘namespace Chapter5‘, ‘namespace Real‘, etc.).
+5. Compilation loop
+- Call ‘compile_lean_code_tool‘ with the full snippet.
+- For unknown identifiers/namespaces: add the missing textbook declarations (via copying) or Mathlib imports.
+- For type/instance/coercion/notation errors: ensure you have copied the relevant instances/notations and that all declarations
+match the original types.
+- For tactic failures due to missing lemmas: either pull the missing lemmas verbatim, or (if that would be too large) change ONLY
+ that lemma/theorem’s proof to ‘by sorry‘, keeping the exact statement.
+Repeat until the snippet compiles or you hit tool limits; always maintain the rules above.
+—————-
+FINAL OUTPUT
+—————-
+- Output ONLY a single Lean file in a “‘lean code block. No natural-language text before or after.
+- The file must be self-contained (plus Mathlib imports) and, as far as your tools allow, compile successfully under the pinned
+Lean + Mathlib version.
+
+
+
+
+                                                               19
+                         TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+A.5.2. Q UERY P ROMPT FOR T EXTBOOK E XTRACTION
+
+   Query Prompt for Textbook Extraction
+
+  We need a **self-contained, compilable Lean snippet** for the following theorem
+   from query[’chapter_name’]:
+  —– TARGET THEOREM —–
+   query[’query_text’]
+  ————————–
+  —– DEPENDENCY SET —–
+   dependency_set
+  ————————–
+  Your job is NOT to design new mathematics. Your job is to EXTRACT a faithful, dependency-minimal slice of the textbook’s Lean
+  code so that the **target theorem** parses and typechecks **in isolation**, in a fresh Lean + Mathlib project, **WITHOUT**
+  importing any ‘Analysis.Section_*‘ modules.
+   Our goal is **context extraction**. Assume the target theorem is provable in the original project. The target theorem in the
+   extracted snippet must **always** end with ‘by sorry‘ regardless of whether an external prover can solve it.
+  You must implement the following constraints:
+   ============================================================
+   CORE RULES FOR BUILDING THE SELF-CONTAINED SNIPPET (V6)
+   ============================================================
+  1. **Usage-based dependency rule**
+   Build the USED NAME SET consisting of:
+  - Every non-notation name in the target theorem’s statement.
+  - Every name appearing in the *transitive dependency* of included declarations required for parsing / typechecking / instance
+  resolution / coercions / notation.
+   2. **For every textbook symbol in the USED NAME SET**, you must:
+  - Obtain its **exact declaration** from the real source (the chapter file below, or any earlier section via ‘file_look_up_tool‘).
+  - **Copy its Lean code verbatim**: type, body, attributes, proofs, and any ‘sorry‘ present in the textbook.
+  - NEVER synthesize definitions from the summary below.
+   3. **The reference summary provided is documentation only.**
+  - It may tell you *which* names exist, but *none* of its code may be used.
+  - If you need a declaration, fetch its *actual* source file and copy it exactly.
+   4. **Handling textbook tactic proofs (e.g. by aesop, grind, simp, etc.)**
+  - If feasible, copy the tactic proof term **exactly** and include any dependent textbook lemmas/instances (verbatim).
+  - If including those dependencies excessively enlarges the snippet, you may replace the **proof term only** with ‘by sorry‘, *but
+   only for theorems/lemmas*.
+  - You may NEVER ‘sorry‘ the bodies of definitions/structures/instances.
+   5. **Forbidden behaviors**
+  - No placeholder implementations for textbook names (‘:= 0‘, ‘:= fun _ => 0‘, etc.).
+  - No redefining textbook objects (e.g. replacing quotient-based ‘Real‘ with Q).
+  - No changing the signature of any textbook declaration.
+  - No synthesized or “simplified” versions of textbook interfaces.
+  - No “I give up” headers or meta explanations.
+   6. **Imports**
+
+
+
+
+                                                                    20
+                    TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+
+- You may import relevant Mathlib modules (‘Mathlib.Tactic‘, ‘Mathlib.Data.Real.Basic‘, . . . ).
+- You must NOT import ANY textbook section (no ‘Analysis.Section_*‘).
+7. **Target theorem**
+- Must retain EXACT name and statement.
+- Must end with ‘by sorry‘ **always** (even if a proof is known or found elsewhere).
+8. **Final output**
+- A SINGLE Lean file, inside one “‘lean code block.
+- No natural-language text before or after the code block.
+- The snippet must be self-contained and compilable under the pinned Mathlib/Lean version.
+============================================================
+AUTHORITATIVE SOURCE FOR THIS CHAPTER
+============================================================
+—– BEGIN SOURCE query[’chapter_name’] —–
+source_file
+—– END SOURCE query[’chapter_name’] —–
+============================================================
+REFERENCE SUMMARY (FOR INFORMATION ONLY — DO NOT COPY CODE)
+============================================================
+query[’content’]
+============================================================
+Construct the final Lean snippet accordingly.
+
+
+
+
+                                                               21
+                       TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+A.5.3. I NITIAL P ROMPT FOR THE R EWRITING S TAGE OF M ATH L IB T RANSLATION
+   Initial Prompt for the Rewriting Stage of MathLib Translation
+
+   “‘lean4
+  {TAOBENCH_EXERCISE}
+   “‘
+   The above is a Lean formalization exercise of a problem from Terence Tao’s Analysis I. Many of the concepts in the given Lean
+   code use local definition / local notation.
+   Please complete the following tasks:
+   1. First, understand and analyze the problem: read the given Lean code and the problem statement, and explain what the problem
+   means mathematically.
+   2. Then, restate the problem using only standard definitions from Mathlib (no need to provide a proof). That is, rewrite the
+   original problem, which uses local definitions / local notation, into a version that uses only the existing standard definitions in
+   Mathlib. Only keep the formal statement of the problem (i.e. the Lean theorem / proposition statement), and do not give any
+   proof.
+   In the Lean code, you may only use the following imports and settings:
+   import Mathlib
+   import Aesop
+   set_option maxHeartbeats 0
+   open BigOperators Real Nat Topology Rat Set Filter
+   Do not add any other imports, and do not introduce any new local definitions or notation.
+   Please first give your analysis, and then provide the rewritten Lean problem statement (theorem declaration) using only the above
+   restrictions, without any proof.
+   The theorem must keep the same name and end with := by sorry. You must ensure that this Lean code can be compiled in Lean4
+   and that the mathematical problem it describes is consistent with Terence Tao’s exercise I gave you.
+   At the very end of your response, include your final Mathlib version of the problem in the following format (replace Mathlib
+   Version of the Problem with your theorem declaration).
+   ### Mathlib Version:
+   “‘lean4
+   import Mathlib
+   import Aesop
+   set_option maxHeartbeats 0
+   open BigOperators Real Nat Topology Rat Set Filter
+   namespace New_Namespace
+   Mathlib Version of the Problem
+   end New_Namespace
+
+
+
+
+                                                                   22
+                       TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+A.5.4. P ROMPT FOR I TERATIVE C OMPILATION E RROR C ORRECTION IN THE R EWRITING S TAGE
+   Prompt for Iterative Compilation Error Correction in the Rewriting Stage
+
+  “‘lean4
+  {TAOBENCH_EXERCISE}
+  “‘
+   The above is a Lean formalization exercise of a problem from Terence Tao’s Analysis I. Many of the concepts in the given Lean
+   code use local definition / local notation.
+   Please complete the following tasks:
+   1. First, understand and analyze the problem: read the given Lean code and the problem statement, and explain what the problem
+   means mathematically.
+   2. Then, restate the problem using only standard definitions from Mathlib (no need to provide a proof). That is, rewrite the
+   original problem, which uses local definitions / local notation, into a version that uses only the existing standard definitions in
+   Mathlib. Only keep the formal statement of the problem (i.e. the Lean theorem / proposition statement), and do not give any
+   proof.
+   In the Lean code, you may only use the following imports and settings:
+   import Mathlib
+   import Aesop
+   set_option maxHeartbeats 0
+   open BigOperators Real Nat Topology Rat Set Filter
+   Do not add any other imports, and do not introduce any new local definitions or notation.
+   Please first give your analysis, and then provide the rewritten Lean problem statement (theorem declaration) using only the above
+   restrictions, without any proof.
+   The theorem must keep the same name and end with := by sorry. You must ensure that this Lean code can be compiled in Lean4
+   and that the mathematical problem it describes is consistent with Terence Tao’s exercise I gave you.
+   ### This is your latest version of the answer:
+  “‘lean4
+  {LATEST_RESULT}
+  “‘
+   ### However, it has compilation errors. The error message is:
+  {ERROR_MESSAGES}
+   ### Please fix the errors while maintaining the mathematical meaning.
+   At the very end of your response, include your final Mathlib version of the problem in the following format (replace {Mathlib
+   Version of the Problem} with your theorem declaration).
+   ### Mathlib Version:
+  “‘lean4
+   import Mathlib
+   import Aesop
+   set_option maxHeartbeats 0
+   open BigOperators Real Nat Topology Rat Set Filter
+   namespace New_Namespace
+  {Mathlib Version of the Problem}
+   end New_Namespace
+
+
+
+
+                                                                   23
+                       TAO B ENCH: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+
+A.5.5. P ROMPT FOR THE E QUIVALENCE C HECKING S TAGE OF M ATH L IB T RANSLATION
+
+   Prompt for the Equivalence Checking Stage of MathLib Translation
+
+   You are an expert in Lean4 and mathlib, and you are familiar with how the same mathematical statement can be represented in
+   different formalizations, with different inductive definitions, notations, or contexts.
+   I will give you two versions of what is supposed to be the same exercise from Terence Tao’s *Analysis I*:
+   1. Terence Tao exercise (Lean4 code)
+   2. Terence Tao goal state (the final statement to be proved)
+   3. Mathlib version exercise (Lean4 code)
+   4. Mathlib version goal state (the final statement to be proved)
+   Your task is to decide whether these two versions are proving the same mathematical statement.
+   ### Terence Tao exercise:
+  “‘lean4
+  {TAOBENCH_EXERCISE}
+  “‘
+   ### Terence Tao goal state:
+  {STATE_OF_TAOBENCH_EXERCISE}
+   ### Mathlib version exercise:
+  “‘lean4
+  {TAOBENCHMATHLIB_EXERCISE}
+  “‘
+   ### Mathlib version goal state:
+  {STATE_TAOBENCHMATHLIB_EXERCISE}
+   Please proceed in the following steps:
+   1. First, understand and analyze the two versions separately: read the given Lean code of each exercise and its corresponding goal
+   state to be proved, and explain what the exercise means mathematically.
+   2. Then, compare the two versions. Check whether the assumptions match logically (allowing for renaming of variables and
+   standard equivalences), check whether the conclusions match logically, and then decide whether they are the same mathematical
+   statement or if there is a real difference.
+   At the very end of your response, give your final answer of "Yes" or "No" in the following format (replace ‘{Your final decision}‘
+   with "Yes" if they are mathematically equivalent, or "No" if they are not mathematically equivalent).
+   ### Mathematical equivalence:
+  {Your final decision}
+
+
+
+
+                                                                  24
+

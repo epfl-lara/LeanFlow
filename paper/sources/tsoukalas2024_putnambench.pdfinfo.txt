@@ -1,0 +1,18 @@
+Title:           
+Subject:         
+Keywords:        
+Author:          
+Creator:         LaTeX with hyperref
+Producer:        GPL Ghostscript 10.01.2
+CreationDate:    Tue Nov  5 03:05:52 2024 CET
+ModDate:         Tue Nov  5 03:05:52 2024 CET
+Custom Metadata: no
+Metadata Stream: yes
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           25
+Encrypted:       no
+Page size:       612 x 792 pts (letter)
