@@ -10,7 +10,6 @@ from epflemma_cli.workflow_state import load_verified_patch_status
 from epflemma_cli.lean_services import (
     LeanCapabilityReport,
     LeanSearchResult,
-    LeanWorkerResult,
 )
 
 
@@ -27,7 +26,7 @@ def test_lean_capabilities_tool_returns_structured_json(monkeypatch):
             mcp_tools={"diagnostics": "mcp_lean_diagnostics"},
             search_providers=["mcp-local-search"],
             helper_tools={"sorry_analyzer": True},
-            workers=["proof-repair"],
+            workers=[],
             degraded_reasons=[],
         ),
     )
@@ -36,7 +35,7 @@ def test_lean_capabilities_tool_returns_structured_json(monkeypatch):
 
     assert payload["success"] is True
     assert payload["project_valid"] is True
-    assert payload["workers"] == ["proof-repair"]
+    assert payload["workers"] == []
 
 
 def test_lean_search_tool_preserves_provider_provenance(monkeypatch):
@@ -126,36 +125,15 @@ def test_lean_incremental_check_tool_dispatches_structured_payload(monkeypatch):
     }
 
 
-def test_handle_function_call_passes_parent_agent_to_lean_worker_dispatch(monkeypatch):
-    captured: dict[str, object] = {}
-    parent_agent = object()
-
-    def _fake_dispatch(request, *, parent_agent=None, owner_id=""):
-        captured["worker"] = request.worker
-        captured["parent_agent"] = parent_agent
-        captured["owner_id"] = owner_id
-        return LeanWorkerResult(
-            worker=request.worker,
-            mode="delegate",
-            dispatched=True,
-            summary="delegated",
-        )
-
-    monkeypatch.setattr(lean_tool, "dispatch_worker", _fake_dispatch)
-
+def test_handle_function_call_reports_lean_worker_dispatch_disabled():
     payload = json.loads(
         model_tools.handle_function_call(
             "lean_worker_dispatch",
             {"worker": "proof-repair", "goal": "repair theorem"},
-            parent_agent=parent_agent,
-            owner_id="agent-123",
         )
     )
 
-    assert payload["success"] is True
-    assert captured["worker"] == "proof-repair"
-    assert captured["parent_agent"] is parent_agent
-    assert captured["owner_id"] == "agent-123"
+    assert payload == {"error": "Unknown tool: lean_worker_dispatch"}
 
 
 def test_lean_proof_context_tool_returns_normalized_payload(monkeypatch):

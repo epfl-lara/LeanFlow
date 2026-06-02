@@ -2,14 +2,14 @@
 id: prove
 kind: workflow
 title: Prove
-summary: Queue-driven autonomous theorem proving with LSP-first inspection, native search fallbacks, worker escalation, and strict verification gates.
+summary: Queue-driven autonomous theorem proving with LSP-first inspection, native search fallbacks, helper decomposition, and strict verification gates.
 aliases: [autoprove]
 skills: [lean-proof-loop, lean-theorem-queue-worker]
-tools: [lean_capabilities, lean_inspect, lean_search, lean_proof_context, lean_auto_search, lean_multi_attempt, lean_decompose_helpers, lean_reasoning_help, lean_verify, lean_sorries, lean_axioms, lean_worker_dispatch]
-workers: [proof-repair, axiom-eliminator, sorry-filler-deep]
+tools: [lean_capabilities, lean_inspect, lean_search, lean_proof_context, lean_auto_search, lean_multi_attempt, lean_decompose_helpers, lean_reasoning_help, lean_verify, lean_sorries, lean_axioms]
+workers: []
 review_actions: [continue, replan, redraft, falsify, stop]
 stop_conditions: [verified, blocked, interrupted, stalled]
-route_actions: [queue-worker, final-sweep, delegate-proof-repair, delegate-axiom-eliminator, delegate-sorry-filler-deep]
+route_actions: [queue-worker, final-sweep]
 ---
 
 # Native Prove Spec
@@ -41,7 +41,7 @@ Use `review`, `checkpoint`, `draft`, `refactor`, or `golf` for those cases.
 ## Tool Order
 
 1. `lean_capabilities`
-   - use first to see whether diagnostics MCP, search providers, and workers are actually available
+   - use first to see whether diagnostics MCP, search providers, and helper tools are actually available
    - do not assume LSP-backed goals or semantic search exist on this machine
 2. `lean_inspect`
    - use to read diagnostics, goals, blocker kind, queue items, and the current capability snapshot
@@ -77,13 +77,10 @@ Use `review`, `checkpoint`, `draft`, `refactor`, or `golf` for those cases.
 9. `lean_reasoning_help`
    - use for broad proof-strategy advice when the missing piece is conceptual or library-navigation oriented
    - prefer `lean_decompose_helpers` instead when the useful next step is a structured sublemma split
-10. `lean_worker_dispatch`
-   - use only when the route decision or blocker history points to a specialist worker
-   - do not delegate by default
-11. `lean_verify`
+10. `lean_verify`
    - use the narrowest verification mode that matches the current gate
    - do not treat `grep`, truncated logs, or disappearing `sorry` text as verification
-12. `lean_sorries` or `lean_axioms`
+11. `lean_sorries` or `lean_axioms`
    - use when the blocker is global `sorry` inventory or axiom risk rather than local proof construction
 
 ## Queue Contract
@@ -135,7 +132,7 @@ Use the blocker kind from `lean_inspect` and the route decision from the runner 
   - unknown identifier
   - failed instance synthesis
   - timeout / tactic failure with clear compiler output
-  - default route: focused local repair, then `proof-repair` if repeated
+  - default route: focused local repair with richer local feedback if repeated
 - search blocker
   - missing lemma or unknown proof shape
   - default route: `lean_search` before rewriting the proof blindly
@@ -146,33 +143,22 @@ Use the blocker kind from `lean_inspect` and the route decision from the runner 
   - do not replace this with comments plus `sorry`; if the helper skeleton is not ready to insert, report the failed skeleton diagnostics as blocker context
 - axiom-risk blocker
   - proof compiles but the axiom profile is unacceptable or unknown
-  - default route: `lean_axioms`, then `axiom-eliminator` if needed
+  - default route: `lean_axioms`, then direct proof cleanup if needed
 - stuck queue item
   - same blocker persists after repeated focused attempts or search is exhausted
-  - default route: bounded escalation to `sorry-filler-deep`
+  - default route: use feedback, helper decomposition, or reasoning help before reporting a concrete blocker
 - final-sweep blocker
   - queue emptied but the file or project still has warnings, malformed proof fragments, or residual diagnostics
   - default route: whole-file or whole-project cleanup pass, then verification
 
-## Worker Escalation
+## Stuck-Proof Handling
 
-The router chooses the route. This spec explains how to interpret it.
+When repeated local attempts fail, keep escalation inside the active tool surface:
 
-- `proof-repair`
-  - use for repeated compiler-style blockers after local direct fixes stop improving the state
-  - keep the scope narrow and verify frequently
-- `axiom-eliminator`
-  - use when the proof shape is acceptable but the axiom report is not
-  - preserve theorem meaning while reducing custom axiom dependence
-- `sorry-filler-deep`
-  - use when a queue item remains stuck after repeated search-backed attempts
-  - stay inside the active file unless the workflow explicitly widens scope
-
-If the runner recommends a worker, the normal next step is:
-
-1. confirm the blocker still matches the route on the refreshed state
-2. dispatch the worker with a concrete goal
-3. re-check the same declaration after the worker result lands
+1. request richer local feedback with `lean_incremental_check(action=feedback, include_tactics=true)`
+2. use `lean_decompose_helpers` when the proof needs intermediate invariants or helper lemmas
+3. use `lean_reasoning_help` when the blocker is conceptual or library-navigation oriented
+4. report a concrete blocker if another edit would only repeat failed proof shapes
 
 ## Stop Conditions
 
@@ -199,6 +185,6 @@ When the workflow cannot finish in the current turn, leave a compact handoff tha
 - last successful verification gate
 - search modes/providers already tried
 - failed-attempt summary
-- recommended worker or next route action
+- next route action
 
 The handoff should be short, factual, and ready for the next autonomous cycle.

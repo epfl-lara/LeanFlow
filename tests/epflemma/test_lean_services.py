@@ -727,7 +727,7 @@ def test_route_workflow_step_marks_search_exhausted_from_recent_empty_search_str
             mcp_tools={},
             search_providers=["project-rg", "mathlib-rg"],
             helper_tools={"search_fallback": True},
-            workers=["sorry-filler-deep"],
+            workers=[],
             degraded_reasons=[],
         ),
     )
@@ -750,7 +750,8 @@ def test_route_workflow_step_marks_search_exhausted_from_recent_empty_search_str
     )
 
     assert decision.search_exhausted is True
-    assert decision.recommended_worker == "sorry-filler-deep"
+    assert decision.recommended_worker == ""
+    assert decision.route_action == "queue-worker"
 
 
 def test_discover_lean_mcp_tools_prefers_raw_managed_tools_over_native_wrappers(monkeypatch):

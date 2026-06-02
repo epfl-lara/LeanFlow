@@ -2376,7 +2376,7 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
     autonomy_state["search_progress"] = tracker
     used_tools = dict(tracker.get("used_tools") or {})
     context_hint = (
-        "- `lean_proof_context` has already been used; prefer a concrete proof draft/check, `lean_decompose_helpers` for a sublemma split, `lean_reasoning_help`, or `lean_worker_dispatch`."
+        "- `lean_proof_context` has already been used; prefer a concrete proof draft/check, `lean_decompose_helpers` for a sublemma split, or `lean_reasoning_help`."
         if int(used_tools.get("lean_proof_context", 0) or 0) > 0
         else "- if you still need context, call `lean_proof_context` once; if the proof needs intermediate invariants, use `lean_decompose_helpers`; otherwise draft and check a proof."
     )
@@ -2393,7 +2393,7 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
                 "- search providers are responding; this is a route-progress nudge, not a search outage.",
                 "- do not call `lean_search` again in this turn unless the query strategy materially changes.",
                 context_hint,
-                "- next useful action should be a concrete proof edit, `lean_incremental_check(check_target)` on a draft, `lean_multi_attempt`, `lean_decompose_helpers` for a helper-lemma split, `lean_reasoning_help`, or `lean_worker_dispatch` if the route still fits.",
+                "- next useful action should be a concrete proof edit, `lean_incremental_check(check_target)` on a draft, `lean_multi_attempt`, `lean_decompose_helpers` for a helper-lemma split, or `lean_reasoning_help`.",
             ]
         ),
     )
@@ -3332,7 +3332,7 @@ def _finish_queue_step_boundary(
                         f"- observed: {attempt_number} verified failed edits/checks on this same declaration",
                         "- manager checks are working; this is a proof-strategy escalation nudge, not a backend failure",
                         "- avoid another broad rewrite of the same proof shape unless you can state the concrete new invariant it fixes",
-                        "- next useful action should be `lean_incremental_check(action=feedback, include_tactics=true)` for local goal state, `lean_multi_attempt` for small tactic variants, `lean_decompose_helpers` when the proof needs sublemmas/intermediate invariants, `lean_reasoning_help` for an external proof plan, or `lean_worker_dispatch` if the blocker still fits the route",
+                        "- next useful action should be `lean_incremental_check(action=feedback, include_tactics=true)` for local goal state, `lean_multi_attempt` for small tactic variants, `lean_decompose_helpers` when the proof needs sublemmas/intermediate invariants, or `lean_reasoning_help` for an external proof plan",
                     ]
                 )
                 _record_activity(
@@ -3666,7 +3666,7 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
     guidance_map = {
         "prove": (
             "autonomous proving session",
-            "Load the native proving contract from the active skill/spec, begin with `lean_capabilities` and `lean_inspect`, use `lean_search` before guessing, and use `lean_worker_dispatch` only when the route recommends it; the live queue, route decision, and verification gate below are the state for this turn.",
+            "Load the native proving contract from the active skill/spec, begin with `lean_capabilities` and `lean_inspect`, use `lean_search` before guessing; the live queue, route decision, and verification gate below are the state for this turn.",
         ),
         "review": (
             "proof review session",
@@ -3690,7 +3690,7 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
         ),
         "formalize": (
             "autonomous formalization session",
-            "Load the native formalization contract from the active skill/spec, begin with `lean_capabilities` and `lean_inspect`, use `lean_search` before redrafting blindly, and use `lean_worker_dispatch` only when the route recommends it; the live queue, route decision, and verification gate below are the state for this turn.",
+            "Load the native formalization contract from the active skill/spec, begin with `lean_capabilities` and `lean_inspect`, and use `lean_search` before redrafting blindly; the live queue, route decision, and verification gate below are the state for this turn.",
         ),
     }
     label, detail = guidance_map.get(
@@ -5843,12 +5843,6 @@ def _queue_assignment_block(
     file_label = _display_file_label(live_state) or active_file or "[unknown]"
     current_status = _current_queue_status(live_state)
     current_blocker = str(live_state.get("current_blocker", "") or reasons or "[none]").strip()
-    route_decision = dict(live_state.get("route_decision", {}) or {})
-    recommended_worker = str(
-        item.get("recommended_worker", "")
-        or route_decision.get("recommended_worker", "")
-        or ""
-    ).strip()
     search_hints = [str(value) for value in item.get("search_hints", []) or [] if str(value).strip()]
     parts = [
         "Assigned queue item:",
@@ -5895,15 +5889,6 @@ def _queue_assignment_block(
         parts.extend(["", "Disabled this run:", f"- {', '.join(disabled_tools)}"])
     if search_hints:
         parts.extend(["", "Search hints:", f"- {', '.join(search_hints[:4])}"])
-    if recommended_worker:
-        parts.extend(
-            [
-                "",
-                "Recommended worker:",
-                f"- `{recommended_worker}`",
-                f"- dispatch with `lean_worker_dispatch` if the blocker persists after the next focused attempt",
-            ]
-        )
     if bool(live_state.get("search_exhausted")):
         parts.extend(
             [
@@ -5911,7 +5896,7 @@ def _queue_assignment_block(
                 "Search exhaustion:",
                 "- repeated search attempts have already failed for this theorem",
                 "- do not call `lean_search` again in this turn unless you are changing the query strategy materially",
-                "- your next move should be an edit, `lean_verify`, `lean_worker_dispatch`, or a concrete blocker report",
+                "- your next move should be an edit, `lean_verify`, or a concrete blocker report",
             ]
         )
     parts.extend(["", "Task:", f"Repair `{label}` from its current state."])
@@ -10658,9 +10643,6 @@ def _startup_user_message(
             f"- blocker kind: {route_decision.get('blocker_kind') or '[none]'}",
             f"- reason: {route_decision.get('reason') or '[none]'}",
         ]
-        if route_decision.get("recommended_worker"):
-            route_lines.append(f"- recommended worker: {route_decision.get('recommended_worker')}")
-            route_lines.append("- use `lean_worker_dispatch` if the next attempt confirms this route")
         route_block = f"\n\n{chr(10).join(route_lines)}"
     queue_block = ""
     if _single_queue_item_turn_enabled():
@@ -11077,11 +11059,6 @@ def _autonomous_continuation_prompt(
             f"- blocker kind: {route_decision.get('blocker_kind') or '[none]'}\n"
             f"- reason: {route_decision.get('reason') or '[none]'}"
         )
-        if route_decision.get("recommended_worker"):
-            prompt += (
-                f"\n- recommended worker: {route_decision.get('recommended_worker')}\n"
-                "- use `lean_worker_dispatch` if the blocker still fits this route after the next focused attempt"
-            )
     if _document_formalization_organization_phase_active(live_state, autonomy_state):
         prompt += f"\n\n{_document_formalization_organization_prompt(live_state)}"
     if _queue_needs_final_file_sweep(live_state):

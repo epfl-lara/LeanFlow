@@ -98,4 +98,4 @@ A concise review handoff should include:
 - top blockers
 - supporting evidence
 - `next_action`
-- concrete next command or worker recommendation
+- concrete next command or route recommendation
