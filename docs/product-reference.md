@@ -1355,7 +1355,7 @@ Installer/bootstrap-managed default Lean MCP backends:
   - primary state/search backend
   - diagnostics, goals, local search, semantic search helpers, state/premise/hover/outline discovery, and `lean_multi_attempt`
   - configured with local power modes: `LEAN_REPL=true`, `LEAN_LOOGLE_LOCAL=true` on Linux/macOS/WSL, `LEAN_REPL_TIMEOUT=60`, and `LEAN_REPL_MEM_MB=8192`
-  - search order prefers local Loogle when ready, then public remote Loogle/Lean search fallbacks, then project/Mathlib `rg`
+  - search order prefers local Loogle when ready and toolchain-compatible with the active project, then public remote Loogle/Lean search fallbacks, then project/Mathlib `rg`
 - `lean-proof-auto-mcp@v0.4.0`
   - secondary automation/context backend
   - theorem-local context and automation helpers such as `get_proof_context`, `probe`, `search_automated_proof`, and `try_automated_proof`
