@@ -1,11 +1,11 @@
 ---
 name: lean-refactor-golf
-description: Native refactor/golf routing entry. Load the linked workflow specs as the contract, preserve theorem meaning, and escalate to `proof-golfer` only when the router calls for it.
+description: Native refactor/golf routing entry. Load the linked workflow specs as the contract, preserve theorem meaning, and keep optimization inside the direct Lean tool surface.
 ---
 
 # Native Lean Refactor / Golf
 
-This skill is the routing layer for Lean proof refactoring and golfing. Treat the linked workflow specs as the operational contract for tool order, verification gates, escalation rules, and stop conditions.
+This skill is the routing layer for Lean proof refactoring and golfing. Treat the linked workflow specs as the operational contract for tool order, verification gates, and stop conditions.
 
 Primary specs:
 
@@ -16,5 +16,4 @@ Primary specs:
 
 - Use `refactor.md` for structure-preserving proof cleanup, helper layout, and reusable proof-shape improvements.
 - Use `golf.md` for already-compiling proofs that need local directness, brevity, clarity, or lighter proof search burden.
-- Use `proof-golfer` only when the route action or recommended worker explicitly calls for it.
 - Preserve theorem meaning, theorem statements, and public interfaces unless the task explicitly asks for a semantic refactor.
