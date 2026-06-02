@@ -25,7 +25,6 @@ Treat the native workflow specs as the contract. This skill is the routing layer
 8. `apply_verified_patch` only when you specifically need a single atomic patch/checkpoint/verification result
 9. `lean_verify` only when inspecting existing state or doing a final broader verification not already covered by the manager gate
 10. `lean_reasoning_help` when repeated focused attempts fail and another configured model may provide broad proof-strategy advice
-11. `lean_worker_dispatch` when the route recommends a specialist worker
 
 ## Operating Rules
 

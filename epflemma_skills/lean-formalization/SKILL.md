@@ -24,7 +24,6 @@ Primary specs:
 9. `patch` or `write_file` for managed Lean file edits; the queue manager verifies successful edits against the current gate
 10. `apply_verified_patch` only when you specifically need a single atomic patch/checkpoint/verification result
 11. `lean_verify` for final broader verification when the manager gate did not cover the requested scope
-12. `lean_worker_dispatch` when the router recommends `proof-repair`, `axiom-eliminator`, or `sorry-filler-deep`
 
 ## Guardrails
 

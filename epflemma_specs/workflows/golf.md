@@ -4,10 +4,10 @@ kind: workflow
 title: Golf
 summary: Lean proof improvement workflow for directness, brevity, and maintainability without sacrificing correctness or introducing axioms.
 skills: [lean-refactor-golf]
-tools: [lean_capabilities, lean_inspect, lean_search, lean_multi_attempt, lean_verify, lean_worker_dispatch, lean_axioms]
-workers: [proof-golfer, axiom-eliminator]
+tools: [lean_capabilities, lean_inspect, lean_search, lean_multi_attempt, lean_verify, lean_axioms]
+workers: []
 stop_conditions: [verified, blocked]
-route_actions: [delegate-proof-golfer, delegate-axiom-eliminator]
+route_actions: [golf]
 ---
 
 # Native Golf Spec
@@ -54,10 +54,6 @@ Use `prove` first when the theorem does not compile, `formalize` when the statem
    - verify the simplified proof immediately
 7. `lean_axioms`
    - use when a shorter proof might worsen the axiom profile
-8. `lean_worker_dispatch`
-   - use `proof-golfer` when the route explicitly recommends it
-   - use `axiom-eliminator` if the shorter proof is correct but axiom-sensitive
-
 ## Golf Policy
 
 Prefer candidates in this order:
@@ -81,13 +77,6 @@ Avoid “wins” that:
 3. broader verification only when the workflow scope requires it
 
 Golf is successful only when the new proof is still correct and the simplification is a real improvement, not just fewer characters.
-
-## Worker Escalation
-
-- `proof-golfer`
-  - use for targeted local proof optimization when direct mode has already identified a good candidate
-- `axiom-eliminator`
-  - use when a shorter proof introduces or preserves an unacceptable axiom profile
 
 ## Stop Conditions
 
