@@ -1,0 +1,703 @@
+                                                RLMEval: Evaluating Research-Level Neural Theorem Proving
+
+                                                            Auguste Poiroux Antoine Bosselut Viktor Kunčak
+                                                               School of Computer and Communication Sciences
+                                                                             EPFL, Switzerland
+                                                      {auguste.poiroux, antoine.bosselut, viktor.kuncak}@epfl.ch
+
+
+
+
+                                                               Abstract                          model performance on these benchmarks may not
+                                             Despite impressive results on curated bench-        reliably predict their practical utility in assisting
+
+
+
+
+arXiv:2510.25427v1 [cs.CL] 29 Oct 2025
+                                             marks, the practical impact of large language       with ongoing, complex formalization projects.
+                                             models (LLMs) on research-level neural theo-           To address this gap, this work introduces
+                                             rem proving and proof autoformalization is still    RLMEval1 , a benchmark for evaluating neural
+                                             limited. We introduce RLMEval, an evaluation        theorem proving and proof autoformalization on
+                                             suite for these tasks, focusing on research-level
+                                                                                                 research-level mathematics within contemporary
+                                             mathematics from real-world Lean formaliza-
+                                             tion projects. RLMEval targets the evaluation       Lean 4 projects. RLMEval distinguishes itself by
+                                             of neural theorem proving and proof autofor-        focusing on blueprint theorems, significant, high-
+                                             malization on challenging research-level the-       level results from real-world Lean projects. These
+                                             orems by leveraging real Lean Blueprint for-        theorems embody core conceptual advances, unlike
+                                             malization projects. Our evaluation of state-of-    the more numerous auxiliary lemmas which often
+                                             the-art models on RLMEval, comprising 613           involve smaller, routine deductions and typically
+                                             theorems from 6 Lean projects, reveals a sig-       constitute over 75% of theorems in Lean projects
+                                             nificant gap: progress on existing benchmarks
+                                                                                                 (see Table 2). By concentrating on these challeng-
+                                             does not readily translate to these more realis-
+                                             tic settings, with the best model achieving only    ing blueprint theorems, RLMEval provides a more
+                                             a 10.3 % pass rate. RLMEval provides a new,         realistic and demanding testbed for LLMs.2 This
+                                             challenging benchmark designed to guide and         targeted evaluation aims to steer LLM develop-
+                                             accelerate progress in automated reasoning for      ment towards capabilities that can meaningfully
+                                             formal mathematics.                                 contribute to the advancement of formal mathemat-
+                                         1   Introduction                                        ics. Our main contributions are the following:
+
+                                         Automatically translating mathematical content
+                                                                                                 1. RLMEval: A novel evaluation benchmark for
+                                         from natural language into a formal language suit-
+                                                                                                    research-level neural theorem proving and proof
+                                         able for proof assistants (Szegedy, 2020; Wang
+                                                                                                    autoformalization. RLMEval is applicable to a
+                                         et al., 2020), is crucial for bridging human mathe-
+                                                                                                    wide range of Lean blueprint projects and, to
+                                         matical reasoning with machine-verifiable proofs.
+                                                                                                    our knowledge, is the first benchmark specifi-
+                                         Neural theorem proving (NTP) and proof autofor-
+                                                                                                    cally designed for these advanced tasks at the
+                                         malization using large language models (LLMs)
+                                                                                                    research level within the Lean ecosystem. Ex-
+                                         have demonstrated remarkable progress (Polu and
+                                                                                                    tensible and versioned annually, RLMEval will
+                                         Sutskever, 2020; Jiang et al., 2023) in these tasks.
+                                                                                                    continuously test model capabilities and limit
+                                         This success is predominantly measured on curated
+                                                                                                    data contamination.
+                                         benchmarks such as MiniF2F (Zheng et al., 2022)
+                                         or ProofNet (Azerbayev et al., 2023a). While valu-      2. An evaluation of state-of-the-art LLMs using
+                                         able, these benchmarks suffer from issues, such            RLMEval. This evaluation reveals a signifi-
+                                         as saturation (e.g., MiniF2F reaching 88.9 % suc-          cant disparity in performance compared to estab-
+                                         cess (Ren et al., 2025)), formalization inaccuracies       lished benchmarks, thereby pinpointing critical
+                                         (e.g., ∼30 % in ProofNet (Poiroux et al., 2024)),          areas for future research and development.
+                                         or a narrow focus on competition-style problems.
+                                         They do not fully capture the complexities of real-        1
+                                                                                                        Apache 2.0 license, similar to the projects it relies on
+                                                                                                    2
+                                         world, research-level mathematics. Consequently,               Examples from RLMEval are in Appendix A.
+2   Related Work                                         offering programmatic control over Lean through
+                                                         its REPL interface (Morrison, 2023). A key feature
+Research in neural theorem proving (NTP) has
+                                                         crucial for RLMEval is its multi-version support,
+seen significant advancements, from early work
+                                                         achieved through manual backporting of the latest
+like GPT-f (Polu and Sutskever, 2020) to recent
+                                                         REPL features and bug fixes to all 41 Lean versions
+LLM-based techniques (e.g., Xin et al., 2024a; Ren
+                                                         between v4.7.0-rc1 and v4.19.0 (a significant under-
+et al., 2025; Wang et al., 2025). Some methods
+                                                         taking ensuring broad applicability). This approach
+explore using intermediate, possibly less-rigorous
+                                                         prioritizes broad compatibility and ease of use for
+reasoning to guide formal proof generation, while
+                                                         benchmarking across the evolving Lean ecosystem,
+others, like LeanAgent (Kumarappan et al., 2025),
+                                                         setting it apart from existing interaction tools like
+train on multiple Lean repositories in a curriculum
+                                                         LeanDojo (Yang et al., 2023) or Pantograph (Aniva
+to accumulate knowledge. Proof autoformalization
+                                                         et al., 2024), which are tied to specific Lean ver-
+has also progressed, with early breakthroughs in
+                                                         sions or require compute-intensive project tracing.
+Isabelle where models like Codex translated infor-
+                                                         This property is a key cornerstone of RLMEval for
+mal math problems into formal specifications (Wu
+                                                         its extensibility, laying the foundations for long-
+et al., 2022). The Draft, Sketch, and Prove (DSP)
+                                                         term maintenance and future updates. Because our
+approach (Jiang et al., 2023) further improved this
+                                                         benchmark is based on real-world projects, data
+by using informal proofs to generate formal proof
+                                                         contamination concerns apply. In order to con-
+sketches, which are then completed by an auto-
+                                                         tinuously mitigate this risks, we plan to release
+mated theorem prover.
+                                                         new versions of RLMEval with more recent Lean
+   M INI F2F (Zheng et al., 2022) offers Olympiad-
+                                                         projects to continuously reduce data contamination
+level problems across multiple proof assistants.
+                                                         risks when evaluating current and future models.
+P ROOF N ET (Azerbayev et al., 2023a) provides
+Lean theorems with informal statements/proofs, tar-      Benchmark Design. Our methodology for cu-
+geting both autoformalization and theorem proving.       rating RLMEval is inspired by RLM25 (Poiroux
+P UTNAM B ENCH (Tsoukalas et al., 2024) focuses          et al., 2024), a research-level benchmark for aut-
+on challenging Putnam competition problems.              oformalization of theorem statements. RLMEval
+These benchmarks are focused on competition-             leverages existing Lean blueprint projects (Mas-
+style problems or undergraduate-level mathematics.       sot, 2025), which curate high-quality alignments
+MINI CTX (Hu et al., 2024) evaluates provers on          between natural language mathematics and their
+real Lean projects but is tied to a specific Lean ver-   formal counterparts. These projects, authored by
+sion and includes all theorems, many of which are        domain experts, ensure the precision and real-world
+auxiliary technical lemmas.                              relevance of the benchmark data.
+   RLMEval differentiates itself by: (1) focusing on        A core design principle of RLMEval is its focus
+research-level mathematics drawn from real-world         on blueprint theorems, i.e. formal theorems that are
+Lean blueprint projects (Massot, 2025); (2) specifi-     linked in the informal blueprint of the projects. The
+cally targeting blueprint theorems, which represent      blueprint theorems represent the main, high-level
+significant conceptual steps, unlike benchmarks          steps of mathematical development, akin to theo-
+that include numerous simpler lemmas (see Ta-            rems found in research papers. This contrasts with
+ble 2); (3) introducing proof autoformalization (in-     previous works (Kumarappan et al., 2025; Hu et al.,
+formal proof to formal proof) alongside neural the-      2024) that include a large proportion of simpler,
+orem proving as core tasks; and (4) ensuring broad       auxiliary lemmas. Table 2 illustrates the differ-
+compatibility with Lean versions, allowing evalua-       ence in proof lengths between the main theorems
+tion on a wider array of ongoing projects.               and auxiliary lemmas in RLMEval: 16.6 vs 6.6
+                                                         lines on average. Auxiliary lemmas regularly rep-
+3   Methodology
+                                                         resent more than 75 % of the total theorems in a
+RLMEval provides a comprehensive suite for evalu-        Lean project. By focusing on blueprint theorems,
+ating neural theorem proving and proof autoformal-       RLMEval targets more complex, research-level rea-
+ization on research-level Lean mathematics. We           soning tasks, providing a more challenging and
+release it along with a dedicated Python interface,      realistic benchmark. RLMEval comprises 613 the-
+LeanInteract, for robust communication with the          orems from the 6 Lean projects detailed in Table 1.
+Lean proof assistant (Moura and Ullrich, 2021),          RLMEval supports the following tasks:
+Table 1: Lean Blueprint projects used to build RLMEval. We obtained agreement from the primary authors of these
+projects to evaluate our models on them. Difficulty is a subjective assessment based on our experience with the
+projects and the models’ performance.
+
+          Project                Domain                 Difficulty    #Thms          Lean       First Commit
+          Carleson               Analysis                hard           110     v4.14.0-rc2          20 Oct 2023
+          FLT                Number Theory              medium           52     v4.14.0-rc2         19 Nov 2023
+          PFR                 Combinatorics              hard           144     v4.14.0-rc3         13 Nov 2023
+          PNT            Analytic Number Theory         medium           99     v4.14.0-rc2           9 Jan 2024
+          FLT3               Number Theory               easy            84      v4.7.0-rc2         22 Mar 2024
+          TLB        Information & Probability Theory   medium          124     v4.13.0-rc3         22 Feb 2024
+
+Table 2: Proof length statistics (in number of lines, comments are trimmed) for theorems within project blueprints
+(main theorems) versus auxiliary lemmas across the RLMEval projects. The ’% Auxiliary lemmas’ column indicates
+the proportion of all theorems that are auxiliary lemmas.
+
+         Project     % Auxiliary lemmas    Main theorems Proof Length         Auxiliary lemmas Proof Length
+         PFR               75.3 %                       23.2                                  9.0
+         FLT               72.2 %                       12.8                                  4.0
+         FLT3              15.9 %                        8.8                                  4.9
+         Carleson          85.9 %                       27.0                                  7.8
+         PNT               78.3 %                       16.7                                  8.3
+         TLB               83.0 %                       11.2                                  5.7
+         Avg               68.3 %                       16.6                                  6.6
+
+
+
+• Neural Theorem Proving (NTP): Given a for-                   a budget significantly larger than the 8 samples
+  mal Lean statement, generate a complete and                  used in miniCTX (Hu et al., 2024), allowing for
+  verifiable Lean proof.                                       a more comprehensive assessment. For each the-
+                                                               orem, models receive the full in-file context up to
+• Proof Autoformalization: Given an informal                   the point where the proof is to be generated, includ-
+  (natural language) proof and its corresponding               ing all preceding definitions, lemmas, and imports
+  formal statement, generate a complete, verifiable            within that specific file. In normal mode, lemmas
+  Lean proof.                                                  not present in the informal blueprint are excluded
+To assess models under varying conditions,                     from the context, while in easy mode, all lemmas
+RLMEval uses two evaluation modes:                             from the project are available.
+                                                                  Our baseline model is Llemma 7B (Azerbayev
+• Easy mode: Models access all definitions and
+                                                               et al., 2023b), a model pretrained on mathematics,
+  lemmas from the source project, including non-
+                                                               but not for proof-search specifically. We also evalu-
+  blueprint auxiliary lemmas, i.e. technical lemmas
+                                                               ate leading models specifically tuned for Lean the-
+  that are not included in the informal blueprint.
+                                                               orem proving: DeepSeek-Prover-V1.5-RL (Xin
+• Normal mode: Models access only blueprint the-               et al., 2024b), DeepSeek-Prover-V2-7B (Ren et al.,
+  orems from the source project; they do not have              2025), Goedel-Prover-SFT (Lin et al., 2025), and
+  access to these non-blueprint auxiliary lemmas               KiminaProver-Preview-7B (Wang et al., 2025).
+  and thus may need to prove equivalent interme-               Our evaluation on RLMEval examines their ability
+  diate results themselves. This simulates a more              to generalize to research-level mathematics.
+  realistic task, closer to what mathematicians for-             Figure 1 presents the main pass@128 rates for
+  malizing research results are faced with.                    both neural theorem proving and proof autofor-
+                                                               malization tasks, comparing “easy” and “normal”
+4   Experimental Setup and Results
+                                                               modes. The overall performance on RLMEval is
+We evaluate several LLMs on the RLMEval tasks.                 markedly lower than on benchmarks like MiniF2F.
+Our primary metric is pass@k, which measures the               For instance, DeepSeek-Prover-V2-7B, the best-
+percentage of problems solved with at least one suc-           performing model, achieves only 10.3 % pass@128
+cessful proof among k generated attempts. For our              on proof autoformalization (normal mode), in stark
+main results, we use k = 128 samples per problem,              contrast to its reported 75 %+ on MiniF2F with
+                                          Neural Theorem Proving                                                                                            Proof Autoformalization
+                 20                                                                                                                   20
+                                                                                                       Easy                                                                        16.7                                  Easy
+
+
+
+
+ Pass Rate (%)                                                                                                    Pass Rate (%)
+                                                                14.7
+                 15                                                                                   Normal                          15                                                                                Normal
+                                              11.4                                                                                                            12.2
+                            9.5                                                                                                                                                            10.3
+                 10                                                      8.8                                                          10      7.6
+                                                      6.9                            7.0                                                                                 7.3
+                                                                                                                                                      5.6                                              6.4
+                                    4.8                                                    4.7                                                                                                                  4.9
+                 5                                                                                   4.1
+                                                                                                            3.2                        5                                                                               3.6 4.2
+
+
+                 0                                                                                                                     0
+                        a-7B                 1.5-     k-                        r-S                    B                                   m                   RL                 2-7B         -P                          B
+                                                 RL     Pr                          FT           rove                                       a-7B     Pr                                           ro                   r-7
+                      em                                   ov                                         r-7                                              ov                k-                         ve            aP
+                        m               r-V                  er           el-P                                                         Ll                er                Pr                          r-S          ro
+                  Ll                                           -V             ro           im                                            em                -V                 ov                          FT          ve
+                                  k-                             2-             ve           in                                                              1.                 er                             K
+                                     Prov                          7B   oe                     aP                                                              5-                 -V       oe
+                                                                                                                                                                                               el               im
+                                         e       pS                        d               K                                                         k-             pS                        d                   in
+                            pS                     ee               G                                                                         pS                      ee                   G
+                              ee              D                                                                                                 ee             ee
+                        ee                     ee                                                                                          D                  D
+                       D                                                                                                                    ee
+
+
+
+Figure 1: Pass rate on RLMEval using pass@128 for neural theorem proving (left) and proof autoformalization
+(right), in Easy and Normal modes.
+
+
+a smaller pass@32 budget. This disparity under-
+
+
+                                                                                                                      Pass Rate (%)
+                                                                                                                                      10
+scores that current models struggle significantly
+with the complexity of research-level mathemat-
+                                                                                                                                       5
+ics in real-world projects.
+   Models consistently perform better in the “easy”
+mode (with access to project-specific auxiliary lem-                                                                                   0
+                                                                                                                                                 1                   4                              32                 128
+mas). DeepSeek-Prover-V2-7B improves from                                                                                                                                              k
+8.8 % (normal) to 14.7 % (easy) in neural theo-                                                                                                 Llemma-7B                                         DeepSeek-Prover-V1.5-RL
+rem proving (NTP), and from 10.3 % to 16.7 %                                                                                               DeepSeek-Prover-V2-7B                                     Goedel-Prover-SFT
+                                                                                                                                              KiminaProver-7B
+in proof autoformalization. This performance gap
+highlights the challenges models face when work-
+                                                                                                                  Figure 2: Scaling trends for the proof autoformalization
+ing without direct access to project-specific lemma                                                               task in normal mode on RLMEval for various models
+support.                                                                                                          and pass@k values.
+   Providing an informal proof offers a modest
+benefit (proof autoformalization versus neural the-
+orem proving (NTP)). For DeepSeek-Prover-V2-                                                                      with more samples for most models, the gains
+7B (normal mode), this translates to an improve-                                                                  diminish noticeably, suggesting that simply scal-
+ment of ∼1.5 percentage points (from 8.8 % to                                                                     ing up sampling may not overcome the fundamen-
+10.3 %). This suggests that current models can                                                                    tal challenges posed by research-level mathemat-
+leverage informal proofs to some extent, but the                                                                  ics. This contrasts with results on benchmarks
+benefit remains limited for complex, research-level                                                               like miniF2F, where aggressive sampling (e.g.,
+problems.                                                                                                         pass@8192) produced substantial improvements
+   Performance varies substantially across                                                                        (Ren et al., 2025), further highlighting the greater
+RLMEval projects (see Table 5 for details). For                                                                   difficulty of RLMEval.
+example, FLT3 yields the highest success rates (up                                                                Proof length.      Proof length serves as a nat-
+to 32.1 % for DeepSeek-Prover-V2-7B), while Car-                                                                  ural proxy for theorem complexity and human-
+leson presents a greater challenge (max 2.73 %).                                                                  perceived difficulty. Table 2 reveals a clear dif-
+This variation indicates that mathematical domain                                                                 ficulty ordering based on average proof lengths:
+and formalization style significantly impact model                                                                FLT3 < TLB < FLT < PNT < PFR < Carleson.
+effectiveness.                                                                                                    This ordering strongly correlates with model per-
+  Figure 2 illustrates how performance scales with                                                                formance trends shown in Table 5 and Table 6,
+an increasing number of samples per theorem for                                                                   where pass@k scores consistently degrade from
+various models. As in traditional benchmarks, we                                                                  FLT3 to Carleson across all evaluated models. This
+observe that pass rate improves with additional                                                                   correlation validates proof length as a meaningful
+samples. While pass rates continue to increase                                                                    indicator of difficulty for both humans and auto-
+mated theorem provers.                                    ticularly pronounced for projects like Carleson
+   Analysis of successful model-generated proofs          with complex mathematical structures, while be-
+reveals significant insights about current capabili-      ing somewhat narrower for more concrete domains
+ties. Table 3 shows that models successful proofs         like algebraic number theory (FLT3). The dispar-
+are short compared to their human-written coun-           ity between “easy” and “normal” modes across all
+terparts, averaging only 2.5–6.0 lines compared to        models demonstrates the critical role of auxiliary
+the 16.6-line human average. Critically, our inspec-      lemmas in successful theorem proving. Access to
+tion reveals that virtually all LLM-generated proofs      these intermediate results improved performance
+are longer than the corresponding human proofs,           by up to 6%, suggesting that enhanced techniques
+indicating that current models primarily succeed          for lemma discovery or generation could be valu-
+on theorems that admit concise proof strategies,          able directions for future research.
+a subset representing the easier problems within
+RLMEval.                                                  Limitations
+   DeepSeek-Prover-V2-7B exhibits notably differ-
+ent behavior, generating proofs averaging 6.0 lines       Potential data contamination. Llemma 7B (Azer-
+compared to 2.5–2.8 lines for other models, and           bayev et al., 2023b) has been released before the
+producing the longest individual proof at 111 lines.      first commit of the projects used in RLMEval,
+Manual inspection reveals this model tends to gen-        making data leakage impossible. However, other
+erate verbose proofs with repetitive or redundant         models have been released more recently, and
+steps, suggesting room for improvement in proof           data contamination is unclear given the lack of
+conciseness and efficiency.                               information about the content of their pre-training
+                                                          set. Note, however, that data contamination would
+    Model                          Average     Max        likely result in overestimating the current state of
+                                                          the art, which we already found to be low com-
+    Llemma-7B                           2.8      20       pared to more artificial benchmarks. Furthermore,
+    DeepSeek-Prover-V1.5-RL             2.6      20       thanks to the use of the LeanInteract tool (Poiroux
+    DeepSeek-Prover-V2-7B               6.0     111       et al., 2025), RLMEval is extensible to new Lean
+    Goedel-Prover-SFT                   2.5      14       blueprint projects. As such, we plan to release
+    KiminaProver-7B                     2.6      14       new versions of RLMEval with more recent Lean
+    Human-Written                      16.6     248       projects to continuously reduce data contamination
+                                                          risks when evaluating current and future models.
+Table 3: Proof length in lines of code, comments
+trimmed, for successful proofs generated by models        Limited Scaling. We evaluate using pass@128
+on RLMEval. The length of the official human-written      which, while being substantially higher than the
+proofs is reported for comparison. Data aggregated from   pass@8 from miniCTX (Hu et al., 2024), falls short
+the proof autoformalization, normal mode experiments.     to the pass@8192 on MiniF2F or pass@1024 on
+                                                          ProofNet used by DeepSeek in Ren et al. (2025).
+                                                          Additionally, we use the 7B version of DeepSeek-
+5    Conclusion                                           Prover-V2 and not the 671B one. Our results there-
+We introduced RLMEval, a benchmark for neu-               fore very likely underestimate the best achievable
+ral theorem proving and proof autoformaliza-              performance on RLMEval as of today. Neverthe-
+tion on research-level mathematics. Focusing on           less, the 7B model already achieves 75.6 % in a
+real-world mathematical formalization challenges,         low compute budget (pass@32) on MiniF2F while
+RLMEval establishes a realistic standard for evalu-       the 671B version achieves 88.9 % on the latest sam-
+ating the practical utility of neural theorem provers     pling budget (pass@8192). These results indicate
+in mathematical settings. Our evaluation on 613           that even the 671B model would likely not achieve
+research-level mathematics theorems reveals a stark       high scores on RLMEval. Additionally, running
+performance drop compared to traditional bench-           such a large model with pass@8192 requires a large
+marks like MiniF2F. The best model achieved only          amount of computation and time which, as of today,
+10.3 % on proof autoformalization (normal mode),          are a bit unrealistic for practical usage.
+highlighting that current models are still far from       Context. Our current evaluation provides models
+reliably handling the complexities of ongoing for-        with the full in-file context preceding the target the-
+malization efforts. This performance gap is par-          orem. While common, this setup may disadvantage
+neural theorem proving (NTP) models trained on            and Formally Proving Undergraduate-Level Mathe-
+self-contained theorems, making them less adept at        matics. arXiv preprint. ArXiv:2302.12433 [cs].
+leveraging long, complex in-file contexts. Ideally,     Zhangir Azerbayev, Hailey Schoelkopf, Keiran Paster,
+models should receive a more sophisticated context,       Marco Dos Santos, Stephen McAleer, Albert Q.
+incorporating broader project and research infor-         Jiang, Jia Deng, Stella Biderman, and Sean Welleck.
+mation. Future work should investigate optimal            2023b. Llemma: An Open Language Model For
+                                                          Mathematics. arXiv preprint. ArXiv:2310.10631
+context retrieval strategies for these research-level     [cs].
+tasks, moving beyond simple in-file truncation.
+Techniques could include retrieval-augmented gen-       Jiewen Hu, Thomas Zhu, and Sean Welleck. 2024.
+eration or methods to summarize or filter premises         miniCTX: Neural Theorem Proving with (Long-
+                                                           )Contexts. arXiv preprint. ArXiv:2408.03350 [cs].
+from the entire project or its dependencies. De-
+veloping and evaluating such mechanisms is a key        Albert Q. Jiang, Sean Welleck, Jin Peng Zhou, Wenda
+area for future work.                                     Li, Jiacheng Liu, Mateja Jamnik, Timothée Lacroix,
+                                                          Yuhuai Wu, and Guillaume Lample. 2023. Draft,
+Informal Proofs. One interesting aspect of our            Sketch, and Prove: Guiding Formal Theorem
+evaluation is how the availability of informal proofs     Provers with Informal Proofs. arXiv preprint.
+affects performance. While we observed a mod-             ArXiv:2210.12283 [cs].
+est improvement when providing informal proofs
+                                                        Adarsh Kumarappan, Mo Tiwari, Peiyang Song,
+over just providing formal statements, the benefit        Robert Joseph George, Chaowei Xiao, and Anima
+is somewhat limited. In particular, we found that         Anandkumar. 2025. LeanAgent: Lifelong Learn-
+some informal proofs in RLMEval can be cryp-              ing for Formal Theorem Proving. arXiv preprint.
+tic without broader project context, using short-         ArXiv:2410.06209 [cs].
+hand references to other theorems or principles.        Yong Lin, Shange Tang, Bohan Lyu, Jiayun Wu,
+The PFR sample in Appendix A is such an exam-             Hongzhou Lin, Kaiyu Yang, Jia Li, Mengzhou
+ple. These terse proofs illustrate the gap between        Xia, Danqi Chen, Sanjeev Arora, and Chi Jin.
+                                                          2025. Goedel-Prover: A Frontier Model for Open-
+idealized benchmark settings, using self-contained        Source Automated Theorem Proving. arXiv preprint.
+informal proofs, and real-world mathematics as de-        ArXiv:2502.07640 [cs].
+picted by RLMEval. Future work should explore
+how to better leverage informal proofs, possibly by     Patrick Massot. 2025. PatrickMassot/leanblueprint.
+                                                          Original-date: 2021-01-22T10:50:48Z.
+providing additional context.
+                                                        Kim Morrison. 2023. leanprover-community/repl.
+Acknowledgments                                           Original-date: 2023-03-30T23:12:19Z.
+
+We thank the Lean community for their support           Leonardo de Moura and Sebastian Ullrich. 2021. The
+                                                          lean 4 theorem prover and programming language.
+and feedback, in particular the authors of the            In Automated Deduction – CADE 28, pages 625–635,
+Lean blueprint projects included in RLMEval. We           Cham. Springer International Publishing.
+also gratefully acknowledge the support of the
+IC school of computer and communication sci-            Auguste Poiroux, Viktor Kuncak, and Antoine Bosselut.
+                                                          2025. LeanInteract: A Python Interface for Lean 4.
+ences, the Swiss National Science Foundation (No.         Original-date: 2025-02-05T21:35:17Z.
+215390), Innosuisse (PFFS-21-29), the EPFL Cen-
+ter for Imaging, Sony Group Corporation, and a          Auguste Poiroux, Gail Weiss, Viktor Kunčak, and
+                                                          Antoine Bosselut. 2024. Improving Autoformal-
+Meta LLM Evaluation Research Grant.                       ization using Type Checking.    arXiv preprint.
+                                                          ArXiv:2406.07222 [cs].
+
+References                                              Stanislas Polu and Ilya Sutskever. 2020. Generative
+                                                           Language Modeling for Automated Theorem Prov-
+Leni Aniva, Chuyue Sun, Brando Miranda, Clark Bar-         ing. arXiv preprint. ArXiv:2009.03393 [cs, stat].
+  rett, and Sanmi Koyejo. 2024. Pantograph: A
+  Machine-to-Machine Interaction Interface for Ad-      Z. Z. Ren, Zhihong Shao, Junxiao Song, Huajian Xin,
+  vanced Theorem Proving, High Level Reasoning,            Haocheng Wang, Wanjia Zhao, Liyue Zhang, Zhe
+  and Data Extraction in Lean 4. arXiv preprint.           Fu, Qihao Zhu, Dejian Yang, Z. F. Wu, Zhibin Gou,
+  ArXiv:2410.16429.                                        Shirong Ma, Hongxuan Tang, Yuxuan Liu, Wenjun
+                                                           Gao, Daya Guo, and Chong Ruan. 2025. DeepSeek-
+Zhangir Azerbayev, Bartosz Piotrowski, Hailey              Prover-V2: Advancing Formal Mathematical Reason-
+  Schoelkopf, Edward W. Ayers, Dragomir Radev, and         ing via Reinforcement Learning for Subgoal Decom-
+  Jeremy Avigad. 2023a. ProofNet: Autoformalizing          position. arXiv preprint. ArXiv:2504.21801 [cs].
+Christian Szegedy. 2020. A Promising Path Towards          A     Appendix
+  Autoformalization and General Artificial Intelligence.
+  volume 12236, pages 3–20, Cham. Springer Interna-        A.1    Model Configurations
+  tional Publishing. Book Title: Intelligent Computer
+  Mathematics Series Title: Lecture Notes in Computer
+                                                           The evaluation of models for both Neural Theorem
+  Science.                                                 Proving (NTP) and Proof Autoformalization tasks
+                                                           was conducted using sampling-based decoding to
+George Tsoukalas, Jasper Lee, John Jennings, Jimmy         compute pass@128. Specific hyperparameters for
+  Xin, Michelle Ding, Michael Jennings, Amitayush          each model are detailed in Table 4. All models
+  Thakur, and Swarat Chaudhuri. 2024. Putnam-
+  Bench: Evaluating Neural Theorem-Provers on the          were accessed via a local vLLM server on H100
+  Putnam Mathematical Competition. arXiv preprint.         80GB GPUs.
+  ArXiv:2407.11214.
+                                                           A.2    Detailed results
+Haiming Wang, Mert Unsal, Xiaohan Lin, Mantas
+  Baksys, Junqi Liu, Marco Dos Santos, Flood Sung,
+  Marina Vinyes, Zhenzhe Ying, Zekai Zhu, Jianqiao
+  Lu, Hugues de Saxc’e, Bolton Bailey, Chendong
+  Song, Chenjun Xiao, Dehao Zhang, Ebony Zhang,
+  Frederick Pu, Han Zhu, and 21 others. 2025. Kimina-
+  Prover Preview: Towards Large Formal Reasoning
+  Models with Reinforcement Learning.
+
+Qingxiang Wang, Chad Brown, Cezary Kaliszyk, and
+  Josef Urban. 2020. Exploration of Neural Machine
+  Translation in Autoformalization of Mathematics in
+  Mizar. In Proceedings of the 9th ACM SIGPLAN
+  International Conference on Certified Programs and
+  Proofs, pages 85–98. ArXiv:1912.02636 [cs].
+
+Yuhuai Wu, Albert Q. Jiang, Wenda Li, Markus N.
+  Rabe, Charles Staats, Mateja Jamnik, and Christian
+  Szegedy. 2022. Autoformalization with Large Lan-
+  guage Models. arXiv preprint. ArXiv:2205.12615
+  [cs].
+
+Huajian Xin, Daya Guo, Zhihong Shao, Zhizhou Ren,
+  Qihao Zhu, Bo Liu, Chong Ruan, Wenda Li, and
+  Xiaodan Liang. 2024a. DeepSeek-Prover: Advanc-
+  ing Theorem Proving in LLMs through Large-Scale
+  Synthetic Data. arXiv preprint. ArXiv:2405.14333
+  [cs].
+
+Huajian Xin, Z. Z. Ren, Junxiao Song, Zhihong Shao,
+  Wanjia Zhao, Haocheng Wang, Bo Liu, Liyue Zhang,
+  Xuan Lu, Qiushi Du, Wenjun Gao, Qihao Zhu, Dejian
+  Yang, Zhibin Gou, Z. F. Wu, Fuli Luo, and Chong
+  Ruan. 2024b. DeepSeek-Prover-V1.5: Harnessing
+  Proof Assistant Feedback for Reinforcement Learn-
+  ing and Monte-Carlo Tree Search. arXiv preprint.
+  ArXiv:2408.08152 [cs].
+
+Kaiyu Yang, Aidan M. Swope, Alex Gu, Rahul Chala-
+  mala, Peiyang Song, Shixing Yu, Saad Godil, Ryan
+  Prenger, and Anima Anandkumar. 2023. LeanDojo:
+  Theorem Proving with Retrieval-Augmented Lan-
+  guage Models. arXiv preprint. ArXiv:2306.15626
+  [cs, stat].
+
+Kunhao Zheng, Jesse Michael Han, and Stanislas Polu.
+  2022. MiniF2F: a cross-system benchmark for for-
+  mal Olympiad-level mathematics. arXiv preprint.
+  ArXiv:2109.00110 [cs] version: 2.
+Table 4: Hyperparameters for model evaluations. We use officially recommended hyperparameters for all models.
+All configurations used 128 samples per RLM25 entry.
+
+       Model                          Temp.       Top P   Max Gen. Tokens       Max Total Tokens
+       Llemma 7B                         0.7      0.95           1024                   4096
+       DeepSeek-Prover-V1.5-RL           1.0      0.95           1024                   4096
+       DeepSeek-Prover-V2-7B             1.0      0.95           1024                   4096
+       Goedel-Prover-SFT                 1.0      0.95           1024                   4096
+       KiminaProver-7B                   0.6      0.95           4096                  16384
+
+Table 5: Detailed pass@k rates (%) for Proof Autoformalization on RLMEval projects. Normal mode uses only
+blueprint lemmas, Easy mode uses all project lemmas. Projects are: PFR, FLT3 (Fermat’s Last Theorem for n=3),
+Carleson (Carl.), FLT (Fermat’s Last Theorem), TLB (testing-lower-bounds), PNT (Prime Number Theorem And).
+
+    Model                         Mode         p@k    PFR FLT3 Carl.        FLT     TLB    PNT Total
+                                          p@1 0.69 3.57 0.00                0.00    3.23    0.00    1.25
+                                  Normal p@32 0.69 9.52 0.91                3.85    6.45    3.03    4.08
+                                         p@128 0.69 14.29 0.91              5.77    8.87    3.03    5.59
+    Llemma 7B
+                                                p@1 0.00 2.38 0.00 1.92             4.03    1.01    1.56
+                                  Easy         p@32 0.69 9.52 0.91 9.62             6.45    3.03    5.04
+                                               p@128 1.39 13.10 0.91 15.38          9.68    5.05    7.58
+                                          p@1 0.00 2.38 0.91                1.92    3.23    2.02    1.74
+                                  Normal p@32 1.39 19.05 0.91               9.62    4.84    2.02    6.30
+                                         p@128 2.08 22.62 0.91              9.62    6.45    2.02    7.28
+    DeepSeek-Prover-V1.5-RL
+                                                p@1 0.69 5.95 0.00 0.00 1.61                2.02 1.71
+                                  Easy         p@32 0.69 16.67 0.91 19.23 12.90             8.08 9.75
+                                               p@128 3.47 23.81 0.91 21.15 14.52            9.09 12.16
+                                          p@1 0.69 11.90 0.00 5.77 2.42                     1.01 3.63
+                                  Normal p@32 2.08 25.00 1.82 11.54 8.87                    2.02 8.56
+                                         p@128 2.08 32.14 2.73 11.54 10.48                  3.03 10.33
+    DeepSeek-Prover-V2-7B
+                                                p@1 0.69 7.14 0.91 9.62 4.84 3.03 4.37
+                                  Easy         p@32 3.47 27.38 1.82 23.08 19.35 10.10 14.20
+                                               p@128 4.86 32.14 3.64 23.08 22.58 14.14 16.74
+                                          p@1 0.00 3.57 0.00                1.92    0.81    0.00    1.05
+                                  Normal p@32 0.69 8.33 0.00                3.85    3.23    0.00    2.68
+                                         p@128 0.69 13.10 0.00              9.62    4.03    2.02    4.91
+    Goedel-Prover-SFT
+                                                p@1 0.00 1.19 0.00 0.00             0.81    0.00    0.33
+                                  Easy         p@32 0.00 8.33 0.00 13.46            4.84    2.02    4.78
+                                               p@128 0.69 10.71 0.00 17.31          6.45    3.03    6.37
+                                          p@1 0.00 3.57 0.00                1.92    2.42    0.00    1.32
+                                  Normal p@32 0.00 10.71 0.00               7.69    3.23    1.01    3.77
+                                         p@128 0.00 13.10 0.00              7.69    3.23    1.01    4.17
+    KiminaProver-7B
+                                                p@1 0.00     3.57 0.00      1.92    0.00    0.00    0.92
+                                  Easy         p@32 0.00     7.14 0.00      5.77    2.42    3.03    3.06
+                                               p@128 0.00    9.52 0.00      5.77    3.23    3.03    3.59
+Table 6: Detailed pass@k rates (%) for Neural Theorem Proving (NTP) on RLMEval projects. Normal mode uses
+only blueprint lemmas, Easy mode uses all project lemmas. Projects are: PFR, FLT3 (Fermat’s Last Theorem for
+n=3), Carleson (Carl.), FLT (Fermat’s Last Theorem), TLB (testing-lower-bounds), PNT (Prime Number Theorem
+And).
+
+    Model                         Mode       p@k     PFR FLT3 Carl.         FLT    TLB     PNT Total
+                                          p@1 0.69 2.38 0.91                0.00   2.42    0.00    1.07
+                                  Normal p@32 0.69 8.33 0.91                5.77   6.45    2.02    4.03
+                                         p@128 0.69 13.10 0.91              5.77   6.45    2.02    4.82
+    Llemma 7B
+                                             p@1 0.00 2.38 0.91 1.92 1.61                  2.02    1.47
+                                  Easy      p@32 1.39 8.33 0.91 13.46 12.90                5.05    7.01
+                                            p@128 2.08 11.90 0.91 21.15 16.13              5.05    9.54
+                                          p@1 0.69 2.38 0.91                1.92   2.42    2.02    1.72
+                                  Normal p@32 1.39 14.29 0.91               5.77   6.45    3.03    5.31
+                                         p@128 1.39 20.24 0.91              9.62   6.45    3.03    6.94
+    DeepSeek-Prover-V1.5-RL
+                                             p@1 0.69 2.38 0.00 7.69 3.23                  2.02 2.67
+                                  Easy      p@32 2.08 11.90 0.91 15.38 12.90               7.07 8.38
+                                            p@128 2.78 20.24 0.91 21.15 15.32              8.08 11.41
+                                          p@1 0.69 11.90 0.91               0.00 4.03      1.01    3.09
+                                  Normal p@32 0.69 22.62 1.82               9.62 7.26      1.01    7.17
+                                         p@128 0.69 25.00 2.73              9.62 10.48     4.04    8.76
+    DeepSeek-Prover-V2-7B
+                                             p@1 0.00 9.52 0.00 11.54 6.45 3.03 5.09
+                                  Easy      p@32 2.78 19.05 1.82 21.15 17.74 9.09 11.94
+                                            p@128 4.86 22.62 1.82 25.00 21.77 12.12 14.70
+                                          p@1 0.00           1.19 0.00      0.00   0.00    0.00    0.20
+                                  Normal p@32 0.69           7.14 0.00      7.69   4.84    0.00    3.39
+                                         p@128 0.69          9.52 0.00      9.62   7.26    1.01    4.68
+    Goedel-Prover-SFT
+                                             p@1 0.00 4.76 0.00 0.00               3.23    0.00    1.33
+                                  Easy      p@32 0.69 7.14 0.91 15.38              6.45    2.02    5.43
+                                            p@128 0.69 11.90 0.91 15.38            8.87    4.04    6.97
+                                          p@1 0.00           3.57 0.00      5.77   0.81    0.00    1.69
+                                  Normal p@32 0.00           4.76 0.00      7.69   2.42    2.02    2.82
+                                         p@128 0.00          5.95 0.00      7.69   3.23    2.02    3.15
+    KiminaProver-7B
+                                             p@1 0.00        3.57 0.00 3.85        0.81    1.01    1.54
+                                  Easy      p@32 0.00        4.76 0.00 11.54       3.23    3.03    3.76
+                                            p@128 0.00       5.95 0.00 11.54       4.03    3.03    4.09
+                       102
+
+
+
+
+       Proof length
+                       101
+
+
+
+
+                       100
+
+
+                                   RL        7b         Pr                        2- 7B
+                                                                                                         T
+                                   5-   em                ov                                  -P
+                              1.          m                 er              ro                   rove
+                      k-                   a-                 -7              ve                      r-S
+                        Pr              Ll                       B               r-V
+                          ov                          ina-                                                F
+                            er                    im                   ek                 oe de
+                              -V                                         -P                     l
+             ee                                   K                  pS                   G
+       pS                                                       ee      e
+     ee                                                        D
+   D
+                                                              Model
+
+Figure 3: Proof length distribution of the different evaluated models on RLMEval. Proof length is measured in lines
+of code, comments trimmed. Data aggregated from all experiments: NTP and proof autoformalization, normal and
+easy modes.
+A.3   Samples from the RLMEval benchmark
+  FLT3 sample - One of the simplest entry from RLMEval
+
+  Name: lmm:lambda_not_dvd_Y
+  File: FLT3/FLT3.lean
+  Theorem. Given ‘S : Solution‘, we have that ‘λ‘ does not divide ‘S.Y‘.
+  Formal statement:
+  lemma lambda_not_dvd_Y : ¬ λ | S.Y
+
+  Informal proof:
+  By contradiction we assume that λ | Y , then, by the properties of divisibility, λ | u2 Y 3 ,
+  which implies, by def:Solution_u1_u2_u3_u4_u5_X_Y_Z, that λ | y. However, this contra-
+  dicts lmm:lambda_not_dvd_y forcing us to conclude that λ ∤ Y .
+  Formal proof:
+  intro h
+  have hyp := dvd_mul_of_dvd_right h (S.u2 * S.Y^2)
+  rw [show ↑(u2 S) * Y S ^ 2 * Y S = ↑S.u2 * S.Y^3 by ring] at hyp
+  rw [← u2 _Y_spec] at hyp
+  apply lambda_not_dvd_y S
+  simp [hyp]
+
+
+
+  Carleson sample - Typical difficult entry of RLMEval
+
+  Name: tile-sum-operator
+  File: Carleson/FinitaryCarleson.lean
+  Theorem. We have for all x ∈ G \ G′
+                                    σ2 (x)
+                X                   X Z
+                      Tp f (x) =              Ks (x, y)f (y)e(Q(x)(y) − Q(x)(x)) dµ(y).           (1)
+                p∈P                s=σ1 (x)
+
+  Formal statement:
+  theorem tile_sum_operator {G' : Set X} {f : X → C}
+    {x : X} (hx : x ∈ G \ G') :R Σ (p : P X), carlesonOn p f x =
+    Σ s in Icc (σ 1 x) (σ 2 x),   y, Ks s x y * f y * exp (I * (Q x y - Q x x))
+
+  Informal proof:
+  Fix x ∈ G \ G′ . Sorting the tiles p on the left-hand-side of (1) by the value s(p) ∈ [−S, S], it
+  suffices to prove for every −S ≤ s ≤ S that
+                                 X
+                                      p ∈ P : s(p) = sT pf (x) = 0                             (2)
+
+  if s ̸∈ [σ1 (x), σ2(x)] and
+            X                             Z
+                p ∈ P : s(p) = sT pf (x) = Ks(x, y)f (y)e(Q(x)(y) − Q(x)(x)), dµ(y).              (3)
+
+  if s ∈ [σ1 (x), σ2 (x)]. If s ̸∈ [σ1 (x), σ2(x)], then by definition of E(p) we have x ̸∈ E(p) for
+  any p with s(p) = s and thus T pf (x) = 0. This proves (2). Now assume s ∈ [σ1 (x), σ2(x)]. By
+  coverdyadic, subsetmaxcube, eq-vol-sp-cube, the fact that c(I0 ) = o and G ⊂ B(o, 41 DS ),
+  there is at least one I ∈ D with s(I) = s and x ∈ I. By dyadicproperty, this I is unique. By
+  eq-dis-freq-cover, there is precisely one p ∈ P(I) such that Q(x) ∈ Ω(p). Hence there is
+  precisely one p ∈ P with s(p) = s such that x ∈ E(p). For this p, the value T p(x) by its definition
+  in definetp equals the right-hand side of (3). This proves the lemma.
+  Formal proof:
+rw [P_biUnion, Finset.sum_biUnion]; swap
+· exact fun s _ s' _ hss' A hAs hAs' p pA 7→ False.elim <| hss' (s_eq (hAs pA) ▷ s_eq (hAs' pA
+     ))
+rw [← (Icc (-S : Z) S).toFinset.sum_filter_add_sum_filter_not (fun s 7→ s ∈ Icc (σ 1 x) (σ 2 x
+     ))]
+rw [Finset.sum_eq_zero sum_eq_zero_of_nmem_Icc, add_zero]
+refine Finset.sum_congr (Finset.ext fun s 7→ ⟨fun hs 7→ ?_, fun hs 7→ ?_⟩) (fun s hs 7→ ?_)
+· rw [Finset.mem_filter, ← mem_toFinset] at hs
+exact hs.2
+· rw [mem_toFinset] at hs
+rw [toFinset_Icc, Finset.mem_filter]
+exact ⟨Finset.mem_Icc.2 (Icc_σ_subset_Icc_S hs), hs⟩
+· rcases exists_Grid hx.1 hs with ⟨I, Is, xI⟩
+obtain ⟨p, IpI, Qp⟩ : ∃ (p : P X), I p = I ∧ Q x ∈ Ω p := by simpa using biUnion_Ω ⟨x, rfl⟩
+have pPXs : p ∈ PX_s s := by simpa [s, IpI]
+have : ∀ p' ∈ PX_s s, p' ̸= p → carlesonOn p' f x = 0 := by
+  intro p' p'PXs p'p
+  apply indicator_of_not_mem
+  simp only [E, mem_setOf_eq, not_and]
+  refine fun x_in_Pp' Qp' 7→ False.elim ?_
+  have s_eq := s_eq pPXs ▷ s_eq p'PXs
+  have : ¬ Disjoint (I p' : Set X) (I p : Set X) := not_disjoint_iff.2 ⟨x, x_in_Ip', IpI ▷ xI⟩
+  exact disjoint_left.1 (disjoint_Ω p'p <| Or.resolve_right (eq_or_disjoint s_eq) this) Qp'
+     Qp
+rw [Finset.sum_eq_single_of_mem p pPXs this]
+have xEp : x ∈ E p :=
+  ⟨IpI ▷ xI, Qp, by simpa only [toFinset_Icc, Finset.mem_Icc, s_eq pPXs] using hs⟩
+simp_rw [carlesonOn_def', indicator_of_mem xEp, s_eq pPXs]
+
+
+
+
+PFR sample - Example of a relatively uninformative informal proof without broader context
+
+Name: cond-trial-ent
+File: PFR/ForMathlib/Entropy/Basic.lean
+Theorem. If ‘X, Y‘ are conditionally independent over ‘Z‘, then ‘H[X, Y, Z] = H[X, Z] + H[Y, Z] -
+H[Z]‘.
+Formal statement:
+lemma ent_of_cond_indep (hX : Measurable X) (hY : Measurable Y) (hZ : Measurable Z)
+     (h : CondIndepFun X Y Z µ) [IsZeroOrProbabilityMeasure µ]
+     [FiniteRange X] [FiniteRange Y] [FiniteRange Z] :
+     H[⟨X, ⟨Y, Z⟩⟩ ; µ] = H[⟨X, Z⟩; µ] + H[⟨Y, Z⟩; µ] - H[Z; µ]
+
+Informal proof:
+Immediate from conditional-vanish and conditional-mutual-alt.
+Formal proof:
+have hI : I[X : Y | Z ; µ] = 0 := (condMutualInfo_eq_zero hX hY).mpr h
+rw [condMutualInfo_eq hX hY hZ] at hI
+rw [entropy_assoc hX hY hZ, chain_rule _ (hX.prod_mk hY) hZ, chain_rule _ hX hZ, chain_rule _
+    hY hZ]
+linarith [hI]
+

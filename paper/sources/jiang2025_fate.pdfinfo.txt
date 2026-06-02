@@ -1,0 +1,18 @@
+Title:           FATE: A Formal Benchmark Series for Frontier Algebra of Multiple Difficulty Levels
+Author:          Jiedong Jiang; Wanyi He; Yuefeng Wang; Guoxiong Gao; Yongle Hu; Jingting Wang; Nailin Guan; Peihao Wu; Chunbo Dai; Liang Xiao; Bin Dong
+Creator:         arXiv GenPDF (tex2pdf:7b1e169)
+Producer:        pikepdf 8.15.1
+Custom Metadata: yes
+Metadata Stream: yes
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           38
+Encrypted:       no
+Page size:       612 x 792 pts (letter)
+Page rot:        0
+File size:       5072007 bytes
+Optimized:       no
+PDF version:     1.7

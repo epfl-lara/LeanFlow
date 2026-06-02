@@ -1,0 +1,1610 @@
+                                                            Construction–Verification: A Benchmark for Formalizing
+                                                                        Applied Mathematics in Lean 4
+
+
+                                                 Bowen Yang 1 Yi Yuan 1 Chenyi Li 1 Ziyu Wang 1 Liangqi Li 2 Bo Zhang 2 Zhe Li 2 Zaiwen Wen 1
+
+
+                                                                   Abstract                                1. Introduction
+                                                                                                           The growing complexity of modern mathematics, coupled
+
+
+
+
+arXiv:2602.01291v1 [cs.LO] 1 Feb 2026
+                                                                                                           with the potentially severe consequences of errors in mathe-
+                                                Recent advances in large language models have              matical proofs, has created an urgent need for rapid verifica-
+                                                demonstrated impressive capabilities in mathe-             tion and error detection. This demand underscores the criti-
+                                                matical formalization. However, existing bench-            cal importance of formal mathematics. Interactive theorem
+                                                marks focus on logical verification of declarative         provers (ITP), which utilize formal mathematical languages,
+                                                propositions, often neglecting the task of explic-         such as HOL Light (Harrison, 1996), Coq (Huet et al., 1997),
+                                                itly synthesizing solutions. This limitation is par-       Isabelle (Paulson, 1994), and Lean (de Moura & Ullrich,
+                                                ticularly acute in applied mathematics domains,            2015; Moura & Ullrich, 2021), address this challenge by
+                                                where the goal is frequently to derive concrete            enabling the automated verification of proofs with absolute
+                                                values or executable algorithms rather than solely         certainty, significantly mitigating the risk of human error
+                                                proving theorems. To address this, we introduce            inherent in traditional manual review.
+                                                a Lean 4 framework that enforces a construction-
+                                                verification workflow, compelling the agent to             However, this assurance of correctness comes at the cost of
+                                                define explicit solutions before proving their cor-        a significant usability barrier, as constructing formal proofs
+                                                rectness. We curate a comprehensive benchmark              demands expert knowledge of extensive libraries and is of-
+                                                AMBER (Applied Mathematics BEnchmark for                   ten a painstakingly manual process due to repetitive tasks.
+                                                Reasoning) spanning core domains of applied                This challenge has catalyzed a promising research direction:
+                                                mathematics, including convex analysis, optimiza-          leveraging large language models (LLMs) to automate rea-
+                                                tion, numerical algebra, and high-dimensional              soning within these formal systems. Notably, both general-
+                                                probability. Aside from theorem proving, our               purpose LLMs (e.g., DeepSeek-V3.2-Thinking (Liu et al.,
+                                                benchmark features complex tasks such as evalu-            2025a), Kimi K2 (Team et al., 2025), Gemini-3 Pro, and
+                                                ation, algorithm design, and representation trans-         fine-tuned models, such as Seed-Prover (Chen et al., 2025),
+                                                formation. Experiments reveal that current mod-            DeepSeek-Prover-V2 (Ren et al., 2025), have demonstrated
+                                                els face significant difficulties with these con-          significant success in automated formalization, particularly
+                                                structive tasks. Notably, we observe that general-         in proving high school contest problems.
+                                                purpose reasoning models consistently outper-              To evaluate and improve the capabilities of large language
+                                                form specialized theorem provers. We attribute             models in automated formalization, researchers have devel-
+                                                this to a degradation of instruction following ca-         oped a variety of specialized benchmarks, such as MiniF2F
+                                                pabilities in specialized models. Fine-tuning on           (Zheng et al., 2021), ProofNet (Azerbayev et al., 2023).
+                                                proof corpora appears to induce “tactical overfit-         However, existing Lean-based benchmarks primarily fo-
+                                                ting”, compromising the ability to adhere to com-          cus on elementary or pure mathematics, with notably lim-
+                                                plex constructive requirements, whereas general            ited coverage of undergraduate-level or higher-level applied
+                                                models retain the versatility needed for multi-task        mathematics. More critically, these benchmarks provide a
+                                                formal reasoning.                                          systematically inadequate representation of core concepts
+                                                                                                           in applied mathematics, such as numerical evaluation, al-
+                                                                                                           gorithm design and representation transformation, which
+                                                                                                           ultimately hinders the expansion of the formalized mathe-
+                                            1
+                                             Peking University, Beijing, China 2 Ant Digital Tech-         matical knowledge frontier.
+                                        nologies, Ant Group.    Correspondence to: Zaiwen Wen
+                                        <wenzw@pku.edu.cn>.                                                To bridge this gap, we propose that effectively evaluating
+                                                                                                           applied mathematical reasoning requires a paradigm shift
+                                        Preprint. February 3, 2026.
+
+                                                                                                       1
+                         Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+from verifying existential propositions to synthesizing con-         2023) and PutnamBench (Tsoukalas et al., 2024). At the
+structive solutions. Unlike pure theorem proving, where              university level, ProofNet (Azerbayev et al., 2023) provides
+establishing the existence of a solution often suffices, ap-         a key dataset for formalizing undergraduate-level mathe-
+plied mathematics necessitates the derivation of explicit            matics. Subsequent efforts have diversified this landscape,
+values and executable algorithms. This distinction demands           including specialized benchmarks for combinatorics (Xiong
+a rigorous formalization approach that structurally enforces         et al., 2025; Liu et al., 2025b), and the abstract algebra
+the “construction-verification” workflow, preventing agents          benchmark FATE (Jiang et al., 2025).
+from exploiting non-constructive shortcuts. By aligning
+                                                                     Auto-formalization with LLMs. Early work by (Polu &
+formal tasks with the computational intuition of fields like
+                                                                     Sutskever, 2020) pioneered the use of search-based methods
+convex optimization and numerical algebra, we aim to es-
+                                                                     for proof generation. Subsequent approaches have explored
+tablish a more faithful standard for automated reasoning in
+                                                                     various search strategies, including variants of best-first
+higher-level mathematics.
+                                                                     search (Yang et al., 2023; Lin et al., 2024; Wu et al., 2025;
+Furthermore, evaluating current models within this con-              Li et al., 2024; Xin et al., 2025) and Monte Carlo tree search
+structive framework reveals a fundamental trade-off: inten-          (Lample et al., 2022; Gloeckle et al., 2024; Xin et al., 2024).
+sive specialization in formal logic often diminishes the gen-        More recently, the field has seen a shift toward single-pass
+eral reasoning and instruction-following skills necessary for        generation, as exemplified by state-of-the-art provers (Ren
+complex mathematical modeling. We observe that the pre-              et al., 2025; Lin et al., 2025; Wang et al., 2025; Zhou et al.,
+vailing strategy of fine-tuning on proof corpora, while effec-       2025; Chen et al., 2025). These models are typically trained
+tive for standard deduction, may inadvertently compromise            with large-scale reinforcement learning and generate long
+the instruction-following versatility required for multi-stage       chain-of-thought reasoning to decompose and correct Lean
+mathematical modeling. This phenomenon highlights a sig-             code, achieving accuracy rates approaching 100% on the
+nificant trade-off in current neuro-symbolic systems: the            miniF2F benchmark.
+tension between local tactical proficiency and the high-level
+                                                                     Formalization of Different Types of Content. The belief
+algorithmic synthesis essential for applied mathematics.
+                                                                     that all mathematical knowledge is amenable to formaliza-
+In summary, our contributions are as follows.                        tion has motivated extensive efforts to formalize diverse do-
+                                                                     mains. Researchers have developed frameworks and bench-
+   • We develop specialized formalization paradigms tai-             marks for various types of content, though formalization
+     lored for distinct categories of applied mathematics.           efforts in theorem proving remain relatively less explored.
+     Specifically, we design a construction-verification pat-        For example, (Miranda et al., 2025) formalized Python al-
+     tern for evaluation problems, algorithm design and              gorithms in VeriBench, (Liu et al., 2025c) introduced a
+     representation transformations.                                 framework for formalizing problem-solving processes, and
+                                                                     (Bentkamp et al., 2023) contributed insights into the formal-
+   • We construct an AMBER (Applied Mathematics                      ization of optimization problems.
+     BEnchmark for Reasoning) benchmark covering core
+     applied domains (convex analysis, optimization, nu-
+     merical algebra, probability) with varying difficulty           3. Formalization for Applied Mathematics
+     levels, from standard undergraduate exercises to PhD-           While formal verification environments ensure rigorous cor-
+     level research problems.                                        rectness, standard benchmarks predominantly incentivize
+   • We conduct comprehensive evaluations demonstrating              logical validity (proving a statement is true) over construc-
+     that current models struggle with constructive applied          tive synthesis (finding a solution). This creates a misalign-
+     mathematics. Our analysis highlights the trade-off              ment in evaluation tasks, which is common in applied math-
+     between proof-search specialization and general con-            ematics. The primary objective of these problems is not
+     structive capability, offering new insights for future          to verify the existence of a solution, but to derive concrete
+     neuro-symbolic research.                                        symbolic or numerical results. To address this, we propose
+                                                                     a versatile framework that flexibly adapts to computation-
+                                                                     oriented tasks by leveraging Lean’s rich constructive fea-
+2. Related Works                                                     tures, including definitions, inductive types, and type class
+Formal Benchmarks. Formal benchmarks play a crucial                  instances. This approach enables the explicit modeling of
+role in enabling rigorous and reproducible assessment of             solution structures and algorithms, ensuring that agents are
+automated theorem proving capabilities. In the domain of             evaluated on their ability to derive values for unknowns
+pre-university mathematics, the MiniF2F benchmark (Zheng             while maintaining compatibility with standard formal verifi-
+et al., 2021) focuses on problems drawn from mathematical            cation logic.
+competitions, a direction also explored by FIMO (Liu et al.,
+
+                                                                 2
+                         Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+3.1. Evaluation Problems                                             that this specific term satisfies the property Q(x(V ), V ). In
+                                                                     the optimization example (1), V = {A, b}, the construc-
+In applied mathematics, a prevalent class of problems in-
+                                                                     tive term is x(V ) = A−1 b, and the property Q(x, V ) is the
+volves explicit solution synthesis, such as solving linear
+                                                                     proposition that x is an optimal point. The general formal-
+equations, optimizing an objective function, or determin-
+                                                                     ization pattern is structured as follows.
+ing a probability distribution, rather than merely verifying
+the existence of such solutions. This distinction is funda-
+mental: deriving a solution requires a constructive search             variable {V : Type_v} {Q : Type_x →
+process and numerical reasoning that extends beyond the                   Type_v → Prop} {hV : Prop}
+scope of checking a candidate solution or proving existence               -- hV: assumptions for V
+non-constructively. Consequently, these evaluation prob-               def x (V : Type_v) : Type_x := sorry
+lems represent a distinct paradigm from traditional theorem
+proving, necessitating a tailored formalization framework.             theorem verification (V : Type_v) :
+                                                                          Q (x V) V := by sorry
+Consider the following quadratic optimization problem as a
+representative example:
+                                                                     Crucially, this architecture enforces a strict syntactic barrier
+                                1 T
+              minn    f (x) =     x Ax − bT x,            (1)        against non-constructive shortcuts. Although the model can
+              x∈R               2                                    read the full problem context, the definition of x is rigidly
+where A ∈ Rn×n is a symmetric positive-definite matrix,              constrained by its function signature: it accepts only the
+and b ∈ Rn is a constant vector. The solution to the opti-           raw parameters V as inputs, not the target property Q or
+mization problem is x∗ = A−1 b. Previous approaches typi-            its proof. This structurally prevents the model from using
+cally model such evaluation problems as existential proposi-         the fact that a solution exists to construct the solution itself.
+tions (i.e., proving there exists x, such that x is an optimal       Consequently, the agent is forced to perform explicit con-
+point of problem (1)) (Liu et al., 2025c). However, logi-            struction, building the solution term step-by-step from the
+cal existence is a significantly weaker condition than con-          available parameters. See more examples in Appendix B.2.
+structive derivation. While identifying the explicit solution
+x∗ = A−1 b automatically entails its existence, establishing         3.2. Algorithm Design Problems
+existence via non-constructive means yields no computa-
+tional insight. For instance, the existence of an optimum can        A significant portion of applied mathematics is concerned
+be proven via the extreme value theorem relying solely on            with defining algorithms. This encompasses iterative algo-
+domain compactness and function continuity without ever              rithms such as the gradient descent method for optimization,
+calculating the specific value of x∗ . We observe that LLMs          the Newton’s method for optimization or root finding, or
+frequently exploit such abstract tactics to prove existence          the alternating direction method of multipliers (ADMM) for
+without constructing the explicit solution, as demonstrated          large-scale learning. In these problems, the solution is not a
+by the case studies in Appendix B.2. This misalignment               closed-form expression, but a transition rule that evolves a
+allows LLMs to be credited with solving an evaluation prob-          state over discrete time steps to achieve a specific behavior
+lem absent any constructive solution, thereby undermining            (e.g., convergence to a stationary point). The objective here
+the benchmark’s goal of assessing applied computational              is to evaluate the agent’s ability to synthesize the algorith-
+capabilities. To ensure robustness, we require a stricter            mic logic itself, rather than merely verifying the properties
+representation that enforces explicit solution construction.         of an abstract sequence.
+
+In the example above, the goal is to derive a constructive           Consider the classic gradient descent algorithm for mini-
+target variable x∗ expressed in terms of the given parameters        mizing a differentiable function f (x). This algorithm is
+A and b, such that x∗ satisfies the optimality condition.            described mathematically by specifying an initialization x0
+Generalizing from this intuition, we propose the following           and an iterative update rule:
+formal definition.
+                                                                                       xk+1 = xk − αk ∇f (xk ),                   (2)
+Definition 3.1 (Evaluation Problems). Given a property
+Q(x, V ) with parameters V , an evaluation problem is to             where α is the step size. The focus is on the constructive
+construct an expression x(V ), such that Q(x(V ), V ) holds.         definition of how xk+1 is derived from xk .
+We implement this via a two-stage formalization pattern:             To benchmark algorithm design effectively, we enforce a
+                                                                     structural constraint: the agent must explicitly provide the
+1. Construction. An explicit function definition (def) is
+                                                                     loop body. We view the algorithm as a recursive function
+required to compute the solution term x(V ).
+                                                                     defined on natural numbers. The agent’s task is to write the
+2. Verification. A subsequent theorem is required to prove           code for the (n + 1)-th step given the n-th step. To formu-
+
+                                                                 3
+                          Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+late the mathematical intuition, we propose the following              sign, but rather a structural transformation of the problem
+definition of an algorithm.                                            statement itself.
+Definition 3.2 (Algorithm). Given a state space S and pa-              To evaluate this capability, we define a class of represen-
+rameters V , constructing an algorithm requires defining a             tation transformation problems. Here, the objective is to
+sequence generator A : N → S such that:                                establish a rigorous mapping between a source problem
+A(0) = init(V ) (Base Case),                                           instance and a target canonical form. We define a math-
+A(n + 1) = Φ(A(n), V ) (Inductive Step),                               ematical problem generically as a tuple P = (X, C, f ),
+where Φ is the transition function to be constructed.                  consisting of a decision variable x in domain X, a set of
+                                                                       constraints C(x) (where C : X → Prop), and an objective
+We formalize the algorithm design problems by modeling                 function f : X → V , where V represents the value space,
+the structure of the iteration using Lean’s recursive definition       such as R for optimization or a set of complex numbers
+capabilities (matching on the inductive type Nat). This                Cn for eigenvalue problems. The goal of this task is to
+involves a two-stage process.                                          transform a source problem Psrc = (X, C, f ) into a target
+Design. The agent must define a function that maps the                 problem Ptgt = (Y, C ′ , f ′ ), where Ptgt often belongs to a
+iteration number and current state to the next state. We               specific class of tractable problems such as convex problems.
+formalize this as finding a transition function Φ : S × V →            We formalize the relationship between these problems via
+S, where S is the state space and V are problem parameters.            the concept of relaxation.
+                                                                       Definition 3.3 (Problem Relaxation and Equivalence). We
+Analysis. Once the sequence A is effectively defined, the              define a binary relation ⪯ on the space of optimization
+agent must prove a property P (A), such as monotonicity                problems to formalize the structural hierarchy of reducibility.
+(f (A(n + 1)) ≤ f (A(n))) or convergence.                              We say that Ptgt is a relaxation of Psrc , denoted Psrc ⪯
+In our benchmark, this is implemented via the template be-             Ptgt , if every feasible solution in the source problem maps
+low. The agent is strictly required to fill the first sorry with       to a feasible solution in the target problem with an identical
+computable logic (the update rule) and the second sorry                objective value:
+with the proof of correctness. The abstract formalization
+                                                                        ∀x ∈ X, C(x) =⇒ ∃y ∈ Y, C ′ (y) ∧ f (x) = f ′ (y). (3)
+template is presented as follows.
+                                                                       Two problems are equivalent if they are mutually compara-
+  variable {State : Type} (V : Type_v)                                 ble under this relation, satisfying the antisymmetric prop-
+  variable (P : (Nat → State) → Prop)                                  erty: Psrc ⪯ Ptgt ∧ Ptgt ⪯ Psrc .
+
+  def algorithm (x0 : State) (V : Type_v) :                            This formalization captures the essence of mathematical
+       Nat −> State                                                    modeling. For example, proving that a specific graph cut
+     | 0 := x0                                                         problem is equivalent to a spectral clustering formulation
+     | (n+1) := sorry                                                  requires showing that the set of cuts maps to the spectrum
+                                                                       of the Laplacian matrix (where f maps the graph configu-
+  theorem verification                                                 ration to eigenvalues). In Lean, we operationalize this by
+    (x0 : State) (V : Type_v) :
+    P (algorithm x0 V) := by sorry                                     requiring the agent to defining the target problem struc-
+                                                                       ture and proving the relaxation or equivalence relation. The
+                                                                       framework distinguishes between the source problem (given
+This framework shifts the evaluation from finding a num-               as parameters) and the target form (which the agent must
+ber to writing a loop body, ensuring the agent acts as a               construct).
+true algorithm designer. See Appendix B.2 for additional
+examples.                                                              Modeling (Construction). The agent must define the com-
+                                                                       ponents of the target problem: the new domain Y , con-
+                                                                       straints C ′ , and the objective f ′ .
+3.3. Representation Transformation
+                                                                       Verification. The agent must prove the logical proposition
+In real-world applications, mathematical problems rarely
+                                                                       Psrc ⪯ Ptgt (or equivalence).
+present themselves in canonical forms. A critical capabil-
+ity of an applied mathematician is modeling: the ability               To rigorize this process, we first define a generic MathProb-
+to transform a raw, non-standard problem into a structured             lem structure that encapsulates the decision domain D, the
+representation, such as integer linear programming, semidef-           constraint predicate, and the objective function. Central to
+inite programming, or a specific matrix factorization, that            this framework is the relaxes definition, which formalizes
+guarantees computational tractability. This process involves           the notion of problem reduction: it asserts that for every
+neither simple value derivation nor iterative algorithm de-            feasible solution in the source problem P1 , there exists a
+
+                                                                   4
+                         Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+mapped solution in the target problem P2 yielding the same
+objective value. In this task, the agent is presented with a            theorem proposition_name (V :
+                                                                            Parameters) (h : Assumptions) :
+source problem P src and must fulfill three specific obli-               Target_Proposition := by sorry
+gations to resolve the sorry placeholders: construct the
+target domain D tgt (often requiring the introduction of aux-
+iliary slack variables), explicitly define the target problem         The agent must replace sorry with a valid tactic sequence
+P tgt, and prove the valid transformation theorem, which              or proof term that closes the goal. These problems range
+demands a demonstration of mutual relaxation between the              from establishing properties of convex sets to proving in-
+source and target problems. The generalized schema for                equalities in high-dimensional probability, serving as a con-
+representation transformation is shown below. The agent               trol group to measure if models trade off pure deductive
+acts as a translator, converting a user-defined problem into a        power for constructive flexibility.
+canonical form required by a solver.
+                                                                      4. Benchmark Curation and Characteristics
+                                                                      4.1. Benchmark Curation
+  structure MathProblem (D V : Type) :=                               Problem Collection. Content selection prioritizes the
+    (constraints : D → Prop)
+    (objective : D → V)                                               benchmark’s representativeness and domain-specific char-
+                                                                      acteristics, with samples predominantly sourced from clas-
+  def relaxes {D1 D2 V : Type}                                        sical and well-recognized textbooks across convex anal-
+    (P1 : MathProblem D1 V)                                           ysis, optimization, numerical linear algebra, and high-
+    (P2 : MathProblem D2 V) : Prop :=                                 dimensional probability (Boyd & Vandenberghe, 2004;
+    ∀ x, P1.constraints x →                                           Golub & Van Loan, 2013; Vershynin, 2018). The selection
+    ∃ y, P2.constraints y ∧ P1.objective x                            is conducted by doctoral and senior undergraduate students
+      = P2.objective y                                                specializing in applied mathematics, who identify topics
+                                                                      representative of core concepts. A preliminary difficulty
+  variable {D_src V : Type}
+    (P_src : MathProblem D_src V)                                     classification based on problem sources serves as a base-
+  def D_tgt : Type := sorry                                           line: easy problems correspond to standard course exercises,
+  def P_tgt : MathProblem D_tgt V := sorry                            while hard problems align with PhD qualifying examina-
+                                                                      tions. We categorize samples into theorem proving and
+  theorem valid_transformation :                                      construction-verification. The latter requires synthesizing
+    relaxes P_src P_tgt ∧ relaxes P_tgt                               a solution before verification across evaluation, algorithm
+      P_src := by sorry
+                                                                      design, and representation transformation tasks. Detailed
+                                                                      definitions appear in Section 3. Comprehensive statistics
+                                                                      regarding the task distribution across domains are provided
+                                                                      in Appendix C. By incorporating both task types, our bench-
+By structuring benchmarks this way, we ensure that the
+                                                                      mark is designed to evaluate a model’s proficiency in vary-
+evaluation metric aligns with the mathematical intuition
+                                                                      ing mathematical reasoning modalities—ranging from the
+of problem reduction. The agent is not merely asked to
+                                                                      rigorous derivation required in probability theory to the al-
+solve the problem, but to demonstrate that it understands
+                                                                      gorithmic synthesis essential in optimization and numerical
+the mathematical structures well enough to translate them
+                                                                      algebra.
+across different domains while preserving their fundamental
+properties. See Appendix B.2 for case studies.
+                                                                      Lean Formalization. Formalization is executed by a team
+                                                                      of experienced Lean users. Leveraging a standardized tem-
+3.4. Theorem Proving
+                                                                      plate to ensure strict adherence to Mathlib norms, the team
+While our benchmark emphasizes constructive tasks, theo-              converts 50 selected problems from each subfield into ex-
+rem proving remains a cornerstone of formal verification.             ecutable Lean code. This rigorous process guarantees that
+We include a subset of traditional theorem proving tasks to           the resultant code maintains strong logical consistency with
+serve as a baseline for assessing the logical reasoning capa-         the original mathematical statements and exhibits excellent
+bilities of models distinct from their constructive abilities.        reproducibility in standard Lean 4 environments.
+Unlike the previous categories where the solution is a data
+structure or algorithm, here the objective is purely deductive.       Review. Validation employs a rigorous two-stage process
+Given a proposition P in a context Γ, the task is to construct        to ensure strict semantic consistency between the formal-
+a proof term t such that Γ ⊢ t : P . In Lean 4, this follows          ized Lean code and the original mathematical problems,
+the standard declaration pattern.                                     consisting of an LLM-based preliminary check and manual
+
+                                                                  5
+                         Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+in-depth verification. In the LLM preliminary check, we              radius k = 3 to capture the immediate conceptual prereq-
+use a state-of-the-art LLM to automatically screen the en-           uisites required to comprehend the statement, avoiding the
+tire corpus, checking each formalized problem against its            dilution of metrics by foundational axioms found at deeper
+original statement. The LLM compares the formalized code             levels. A higher ρk (p) indicates that the model must success-
+with the original problem statements to detect possible se-          fully retrieve and reason over a dense subgraph of mathemat-
+mantic discrepancies, logical omissions, or misalignments;           ical concepts to even parse the problem correctly, posing a
+all flagged cases are prioritized for manual review and re-          significant challenge to the model’s retrieval-augmented gen-
+vision. Detailed information regarding the specific model,           eration (RAG) and long-context understanding capabilities.
+configuration, and prompting strategies is provided in the           To quantify the overall complexity of a dataset D, we calcu-
+Appendix C.4. The manual in-depth verification adopts sev-           late the average dependency density as theP   arithmetic mean
+                                                                                                                1
+eral rounds of team cross-validation, with each expert being         of the individual densities: ρ̄k (D) = |D|      p∈D ρk (p). To
+an experienced Mathlib contributor. In each round, every             contextualize these metrics, we compare AMBER against
+formalized problem is reviewed by at least two Lean experts,         three established baselines: MiniF2F (high-school competi-
+who strictly verify that all constructs, both custom defini-         tions), ProofNet (undergraduate mathematics), and FATE.
+tions/lemmas and invoked Mathlib concepts, align with the            Figure 1 presents the results. Our AMBER benchmark
+original problem’s intent.                                           exhibits the highest dependency density, quantitatively con-
+                                                                     firming the superior semantic depth of AMBER.
+4.2. Benchmark Characteristics
+                                                                                                                                                                    6 H P D Q W L F  & R P S O H [ L W \  & R P S D U L V R Q
+Expert-Driven Difficulty Assessment. Unlike traditional                                                                                                                                                                                  
+benchmarks that may rely on syntactic length or heuristic                                                                                   
+
+
+
+
+                                                                       $ Y H U D J H  ' H S H Q G H Q F \  ' H Q V L W \   k = 3 
+proxies for difficulty, we ground our classification in expert                                                                              
+mathematical consensus. To measure the intrinsic logical                                                                                    
+gap between hypothesis and conclusion, we conduct an                                                                                        
+assessment with ten PhD students from prestigious research                                                                                   
+institutes. They evaluate the reasoning depth required to                                                                                                                                                     
+construct a proof blueprint, ensuring that problems classified                                                                                                                    
+                                                                                                                                                         
+as “hard” reflect genuine mathematical complexity (e.g.,                                                                                     
+requiring novel auxiliary constructions) rather than mere
+                                                                                                                                             
+notational verbosity. This human-centric approach validates                                                                                        0 L Q L )  )             3 U R R I 1 H W                ) $ 7 (                $ 0 % ( 5
+that our AMBER benchmark captures the rigor of research-                                                   Figure 1. Quantitative comparison of semantic complexity.
+level applied mathematics.
+
+Quantitative Formal Complexity. Complementing qual-                  5. Experiments
+itative expert assessment, we quantify the intrinsic infor-
+mation density of our benchmark using Lean’s metapro-                To assess the capabilities of current models on applied math-
+gramming framework. Unlike text-based datasets where                 ematics formalization, we conduct a comprehensive evalu-
+complexity is often proxied by token length, formal envi-            ation on our AMBER benchmark. Our experiments focus
+ronments allow us to measure the conceptual dependency               not only on theorem proving, but also on agents’ ability to
+load of a problem statement. Concretely, we represent each           follow the structural requirements, specifically completing
+benchmark instance p as the corresponding Lean declaration           various forms of Lean content including evaluation, algo-
+and model the underlying formal library as a global seman-           rithm design and representation transformation, outlined in
+tic dependency graph G with vertex set V and directed edge           Section 3.
+set E, where V consists of formal declarations such as def-
+initions and theorems, and E encodes usage dependencies.             5.1. Experiment Setup
+For a problem p, we define the dependency density ρk (p)
+as the size of its non-trivial conceptual neighborhood:              Models. We evaluate a diverse set of models representing
+                                                                     two distinct paradigms: general-purpose reasoning agents
+  ρk (p) = {v ∈ V | 1 ≤ distG (p, v) ≤ k ∧ v ∈
+                                             / Strivial } ,          and specialized theorem provers. For general reasoning,
+                                                                     we employ DeepSeek-V3.2-Thinking (Liu et al., 2025a)
+where distG (p, v) denotes the shortest path distance from           and GPT-5.1, which represent state-of-the-art capabilities
+problem p to concept v in the dependency graph. The set              in natural language understanding and chain-of-thought rea-
+Strivial acts as a high-pass semantic filter, removing purely        soning. For specialized formalization, we evaluate Goedel
+syntactic constructs such as logic connectives and basic             Prover-32B (Lin et al., 2025) and Kimina Prover-72B (Wang
+types to isolate domain-specific knowledge. We set the local         et al., 2025), models that have been fine-tuned extensively
+
+                                                                 6
+                          Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+     Table 1. Pass@16 results of various models across different subsets. Each dataset is partitioned into Easy and Hard subsets.
+
+                                         Optimization        Convex Analysis         Numerical Algebra         Probability
+          Model                          Easy      Hard      Easy         Hard       Easy         Hard        Easy     Hard
+          DeepSeek-V3.2-Thinking          3/24     0/26      5/26         0/24       3/25         0/25        1/25     0/25
+          GPT-5.1                         2/24     0/26      3/26         0/24       3/25         0/25        1/25     0/25
+          Gemini-3.0 Pro                  3/24     0/26      4/26         0/24       4/25         0/25        1/25     0/25
+          Goedel Prover-32B               3/24     0/26      1/26         0/24       3/25         0/25        1/25     0/25
+          Kimina Prover-72B               2/24     0/26      2/26         0/24       3/25         0/25        1/25     0/25
+
+
+on Mathlib and Lean corpora.                                            Table 2. Pass@k (k = 1, 16) statistics for all models on the
+                                                                        full AMBER benchmark. The values represent the percentage of
+                                                                        problems solved given k budget.
+Evaluation Protocol. For each problem, the model is pro-
+vided with a context header (imports and variable declara-                  Model                          Pass@1      Pass@16
+tions) and a Lean statement based on the structural template                General-Purpose Reasoning Models
+corresponding to the problem type, including evaluation,                    DeepSeek-V3.2-Thinking    1.68%              6.00%
+algorithm design, representation transformation and tradi-                  GPT-5.1                   1.40%              4.50%
+tional theorem proving. Crucially, the model must complete                  Gemini-3.0 Pro            2.62%              6.00%
+the code by filling in the sorry placeholders for both the
+definition (construction) and the theorem (verification). We                Specialized Theorem Provers
+report the Pass@k metric (k = 16). A problem is consid-                     Goedel Prover-32B           0.97%            4.00%
+ered solved only if, within k samples, at least one generated               Kimina Prover-72B           1.03%            4.00%
+solution allows Lean to successfully compile both the con-
+structive definition and the verification proof without errors.
+Unbiased estimators for Pass@k with varying k are detailed
+                                                                        models consistently outperform specialized mathematical
+in Appendix D.3. Additional hyperparameters and prompt
+                                                                        provers, a trend that contradicts the typical performance hi-
+engineering details are provided in Appendix D.
+                                                                        erarchy where specialized provers dominate standard bench-
+                                                                        marks. We attribute this to a phenomenon we term “tactical
+5.2. Benchmark Performance                                              overfitting”: while extensive fine-tuning on state-tactic pairs
+We summarize the performance across four applied mathe-                 maximizes the ability to close logical goals, it appears to
+matics subfields in Table 1. The results reveal several critical        induce a “hammer-and-nail” bias where models treat every
+insights regarding the current state of automated formaliza-            structural challenge as a pure theorem-proving task. This
+tion, most notably that overall pass rates are remarkably low           specialization leads to a catastrophic forgetting of general
+compared to standard pure mathematics benchmarks like                   alignment skills, causing models to ignore the multi-stage
+MiniF2F. This performance gap is particularly evident in                nature of applied mathematics. Consequently, they struggle
+the hard subset, where success rates remain near zero for               to adhere to the rigid “construction-verification” template,
+almost all evaluated models. These findings validate our hy-            frequently bypassing the required definition (the def block)
+pothesis that applied mathematics presents unique structural            or erroneously attempting to discharge construction goals
+challenges. Agents must overcome both the intrinsic logi-               using non-constructive proof tactics. In contrast, general-
+cal depth required to navigate specialized domain-specific              purpose models retain robust instruction-following skills,
+proofs and the significant structural complexity involved in            allowing them to bridge the gap between informal intent and
+constructing accurate mathematical objects. This difficulty             formal syntax to correctly synthesize mathematical objects
+is consistent with our quantitative analysis, which shows               before entering the verification stage. A Detailed analysis
+our AMBER benchmark possesses a significantly higher se-                of this phenomenon is provided in Appendix E.
+mantic dependency density than existing datasets, requiring
+models to reason over a much denser subgraph of mathe-                  5.3. Ablation Study on Prompts.
+matical concepts. We provide a comprehensive breakdown
+                                                                        To validate the effectiveness of our proposed framework
+of unbiased Pass@k results for k ≤ 16 in Table 2, with full
+                                                                        and the necessity of structural constraints, we conducted an
+results detailed in Appendix D.3.
+                                                                        extensive ablation study across all 100 problems within the
+General Models Outperform Specialized Provers. A                        optimization and convex analysis domains. We compared
+striking observation is that general-purpose reasoning                  our construction-verification prompt against two baselines:
+
+                                                                    7
+                          Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+standard code completion (providing the file without struc-             vide fully executable code, 15.2% (487 cases) of the out-
+tural instructions) and traditional proof only (asking solely           puts contained incomplete segments marked by sorry or
+for a proof). The results, detailed in Appendix D.4, demon-             submit. This issue is particularly pronounced in com-
+strate that the construction-verification strategy yields the           plex algorithm design tasks, where the model successfully
+highest success rate of 8%. In contrast, the performance                sketches the algorithmic structure but abandons the rigorous
+drops to 6% with standard completion and further to 5%                  proof of the inductive step, reverting to placeholders when
+with proof-only prompts.                                                the derivation becomes too involved.
+
+      Table 3. Ablation results on the 100-problem subset.              Formatting and Syntax. Finally, a minor fraction of 4.8%
+                                                                        (154 cases) is attributed to basic output formatting errors,
+         Prompt Type                    Success Rate                    such as failing to encapsulate code within standard mark-
+                                                                        down blocks or generating syntactically malformed headers
+         Construction-Verification           8/100
+                                                                        that prevent the compiler from parsing the file.
+         Standard Completion                 6/100
+         Traditional Proof-Only              5/100                      In summary, nearly half of the failures are due to LLM
+                                                                        hallucination, suggesting that future improvements should
+Qualitative analysis reveals that traditional proof-only                prioritize retrieval-augmented generation or specialized fine-
+prompts frequently mislead models into using non-                       tuning to align the model’s internal knowledge with the
+constructive shortcuts. For instance, models often resort to            exact state of the Mathlib library. Details and case studies
+tactics such as Classical.choice to prove existence                     are provided in Appendix F.
+logically without providing the computational solution. Fur-
+                                                                                              Distribution of Error Types
+thermore, standard completion prompts often lead models                                  Incomplete Outputs
+to ignore the requirement to fill the definition block and
+                                                                                   Formatting
+attempt to discharge the entire problem using only proof-
+search tactics. These findings confirm that explicit structural                                          15.2%
+                                                                                                  4.8%
+prompting is essential to prevent models from bypassing the
+                                                                                                                            Formalization
+constructive requirements of the benchmark.                                                                         32.7%   Competence
+
+
+5.4. Error Analysis
+                                                                                                47.3%
+To investigate the specific obstacles in formalizing applied
+mathematics, we conducted a detailed manual classification                    Hallucination
+of 3,189 randomly sampled error messages generated by
+the DeepSeek-R1 model. The analysis reveals that the chal-
+lenges are not uniformly distributed, with specific failure                             Figure 2. Error analysis distribution.
+modes dominating the results.
+Hallucination of LLMs. The most prevalent source of                     6. Conclusion
+error, accounting for 47.3% (1,512 cases) of the total, is
+the invocation of non-existent theorems or definitions. In              In this work, we introduce a comprehensive AMBER bench-
+these instances, the model hallucinates plausible-sounding              mark tailored for applied mathematics in Lean 4, addressing
+Mathlib identifiers (e.g., convexHull eq sInter) that                   a critical misalignment in existing datasets by shifting the
+do not exist in the actual library. This indicates that while the       evaluation paradigm from existential verification to explicit
+model often correctly identifies the necessary mathematical             solution construction. Apart from theorem proving, our pro-
+steps, it lacks the precise memorization of the Lean 4 library          posed tasks spanning numerical evaluation, algorithm de-
+signature required to implement them.                                   sign and representation transformation compel agents to go
+                                                                        beyond mere theorem proving by synthesizing computable
+Formalization Competence. The second largest category,
+                                                                        definitions and performing structural modeling before veri-
+comprising the remaining 32.7% of errors, stems from in-
+                                                                        fication. Extensive evaluations reveal that this constructive
+sufficient formalization skills. These failures occur when
+                                                                        paradigm poses significant challenges to state-of-the-art
+the model utilizes valid theorems and tactics but misapplies
+                                                                        models, most notably highlighting a “tactical overfitting”
+them, misjudging the effect of a tactic or failing to discharge
+                                                                        phenomenon where specialized theorem provers, despite
+necessary side-conditions for a rewrite. This reflects a gap
+                                                                        their proficiency in closing local logical goals, exhibit a
+between the model’s high-level reasoning and its low-level
+                                                                        rigidity that hampers their ability to adhere to multi-stage
+tactic execution capabilities.
+                                                                        constructive instructions compared to the superior versatil-
+Incomplete Outputs. Despite explicit instructions to pro-               ity of general-purpose models. These results underscore
+
+                                                                    8
+                          Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+the necessity of moving beyond pure proof search towards               Li, Y., Du, D., Song, L., Li, C., Wang, W., Yang, T., and Mi,
+neuro-symbolic systems that integrate high-level algorith-                H. Hunyuanprover: A scalable data synthesis framework
+mic reasoning with rigorous formal verification, serving as               and guided tree search for automated theorem proving.
+a foundation for future research in expanding the frontiers               arXiv preprint arXiv:2412.20735, 2024.
+of formalized applied mathematics.
+                                                                       Lin, H., Sun, Z., Welleck, S., and Yang, Y. Lean-star: Learn-
+                                                                         ing to interleave thinking and proving. arXiv preprint
+References                                                               arXiv:2407.10040, 2024.
+Azerbayev, Z., Piotrowski, B., Schoelkopf, H., Ayers, E. W.,
+  Radev, D., and Avigad, J. Proofnet: Autoformalizing and              Lin, Y., Tang, S., Lyu, B., Yang, Z., Chung, J.-H., Zhao,
+  formally proving undergraduate-level mathematics. arXiv                H., Jiang, L., Geng, Y., Ge, J., Sun, J., et al. Goedel-
+  preprint arXiv:2302.12433, 2023.                                       prover-v2: Scaling formal theorem proving with scaf-
+                                                                         folded data synthesis and self-correction. arXiv preprint
+Bentkamp, A., Fernández Mir, R., and Avigad, J. Verified re-            arXiv:2508.03613, 2025.
+  ductions for optimization. In International Conference on
+  Tools and Algorithms for the Construction and Analysis               Liu, A., Mei, A., Lin, B., Xue, B., Wang, B., Xu, B., Wu,
+  of Systems, pp. 74–92. Springer, 2023.                                 B., Zhang, B., Lin, C., Dong, C., et al. Deepseek-v3.
+                                                                         2: Pushing the frontier of open large language models.
+Boyd, S. and Vandenberghe, L. Convex optimization. Cam-                  arXiv preprint arXiv:2512.02556, 2025a.
+  bridge university press, 2004.
+                                                                       Liu, C., Shen, J., Xin, H., Liu, Z., Yuan, Y., Wang, H., Ju,
+Chen, L., Gu, J., Huang, L., Huang, W., Jiang, Z., Jie, A., Jin,         W., Zheng, C., Yin, Y., Li, L., et al. Fimo: A challenge
+  X., Jin, X., Li, C., Ma, K., et al. Seed-prover: Deep and              formal dataset for automated theorem proving. arXiv
+  broad reasoning for automated theorem proving. arXiv                   preprint arXiv:2309.04295, 2023.
+  preprint arXiv:2507.23726, 2025.
+                                                                       Liu, J., Lin, X., Bayer, J., Dillies, Y., Jiang, W., Liang, X.,
+Chen, M. Evaluating large language models trained on code.               Soletskyi, R., Wang, H., Xie, Y., Xiong, B., et al. Com-
+  arXiv preprint arXiv:2107.03374, 2021.                                 bibench: Benchmarking llm capability for combinatorial
+                                                                         mathematics. arXiv preprint arXiv:2505.03171, 2025b.
+de Moura, L. and Ullrich, S. The lean 4 theorem prover and
+  programming language (system description). 2015.                     Liu, Q., Zheng, X., Xia, R., Qi, X., Cao, Q., and Yan, J.
+                                                                         Beyond theorem proving: Formulation, framework and
+Gloeckle, F., Limperg, J., Synnaeve, G., and Hayat, A. Abel:             benchmark for formal problem-solving. arXiv preprint
+  Sample efficient online reinforcement learning for neural              arXiv:2505.04528, 2025c.
+  theorem proving. In The 4th Workshop on Mathematical
+  Reasoning and AI at NeurIPS’24, 2024.                                Miranda, B., Zhou, Z., Nie, A., Obbad, E., Aniva, L.,
+                                                                        Fronsdal, K., Kirk, W., Soylu, D., Yu, A., Li, Y., et al.
+Golub, G. H. and Van Loan, C. F. Matrix computations.                   Veribench: End-to-end formal verification benchmark
+ JHU press, 2013.                                                       for ai code generation in lean 4. In 2nd AI for Math
+                                                                        Workshop@ ICML 2025, 2025.
+Harrison, J. Hol light: A tutorial introduction. In Interna-
+  tional Conference on Formal Methods in Computer-Aided                Moura, L. d. and Ullrich, S. The lean 4 theorem prover and
+  Design, pp. 265–269. Springer, 1996.                                  programming language. In International Conference on
+                                                                        Automated Deduction, pp. 625–635. Springer, 2021.
+Huet, G., Kahn, G., and Paulin-Mohring, C. The coq proof
+  assistant a tutorial. Rapport Technique, 178:113, 1997.              Paulson, L. C. Isabelle: A generic theorem prover. Springer,
+                                                                         1994.
+Jiang, J., He, W., Wang, Y., Gao, G., Hu, Y., Wang, J.,
+   Guan, N., Wu, P., Dai, C., Xiao, L., et al. Fate: A for-            Polu, S. and Sutskever, I. Generative language model-
+   mal benchmark series for frontier algebra of multiple                 ing for automated theorem proving. arXiv preprint
+   difficulty levels. arXiv preprint arXiv:2511.02872, 2025.             arXiv:2009.03393, 2020.
+
+Lample, G., Lacroix, T., Lachaux, M.-A., Rodriguez, A.,                Ren, Z., Shao, Z., Song, J., Xin, H., Wang, H., Zhao, W.,
+  Hayat, A., Lavril, T., Ebner, G., and Martinet, X. Hyper-              Zhang, L., Fu, Z., Zhu, Q., Yang, D., et al. Deepseek-
+  tree proof search for neural theorem proving. Advances in              prover-v2: Advancing formal mathematical reasoning via
+  neural information processing systems, 35:26337–26349,                 reinforcement learning for subgoal decomposition. arXiv
+  2022.                                                                  preprint arXiv:2504.21801, 2025.
+
+                                                                   9
+                         Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+Team, K., Bai, Y., Bao, Y., Chen, G., Chen, J., Chen,
+  N., Chen, R., Chen, Y., Chen, Y., Chen, Y., et al.
+  Kimi k2: Open agentic intelligence. arXiv preprint
+  arXiv:2507.20534, 2025.
+Tsoukalas, G., Lee, J., Jennings, J., Xin, J., Ding, M., Jen-
+  nings, M., Thakur, A., and Chaudhuri, S. Putnambench:
+  Evaluating neural theorem-provers on the putnam math-
+  ematical competition. Advances in Neural Information
+  Processing Systems, 37:11545–11569, 2024.
+Vershynin, R. High-dimensional probability: An introduc-
+  tion with applications in data science, volume 47. Cam-
+  bridge university press, 2018.
+Wang, H., Unsal, M., Lin, X., Baksys, M., Liu, J., Santos,
+ M. D., Sung, F., Vinyes, M., Ying, Z., Zhu, Z., et al.
+ Kimina-prover preview: Towards large formal reason-
+ ing models with reinforcement learning. arXiv preprint
+ arXiv:2504.11354, 2025.
+Wu, Z., Huang, S., Zhou, Z., Ying, H., Yuan, Z., Zhang, W.,
+ Lin, D., and Chen, K. Internlm2. 5-stepprover: Advanc-
+ ing automated theorem proving via critic-guided search.
+ In 2nd AI for Math Workshop@ ICML 2025, 2025.
+Xin, H., Ren, Z., Song, J., Shao, Z., Zhao, W., Wang, H., Liu,
+  B., Zhang, L., Lu, X., Du, Q., et al. Deepseek-prover-v1.
+  5: Harnessing proof assistant feedback for reinforcement
+  learning and monte-carlo tree search. arXiv preprint
+  arXiv:2408.08152, 2024.
+Xin, R., Xi, C., Yang, J., Chen, F., Wu, H., Xiao, X., Sun, Y.,
+  Zheng, S., and Ding, M. Bfs-prover: Scalable best-first
+  tree search for llm-based automatic theorem proving. In
+  Proceedings of the 63rd Annual Meeting of the Associ-
+  ation for Computational Linguistics (Volume 1: Long
+  Papers), pp. 32588–32599, 2025.
+Xiong, B., Lv, H., Shan, H., Wang, J., Yang, Z., and Zhi,
+  L. A combinatorial identities benchmark for theorem
+  proving via automated theorem generation. arXiv preprint
+  arXiv:2502.17840, 2025.
+Yang, K., Swope, A., Gu, A., Chalamala, R., Song, P.,
+  Yu, S., Godil, S., Prenger, R. J., and Anandkumar, A.
+  Leandojo: Theorem proving with retrieval-augmented
+  language models. Advances in Neural Information Pro-
+  cessing Systems, 36:21573–21612, 2023.
+Zheng, K., Han, J. M., and Polu, S. Minif2f: a cross-system
+  benchmark for formal olympiad-level mathematics. arXiv
+  preprint arXiv:2109.00110, 2021.
+Zhou, Y., Zhao, J., Zhang, Y., Wang, B., Wang, S., Chen,
+  L., Wang, J., Chen, H., Jie, A., Zhang, X., et al. Solving
+  formal math problems by decomposition and iterative
+  reflection. arXiv preprint arXiv:2507.15225, 2025.
+
+                                                                  10
+                        Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+A. Introduction to Formalization and Lean
+Mathematical formalization is the process of translating mathematical definitions, theorems, and proofs from natural
+language (informal mathematics) into a strict formal language that can be mechanically checked by a computer. This
+appendix provides a brief overview of the Lean theorem prover, focusing on the concepts essential for understanding the
+benchmark presented in this paper.
+
+A.1. Formal Verification and Lean
+Lean is an interactive theorem prover (ITP) and a functional programming language developed at Microsoft Research.
+Unlike computer algebra systems (e.g., MATLAB, Mathematica) which focus on numerical or symbolic computation, Lean
+focuses on logical correctness. It verifies that a derivation follows the axioms of mathematics without ambiguity.
+The core underlying logic of Lean is the calculus of inductive constructions (CIC). In this system, mathematical statements
+and proofs are treated as types and programs, respectively. This correspondence, known as the Curry-Howard Isomorphism,
+implies that:
+
+   • A proposition (a mathematical statement) is a type.
+   • A proof of that proposition is a term (a program) of that type.
+   • Verifying a proof is equivalent to type-checking the program.
+
+If a user writes a proof term that successfully type-checks against a theorem statement, the theorem is guaranteed to be true
+(relative to the consistency of the system).
+
+A.2. Definitions vs. Theorems
+A critical distinction in Lean and a central theme of our AMBER benchmark is the difference between defining data
+(definitions) and proving facts (theorems). In applied mathematics, we often need both: we construct a solution (an algorithm
+or a value) and then prove it is correct.
+Definitions (def). Definitions are used to construct mathematical objects, functions, or algorithms. These are computational
+or structural entities. For example, defining the square function on natural numbers:
+
+  def square (n : N) : N := n ∗ n
+
+In our benchmark, the construction phase (e.g., defining the optimal x∗ , or writing the Gradient Descent loop) corresponds
+to the creation of a def.
+Theorems (theorem). Theorems are used to assert propositions. They do not produce data; they carry logical evidence.
+For example, proving that the square of a positive number is positive:
+
+  theorem square_pos (n : N) (h : n > 0) : square n > 0 := by
+    -- The proof goes here
+    sorry
+
+In our benchmark, the verification phase corresponds to establishing a theorem that validates the properties of the
+previously defined def.
+
+A.3. Tactics and Automation
+Writing proof terms directly (e.g., constructing complex lambda calculus terms) is tedious for humans. Lean provides a
+tactic mode, usually introduced by the keyword by. Tactics are meta-programs that manipulate the proof state to generate
+the underlying proof term automatically.
+Common tactics include:
+rw (rewrite): Replaces terms using equalities.
+
+                                                             11
+                        Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+simp (simplify): Simplifies expressions using a database of algebraic rules.
+apply: Applies a lemma to reduce the current goal to sub-goals.
+linarith: Automatically solves linear arithmetic inequalities.
+In our experiments, LLMs must predict these tactic sequences to close the logical goals. The sorry keyword is a
+placeholder used to admit a goal without proof. The objective of the benchmark is to replace every sorry with valid code
+or tactics.
+
+A.4. Mathlib: The Mathematical Library
+Lean is supported by Mathlib, a unified, community-driven mathematical library. Mathlib contains formalized definitions
+and theorems spanning algebra, topology, analysis, probability, and more. For applied mathematics, Mathlib provides the
+necessary infrastructure, such as:
+Linear Algebra: Definitions of matrices, vectors, eigenvalues, and inner product spaces.
+Analysis: Notions of derivatives, gradients, convexity, and continuity.
+Probability: Measure theory, integration, and random variables.
+Our AMBER benchmark heavily relies on Mathlib. For instance, an optimization problem in our dataset will invoke
+Mathlib’s definition of PositiveDefinite matrices. An LLM’s performance is thus contingent not only on its reasoning ability
+but also on its familiarity with Mathlib’s specific API and naming conventions.
+
+A.5. Why Lean for Applied Mathematics?
+While historically used for pure mathematics (e.g., verifying Fermat’s Last Theorem), Lean 4 is designed as a general-
+purpose programming language. This makes it uniquely suitable for the Algorithmic and Computational problems featured
+in this paper.
+Unlike purely logical systems, Lean allows us to define executable algorithms, run these algorithms on inputs and even
+simultaneously prove that the algorithm converges.This duality allows our benchmark to evaluate agents on the full spectrum
+of applied mathematics: from modeling and computation (programming) to rigorous justification (proving).
+
+B. Details and Examples on Formalization Framework
+In this section, we provide details on the formalization framework in Section 3. We first show the detailed class definition
+
+B.1. Classes of Representation Transformation
+To systematically evaluate the capability of models to perform Representation Transformation, we have developed a
+comprehensive infrastructure of modular Type Classes in Lean 4. This framework is designed to rigorously formalize
+the often implicit process of problem reformulation in applied mathematics, converting it from a heuristic procedure
+into a precise task of type mapping. Unlike standard numerical computation, representation transformation demands the
+restructuring of a non-standard primal problem into a computationally tractable canonical form, such as LP or SDP, while
+preserving mathematical equivalence or relaxation properties. To this end, we established a hierarchical class structure. We
+begin by defining a generic interface, OptProblem, which encapsulates the decision variable domain, the set of constraint
+predicates, and the objective function. Building upon this foundation, and specifically addressing duality theory, one of the
+cornerstones of optimization theory , we designed specialized class structures to formalize the derivation of dual problems.
+This design not only encapsulates the construction of the Lagrangian function but also explicitly types the space of dual
+variables and their associated constraints. By enforcing this structured definition, we compel the agents to go beyond
+intuitive symbolic derivation; they must instead construct a verified structural transformation, providing rigorous proofs of
+the correctness within the Lean type system.
+
+
+
+
+                                                            12
+                 Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+
+class OriginalProblem where
+ n_var : N
+ constraints : (Fin n_var → R) → Prop
+ objective : (Fin n_var → R) → R
+
+class OptProblem extends OriginalProblem where
+ n_eqs : N
+ eq_constraints : (Fin n_var → R) → (Fin n_eqs → R)
+ n_ieqs : N
+ ieq_constraints : (Fin n_var → R) → (Fin n_ieqs → R)
+ constraints := fun x => eq_constraints x = 0 ∧ ieq_constraints x ≤ 0
+ h_constraints : constraints = fun x => eq_constraints x = 0 ∧ ieq_constraints x ≤ 0 :
+    = by simp
+
+class LP extends OptProblem where
+ c : Fin n_var → R
+ A_eq : Matrix (Fin n_eqs) (Fin n_var) R
+ b_eq : Fin n_eqs → R
+ A_ieq : Matrix (Fin n_ieqs) (Fin n_var) R
+ b_ieq : Fin n_ieqs → R
+ objective := fun x => c ·v x
+ eq_constraints := fun x => A_eq ∗ v x − b_eq
+ ieq_constraints := fun x => A_ieq ∗ v x − b_ieq
+ h_objective : objective = fun x => c ·v x := by simp
+ h_eq : eq_constraints = fun x => A_eq ∗ v x − b_eq := by simp
+ h_ieq : ieq_constraints = fun x => A_ieq ∗ v x − b_ieq := by simp
+
+class SDP extends OriginalProblem where
+ c : Fin n_var → R
+ n_eqs : N
+ A_eq : Matrix (Fin n_eqs) (Fin n_var) R
+ b_eq : Fin n_eqs → R
+ eq_constraints := fun x => A_eq ∗ v x − b_eq
+ n_ieqs : N
+ A_sd : Fin n_var → Matrix (Fin n_ieqs) (Fin n_ieqs) R
+ B_sd : Matrix (Fin n_ieqs) (Fin n_ieqs) R
+ ieq_constraints := fun x => Σ i, x i · A_sd i + B_sd
+ constraints := fun x => eq_constraints x = 0 ∧ (ieq_constraints x).PosDef
+ h_constraints : constraints = fun x => eq_constraints x = 0 ∧ (ieq_constraints
+     x).PosDef := by simp
+ objective := fun x => c ·v x
+ h_objective : objective = fun x => c ·v x := by simp
+
+def subequivlance (p q : OriginalProblem) : Prop :=
+ ∀ (x : Fin p.n_var → R), (p.constraints x) →
+ ∃ (y : Fin q.n_var → R), (q.constraints y) ∧
+ q.objective y = p.objective x
+
+def equivalence (p q : OriginalProblem) : Prop :=
+ subequivlance p q ∧ subequivlance q p
+
+class DualProblem (p : OptProblem) where
+ dual_objective : (Fin p.n_eqs → R) → (Fin p.n_ieqs → R) → EReal
+ dual_domain : Set ((Fin p.n_eqs → R) × (Fin p.n_ieqs → R))
+ h_objective : dual_objective = fun lam mu => (⊓ x : (Fin p.n_var → R), ((lam ·v
+    p.eq_constraints x) + (mu ·v p.ieq_constraints x) + p.objective x).toEReal) := by simp
+ h_domain : dual_domain = {(lam, mu) | dual_objective lam mu ̸= ⊥} := by simp
+
+
+
+
+                                                   13
+                        Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+B.2. Examples of Different Problem Categories
+In this section, we provide concrete examples illustrating the distinct problem categories defined in our AMBER benchmark.
+
+B.2.1. C ONSTRUCTION -V ERIFICATION VS . T HEOREM - PROVING
+Construction-Verification problems ask the solver to produce an explicit value of a mathematics problem, rather than merely
+proving that such a value exists. Below is a representative example of ..........
+Informal Statement. Solve the optimization problem
+
+                                    f = ∥x∥, s.t. x ∈ (x, y, z)|x2 + y 2 + z 2 ≤ 1 .
+                                                     
+
+
+
+The theorem-proving approach is to translate optimization problem into an existence theorem , and then extract a witness
+using use tactic as follow.
+
+
+  noncomputable def f : (EuclideanSpace R (Fin 3)) → R :=
+   fun x 7→ ∥x∥
+
+  def ball := Metric.closedBall (0 : EuclideanSpace R (Fin 3)) 1
+
+  theorem optimization_problem′ : ∃ x ∈ ball, IsMinOn f ball x := by
+   use 0
+   constructor
+   · simp [ball]
+   · intro x hx
+     simp [f]
+
+
+In practice, Lean code generated by LLMs often default to an automation-friendly pattern: they discharge goals by rewriting
+them into standard existence statements (e.g., via extreme-value arguments), yielding a proof of ∃x, . . . rather than an
+explicit construction of a concrete minimizer. Consequently, even when the underlying optimization problem admits a
+simple closed-form solution, the generated proof script may drift toward establishing the existence of some x instead of
+defining a specific x and certifying its feasibility and optimality. In the example below, the proof establishes only the
+existence of the minimizer x by showing that the feasible set is compact, without providing an explicit construction of the
+minimizer x.
+
+
+  noncomputable def f : (EuclideanSpace R (Fin 3)) → R :=
+    fun x 7→ ∥x∥
+
+  def ball := Metric.closedBall (0 : EuclideanSpace R (Fin 3)) 1
+
+  theorem optimization_problem {n : N} [NeZero n] :
+     ∃ x ∈ ball, IsMinOn f ball x :=
+    -- Show that ball is a Compact set
+    have hcompact : IsCompact ball :=
+      isCompact_closedBall 0 1
+    hcompact.exists_isMinOn (by simp [ball]) continuous_norm.continuousOn
+
+
+B.2.2. E VALUATION P ROBLEMS
+Evaluation problems require the explicit synthesis of a solution term rather than a mere existence proof. These tasks are
+categorized into two subclasses: numerical computation, where the problem parameters are concrete numbers, and symbolic
+derivation, where the solution must be expressed in terms of abstract variables. Below is a representative example of a
+numerical computation problem involving quadratic programming (QP).
+
+                                                            14
+                        Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+Informal Statement. Find an optimal point of the following optimization problem.
+
+                                          minimize     (1/2)xT P x + q T x + r
+                                          subject to   −1 ≤ xi ≤ 1, i = 1, 2, 3,
+
+
+where
+                                                                         
+                                          13     12    −2             −22.0
+                                    P =  12     17     6 ,     q = −14.5 ,    r = 1.
+                                         −2      6     12              13.0
+
+The example above is a typical numerical computation problem. In the problem, we provide several numerical matrix and
+vectors, and the task is to construct an optimal point numerically. To complete the lean content, it is required to figure out
+the result and fill it in the first sorry, and then prove the optimality of the result in the theorem.
+Formal Statement.
+
+  def answer : Fin 3 → R := sorry
+
+  theorem num_3_S_E : let x := answer
+   let P : Matrix (Fin 3) (Fin 3) R:= !![13, 12, −2; 12, 17, 6; −2, 6, 12]
+   let q : Fin 3 → R := ![−22, −14.5, 13]
+   let r := 1
+   IsMinOn (fun y => (1 / 2) ∗ (y ·v P ∗ v y) + (q ·v y) + r) {x | ∀ i : Fin 3, −1 ≤ x i ∧ x i ≤ 1} x
+   ∧ ∀ i : Fin 3, −1 ≤ x i ∧ x i ≤ 1:= by sorry
+
+
+Formalization Challenge. This example represents a typical numerical computation task. The problem inputs (matrix
+P and vectors q, r) are provided as concrete data structures. The agent must compute the specific numerical vector x∗
+that minimizes the objective function and instantiate it in the definition block (resolving the first sorry). Meanwhile, the
+agent must subsequently provide a rigorous proof in the theorem block showing that this specific candidate x∗ satisfies the
+optimality conditions under the given constraints. Unlike numerical problems, symbolic derivation tasks require the agent to
+construct a general closed-form expression in terms of abstract parameters.
+Informal Statement. Derive the analytical solution for the unconstrained quadratic minimization problem:
+
+                                                                 1 T
+                                              minn     f (x) =     x Ax + bT x,
+                                              x∈R                2
+
+where A ∈ Rn×n is a symmetric positive definite matrix (A ≻ 0) and b ∈ Rn is an arbitrary constant vector.
+Formal Statement.
+
+  variable (n : Nat) (A : Matrix (Fin n) (Fin n) R) (b : Fin 3 → R)
+
+  def answer (n : Nat) (A : Matrix (Fin n) (Fin n) R) (b : Fin 3 → R) : Fin n → R := sorry
+
+  theorem num_3_S_E : let x := answer n A b
+   IsMinOn (fun y => (1 / 2) ∗ (y ·v A ∗ v y) + (b ·v y) + c) .univ x := by sorry
+
+
+Formalization Challenge. This problem tests the agent’s ability to perform symbolic algebraic manipulation rather than
+arithmetic calculation. The agent must define a function that takes the parameters A and b as arguments and returns the term
+−A−1 b (or an equivalent representation involving the linear solve operation). The definition must be structurally valid for
+any A and b satisfying the type constraints. The subsequent theorem requires proving that this constructed term is indeed
+the unique global minimizer. This involves invoking properties of positive definite matrices and gradients (e.g., showing
+∇f (x∗ ) = 0 or completing the square) rather than checking numerical inequalities.
+
+                                                               15
+                         Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+B.2.3. A LGORITHM D ESIGN
+Informal Statement. Suppose L ∈ Rn×n are lower triangular and B ∈ Rn×n . Give an algorithm for computing X ∈ Rn×n
+so that LX = B.
+Formal Statement.
+
+
+
+
+  open Matrix WithLp
+
+  variable {n : N} {L : Matrix (Fin n) (Fin n) R} (B : Matrix (Fin n) (Fin n) R)
+
+  variable (hL : L.BlockTriangular OrderDual.toDual)
+
+  def algorithm (hL : L.BlockTriangular OrderDual.toDual) (B : Matrix (Fin n) (Fin n) R) : N →
+       Matrix (Fin n) (Fin n) R := fun k => match k with
+   | 0 => 0
+   | k + 1 => sorry
+
+  theorem algorithm_prop (B : Matrix (Fin n) (Fin n) R) :
+    L ∗ algorithm hL B n = B := by
+   sorry
+
+
+
+
+Formalization Challenge. This problem category evaluates the agent’s ability to synthesize algorithmic logic rather than
+static solutions. Unlike evaluation tasks where the output is a closed-form term, here the target is a state-transition rule. To
+resolve the first sorry, the agent must explicitly implement a forward substitution algorithm leveraging the lower-triangular
+structure of. This requires translating the standard imperative loop such as computing the -th component based on previous
+results into Lean’s functional recursive style, effectively defining the step-by-step evolution of the matrix . The verification
+phase (the second sorry) demands a proof of algorithmic correctness. The agent must demonstrate via induction that the
+constructed sequence terminates at the exact solution after steps. This tests the capability to model control flow and establish
+loop invariants, bridging the gap between numerical algorithm design and formal logic.
+
+B.2.4. R EPRESENTATION T RANSFORMATION
+We adhere to the theoretical framework established in Section 3.3 and leverage the foundational class definitions provided in
+Appendix B.1, which implement these concepts in Lean. This category evaluates an agent’s ability to recognize underlying
+mathematical structures and map them to tractable canonical forms. Below, we present a representative example involving
+the reduction of a matrix approximation problem to a linear program (LP).
+Informal Statement. We are given k + 1 matrices A0 , . . . , Ak ∈ Rm×n , and need to find x ∈ Rk that minimizes
+
+
+
+
+                                               ∥A0 + x1 A1 + · · · + xk Ak ∥∞ .
+
+
+
+
+Express this problem as a linear program.
+Formal Statement.
+
+                                                              16
+                        Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+                          Table 4. Detailed statistics of the benchmark dataset across different domains.
+
+                                    Difficulty                            Problem Category
+         Domain                   Easy     Hard      Proof     Evaluation      Algorithm       Transformation   Total
+         Optimization              24        26        18            12              1                 19        50
+         Convex Analysis           26        24        36            13              1                  0        50
+         Numerical Algebra         25        25        19            12             19                  0        50
+         High-dim Probability      25        25        45             5              0                  0        50
+         Total                     100      100       118            42             21                 19       200
+
+
+
+  open scoped Matrix.Norms.Operator
+
+  variable (m n k : N) (A : Fin k → Matrix (Fin m) (Fin n) R)
+
+  noncomputable def P : OptProblem where
+   n_var := k
+   n_eqs := 0
+   eq_constraints := 0
+   n_ieqs := 0
+   ieq_constraints := 0
+   objective := fun x => ∥Σ i, x i · (A i)∥
+
+  def answer (m n k : N) (A : Fin k → Matrix (Fin m) (Fin n) R) : LP := sorry
+
+  theorem num_7_T_H :
+   let Q := answer m n k A
+   let P := P m n k A
+   equivalence P.toOriginalProblem Q.toOriginalProblem := by sorry
+
+
+Formalization Challenge. This problem introduces a distinct layer of complexity compared to direct calculation. To resolve
+the first sorry, the agent must explicitly construct the linear programming form. This involves a non-trivial modeling
+step: understanding that minimizing an L∞ norm is equivalent to minimizing a scalar slack variable t subject to linear
+constraints (−t ≤ (A(x))ij ≤ t). Consequently, the agent must correctly define a new decision space that includes the
+auxiliary slack variable (mapping from Rk to Rk+1 ). The agent also needs to populate the fields of the LP structure with the
+correct block-matrix representations derived from the input matrices Ai . Furthermore, the verification theorem requires
+unfolding the custom LP definitions found in the Appendix. This demands that the LLM not only process the immediate
+local context but also retrieve and comprehend the global type definitions to construct a valid proof of equivalence. This
+challenge the agent’s capability on the multi-modal interplay between natural language mathematical intent and specific
+code library constraints)
+
+C. Details and Analysis on AMBER Benchmark
+C.1. Term Analysis
+To construct a benchmark that evaluates deep mathematical reasoning, mere text scraping is insufficient. Unlike natural
+language, formal mathematics in Lean possesses a rigorous dependency structure where every symbol is unambiguously
+defined. We developed a custom static analysis engine to extract these semantic dependencies, ensuring that each theorem in
+our dataset is accompanied by the precise definitions of the mathematical concepts it employs.
+
+C.1.1. E NVIRONMENT R ECONSTRUCTION AND AST T RAVERSAL
+The first stage of our pipeline involves reconstructing the compilation environment for each source file. We utilize Lean’s
+compiler infrastructure to elaborate the source code, transforming raw text into fully typed abstract syntax trees (ASTs).
+This step is crucial because it resolves imports and namespaces, allowing us to distinguish between effectively identical
+
+                                                                17
+                         Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+names (e.g., Matrix.trace vs. LinearMap.trace) based on their precise identity in the global environment.
+For each target theorem T , we extract its statement (type signature) and perform a recursive traversal of its expression tree.
+Let ET denote the expression tree of theorem T . We collect the set of all unique constants CT = {c | c ∈ leaves(ET )}
+appearing in the statement. This process captures not just the top-level concepts but also nested dependencies used in
+arguments or return types.
+
+C.1.2. S EMANTIC S TOPWORD F ILTERING
+A raw extraction of constants yields a mixture of high-level mathematical concepts and low-level logical infrastructure. To
+focus on domain-specific reasoning, we implement a semantic stopword filter.
+We partition the set of constants CT into two subsets: Cinfra and Cdomain .
+Infrastructure Terms (Cinfra ). These include logical connectives (∧, ∨, →), equality types (Eq), basic data types (Nat,
+String), and internal compiler auxiliary definitions. These are treated as stop words similar to NLP preprocessing, as they
+provide structural glue rather than mathematical content.
+
+Domain Concepts (Cdomain ). These are the definitions, structures, and classes relevant to the mathematical subfield (e.g.,
+Convex, Measure, Eigenvalue).
+
+Our analyzer filters out Cinfra , retaining only the domain-specific concepts that a model must understand to prove the
+theorem.
+This pipeline results in a structured representation for each theorem T , consisting of the tuple (ST , DT ), where ST is the
+formal statement and DT is the set of resolved dependencies, each containing its formal definition, source code location,
+and natural language documentation. The listing below presents a concrete example of this JSON structure for a specific
+theorem, showcasing the resolved dependencies and their associated metadata.
+
+  {
+      “theoremName”: “isUnit_one_sub_skew_symmetric”,
+      “statement”: “∀ {n : N} [NeZero n] (S : Matrix (Fin n) (Fin n) R), ...”,
+      “filePath”: “Benchmarks/NAlg/num_2_P_E.lean”,
+      “dependencies”: [
+       {
+        “name”: “Matrix.one”,
+        “module”: “Mathlib.Data.Matrix.Diagonal”,
+        “kind”: “definition”,
+        “docString”: null,
+        “depth”: 1,
+        “definition”: “{n : Type u_3} → ... → One (Matrix n n α)”,
+        “defRange”: {“startLine”: 199, “endLine”: 200}
+       },
+       {
+        “name”: “Matrix.transpose”,
+        “module”: “Mathlib.LinearAlgebra.Matrix.Defs”,
+        “kind”: “definition”,
+        “docString”: “The transpose of a matrix.”,
+        “depth”: 1,
+        “definition”: “{m : Type u} ... → Matrix m n α → Matrix n m α”,
+        “defRange”: {“startLine”: 133, “endLine”: 135}
+       },
+       {
+        “name”: “IsUnit”,
+        “module”: “Mathlib.Algebra.Group.Units.Defs”,
+        “kind”: “definition”,
+        “docString”: “An element `a : M` of a `Monoid` is a unit if...”,
+        “depth”: 1,
+        “definition”: “{M : Type u} → [Monoid M] → M → Prop”,
+
+
+                                                              18
+                         Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+            “defRange”: {“startLine”: 362, “endLine”: 369}
+          },
+          ...
+      ]
+  }
+
+
+C.2. Domain Statistics and Benchmark Fingerprinting
+Leveraging the dependency extraction pipeline described above, we performed a quantitative analysis of the mathematical
+domains covered by our benchmark compared to existing datasets, specifically FATE (focused on algebra) and MiniF2F
+(focused on high school competitions). Since Mathlib’s directory structure strictly follows mathematical hierarchies,
+mapping the filtered domain constants Cdomain back to their defining modules provides a high-resolution fingerprint of the
+dataset’s domain focus.
+We aggregated the frequency of imported modules for all theorems in each dataset, excluding common utility files. The
+results, summarized in Table 5, reveal distinct domain signatures that align with the intended scope of each benchmark.
+
+   • FATE (Algebraic Focus):          As expected for an algebra-centric benchmark, the dependen-
+     cies are heavily concentrated in abstract algebraic structures.     Prominent modules include
+     Mathlib.Algebra.Lie, Mathlib.Algebra.Polynomial, Mathlib.RingTheory.Ideal and
+     Mathlib.Algebra.EuclideanDomain. This confirms its specialized utility for evaluating reasoning in
+     commutative and non-commutative algebra.
+   • MiniF2F (Olympiad Focus): The distribution reflects the nature of pre-university mathematics competi-
+     tions, which prioritize elementary number theory, combinatorics, and discrete mathematics. The dom-
+     inant modules are Mathlib.Data.Nat (natural numbers), Mathlib.Data.Finset (finite sets), and
+     Mathlib.Data.Nat.Cast, indicating a focus on arithmetic manipulation and finite structures rather than continu-
+     ous analysis.
+   • ProofNet (Undergraduate Analysis Focus): The dependency profile indicates a strong emphasis on the standard
+     undergraduate analysis and topology curriculum. Leading imports include Mathlib.Analysis.Normed.Group,
+     Mathlib.Topology.Defs, and Mathlib.Topology.MetricSpace. This fingerprint reflects tasks centered
+     on metric spaces, continuity, and fundamental properties of normed vector spaces.
+   • AMBER (Applied Mathematics): In contrast, our dataset exhibits a unique footprint characterized by continuous opti-
+     mization and high-dimensional analysis. The top dependencies include Mathlib.LinearAlgebra.Matrix and
+     Mathlib.Analysis.InnerProductSpace, which are foundational for numerical linear algebra and convex
+     optimization. Furthermore, the significant presence of Mathlib.MeasureTheory.MeasurableSpace reflects
+     the inclusion of high-dimensional probability tasks. This distribution empirically verifies that our AMBER benchmark
+     successfully targets the gap in applied computational mathematics.
+
+
+C.3. Difficulty Analysis
+To ensure the benchmark serves as a robust diagnostic tool for varying levels of mathematical capability, we enforced a
+rigorous difficulty stratification during the collection process. We classify problem difficulty based on the academic maturity
+required to solve the source material. Easy problems are derived from standard undergraduate course exercises, typically
+requiring direct application of definitions or single-step inferences. Hard problems are sourced from graduate-level textbooks
+and PhD qualifying examinations, necessitating multi-step reasoning, creative auxiliary constructions, or deep structural
+insights. Table 4 presents the distribution of difficulty levels across domains. A distinct feature of our benchmark is the
+strict balance achieved: the dataset contains an exact split of 100 Easy and 100 Hard problems. Crucially, this symmetry
+is maintained not only globally but also locally within each subfield. This uniform stratification prevents the evaluation
+from being skewed by domain-specific difficulty spikes and allows researchers to assess whether an agent’s performance
+degradation on hard tasks is consistent across different mathematical subjects. Furthermore, the difficulty classification
+adapts to the specific paradigms introduced in Section 3. For theorem proving tasks, difficulty correlates with the logical
+depth and the sparsity of the required search path. In contrast, for construction-verification tasks (evaluation, algorithm,
+
+                                                             19
+                           Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+Table 5. Top-3 Mathlib module dependencies across different benchmarks. The statistics highlight distinct specializations: FATE (Abstract
+Algebra), MiniF2F (Discrete Math), ProofNet (Topology/Analysis), and AMBER (Numerical/Applied Analysis).
+
+                   Benchmark         Top Modules (Domain Signature)                    Mathematical Focus
+                                     Mathlib.Algebra.Category.ModuleCat                Module Categories
+                   FATE              Mathlib.RingTheory.Ideal.Quotient                 Quotient Rings
+                                     Mathlib.FieldTheory.IntermediateField             Field Theory
+                                     Mathlib.Data.Nat                                  Number Theory
+                   MiniF2F           Mathlib.Data.Finset                               Combinatorics
+                                     Mathlib.Data.Nat.Cast                             Arithmetic
+                                     Mathlib.Analysis.Normed.Group                     Normed Spaces
+                   ProofNet          Mathlib.Topology.Defs                             General Topology
+                                     Mathlib.Topology.MetricSpace                      Metric Spaces
+                                     Mathlib.LinearAlgebra.Matrix                      Numerical Linear Algebra
+                                     Mathlib.Analysis.InnerProductSpace                Optimization
+                   AMBER
+                                     Mathlib.Analysis.Convex                           Convex Analysis
+                                     Mathlib.MeasureTheory.MeasurableSpace             Probability
+
+
+transformation), difficulty is governed by the structural complexity of the target object. For instance, an easy construction
+task might involve finding a scalar root, whereas a hard task requires designing an iterative matrix factorization algorithm or
+constructing a complex semidefinite relaxation. This multi-dimensional difficulty structure ensures that the benchmark can
+effectively discriminate between models that merely memorize syntactic patterns and those capable of genuine mathematical
+synthesis.
+
+C.4. LLM Verification Details
+The exact prompt employed for the preliminary semantic consistency check is provided below.
+System Prompt.
+
+  You are an expert Mathematician and Lean 4 Formalization Engineer. Your task is to verify the strict semantic
+  consistency between a natural language mathematical problem and its formalized Lean code. You must detect any
+  logical omissions, semantic discrepancies, or misalignments in variable definitions, constraints, or the final goal.
+
+User Prompt.
+
+  Please review the following pair:
+  1. Natural Language Problem: {natural language problem}
+  ORIGINAL Natural Language Problem START
+  {natural language problem}
+  ORIGINAL Natural Language Problem END
+  2. Lean Formalization:
+  ORIGINAL LEAN FILE START
+  {lean source}
+  ORIGINAL LEAN FILE END
+  Validation Instructions:
+  Variable Mapping: Verify that every variable in the text exists in the code with the correct type (e.g., real vs. integer,
+  non-negative constraints).
+  Hypothesis Check: Ensure all conditions (e.g., ”distinct,” ”prime,” ”x¿0”) are explicitly present in the Lean hypotheses.
+  Goal Alignment: Check if the proof goal in Lean strictly matches the question asked in the text.
+  Mathlib Usage: Verify that standard concepts (primes, factorials, geometry definitions) use standard Mathlib definitions
+
+
+                                                                   20
+                        Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+
+  and not incorrect custom ones.
+  Output: If the code is correct, output: [CONSISTENT]. If there are errors, output: [MISMATCH] followed by a concise
+  explanation of the missing or incorrect logic.
+
+
+D. Experiment Details
+D.1. Baseline Setup
+To establish a comprehensive evaluation landscape, we select a diverse set of models ranging from state-of-the-art general
+reasoning engines to specialized open-source theorem provers.We access proprietary models via their official APIs,
+specifically utilizing DeepSeek-V3.2-Thinking and GPT-5.1. Complementing these, we locally deploy prominent open-
+source models fine-tuned for formal mathematics, including Kimina-Prover and Goedel-Prover, to assess the impact of
+domain-specific training. To ensure reproducibility and representativeness of standard usage, we adhere to the default
+inference parameters, including temperature and top-p, recommended by the respective official documentation for all models.
+The maximum generation length is uniformly set to 32,768 tokens to accommodate the verbose nature of formal proofs and
+constructive definitions. For reasoning-enhanced models that support adjustable compute allocation, we explicitly configure
+the reasoning effort parameter to medium.
+
+D.2. Prompts
+We provide our detailed prompts used for evaluating existing models.
+System Prompt.
+
+ You are a Lean 4 theorem-proving assistant.
+ Task:
+ - You will receive the content of a Lean 4 file for a math problem.
+ - You must produce a COMPLETE Lean 4 source file that can be compiled in the given project.
+  Strict output requirements:
+ - Give the complete proof of the statement. DO NOT contain sorry in your output
+ - DO NOT change anything in the file except for the sorry.
+ - Output ONLY the Lean 4 source code of the final file.
+ - DO NOT add any explanations, comments about what you are doing, or natural language text outside of the code.
+ - DO NOT wrap the code in Markdown fences.
+ - DO NOT change the definitions and classes in the source file.
+ - The output must be a self-contained Lean 4 file that can be saved as a .lean file and compiled directly.
+ - If you receive a problem about solving a problem, you must produce a solution that is correct and complete. Do NOT
+  use the problem itself to answer it.
+ - If you receive a problem about designing an algorithm, you must produce a complete algorithm that is correct and
+  complete.You need to consider whether the algorithm can be realized, rather than only considering the correctness of
+  the algorithm.
+
+User Prompt.
+
+  Below is the content of a Lean 4 file for a math problem.
+  ORIGINAL LEAN FILE START
+  {lean source}
+  ORIGINAL LEAN FILE END
+  Please produce the final complete Lean 4 source file.
+  Your task is to replace each occurrence of the token ‘sorry‘ with correct Lean code.
+  You MUST NOT modify any other part of the file: all lines, imports, comments, names, and formatting outside ‘sorry‘
+  must remain exactly the same.
+  Do not introduce any new ‘sorry‘ or ‘submit‘
+
+
+                                                            21
+                          Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+
+  Output only raw Lean code, no Markdown fences, no explanations.
+
+
+D.3. Unbiased Estimation for Pass@k Results
+We report the Pass@k metric using the unbiased estimator (Chen, 2021). Evaluating Pass@k by simply generating k samples
+and checking if at least one is correct results in high variance. To address this, we generate a larger pool of n samples
+(n ≥ k) for each problem and estimate the probability that at least one sample is correct if we were to draw k samples from
+this pool without replacement.Let n be the total number of samples generated for a problem, and let c be the number of
+correct samples among them. The unbiased estimator for Pass@k is calculated as:
+                                                              "           #
+                                                                          n−c
+                                                                           k
+                                                   Pass@k := E 1 −         n                                                      (4)
+                                                                           k
+
+
+where nk denotes the binomial coefficient. In our experiments, we set k = 1, 2, 4, 8, 16 and the total sample size n = 16.
+        
+
+When n = k, this formula simplifies to the empirical accuracy (1 if c > 0, 0 otherwise). For cases where n − c < k, the
+term n−c
+      k   is defined as 0, resulting in a Pass@k of 1.
+Table 6 presents the detailed Pass@k statistics (k = {1, 2, 4, 8, 16}) for all evaluated models. The metrics are calculated
+using the unbiased estimator described above, based on n = 16 samples per problem.
+
+Table 6. Pass@k (k = 1, 2, 4, 8, 16) statistics for all models on the full benchmark. The values represent the percentage of problems
+solved given k budget.
+
+                     Model                          Pass@1      Pass@2       Pass@4      Pass@8      Pass@16
+                     General-Purpose Reasoning Models
+                     DeepSeek-V3.2-Thinking    1.68%             2.71%        4.04%       4.86%        6.00%
+                     GPT-5.1                   1.40%             2.27%        3.27%       4.20%        4.50%
+                     Gemini-3.0 Pro            2.62%             3.52%        4.46%       4.41%        6.00%
+                     Specialized Theorem Provers
+                     Goedel Prover-32B           0.97%           1.70%        2.66%       3.50%        4.00%
+                     Kimina Prover-72B           1.03%           1.65%        2.51%       3.50%        4.00%
+
+
+D.4. Ablation Study on Prompts
+To rigorously evaluate the impact of prompt engineering on model performance, we conducted a targeted ablation study
+on a subset of 20 specialized problems selected from the optimization and convex analysis domains. This study aimed
+to determine whether the structural constraints of our construction-verification framework are necessary for applied
+mathematical reasoning or if standard formalization prompts suffice. We compared three distinct prompting strategies
+provided to the models.
+
+   • Construction-Verification. The model is explicitly required to first define a computable solution term via a def block
+     and then prove its correctness within a theorem block.
+
+   • Standard Code Completion. The model receives a Lean file with sorry placeholders but no explicit structural
+     guidance or emphasis on the two-stage workflow.
+
+   • Traditional Proof Only. The model is tasked solely with proving the provided statement without the requirement to
+     define an explicit solution object.
+
+As shown in Table 3, the construction-verification prompt yielded the highest success rate, while the other two strategies
+significantly misled the models. Our analysis indicates that traditional proof-only prompts often trigger a 40% decrease
+in validity compared to our structured approach. Without the explicit requirement for construction, models frequently
+resort to non-constructive tactics such as Classical.choice or apply is compact.exists min. While these methods
+
+                                                                 22
+                         Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+logically prove the existence theorem, they provide no computational value, failing the core objective of applied mathematics.
+Furthermore, standard completion prompts without structural guardrails often lead to “tactical overfitting”, where the model
+ignores the def block entirely and attempts to discharge the goal using proof-search tactics alone. These results confirm that
+explicit construction-verification represents a distinct paradigm that necessitates a tailored formalization interface to prevent
+models from bypassing the rigorous derivation of solutions.
+
+E. Details on Instructions Following Analysis
+A counter-intuitive finding in our experiments is the inverse correlation between a model’s specialization in formal proving
+and its performance on applied mathematics tasks. As shown in Table 1, specialized models exhibit performance comparable
+to, or even exceeding, general-purpose LLMs on standard theorem proving tasks. However, their capabilities degrade
+precipitously on algorithm design and representation transformation tasks. We identify this phenomenon as the “tactical
+overfitting” effect. Specialized models are fine-tuned extensively on state-tactic pairs, which maximizes their ability to close
+logical goals, but also appears to compromise their instruction-following capabilities in two critical ways relevant to applied
+mathematics.
+Rigidity in Problem Structure. Applied mathematics problems often inherently a complex structure as described in Section
+3, where the agent must first synthesize a constructive definition before proving its properties. General-purpose models,
+retaining strong instruction-following abilities from their base pre-training, respect this structural requirement. In contrast,
+specialized models frequently ignore the instruction to define data structures, attempting instead to solve the entire problem
+within a single theorem block. This “hammer-and-nail” bias of treating every prompt as a pure theorem proving task leads
+to disqualification in constructive benchmarks.
+Loss of Applied Mathematics Intuition. General-purpose models demonstrate a superior ability to translate informal
+mathematical concepts into formal specifications. For instance, when asked to formalize a relaxation to an SDP, general
+models often correctly infer the necessary matrix inequalities. Specialized models, despite being stronger at manipulating
+algebraic expressions once formalized, struggle to generate the initial formal definition from natural language descriptions.
+They effectively lack the common sense to bridge the gap between informal intent and formal syntax, a capability likely
+eroded during intensive fine-tuning on pure proof corpora. Consequently, while specialized provers remain superior for
+distinct logical verification steps, they lack the flexibility required for the end-to-end workflow of an applied mathematician,
+which heavily relies on structural synthesis and cross-domain modeling.
+Our investigation into model behavior reveals a significant discrepancy in how different architectures handle the multi-stage
+requirements of applied mathematical formalization. While specialized provers excel in isolated logical deduction, they
+frequently fail the end-to-end constructive workflow.
+
+E.1. The Tactical Overfitting Phenomenon
+We characterize the performance degradation in specialized models as “tactical overfitting”. This effect is observed when
+models fine-tuned exclusively on proof-state-tactic pairs develop a bias toward closing proof goals at the expense of structural
+synthesis.
+A salient example of the “tactical overfitting” effect can be observed in the behavior of specialized models like Kimina-Prover
+during complex, structured reasoning tasks. In the following instance, the model attempted to utilize the intro tactic to
+invoke preceding variables that had been established within a let statement, a ubiquitous procedure in traditional declarative
+proofs but a structural error in this specific context. This mistake highlights a critical lack of situational awareness; because
+the model has been fine-tuned so intensively on state-tactic pairs, it defaults to high-frequency proof-search routines without
+correctly recognizing the formal environment or the existing variable scope.
+Such failures represent a broader “hammer-and-nail” bias where specialized provers treat every prompt as a pure theorem-
+proving task, effectively eroding the common sense intuition necessary to bridge the gap between informal mathematical
+intent and formal syntax. Like a master carpenter who only knows how to use a hammer, the model treats every structural
+challenge as a nail to be driven in with a proof tactic, ultimately lacking the flexibility required for the end-to-end workflows
+of an applied mathematician. Consequently, while specialized provers remain superior for distinct deductive steps, they
+fail to respect the multi-stage constructive requirements that general-purpose reasoning models navigate with much higher
+fidelity.
+
+
+                                                               23
+                        Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+
+  variable (n m : N) [NeZero n] [NeZero m] (A : Matrix (Fin m) (Fin n) R) (b : Fin m → R) (x : Fin n →
+     R)
+
+  noncomputable def P : OptProblem where
+   n_var := n
+   n_eqs := 0
+   eq_constraints := 0
+   n_ieqs := m
+   ieq_constraints := fun x => A ∗ v x − b
+   objective := fun x => − Σ i, log ((b − A ∗ v x) i)
+
+  def Q : DualProblem (P n m A b) :=
+   {
+    dual_objective := fun (lam : Fin 0 → R) (mu : Fin m → R) =>
+      if h : ∀ i : Fin m, mu i ≥ 0 then
+        EReal.ofReal (− Σ i : Fin m, (log (mu i) + 1))
+      else
+        ⊥,
+    dual_domain := Set.filter (fun (p : (Fin 0 → R) × (Fin m → R)) =>
+      let (lam, mu) := p
+      (∀ i : Fin m, mu i ≥ 0)
+    ) (Set.univ : Set ((Fin 0 → R) × (Fin m → R))),
+    h_objective := by
+       intro lam mu
+      ::::::::::
+      simp [P, EReal, EReal.ofReal]
+      all_goals try {
+        aesop
+      }
+    ,
+    h_domain := by
+      ext ⟨lam, mu⟩
+      simp [P, EReal, EReal.ofReal]
+      all_goals try {
+        aesop
+      }
+   }
+
+
+
+
+E.2. Loss of Applied Mathematics Intuition
+A critical requirement for applied mathematicians is the ability to recognize underlying mathematical structures and map
+them to tractable forms, such as deriving a dual problem from a primal formulation. Our experiments demonstrate that
+specialized theorem provers frequently lack the necessary modeling intuition to perform this translation accurately. While
+these models are proficient at algebraic manipulation once a goal is established, they struggle to bridge the gap between
+informal mathematical intent and formal syntax.
+A representative failure is observed in the behavior of Kimina-Prover when tasked with deriving a dual problem. Instead of
+correctly constructing the Lagrangian and identifying the appropriate dual variables and constraints , the model attempted
+to produce a solution that was fundamentally misaligned with the problem’s intent. Rather than evaluating the structural
+requirements of the dual space, the model defaults to generating correct-looking but logically incorrect definitions that
+mimic standard proof patterns.
+In contrast, general-purpose models demonstrate a superior capability to infer necessary matrix inequalities and structural
+constraints from natural language descriptions. This case study underscores that the end-to-end workflow of applied
+mathematics, which relies heavily on structural synthesis and cross-domain modeling, remains a significant challenge for
+models over-optimized for logical verification alone.
+
+                                                            24
+                        Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+
+  /-
+  Derive a dual problem for
+  \[
+  \begin{array}{ll}
+  \text{min} \quad &\sum_{i=1}ˆ{N} \|y_i\|_2 + (1/2)\|x - x_0\|_2ˆ2. \\
+  \text{subject to} & y_i = A_ix+b_i, i=1, 2, \cdots n
+  \end{array}
+  \]
+  The problem data are \( A_i \in \mathbb{R}ˆ{m_i \times n}, b_i \in
+        \mathbb{R}ˆ{m_i} \), and \( x_0 \in \mathbb{R}ˆn \).
+  -/
+  noncomputable def P : OptProblem where
+    · · · --omit detailed definition of P
+
+  def Q : DualProblem (P n m k A b x0) := by
+   dual_objective := fun lam _ =>
+     if h : ∀ i : Fin k, sqrt ((b i) ·v (b i)) ≤ 1 then
+       EReal.ofReal (Σ i : Fin k, (b i) ·v (b i) + (A i ∗ v x0) ·v (b i) − (1 / 2) ∗ ((Σ i : Fin k, (A i : Matrix
+         (Fin m) (Fin n) R) ˆ∗ ∗ (b i)) ·v (Σ i : Fin k, (A i : Matrix (Fin m) (Fin n) R) ˆ∗ ∗ (b i))) : R)
+       --Here the dual objective is wrong.
+     else
+       ⊥
+   · · · --omit detailed definition of Q
+
+
+F. Details on Error Analysis
+In this section, we provide comprehensive case studies to show the error information from the Lean 4 compiler.
+
+F.1. Hallucination of LLMs.
+LLMs frequently hallucinate non-existent theorems or definitions in formal reasoning settings. A representative ex-
+ample below in Lean 4 shows that the model attempts to complete a proof by invoking a non-existing theorem,
+convexHull eq sInter, confidently treating it as a valid result. This behavior suggests that the model is not reason-
+ing within the formal system itself, but rather relying on memorized patterns from previously seen mathematical texts.
+Consequently, the apparent theorem-proving ability of current LLMs is unlikely to be genuinely transferable, as it fails to
+generalize to domains, libraries, or formalizations that were not explicitly encountered during training.
+
+  --Show that the convex hull of a set \( S \) is
+  --the intersection ofall convex sets that contain \( S \).
+  theorem num_4_P_E (n : N) [NeZero n] (C : Set (Fin n → R)) :
+    ∩ (S : Set (Fin n → R)) (_ : C ⊆ S) (_ : Convex R S) , S = convexHull R C := by
+    exact ( convexHull    eq sInter C).symm
+             ::::::::::::::::
+
+
+
+
+F.2. Formalization Competence.
+
+  variable (n : N) [NeZero n] (a : Fin n → R) (b1 b2 : R)
+
+  noncomputable def answer (n : N) [NeZero n] (a : Fin n → R) (b1 b2 : R): R :=
+   |b1 − b2| / ∥a∥
+
+  lemma toLp2_norm_eq (v : Fin n → R) : ∥toLp 2 v∥ = ∥v∥ :=
+   (EuclideanSpace.equiv 2 (Fin n) R).symm.norm_map v
+
+  theorem num_5_S_E (h : a ̸= 0):
+   let A := {x | a ·v x = b1}
+
+
+                                                            25
+                         Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+   let B := {x | a ·v x = b2}
+   ∀ x y, A x → B y → ∥toLp 2 (x − y)∥ ≥ answer n a b1 b2 ∧
+   ∃ x y, A x ∧ B y ∧ ∥toLp 2 (x − y)∥ = answer n a b1 b2 := by
+   intro A B x y hx hy
+   have hA : A x := hx
+   have hB : B y := hy
+    simp rw [Set.mem setOf eq] at hA hB
+    ::::::::::::::::::::::::::::
+   have h1 : a ·v (x − y) = b1 − b2 := by
+     rw [inner_sub_right, hA, hB, sub_sub_cancel]
+   have hnorm_pos : ∥a∥ > 0 := norm_pos_iff.mpr h
+   constructor
+   · have h3 : |b1 − b2| ≤ ∥a∥ ∗ ∥x − y∥ := by
+      rw [← abs_inner_le_norm a (x − y)]
+      exact congr_arg abs h1 ▷ le_refl _
+     rw [toLp2_norm_eq, answer]
+     exact (div_le_div_right hnorm_pos).mp h3
+   · set x0 := (b1 / ∥a∥ ˆ 2) · a
+     set y0 := (b2 / ∥a∥ ˆ 2) · a
+     have hx0 : A x0 := by
+      simp [A, Set.mem_setOf_eq, x0]
+      rw [inner_smul_right, inner_self_eq_norm_sq, mul_div_cancel′ ]
+      exact pow_ne_zero 2 (norm_ne_zero_iff.mpr h)
+     have hy0 : B y0 := by
+      simp [B, Set.mem_setOf_eq, y0]
+      rw [inner_smul_right, inner_self_eq_norm_sq, mul_div_cancel′ ]
+      exact pow_ne_zero 2 (norm_ne_zero_iff.mpr h)
+     have hnorm : ∥toLp 2 (x0 − y0)∥ = answer n a b1 b2 := by
+      rw [toLp2_norm_eq, answer]
+      calc
+       ∥x0 − y0∥ = ∥((b1 − b2) / ∥a∥ ˆ 2) · a∥ := by simp [x0, y0, sub_smul, smul_sub]
+       _ = |(b1 − b2) / ∥a∥ ˆ 2| ∗ ∥a∥ := norm_smul _ _
+       _ = |b1 − b2| / ∥a∥ ˆ 2 ∗ ∥a∥ := by rw [abs_div, abs_of_pos (pow_pos hnorm_pos 2)]
+       _ = |b1 − b2| / ∥a∥ := by field_simp [ne_of_gt hnorm_pos]; ring
+     exact ⟨x0, y0, hx0, hy0, hnorm⟩
+
+
+A typical manifestation of insufficient formalization competence is illustrated by the error “simp made no progress” in
+the highlighted line. Here, the model applies the simplification tactic simp rw to the hypotheses hA and hB, implicitly
+assuming that this tactic would unfold the set membership and yield usable equalities. However, the tactic fails to simplify
+the goals in any meaningful way, indicating that no applicable rewrite rules were triggered. This reveals that the model
+incorrectly anticipates the effect of the simp tactic, treating it as a generic tool for progress rather than reasoning about its
+precise preconditions and rewrite behavior. Such errors suggest that the model lacks a concrete understanding of how tactics
+operate at the proof-state level, and instead selects tactics based on superficial associations rather than a correct grasp of
+their formal semantics.
+
+F.3. Incomplete Outputs.
+A closely related manifestation of insufficient formalization competence is the model’s frequent reliance on special
+placeholders such as sorry, submit, or even newly introduced axioms to force incomplete proofs to pass the compiler’s
+checks. As illustrated in the example, the model successfully constructs the high-level mathematical objects and outlines the
+intended proof structure, but abandons the formal derivation when confronted with technically demanding arguments, such
+as verifying optimality conditions or completing inductive reasoning. Instead of resolving the remaining proof obligations,
+the model resorts to these escape mechanisms, which formally suppress unresolved goals rather than discharging them. This
+behavior indicates that the model treats the proof assistant as a permissive environment that can be coerced into accepting
+partial solutions, rather than as a system enforcing strict logical completeness. Consequently, while the generated code may
+appear syntactically valid, it fails to represent a genuine, machine-checked proof, further highlighting the gap between the
+model’s conceptual reasoning and its ability to carry out precise, low-level formal proofs.
+
+                                                               26
+                         Construction–Verification: A Benchmark for Applied Mathematics in Lean 4
+
+
+  variable (n : N) [NeZero n] (X : Matrix (Fin n) (Fin n) R) (hX : X.PosDef)
+
+  def answer (n : N) [NeZero n] (X : Matrix (Fin n) (Fin n) R) (hX : X.PosDef) : Matrix (Fin n) (Fin
+       n) R :=
+   let ⟨P, D, hD_diag, hPD, hPorth, hPorth′ ⟩ := hX.1.orthogonalDiagonalization
+   let Λ : Matrix (Fin n) (Fin n) R := Matrix.diagonal (fun i => (D i i + Real.sqrt ((D i i)ˆ2 + 4))
+       / 2)
+   P ∗ Λ ∗ P⊤
+
+  theorem num_43_S_H(n : N) [NeZero n] (X : Matrix (Fin n) (Fin n) R) (hX : X.PosDef) : let answer :
+      = answer n X hX
+  IsMinOn (fun U => −log (det U) + ((X − U) ∗ (X − U)).trace / 2) .univ answer := by
+   intro answer
+   sorry
+   ::::::
+
+
+
+
+F.4. Formatting and Syntax.
+This category covers errors arising from improper output formatting or basic syntactic mistakes that prevent the compiler
+from correctly parsing the generated file. Typical cases include failing to wrap code in appropriate markdown or code
+blocks, producing malformed section or environment headers, and introducing missing or mismatched delimiters such
+as parentheses, brackets, or braces. In these instances, the generated content may be mathematically meaningful or even
+formally correct in isolation, yet it cannot be processed due to violations of the surface-level structural requirements imposed
+by the proof assistant or document system. Although these errors are comparatively shallow and do not reflect a lack
+of mathematical understanding, they nonetheless indicate that the model does not consistently internalize or enforce the
+rigid syntactic and formatting conventions required in formal verification settings. As a result, even minor deviations at
+the presentation level can lead to complete failure of compilation, underscoring the fragility of automated formalization
+pipelines with respect to low-level output correctness.
+
+G. Usage of LLM
+LLMs were evaluated as research subjects to assess their formalization capabilities within our proposed framework, while
+LLMs were also used to refine the manuscript’s grammar and clarity.
+
+
+
+
+                                                              27
+

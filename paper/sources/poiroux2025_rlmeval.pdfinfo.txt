@@ -1,0 +1,18 @@
+Title:           RLMEval: Evaluating Research-Level Neural Theorem Proving
+Author:          Auguste Poiroux; Antoine Bosselut; Viktor Kunčak
+Creator:         arXiv GenPDF (tex2pdf:e76afa9)
+Producer:        pikepdf 8.15.1
+Custom Metadata: yes
+Metadata Stream: yes
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           12
+Encrypted:       no
+Page size:       595.276 x 841.89 pts (A4)
+Page rot:        0
+File size:       335671 bytes
+Optimized:       no
+PDF version:     1.7

@@ -1,0 +1,1459 @@
+                                        Preprint
+
+
+
+
+                                        S ORRY DB: C AN AI P ROVERS C OMPLETE R EAL -
+                                        W ORLD L EAN T HEOREMS ?
+
+                                            Austin Letson1 , Leopoldo Sarra1 , Auguste Poiroux3,4 , Oliver Dressler , Paul Lezeau5,6 , Dhyan
+                                            Aranha2,7 , Frederick Pu10 , Aaron Hill , Miguel Corredera Hidalgo8 , Julian Berman9 , George
+                                                                          Tsoukalas11 , and Lenny Taelman2
+                                                                                        1
+                                                                                          Axiomatic AI
+                                                                               2
+                                                                                University of Amsterdam
+                                                                                          3
+                                                                                            Math, Inc.
+                                                                                             4
+                                                                                               EPFL
+                                                                                     5
+
+
+
+
+arXiv:2603.02668v1 [cs.AI] 3 Mar 2026
+                                                                                       Imperial College
+                                                                6
+                                                                  The London School of Geometry and Number Theory
+                                                                                7
+                                                                                  Côte d’Azur University
+                                                                       8
+                                                                         ENSEIRB-MATMECA, INP-Bordeaux
+                                                                                  9
+                                                                                    Columbia University
+                                                                                 10
+                                                                                    University of Toronto
+                                                                          11
+                                                                             The University of Texas at Austin
+
+
+
+                                                                                     A BSTRACT
+
+                                                   We present SorryDB, a dynamically-updating benchmark of open Lean tasks
+                                                   drawn from 78 real world formalization projects on GitHub. Unlike existing static
+                                                   benchmarks, often composed of competition problems, hillclimbing the SorryDB
+                                                   benchmark will yield tools that are aligned to the community needs, more us-
+                                                   able by mathematicians, and more capable of understanding complex dependen-
+                                                   cies. Moreover, by providing a continuously updated stream of tasks, SorryDB
+                                                   mitigates test-set contamination and offers a robust metric for an agent’s abil-
+                                                   ity to contribute to novel formal mathematics projects. We evaluate a collection
+                                                   of approaches, including generalist large language models, agentic approaches,
+                                                   and specialized symbolic provers, over a selected snapshot of 1000 tasks from
+                                                   SorryDB. We show that current approaches are complementary: even though an
+                                                   agentic approach based on Gemini Flash is the most performant, it is not strictly
+                                                   better than other off-the-shelf large-language models, specialized provers, or even
+                                                   a curated list of Lean tactics.
+
+
+                                        1     I NTRODUCTION
+                                        Formal methods recast theorem proving as the computational problem of synthesizing machine-
+                                        verifiable proofs (Moura and Ullrich, 2021). Subsequently, a trusted kernel can automatically verify
+                                        a formal solution and its error trace can be used to detect loopholes and hallucinations in reasoning.
+                                        Recently, formal methods have gained renewed popularity in mathematics. In particular, large-scale
+                                        formalization efforts using the Lean interactive theorem prover (Moura and Ullrich, 2021), such
+                                        as the Liquid Tensor Experiment (Commelin and Topaz, 2023), Carleson’s theorem (Becker et al.,
+                                        2025) and Fermat’s Last Theorem (Buzzard and Taylor, 2026), have shown that systematically for-
+                                        malizing complete cutting-edge mathematical results is becoming feasible. Formalization improves
+                                        collaboration among mathematicians, allowing them to unambiguously specify concepts of interest,
+                                        reuse previously proven results, detect errors, and automatically validate a mathematical argument
+                                        by checking its formalization, which for complex arguments can even decrease the costs of peer
+                                        review (Hales, 2024; Robertson et al., 1997). Crucially, this work is rarely linear: mathematicians
+                                        “prove in the open”, with dozens of contributors working asynchronously across a shared code base.
+                                        In recent years, formal methods have also been adopted by researchers focusing on automated math-
+                                        ematical reasoning. Outstanding results have been shown, for example, by achieving a performance
+
+
+                                                                                           1
+Preprint
+
+
+
+
+                                                       Active formalization project
+
+
+
+                             Lean4 Reservoir
+                             Package Manager
+
+
+
+
+                                                                         Task
+                                   GitHub repository                     • URL
+                                                                         • File
+                                                                         • Position
+                                                                         • Lean version   SorryDB
+
+
+
+Figure 1: Dataset extraction pipeline for SorryDB. We consider 78 repositories on active GitHub
+Lean projects and list all the theorems that contain a sorry. We save the metadata for each of them
+and store it in the database. A project is considered active when it had at least one commit in the
+previous three months.
+
+
+
+
+that would deserve medals at the International Mathematical Olympiad (Hubert et al., 2025; Achim
+et al., 2025; Chen et al., 2025b). Rather than only proposing the solution to a problem (Huang and
+Yang, 2025), these models can also provide an automatically verifiable proof. This allows for post-
+selecting correct solutions (Lin et al., 2025a), or even using the feedback as a strong reward signal
+for reinforcement learning training (Lambert et al., 2025) with verifiable rewards (Ren et al., 2025;
+Wang et al., 2025a).
+State-of-the-art models are mainly being evaluated on competitive math datasets, for example, on
+IMO and other olympiad-level mathematics, such as miniF2F (Zheng et al., 2021) or undergraduate-
+level math challenges, such as PutnamBench (Tsoukalas et al., 2024). However, competitive math
+is not fully aligned with practical applications, and, since it does not cover actual projects, it may
+not be fully representative of the real challenges of formal theorem proving, including a broader
+mathematical context, the dependence on theorems and definitions defined in the specific project
+itself (Hu et al., 2025; Kumarappan et al., 2025), or simply the messiness that comes with fitting
+solutions into real-world applications. Moreover, these benchmarks are essentially saturated, and it
+becomes increasingly difficult to evaluate the performance of different automated theorem provers,
+thus hindering progress in the field (Reuel et al., 2024). In addition, as the datasets are made public
+and agentic systems using standard large language models (LLMs) are developed (Varambally et al.,
+2025; Ospanov et al., 2025; Wang et al., 2025c), it becomes challenging to detect solutions leakage
+in training data and distinguish memorization from more general reasoning skills.
+Active formalization projects offer an ideal test bed for addressing the limitations of current bench-
+marks. Starting from an informal list of definitions and theorems that lead to the main result of
+a project, developers first formalize the statements of theorems and their dependencies. Unproven
+theorems or part of them are temporarily marked with a sorry placeholder. This process mostly
+happens in open repositories on GitHub, in order to enable large scale collaboration, and provides a
+steady supply of novel challenges that Lean practitioners have left for others, or their future selves,
+to solve.
+In this paper, we propose SorryDB, a new evaluation dataset based on real formalization projects.
+This dataset is specifically meant to evaluate the practical usefulness of an automated theorem prover
+by resembling the envisaged day-to-day usage. It also addresses the problem of saturation, mis-
+alignment, and leakage of existing benchmarks. More specifically, we aim at replicating the spirit
+of SWE-bench (Jimenez et al., 2024), meant for software engineering tasks, for theorem proving:
+evaluate state-of-the-art models on tasks as close as possible to real applications that are valuable to
+the community. Our main contributions are:
+
+
+      1. The SorryDB Dataset: We design a procedure to select the parts of a theorem that have
+         not been proven yet (i.e. marked with a “sorry”) from open-source Lean repositories and
+         assemble them into a dynamically-evolving dataset, by construction aligned to practical
+         applications, as shown in Figure 1.
+
+
+                                                               2
+Preprint
+
+
+
+
+      2. Benchmarking Framework: We provide an automated validation mechanism to evaluate
+         whether a proposed solution is correct or not and allow assessing the performance of an
+         automated prover on the SorryDB dataset.
+      3. Evaluation: We analyze a static snapshot of the dataset with 1000 tasks and a cutoff set to
+         January 2026, and provide a baseline evaluation of a collection of models. We confirm that
+         the proposed dataset provides useful feedback on practical usefulness of automated theorem
+         provers, that it is not saturated yet, and we analyze the most common failure cases. The
+         evaluation highlights that current models are complementary, solving different subsets of
+         problems, and that overall the iterative feedback is the dominant factor in performance,
+         with self-correcting and agentic approaches outperforming one-shot pass@k approaches.
+
+
+2   BACKGROUND AND R ELATED W ORK
+
+Interactive Theorem Provers. To create a formal proof for a mathematical result, the first step is
+to convert the natural language statement into a formal language. The formal statement will define
+precisely all the mathematical objects, include all the assumptions necessary to prove the theorem,
+and clearly specify the target goal. Subsequently, the proof is provided, either by modifying the
+goal step by step until it becomes a trivial consequence of the hypotheses or by directly instantiating
+an object with the properties required by the goal. Libraries of definitions and proven theorems,
+such as Mathlib (mathlib Community, 2020), help import the appropriate objects and build on top of
+existing results. In Lean, it is also possible to write only the formal definition of a theorem, putting
+a placeholder keyword, written as sorry, in place of the proof. In the context of formalization
+projects, sorry statements are often left as work items to be completed later in the project.
+
+Competition Math. Most common datasets to evaluate automated theorem provers focus on com-
+petition math. The most popular are PutnamBench (Tsoukalas et al., 2024), focused on the Putnam
+competition, a popular annual contest for undergraduate math students, and miniF2F (Zheng et al.,
+2021), a curated collection of formalized olympiad-level math problems. DeepSeek ProverBench
+contains hundreds of formalized problems from textbooks, tutorials, and AIME competitions (Ren
+et al., 2025). Several other datasets exist, including ProofNet (Azerbayev et al., 2023) and IndiMath-
+Bench (Biyani et al., 2025).
+Since these datasets are focused on competitive math, they cover only a small segment of the real-
+world use cases of formal methods. Moreover, nowadays they have been mostly saturated, and their
+solutions may have been leaked in the training data of many off-the-shelf models.
+The reduced performance of current state-of-the-art Lean theorem provers on tasks outside competi-
+tion math has been documented in various works, for example, as the motivation for building datasets
+focused on specific math fields, such as FATE, assessing the performance on frontier algebra (Jiang
+et al., 2025) and LeanCAT, on category theory (Xu et al., 2025).
+
+Formalization Projects. FormalML (Yang et al., 2025c) benchmarks fill-in-the-sorry tasks from
+real Lean projects, mainly on two selected projects on optimization and probability theory.
+RLMEval (Poiroux et al., 2025a) also evaluated neural theorem provers on six existing popular
+Lean formalization projects, focusing on testing the ability to prove again the main theorems of the
+formalization project. These are relatively small curated datasets on specific fields of mathematics.
+Along these lines, we propose to systematically build a dataset on a larger-scale, explicitly meant
+for theorem prover evaluation that resembles the day-to-day usage of a theorem prover by a Lean
+developer.
+Some other work has compiled a general dataset by scraping multiple repositories of Lean projects.
+In particular, miniCTX (Hu et al., 2025) sources theorems from real projects and formalized text-
+books. They also emphasize that a real theorem proving task requires local context and may be
+much more difficult than proving a competition math theorem out of context. We propose to push
+this assumption even further and build a much larger, dynamic dataset that contains theorems whose
+solution has not yet even been published, mitigating data contamination risk, instead of trying to
+prove again already established theorems.
+
+
+                                                   3
+Preprint
+
+
+
+
+Benchmarking Practical Utility. The idea of using challenges from real applications is very pop-
+ular for software engineering coding agents, e.g. SWE-bench (Jimenez et al., 2024; Yang et al.,
+2024; Wang et al., 2025b). In this case, the task is to fix a given issue taken from a real GitHub
+repository by submitting the equivalent of a pull request. Another example is CodeSearchNet (Hu-
+sain et al., 2020) for the evaluation of semantic code search, containing millions of real world func-
+tions associated with their documentation.
+
+Open-source provers. Several models have been fine-tuned from general-purpose large language
+models for theorem proving. In particular, Kimina Prover (Wang et al., 2025a), Goedel Prover (Lin
+et al., 2025b) and DeepSeek Prover (Ren et al., 2025), employ reinforcement learning to learn to
+prove formally. Hilbert (Varambally et al., 2025) uses an agentic decomposition harness, combin-
+ing informal reasoning with formal proving, without training, that achieves strong performance in
+competition problems.
+
+Proprietary provers. AlphaProof (Hubert et al., 2025) was the first model to use Lean to prove
+Olympiad-level problems using reinforcement-learning-driven search inspired by AlphaZero (Sil-
+ver et al., 2017). Several theorem provers based on large language models have recently been
+announced, including SeedProver V1.5 (Chen et al., 2025a), Aristotle (Achim et al., 2025), or Ax-
+iom (Axiom, 2026). More recently, Logical Intelligence claims to have even saturated PutnamBench
+with a performance of 99.4% (Logical Intelligence). These provers are often available in closed beta
+programs with usage terms that would not allow running systematic evaluations.
+
+3     S ORRY DB
+In this section we detail SorryDB, which consists of both the dynamically updating benchmark, and
+the framework that allows extraction and verification of solutions.
+
+3.1   DATASET
+
+We create SorryDB by extracting proof obligations, i.e. placeholder sorry keywords, from active
+open-source Lean projects. They may be full unproven theorems or open intermediate steps within
+a sketched proof.
+We call the evaluation task fill in the sorry: provide the code with which we can replace a given
+sorry keyword inside a theorem so that the specific proof obligation is properly completed. In
+other words, in case a theorem contains multiple sorry statements, we do not require to prove the
+entire theorem, but only the target one.
+As shown in Figure 1, the dataset generation procedure consists in the following phases: repository
+selection, where we select which projects to include; and extraction, where we extract and validate
+all the extracted sorry statements.
+
+Repository selection criteria. We consider GitHub repositories from Reservoir, the Lean package
+registry (Lean Prover contributors, 2026). As a consequence, all included repositories satisfy its
+inclusion criteria (Lean FRO, 2025), and most notably are licensed under a GitHub-recognized OSI-
+approved license. In addition, we require that the project is still maintained by verifying that it has
+been updated at least once since January 2025, and that its GitHub repository is public.
+To obtain a large variety, SorryDB indexes sorry statements from a diverse set of 78 repositories
+which broadly fall into the following manually handcrafted categories:
+
+       • Pedagogical: Teaching materials, tutorials, course repositories, and learning resources.
+       • Tooling: Lean-specific tools, utilities, and development aids (such as verso or duper (Tang,
+         2025)).
+       • Benchmark: AI evaluation datasets, benchmarks, and math competition problems (such
+         as PutnamBench & miniF2F).
+       • Library: Reusable mathematical or programming libraries (such as batteries, cslib, and
+         mathlib4 (mathlib Community, 2020)).
+
+
+                                                  4
+Preprint
+
+
+
+
+       • Formalization: Projects formalizing specific theorems or mathematical theories (such as
+         FLT (Buzzard and Taylor, 2026) or Carleson (Becker et al., 2025)).
+
+By including a variety of repositories from different categories, the dataset encompasses the full
+range of incomplete Lean proofs that an AI system encounters in practice, with all the messiness
+and differences in difficulty that come with this wide range of problems. For this reason, we also
+include simpler or even trivial statements from educational repositories and appropriately categorize
+their origin.
+
+Task extraction. For each selected repository, the indexer extracts all sorry keywords and stores
+identifying metadata, including tasks found on both main and work-in-progress branches. Subse-
+quently, these candidates are filtered to ensure they can be reproduced. We then filter for tasks
+that strictly require a proof and deduplicate them to keep only the most recent occurrence. See
+Appendix E for full details of extraction, filtering and deduplication.
+
+3.2   B ENCHMARKING USING S ORRY DB
+
+We can use the SorryDB dataset for evaluating automated theorem provers. When evaluating a
+proposal, we can deterministically validate it by checking if the code compiles and if the sorry
+has been properly completed, without the need for a curated label. The evaluation metric is just the
+average success rate of a model, i.e. the accuracy.
+We provide an automated validation pipeline for the evaluation of each proposal. To verify that the
+proposed solution for a given sorry keyword is correct, we replace the sorry with the proposal
+and use LeanInteract (Poiroux et al., 2025b) to check the proof state at that specific location, and
+validate that it compiles successfully without any sorry-like term in the final state. Just building
+the Lean project is insufficient to verify that the sorry has been filled by the prover, because sorry
+is syntactically valid in Lean. In addition, there are alternative keywords or constructs that can
+have a similar effect to a sorry placeholder. Since the evaluation requires cloning and building
+the specific project repository for each sorry, which can be space-intensive and time-consuming,
+some engineering effort is required to run the dataset evaluation efficiently. Specifically, it is useful
+to prepare all the repositories in advance so that they can be quickly instantiated for verifying a
+specific proposal for the associated task.
+We describe our implementation in more detail in Appendix G.
+
+4     E XPERIMENTS
+In our evaluation, we use SorryDB-2601, a snapshot of the SorryDB dataset created with the
+procedure described in Section 3 with cutoff date on January 2026, thus named 2601. This dataset
+contains 5663 sorry filling tasks from 78 repositories. In particular, for practicality, we focus on a
+split of 1000 sorry statements, chosen to be the most recent according to the commit timestamp,
+and with the constraint of maximizing the variety of repositories in the slice. The details of the
+dataset with the distribution of tasks per category are shown in Appendix B. According to the needs,
+alternative choices are possible: a larger time frame could have been chosen, or even the full dataset
+could have been evaluated, obtaining a more precise but also more expensive and time-consuming
+evaluation. See Appendix H for the specific procedure we used to select this set.
+We consider several approaches ranging from deterministic tactics to general-purpose large language
+models, specialized models and iterative or agentic architectures. For each class of methods, we
+show a few representative models.
+It is important to notice that the fill-in-the-sorry task requires filling a specific part of a theorem,
+and not the full theorem itself, and requires strong understanding of the local proof context in the
+proof and the more general project context. For these reasons, some provers may not support this
+task because they were designed to complete only full theorems, making this task appear slightly
+out-of-distribution.
+
+Baseline tactics. A tactic is a short command or instruction that tells Lean how to construct a
+proof step-by-step, rather than having to write out the complex logical terms manually. The sim-
+
+
+                                                   5
+Preprint
+
+
+
+
+Table 1: Performance of various provers on a snapshot of 1000 tasks from SorryDB-2601. Tactics
+are deterministic and thus only evaluated once. General-purpose and specialized models are evalu-
+ated by sampling once (pass@1) or by checking if any of 32 candidates solve the task (pass@32).
+Self-correcting (SC) or Agentic approaches run for up to 16 iterations. The row labelled as “Com-
+bined” shows how many tasks have been solved at least once across the proposals by all the provers.
+Since it is the largest value, it highlights the complementarity of the considered provers.
+
+                                     A PPROACH                                          PASS @1            PASS @32
+                                     Deterministic
+                                       T RIVIAL                                             2.1 %                 N/A
+                                       TACTICS                                              8.4 %                 N/A
+
+                                     General-purpose LLM
+                                       GPT 5.2                                               6.2 %              13.2 %
+                                       C LAUDE O PUS 4.5                                    7.8 %               15.4 %
+                                       G EMINI F LASH 3                                     10.8 %              20.5 %
+                                       G EMINI P RO 3                                       11.0 %              20.5 %
+                                       Q WEN 3                                              5.0 %                8.1 %
+                                     Specialized LLM
+                                       K IMINA P ROVER 8B                                   1.0 %                6.6 %
+                                       G OEDEL P ROVER V2 32B                               2.7%                11.3 %
+                                     Iterative
+                                        C LAUDE O PUS 4.5 (SC)                              27.1 %                N/A
+                                        G EMINI F LASH 3 (SC)                               27.9 %                N/A
+                                        G EMINI F LASH 3 ( AGENTIC )                        30.3 %                N/A
+
+                                     C OMBINED                                                      35.7 %
+
+
+                   100      Gemini Flash 3 (SC)             Gemini Pro 3                     GPT 5.2                     Kimina 8B         Tactics
+
+
+
+
+Success Rate (%)
+                            Gemini Flash 3 (agentic)        Claude Opus 4.5 (SC)             Goedel Prover V2            Qwen 3            Combined
+                   75       Gemini Flash 3                  Claude Opus 4.5
+
+                   50
+                   25
+                    0
+                         pedagogical                   tooling              benchmark                       library                  formalization
+                           (n=216)                     (n=85)                      (n=48)                       (n=89)                  (n=559)
+
+Figure 2: Success rate of different provers split by repository category. We compare general purpose
+LLMs, specialized models (pass@32), self-correcting (SC) and agentic approaches (16 iterations).
+We see that tasks from pedagogical repositories are easier to prove, while those from math formal-
+ization projects are harder. A specialized prover such as Goedel Prover works relatively better on
+benchmark repositories but has worse performance on other project types.
+
+
+plest prover we consider is the trivial tactic, capable of solving extremely simple theorems
+where the proof is a trivial reformulation of the goal. We consider also other deterministic tactics
+such as ring, linarith, norm_num, and more advanced approaches such as simp or grind
+(de Moura, 2025). grind serves as a high-powered, general-purpose automation engine, using
+SMT-based techniques to solve complex problems. See Appendix I for a full analysis of the deter-
+ministic approaches.
+
+
+Foundation models. We consider state-of-the-art general-purpose large language models such as
+Claude Opus 4.5 (Anthropic, 2025), Gemini Flash 3 (Comanici et al., 2025), GPT 5.2 (OpenAI,
+2025). We also consider Qwen 3 (Yang et al., 2025a) as an example of open-weight model. Foun-
+dation models are trained on very large amounts of data and are known for their flexibility and
+generalization capabilities outside of their specific training domain.
+
+
+                                                                             6
+Preprint
+
+
+
+
+Specialized models. We also include models specifically trained for automated theorem solving,
+such as Kimina-prover (Wang et al., 2025a) and Goedel-Prover V2 (Lin et al., 2025b). We select
+specifically these two specialized provers because they have good performance on competitive math
+datasets, are available open source, and are compatible with the fill-in-the-sorry task.
+
+Self-correcting and agentic approaches. We consider self-correcting approaches in which we
+sample each model iteratively up to 16 times. For every proposal, a deterministic reviewer inserts
+the solution into the project and tests for compilation errors. In case of failure, it returns the build
+error message as a feedback for the next iteration. In addition, we implement a simple baseline
+agentic approach inspired by most popular implementations (Jiang et al., 2023; Varambally et al.,
+2025; Cao et al., 2025). In particular, it includes a Proposer, tasked to provide a solution for the
+given task, and a deterministic reviewer, like in the pure self-correcting mode. The Proposer has a
+ReAct-style (Yao et al., 2023) architecture with a library search tool, LeanSearch (Gao et al., 2025).
+The proposer uses Gemini Flash 3 with a dynamic thinking budget and 5 rounds of tool calls at each
+iteration.
+
+4.1   R ESULTS
+
+We evaluate the approaches based on language-models without self-correction with pass@32, while
+self-correcting models can run up to 16 iterations. We do not evaluate the tactics multiple times,
+as their outcome is deterministic. Performance is shown in Table 1. By looking at the results, we
+immediately notice that the feedback from the build output, which, in case of errors, includes the
+state before the failure and the error message, is extremely useful for the models we tested. As
+emphasized by Figure 3a, with just 16 model calls, iterative approaches strongly outperform any
+single-shot approach, even if considering pass@k with double the number of calls. In other words,
+when working with SorryDB, access to the project environment and having the possibility to compile
+it to test a proposed solution is much more helpful than longer reasoning budget or fine-tuning on
+specific datasets.
+Figure 2 shows that performance is generally higher in pedagogical repositories and repositories
+that contain existing benchmark problems. After all, pedagogical repositories often contain theo-
+rems that can be solved in a few steps, or even already exist as proven theorems in Mathlib, while
+benchmark problems are a common target for reasoning evaluation, and recent models may have
+trained on them. Goedel Prover V2 performs relatively better on benchmark repositories. In addi-
+tion to traditional competitive math benchmarks, we also include code generation benchmarks (Ye
+et al., 2025).
+By inspecting the distribution of solved proofs per prover, we observe that aggregating solutions
+across provers increases the total number of solved tasks. This indicates that provers are comple-
+mentary: each succeeds on a different subset of problems, and even the strongest prover fails on
+instances that others can solve. A qualitative example of this is shown in Appendix A.
+Moreover, we notice that without library search, provers struggle to find theorems on their own.
+Finally, we notice that specialized models have been trained on old Lean versions, and the version
+mismatch could be a reason for their weaker performance.
+Furthermore, their RL training focused on competition math and this may explain the difficulty
+generalizing to other domains. Also, theorem provers specifically trained for solving entire theorems
+may find the fill-in-the-sorry task slightly out of domain.
+
+
+5     D ISCUSSION
+
+SorryDB scrapes open proof obligations (i.e. sorry statements) in active Lean formalization
+projects, with an emphasis on projects that received commits within some recent timeframe. This
+choice is made to promote the selection of projects that are still under development. This design
+ensures that the benchmark keeps targeting new and unsolved tasks, rather than problems that are
+already well-supported by current available proof automation. In practice, this means that each
+sorry represents a proof obligation that contributors have chosen not to discharge immediately,
+probably because it would require nontrivial insight, missing lemmas, or substantial refactoring. As
+
+
+                                                   7
+    Preprint
+
+
+
+
+                                                                                                                                     21
+                                                                                                                              20.0                                  formalization
+                                                                                                                              17.5        17                        pedagogical
+                                                                                                                                               15                   benchmark
+                                                                                                                              15.0
+
+
+
+                                                                                                          Count by category
+                                                                                                                                                                    tooling
+                                                                                                                              12.5                                  library
+                                                                                                                              10.0
+                               Claude Opus 4.5          Gemini Flash 3 (SC)                                                                         8   8
+                               Gemini Flash 3           GPT 5.2                                                                7.5
+                                                                                                                                                            6   6
+                               Goedel Prover V2         Gemini Flash 3 (agentic)
+                               Gemini Pro 3             Kimina 8B                                                              5.0
+                               Qwen 3                   Claude Opus 4.5 (SC)                                                                                         3
+                                                                                                                               2.5                                       2
+                                                                                                                                                                             1   1
+                 300
+                                                                                                                               0.0
+                 250
+                                                                                                                     Tactics
+
+
+Sorries Solved
+                 200
+                                                                                                         Kimina 8B
+                 150
+                                                                                                                  Qwen 3
+                 100
+                                                                                                  Goedel Prover V2
+                  50                                                                               Claude Opus 4.5
+                   0                                                                                 Gemini Flash 3
+                       1   4   7     10    13     16   19    22     25     28      31
+                                            Sample Proofs                                              Gemini Pro 3
+    (a) Number of solved tasks by number of LLM                                               Claude Opus 4.5 (SC)
+    calls. Iterative sampling (self-correcting or agentic)                                      Gemini Flash 3 (SC)
+    is much more efficient than parallel sampling.                                          Gemini Flash 3 (agentic)
+
+                                                                                            (b) Upset plot of sorries solved by each model. Each
+                                                                                            column represents the number of theorems solved by
+                                                                                            all the provers marked in the table with a black circle,
+                                                                                            and not solved by the others. Deterministic tactics
+                                                                                            solve some sorries that none of the LLM-based ap-
+                                                                                            proaches could solve.
+
+    Figure 3: Analysis of prover complementarity. (a) Iterative approaches with error feedback strongly
+    outperform parallel sampling with the same number of calls. (b) Different provers solve different
+    subsets of problems, indicating complementarity.
+
+
+    a result, it is reasonable to expect that each task is, by construction, a meaningful unit of work for
+    evaluating automated theorem provers. As automated theorem proving improves and these tools are
+    used to solve sorries, the remaining ones naturally become more challenging, allowing SorryDB
+    to adapt to the current state of the art and remain a moving benchmark that scales with progress
+    rather than becoming saturated. In other words, this is an evolving dataset: while we analyze a
+    static snapshot in our evaluations, we plan to take new snapshots of the dataset, for example, on
+    a monthly basis. As a consequence, SorryDB will not be saturated: as new theorem provers are
+    released, mathematicians adopt them, and the difficulty of recent sorry filling tasks will increase.
+    One drawback of this approach is not knowing the best possible performance on a snapshot: we
+    measure the relative performance among provers, but we do not know how many tasks are actually
+    unsolvable because they are unprovable. Trying to prove the negation of the goal for tasks without
+    known solution could be a way to estimate this in the future. Moreover, we could adopt in the
+    future an Elo score (Király and Qian, 2017), such as that used in CodeClash (Yang et al., 2025b),
+    to emphasize that the evaluation score is relative. As a future step, we plan to set up a leaderboard
+    to help comparing the performance of the various state of the art models, and regularly provide an
+    updated snapshot of the dataset.
+
+    Limitations.                   Regarding current limitations, there are a few directions open to future improve-
+    ments.
+    First, despite the broader variety of repositories, the scope is still limited to projects in the Lean
+    reservoir, and the data distribution may be biased towards some fields, while other topics may be un-
+
+
+                                                                                        8
+Preprint
+
+
+
+
+derrepresented. Considering only projects in the Lean reservoir restricts the number of repositories
+to consider, but it is more likely to lead to higher quality projects.
+In addition, the verifier currently does not allow solutions that propose to add imports to the target
+file, open additional namespaces, or to define additional lemmas to use in the target theorem, which
+could be a limitation to the expressivity of the prover. This constraint can be easily removed in a
+future version of the benchmark.
+Finally, some solutions may potentially exploit Lean properties to trick the verification pipeline.
+While we currently employ a custom script to remove instances of sorryAx, an exploit which
+the agentic systems used to get around the sorry verification, future work can easily improve the
+verification pipelines by integrating tools such as Leanchecker (leanprover contributors), SafeVer-
+ify (GasStationManager) or another custom kernel check tool would improve its reliability.
+
+6   C ONCLUSION
+In this work, we introduce SorryDB, a dynamic benchmark derived from unresolved sorry state-
+ments in Lean GitHub repositories containing active formalization efforts. By focusing on outstand-
+ing real-world tasks, SorryDB is inherently aligned to the priorities of the formalization community.
+The benchmark is continually refreshed to mitigate data contamination and ensure it reflects the
+ever-evolving formalization landscape. Our evaluations demonstrate the efficacy of modern agentic
+provers while identifying specific limitations compared to traditional methods. With SorryDB, we
+aim to help herald the coming future of increasingly capable and usable proving assistants. Code is
+available at https://github.com/SorryDB/SorryDB/
+
+ACKNOWLEDGMENTS
+We thank Morph Labs for providing support with their infrastructure, and Axiomatic AI for pro-
+viding support with LLM inference. Part of this research was supported by the European Research
+Council (ERC), grant 864145. A.L. and L.S thank Marco del Tredici and Benjamin Breen for com-
+ments on the original manuscript and for discussions.
+
+R EFERENCES
+Tudor Achim, Alex Best, Alberto Bietti, Kevin Der, Mathïs Fédérico, Sergei Gukov, Daniel Halpern-
+  Leistner, Kirsten Henningsgard, Yury Kudryashov, Alexander Meiburg, Martin Michelsen, Ri-
+  ley Patterson, Eric Rodriguez, Laura Scharff, Vikram Shanker, Vladmir Sicca, Hari Sowrirajan,
+  Aidan Swope, Matyas Tamas, Vlad Tenev, Jonathan Thomm, Harold Williams, and Lawrence
+  Wu. Aristotle: Imo-level automated theorem proving, 2025. URL https://arxiv.org/
+  abs/2510.01346.
+Anthropic. Introducing claude opus 4.5. Anthropic News (Announcements), November 2025. URL
+  https://www.anthropic.com/news/claude-opus-4-5. Accessed: 2026-01-05.
+Axiom. From seeing why to checking everything: Axiomprover solves all problems at putnam 2025:
+  Proof release & commentary, January 2026. URL https://axiommath.ai/territory/
+  from-seeing-why-to-checking-everything. Territory (Axiom Math blog).
+Zhangir Azerbayev, Bartosz Piotrowski, Hailey Schoelkopf, Edward W. Ayers, Dragomir Radev,
+  and Jeremy Avigad. Proofnet: Autoformalizing and formally proving undergraduate-level math-
+  ematics, 2023. URL https://arxiv.org/abs/2302.12433.
+Lars Becker, María Inés de Frutos-Fernández, Leo Diedering, Floris van Doorn, Sébastien Gouëzel,
+  Asgar Jamneshan, Evgenia Karunus, Edward van de Meent, Pietro Monticone, Jasper Mulder-
+  Sohn, Jim Portegies, Joris Roos, Michael Rothgang, Rajula Srivastava, James Sundstrom, Jeremy
+  Tan, and Christoph Thiele. A blueprint for the formalization of carleson’s theorem on convergence
+  of fourier series, 2025. URL https://arxiv.org/abs/2405.06423.
+Param Biyani, Shashank Kirtania, Yasharth Bajpai, Sumit Gulwani, and Ashish Tiwari. Indimath-
+  bench: Autoformalizing mathematical reasoning problems with a human touch, 2025. URL
+  https://arxiv.org/abs/2512.00997.
+
+
+                                                  9
+Preprint
+
+
+
+
+Kevin Buzzard and Richard Taylor. Towards a lean proof of fermat’s last theorem. Technical re-
+  port, Imperial College London, January 2026. URL https://imperialcollegelondon.
+  github.io/FLT/blueprint.pdf. Project blueprint and documentation.
+
+Chenrui Cao, Liangcheng Song, Zenan Li, Xinyi Le, Xian Zhang, Hui Xue, and Fan Yang. Re-
+  viving dsp for advanced theorem proving in the era of reasoning models, 2025. URL https:
+  //arxiv.org/abs/2506.11487.
+
+Jiangjie Chen, Wenxiang Chen, Jiacheng Du, Jinyi Hu, Zhicheng Jiang, Allan Jie, Xiaoran Jin,
+   Xing Jin, Chenggang Li, Wenlei Shi, Zhihong Wang, Mingxuan Wang, Chenrui Wei, Shufa Wei,
+   Huajian Xin, Fan Yang, Weihao Gao, Zheng Yuan, Tianyang Zhan, Zeyu Zheng, Tianxi Zhou,
+   and Thomas Hanwen Zhu. Seed-prover 1.5: Mastering undergraduate-level theorem proving via
+   learning from experience, 2025a. URL https://arxiv.org/abs/2512.17260.
+
+Luoxin Chen, Jinming Gu, Liankai Huang, Wenhao Huang, Zhicheng Jiang, Allan Jie, Xiaoran Jin,
+  Xing Jin, Chenggang Li, Kaijing Ma, Cheng Ren, Jiawei Shen, Wenlei Shi, Tong Sun, He Sun,
+  Jiahui Wang, Siran Wang, Zhihong Wang, Chenrui Wei, Shufa Wei, Yonghui Wu, Yuchen Wu,
+  Yihang Xia, Huajian Xin, Fan Yang, Huaiyuan Ying, Hongyi Yuan, Zheng Yuan, Tianyang Zhan,
+  Chi Zhang, Yue Zhang, Ge Zhang, Tianyun Zhao, Jianqiu Zhao, Yichi Zhou, and Thomas Hanwen
+  Zhu. Seed-prover: Deep and broad reasoning for automated theorem proving, 2025b. URL
+  https://arxiv.org/abs/2507.23726.
+
+Gheorghe Comanici, Eric Bieber, Mike Schaekermann, and Ice Pasupat et al. Gemini 2.5: Pushing
+  the frontier with advanced reasoning, multimodality, long context, and next generation agentic
+  capabilities, 2025. URL https://arxiv.org/abs/2507.06261.
+
+Johan Commelin and Adam Topaz. Abstraction boundaries and spec driven development in pure
+  mathematics, 2023. URL https://arxiv.org/abs/2309.14870.
+
+Leonardo de Moura. The Lean Reference Manual: The grind tactic. Lean Focused Research
+  Organization, 2025.  URL https://lean-lang.org/doc/reference/latest/
+  The--grind--tactic/.
+
+Rémy Degenne, David Ledvinka, Etienne Marion, and Peter Pfaffelhuber. Formalization of brown-
+  ian motion in lean, 2025. URL https://arxiv.org/abs/2511.20118.
+
+Guoxiong Gao, Haocheng Ju, Jiedong Jiang, Zihan Qin, and Bin Dong. A semantic search engine
+  for mathlib4, 2025. URL https://arxiv.org/abs/2403.13310.
+
+GasStationManager. Safeverify: A lean4 script for robustly verifying submitted proofs of theo-
+  rems and implementations of functions. https://github.com/GasStationManager/
+  SafeVerify. GitHub repository. License: Apache-2.0. Accessed 2026-01-19.
+
+Thomas Hales. The formal proof of the kepler conjecture: a critical retrospective, 2024. URL
+  https://arxiv.org/abs/2402.08032.
+
+Jiewen Hu, Thomas Zhu, and Sean Welleck. minictx: Neural theorem proving with (long-)contexts,
+   2025. URL https://arxiv.org/abs/2408.03350.
+
+Yichen Huang and Lin F. Yang. Winning gold at imo 2025 with a model-agnostic verification-and-
+  refinement pipeline, 2025. URL https://arxiv.org/abs/2507.15855.
+
+Thomas Hubert, Rishi Mehta, Laurent Sartran, Miklós Z. Horváth, Goran Žužić, Eric Wieser, Aja
+  Huang, Julian Schrittwieser, Yannick Schroecker, Hussain Masoom, Ottavia Bertolli, Tom Za-
+  havy, Amol Mandhane, Jessica Yung, Iuliya Beloshapka, Borja Ibarz, Vivek Veeriah, Lei Yu,
+  Oliver Nash, Paul Lezeau, Salvatore Mercuri, Calle Sönne, Bhavik Mehta, Alex Davies, Daniel
+  Zheng, Fabian Pedregosa, Yin Li, Ingrid von Glehn, Mark Rowland, Samuel Albanie, Ameya Vel-
+  ingker, Simon Schmitt, Edward Lockhart, Edward Hughes, Henryk Michalewski, Nicolas Son-
+  nerat, Demis Hassabis, Pushmeet Kohli, and David Silver. Olympiad-level formal mathematical
+  reasoning with reinforcement learning. Nature, 2025. doi: 10.1038/s41586-025-09833-y. URL
+  https://doi.org/10.1038/s41586-025-09833-y.
+
+
+                                              10
+Preprint
+
+
+
+
+Hamel Husain, Ho-Hsiang Wu, Tiferet Gazit, Miltiadis Allamanis, and Marc Brockschmidt. Code-
+  searchnet challenge: Evaluating the state of semantic code search, 2020. URL https:
+  //arxiv.org/abs/1909.09436.
+Albert Q. Jiang, Sean Welleck, Jin Peng Zhou, Wenda Li, Jiacheng Liu, Mateja Jamnik, Timothée
+  Lacroix, Yuhuai Wu, and Guillaume Lample. Draft, sketch, and prove: Guiding formal theorem
+  provers with informal proofs, 2023. URL https://arxiv.org/abs/2210.12283.
+Jiedong Jiang, Wanyi He, Yuefeng Wang, Guoxiong Gao, Yongle Hu, Jingting Wang, Nailing Guan,
+   Peihao Wu, Chunbo Dai, Liang Xiao, and Bin Dong. Fate: A formal benchmark series for frontier
+   algebra of multiple difficulty levels, 2025. URL https://arxiv.org/abs/2511.02872.
+Carlos E. Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir Press, and Karthik
+  Narasimhan. Swe-bench: Can language models resolve real-world github issues?, 2024. URL
+  https://arxiv.org/abs/2310.06770.
+Franz J. Király and Zhaozhi Qian. Modelling competitive sports: Bradley-terry- models for su-
+  pervised and on-line learning of paired competition outcomes, 2017. URL https://arxiv.
+  org/abs/1701.08055.
+Adarsh Kumarappan, Mo Tiwari, Peiyang Song, Robert Joseph George, Chaowei Xiao, and Anima
+  Anandkumar. Leanagent: Lifelong learning for formal theorem proving, 2025. URL https:
+  //arxiv.org/abs/2410.06209.
+Nathan Lambert, Jacob Morrison, Valentina Pyatkin, Shengyi Huang, Hamish Ivison, Faeze Brah-
+  man, Lester James V. Miranda, Alisa Liu, Nouha Dziri, Shane Lyu, Yuling Gu, Saumya Ma-
+  lik, Victoria Graf, Jena D. Hwang, Jiangjiang Yang, Ronan Le Bras, Oyvind Tafjord, Chris
+  Wilhelm, Luca Soldaini, Noah A. Smith, Yizhong Wang, Pradeep Dasigi, and Hannaneh Ha-
+  jishirzi. Tulu 3: Pushing frontiers in open language model post-training, 2025. URL https:
+  //arxiv.org/abs/2411.15124.
+Lean FRO. Inclusion criteria, 2025.        URL https://reservoir.lean-lang.org/
+  inclusion-criteria.
+Lean Prover contributors. Reservoir: Package registry for lean/lake. https://github.com/
+  leanprover/reservoir, 2026. GitHub repository (Apache-2.0), accessed 2026-01-28.
+leanprover contributors. lean4checker: Replay the environment for a given lean module. https:
+   //github.com/leanprover/lean4checker. GitHub repository. License: Apache-2.0.
+   Accessed 2026-01-19.
+Yong Lin, Shange Tang, Bohan Lyu, Jiayun Wu, Hongzhou Lin, Kaiyu Yang, Jia Li, Mengzhou
+  Xia, Danqi Chen, Sanjeev Arora, and Chi Jin. Goedel-prover: A frontier model for open-source
+  automated theorem proving, 2025a. URL https://arxiv.org/abs/2502.07640.
+Yong Lin, Shange Tang, Bohan Lyu, Ziran Yang, Jui-Hui Chung, Haoyu Zhao, Lai Jiang, Yihan
+  Geng, Jiawei Ge, Jingruo Sun, Jiayun Wu, Jiri Gesi, Ximing Lu, David Acuna, Kaiyu Yang,
+  Hongzhou Lin, Yejin Choi, Danqi Chen, Sanjeev Arora, and Chi Jin. Goedel-prover-v2: Scaling
+  formal theorem proving with scaffolded data synthesis and self-correction, 2025b. URL https:
+  //arxiv.org/abs/2508.03613.
+Logical Intelligence. Aleph prover by logical intelligence.             URL https://www.
+  logicalintelligence.com/aleph-prover.html.
+The mathlib Community. The lean mathematical library. In Proceedings of the 9th ACM SIGPLAN
+  International Conference on Certified Programs and Proofs, POPL ’20, page 367–381. ACM,
+  January 2020. doi: 10.1145/3372885.3373824. URL http://dx.doi.org/10.1145/
+  3372885.3373824.
+Leonardo de Moura and Sebastian Ullrich. The lean 4 theorem prover and programming language.
+  In Automated Deduction – CADE 28: 28th International Conference on Automated Deduction,
+  Virtual Event, July 12–15, 2021, Proceedings, page 625–635, Berlin, Heidelberg, 2021. Springer-
+  Verlag. ISBN 978-3-030-79875-8. doi: 10.1007/978-3-030-79876-5_37. URL https://doi.
+  org/10.1007/978-3-030-79876-5_37.
+
+
+                                               11
+Preprint
+
+
+
+
+OpenAI. Introducing GPT-5.2, December 2025. URL https://openai.com/index/
+  introducing-gpt-5-2/. Published December 11, 2025. Accessed: 2026-01-25.
+Azim Ospanov, Farzan Farnia, and Roozbeh Yousefzadeh. Apollo: Automated llm and lean col-
+  laboration for advanced formal reasoning, 2025. URL https://arxiv.org/abs/2505.
+  05758.
+Auguste Poiroux, Antoine Bosselut, and Viktor Kunčak. Rlmeval: Evaluating research-level neural
+  theorem proving, 2025a. URL https://arxiv.org/abs/2510.25427.
+Auguste Poiroux, Viktor Kuncak, and Antoine Bosselut. Leaninteract: A python interface for lean
+  4, 2025b. URL https://github.com/augustepoiroux/LeanInteract.
+Z. Z. Ren, Zhihong Shao, Junxiao Song, Huajian Xin, Haocheng Wang, Wanjia Zhao, Liyue
+  Zhang, Zhe Fu, Qihao Zhu, Dejian Yang, Z. F. Wu, Zhibin Gou, Shirong Ma, Hongxuan Tang,
+  Yuxuan Liu, Wenjun Gao, Daya Guo, and Chong Ruan. Deepseek-prover-v2: Advancing for-
+  mal mathematical reasoning via reinforcement learning for subgoal decomposition, 2025. URL
+  https://arxiv.org/abs/2504.21801.
+Anka Reuel, Amelia Hardy, Chandler Smith, Max Lamparth, Malcolm Hardy, and Mykel J. Kochen-
+  derfer. Betterbench: Assessing ai benchmarks, uncovering issues, and establishing best practices,
+  2024. URL https://arxiv.org/abs/2411.12990.
+Neil Robertson, Daniel Sanders, Paul Seymour, and Robin Thomas. The four-colour theorem.
+  Journal of Combinatorial Theory, Series B, 70(1):2–44, 1997. ISSN 0095-8956. doi: https:
+  //doi.org/10.1006/jctb.1997.1750. URL https://www.sciencedirect.com/science/
+  article/pii/S0095895697917500.
+David Silver, Thomas Hubert, Julian Schrittwieser, Ioannis Antonoglou, Matthew Lai, Arthur Guez,
+  Marc Lanctot, Laurent Sifre, Dharshan Kumaran, Thore Graepel, Timothy Lillicrap, Karen Si-
+  monyan, and Demis Hassabis. Mastering chess and shogi by self-play with a general reinforce-
+  ment learning algorithm, 2017. URL https://arxiv.org/abs/1712.01815.
+Xichen Tang. A comprehensive survey of the lean 4 theorem prover: Architecture, applications, and
+  advances, 2025. URL https://arxiv.org/abs/2501.18639.
+The leanprover-community. Lean 4 repl: A simple repl for lean 4, returning information about errors
+  and sorries. https://github.com/leanprover-community/repl, 2023.
+George Tsoukalas, Jasper Lee, John Jennings, Jimmy Xin, Michelle Ding, Michael Jennings, Ami-
+  tayush Thakur, and Swarat Chaudhuri. Putnambench: Evaluating neural theorem-provers on the
+  putnam mathematical competition, 2024. URL https://arxiv.org/abs/2407.11214.
+Sumanth Varambally, Thomas Voice, Yanchao Sun, Zhifeng Chen, Rose Yu, and Ke Ye. Hilbert:
+  Recursively building formal proofs with informal reasoning, 2025. URL https://arxiv.
+  org/abs/2509.22819.
+Haiming Wang, Mert Unsal, Xiaohan Lin, Mantas Baksys, Junqi Liu, Marco Dos Santos, Flood
+  Sung, Marina Vinyes, Zhenzhe Ying, Zekai Zhu, Jianqiao Lu, Hugues de Saxcé, Bolton Bailey,
+  Chendong Song, Chenjun Xiao, Dehao Zhang, Ebony Zhang, Frederick Pu, Han Zhu, Jiawei Liu,
+  Jonas Bayer, Julien Michel, Longhui Yu, Léo Dreyfus-Schmidt, Lewis Tunstall, Luigi Pagani,
+  Moreira Machado, Pauline Bourigault, Ran Wang, Stanislas Polu, Thibaut Barroyer, Wen-Ding
+  Li, Yazhe Niu, Yann Fleureau, Yangyang Hu, Zhouliang Yu, Zihan Wang, Zhilin Yang, Zhengying
+  Liu, and Jia Li. Kimina-prover preview: Towards large formal reasoning models with reinforce-
+  ment learning, 2025a. URL https://arxiv.org/abs/2504.11354.
+Lilin Wang, Lucas Ramalho, Alan Celestino, Phuc Anthony Pham, Yu Liu, Umang Kumar Sinha,
+  Andres Portillo, Onassis Osunwa, and Gabriel Maduekwe. Swe-bench++: A framework for the
+  scalable generation of software engineering benchmarks from open-source repositories, 2025b.
+  URL https://arxiv.org/abs/2512.17419.
+Ruida Wang, Rui Pan, Yuxin Li, Jipeng Zhang, Yizhen Jia, Shizhe Diao, Renjie Pi, Junjie Hu, and
+  Tong Zhang. Ma-lot: Model-collaboration lean-based long chain-of-thought reasoning enhances
+  formal theorem proving, 2025c. URL https://arxiv.org/abs/2503.03205.
+
+
+                                                12
+Preprint
+
+
+
+
+Rongge Xu, Hui Dai, Yiming Fu, Jiedong Jiang, Tianjiao Nie, Hongwei Wang, Junkai Wang, Holi-
+  verse Yang, Jiatong Yang, and Zhi-Hao Zhang. Leancat: A benchmark suite for formal category
+  theory in lean (part i: 1-categories), 2025. URL https://arxiv.org/abs/2512.24796.
+An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang
+  Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Dayiheng Liu, Fan Zhou, Fei Huang, Feng Hu,
+  Hao Ge, Haoran Wei, Huan Lin, Jialong Tang, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin
+  Yang, Jiaxi Yang, Jing Zhou, Jingren Zhou, Junyang Lin, Kai Dang, Keqin Bao, Kexin Yang,
+  Le Yu, Lianghao Deng, Mei Li, Mingfeng Xue, Mingze Li, Pei Zhang, Peng Wang, Qin Zhu, Rui
+  Men, Ruize Gao, Shixuan Liu, Shuang Luo, Tianhao Li, Tianyi Tang, Wenbiao Yin, Xingzhang
+  Ren, Xinyu Wang, Xinyu Zhang, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yinger
+  Zhang, Yu Wan, Yuqiong Liu, Zekun Wang, Zeyu Cui, Zhenru Zhang, Zhipeng Zhou, and Zihan
+  Qiu. Qwen3 technical report, 2025a. URL https://arxiv.org/abs/2505.09388.
+John Yang, Carlos E. Jimenez, Alex L. Zhang, Kilian Lieret, Joyce Yang, Xindi Wu, Ori Press,
+  Niklas Muennighoff, Gabriel Synnaeve, Karthik R. Narasimhan, Diyi Yang, Sida I. Wang, and
+  Ofir Press. Swe-bench multimodal: Do ai systems generalize to visual software domains?, 2024.
+  URL https://arxiv.org/abs/2410.03859.
+John Yang, Kilian Lieret, Joyce Yang, Carlos E. Jimenez, Ofir Press, Ludwig Schmidt, and Diyi
+  Yang. Codeclash: Benchmarking goal-oriented software engineering, 2025b. URL https:
+  //arxiv.org/abs/2511.00839.
+Xiao-Wen Yang, Zihao Zhang, Jianuo Cao, Zhi Zhou, Zenan Li, Lan-Zhe Guo, Yuan Yao, Taolue
+  Chen, Yu-Feng Li, and Xiaoxing Ma. Formalml: A benchmark for evaluating formal subgoal
+  completion in machine learning theory, 2025c. URL https://arxiv.org/abs/2510.
+  02335.
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao.
+  React: Synergizing reasoning and acting in language models, 2023. URL https://arxiv.
+  org/abs/2210.03629.
+Zhe Ye, Zhengxu Yan, Jingxuan He, Timothe Kasriel, Kaiyu Yang, and Dawn Song. Verina: Bench-
+  marking verifiable code generation. arXiv preprint arXiv:2505.23135, 2025.
+Kunhao Zheng, Jesse Michael Han, and Stanislas Polu. Minif2f: a cross-system benchmark for
+  formal olympiad-level mathematics. arXiv preprint arXiv:2109.00110, 2021.
+
+
+A    Q UALITATIVE A NALYSIS
+In this Appendix, we analyze specific examples of proposed proofs to better understand the qualita-
+tive differences across provers.
+A striking example from the Brownian-motion repository (Degenne et al., 2025) is shown in Figure
+4. It involves proving that the Càdlàg property (right-continuous with left limits) is preserved under
+the squared norm operation. While standard LLMs were distracted by hunting for non-existent
+Mathlib lemmas, the self-correcting approach, without tools succeeded by directly constructing the
+solution. This required a deep understanding of the local IsCadlag definition: the model manually
+initialized the structure’s fields and successfully constructed an existential witness for the left limit.
+Interestingly, the tool-enabled agentic approach failed to solve this same problem, as it kept calling
+the search tool rather than building the proof term itself. This illustrates a counter-intuitive failure
+mode where a generally stronger prover is outperformed by a weaker one due to tool over-reliance.
+As shown in the upset plot (Figure 3b), this is not an isolated incident. It is one of six theorems
+solved by the self-correcting Gemini Flash but missed by the agentic version.
+This highlights the strength of SorryDB: it captures tasks that resist simple retrieval and require
+models to engage in novel arguments within a specific local context. A complementary success
+is observed in the RemyDegenne/CLT repository, where the task involved proving the integra-
+bility of a function on a product measure space. While pure generative models failed to recon-
+struct the complex measure-theoretic argument, both the deterministic tactics and the Agentic one
+successfully solved it by retrieving specific Mathlib lemmas (integrable_comp_eval and
+
+
+                                                   13
+Preprint
+
+
+
+
+                              Incorrect Attempt - Goedel Prover:
+           The model outlines the proof structure but gives up on each step with sorry.
+    have hX2_cadlag : ∀ ω, IsCadlag (fun t 7→ ∥X t ω∥ ^ 2) := by
+      intro ω
+      have h1 : IsCadlag (X · ω) := hX_cadlag ω
+      have h2 : Continuous (fun x : E => ∥x∥ : E → R) := by sorry
+      have h3 : IsRightContinuous (fun t : ι => ∥X t ω∥ ^ 2 : ι → R) := by
+      sorry
+      have h4 : IsLeftContinuous (fun t : ι => ∥X t ω∥ ^ 2 : ι → R) := by
+      sorry
+      have h5 : IsCadlag (fun t : ι => ∥X t ω∥ ^ 2 : ι → R) := by sorry
+      sorry
+
+                  Incorrect Attempt - Gemini (agentic with LeanSearch):
+       The model hallucinates a high-level lemma (continuous_comp) to fill the sorry.
+have hX2_cadlag : ∀ ω, IsCadlag (fun t 7→ ∥X t ω∥ ^ 2) :=
+  fun ω 7→ (hX_cadlag ω).continuous_comp (continuous_norm.pow 2)
+
+                         Correct Solution - Gemini (self-correcting):
+The model does not find an appropriate existing lemma and fills the sorry by constructing the proof
+                                    term structure manually.
+have hX2_cadlag : ∀ ω, IsCadlag (fun t 7→ ∥X t ω∥ ^ 2) :=
+  fun ω 7→ {
+    right_continuous := fun t 7→
+      ((hX_cadlag ω).right_continuous t).norm.pow 2
+    left_limit := fun t 7→
+      let ⟨l, hl⟩ := (hX_cadlag ω).left_limit t
+      ⟨∥l∥ ^ 2, hl.norm.pow 2⟩
+  }
+
+
+
+Figure 4: Three attempts at filling the same sorry in the brownian-motion repository. (top)
+Goedel Prover outlines the proof structure but abandons each sub-goal with sorry, unable to find
+the required lemmas. (middle) Gemini with LeanSearch attempts a syntactically-correct guess using
+continuous_comp, a non-existent library function it assumed to exist. (bottom) Gemini self-
+correcting (without LeanSearch) inspects the definition of IsCadlag and manually constructs a
+proof term by providing the two required fields: right_continuous and left_limit.
+
+
+
+
+integrable_comp_of_integrable, respectively). This contrast highlights a key strength of
+SorryDB: it effectively captures the diverse reality of formalization, where success requires know-
+ing when to construct a novel proof, as in the Brownian motion example, and when to leverage the
+existing library, it does not test reasoning power in a vacuum. By including tasks that demand deep
+library knowledge alongside those requiring novel construction, SorryDB provides a more holistic
+evaluation of the practical utility of an AI-based theorem prover.
+
+
+
+B    DATASET COMPOSITION
+
+The source for all GitHub repositories which store SorryDB sorrys is the Reservoir Lean package
+registry. This means that selected repositories comply with the reservoir inclusion criteria and have
+a root lake-manifest.json file which specifies relevant descriptive metadata. All branches
+are included; when the indexer is run, it looks for “leaf commits,” which are the final commits in
+any branch.
+
+
+                                                 14
+Preprint
+
+
+
+
+                                               SorryDB-2601 (n=5663)
+                                    1500
+
+
+                     # Sorries
+                                    1000
+
+                                        500
+
+                                          0
+                                               Evaluation Sample (n=1000)
+                                        200
+
+                         # Sorries
+                                        100
+
+
+                                          0
+                                               02 2       023          02 3         024          02 4        025      02 5
+                                               t2       r2         t2              r2            t2      r2          t2
+                                          Oc          Ap         Oc            Ap            Oc          Ap         Oc
+                                                                               Git Blame Date
+
+Figure 5: Distribution of git blame dates in SorryDB-2601 and the 1000 sorry sample. Serving as a
+proxy for the time of addition, these dates reveal that most sorries are very recent.
+
+
+
+
+                                                                2310
+
+
+
+
+                    Number of Sorries
+                                        2000
+                                        1500
+                                                                                    1108
+                                        1000                                                                  871
+                                                                                                                             716
+                                         500                                               203
+                                                    11 54 22            1     98                 43 66   7          11 142
+                                          0       v4
+                                              v4 .18.
+                                                .18 0
+                                                   .0-
+                                                  v4 1 rc
+                                                     .21
+                                                  v4 .0
+                                              v4 .22.
+                                                .22 0
+                                              v4 .0-rc
+                                                .23 4
+                                                   .0-
+                                                  v4 2
+                                              v4 .24.
+                                                .24 0  rc
+                                                   .0-
+                                                  v4 1
+                                              v4 .25.
+                                                .25 0
+                                                   .0-
+                                                  v4 2 rc
+                                                       rc
+                                                     .25
+                                                  v4 .1
+                                              v4 .26.
+                                                .26 0
+                                              v4 .0-rc
+                                                .26 1
+                                              v4 .0-rc
+                                                .27 2
+                                                   .0-
+                                                                                   Lean Version
+                                                       rc1
+
+
+
+Figure 6: Lean versions of SorryDB-2601 are distributed across major versions and release can-
+didates with the vast majority of sorries on major versions 4.22, 4.24, 4.26, and 4.27.0-rc1, the last
+being the latest version at the time of the dataset collection.
+
+
+
+
+                                                                                    15
+Preprint
+
+
+
+
+Table 2: Distribution of sorries by repository category in the SorryDB-2601 dataset snapshot and
+for the specific 1000 sorries we sampled for use in our experiments. For building the latter, we
+sampled the newest sorries from each repository to maximize diversity and recency.
+
+                        C ATEGORY           S ORRY DB-2601     T EST S AMPLE
+                        F ORMALIZATION           3,099              562
+                        P EDAGOGICAL             1,037              216
+                        B ENCHMARK                797                48
+                        L IBRARY                  616                89
+                        T OOLING                  114               85
+                        T OTAL                   5,663             1,000
+
+
+
+B.1    T OTAL SORRIES ON G IT H UB OVER TIME
+
+
+
+
+      Figure 7: Total sorries on GitHub over time have steadily increased over the last 3 years.
+
+
+
+B.2    DYNAMICS OF A L EAN PROJECT
+
+Figure 8 illustrates the dynamic nature of a representative repository, where periods of rapid devel-
+opment introduce many sorry statements, followed by gradual discharge as proofs mature.
+
+
+
+
+Figure 8: Sorries added and removed from the Carleson project from its announcement to its com-
+pletion. You can see sharp increases in number of sorry statements when new sections were added
+with missing proofs and then a gradual decrease as Lean practitioners provided proofs.
+
+
+
+                                                 16
+Preprint
+
+
+
+
+C     F ULL DATASET SCHEMA
+We provide the full schema for the SORRYDB-2601 dataset.
+
+                     Table 3: Schema of a Sorry record in the SorryDB database.
+             Field                        Type           Description
+             repo
+               remote                     string         Repository URL
+               branch                     string         Git branch name
+               commit                     string         Git commit hash
+               lean_version               string         Lean version (e.g., v4.26.0)
+             location
+               path                       string         File path within repository
+               start_line                 int            Starting line number
+               start_column               int            Starting column number
+               end_line                   int            Ending line number
+               end_column                 int            Ending column number
+             debug_info
+               goal                       string         Proof goal state at the sorry
+               url                        string         URL to sorry location in repo
+             metadata
+               blame_email_hash           string         Hashed email of author
+               blame_date                 datetime       Date sorry was introduced
+               inclusion_date             datetime       Date added to database
+             id                           string         SHA256 hash identifier
+
+D     E XAMPLES OF S O R R Y STATEMENTS
+We provide examples from the SorryDB-2601 dataset.
+    Example 1: Intermediate Value Theorem (RealAnalysisGame)
+    Repository:      AlexKontorovich/RealAnalysisGame
+    File:            Game/Levels/L25Levels/L02.lean:128
+    Lean Version:    v4.23.0-rc2
+    URL:             View on GitHub
+    Code Context:
+       /--
+    The Intermediate Value Theorem (IVT) states that if a function is
+         continuous on a closed interval ‘[a, b]‘ and takes values ‘f(a) <
+         0‘ and ‘0 < f(b)‘, then there exists ‘c ∈ (a, b)‘ so that
+         ‘f(c)=0‘.
+    -/
+    TheoremDoc RealAnalysisGame.IVT as "IVT" in "f(x)"
+
+    Statement IVT {f : R → R} (hf : FunCont f) {a b : R} (hab : a < b)
+          (hfa : f a < 0) (hfb : 0 < f b): ∃ c ∈ Ioo a b, f c = 0 := by
+    let S := { x ∈ Icc a b | f x < 0 }
+    have a_in_S : a ∈ S := by
+      split_ands
+      · bound
+      ...
+      linarith [hc.2 (c - δ / 2) cUB, hδpos]
+      sorry
+
+    Goal:
+
+
+
+                                                 17
+Preprint
+
+
+
+
+       case refine_1
+       f : R → R
+       hf : FunCont f
+       a b : R
+       hab : a < b
+       hfa : f a < 0
+       hfb : 0 < f b
+       S : Set R := {x | x ∈ Icc a b ∧ f x < 0}
+       c : R
+       hc : IsLUB S c
+       fc : f c = 0
+       hca : a ̸= c
+       ⊢ a < c
+
+
+
+
+  Example 2: Field Multiplication (curve25519-dalek-lean-verify)
+  Repository:     Beneficial-AI-Foundation/curve25519-dalek-lean-verify
+  File:           Curve25519Dalek/.../FieldElement51/Mul.lean:44
+  Lean Version:   v4.24.0
+  URL:            View on GitHub
+  Code Context:
+  /-
+  natural language description:
+
+        · Computes the product of two field elements a and b in the field
+        F_p where p = 2^255 - 19
+        · The field elements are represented as five u64 limbs each
+
+  natural language specs:
+
+        · The function always succeeds (no panic)
+        · Field51_as_Nat(result) ≡ Field51_as_Nat(lhs) *
+        Field51_as_Nat(rhs) (mod p)
+  -/
+
+  /-- **Spec and proof concerning
+       ‘backend.serial.u64.field.FieldElement51.Mul.mul‘**:
+  - No panic (always returns successfully)
+  - The result, when converted to a natural number, is congruent to
+       the product of the inputs modulo p
+  - Input bounds: each limb < 2^54
+  - Output bounds: each limb < 2^52
+  -/
+  @[progress]
+  theorem mul_spec (lhs rhs : Array U64 5#usize)
+       (hlhs : ∀ i < 5, lhs[i]!.val < 2 ^ 54) (hrhs : ∀ i < 5,
+       rhs[i]!.val < 2 ^ 54) :
+       ∃ r, mul lhs rhs = ok r ∧
+       Field51_as_Nat r ≡ (Field51_as_Nat lhs) * (Field51_as_Nat rhs)
+       [MOD p] ∧
+       (∀ i < 5, r[i]!.val < 2 ^ 52) := by
+     sorry
+
+  Goal:
+       lhs rhs : Array U64 5#usize
+       hlhs : ∀ i < 5, ↑lhs[i]! < 2 ^ 54
+       hrhs : ∀ i < 5, ↑rhs[i]! < 2 ^ 54
+       ⊢ ∃ r, mul lhs rhs = ok r ∧
+
+
+
+                                            18
+Preprint
+
+
+
+
+          Field51_as_Nat r ≡ Field51_as_Nat lhs * Field51_as_Nat rhs
+        [MOD p] ∧
+          ∀ i < 5, ↑r[i]! < 2 ^ 52
+
+
+
+
+    Example 3: Division Algebra Finiteness (FLT)
+    Repository:     ImperialCollegeLondon/FLT
+    File:           FLT/DivisionAlgebra/Finiteness.lean:106
+    Lean Version:   v4.27.0-rc1
+    URL:            View on GitHub
+    Code Context:
+    lemma existsE : ∃ E : Set (D_A), IsCompact E ∧
+        ∀ φ : D_A ≃t + D_A, addEquivAddHaarChar φ = 1 → ∃ e1 ∈ E, ∃ e2 ∈
+        E,
+        e1 ̸= e2 ∧ φ e1 - φ e2 ∈ Set.range
+        (Algebra.TensorProduct.includeLeft : D →a [K] D_A) := by
+      --have :=
+        MeasureTheory.QuotientMeasureEqMeasurePreimage.haarMeasure_quotient
+      sorry -- **TODO** prove that if A is a locally compact ab group
+        and Gamma is a cocompact
+      -- subgroup then there’s some positive real M such that if U ⊆ A
+        and µ(U)>M then
+      -- U -> A/Gamma isn’t injective.
+
+    Goal:
+      K : Type u_1
+      inst†6 : Field K
+      inst†5 : NumberField K
+      D : Type u_2
+      inst†4 : DivisionRing D
+      inst†3 : Algebra K D
+      inst†2 : FiniteDimensional K D
+      ⊢ ∃ E, IsCompact E ∧
+          ∀ (φ : D_A ≃p + D_A), addEquivAddHaarChar φ = 1 →
+             ∃ e1 ∈ E, ∃ e2 ∈ E, e1 ̸= e2 ∧
+               φ e1 - φ e2 ∈ Set.range ↑Algebra.TensorProduct.includeLeft
+
+
+
+
+E     I NDEXER D ETAILS
+
+For each selected repository, the indexer extracts all the sorry keywords used inside the project.
+For each sorry, we store specific metadata that help identifying it, including the specific repo and
+commit branch, its url, the commit date. All sorrys that are intentionally committed to a main
+branch are included alongside those found on any work-in-progress branch.
+Subsequently, sorrys are filtered so that they can be reproduced in an evaluation environment.
+Specifically, for each sorry, we clone the associated repo, checkout the specific branch and make
+sure that the Lean project successfully builds. We remove the tasks that fail to build. Next, the in-
+dexer uses the Lean REPL (The leanprover-community, 2023) interaction tool to extract the sorry
+from the Lean file and verify that it is “prop-valued”, that is, the sorry requires a proof (i.e. a
+term of type Prop) rather than a term of some other type (e.g. Nat or Real). Indeed, filling a
+sorry for a non-Prop term is considered out of scope because one cannot automatically evaluate
+the correctness of filled value: intuitively, this corresponds to providing a definition rather than a
+proof. The sorrys are then deduplicated, removing those that have exactly the same formal goal and
+
+
+                                                 19
+Preprint
+
+
+
+
+keeping only the most recent occurrence. Deduplication is important as many sorries are repeated
+across multiple commits across a single repo.
+
+F     L IST OF REPOSITORIES IN THE S O R R Y DB-2601 DATASET
+
+    Table 4: Repositories in the SorryDB-2601 Dataset and number of sorrys per repository.
+
+           Repository                                                  Test Set   Full Set
+           AlexKontorovich/PrimeNumberTheoremAnd                            21       136
+           AlexKontorovich/RealAnalysisGame                                 21        55
+           Beneficial-AI-Foundation/curve25519-dalek-lean-verify            21        86
+           Bergschaf/lean-banach-tarski                                      1         1
+           Clap-lang/clap-lean                                              13        13
+           Deducteam/lean2dk                                                 1         1
+           FormalizedFormalLogic/Foundation                                 21        33
+           FredRaj3/SemicircleLaw                                           21        35
+           GasStationManager/SafeVerify                                      1         1
+           HEPLean/PhysLean                                                 21        27
+           ImperialCollegeLondon/FLT                                        21        74
+           Ivan-Sergeyev/seymour                                             2         2
+           JadAbouHawili/Raymond-Smullyan-KnightsAndKnaves                   6         6
+           MichaelStollBayreuth/EulerProducts                                1         1
+           NyxFoundation/tsl-formal-verification                             1         1
+           PatrickMassot/GlimpseOfLean                                      20        70
+           Paul-Lez/PersistentDecomp                                        20        42
+           RemyDegenne/CLT                                                   5         5
+           RemyDegenne/brownian-motion                                      20        31
+           RemyDegenne/lean-bandits                                         13        13
+           Timeroot/Lean-QuantumInfo                                        20       137
+           VCA-EPFL/graphiti                                                20        49
+           Verified-zkEVM/ArkLib                                            20       431
+           Verified-zkEVM/VCV-io                                            20        94
+           Verified-zkEVM/clean                                             18        18
+           WuProver/groebner_proj                                            6         6
+           YaelDillies/LeanAPAP                                             20        41
+           YaelDillies/LeanCamCombi                                         20        45
+           YaelDillies/MiscYD                                               20        36
+           YaelDillies/Toric                                                 9         9
+           YellPika/quasi-borel-spaces                                       2         2
+           acmepjz/lean-iwasawa                                              6         6
+           alexkeizer/QpfTypes                                               2         2
+           apnelson1/Matroid                                                20        61
+           arademaker/fad                                                   20        22
+           dagurtomas/LeanCondensed                                         13        13
+           djvelleman/HTPILeanPackage                                       20       259
+           dwrensha/compfiles                                               20       120
+           emilyriehl/infinity-cosmos                                        1         1
+           fpvandoorn/LeanCourse25                                          20       443
+           fpvandoorn/carleson                                              20        86
+           frenzymath/jixia                                                  1         1
+           frenzymath/reap                                                   1         1
+           goens/lost-pop-lean                                              10        10
+           google-deepmind/formal-conjectures                               20      1698
+           google-deepmind/formal-imo                                       20       301
+           jcreedcmu/Noperthedron                                           20        29
+           jsm28/IMOLean                                                    20        28
+                                                                   Continued on next page
+
+
+                                                20
+Preprint
+
+
+
+
+           Repository                                                     Test Set    Full Set
+           kbuzzard/ClassFieldTheory                                            20         55
+           kebekus/ProjectVD                                                    17         17
+           knowsys/Formale-Systeme-in-LEAN                                      20         23
+           lean-dojo/LeanMillenniumPrizeProblems                                14         14
+           leanprover-community/aesop                                           14         14
+           leanprover-community/batteries                                        7          7
+           leanprover-community/duper                                            2          2
+           leanprover-community/mathlib4                                        20         21
+           leanprover-community/quote4                                           1          1
+           leanprover-community/sphere-eversion                                  6          6
+           leanprover/verso                                                      4          4
+           m4lvin/Gossip-in-Lean                                                19         19
+           m4lvin/lean4-pdl                                                     20         47
+           madvorak/chomsky                                                      1          1
+           mo271/FormalBook                                                     20         78
+           oliver-butterley/SpectralThm                                         20         27
+           or4nge19/NeuralNetworks                                               5          5
+           peabrainiac/lean-catdg                                               14         14
+           pitmonticone/ItaLean2025                                             16         16
+           powdr-labs/leanr                                                      1          1
+           rkirov/category-theory-in-context-lean                               21         31
+           siddhartha-gadgil/LeanLangur                                         10         10
+           siddhartha-gadgil/LeanLion                                            2          2
+           siddhartha-gadgil/MetaExamples                                        6          6
+           sunblaze-ucb/verina                                                   8          8
+           sven-manthe/A-formalization-of-Borel-determinacy-in-Lean              4          4
+           thefundamentaltheor3m/Sphere-Packing-Lean                            20        152
+           ufmg-smite/lean-smt                                                   6          6
+           vihdzp/combinatorial-games                                            2          2
+           yangky11/miniF2F-lean4                                               20        488
+           Total                                                             1000        5663
+
+
+
+
+G    V ERIFICATION INFRASTRUCTURE
+
+LeanInteract queries the Lean REPL to report all sorry statements present in a file. We verify that (1)
+the modified file compiles successfully, (2) the number of sorry statements has decreased by exactly
+one, and (3) all remaining sorry statements have unchanged goals. Simply building the Lean project
+with lake build is insufficient because sorry is a valid Lean term that compiles without error. Our
+verification must therefore explicitly check that the proposed proof eliminates the sorry term rather
+than merely producing a syntactically valid file.
+
+
+
+H    M ETHODOLOGY FOR SELECTING THE 1000 SORRY STATEMENTS TEST SET
+
+We extract sorry statements exclusively from leaf commits (branch tips). This ensures we cap-
+ture incomplete proofs on the main branch as well as work-in-progress on individual development
+branches. For the evaluation, we selected 1000 sorry statements from SorryDB-2601 favoring both
+recency and diversity of repos: we selected the most recent sorry from each repo by blame date
+while pulling cyclically through repos. This prioritization of recency ensures the dataset reflects
+the current state of proof obligations and the real-world challenges Lean practitioners face using
+currently available tools.
+
+
+                                                  21
+Preprint
+
+
+
+
+I   TACTIC STUDY
+
+We conduct a study of the deterministic Tactic strategy used on the SorryDB-2601 dataset.
+
+
+
+
+Figure 9: Number of sorry statements solved by each tactic. General purpose automation tactics like
+grind and aesop perform best.
+
+
+
+
+Figure 10: Upset plot of sorry statements solved by each tactic. Interestingly, exact? uniquely
+solves the most sorry statements, mostly from pedagogical repos. This makes sense as tutorials are
+likely to have exercises easily dispatched by theorems already in Mathlib. Grind is in second place,
+but solves sorry statements from a wider distribution of categories showing its versatility.
+
+
+
+
+                                                22
+Preprint
+
+
+
+
+J   A NALYSIS OF TOKEN CONSUMPTION
+In Figure 11, we analyze the distribution of total tokens for each different model, considering only
+proposed proofs that were successful.
+
+                                              Claude Opus 4.5 (n=154)
+                                              Gemini Flash 3 (n=205)
+                                              Gemini Pro 3 (n=205)
+                                   40         Goedel Prover V2 (n=113)
+                                              Qwen 3 (n=81)
+                                              Kimina 8B (n=39)
+
+
+
+
+       Number of Verified Proofs
+                                   30
+
+
+
+
+                                   20
+
+
+
+
+                                   10
+
+
+
+
+                                    0
+                                        104                                        105                              106
+                                                                                         Total Tokens
+
+
+                                                             Figure 11: Token usage distributions for each model.
+
+
+
+
+                                                                                          23
+

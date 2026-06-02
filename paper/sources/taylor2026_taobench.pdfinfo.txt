@@ -1,0 +1,18 @@
+Title:           TaoBench: Do Automated Theorem Prover LLMs Generalize Beyond MathLib?
+Author:          Alexander K Taylor; Junyi Zhang; Ethan Ji; Vigyan Sahai; Haikang Deng; Yuanzhou Chen; Yifan Yuan; Di Wu; Jia-Chen Gu; Kai-Wei Chang; Nanyun Peng; Amit Sahai; Wei Wang
+Creator:         arXiv GenPDF (tex2pdf:8e18bb9)
+Producer:        pikepdf 8.15.1
+Custom Metadata: yes
+Metadata Stream: yes
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           24
+Encrypted:       no
+Page size:       612 x 792 pts (letter)
+Page rot:        0
+File size:       4523391 bytes
+Optimized:       no
+PDF version:     1.7

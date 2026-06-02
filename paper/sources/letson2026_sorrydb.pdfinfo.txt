@@ -1,0 +1,18 @@
+Title:           SorryDB: Can AI Provers Complete Real-World Lean Theorems?
+Author:          Austin Letson; Leopoldo Sarra; Auguste Poiroux; Oliver Dressler; Paul Lezeau; Dhyan Aranha; Frederick Pu; Aaron Hill; Miguel Corredera Hidalgo; Julian Berman; George Tsoukalas; Lenny Taelman
+Creator:         arXiv GenPDF (tex2pdf:20bc8e9)
+Producer:        pikepdf 8.15.1
+Custom Metadata: yes
+Metadata Stream: yes
+Tagged:          no
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           23
+Encrypted:       no
+Page size:       612 x 792 pts (letter)
+Page rot:        0
+File size:       1410936 bytes
+Optimized:       no
+PDF version:     1.7

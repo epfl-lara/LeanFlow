@@ -1,0 +1,1478 @@
+    Reliable Evaluation and Benchmarks for Statement Autoformalization
+
+                            Auguste Poiroux Gail Weiss
+                         Viktor Kunčak Antoine Bosselut
+                   School of Computer and Communication Sciences
+                                 EPFL, Switzerland
+    {auguste.poiroux, gail.weiss, viktor.kuncak, antoine.bosselut}@epfl.ch
+
+
+
+                      Abstract                                To enable scalable experimentation and robust
+                                                           evaluation, we propose new metrics, benchmarks,
+    Evaluating statement autoformalization, trans-
+                                                           and standards for evaluating statement autoformal-
+    lating natural language mathematics into for-
+    mal languages like Lean 4, remains a signifi-          ization methods. First, we introduce BEq+, a
+    cant challenge, with few metrics, datasets, and        reference-based metric inspired by BEq (Liu et al.,
+    standards to robustly measure progress. In this        2024). BEq+ is deterministic, runs efficiently on
+    work, we present a comprehensive approach              CPU alone, and does not require a 20B LLM prover.
+    combining improved metrics, robust bench-              We measure its strong correlation with human judg-
+    marks, and systematic evaluation, to fill this         ments, demonstrating its utility as a metric for
+    gap. First, we introduce BEq+, an automated
+                                                           comparing autoformalization models. Recogniz-
+    metric that correlates strongly with human judg-
+    ment, along with ProofNetVerif, a new dataset
+                                                           ing that progress in autoformalization will require
+    for assessing the quality of evaluation metrics,       continued improvements in metrics, we also re-
+    containing 3,752 annotated examples. Sec-              lease ProofNetVerif, a new benchmark of 3752
+    ond, we develop two new autoformalization              formal-informal pairs with human-annotated bi-
+    benchmarks: ProofNet#, a corrected version of          nary semantic equivalence labels that can be used
+    ProofNet, and RLM25, with 619 new pairs of             to benchmark the faithfulness of new metrics.
+    research-level mathematics from six formaliza-            Next, we propose two benchmarks as evaluation
+    tion projects. Through systematic experimen-
+                                                           testbeds of statement autoformalization methods.
+    tation across these benchmarks, we find that
+    current techniques can achieve up to 45.1% ac-         First, we identify numerous formalization errors
+    curacy on undergraduate mathematics but strug-         in existing Lean 4 ports (31.8% of the entries),
+    gle with research-level content without proper         and present ProofNet#, a meticulously corrected
+    context. Our work establishes a reliable founda-       version of the leading ProofNet benchmark (Azer-
+    tion for evaluating and advancing autoformal-          bayev et al., 2023a). At the same time, we ob-
+    ization systems.                                       serve that ProofNet focuses on undergraduate-level
+                                                           and self-contained statement formalization. To as-
+1    Introduction
+                                                           sess autoformalization in more realistic, context-
+Automatic verification of logical reasoning holds          dependent, research-oriented scenarios, we cu-
+promise for formal verification of mathematical            rate RLM25, a novel benchmark comprising 619
+proofs, software verification, and artificial intelli-     pairs from real-world, research-level formalization
+gence. Proof assistants allow users to rigorously          projects, the first of its kind, to our knowledge.
+express mathematical statements and mechanically              Finally, we set new standards for evaluating
+check their proofs (Mahboubi and Tassi, 2022;              autoformalization. Current state-of-the-art meth-
+Paulson, 2023; Avigad, 2024), but require inputs           ods, whether based on large language models (Wu
+to be formalized: translated from informally stated        et al., 2022; Azerbayev et al., 2023a), distilled back-
+mathematical statements into a formal language,            translation (Jiang et al., 2023; Azerbayev et al.,
+such as Lean 4. New research explores methods              2023a), or retrieval augmented generation (Azer-
+that automate this process, a task referred to as aut-     bayev et al., 2023a; Liu et al., 2024), show limited
+oformalization (Szegedy, 2020; Wang et al., 2020),         success, with reported accuracies typically below
+but there exists few reliable resources for evaluat-       20% on benchmarks such as ProofNet (Azerbayev
+ing statement autoformalization methods (Liu et al.,       et al., 2023a; Liu et al., 2024). A common failure
+2024; Lu et al., 2024b).                                   of these methods is the inability to generate for-
+                                                       17947
+     Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing, pages 17947–17969
+                          November 4-9, 2025 ©2025 Association for Computational Linguistics
+malizations that type-check in Lean 4 (Moura and          • Using BEq+ and manual evaluation, we study
+Ullrich, 2021), a crucial precursor to correctness.         the statement autoformalization performance of
+Our results show that sampling multiple formaliza-          various leading models.
+tions and discarding the ones that do not type-check       We release BEq+, ProofNetVerif, and
+already substantially increases downstream correct-     ProofNet# with an MIT license. RLM25 is
+ness.                                                   released under an Apache 2.0 license, similar to
+    Given that statement autoformalization is more      the license of the underlying projects.
+likely to be applied in limited data contexts (i.e.,
+mathematics), increasing test-time compute is a         2   Related Work
+promising factor. Consequently, we propose that
+autoformalization studies should explore a variety      Interactive Theorem Proving. Autoformaliza-
+of inference-time compute budgets to broadly test       tion in mathematics depends on formal systems,
+method capabilities. While prior work explored          such as Coq (Castéran and Bertot, 2004), Lean
+sampling multiple formalizations (up to n = 20)         (Moura and Ullrich, 2021), Isabelle (Nipkow et al.,
+(Li et al., 2024b; Agrawal et al., 2022), we system-    2002), and their math libraries. In this work, we fo-
+atically study how performance scales with a signif-    cus on Lean (specifically, its current version, Lean
+icantly larger number of samples (up to n = 1000).      4): a powerful interactive theorem prover with a
+We also investigate various strategies for filtering    growing formal library of definitions and proven
+ill-typed samples and selecting the final prediction.   statements known as Mathlib (mathlib Community,
+    Our experiments demonstrate that scaling test-      2020). de Moura et al. (2015) and Moura and Ull-
+time compute by increasing candidate sampling,          rich (2021) provide insights into the inner workings
+combined with type-check filtering and selection        of Lean type-checking.
+heuristics, can substantially improve autoformaliza-    Autoformalization. Classical programmatic tools
+tion accuracy. Notably, the performance of GPT-4o       can be used to translate constrained natural lan-
+on ProofNet# improves from 31.0% (single gen-           guage statements into formal systems (Pathak,
+eration) to 45.1% (using 50 samples and a selec-        2024). In contrast, we are interested in translat-
+tion heuristic). These findings, alongside our con-     ing unconstrained natural language statements. In
+tributions in metrics and benchmarks, establish a       Wu et al. (2022), the authors find LLMs to be a
+more reliable foundation for evaluating and advanc-     promising approach, capable of autoformalization
+ing statement autoformalization systems, particu-       through the use of in-context learning. In Azer-
+larly for complex undergraduate and research-level      bayev et al. (2023a) and Jiang et al. (2023), the au-
+mathematics.                                            thors demonstrate that distilled back-translation im-
+We summarize our contributions as follows:              proves performance of some base models. Agrawal
+  • We develop BEq+, a reference-based metric for       et al. (2022) use an advanced post-processing step
+     statement autoformalization based on determin-     to automatically fix type errors in LLM predic-
+     istic symbolic computation and running exclu-      tions. They find that, for a given problem, keeping
+     sively on a CPU. We demonstrate that BEq+          only well-typed predictions when generating sev-
+     correlates strongly with human annotations         eral formalization attempts is a strong filter. In
+     at the benchmark level, making it reliable to      a more recent work, (Li et al., 2024b) proposes
+     compare different autoformalization models.        a self-consistency approach specifically designed
+  • We release ProofNetVerif, a benchmark of            for autoformalization. Their method clusters log-
+     3 752 formal-informal pairs annotated with bi-     ically equivalent formalizations using automated
+     nary semantic equivalence labels to evaluate       theorem-proving techniques. They evaluate this
+     statement autoformalization metrics.               approach up to n = 10 samples per problem.
+  • We curate ProofNet#, a revised version of           Metrics. Evaluating the accuracy of models on the
+     ProofNet with many corrections.                    statement autoformalization task is a non-trivial
+  • We release RLM25, a new statement aut-              problem. In previous works (Wu et al., 2022;
+     oformalization benchmark based on several          Agrawal et al., 2022; Azerbayev et al., 2023a; Jiang
+     research-level natural language-aligned formal-    et al., 2023), manual evaluation is the standard prac-
+     ization projects. To the best of our knowledge,    tice to report statement autoformalization perfor-
+     this is the first autoformalization benchmark on   mance. Manual evaluation, though comprehensive
+     research-level mathematical topics.                and methodical, is a bottleneck for evaluation, mo-
+                                                   17948
+tivating automatic metrics as a proxy for manual        didate formalization to a reference formalization
+accuracy, such as BLEU (Wu et al., 2022; Azer-          by checking equivalence between two formulas
+bayev et al., 2023a; Ying et al., 2024b). However,      using symbolic algorithms inside the proof assis-
+prior work (Azerbayev et al., 2023a) showed that        tant. We invoke proof scripts in Lean that try to
+the correlation between BLEU and formalization          prove each formula from the other. These metrics
+accuracy is low. Other works have also proposed         are motivated by the prior BEq metric (Liu et al.,
+type-check rate (Azerbayev et al., 2023a; Agrawal       2024) which leverages a 20B LLM trained on the
+et al., 2022) and symbolic equivalence metrics (Liu     theorem proving task to check equivalence. In-
+et al., 2024; Li et al., 2024b) as proxies for auto-    stead of an LLM, our metrics employ two purely
+formalization accuracy. In our work, we further         symbolic, CPU-only equivalence checks that are
+discuss shortcomings of these metrics, and propose      not only more computationally efficient and inter-
+new metrics to overcome them.                           pretable, but also eliminate the need for specialized
+Benchmarks. ProofNet (Azerbayev et al., 2023a)          hardware, allowing us to scale our experiments to
+is a benchmark specifically designed for autofor-       n = 1000 samples per query.
+malization. It consists of 371 undergraduate math-      BEqL . This metric is based on proving formula
+ematical exercises, making it an essential bench-       equivalence using the exact? tactic (tactics can be
+mark for evaluating the performance of autofor-         seen as proof steps). As noted by the authors (Liu
+malization models. In a recent work on neural           et al., 2024), this tactic can prove equivalence for
+theorem proving (Hu et al., 2024), the authors eval-    a wide variety of syntactic variations of equiva-
+uated their automated theorem prover method on          lent formal statements. exact? can, in general, use
+research-level formal projects. Similarly, in Liu       other theorems from the libraries to prove the cur-
+et al. (2024), the authors evaluate their method on     rent formalization, resulting in a situation where
+Con-NF (Wilshaw, 2025) using LLM-generated              unrelated true theorems are considered equivalent.
+natural language statements.                            We therefore restrict the exact? tactic to only use
+LLM sampling-based methods. For our evalu-              the candidate equivalent formula. Even though
+ation, we study a method using self-consistency         this metric has a relatively high false negative rate,
+algorithms such as majority voting (Wang et al.,        its simplicity makes it easier to reproduce results
+2023) and Self-BLEU (Zhu et al., 2018). Such            across works.
+methods have empirically proven to be effective         BEq+. To improve recall compared to BEqL , we
+across a wide range of NLP tasks (Li et al., 2024a).    introduce a new symbolic metric: BEq+. BEq+ ex-
+In particular, Lewkowycz et al. (2022) demon-           plores several alternative proof strategies for each
+strated the effectiveness of the combination of sam-    direction of the implication, as summarized in Al-
+pling and majority voting on the MATH benchmark         gorithm 1. A description of the tactics used can be
+(Hendrycks et al., 2021). Further works in this         found in subsection A.1. We apply this algorithm
+direction improve over majority voting by using         once for each of the two implication directions.
+trained verifiers (Hosseini et al., 2024).
+                                                        3.1   ProofNetVerif: Benchmarking Metrics
+3   Manual and Symbolic Metrics                         When proposing new automated metrics (section 3),
+                                                        we must validate whether these metrics are accu-
+Currently, the most reliable evaluation for autofor-    rate enough to approximate human evaluation. In
+malization is a manual evaluation by persons with       related work (Liu et al., 2024), the authors conduct
+sufficient understanding of the formal proof assis-     a study on 200 sampled formalization attempts and
+tant and its library. As in prior work, we define a     show that BEq is accurate at the instance level, but
+formalization as correct if it is semantically equiv-   with a relatively high amount of false negatives.
+alent to the provided natural language statement.          Using manual annotations from this paper, we
+Throughout this paper, accuracy exclusively refers      curate a new benchmark: ProofNetVerif. Achiev-
+to the proportion of statements evaluated as correct    ing high performance on this benchmark serves two
+by manual annotation.                                   key purposes: (1) establishing robust evaluation
+Symbolic Computation Metrics BEqL and                   metrics for autoformalization, and (2) improving
+BEq+. However, as manual evaluation is time-            selection strategies by filtering out incorrect for-
+consuming, we propose novel automatic evalua-           malizations, thereby narrowing the search space in
+tion metrics BEqL and BEq+ that compare a can-          sampling-based methods.
+                                                   17949
+Algorithm 1 BEq+ - Unidirectional                               Table 2: Correlation between human-reported accuracy
+  Input: Theorem formalizations t1 and t2
+                                                                and different automated metrics on ProofNet# using
+  Output: Whether t2 can be derived from t1                     data from all models evaluated in this paper.
+  1. Run BEqL
+  if exact? closes proof by using t1 then                               Metric         Pearson Kendall
+      return TRUE
+  2. Leverage conclusion matching                                       Type-Check       0.655      0.560
+  if apply t_1 or convert t_1 succeeds then
+      Proving t1 assumptions can be derived from t2                     BEqL             0.966      0.846
+      if repeated applications of tauto, simp_all_arith!,               BEq+             0.974      0.872
+      noncomm_ring, or exact? close proof then
+          return TRUE
+  3. Attempt direct assumption of t1
+  if have : goal(t_1) := by apply_rules [t_1] suc-              However, current metrics still show relatively low
+  ceeds then                                                    recall relative to near-perfect precision, underesti-
+      if repeated applications of tauto, simp_all_arith!,
+      noncomm_ring, or exact? close the subproof introduced
+                                                                mating true autoformalization accuracy of models.
+      by have then                                                 To complement this instance-level view, we also
+          if repeated applications of tauto, simp_all_arith!,   study benchmark-level agreement, where we no
+          or exact? using this close the main proof then
+              return TRUE
+                                                                longer look at whether a single formalization at-
+  return FALSE                                                  tempt is correct, but rather whether aggregated
+                                                                scores across an entire benchmark (i.e., across all
+                                                                problems solved by a given model under a given
+   ProofNetVerif contains aligned examples of a
+                                                                method) align with human judgments (i.e., accu-
+natural language statement, reference formaliza-
+                                                                racy). We show that BEq+ has strong correlation
+tion, predicted formalization, and a boolean label
+                                                                with accuracy: leveraging all our manual annota-
+indicating semantic equivalence between the pre-
+                                                                tions on ProofNet# conducted for this work, we
+dicted formalization and the natural language state-
+                                                                measure the correlation of symbolic metrics and
+ment, making it suitable to evaluate both reference-
+                                                                human evaluation at the benchmark level, amount-
+free and reference-based metrics. The benchmark
+                                                                ing to 65 data points (different models and method
+contains 3752 examples, with 1142 entries of pre-
+                                                                choices, see subsection A.17), and report the results
+dicted formalizations equivalent to a natural lan-
+                                                                in Table 2. Correlation factors between BEq+ and
+guage input (the remainder being non-equivalent).
+                                                                human evaluation are fairly high, with a Kendall
+With this scale, ProofNetVerif provides a challeng-
+                                                                coefficient of 0.872. While symbolic metrics are
+ing benchmark for designing automated metrics to
+                                                                conservative in comparison to human-measured
+evaluate autoformalization mistakes.
+                                                                accuracy, this high Kendall correlation coefficient
+   We report the results of our new metrics on
+                                                                shows that BEq+ can be reliably used to compare
+ProofNetVerif in Table 1. In particular, we find that
+                                                                model performance for autoformalization.
+BEq+ largely improves over BEqL and captures
+                                                                   We also find that the type-check rate correlation
+non-trivial semantical equivalence. We measured
+                                                                with human evaluation is relatively low, experimen-
+the performance of BEq+ and BEqL only once on
+                                                                tally confirming that this metric can not be used as a
+this benchmark and did not tune their design to fit
+                                                                substitute for human evaluation. However, our em-
+this specific dataset. Additional details and discus-
+                                                                pirical results in Figure 3 suggest that type-check
+sions can be found in subsection A.5.
+                                                                rates can probably be used to approximate accu-
+Table 1: Binary performance, in percentage, of BEqL             racy when comparing different experiments for a
+and BEq+ metrics on ProofNetVerif.                              single model. This can be particularly useful in
+                                                                reference-free setups outside of benchmarks where
+             Metric        BEqL       BEq+                      no reference formalizations are available.
+             Precision      100.0      98.0
+             Recall          30.9      48.3                     4   New Benchmarks
+             F1 Score        47.2      64.7                     In addition to metrics, we contribute several
+                                                                new benchmarks for autoformalizationm, incuding
+                                                                RLM25, a new benchmark for research-Level math-
+3.2 Benchmark-Level Agreement                                   ematics, and ProofNet#, a manual re-annotation of
+ProofNetVerif measures instance-level agreement                 ProofNet that identifies and corrects a large per-
+between human evaluation and automated metrics.                 centage of mislabeled pairs.
+                                                           17950
+Table 3: Lean Blueprint projects used to build RLM25          4.2    ProofNet#: A Corrected Lean 4 ProofNet
+
+         Project          #Thms     Lean    First Commit      Past autoformalization approaches (Azerbayev
+                                                              et al., 2023a; Jiang et al., 2023; Liu et al., 2024) of-
+          Carleson          111   4.14.0-rc2 20 Oct 2023
+            FLT             56    4.14.0-rc2 19 Nov 2023      ten use the ProofNet benchmark (Azerbayev et al.,
+           FLT3             84    4.7.0-rc2 22 Mar 2024       2023a) for evaluation, containing 371 pairs (185
+            PFR             145   4.14.0-rc3 13 Nov 2023
+PrimeNumberTheoremAnd        99   4.14.0-rc2   9 Jan 2024
+                                                              validation, 186 test) of informal statements in un-
+   testing-lower-bounds     124   4.13.0-rc3 22 Feb 2024      dergraduate mathematics and corresponding for-
+                                                              malizations in Lean 3. As we focus on Lean 4,
+                                                              we start from two Lean 4 ports of ProofNet (Vish-
+4.1 RLM25: Research-Level Mathematics                         wakarma, 2024; Xin et al., 2024). However, our
+                                                              analysis revealed that these ports, direct transla-
+To better evaluate the use of autoformalization for           tions from Lean 3 to Lean 4, contained 118 en-
+formalizing new mathematical results, we intro-               tries with formalization errors (31.8% of the to-
+duce a new benchmark, RLM25, comprised of 619                 tal entries), biasing downstream evaluation. We
+pairs natural language statement and their Lean               corrected these errors, leading to a new dataset,
+formalizations with context1 from six formaliza-              ProofNet# (see subsection A.2), that is compatible
+tion projects (Table 3) that use the Lean blueprint           and well-typed for Lean versions between 4.7.0
+framework (Massot, 2025). Because these projects              to 4.16.0-rc2. ProofNet# remains very close to
+contain natural language-aligned formalizations of            ProofNet, as only the reference formalizations are
+research-level mathematics, they are suitable for             updated. Hence, the results reported in other works
+evaluating statement autoformalization methods.               using reference-free metrics (e.g., human evalua-
+We believe RLM25 is more representative of the                tion and type-check rate) remain the same.
+intended use of autoformalization in mathematics
+research. To the best of our knowledge, we are the            5     Autoformalization Methods
+first to conduct such a study on real formalization
+projects. With 619 pairs, RLM25 is slightly larger            In this section, we describe the leading autoformal-
+than existing benchmarks MiniF2F (488 pairs) and              ization approaches evaluated using our new metrics
+ProofNet (371 pairs).                                         and benchmarks.
+   Curating this benchmark required notable en-               5.1    Adaptation Methods
+gineering and analysis efforts. We use plasTeX
+(plasTeX Development Team, 2024) to extract nat-              In-context learning. On ProofNet#, we use the 12-
+ural language statements from blueprint latex files           shot prompt from Azerbayev et al. (2023a) updated
+along with the Lean labels. We then use LeanDojo              to Lean 4, which we share in subsection A.15. On
+(Yang et al., 2023) to extract formal statements              research-level formalization projects, similar to Hu
+along with their context from the Lean files. Fi-             et al. (2024) for neural theorem proving, we also
+nally, we align the natural language statements with          consider in-file context, i.e., the content preceding
+their formal counterparts using the Lean labels in            the official formalizations in the project files.
+the latex files. For evaluation, we use Lean REPL             Fine-tuning on MMA. Empirically, it has been
+(Morrison, 2023), which we backported to previous             shown that LLMs are better at informalization, i.e.,
+Lean versions to make the latest features and bug             translating formal statements to informal mathemat-
+fixes available for all the projects in RLM25.                ical statements, than autoformalization (Wu et al.,
+   The projects included in RLM25 have been se-               2022; Azerbayev et al., 2023a). Using this fact,
+lected as follows: from 11 Lean blueprint project             Jiang et al. (2023) informalized the Lean 4 Math-
+candidates available at the time of our study, we se-         lib library with GPT-4 (OpenAI et al., 2024a) to
+lected 6 projects that (1) began after October 2023           create a dataset, MMA, of formal-informal pairs
+to avoid data contamination, (2) contained at least           that is often used for finetuning autoformalization
+50 extractable formal-informal pairs, and (3) for             methods.
+which we got use agreement from their primary                 Fine-tuning on Lean Workbook. In a recent work
+authors to conduct evaluations of AI systems.                 (Ying et al., 2024a), the authors release a syntheti-
+                                                              cally generated training set for statement autofor-
+   1
+    We obtained agreement from the primary authors of these   malization. They train a model on MiniF2F and
+projects to evaluate our models on them.                      ProofNet benchmarks, and then, through active
+                                                         17951
+learning, they curate a train set of ∼ 57K formal-                            BEqL                  BEq+
+informal pairs. Because of this training on the                    25
+benchmarks, we only evaluate models fine-tuned                     20
+on this dataset on the RLM25 benchmark.
+
+                                                       Score (%)
+                                                                   15
+
+5.2 Sampling-Based Methods                                         10
+
+We consider sampling methods designed as a plug-                   5
+and-play improvement that can be seamlessly in-                    0
+tegrated with existing techniques to enhance their                      0.3 0.5 0.7 0.9 1.1   0.3 0.5 0.7 0.9 1.1
+performance.                                                            Temperature (T )      Temperature (T )
+Sampling. In our experiments, unless otherwise                            n=1            n=2           n=5
+stated, we employ temperature sampling with T =                           n = 10         n = 20        n = 50
+0.7 and generate n = 50 autoformalization at-
+tempts per informal statement.                        Figure 1: Evolution of BEq+ and BEqL pass@n
+Filtering. We use Lean REPL (Morrison, 2023)          scores for different temperatures on top of type-
+to implement our filtering step, which assesses if    check filtering. We evaluate Llemma 7B on ProofNet#
+                                                      validation split.
+provided statements are well-typed. de Moura et al.
+(2015) and Moura and Ullrich (2021) provide de-
+tailed insights into the inner workings of the Lean   GPT-4o (OpenAI et al., 2024b). This is a state-
+type system and type-checking.                        of-the-art general LLM. We use version gpt-4o
+Selection. In our selection process, we employ        -2024-05-13 for reproducibility.
+and compare four distinct heuristics to refine and    To address data contamination concerns, Table 3
+choose the best outputs generated by the models:      includes the first commit date of each project in the
+random selection, majority voting (Wang et al.,       RLM25 benchmark.2 For all these projects, this
+2023), Self-BLEU (Zhu et al., 2018), and the sym-     commit date comes after the announced knowledge
+bolic equivalence method presented in Li et al.       cut-off date of the models used in this work: Octo-
+(2024b). A more detailed description of each com-     ber 2023 for GPT-4o, March 2023 for Llama3 8B,
+ponent is presented in subsection A.3.                and August 2023 as the release date of Llemma 7B.
+
+6   Experiments                                       6.2          Analysis of Sampling-Based Methods
+                                                      In this section, we conduct an ablation study of var-
+We evaluate statement autoformalization across        ious parameters involved in sampling-based meth-
+models and methods using BEq+ and human an-           ods. By default, we use a temperature of T = 0.7,
+notations. Our experiments test (i) optimal tem-      n = 50 samples, and 12-shot prompting in our
+perature, (ii) various selection methods, (iii) how   experiments. All the results in this section are con-
+performance scales with the number of attempts,       ducted on the validation split of the ProofNet#
+and (iv) the effect of contextual information on      benchmark.
+research-level tasks.
+                                                      Optimal temperature In Figure 1, we report
+6.1 Models Used in Experimental Setup                 the evolution of BEq+ pass@n metric3 using the
+                                                      Llemma 7B model. We find that the optimal tem-
+Llemma-7B & 34B (Azerbayev et al., 2023b).
+                                                      perature for balancing exploration and coherent out-
+These open models are based on CodeLlama 7B
+                                                      puts depends on the number of samples, and that
+and 34B (Rozière et al., 2024) and have been fur-
+                                                      this optimal temperature increases with the number
+ther pre-trained on the ProofPile-2 collection of
+                                                      of samples. For the rest of this study, we continue
+mathematical data (explicitly excluding ProofNet),
+                                                      with the value of T = 0.7 for our sampling-based
+which was introduced along with these models.
+                                                      experiments.
+Due to their training data, these math models are
+particularly suited for formal-related tasks.            2
+                                                           The authors of the projects confirmed that the first com-
+Llama3-8B-Instruct (Grattafiori et al., 2024).        mit dates correspond to the first public appearance of these
+                                                      projects.
+This is a state-of-the art open 8B model from the        3
+                                                           pass@n measures the percentage of tasks where at least
+Llama3 family.                                        one of the n outputs is correct, as measured by BEq+ here.
+
+                                                 17952
+                Llama3 8B              Llemma 7B Llemma 34B                                                Type-Check                    Accuracy
+        25                                            50                                         100                            50
+                               40
+        20                                            40                                         80                             40
+
+
+ BEq+ (%)
+                               30
+
+
+
+                                                                                     Score (%)
+        15                                            30                                         60                             30
+                               20
+        10                                            20
+                                                                                                 40                             20
+            5                  10                     10
+                                                                                                 20                             10
+            0                      0                      0
+                1   10 100 1 000       1   10 100 1 000       1   10 100 1 000                    0                             0
+                      n                      n                      n                                  1      5       20   50        1      5       20 50
+                     Optimal (= pass@n)                        Random
+                                                                                                                  n                             n
+                      Majority Voting                         Self-BLEU                                      Llama3 8B                   Llemma 7B
+                    Symbolic Equivalence                                                                    Llemma 34B                     GPT-4o
+
+Figure 2: Evolution of BEq+ metric for different se-                                Figure 3: Type-Check rate and Accuracy scaling
+lection methods on top of type-check filtering. We                                  trends with respect to the number of samples on
+evaluate Llama3 8B, Llemma 7B, and Llemma 34B on                                    ProofNet# validation split using 12-shot prompting
+ProofNet# validation split with a number of candidate                               and a sampling-based method (type-check filter + Self-
+samples up to n = 1000. Given its quadratic scaling                                 BLEU). The number of samples varies from n = 1 to
+with n and high computational cost, the symbolic equiv-                             50 (where Llemma 34B has top type-check rate and
+alence method is limited to n ≤ 50 candidate samples.                               GPT-4o top accuracy). Numbers are in Table 15.
+
+
+Optimal selection method In Figure 2, we re-                                        greedy decoding baseline. Meanwhile, adding type-
+port BEq+ scores of the different selection methods,                                check filtering substantially outperforms the greedy
+along with the optimal score that can be achieved                                   decoding baseline even without any final selection
+with a perfect selection method, which is repre-                                    heuristic (Filter + Random selection). We conclude
+sented by pass@n. First, BEq+ pass@n scores                                         that the type-check filter is a critical component in
+steadily increase with the number of samples, go-                                   sampling-based methods and that it should be ap-
+ing, for example, from 4.11% at n = 1, to 40.54%                                    plied before selection.
+at n = 1000 for Llemma 7B, meaning that there is
+                                                                                    6.3           Empirical Analysis on RLM25
+great potential in enhancing autoformalization per-
+formance through sampling. Additional studies on
+                                                                                    Table 4: Results, in percentage, on RLM25 for different
+BEq+ pass@n can be found in subsection A.7. Sec-
+                                                                                    methods and models using only the natural language
+ond, we find that the studied self-consistency meth-                                statement as input (i.e., no in-file context is provided).
+ods performance monotonically increases with the
+number of samples. We confirm these findings with                                    Model                 Method           Type-Check BEqL BEq+
+more models and manual evaluation in Figure 3. Fi-                                                         12-shot               2.80       0.20     0.40
+                                                                                     Llama3 8B
+nally, we find that the symbolic equivalence method                                                        MMA                   3.18       0.00     0.54
+does not yield better empirical results for selection                                                      12-shot               5.06       2.78     2.78
+compared to simpler and less compute-intensive                                       Llemma 7B             MMA                  8.65        0.79     1.16
+                                                                                                           Lean Workbook        23.06       0.17     1.13
+methods such as Self-BLEU or majority voting.
+We therefore continue with Self-BLEU and major-                                      Llemma 34B 12-shot                          4.94       0.79     0.79
+
+ity voting in subsequent experiments.                                                GPT-4o                12-shot              10.55       0.57     1.50
+
+
+Type-Check Filtering In Figure 4, we empiri-                                           To further confirm our findings and evaluate cur-
+cally study the contribution of the filtering compo-                                rent autoformalization methods in more realistic
+nent in sampling-based methods by evaluating with                                   settings, we conduct studies on RLM25 in this sec-
+and without filtering, as well as with different selec-                             tion. We start by conducting an initial study using
+tion heuristics. While majority voting (No filter +                                 the current approach in the literature for statement
+Majority voting) and Self-BLEU selection (No filter                                 autoformalization: only the natural language state-
++ Self-BLEU) generally improve the accuracy of                                      ment is provided as input to the methods. We report
+random sampling, both struggle to increase the per-                                 our results in Table 4. These results are very sim-
+formance of random sampling beyond that of the                                      ilar to the ones presented in Liu et al. (2024) on
+                                                                                 17953
+               50                                                                            formalization datasets are needed for tackling auto-
+
+
+
+Accuracy (%)
+               40                                                                            formalization for research-level projects.
+               30
+                                                                                             6.4    Final Results
+               20
+
+               10
+                                                                                             We conducted a detailed baseline study along with
+                                                                                             human evaluation of the different autoformaliza-
+                0
+                            8B             B              4B          PT
+                                                                           o                 tion methods on ProofNet#, which we report in the
+                                       a7
+                    Ll
+                        a3
+                       am
+                                  Ll em           Ll
+                                                     ma3             G
+                                                                        -4
+                                                                                             appendix in Table 8. Confirming results from prior
+                                       m             em
+                                                                                             works (Jiang et al., 2023; Azerbayev et al., 2023a),
+                    Greedy baseline                       No filter + Random selection       we note the large proportion of errors for all meth-
+                    No filter + Majority voting           No filter + Self-BLEU              ods due to type-check failures. In Table 6, we re-
+                    Filter + Random selection             Filter + Self-BLEU
+                                                                                             port side-by-side final performance results between
+                                                                                             classical greedy decoding and a sampling-based
+Figure 4: Type-Check Filtering Ablation Study. Ac-
+curacy scores are reported on ProofNet# validation split                                     method using Self-BLEU on both ProofNet# and
+for various ablations of sampling-based methods. More                                        RLM25. These results confirm the consistent per-
+details and exact numbers are reported in Table 14.                                          formance improvement of sampling for all tested
+                                                                                             models on the two benchmarks, ProofNet# and
+                                                                                             RLM25. We also report the effect of sampling
+their semi-synthetic Con-NF benchmark, with BEq                                              on MMA and Lean Workbook fine-tuned models
+results close to 0% for all methods.                                                         in Table 9. However, we find that applying the
+   A manual analysis of the predictions quickly                                              sampling strategy on base models with few-shot
+reveals a key issue: without in-file context, auto-                                          learning achieves better absolute accuracy. We re-
+formalization methods lack access to crucial infor-                                          port additional results on other benchmarks such as
+mation. While some missing information from a                                                PDA (Lu et al., 2024a) and MiniF2F (Zheng et al.,
+Lean file, such as local definitions, can be tack-                                           2022) in subsection A.11.
+led through current retrieval-based methods, others,
+such as opened namespaces and local variables are                                            Table 6: Performance comparison between greedy de-
+still missing. To assess the importance of different                                         coding and a sampling-based method on ProofNet#
+file components, we conducted an ablation study to                                           and the new RLM25 benchmark. 12-shot is used for
+                                                                                             ProofNet#, and in-file context with proofs removed is
+identify which contextual elements help LLMs gen-
+                                                                                             used for RLM25. Sampled with T = 0.7 and n = 50.
+erate accurate formalizations. As shown in Table 5,
+the best performance across models is achieved                                                                                 ProofNet#     RLM25
+                                                                                             Model        Method
+when proofs are removed while retaining all other
+                                                                                                                           Accuracy BEq+ BEq+
+contextual elements. In contrast, removing both
+                                                                                                          Greedy                3.3   3.3     20.3
+proofs and theorems significantly degrades perfor-                                           Llama3 8B
+                                                                                                          Filter + Self-BLEU   12.0   9.2     23.9
+mance, particularly for less capable models.                                                              Greedy               10.9   6.5     24.2
+                                                                                             Llemma 7B
+                                                                                                          Filter + Self-BLEU   29.3   17.9    28.8
+Table 5: Ablation study on prompt content using
+various models on RLM25. We report BEq+ (%) per-                                                          Greedy               12.5   7.1     30.3
+                                                                                             Llemma 34B
+                                                                                                          Filter + Self-BLEU   28.3   14.7    33.4
+formance. In the prompt column, ’-’ represents removal
+from the context.                                                                                         Greedy               31.0   18.5    24.6
+                                                                                             GPT-4o
+                                                                                                          Filter + Self-BLEU   45.1   23.4    31.6
+Prompt                           Llama3 8B Llemma 7B Llemma 34B GPT-4o
+12-shot                             0.40            2.78            0.79           1.50
+Full file context                  18.67           22.15           25.99          20.64      7     Conclusion
+- theorems & proofs                 6.60           13.82           15.63          17.20
+- proofs                           20.29           24.16           30.33          24.56      Our work advances and standardizes the evalu-
+                                                                                             ation of statement autoformalization. We intro-
+   In Table 5, we find that in-file context prompt-                                          duced several key resources: BEq+, an auto-
+ing substantially improves performance across all                                            mated equivalence-checking metric demonstrating
+methods and models compared to Table 4. Fur-                                                 a strong correlation with human judgments, and
+thermore, fine-tuning on existing autoformaliza-                                             ProofNetVerif, a dataset of 3752 annotated exam-
+tion datasets does not yield improvement over base                                           ples to validate new metrics. Alongside these, we
+models on RLM25, suggesting that context-aware                                               published ProofNet#, a corrected version of the
+                                                                                          17954
+popular ProofNet benchmark, and RLM25, the              References
+first benchmark for research-level mathematics for-     Ayush Agrawal, Siddhartha Gadgil, Navin Goyal,
+malization across six projects. Our experiments           Ashvni Narayanan, and Anand Tadipatri. 2022.
+using these new resources reveal critical insights.       Towards a Mathematics Formalisation Assistant
+Sampling strategies, combined with incorporating          using Large Language Models. arXiv preprint.
+                                                          ArXiv:2211.07524 [cs].
+type-checking and selection heuristics, substan-
+tially boost performance, achieving up to 45.1% ac-     Jeremy Avigad. 2024. Automated reasoning for mathe-
+curacy on undergraduate mathematics (ProofNet#),           matics. In IJCAR (1), volume 14739 of Lecture Notes
+suggesting autoformalization evaluations should            in Computer Science, pages 3–20. Springer.
+integrate test-time compute budgets and simple          Zhangir Azerbayev, Bartosz Piotrowski, Hailey
+heuristic correctors for recording more realistic         Schoelkopf, Edward W. Ayers, Dragomir Radev, and
+performance measures. These benchmarks and our            Jeremy Avigad. 2023a. ProofNet: Autoformalizing
+metric provide the community with more reliable           and Formally Proving Undergraduate-Level Mathe-
+                                                          matics. arXiv preprint. ArXiv:2302.12433 [cs].
+tools to measure progress. We believe these contri-
+butions will foster the development of more capable     Zhangir Azerbayev, Hailey Schoelkopf, Keiran Paster,
+and practical autoformalization systems.                  Marco Dos Santos, Stephen McAleer, Albert Q.
+                                                          Jiang, Jia Deng, Stella Biderman, and Sean Welleck.
+                                                          2023b. Llemma: An Open Language Model For
+Limitations                                               Mathematics. arXiv preprint. ArXiv:2310.10631
+                                                          [cs].
+We identify key limitations of our work. First, our
+newly introduced RLM25 benchmark is focused on          Pierre Castéran and Yves Bertot. 2004. Interactive theo-
+                                                           rem proving and program development. Coq’Art: The
+statement autoformalization, while the underlying
+                                                           Calculus of inductive constructions. Texts in Theoret-
+projects from which we construct the benchmark             ical Computer Science. Springer Verlag. Traduction
+would support extension to proof autoformaliza-            en chinois parue en 2010. Tsinghua University Press.
+tion, which is not tackled in our work. Second, we         ISBN 9787302208136.
+observe that BEq+ and BEqL face challenges in
+                                                        Leonardo de Moura, Soonho Kong, Jeremy Avigad,
+proving equivalence for long formal statements (as        Floris van Doorn, and Jakob von Raumer. 2015. The
+shown in subsection A.5). The recall performance          lean theorem prover (system description). In Auto-
+of BEq+ drops significantly from 62.5% on short           mated Deduction - CADE-25, pages 378–388, Cham.
+statements to 29.6% on long statements, indicat-          Springer International Publishing.
+ing that it over-penalizes longer formal expressions.   Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri,
+These metrics also require accurate ground truth          Abhinav Pandey, Abhishek Kadian, Ahmad Al-
+formalizations, which are not available when for-         Dahle, Aiesha Letman, Akhil Mathur, Alan Schel-
+malizing completely new mathematics.                      ten, Alex Vaughan, Amy Yang, Angela Fan, Anirudh
+                                                          Goyal, Anthony Hartshorn, Aobo Yang, Archi Mi-
+Data contamination. Our in-depth study in sub-            tra, Archie Sravankumar, Artem Korenev, Arthur
+section A.16 suggests that data contamination is          Hinsvark, and 542 others. 2024. The Llama 3 Herd
+unlikely among the models we evaluated.                   of Models. arXiv preprint. ArXiv:2407.21783 [cs].
+
+                                                        Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul
+Acknowledgements                                          Arora, Steven Basart, Eric Tang, Dawn Song, and
+                                                          Jacob Steinhardt. 2021. Measuring Mathematical
+We thank the Lean community for their support             Problem Solving With the MATH Dataset. arXiv
+and feedback, in particular the authors of the Lean       preprint. ArXiv:2103.03874 [cs].
+blueprint projects included in RLM25. We thank          Arian Hosseini, Xingdi Yuan, Nikolay Malkin, Aaron
+Simon Sorg for finding and sharing an exploit of          Courville, Alessandro Sordoni, and Rishabh Agarwal.
+the BEq+ metric we address in subsection A.6.             2024. V-STaR: Training Verifiers for Self-Taught
+                                                          Reasoners. arXiv preprint. ArXiv:2402.06457 [cs].
+We also gratefully acknowledge the support of
+the IC school of computer and communication sci-        Jiewen Hu, Thomas Zhu, and Sean Welleck. 2024.
+ences, the Swiss National Science Foundation (No.          miniCTX: Neural Theorem Proving with (Long-
+215390), Innosuisse (PFFS-21-29), the EPFL Cen-            )Contexts. arXiv preprint. ArXiv:2408.03350 [cs].
+ter for Imaging, Sony Group Corporation, and a          Albert Q. Jiang, Wenda Li, and Mateja Jamnik. 2023.
+Meta LLM Evaluation Research Grant.                       Multilingual Mathematical Autoformalization. arXiv
+                                                          preprint. ArXiv:2311.03755 [cs].
+                                                   17955
+Ashvini Jindal. 2023. Arithmo-mistral-7b: Mathemati-      OpenAI, Josh Achiam, Steven Adler, Sandhini Agarwal,
+  cal reasoning model. Hugging Face.                        Lama Ahmad, Ilge Akkaya, Florencia Leoni Ale-
+                                                            man, Diogo Almeida, Janko Altenschmidt, Sam Alt-
+Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying                man, Shyamal Anadkat, Red Avila, Igor Babuschkin,
+ Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E.               Suchir Balaji, Valerie Balcom, Paul Baltescu, Haim-
+ Gonzalez, Hao Zhang, and Ion Stoica. 2023. Ef-             ing Bao, Mohammad Bavarian, Jeff Belgum, and
+ ficient memory management for large language               262 others. 2024a. Gpt-4 technical report. Preprint,
+ model serving with pagedattention.    Preprint,            arXiv:2303.08774.
+ arXiv:2309.06180.
+                                                          OpenAI, Aaron Hurst, Adam Lerer, Adam P. Goucher,
+Aitor Lewkowycz, Anders Johan Andreassen,                   Adam Perelman, Aditya Ramesh, Aidan Clark, A. J.
+  David Dohan, Ethan Dyer, Henryk Michalewski,              Ostrow, Akila Welihinda, Alan Hayes, Alec Radford,
+  Vinay Venkatesh Ramasesh, Ambrose Slone, Cem              Aleksander M ˛adry, Alex Baker-Whitcomb, Alex Beu-
+  Anil, Imanol Schlag, Theo Gutman-Solo, Yuhuai Wu,         tel, Alex Borzunov, Alex Carney, Alex Chow, Alex
+  Behnam Neyshabur, Guy Gur-Ari, and Vedant Misra.          Kirillov, Alex Nichol, and 400 others. 2024b. GPT-
+  2022. Solving Quantitative Reasoning Problems             4o System Card. arXiv preprint. ArXiv:2410.21276
+  with Language Models. In NeurIPS.                         [cs].
+Junyou Li, Qin Zhang, Yangbin Yu, Qiang Fu, and           Shashank Pathak. 2024. Gflean: An autoformal-
+  Deheng Ye. 2024a. More agents is all you need.            isation framework for lean via gf. Preprint,
+  Preprint, arXiv:2402.05120.                               arXiv:2404.01234.
+Zenan Li, Yifan Wu, Zhaoyu Li, Xinming Wei, Xian
+  Zhang, Fan Yang, and Xiaoxing Ma. 2024b. Autofor-       Lawrence C. Paulson. 2023. Large-scale formal proof
+  malize Mathematical Statements by Symbolic Equiv-         for the working mathematician - lessons learnt from
+  alence and Semantic Consistency. arXiv preprint.          the ALEXANDRIA project. In CICM, volume 14101
+  ArXiv:2410.20936.                                         of Lecture Notes in Computer Science, pages 3–15.
+                                                            Springer.
+Qi Liu, Xinhao Zheng, Xudong Lu, Qinxiang Cao, and
+  Junchi Yan. 2024. Rethinking and Improving Auto-        plasTeX Development Team. 2024. plastex/plastex.
+  formalization: Towards a Faithful Metric and a De-         Original-date: 2014-03-06T16:10:23Z.
+  pendency Retrieval-based Approach.
+                                                          Baptiste Rozière, Jonas Gehring, Fabian Gloeckle, Sten
+Jianqiao Lu, Zhengying Liu, Yingjia Wan, Yinya Huang,       Sootla, Itai Gat, Xiaoqing Ellen Tan, Yossi Adi,
+   Haiming Wang, Zhicheng Yang, Jing Tang, and Zhi-         Jingyu Liu, Romain Sauvestre, Tal Remez, Jérémy
+   jiang Guo. 2024a. Process-Driven Autoformalization       Rapin, Artyom Kozhevnikov, Ivan Evtimov, Joanna
+   in Lean 4. arXiv preprint. ArXiv:2406.01940 [cs].        Bitton, Manish Bhatt, Cristian Canton Ferrer, Aaron
+                                                            Grattafiori, Wenhan Xiong, Alexandre Défossez, and
+Jianqiao Lu, Yingjia Wan, Yinya Huang, Jing Xiong,          7 others. 2024. Code llama: Open foundation models
+   Zhengying Liu, and Zhijiang Guo. 2024b. For-             for code. Preprint, arXiv:2308.12950.
+   malAlign: Automated Alignment Evaluation for Aut-
+   oformalization. arXiv preprint. ArXiv:2410.10135       Christian Szegedy. 2020. A Promising Path Towards
+   [cs].                                                    Autoformalization and General Artificial Intelligence.
+                                                            In Intelligent Computer Mathematics, volume 12236,
+Assia Mahboubi and Enrico Tassi. 2022. Mathematical         pages 3–20, Cham. Springer International Publishing.
+  Components. Zenodo.
+                                                          Rahul Vishwakarma. 2024. rahul3613/ProofNet-lean4.
+Patrick Massot. 2025. leanblueprint.                        Original-date: 2024-03-04T14:12:29Z.
+The mathlib Community. 2020. The lean mathematical
+  library. In Proceedings of the 9th ACM SIGPLAN          Qingxiang Wang, Chad Brown, Cezary Kaliszyk, and
+  International Conference on Certified Programs and        Josef Urban. 2020. Exploration of Neural Machine
+  Proofs (CPP). ACM.                                        Translation in Autoformalization of Mathematics in
+                                                            Mizar. In Proceedings of the 9th ACM SIGPLAN
+Kim Morrison. 2023. leanprover-community/repl.              International Conference on Certified Programs and
+  Original-date: 2023-03-30T23:12:19Z.                      Proofs, pages 85–98. ArXiv:1912.02636 [cs].
+
+Leonardo de Moura and Sebastian Ullrich. 2021. The        Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le,
+  lean 4 theorem prover and programming language.           Ed Chi, Sharan Narang, Aakanksha Chowdhery, and
+  In Automated Deduction – CADE 28, pages 625–635,          Denny Zhou. 2023. Self-consistency improves chain
+  Cham. Springer International Publishing.                  of thought reasoning in language models. Preprint,
+                                                            arXiv:2203.11171.
+Tobias Nipkow, Lawrence C. Paulson, and Markus Wen-
+  zel. 2002. Isabelle/Hol a Proof Assistant for Higher-   Sky Wilshaw. 2025. leanprover-community/con-nf.
+  Order Logic. Springer, Berlin and New York.               Original-date: 2022-03-31T05:04:06Z.
+                                                     17956
+Yuhuai Wu, Albert Q. Jiang, Wenda Li, Markus N.             handling a few transformations on the conclu-
+  Rabe, Charles Staats, Mateja Jamnik, and Christian        sion, but also variable/hypothesis assignment.
+  Szegedy. 2022. Autoformalization with Large Lan-
+                                                            For both BEqL and BEq+, if exact? succeeds
+  guage Models. arXiv preprint. ArXiv:2205.12615
+  [cs].                                                     we check that it is using the other formalization
+                                                            to close the goal. Otherwise it could lead to
+Huajian Xin, Z. Z. Ren, Junxiao Song, Zhihong Shao,         false positives.
+  Wanjia Zhao, Haocheng Wang, Bo Liu, Liyue Zhang,
+  Xuan Lu, Qiushi Du, Wenjun Gao, Qihao Zhu, Dejian       • apply e tries to match the current goal against
+  Yang, Zhibin Gou, Z. F. Wu, Fuli Luo, and Chong           the conclusion of e’s type. If it succeeds, then
+  Ruan. 2024. DeepSeek-Prover-V1.5: Harnessing              the tactic returns as many subgoals as the num-
+  Proof Assistant Feedback for Reinforcement Learn-         ber of premises that have not been fixed by type
+  ing and Monte-Carlo Tree Search. arXiv preprint.
+  ArXiv:2408.08152 [cs].                                    inference or type class resolution.
+                                                          • convert: The exact e and refine e tactics re-
+Kaiyu Yang, Aidan M. Swope, Alex Gu, Rahul Chala-           quire a term e whose type is definitionally equal
+  mala, Peiyang Song, Shixing Yu, Saad Godil, Ryan
+                                                            to the goal. convert e is similar to refine e, but
+  Prenger, and Anima Anandkumar. 2023. LeanDojo:
+  Theorem Proving with Retrieval-Augmented Lan-             the type of e is not required to exactly match
+  guage Models. arXiv preprint. ArXiv:2306.15626            the goal. Instead, new goals are created for
+  [cs, stat].                                               differences between the type of e and the goal
+Huaiyuan Ying, Zijian Wu, Yihan Geng, Jiayu Wang,           using the same strategies as the congr! tactic.
+  Dahua Lin, and Kai Chen. 2024a. Lean Workbook:            We use this tactic to try partial matching with
+  A large-scale Lean problem set formalized from            the conclusion of the other theorem. In particu-
+  natural language math problems. arXiv preprint.           lar we use the convert using n variation, where
+  ArXiv:2406.03847 [cs].
+                                                            n determines the matching depth. We vary n
+Huaiyuan Ying, Shuo Zhang, Linyang Li, Zhejian Zhou,        between 0 and 5.
+  Yunfan Shao, Zhaoye Fei, Yichuan Ma, Jiawei Hong,       • tauto breaks down assumptions of the form _ ∧
+  Kuikun Liu, Ziyi Wang, Yudong Wang, Zijian Wu,
+                                                              _, _ ∨ _, _ ↔ _ and ∃ _, _ and splits a goal of
+  Shuaibin Li, Fengzhe Zhou, Hongwei Liu, Songyang
+  Zhang, Wenwei Zhang, Hang Yan, Xipeng Qiu,                the form _ ∧ _, _ ↔ _ or ∃ _, _ until it can be
+  and 3 others. 2024b. InternLM-Math: Open Math             discharged using reflexivity or solve_by_elim.
+  Large Language Models Toward Verifiable Reason-         • simp_all_arith!: simplifies multiple times tar-
+  ing. arXiv preprint. ArXiv:2402.06332 [cs].               get and all (propositional) hypotheses using the
+Kunhao Zheng, Jesse Michael Han, and Stanislas Polu.        other hypotheses. Additionally, it uses normal-
+  2022. MiniF2F: a cross-system benchmark for for-          ization by linear arithmetic.
+  mal Olympiad-level mathematics. arXiv preprint.         • noncomm_ring: A tactic for simplifying identi-
+  ArXiv:2109.00110 [cs] version: 2.
+                                                            ties in not-necessarily-commutative rings. It is
+Yaoming Zhu, Sidi Lu, Lei Zheng, Jiaxian Guo, Weinan        pretty general and works on all types having a
+  Zhang, Jun Wang, and Yong Yu. 2018. Texygen: A            ring structure.
+  benchmarking platform for text generation models.       • have : t := . . . adds the hypothesis this : t to
+  Preprint, arXiv:1802.01886.
+                                                            the current goal.
+A   Appendix                                              • apply_rules [l1 , l2 , . . .] tries to solve the main
+                                                            goal by iteratively applying the list of lemmas
+A.1 Tactics used in BEq+                                    [l1 , l2 , . . .] or by applying a local hypothesis.
+To develop BEq+, we checked existing tactics                If apply generates new goals, apply_rules iter-
+in Lean and Mathlib using the list provided                 atively tries to solve those goals. apply_rules
+at https://github.com/haruhisa-enomoto/mathlib4-            will also use rfl, trivial, congrFun and congrArg
+all-tactics/blob/main/all-tactics.md. We provide a          .
+brief description of the tactics we ended up using
+in BEq+ using the official Mathlib documentation       A.2     Annotation process
+(mathlib Community, 2020):                             For all the evaluations presented in this paper, along
+  • exact?: Searches environment for definitions       with the curation of ProofNetVerif and ProofNet#,
+    or theorems that can solve the goal using ex-      we adopted the following systematic annotation
+    act with conditions resolved by solve_by_elim.     process for each formalized statement to determine
+    While we are not directly interested in search-    its validity:
+    ing the library, this tactic is also capable of      • Ill-typed statements and statements with
+                                                  17957
+  counter-examples found by plausible /               gle annotator and required a total of ∼ 200 human-
+  slim_check were immediately marked as               hours for the results and datasets presented in this
+  invalid.                                            paper.
+• Manual pass through all the statements. Hy-            When curating ProofNet#, this annotation pro-
+  potheses and conclusions were carefully in-         cess led to the discovery of mistakes in 118 entries
+  spected for completeness and semantic correct-      out of the 371 of the initial ProofNet benchmark.
+  ness, correct handling of default Lean types,
+  correct use of definitions/instances, ... A non-    A.3     Sampling-Based Method
+  exhaustive list of issues that were looked for      The method is composed of three steps: (1) sam-
+  includes:                                           pling, (2) type-check filtering, and then (3) select-
+   – Missing/extra invalid hypotheses                 ing. We present them in this section.
+   – Invalid implicit types (ex: 3/2 = 1 in Lean
+      because 3 and 2 are natural numbers by de-      A.3.1    Sampling
+      fault)                                          In our experiments, unless otherwise stated, we
+   – Natural numbers (they start at 0 in Lean)        employ temperature sampling with T = 0.7 and
+   – Parentheses, especially in quantified propo-     generate n = 50 autoformalization attempts per
+      sitional formulas                               informal statement. Depending on the models, we
+   – Instances/definitions used: they must have       use the vLLM library (Kwon et al., 2023) or the
+      the same semantic meaning as the ones in        OpenAI API to generate predictions.
+      the informal statement to formalize                Cleaning: Certain models often try to provide
+   – Semantically invalid hypotheses                  proofs after generating formal statements. Further-
+   – Stronger / more restrictive hypotheses           more, we find that generated names for theorems
+   – In case of doubts, the prediction was marked     sometimes clash with names in the Mathlib library.
+      as invalid                                      To avoid being considered invalid by the Lean type-
+• (ProofNet# only) Running DeepSeek-Prover-           checker, we trim proofs, substitute theorem names
+  V1.5 (Xin et al., 2024) to find proofs on the       for dummy identifiers, and normalize whitespace
+  current iteration of ProofNet. We then manually     when parsing the generated theorems. Additionally,
+  analyze these proofs to check if flaws in the       the Lean proof assistant requires theorems to be ac-
+  formalizations not detected by the manual pass      companied by proofs. To address this, we append
+  have been exploited. This step helped finding a     a safe dummy sorry proof to each theorem (which
+  total of 2 additional formalization mistakes.       indicates to Lean that the proof will be provided
+                                                      later).
+ To reduce annotation mistakes and biases:
+• All predictions were anonymized with respect        A.3.2    Filtering
+  to the model and method that produced them.         We use Lean REPL (Morrison, 2023) to implement
+  This way, the annotator was not biased in favor     our filtering step. For any formal statement, if the
+  of some models.                                     statement is valid, REPL will return declaration
+• All predictions related to a specific input prob-    uses `sorry', which means that the statement is
+  lem were evaluated together, meaning that the       well-typed and that we should provide an actual
+  annotator was annotating a few dozen predic-        proof instead of sorry. Otherwise, the tool will
+  tions at the same time, giving them a good          return error messages explaining why the formal
+  overview and leading to a more objective evalu-     statement is ill-formed, which we use as an indi-
+  ation.                                              cator to filter out such statements. de Moura et al.
+• Each sample has been annotated twice                (2015) and Moura and Ullrich (2021) provide de-
+  for model evaluations and the curation of           tailed insights into the inner workings of the Lean
+  ProofNetVerif, and three times for ProofNet#.       type system and type-checking.
+• ProofNet# and ProofNetVerif have been pub-
+  licly shared with the Lean community several        A.3.3    Selection
+  months before the reviewing process, including      In our selection process, we employ and compare
+  a website to explore ProofNet#. No errors have      four distinct heuristics to refine and choose the best
+  been reported during this period.                   outputs generated by the models: random selection,
+ This annotation process was conducted by a sin-      majority voting (Wang et al., 2023), Self-BLEU
+                                                 17958
+(Zhu et al., 2018), and the symbolic equivalence          These results are not directly comparable to the
+method presented in Li et al. (2024b).                 ones presented in Liu et al. (2024) as we do not
+Random:. As a baseline strategy, we randomly           use the same samples to evaluate. For instance,
+choose an output from the set of generated candi-      regarding their results without LLM use, which
+dates.                                                 correspond to BEqL , they get a recall of 67.14%
+Majority voting. (Wang et al., 2023): We aggre-        on their 200 sampled predictions, vs 30.9% on
+gate multiple outputs and select the most frequently   ProofNetVerif in our case. However, given the
+occurring candidate as the final choice, relying on    large improvement of BEq+ over BEqL showcased
+consensus to mitigate the impact of any single er-     in Table 7, it is very likely that BEq+ outperforms
+roneous output. Our cleaning process after the         the original LLM-based BEq implementation. In
+sampling step normalize the generated outputs, in-     fact, in their most compute-intensive setup, BEq
+creasing the chance of exact string match between      achieves a recall of 72.86% on their samples, which
+the predictions.                                       is only slightly better than the 67.14% baseline. On
+Self-BLEU. (Zhu et al., 2018): We evaluate the         ProofNetVerif, BEq+ outperforms BEqL with a
+similarity of the generated outputs by calculating     larger relative improvement for the recall: 48.3%
+the BLEU score between all pairs of candidates.        vs. 30.9%.
+We then select the generated candidate with the
+highest aggregated BLEU score.                         A.6   BEq+ failure cases
+Symbolic Equivalence. (Li et al., 2024b): the          A.6.1 False positives
+core idea of this method is to compute equivalence     A typical example of two non-semantically equiv-
+classes of the generated predictions, using logical    alent statements that are considered equivalent by
+equivalence. A prediction from the largest equiva-     BEq+:
+lence class is then selected as final prediction. As   theorem ground_truth (a b : Z) :
+the original work has been conducted in the Is-          (ofInt a : GaussianInt) | ofInt b → a | b :=
+abelle formal language (Nipkow et al., 2002), no           sorry
+implementation of this method is available in Lean.    theorem prediction (a b : Z) (ha : a | b) : a |
+We therefore implemented a Lean version relying            (b : Z) := sorry
+on our BEq+ method to compute the equivalence             The main issue here lies from the fact that it
+between statements.                                    is trivial to prove one formalization assuming the
+A.4 Compute usage & cost                               other. A generalization of this issue has been found
+                                                       by Simon Sorg:
+All experiments were run on 1xH100 for 7-8B
+                                                       theorem ground_truth (n : Nat) : n + n = 2 * n
+models and 2xH100 for Llemma-34B. The most                 := sorry
+compute-intensive experiments, i.e., generating
+                                                       theorem prediction (p : Prop) (h : p) : p :=
+1000 candidates per problem in ProofNet#, re-              sorry
+quired less than 10 hours (wall-clock time). For
+cost reasons, we did not sample n = 1000 candi-           A fix with minimal performance loss is available
+dates with GPT-4o, and the largest GPT-4o results      in our implementation and is now the default.
+in the paper use n = 50, costing ∼ $25 per evalua-     A.6.2 False negatives
+tion on ProofNet#.
+                                                       False negatives with BEq+ are caused by the rela-
+A.5 BEqL & BEq+ Performance on                         tively weak power of the static proof search we use.
+    ProofNetVerif                                      A typical example is:
+                                                       theorem ground_truth : Infinite {p : Nat.Primes
+In Table 7, we report the performance of our met-          // p ≡ -1 [ZMOD 6]} :=
+rics at the instance level using binary metrics.
+While BEq+ outperforms BEqL , we find that over-       theorem prediction : Set.Infinite {p : N | Nat.
+                                                           Prime p ∧ p % 6 = 5} :=
+all both struggle with a low recall. Empirically,
+we find that both BEq implementations show bet-           Proving the equivalence between these two state-
+ter recall on short statements than on long state-     ments require a consequential work as it requires
+ments. Intuitively, long statements involve more       to (1) prove that p % 6 = 5 is equivalent to p ≡ -1
+logical clauses, generally making equivalence prov-    [ZMOD 6], (2) prove that the set of natural numbers
+ing harder.                                            is equivalent to the set of natural numbers with the
+                                                  17959
+Table 7: Binary performance, in percentage, of BEqL and BEq+ metrics on ProofNetVerif. The evaluation is
+performed on 3 splits based on the reference formalizations length. These splits contain roughly 1250 entries each.
+
+                   Reference formalization length         Binary Metric                   BEqL     BEq+
+                                                          Precision                        100.0      97.1
+                   Less than 115 characters               Recall                            39.9      62.5
+                                                          F1 Score                          57.0      76.1
+                                                          Precision                        100.0      99.2
+                   Between 115 and 165 characters         Recall                            28.2      41.0
+                                                          F1 Score                          44.0      58.0
+                                                          Precision                        100.0   100.0
+                   More than 165 characters               Recall                            17.2    29.6
+                                                          F1 Score                          29.3    45.6
+                                                          Precision                        100.0      98.0
+                   All                                    Recall                            30.9      48.3
+                                                          F1 Score                          47.2      64.7
+
+
+prime predicate, and (3) unstructuring the two sets                                  ProofNet#                     RLM25
+to prove the equivalence between the two quanti-
+
+
+
+
+                                                            BEq+ pass@n (%)
+                                                                              30                      40
+fied statements. This is currently out of reach of
+our BEq+ implementation and solving these cases
+                                                                              20                      30
+will likely require using powerful general-purpose
+proof search methods. Finding a way to develop
+                                                                              10                      20
+such methods while keeping efficiency and align-
+ment with human judgments is an interesting direc-
+                                                                               0                      10
+tion for future work.                                                              1 2   5 10 20 50          1 2    5 10 20 50
+                                                                                           n                      n
+A.7 BEq+ pass@n Additional Results                                                        Llama3 8B           Llemma 7B
+In Figure 5, we conduct a study on BEq+ pass@n                                           Llemma 34B             GPT-4o
+with 4 models: Llama3 8B, Llemma 7B, Llemma
+34B, and GPT-4o on both ProofNet# and RLM25.
+                                                           Figure 5: BEq+ pass@n scaling trends with respect
+For ProofNet#, we use 12-shot prompting. For
+                                                           to the number of samples on ProofNet# validation split
+RLM25, we prompt models with in-file context               and RLM25 using in-context learning prompting. We
+with proofs removed as described in subsection 6.3.        vary the number of candidate samples from n = 1 to 50.
+Llemma 34B model has not been run on the
+RLM25 benchmark.
+
+A.8 ProofNet#: Baseline study                                 In Figure 6, we report results on the ProofNet#
+                                                           test dataset by supplementing tested models us-
+We report a baseline performance in Table 8. We            ing our self-consistency method described in sub-
+evaluated the models described in subsection 6.1           section 5.2. Overall, we observe a consistent and
+using greedy decoding, coupled with either 12-shot         significant improvement over the greedy baseline
+learning or a fine-tuning on either MMA (Jiang             across all selection methods and all models eval-
+et al., 2023) or Lean Workbook (Ying et al., 2024a).       uated. Interestingly, even using random selection
+                                                           over filtered generated statements is enough to out-
+A.9 Detailed Results of Sampling-Based
+                                                           perform the greedy decoding baseline substantially.
+    Methods on ProofNet#
+                                                           This demonstrates the practical efficacy of exten-
+We present detailed results about the use of               sively leveraging the type-checker in the context
+sampling-based methods on different models and             of statement autoformalization. We find that the
+autoformalization methods in Table 9.                      overall best strategy is to use type-check filtering
+                                                      17960
+Table 8: Baseline performance on ProofNet# using greedy decoding. Except for Codex, which has been evaluated
+on Lean 3 in Azerbayev et al. (2023a) (indicated with an asterisk *, only the results on the test split are available),
+all models are evaluated on Lean 4.
+
+                                                         Validation                               Test
+  Method                  Model
+                                        Type-Check Accuracy↑ BEqL ↑ BEq+↑ Type-Check Accuracy↑ BEqL ↑ BEq+↑
+  12-shot                 Codex              -             -           -      -     23.7*       13.4*      -        -
+  Prompt retrieval        Codex              -             -           -      -     45.2*       16.1*      -        -
+  MMA            Llama3-8B                 12.6           4.9         2.2    3.3    4.3           -       0.5     0.5
+  MMA            Llemma-7B                 14.2           6.0         2.7    4.4    9.7           -       0.0     1.1
+  Lean Workbook1 Llemma-7B                 39.5            -          5.4    7.0    39.3          -       5.4     6.5
+  12-shot                 Llama3-8B        13.7            5.5         3.3    4.4   13.0         3.3     1.6       3.3
+  12-shot                 Llemma-7B        26.8            8.7         3.3    6.0   29.9        10.9      5.4      6.5
+  12-shot                 Llemma-34B       33.3           16.9         5.5    9.3   29.9        12.5      5.4      7.1
+  12-shot                 GPT-4-turbo      24.6           19.7         8.7   12.6   27.7        22.8     13.0     16.8
+  12-shot                 GPT-4o           33.3           26.2        10.9   16.4   42.9        31.0     13.6     18.5
+
+
+
+                    Accuracy on ProofNet# test split                  A.11   Other Benchmarks
+               50                                             While we focused our work on the ProofNet# and
+                                                              RLM25 benchmarks, sampling-based methods are
+
+
+Accuracy (%)
+      40
+      30                                                      not specific to this benchmark, and we believe they
+                                                              should yield improvements out of the box on other
+      20
+                                                              statement autoformalization benchmarks.
+      10                                                         In this section, we report results on two other
+       0                                                      benchmarks: Process-Driven Autoformalization
+                    8B     ma7      m
+                                        4B        PT-4
+                                                      o
+                                                              (PDA) (Lu et al., 2024a), and MiniF2F (Zheng
+                am            B      a3
+               Ll
+                  a3     em       em
+                                                  G           et al., 2022). The PDA benchmark from Lu et al.
+                                                              (2024a) has been designed to evaluate statement
+                         Ll       Ll
+                                                              and proof autoformalization. Given the size of this
+         Greedy baseline            Filter + Random selection
+                                                              benchmark, 3 test splits of 1000 theorems, and the
+         Filter + Majority voting   Filter + Self-BLEU
+                                                              fact that not all of these subsets contain reference
+                                                              formalizations, we sample 50 random problems for
+Figure 6: Autoformalization accuracy on the                   each test split and conduct a manual evaluation. We
+ProofNet# test set. All methods use 12-shot prompting         report our results in Table 11 .
+in this figure. Detailed results are reported in Table 8         On all test splits, we observe that sampling-based
+and Table 9.                                                  methods largely improve over greedy decoding. We
+                                                              have found the real test split to be challenging as
+                                                              problems are sampled from Arithmo dataset (Jindal,
+and Self-BLEU for the selection step. One can                 2023) without solutions, therefore requiring first
+notice that the absolute improvement in accuracy              solving the problem before providing an accurate
+achieved by this method ranges from +8.7% to                  formalization.
++18.4% over greedy decoding, with relative im-                   The authors of the PDA benchmark reported
+provements between 1.4x and 3x. We also report                compilation results for statement and proof auto-
+results of sampling-based methods on other clas- formalization at once. However, they do not report
+sical benchmarks, PDA and MiniF2F, in subsec- results for statement autoformalization alone and
+tion A.11.                                                    do not report accuracy results either. This lack
+                                                              of data in Lu et al. (2024a) means that we cannot
+A.10 Detailed Results on RLM25                                compare directly to their results.
+                                                                 We report results on the MiniF2F benchmark
+We present detailed results about the use of                  in Table 12. We find the Llemma 7B model fine-
+sampling-based methods on different models and                tuned on Lean Workbook (Ying et al., 2024a) to
+autoformalization methods in Table 10.                        perform particularly well on it. However, since
+                                                                 17961
+Table 9: Evaluation results (in percentage) of sampling-based methods on ProofNet#. For all these results, for each
+informal statement in the benchmark, we sampled 50 formalization attempts per model and filtered type-checking
+ones before applying a selection method. We observe some performance differences between the two splits which
+are caused by the small size of the ProofNet# benchmark (2x 185 statements).
+
+                    Selection                       Validation                                         Test
+    Model
+                     method
+                                   Type-Check Accuracy↑ BEqL ↑ BEq+↑ Type-Check Accuracy↑ BEqL ↑ BEq+↑
+ MMA fine-tune
+                    Random             33.3           9.3         3.3         4.9       29.0           -        2.2     4.8
+  Llama3-8B         Majority           33.3           8.7         3.3         4.4       29.0           -        1.1     4.8
+                   Self-BLEU           33.3           8.7         3.3         4.4       29.0           -        1.1     4.3
+                    Random             61.2           9.3         4.4         5.5       52.2           -        3.2     5.9
+ Llemma-7B          Majority           61.2          10.9         3.8         5.5       52.2           -        3.8     7.0
+                   Self-BLEU           61.2          13.7         4.9         6.6       52.2           -        5.4     8.1
+ Lean Workbook fine-tune
+                 Random                86.0            -          7.6         9.2       86.6           -        7.0      8.6
+ Llemma-7B      Majority               86.0            -          9.2        10.8       86.6           -        5.9     8.6
+              Self-BLEU                86.0            -          9.7        12.4       86.6           -        6.5     10.2
+ 12-shot
+                    Random             42.1           9.8         4.4         6.6       45.7         13.6       4.9     10.3
+  Llama3-8B         Majority           42.1          12.0          4.9        7.1       45.7         14.7       4.9     10.9
+                   Self-BLEU           42.1          12.6         6.0         8.2       45.7         12.0       4.9      9.2
+                    Random             84.7          16.9         4.9         7.7       88.6         21.2       9.8     11.4
+ Llemma-7B          Majority           84.7          23.0          8.2        9.8       88.6         23.9      10.3     12.0
+                   Self-BLEU           84.7          23.5          7.7       11.5       88.6         29.3      11.4     17.9
+                    Random             89.6          21.3         4.9         9.8       84.2         19.6       5.4     11.4
+ Llemma-34B         Majority           89.6          27.3          8.7       12.6       84.2         27.7      10.9     14.1
+                   Self-BLEU           89.6          29.5         8.7        13.1       84.2         28.3       9.8     14.7
+                    Random             65.6          43.2         16.4       23.5       70.1         42.9      15.8     22.8
+   GPT-4o           Majority           65.6          45.4         15.8       21.3       70.1         44.6      15.8     22.8
+                   Self-BLEU           65.6          44.8         15.3       21.3       70.1         45.1      16.3     23.4
+
+
+
+the Lean Workbook dataset has been synthetically                      In this section, we present several examples of
+generated by a model finetuned on the MiniF2F and                  autoformalizations on ProofNet# validation split
+ProofNet benchmarks, some data leakage might                       that are evaluated as incorrect yet fixable with low
+have happened.                                                     effort. Evaluation results on ProofNet# test split
+                                                                   are presented in Table 13.
+A.12 Low-correction Effort Formalizations
+One goal of autoformalization is the development                         Low-correction effort examples
+of AI-assisted tools for formalization. In this set-
+                                                                         Rudin exercise_1_1a
+ting, producing close-to-correct formal statements
+can already help users by providing hints and poten-                     Informal statement: If r is rational (r ̸= 0)
+tial directions. Using the same setup as in the previ-                   and x is irrational, prove that r + x is irrational.
+ous section, we report our results on the ProofNet#                      Generated formalization:
+test split in Figure 6. Note that in this setup, con-                    theorem exercise_1_1a (hr : r ̸= 0) (hi :
+                                                                             Irrational x) : Irrational (r + x) :=
+trary to Jiang et al. (2023), we are considering only
+well-typed statements.                                                   Issue: r has not been declared as a rational
+   We find that, by using sampling-based methods,                        number.
+open-source models Llemma-7B and Llemma-34B
+can autoformalize ∼ 50% of the mathematical
+                                                                         Herstein exercise_4_3_25
+statements from the ProofNet# test benchmark in a
+close-to-correct way4 . This makes these open mod-                       Informal statement: Let R be the ring of 2×2
+els good fit for local autoformalization assistant,                      matrices over the real numbers; suppose that I
+especially Llemma-7B for its relatively small size.                      is an ideal of R. Show that I = (0) or I = R.
+   4
+                                                                         Generated formalization:
+     We define close-to-correct formalizations as those with
+one slightly diverging hypothesis or conclusion, typically fix-          theorem exercise_4_3_25 {R : Type*} [
+able in a matter of seconds.
+
+                                                             17962
+Table 10: Results on RLM25 for different methods and models. In this setup, all models are prompted with in-file
+context and proofs are removed. Greedy decoding is used for generation.
+
+                         Model     Method         Type-Check BEqL BEq+
+                                   No fine-tuning    37.19   18.90 20.29
+                         Llama3 8B
+                                   MMA               41.73   17.55 19.24
+                                   No fine-tuning                     55.96            22.49 24.16
+                         Llemma 7B MMA                                51.63            21.37 22.63
+                                   Lean Workbook                      53.89            21.84 23.55
+                         GPT-4o          No fine-tuning               51.37            21.18 24.56
+
+Table 11: Evaluation results (in percentage) of sampling-based methods on the Process-Driven Autoformalization
+benchmark. We evaluate on 50 samples on each of the "Basic", "Random", and "Real" splits of this benchmark.
+Greedy decoding is used for methods without sampling, i.e., when filtering is not mentioned. For sampling-based
+methods, we sample n = 50 predictions with temperature T = 0.7. We separate greedy decoding methods from
+sampling-based methods by a gray line for each model.
+
+                                                    Basic                                 Random                         Real
+Model        Method
+                                          Type-Check Accuracy↑ Type-Check Accuracy↑ Type-Check Accuracy↑
+          12-shot                            18.0           16.0                     20.0          16.0          20.0            4.0
+Llama3-8B
+          12-shot + Filter + Self-BLEU       48.0           28.0                     46.0          32.0          72.0           8.0
+          12-shot                            20.0           14.0                     30.0          26.0          62.0            0.0
+Llemma-7B
+          12-shot + Filter + Self-BLEU       76.0           58.0                     72.0          54.0          100.0          8.0
+          12-shot                            30.0           28.0                     42.0          38.0           4.0            0.0
+GPT-4o
+          12-shot + Filter + Self-BLEU       64.0           54.0                     66.0          56.0          26.0           12.0
+
+
+
+        CommRing R] (I : Ideal (Matrix (Fin 2) (
+        Fin 2) R)) : I = ⊥ ∨ I = ⊤ :=
+
+  Issue: Superfluous declaration of CommRing R.                                      Accuracy - Low correction effort
+                                                                            60
+A.13 Ablation Study: Detailed Results
+
+
+                                                             Accuracy (%)
+We present detailed results of our ablation study on                        40
+the type-check filtering step in Table 14.
+                                                                            20
+A.14 Sampling Scaling
+Detailed results about our sampling study can be
+                                                                            0
+found in Table 15.                                                                   8B          a7            4B           o
+                                                                                 a3                B        a3           PT-4
+                                                                                 m           m            m            G
+                                                                            Ll              em         Ll
+                                                                               a            Ll            em
+
+                                                                                 Greedy baseline                    Filter + Random
+                                                                                 Filter + Majority voting           Filter + Self-BLEU
+
+
+
+                                                             Figure 7: Proportion of formalized statements eval-
+                                                             uated as correct or as fixable with a low amount of
+                                                             effort (i.e., close-to-correct) on the ProofNet# test set.
+                                                             All models are prompted with 12-shot examples. De-
+                                                             tailed results are reported in Table 13.
+
+
+
+
+                                                       17963
+Table 12: Performance of different methods on MiniF2F. Greedy decoding is used for methods without sampling,
+i.e., when filtering is not mentioned. For sampling-based methods, we sample n = 50 predictions with temperature
+T = 0.7. We separate greedy decoding methods from sampling-based methods by a gray line for each model. 1 Lean
+Workbook dataset has been curated with a model trained on the MiniF2F benchmark, thus data leakage concerns
+apply.
+
+                  Model       Method                              Type-Check BEqL ↑ BEq+↑
+                            12-shot                                  45.9        6.8    14.6
+                  Llama3 8B MMA                                      36.7        3.1     8.8
+                            12-shot + Filter + Self-BLEU             93.0       10.3    21.3
+                            12-shot                                  67.0        7.6    16.0
+                            MMA                                      32.2        2.1     5.3
+                  Llemma 7B Lean Workbook1                           89.6       14.3    28.5
+                            12-shot + Filter + Self-BLEU             99.8       10.3    21.3
+                            Lean Workbook + Filter + Self-BLEU1      99.0       14.1    28.1
+                  GPT-4o      12-shot                                24.4       8.0     13.5
+
+
+
+
+Table 13: Models performance (in percentage) on
+ProofNet# test split when accounting for formalizations
+that can be corrected with a low amount of efforts.
+
+ Model             Method                  Accuracy↑
+                   Greedy                      9.1
+                   Filter + Random            23.7
+ Llama3-8B
+                   Filter + Majority          25.8
+                   Filter + Self-BLEU         25.3
+                   Greedy                     16.7
+                   Filter + Random            37.1
+ Llemma-7B
+                   Filter + Majority          40.9
+                   Filter + Self-BLEU         48.9
+                   Greedy                     19.9
+                   Filter + Random            35.5
+ Llemma-34B
+                   Filter + Majority          40.3
+                   Filter + Self-BLEU         51.1
+                   Greedy                     40.3
+                   Filter + Random            60.7
+ GPT-4o
+                   Filter + Majority          60.2
+                   Filter + Self-BLEU         61.3
+
+
+
+
+                                                       17964
+Table 14: Models performance (in percentage) on ProofNet# validation split removing different aspects of sampling-
+based methods. We also report Greedy baseline and the Filter + Self-BLEU results as reference.
+
+       Model                Method                        Type-Check    Accuracy↑      BEqL ↑     BEq+↑
+                            Greedy                           13.7            5.5         3.3        4.4
+                            No filter + Random                9.8            4.4         2.7        2.7
+                            No filter + Majority             13.1            5.5         3.3        3.8
+       Llama3-8B
+                            No filter + Self-BLEU            14.2            6.0         2.7        3.8
+                            Filter + Random                  42.1            9.8         4.4        6.6
+                            Filter + Self-BLEU               42.1           12.6         6.0        8.2
+                            Greedy                           26.8            8.7         3.3        6.0
+                            No filter + Random               25.7            6.0         3.3        3.8
+                            No filter + Majority             25.1           10.9         4.4        4.9
+       Llemma-7B
+                            No filter + Self-BLEU            32.2           14.2         6.6        9.3
+                            Filter + Random                  84.7           16.9         4.9        7.7
+                            Filter + Self-BLEU               84.7           23.5         7.7       11.5
+                            Greedy                           33.3           16.9         5.5        9.3
+                            No filter + Random               24.6            9.3         2.7        4.4
+                            No filter + Majority             24.6           10.9         4.9        7.1
+       Llemma-34B
+                            No filter + Self-BLEU            32.8           14.2         3.8        6.0
+                            Filter + Random                  89.6           21.3         4.9        9.8
+                            Filter + Self-BLEU               89.6           29.5         8.7       13.1
+                            Greedy                           33.3           26.2        10.9       16.4
+                            No filter + Random               33.3           25.7         9.8       14.8
+                            No filter + Majority             35.5           29.5        12.0       16.4
+       GPT-4o
+                            No filter + Self-BLEU            36.1           28.4        12.0       16.9
+                            Filter + Random                  65.6           43.2        16.4       23.5
+                            Filter + Self-BLEU               65.6           44.8        15.3       21.3
+
+
+
+
+Table 15: Evaluation results (in percentage) of sampling-based methods on ProofNet# validation split for different
+numbers of formalizations sampled during the sampling phase (represented by the number n in this table). We used
+a 12-shot prompt with the filter+Self-BLEU variant and a temperature of 0.7.
+
+                     Type-Check              Accuracy↑                 BEqL ↑                BEq+↑
+     Model
+                n=1 n=5 n=20 n=50 n=1 n=5 n=20 n=50 n=1 n=5 n=20 n=50 n=1 n=5 n=20 n=50
+   Llama3-8B 9.8 22.4      32.8   42.1 4.4 7.1     10.4   12.6   2.7 3.3 4.4 6.0 2.7 4.9 6.0 8.2
+  Llemma-7B 25.7 50.3      71.0   84.7 6.0 10.9    19.7   23.5   3.3 3.3 7.1 7.7 3.8 6.0 10.4 11.5
+  Llemma-34B 24.6 55.2     78.7   89.6 9.3 14.8    25.7   29.5   2.7 5.5 8.2 8.7 4.4 8.7 12.0 13.1
+    GPT-4o   33.3 47.0     55.7   65.6 25.7 34.4   38.8   44.8   9.8 14.2 13.7 15.3 14.8 20.2 19.7 21.3
+
+
+
+
+                                                     17965
+A.15 12-shot Prompt                                             theorem eq_iff_eq_on_prime_powers [
+Note: We translated the 12-shot prompt from                         CommMonoidWithZero R] (f :
+                                                                    ArithmeticFunction R)
+ProofNet# to Lean 4, with as minimal changes as                 (hf : f.IsMultiplicative) (g :
+possible, for the accuracy comparison with previ-                   ArithmeticFunction R) (hg : g.
+ous results to be as fair as possible. In particular,               IsMultiplicative) :
+                                                                f = g ↔ ∀ p i : N, Nat.Prime p → f (p ^ i)
+we did not remove/change the statements leaked                       = g (p ^ i) :=
+from the benchmark and did not correct potential
+formalization mistakes in this prompt to make our
+results comparable with the results in Azerbayev                Natural language version:
+et al. (2023a).                                                 If z1 , . . . , zn are complex, then |z1 + z2 + · · · +
+                                                                zn | ≤ |z1 | + |z2 | + · · · + |zn |.
+  12-shot examples                                              Translate the natural language version to a
+                                                                Lean 4 version:
+  Natural language version:
+                                                                theorem abs_sum_leq_sum_abs (n : N) (f : N
+  Let P be a p-subgroup of G. Then P is con-                        → C) :
+  tained in a Sylow p-subgroup of G.                            abs (Σ i in Finset.range n, f i) ≤ Σ i in
+  Translate the natural language version to a                       Finset.range n, abs (f i) :=
+  Lean 4 version:
+  theorem exists_le_sylow [Group G] {P :                        Natural language version:
+      Subgroup G} (hP : IsPGroup p P) : ∃ Q :                   If x and y are in Rn , then |x + y|2 + |x − y|2 =
+       Sylow p G, P ≤ Q :=
+                                                                2|x|2 + 2|y|2 .
+                                                                Translate the natural language version to a
+  Natural language version:                                     Lean 4 version:
+  Let E and F be complex normed spaces and                      theorem
+  let f : E → F . If f is differentiable and                        sum_add_square_sub_square_eq_sum_square
+                                                                    (n : N) (x y : EuclideanSpace R (Fin n)
+  bounded, then f is constant Translate the natu-                   ) :
+  ral language version to a Lean 4 version:                     ∥x + y∥^2 + ∥x - y∥^2 = 2*∥x∥^2 + 2*∥y∥^2 :=
+  theorem exists_eq_const_of_bounded {E : Type
+       u} [NormedAddCommGroup E] [NormedSpace
+      C E] {F : Type v} [NormedAddCommGroup F                   Natural language version:
+      ] [NormedSpace C F] {f : E → F} (hf :                     If x is an element of infinite order in G, prove
+      Differentiable C f)(hb : IsBounded (
+      range f)) : ∃ c, f = const E c :=                         that the elements xn , n ∈ Z are all distinct.
+                                                                Translate the natural language version to a
+                                                                Lean 4 version:
+  Natural language version:
+                                                                theorem
+  Let X be a topological space; let A be a subset                   distinct_powers_of_infinite_order_element
+  of X. Suppose that for each x ∈ A there is                         (G : Type*) [Group G] (x : G)
+                                                                  (hx_inf : ∀ n : N, x ^ n ̸= 1) :
+  an open set U containing x such that U ⊂ A.                     ∀ m n : Z, m ̸= n → x ^ m ̸= x ^ n :=
+  Then A is open in X.
+  Translate the natural language version to a
+  Lean 4 version:                                               Natural language version:
+  theorem subset_of_open_subset_is_open (X :
+                                                                A set of vectors {vi }i∈I orthogonal with re-
+      Type*) [TopologicalSpace X]                               spect to some bilinear form B : V × V →
+  (A : Set X) (hA : ∀ x ∈ A, ∃ U : Set X,                       K is linearly independent if for all i ∈
+      IsOpen U ∧ x ∈ U ∧ U ⊆ A):
+    IsOpen A :=
+                                                                I, B(vi , vi ) ̸= 0.
+                                                                Translate the natural language version to a
+                                                                Lean 4 version:
+  Natural language version:                                     theorem linear_independent_of_is_Ortho {V K :
+  Two multiplicative functions f, g : N → R                           Type*} [Field K]
+  are equal if and only if f (pi ) = f (g i ) for all           [AddCommGroup V] [Module K V] {n : Type*} {B
+                                                                      : BilinForm K V}
+  primes p.                                                     {v : n → V} (hv1 : B.iIsOrtho v)
+  Translate the natural language version to a                   (hv2 : ∀ (i : n), ¬B.IsOrtho (v i) (v i)) :
+  Lean 4 version:                                               LinearIndependent K v :=
+
+
+                                                        17966
+                                                              theorem uniform_continuous_of_continuous_
+Natural language version:                                        injective_uniform_continuous_comp
+Suppose that V is an n-dimensional vector                     {X Y Z : Type*} [MetricSpace X] [MetricSpace
+space. Then for some set of vectors {vi }ki=1 , if                 Y] [MetricSpace Z]
+                                                              (hY : CompactSpace Y) (f : X → Y) (g : Y →
+k >Pn then there exist scalars f1 , . . . , fk such                Z) (hgc : Continuous g)
+that ki=1 fk vk = 0.                                          (hgi : Function.Injective g)
+                                                              (h : UniformContinuous (g ◦ f)) :
+Translate the natural language version to a                       UniformContinuous f :=
+Lean 4 version:
+theorem
+    exists_nontrivial_relation_sum_zero_of_
+  dim_succ_lt_card {K V : Type*}                         A.16      Data Contamination
+[DivisionRing K] [AddCommGroup V] [Module K
+    V] [FiniteDimensional K V]                           Data contamination is a serious issue in today’s
+{t : Finset V} (h : FiniteDimensional.                   LLM benchmarks. In fact, large language mod-
+    finrank K V + 1 < t.card) :
+∃ (f : V → K), t.sum (λ (e : V) => f e · e)              els are trained on large-scale training data, thus,
+     = 0 ∧ t.sum (λ (e : V) => f e) = 0                  despite the filtering efforts, data leakage might hap-
+∧ ∃ (x : V) (H : x ∈ t), f x ̸= 0 :=                     pen. For the new dataset RLM25 we introduce, as
+                                                         stated in subsection 4.1, all projects selected for
+Natural language version:                                evaluation were made available after the knowledge
+A group is commutative if the quotient by the            cutoff dates of the evaluated models. In particular,
+center is cyclic.                                        Llemma 7B, performing almost on par with GPT-
+Translate the natural language version to a              4o on this benchmark, is open-weight and has been
+Lean 4 version:                                          released in August 2023, thus before the first com-
+theorem comm_group_of_cycle_center_quotient              mit of any of these projects.
+    {G H : Type*} [Group G] [Group H]                       ProofNet 3 was released in February 2023, and
+[IsCyclic H] (f : G →* H) (hf : f.ker ≤ (
+    center G : Subgroup G)):                             an unofficial port to Lean 4 has been publicly avail-
+CommGroup G :=                                           able since March 2024. Since the cutoff training
+                                                         dates for all models used in these experiments are
+Natural language version:                                before March 2024, Lean 4 data contamination due
+If H is a p-subgroup of G, then the index of H           to training is not possible. However, it remains the-
+inside its normalizer is congruent modulo p to           oretically possible that some models were trained
+the index of H.                                          on the Lean 3 version and weakly generalized to
+Translate the natural language version to a              Lean 4. Such data leakage for the Llemma models
+Lean 4 version:                                          family (Azerbayev et al., 2023b) seems unlikely as
+                                                         the authors claim they have specifically excluded
+theorem card_quotient_normalizer_modEq_
+  card_quotient {G : Type*} [Group G] [                  ProofNet from their training data.
+    Fintype G] {p : N} {n : N} [hp : Fact p                 For our data contamination study, we use an un-
+    .Prime]
+{H : Subgroup G} (hH : Fintype.card H = p ^              official Lean 4 port (Vishwakarma, 2024) of the
+    n) :                                                 ProofNet benchmark made by an independent re-
+Fintype.card (normalizer H / Subgroup.comap              search team. This port shows minimal differences
+    ((normalizer H).subtype : normalizer H
+    →* G) H) ≡                                           from the original Lean 3 ProofNet benchmark, pre-
+  Fintype.card (G / H) [MOD p] :=                        serving the order of hypotheses and terms. Upon
+                                                         analyzing the raw predictions of all models, we did
+Natural language version:                                not find any exact matches with the Lean 4 ground
+Suppose X, Y, Z are metric spaces, and Y is              truths. This is primarily because the theorems in
+compact. Let f map X into Y , let g be a                 the benchmark follow an exercise_number naming
+continuous one-to-one mapping of Y into Z,               scheme, which the models do not produce. Conse-
+and put h(x) = g(f (x)) for x ∈ X. Prove                 quently, we employed fuzzy matching for our data
+that f is uniformly continuous if h is uniformly         contamination checks. This involved normalizing
+continuous.                                              whitespaces and removing comments and theorem
+Translate the natural language version to a              names. We found a maximum of 2.2% matches
+Lean 4 version:                                          (4 statements out of 185/186) for each model in-
+                                                         dependently on the validation split, including the
+                                                      17967
+2 statements leaked by the prompt. Given that the           (hX : LocallyCompactSpace X) (hX' :
+space of correct formal statements is heavily con-            T2Space X) :
+strained, this hit rate is quite reasonable. Below,         RegularSpace X :=
+we provide a list of all unique hits found across
+all models and experiments. Most of these hits             Herstein|exercise_4_3_25:
+are very short and almost unavoidable. Consider-
+                                                           theorem exercise_4_3_25 (I : Ideal (Matrix (
+ing these results, it seems unlikely that significant          Fin 2) (Fin 2) R)) :
+data leakage occurred during the training of these           I = ⊥ ∨ I = ⊤ :=
+models.
+   Nonetheless, during our data contamination
+                                                           Statements from the validation split leaked
+study, we found that 4 examples from the 12-shot
+                                                           by the ProofNet prompt
+prompt in Azerbayev et al. (2023a), which we in-
+tended to compare to, were also present in the             Munkres|exercise_13_1
+benchmark (2 in the validation set and 2 in the            theorem subset_of_open_subset_is_open (X :
+test set). Fortunately, this affects the results only          Type*) [TopologicalSpace X]
+negligibly (at most ∼ 1.1%). We report all our               (A : Set X) (hA : ∀ x ∈ A, ∃ U : Set X,
+                                                               IsOpen U ∧ x ∈ U ∧ U ⊆ A):
+results with these statements removed.                         IsOpen A :=
+
+  List of all the hits found (using fuzzy match-
+                                                           Dummit-Foot|exercise_1_1_34
+  ing) across all our experiments on the
+  ProofNet validation split                                theorem
+                                                               distinct_powers_of_infinite_order_element
+                                                                (G : Type*) [Group G] (x : G)
+  Munkres|exercise_29_1:                                     (hx_inf : ∀ n : N, x ^ n ̸= 1) :
+  theorem exercise_29_1 : ¬                                  ∀ m n : Z, m ̸= n → x ^ m ̸= x ^ n :=
+      LocallyCompactSpace Q :=
+
+
+  Dummit-Foote|exercise_1_1_22a:
+  theorem exercise_1_1_22a {G : Type*} [Group
+      G] (x g : G) :
+    orderOf x = orderOf (g−1 * x * g) :=
+
+
+  Herstein|exercise_2_1_27:
+  theorem exercise_2_1_27 {G : Type*} [Group G
+      ]
+    [Fintype G] : ∃ (m : N), ∀ (a : G), a ^ m
+       = 1 :=
+
+
+  Munkres|exercise_17_4:
+  theorem exercise_17_4 {X : Type*} [
+      TopologicalSpace X]
+    (U A : Set X) (hU : IsOpen U) (hA :
+      IsClosed A) :
+    IsOpen (U \ A) ∧ IsClosed (A \ U) :=
+
+
+  Herstein|exercise_5_5_2:
+  theorem exercise_5_5_2 : Irreducible (X^3 -
+      3*X - 1 : Polynomial Q) :=
+
+
+  Munkres|exercise_32_3:
+  theorem exercise_32_3 {X : Type*} [
+      TopologicalSpace X]
+
+
+                                                   17968
+A.17 All results on ProofNet#
+We report in the table below metric results for all autoformalization methods and models on which we
+conducted manual evaluation. Such manual evaluation has been conducted on both ProofNet# validation
+and test splits.
+
+       Model                     Strategy                             Split   Type Check   Accuracy   BEqL    BEq+    Hyp. Rej.
+       ensemble-12shot-top50     top50 type-checked majority voting   test          96.2       44.6    17.4    23.4         3.8
+       ensemble-12shot-top50     top50 type-checked random            test          96.2       33.2     9.8    14.7         2.2
+       ensemble-12shot-top50     top50 type-checked self consistent   test          96.2       48.4    17.9    26.6         3.3
+       gpt-4-turbo-2024-04-09    greedy type-checked                  test          27.7       22.8    13.0    16.8         1.1
+       gpt-4-turbo-2024-04-09    greedy type-checked                  valid         24.6       19.7     8.7    12.6         0.0
+       gpt-4o-2024-05-13         greedy type-checked                  test          42.9       31.0    13.6    18.5         1.6
+       gpt-4o-2024-05-13         greedy type-checked                  valid         33.3       26.2    10.9    16.4         0.0
+       gpt-4o-2024-05-13-top50   top50 type-checked majority voting   test          70.1       44.6    15.8    22.8         2.2
+       gpt-4o-2024-05-13-top50   top50 type-checked random            test          70.1       42.9    15.8    22.8         1.1
+       gpt-4o-2024-05-13-top50   top50 type-checked self consistent   test          70.1       45.1    16.3    23.4         2.2
+       gpt-4o-2024-05-13-top50   top20 type-checked self consistent   valid         55.7       38.8    13.7    19.7         0.5
+       gpt-4o-2024-05-13-top50   top50 majority voting type-checked   valid         35.5       29.5    12.0    16.4         0.0
+       gpt-4o-2024-05-13-top50   top50 random type-checked            valid         33.3       25.7     9.8    14.8         0.0
+       gpt-4o-2024-05-13-top50   top50 self consistent type-checked   valid         36.1       28.4    12.0    16.9         0.0
+       gpt-4o-2024-05-13-top50   top50 type-checked majority voting   valid         65.6       45.4    15.8    21.3         0.0
+       gpt-4o-2024-05-13-top50   top50 type-checked random            valid         65.6       43.2    16.4    23.5         0.0
+       gpt-4o-2024-05-13-top50   top50 type-checked self consistent   valid         65.6       44.8    15.3    21.3         0.0
+       gpt-4o-2024-05-13-top50   top5 type-checked self consistent    valid         47.0       34.4    14.2    20.2         0.0
+       llama3-8b                 greedy type-checked                  test          13.0        3.3     1.6     3.3         1.1
+       llama3-8b                 greedy type-checked                  valid         13.7        5.5     3.3     4.4         0.5
+       llama3-8b-mma             valid                                valid         12.6        4.9     2.2     3.3         2.2
+       llama3-8b-mma-top50       top50 type-checked most frequent     valid         33.3        8.7     3.3     4.4         2.2
+       llama3-8b-mma-top50       top50 type-checked random            valid         33.3        9.3     3.3     4.9         2.7
+       llama3-8b-mma-top50       top50 type-checked self consistent   valid         33.3        8.7     3.3     4.4         2.7
+       llama3-8b-top50           top50 type-checked majority voting   test          45.7       14.7     4.9    10.9         2.2
+       llama3-8b-top50           top50 type-checked random            test          45.7       13.6     4.9    10.3         1.1
+       llama3-8b-top50           top50 type-checked self consistent   test          45.7       12.0     4.9     9.2         1.6
+       llama3-8b-top50           top20 type-checked self consistent   valid         32.8       10.4     4.4     6.0         0.5
+       llama3-8b-top50           top50 majority voting type-checked   valid         13.1        5.5     3.3     3.8         0.5
+       llama3-8b-top50           top50 random type-checked            valid          9.8        4.4     2.7     2.7         0.5
+       llama3-8b-top50           top50 self consistent type-checked   valid         14.2        6.0     2.7     3.8         0.5
+       llama3-8b-top50           top50 type-checked most frequent     valid         42.1       12.0     4.9     7.1         1.1
+       llama3-8b-top50           top50 type-checked random            valid         42.1        9.8     4.4     6.6         1.1
+       llama3-8b-top50           top50 type-checked self consistent   valid         42.1       12.6     6.0     8.2         1.1
+       llama3-8b-top50           top5 type-checked self consistent    valid         22.4        7.1     3.3     4.9         1.1
+       llemma-34b                greedy type-checked                  test          29.9       12.5     5.4     7.1         1.1
+       llemma-34b                greedy type-checked                  valid         33.3       16.9     5.5     9.3         0.0
+       llemma-34b-top50          top50 type-checked majority voting   test          84.2       27.7    10.9    14.1         3.3
+       llemma-34b-top50          top50 type-checked random            test          84.2       19.6     5.4    11.4         2.2
+       llemma-34b-top50          top50 type-checked self consistent   test          84.2       28.3     9.8    14.7         2.2
+       llemma-34b-top50          top20 type-checked self consistent   valid         78.7       25.7     8.2    12.0         1.1
+       llemma-34b-top50          top50 majority voting type-checked   valid         24.6       10.9     4.9     7.1         0.0
+       llemma-34b-top50          top50 random type-checked            valid         24.6        9.3     2.7     4.4         0.5
+       llemma-34b-top50          top50 self consistent type-checked   valid         32.8       14.2     3.8     6.0         0.0
+       llemma-34b-top50          top50 type-checked majority voting   valid         89.6       27.3     8.7    12.6         1.1
+       llemma-34b-top50          top50 type-checked random            valid         89.6       21.3     4.9     9.8         2.2
+       llemma-34b-top50          top50 type-checked self consistent   valid         89.6       29.5     8.7    13.1         1.6
+       llemma-34b-top50          top5 type-checked self consistent    valid         55.2       14.8     5.5     8.7         2.2
+       llemma-7b                 greedy type-checked                  test          29.9       10.9     5.4     6.5         2.2
+       llemma-7b                 greedy type-checked                  valid         26.8        8.7     3.3     6.0         0.0
+       llemma-7b-mma             valid                                valid         14.2        6.0     2.7     4.4         0.0
+       llemma-7b-mma-top50       top50 type-checked most frequent     valid         61.2       10.9     3.8     5.5         1.6
+       llemma-7b-mma-top50       top50 type-checked random            valid         61.2        9.3     4.4     5.5         2.7
+       llemma-7b-mma-top50       top50 type-checked self consistent   valid         61.2       13.7     4.9     6.6         2.7
+       llemma-7b-top50           top50 type-checked majority voting   test          88.6       23.9    10.3    12.0         2.7
+       llemma-7b-top50           top50 type-checked random            test          88.6       21.2     9.8    11.4         4.9
+       llemma-7b-top50           top50 type-checked self consistent   test          88.6       29.3    11.4    17.9         4.3
+       llemma-7b-top50           top20 type-checked self consistent   valid         71.0       19.7     7.1    10.4         1.6
+       llemma-7b-top50           top50 majority voting type-checked   valid         25.1       10.9     4.4     4.9         0.5
+       llemma-7b-top50           top50 random type-checked            valid         25.7        6.0     3.3     3.8         1.1
+       llemma-7b-top50           top50 self consistent type-checked   valid         32.2       14.2     6.6     9.3         0.5
+       llemma-7b-top50           top50 type-checked most frequent     valid         84.7       23.0     8.2     9.8         2.2
+       llemma-7b-top50           top50 type-checked random            valid         84.7       16.9     4.9     7.7         2.7
+       llemma-7b-top50           top50 type-checked self consistent   valid         84.7       23.5     7.7    11.5         1.6
+       llemma-7b-top50           top5 type-checked self consistent    valid         50.3       10.9     3.3     6.0         1.6
+
+
+
+
+                                                                  17969
+
