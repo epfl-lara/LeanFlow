@@ -53,7 +53,7 @@ EPFLemma keeps working and reports the fallback clearly.
 
 The installer configures local `lean-lsp-mcp` power modes by default:
 
-- local Loogle on Linux/macOS/WSL, with public remote Loogle fallback when local setup is cold or unavailable
+- local Loogle on Linux/macOS/WSL, with public remote Loogle fallback when local setup is cold, unavailable, or built for a different Lean toolchain than the active project
 - REPL-backed `lean_multi_attempt` for faster tactic screening after `project init` builds `repl`
 - local LeanExplore semantic search when `lean-explore[local]` is installed and `lean-explore data fetch` has prepared the index; hosted LeanExplore API calls remain opt-in via `LEANEXPLORE_API_KEY`
 

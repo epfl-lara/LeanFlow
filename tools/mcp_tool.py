@@ -273,6 +273,49 @@ def _truthy_env_value(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _read_lean_toolchain_from_root(path: str | os.PathLike[str] | None) -> str:
+    if not path:
+        return ""
+    try:
+        root = Path(path).expanduser().resolve()
+        return (root / "lean-toolchain").read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _disable_incompatible_local_loogle(server_name: str, env: dict, cwd: str | None) -> dict:
+    """Disable local Loogle when its cached Lean toolchain cannot read project .olean files."""
+    if str(server_name or "") != "lean-lsp":
+        return env
+    if not _truthy_env_value((env or {}).get("LEAN_LOOGLE_LOCAL")):
+        return env
+
+    raw_cache_dir = str((env or {}).get("LEAN_LOOGLE_CACHE_DIR", "") or "").strip()
+    if not raw_cache_dir:
+        return env
+    cache_dir = Path(raw_cache_dir).expanduser()
+    loogle_toolchain = _read_lean_toolchain_from_root(cache_dir / "repo")
+    project_root = str(
+        (env or {}).get("LEAN_PROJECT_PATH")
+        or (env or {}).get("EPFLEMMA_PROJECT_ROOT")
+        or cwd
+        or ""
+    ).strip()
+    project_toolchain = _read_lean_toolchain_from_root(project_root)
+    if not loogle_toolchain or not project_toolchain or loogle_toolchain == project_toolchain:
+        return env
+
+    updated = dict(env)
+    updated["LEAN_LOOGLE_LOCAL"] = "false"
+    logger.info(
+        "Local Loogle disabled for this run: managed cache uses %s, project uses %s; "
+        "remote Loogle fallback remains enabled.",
+        loogle_toolchain,
+        project_toolchain,
+    )
+    return updated
+
+
 def _augment_lean_stdio_env(server_name: str, env: dict, cwd: str | None) -> dict:
     """Add project-local Lean runtime env expected by managed Lean MCP servers."""
     updated = dict(env or {})
@@ -919,6 +962,7 @@ class MCPServerTask:
         command, safe_env = _resolve_stdio_command(command, safe_env)
         cwd = _resolve_stdio_cwd(self.name, config)
         safe_env = _augment_lean_stdio_env(self.name, safe_env, cwd)
+        safe_env = _disable_incompatible_local_loogle(self.name, safe_env, cwd)
         _repair_loogle_cache_if_needed(self.name, safe_env)
         server_params = StdioServerParameters(
             command=command,

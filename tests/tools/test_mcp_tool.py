@@ -489,6 +489,51 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_lean_lsp_disables_local_loogle_for_toolchain_mismatch(self, tmp_path, monkeypatch):
+        """Local Loogle is skipped before startup when its cached toolchain differs."""
+        from tools.mcp_tool import MCPServerTask
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "lean-toolchain").write_text(
+            "leanprover/lean4:v4.30.0-rc2\n",
+            encoding="utf-8",
+        )
+        cache = tmp_path / "cache"
+        repo = cache / "repo"
+        repo.mkdir(parents=True)
+        (repo / "lean-toolchain").write_text(
+            "leanprover/lean4:v4.30.0-rc1\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params, p_stdio, p_cs:
+                server = MCPServerTask("lean-lsp")
+                await server.start(
+                    {
+                        "command": "lean-lsp-mcp",
+                        "env": {
+                            "LEAN_LOOGLE_LOCAL": "true",
+                            "LEAN_LOOGLE_CACHE_DIR": str(cache),
+                        },
+                    }
+                )
+
+                env_arg = mock_params.call_args.kwargs["env"]
+                assert env_arg["LEAN_LOOGLE_LOCAL"] == "false"
+                assert env_arg["LEAN_PROJECT_PATH"] == str(project)
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+
     def test_lean_lsp_repairs_stale_loogle_cache_before_start(self, tmp_path, monkeypatch):
         """Missing Loogle dependency artifacts trigger one cached repo rebuild."""
         from tools.mcp_tool import MCPServerTask

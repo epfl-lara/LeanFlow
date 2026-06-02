@@ -114,7 +114,7 @@ EPFLemma installs and manages the Lean MCP backends by default:
   - role: `primary-state-search`
   - exposes diagnostics, goals, search, state/premise/hover/outline discovery, and tactic attempt screening
   - configured with `LEAN_REPL=true` and local Loogle on Linux/macOS/WSL
-  - prefers local acceleration first, then public remote Lean search fallbacks, then native project/Mathlib search
+  - prefers local acceleration first when toolchain-compatible with the active project, then public remote Lean search fallbacks, then native project/Mathlib search
 - `lean-proof-auto-mcp`
   - role: `secondary-automation-context`
   - used through native wrappers, with local fallback when backend theorem lookup misses a declaration visible in the current file

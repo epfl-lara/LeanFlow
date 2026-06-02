@@ -6,6 +6,7 @@ from pathlib import Path
 from epflemma_cli import mcp_bootstrap
 from epflemma_cli.mcp_bootstrap import (
     bootstrap_lean_mcp,
+    managed_mcp_power_status,
     managed_mcp_command_path,
     managed_mcp_server_status,
     write_managed_mcp_config,
@@ -91,6 +92,62 @@ def test_managed_mcp_server_status_marks_missing_servers_for_bootstrap(tmp_path)
     assert status["lean-explore"]["configured"] is False
     assert status["lean-explore"]["installed"] is False
     assert status["lean-lsp"]["power_modes"]["remote_search_policy"] == "public-fallbacks-enabled"
+
+
+def test_managed_mcp_power_status_marks_local_loogle_toolchain_mismatch(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    config_path = home / "config.yaml"
+    cache = tmp_path / "loogle-cache"
+    repo = cache / "repo"
+    repo.mkdir(parents=True)
+    (repo / "lean-toolchain").write_text(
+        "leanprover/lean4:v4.30.0-rc1\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "lean-toolchain").write_text(
+        "leanprover/lean4:v4.30.0-rc2\n",
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        "mcp_servers:\n"
+        "  lean-lsp:\n"
+        "    env:\n"
+        "      LEAN_LOOGLE_LOCAL: 'true'\n"
+        f"      LEAN_LOOGLE_CACHE_DIR: {cache}\n",
+        encoding="utf-8",
+    )
+
+    power = managed_mcp_power_status(home, project_root=project)
+
+    assert power["loogle_local_status"] == "incompatible"
+    assert power["loogle_local_available"] is False
+    assert power["loogle_local_ready"] is False
+    assert power["loogle_toolchain"] == "leanprover/lean4:v4.30.0-rc1"
+    assert power["project_toolchain"] == "leanprover/lean4:v4.30.0-rc2"
+
+
+def test_bootstrap_patches_lean_lsp_loogle_project_paths(tmp_path):
+    venv = tmp_path / "venv"
+    package_dir = venv / "lib" / "python3.11" / "site-packages" / "lean_lsp_mcp"
+    package_dir.mkdir(parents=True)
+    loogle_py = package_dir / "loogle.py"
+    loogle_py.write_text(
+        "        paths = []\n"
+        "        # Check packages directory\n"
+        "        lake_packages = self.project_path / \".lake\" / \"packages\"\n",
+        encoding="utf-8",
+    )
+
+    assert mcp_bootstrap._patch_lean_lsp_loogle_project_paths(venv) is True
+
+    rendered = loogle_py.read_text(encoding="utf-8")
+    assert '"lean", "--print-libdir"' in rendered
+    assert "loogle_lib = self.repo_dir" in rendered
+    assert mcp_bootstrap._patch_lean_lsp_loogle_project_paths(venv) is True
+    assert loogle_py.read_text(encoding="utf-8") == rendered
 
 
 def test_managed_mcp_bootstrap_pins_setuptools_below_torch_conflict(monkeypatch, tmp_path):
