@@ -1,5 +1,3 @@
-%%%%%%%% ICML 2026 WORKSHOP DRAFT %%%%%%%%%%%%%%%%%
-
 \documentclass{article}
 
 \usepackage{microtype}
@@ -9,7 +7,7 @@
 \usepackage{booktabs}
 \usepackage{hyperref}
 \newcommand{\theHalgorithm}{\arabic{algorithm}}
-\usepackage{icml2026}
+\usepackage[accepted]{icml2026}
 
 \usepackage{amsmath}
 \usepackage{amssymb}
@@ -137,12 +135,15 @@
 \icmltitle{\method: A Case Study in Workflow-Driven Lean Autoformalization}
 
   \begin{icmlauthorlist}
-    \icmlauthor{Anonymous Authors}{anon}
+    \icmlauthor{Lazar Milikic}{epfl}
+    \icmlauthor{Simon Guilloud}{epfl}
+    \icmlauthor{Khanh Nguyen}{epfl}
+    \icmlauthor{Viktor Kun{\v c}ak}{epfl}
   \end{icmlauthorlist}
 
-  \icmlaffiliation{anon}{Anonymous Institution}
-  \icmlcorrespondingauthor{Anonymous Authors}{anonymous@example.com}
-  \icmlkeywords{autoformalization, theorem proving, Lean, mathematical reasoning, agents}
+  \icmlaffiliation{epfl}{EPFL, Lausanne, Switzerland}
+  \icmlcorrespondingauthor{Lazar Milikic}{lazar.milikic@epfl.ch}
+  \icmlkeywords{autoformalization, theorem proving, Lean, LLM agents, document-level formalization, proof repair}
 
   \vskip 0.3in
 ]
@@ -150,10 +151,10 @@
 \printAffiliationsAndNotice{}
 
 \begin{abstract}
-  We present and evaluate \method, a \lean-specialized LLM-agent system for translating mathematical papers into buildable \lean projects.
-  Recent verifier-in-the-loop systems show that large formal artifacts can be produced, but it remains unclear which runtime mechanisms make document-to-project formalization reliable across model strengths.
-  We study this question on two previously unformalized mathematical papers in number theory and measure theory, using model ablations (\kimi and \gpt) and proof-workflow and toolset ablations; we report task outcome, API calls, input tokens, and output tokens.
-  The full workflow completes both document-level projects with \kimi while no-queue variants hit the 2000-call budget; with \gpt, it lowers model-side token use on both sources.
+  We present and evaluate \method, a Lean-specialized LLM-agent system for translating mathematical papers into buildable \lean projects.
+  Recent verifier-in-the-loop systems show that large formal artifacts can be produced, but it remains unclear which runtime mechanisms improve document-to-project formalization across model strengths.
+  We study this question on two previously unformalized mathematical papers in number theory and measure theory, using model, proof-workflow, and toolset ablations with \kimi and \gpt; we report task outcome, API calls, input tokens, and output tokens.
+  The full workflow completes both document-level projects with \kimi within the 2000-call budget, while no-queue variants hit the budget; with \gpt, it lowers model-side token use on both sources.
   On complementary benchmarks, \method reaches 75.7\% BEq+ on RLM25, 97\% on FATE-H, and solves all five ICML 2026 AI for Math TCS challenge projects in our \gpt runs.
 \end{abstract}
 
@@ -171,7 +172,7 @@ Before proof search, a statement/source gate checks that the generated declarati
 During proving, a programmatic workflow manager owns the theorem queue, failed-attempt memory, retry budgets, verification records, logs, and checkpoints.
 The model proposes edits and helper lemmas, while the manager assigns one target at a time and advances only after external \lean verification accepts the edit.
 
-This separation is useful across the two model settings in our experiments.
+This separation has different benefits across the two model settings in our experiments.
 For \kimi~\citep{moonshot2026kimi}, it turns a long, failure-prone transcript into bounded theorem assignments with explicit context and failure memory.
 For \gpt, the same structure reduces waste: the model can spend more of its budget on local proof search instead of rediscovering the active theorem, rechecking the whole project, or deciding for itself whether a run is finished.
 
@@ -209,7 +210,7 @@ Early LLM autoformalization work studied natural-language-to-formal translation 
 M2F~\citep{wang2026m2f} and Automatic Textbook Formalization~\citep{gloeckle2026automatictextbookformalization} formalize long mathematical sources into \lean projects, audit generated statements, and repair proofs under a pinned environment.
 The Gauss project~\citep{hariharan2026milestoneformalizationspherepacking} completes a sorry-free formalization of the sphere-packing problem in dimension 8 from an existing blueprint and \lean development.
 AlphaProof Nexus~\citep{tsoukalas2026advancingmathematicsresearchaidriven} uses an agentic evolutionary framework for formal proof search over a large set of formalized conjectures.
-Our scope is smaller in document volume but different in emphasis: we isolate queue control, tool routing, statement handoff, and model-side budget under the two model settings in our experiments.
+Our study is smaller in document volume but different in emphasis: we isolate queue control, tool routing, statement handoff, and model-side budget under the two model settings in our experiments.
 
 \paragraph{Lean tooling for agents.}
 Retrieval and environment access are central to practical \lean proving.
