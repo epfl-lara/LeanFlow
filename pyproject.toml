@@ -15,7 +15,7 @@ dependencies = [
   "fire",
   "httpx",
   "jinja2",
-  "lean-probe>=0.2.2,<0.3",
+  "lean-probe>=0.3.0,<0.4",
   "openai",
   "prompt_toolkit",
   "pydantic>=2.0",
