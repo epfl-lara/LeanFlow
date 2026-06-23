@@ -69,8 +69,26 @@
   top=0.7mm,
   bottom=0.7mm,
   boxsep=0pt,
-  width=0.90\columnwidth,
+  width=0.92\columnwidth,
   fontupper=\ttfamily\scriptsize,
+  borderline west={1.4pt}{0pt}{feedbackFrame!75},
+  before skip=1.0mm,
+  after skip=1.0mm
+}
+\newtcolorbox{leanerrorbox}{
+  enhanced,
+  colback=leanError!6,
+  colframe=leanError!55,
+  boxrule=0.35pt,
+  arc=1pt,
+  left=0.9mm,
+  right=0.9mm,
+  top=0.7mm,
+  bottom=0.7mm,
+  boxsep=0pt,
+  width=0.92\columnwidth,
+  fontupper=\ttfamily\scriptsize,
+  borderline west={1.4pt}{0pt}{leanError!75},
   before skip=1.0mm,
   after skip=1.0mm
 }
@@ -206,7 +224,6 @@ They provide useful calibration, but most start from an existing formal statemen
 % \paragraph{Autoformalization and document-scale formalization.}
 \paragraph{Autoformalization across scales.}
 Early LLM autoformalization work studied natural-language-to-formal translation at theorem scale~\citep{wu2022autoformalization}; later work improved process supervision and evaluation for \lean statements~\citep{lu2024process,poiroux2024reliable,poiroux2025rlmeval}.
-% M2F~\citep{wang2026m2f} is the closest systems reference: it formalizes long mathematical sources into \lean projects, audits matched statements, and repairs proofs under a pinned environment.
 M2F~\citep{wang2026m2f} and Automatic Textbook Formalization~\citep{gloeckle2026automatictextbookformalization} formalize long mathematical sources into \lean projects, audit generated statements, and repair proofs under a pinned environment.
 The Gauss project~\citep{hariharan2026milestoneformalizationspherepacking} completes a sorry-free formalization of the sphere-packing problem in dimension 8 from an existing blueprint and \lean development.
 AlphaProof Nexus~\citep{tsoukalas2026advancingmathematicsresearchaidriven} uses an agentic evolutionary framework for formal proof search over a large set of formalized conjectures.
@@ -392,22 +409,22 @@ A failed candidate can be returned as model-readable \lean with compact comments
 \centering
 \begin{leanexamplebox}[title={LeanProbe feedback on a failed candidate}]
 \textcolor{leanKeyword}{theorem} add\_comm\_candidate (x y : Nat) :\\
-\hspace*{1.0em}x + y = y + x := by
+\hspace*{1.0em}x + y = y + x := \textcolor{leanKeyword}{by}
 \begin{leanfeedbackbox}
 \textcolor{feedbackFrame}{/- \textless{}feedback\textgreater{}}\\
 \textcolor{feedbackFrame}{-- proof state:}\\
 x y : Nat\\
-\textcolor{leanGoal}{|- x + y = y + x}\\
+\textcolor{leanGoal}{$\vdash$ x + y = y + x}\\
 \textcolor{feedbackFrame}{\textless{}/feedback\textgreater{} -/}
 \end{leanfeedbackbox}
-\hspace*{1.0em}rfl
-\begin{leanfeedbackbox}
-\textcolor{feedbackFrame}{/- \textless{}feedback\textgreater{}}\\
-\textcolor{leanError}{-- type: error, msg: unsolved goals}\\
-\textcolor{feedbackFrame}{\textless{}/feedback\textgreater{} -/}
-\end{leanfeedbackbox}
+\hspace*{1.0em}{\setlength{\fboxsep}{1pt}\colorbox{leanError!12}{\textcolor{leanError}{rfl}}}
+\begin{leanerrorbox}
+\textcolor{leanError}{/- \textless{}feedback\textgreater{}}\\
+\textcolor{leanError}{-- type: error, msg: tactic 'rfl' failed}\\
+\textcolor{leanError}{\textless{}/feedback\textgreater{} -/}
+\end{leanerrorbox}
 \end{leanexamplebox}
-\caption{Example LeanProbe feedback embedded into a failed Lean candidate. The proof state is inserted before the failing tactic; the final diagnostic records the open goal.}
+\caption{Example LeanProbe feedback embedded into a failed \lean candidate. The failing tactic is highlighted; LeanProbe injects the local proof state before it and the normalized diagnostic (red) after it as inline \lean comments.}
 \label{fig:leanprobe-feedback}
 \end{figure}
 This information is used for fast local repair inside the queue loop, not for final acceptance.
@@ -647,7 +664,7 @@ The system is intended to assist expert formalizers rather than replace human ma
 \section{Document Case Study Details}
 \label{app:case-studies}
 
-The implementation is available at \href{https://github.com/epfl-lara/EPFLemma}{\texttt{epfl-lara/EPFLemma}}, and the generated formalization projects, together with workflow logs and implementation details, are available at \href{https://github.com/epfl-lara/AutoformalizedProjects}{\texttt{epfl-lara/AutoformalizedProjects}}.
+The implementation is available at \href{https://github.com/epfl-lara/EPFLemma}{\texttt{epfl-lara/EPFLemma}}, and the generated formalization projects are available at \href{https://github.com/epfl-lara/AutoformalizedProjects}{\texttt{epfl-lara/AutoformalizedProjects}}.
 Each released project is self-contained, pinning its own \lean toolchain and \mathlib revision (for example, \lean \texttt{v4.30.0-rc2} for the Pythagorean project and \texttt{v4.29.1} for Cramer--Wold), so builds are reproducible without a single global environment.
 The two case studies are also contributed to the community \href{https://github.com/Vilin97/lean-pool}{\texttt{lean-pool}} repository of AI-produced \lean developments (pull requests \href{https://github.com/Vilin97/lean-pool/pull/185}{\#185} and \href{https://github.com/Vilin97/lean-pool/pull/186}{\#186}).
 
