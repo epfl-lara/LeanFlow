@@ -216,6 +216,27 @@ from epflemma_cli.native_state import (  # noqa: E402
     _VERIFICATION_DECISION_LOG_CACHE_ORDER,
     _cache_once,
 )
+from epflemma_cli.native_utils import (  # noqa: E402
+    _bounded_verifier_response,
+    _collect_message_text,
+    _diagnostic_counts_from_messages,
+    _extract_blocker_summary,
+    _extract_diagnostic_line_numbers,
+    _extract_diagnostics_summary,
+    _extract_json_payload,
+    _extract_next_steps,
+    _extract_recent_build_status,
+    _format_declaration_queue,
+    _format_diagnostic_for_model,
+    _format_turns_for_snapshot,
+    _logging_config,
+    _message_text,
+    _normalize_blocker_summary,
+    _positive_int_config,
+    _relative_file_label,
+    _relative_project_file_label,
+    _single_line,
+)
 from epflemma_cli.queue_edit_guard import (  # noqa: E402
     _queue_edit_assigned_statement_signature,
     _queue_edit_changed_protected_declarations,
@@ -673,15 +694,6 @@ def _record_queue_assignment(
 _CURRENT_AGENT_ACTIVITY_DETAILS: dict[str, Any] = {}
 
 
-def _logging_config() -> Mapping[str, Any]:
-    try:
-        config = load_config()
-    except Exception:
-        return {}
-    logging_cfg = config.get("logging", {})
-    return logging_cfg if isinstance(logging_cfg, dict) else {}
-
-
 def _agent_config() -> Mapping[str, Any]:
     try:
         config = load_config()
@@ -702,22 +714,6 @@ def _parse_managed_reasoning_config(effort: str) -> dict[str, Any] | None:
     if normalized in {"low", "minimal", "medium", "high", "xhigh"}:
         return {"enabled": True, "effort": normalized}
     return None
-
-
-def _positive_int_config(name: str, default: int) -> int:
-    try:
-        value = int(_logging_config().get(name, default))
-    except Exception:
-        return default
-    return value if value > 0 else default
-
-
-def _single_line(text: Any, limit: int | None = None) -> str:
-    effective_limit = limit if limit is not None else max(_positive_int_config("activity_preview_chars", 420) + 140, 560)
-    collapsed = " ".join(str(text or "").split())
-    if len(collapsed) <= effective_limit:
-        return collapsed
-    return collapsed[: effective_limit - 3] + "..."
 
 
 def _active_file_candidates(active_file: str) -> set[str]:
@@ -1098,30 +1094,6 @@ def _manager_check_queue_item(active_file: str, target_symbol: str) -> tuple[dic
         if incremental_payload.get("success", False):
             return manager_verification, "lean_incremental_check"
     return _manager_verify_queue_file(active_file), "lean_verify"
-
-
-def _diagnostic_counts_from_messages(
-    *,
-    output: str = "",
-    messages: Any = None,
-) -> tuple[int, int, int]:
-    items: list[Mapping[str, Any]] = []
-    if isinstance(messages, list):
-        items.extend(item for item in messages if isinstance(item, Mapping))
-    items.extend(diagnostic_items(output))
-    errors = 0
-    warnings = 0
-    sorry_count = 0
-    for item in items:
-        severity = str(item.get("severity", "") or "").strip().lower()
-        message = str(item.get("message", "") or "").strip().lower()
-        if severity == "error":
-            errors += 1
-        elif severity == "warning":
-            warnings += 1
-        if "sorry" in message:
-            sorry_count += 1
-    return errors, warnings, sorry_count
 
 
 def _verification_record_from_check(
@@ -3479,18 +3451,6 @@ def _discover_lean_mcp_tool_names() -> dict[str, str]:
     }
 
 
-def _message_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if content is None:
-        return ""
-    return str(content)
-
-
-def _collect_message_text(messages: list[dict[str, Any]]) -> str:
-    return "\n\n".join(_message_text(message.get("content")) for message in messages if message)
-
-
 def _snapshot_metadata() -> dict[str, Any]:
     return {
         "workflow_kind": _workflow_kind(),
@@ -3524,71 +3484,6 @@ def _extract_active_files(text: str) -> list[str]:
         if normalized and normalized not in seen:
             seen.append(normalized)
     return seen[:8]
-
-
-def _extract_diagnostics_summary(messages: list[dict[str, Any]]) -> str:
-    snippets: list[str] = []
-    for message in messages[-12:]:
-        content = _message_text(message.get("content")).strip()
-        if not content:
-            continue
-        lowered = content.lower()
-        if any(token in lowered for token in ("error", "warning", "sorry", "no errors found", "diagnostic")):
-            snippets.append(content[:240])
-    return "\n".join(snippets[:4])
-
-
-def _extract_blocker_summary(text: str) -> str:
-    lowered = text.lower()
-    blocker_tokens = [
-        "blocked",
-        "blocker",
-        "stuck",
-        "cannot proceed",
-        "can't proceed",
-        "unable to",
-        "failed to",
-    ]
-    if not any(token in lowered for token in blocker_tokens):
-        return ""
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    for line in reversed(lines[-8:]):
-        lowered_line = line.lower()
-        if lowered_line.startswith("## "):
-            continue
-        if "no blocker declared" in lowered_line or "all blockers resolved" in lowered_line:
-            continue
-        if any(token in lowered_line for token in blocker_tokens):
-            return line[:280]
-    return ""
-
-
-def _normalize_blocker_summary(text: str) -> str:
-    normalized = str(text or "").strip()
-    if not normalized:
-        return ""
-    lowered = normalized.lower()
-    cleared_tokens = (
-        "all blockers resolved",
-        "none. all blockers resolved",
-        "no blocker declared",
-        "no blockers remain",
-    )
-    if any(token in lowered for token in cleared_tokens):
-        return ""
-    return normalized
-
-
-def _extract_next_steps(summary_text: str) -> str:
-    lines = [line.strip("- ").strip() for line in summary_text.splitlines() if line.strip()]
-    for idx, line in enumerate(lines):
-        if line.lower() == "## next steps" and idx + 1 < len(lines):
-            return lines[idx + 1][:320]
-    return ""
-
-
-def _extract_recent_build_status(history: list[dict[str, Any]]) -> str:
-    return ""
 
 
 def _resolve_active_file(history: list[dict[str, Any]], checkpoint_state: Mapping[str, Any] | None = None) -> str:
@@ -3714,15 +3609,6 @@ def _project_prove_manager_active(autonomy_state: Mapping[str, Any] | None = Non
 
 def _set_project_prove_manager_active(value: bool) -> None:
     return None
-
-
-def _relative_project_file_label(path: str | os.PathLike[str], project_root: str | os.PathLike[str] | None = None) -> str:
-    raw = Path(path)
-    root = Path(project_root or _project_root())
-    try:
-        return str(raw.resolve().relative_to(root.resolve()))
-    except Exception:
-        return str(raw)
 
 
 def _set_native_active_file(file_label: str) -> None:
@@ -4260,25 +4146,6 @@ def _guard_project_prove_llm_order(
     )
 
 
-def _extract_json_payload(text: str) -> Any:
-    raw = str(text or "").strip()
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except Exception:
-        pass
-    for opener, closer in (("{", "}"), ("[", "]")):
-        start = raw.find(opener)
-        end = raw.rfind(closer)
-        if start >= 0 and end > start:
-            try:
-                return json.loads(raw[start : end + 1])
-            except Exception:
-                continue
-    return None
-
-
 def _ordered_labels_from_llm_payload(payload: Any, valid_labels: set[str]) -> list[str]:
     if isinstance(payload, Mapping):
         raw_items = (
@@ -4638,28 +4505,6 @@ def _nearest_declaration_name(active_file: str, line_number: int | None) -> str:
     return current
 
 
-def _extract_diagnostic_line_numbers(text: str) -> list[int]:
-    actionable_lines = actionable_diagnostic_line_numbers(text)
-    if actionable_lines or diagnostic_items(text):
-        return actionable_lines
-    values: list[int] = []
-    patterns = (
-        r":(\d+):\d+",
-        r"\bline\s+(\d+)\b",
-        r"""["']line["']\s*:\s*(\d+)""",
-        r"\((\d+),\s*\d+\)",
-    )
-    for pattern in patterns:
-        for match in re.finditer(pattern, text or "", flags=re.IGNORECASE):
-            try:
-                value = int(match.group(1))
-            except Exception:
-                continue
-            if value > 0 and value not in values:
-                values.append(value)
-    return values
-
-
 def _queue_diagnostic_items(text: str) -> list[dict[str, Any]]:
     return [
         item
@@ -4899,28 +4744,6 @@ def _declaration_work_queue(
     return queue
 
 
-def _format_declaration_queue(queue: list[dict[str, Any]], *, limit: int = 8) -> str:
-    if not queue:
-        return "[none]"
-    lines: list[str] = []
-    for item in queue[:limit]:
-        label = str(item.get("label", "") or "[unnamed]")
-        reasons = ", ".join(item.get("reasons", []) or [])
-        file_path = str(item.get("file", "") or "")
-        try:
-            file_label = str(Path(file_path).resolve().relative_to(Path(_project_root()).resolve())) if file_path else ""
-        except Exception:
-            file_label = file_path
-        if file_label and label != file_label:
-            lines.append(f"- {label} [{file_label}] — {reasons or 'pending'}")
-        else:
-            lines.append(f"- {label} — {reasons or 'pending'}")
-    remaining = len(queue) - min(len(queue), limit)
-    if remaining > 0:
-        lines.append(f"- ... plus {remaining} more pending item(s)")
-    return "\n".join(lines)
-
-
 def _queue_horizon_summary(
     *,
     declaration_scope: str,
@@ -4946,19 +4769,6 @@ def _queue_horizon_summary(
         ),
     ]
     return "\n".join(lines)
-
-
-def _format_diagnostic_for_model(item: Mapping[str, Any]) -> str:
-    severity = str(item.get("severity", "") or "diagnostic").strip().lower()
-    line = item.get("line")
-    column = item.get("column")
-    location = ""
-    if isinstance(line, int) and line > 0:
-        location = f" line {line}"
-        if isinstance(column, int) and column > 0:
-            location += f":{column}"
-    message = _single_line(str(item.get("message", "") or ""), 260)
-    return f"- {severity}{location}: {message}" if message else f"- {severity}{location}"
 
 
 def _diagnostics_for_queue_horizon(
@@ -6061,13 +5871,6 @@ def _document_formalization_review_due(
     signature = _document_formalization_review_signature(live_state)
     previous = str((autonomy_state or {}).get("document_formalization_review_signature", "") or "")
     return bool(signature) and signature != previous
-
-
-def _bounded_verifier_response(text: str, limit: int = 12000) -> str:
-    raw = str(text or "").strip()
-    if len(raw) <= limit:
-        return raw
-    return raw[: max(0, limit - 48)].rstrip() + "\n\n[truncated by EPFLemma verifier logging]"
 
 
 def _stamp_blueprint_statement_review_approved(
@@ -8154,15 +7957,6 @@ def _module_name_for_file(active_file: str) -> str:
     return ".".join(parts)
 
 
-def _relative_file_label(active_file: str) -> str:
-    if not active_file:
-        return ""
-    try:
-        return str(Path(active_file).resolve().relative_to(Path(_project_root()).resolve()))
-    except Exception:
-        return active_file
-
-
 def _canonical_file_verification_command(active_file: str) -> str:
     relative_label = _relative_file_label(active_file)
     if not relative_label:
@@ -8671,26 +8465,6 @@ def _checkpoint_replay_history(entry: Mapping[str, Any]) -> list[dict[str, Any]]
     if not summary_text:
         return []
     return [_workflow_replay_message(summary_text)]
-
-
-def _format_turns_for_snapshot(turns: list[dict[str, Any]]) -> str:
-    parts: list[str] = []
-    for msg in turns:
-        role = str(msg.get("role", "unknown") or "unknown").upper()
-        content = _message_text(msg.get("content"))
-        if len(content) > 2500:
-            content = content[:1500] + "\n...[truncated]...\n" + content[-700:]
-        tool_calls = msg.get("tool_calls") or []
-        if tool_calls:
-            tool_names = []
-            for tool_call in tool_calls:
-                if isinstance(tool_call, dict):
-                    tool_names.append(tool_call.get("function", {}).get("name", "?"))
-                else:
-                    tool_names.append(getattr(getattr(tool_call, "function", None), "name", "?"))
-            content = f"{content}\n[Tool calls: {', '.join(tool_names)}]"
-        parts.append(f"[{role}]\n{content}".strip())
-    return "\n\n".join(parts).strip()
 
 
 def _fallback_checkpoint_summary(
