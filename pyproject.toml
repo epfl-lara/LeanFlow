@@ -99,4 +99,5 @@ files = [
   "utils.py",
   "agent/log_formatting.py",
   "tools/response.py",
+  "agent/managed_run.py",
 ]
