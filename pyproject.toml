@@ -105,4 +105,5 @@ files = [
   "epflemma_cli/native_state.py",
   "epflemma_cli/queue_edit_guard.py",
   "epflemma_cli/formalization_document_runner.py",
+  "epflemma_cli/manager_verification.py",
 ]
