@@ -20,7 +20,7 @@
 \usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,calc}
 
 % Rename the method here if the agent/product name changes.
-\newcommand{\method}{\textsc{LeanFlow}\xspace}
+\newcommand{\method}{LeanFlow\xspace}
 \newcommand{\kimi}{Kimi-K2.6\xspace}
 \newcommand{\gpt}{GPT-5.5\xspace}
 \newcommand{\lean}{Lean\xspace}
@@ -151,11 +151,11 @@
 \printAffiliationsAndNotice{}
 
 \begin{abstract}
-  We present and evaluate \method, a Lean-specialized LLM-agent system for translating mathematical papers into buildable \lean projects.
-  Recent verifier-in-the-loop systems show that large formal artifacts can be produced, but it remains unclear which runtime mechanisms improve document-to-project formalization across model strengths.
-  We study this question on two previously unformalized mathematical papers in number theory and measure theory, using model, proof-workflow, and toolset ablations with \kimi and \gpt; we report task outcome, API calls, input tokens, and output tokens.
-  The full workflow completes both document-level projects with \kimi within the 2000-call budget, while no-queue variants hit the budget; with \gpt, it lowers model-side token use on both sources.
-  On complementary benchmarks, \method reaches 75.7\% BEq+ on RLM25, 97\% on FATE-H, and solves all five ICML 2026 AI for Math TCS challenge projects in our \gpt runs.
+  We present and evaluate \method, an LLM agent system specialized for translating mathematical papers into buildable \lean projects.
+  Recent verifier-in-the-loop systems show that large formal artifacts can be produced, but it remains unclear which runtime mechanisms affect completion, auditability, or efficiency in document-to-project formalization.
+  We study this question as a case study on two previously unformalized mathematical papers in number theory and measure theory, using model, proof-workflow, and toolset ablations with \kimi and \gpt; we report task outcome, API calls, input tokens, and output tokens.
+  With \kimi, the full workflow completes both document-level projects within the 2000-call budget, while no-queue variants hit the budget; with \gpt, all document-level variants complete, and the full workflow lowers model-side token use on both sources.
+  As complementary calibration, \method reaches 75.7\% BEq+ on RLM25, 97\% on FATE-H, and solves all five ICML 2026 AI for Math TCS challenge projects in our \gpt runs.
 \end{abstract}
 
 \section{Introduction}
@@ -173,8 +173,8 @@ During proving, a programmatic workflow manager owns the theorem queue, failed-a
 The model proposes edits and helper lemmas, while the manager assigns one target at a time and advances only after external \lean verification accepts the edit.
 
 This separation has different benefits across the two model settings in our experiments.
-For \kimi~\citep{moonshot2026kimi}, it turns a long, failure-prone transcript into bounded theorem assignments with explicit context and failure memory.
-For \gpt, the same structure reduces waste: the model can spend more of its budget on local proof search instead of rediscovering the active theorem, rechecking the whole project, or deciding for itself whether a run is finished.
+For \kimi~\citep{moonshot2026kimi}, workflow control is decisive in our two document-level runs: the full workflow finishes both sources, while no-queue variants exhaust the call budget.
+For \gpt, all document-level variants finish, so the observed benefit is not a binary success difference; the same structure instead reduces token use and preserves an explicit audit trail for the proof work.
 
 \method also introduces LeanProbe, a cached same-file verifier built on LeanInteract~\citep{leaninteract2025}, for repeated proof-repair checks.
 LeanProbe gives the proving agent low-latency diagnostics and proof-state feedback while leaving final acceptance to standard \lean/Lake checks.
@@ -193,7 +193,8 @@ Both require source-aware definitions and reusable \lean infrastructure that the
 
 This paper makes two contributions.
 First, it describes \method as an autonomous workflow for document-to-project formalization and proof repair: the runtime records how source claims become \lean declarations, reviews those declarations before proving, manages the proof queue, and uses LeanProbe for fast local feedback while keeping final acceptance in standard \lean/Lake checks.
-Second, it evaluates those design choices through ablations under \kimi and \gpt on document-level case studies, with complementary measurements on RLM25, FATE-H, and the AI for Math TCS challenge.
+Second, it evaluates those design choices through case-study ablations under \kimi and \gpt, distinguishing workflow effects on completion from effects on model-side efficiency and auditability.
+The implementation is available at \href{https://github.com/epfl-lara/EPFLemma}{\texttt{epfl-lara/EPFLemma}}, and the generated formalization projects are available at \href{https://github.com/epfl-lara/AutoformalizedProjects}{\texttt{epfl-lara/AutoformalizedProjects}}.
 
 \section{Related Work}
 
@@ -210,6 +211,7 @@ Early LLM autoformalization work studied natural-language-to-formal translation 
 M2F~\citep{wang2026m2f} and Automatic Textbook Formalization~\citep{gloeckle2026automatictextbookformalization} formalize long mathematical sources into \lean projects, audit generated statements, and repair proofs under a pinned environment.
 The Gauss project~\citep{hariharan2026milestoneformalizationspherepacking} completes a sorry-free formalization of the sphere-packing problem in dimension 8 from an existing blueprint and \lean development.
 AlphaProof Nexus~\citep{tsoukalas2026advancingmathematicsresearchaidriven} uses an agentic evolutionary framework for formal proof search over a large set of formalized conjectures.
+An apples-to-apples comparison with M2F is difficult from the currently available public artifacts: reproducing our document-level runs under M2F would require the same source documents, model, \mathlib version, budget, prompts, workflow logs, tool surface, and final acceptance criteria.
 Our study is smaller in document volume but different in emphasis: we isolate queue control, tool routing, statement handoff, and model-side budget under the two model settings in our experiments.
 
 \paragraph{Lean tooling for agents.}
@@ -493,9 +495,9 @@ Cramer--Wold & \gpt & NoQ+CLI & \textbf{success} & 476 & 49.7M & 281.6K \\
 \end{tabular*}
 \end{table*}
 
-\cref{tab:longform-ablation} shows that queue management changes the outcome for \kimi on these document-level sources: both no-queue variants exhaust the 2000-call budget on both case studies, while full \method succeeds in 1043 calls on Pythagorean triples and 1278 calls on Cramer--Wold.
+\cref{tab:longform-ablation} shows that queue management is decisive for \kimi in these two document-level runs: both no-queue variants exhaust the 2000-call budget on both case studies, while full \method succeeds in 1043 calls on Pythagorean triples and 1278 calls on Cramer--Wold.
 The tool surface matters most on the analytic case study, where \kimi with a queue but terminal-only interaction still fails on Cramer--Wold.
-For \gpt, all document-level variants succeed, so the effect is mostly budget use rather than binary success; full \method has the lowest or tied-lowest input-token cost on both sources, although the Cramer--Wold no-queue/full-tools run uses slightly fewer calls at higher input-token cost.
+For \gpt, all document-level variants succeed, so these runs support an efficiency and auditability claim rather than a necessity claim; full \method has the lowest or tied-lowest input-token cost on both sources, although the Cramer--Wold no-queue/full-tools run uses slightly fewer calls at higher input-token cost.
 
 \subsection{RLM25 Autoformalization}
 
@@ -634,21 +636,22 @@ The detailed declaration-level contrast is reported in the Appendix~\ref{app:doc
 \section{Threats to Validity}
 
 The evaluation has several limitations.
-First, project buildability is necessary but not sufficient: a project can build with a faithful theorem, a weakened theorem, or a theorem whose representation silently changed.
-We mitigate this through the statement/source gate, but the document-level skeletons still rely on expert judgment before proof ablations begin; source spans and blueprint decisions should therefore be released with the artifacts so disagreements are inspectable.
-Second, two document-level case studies cannot establish broad coverage across mathematics, and the Cramer--Wold skeleton was initialized with \gpt rather than \kimi because of its representation choices.
-Third, model comparisons are sensitive to model version, serving stack, context limit, retry policy, and tool latency.
-Calls and token counts are useful proxies for model-side effort, but they are not a full measure of wall-clock cost or human engineering cost.
+Buildability is necessary but not sufficient, and the statement/source gate still relies partly on expert judgment.
+The document-level evidence covers only two case studies; the Cramer--Wold skeleton was initialized with \gpt rather than \kimi because of its representation choices.
+The ablations are single runs, so they do not estimate variance; repeated document-level runs would be cleaner but expensive, since each can require hundreds to thousands of calls, tens to hundreds of millions of input tokens, and substantial wall-clock time.
+Several mechanisms also remain bundled: queue/tool ablations do not isolate blueprinting, statement review, failed-attempt memory, hygiene scanning, and LeanProbe feedback.
+The complementary benchmarks do not fully exercise document-to-project formalization, the \gpt rows show efficiency more than necessity, and we do not include a matched document-level M2F comparison.
+Calls and token counts are useful proxies for model-side effort, but not full measures of wall-clock or human engineering cost.
 
 \section{Conclusion}
 
 \method treats autoformalization as an evolving \lean project with durable workflow state, not as independent theorem prompts.
 The central design choice is to keep project control outside the model: the runtime records source-to-\lean decisions, reviews statements before proof search, assigns proofs one at a time, checks candidate edits quickly, and accepts only builds that pass the verifier and contain no leftover placeholders or unapproved axioms.
-The current results show that this structure lets \kimi finish document-level sources that the no-queue variants do not finish within budget, helps \gpt spend less model budget, and separates statement synthesis, proof-only proving, and algorithmic proof workloads.
+The strongest document-level evidence is model-dependent: in our two case studies, workflow control is decisive for \kimi completion under budget, while for \gpt it mainly improves token efficiency and audit discipline because every document-level variant completes.
 
 \section*{Impact Statement}
 
-This paper presents work whose goal is to make \lean autoformalization more reliable, inspectable, and reproducible.
+This paper presents work whose goal is to make \lean autoformalization more inspectable, reproducible, and verifier-grounded.
 Potential positive impacts include reducing the engineering burden of proof repair, improving the auditability of machine-assisted formalization, and making document-level formal verification workflows easier to study.
 Potential risks include over-reliance on generated formal artifacts, mistaking buildability for source faithfulness, and unequal access to the compute and model resources needed for long formalization runs.
 \method is designed to mitigate these risks by recording source-to-\lean decisions, separating statement review from proof search, preserving workflow logs and checkpoints, and accepting final artifacts only after external \lean verification with no leftover placeholders or unapproved axioms.
@@ -722,6 +725,7 @@ The formalization represents $\mathbb{R}^n$ as \lean Euclidean space, defines cl
 The first analytic proof block packages the Crofton/Fubini argument showing that half-space values determine $f_\mu$.
 The second proof block packages the odd-dimensional inversion step: after reindexing dimensions as $2m+1$, the needed kernel identity is that an $(m+1)$-fold Laplacian of the norm kernel recovers a nonzero multiple of the point mass at the origin.
 In \lean-facing terms, this required a tempered-distribution norm kernel, Fourier/Laplacian algebra for iterated Laplacians, transport between the Euclidean model used by PhysLean~\citep{physlean2025} and the project's odd-dimensional space, and a bridge from PhysLean's real distribution API to Mathlib's complex tempered distributions.
+The analytic formalization also produced reusable PhysLib infrastructure for distributional Laplacians of norm-kernel fundamental solutions, upstreamed in \href{https://github.com/leanprover-community/physlib/pull/1172}{\texttt{leanprover-community/physlib\#1172}}.
 The even-dimensional Cramer--Wold theorem is then reduced to the odd-dimensional one by embedding $\mathbb{R}^{2m}$ into $\mathbb{R}^{2m+1}$ and transporting half-space values along that embedding.
 The reviewed skeleton keeps the Crofton and inversion blocks as named proof targets rather than hiding them inside the final theorem; this makes it clear which missing analytic facts are mathematical infrastructure, not model-generated assumptions.
 
