@@ -11,7 +11,6 @@ import subprocess
 import sys
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import unified_diff
@@ -112,16 +111,6 @@ LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
 PROOF_DECLARATION_KINDS = {"theorem", "lemma", "example"}
 CONSTRUCTION_DECLARATION_KINDS = {"def", "instance", "class", "structure"}
-_MANAGER_VERIFICATION_LOG_CACHE_LIMIT = 256
-_MANAGER_VERIFICATION_LOG_CACHE_ORDER: deque[tuple[str, str, bool, str]] = deque(maxlen=_MANAGER_VERIFICATION_LOG_CACHE_LIMIT)
-_MANAGER_VERIFICATION_LOG_CACHE: set[tuple[str, str, bool, str]] = set()
-_VERIFICATION_DECISION_LOG_CACHE_LIMIT = 512
-_VERIFICATION_DECISION_LOG_CACHE_ORDER: deque[str] = deque(maxlen=_VERIFICATION_DECISION_LOG_CACHE_LIMIT)
-_VERIFICATION_DECISION_LOG_CACHE: set[str] = set()
-_VERIFICATION_ADVISORY_CACHE_LIMIT = 128
-_VERIFICATION_ADVISORY_CACHE_ORDER: deque[str] = deque(maxlen=_VERIFICATION_ADVISORY_CACHE_LIMIT)
-_VERIFICATION_ADVISORY_CACHE: set[str] = set()
-_VERIFICATION_ADVISORY_RESULT_CACHE: dict[str, dict[str, Any]] = {}
 _QUEUE_MANAGER_STATE_KEYS = TheoremQueueManager.OWNED_AUTONOMY_KEYS
 
 # Final-sweep warning-cleanup state. Lives directly on autonomy_state because
@@ -141,10 +130,12 @@ _FINAL_SWEEP_AUTONOMY_KEYS = frozenset(
 )
 
 
-# Pure leaf modules extracted from native_runner (refactor Phase 2) are re-exported here for
+# Leaf modules extracted from native_runner (refactor Phase 2) are re-exported here for
 # backwards compatibility — these names are referenced throughout this module and by tests.
 # lean_parsing.py holds the pure Lean source-text/declaration parsers (plus
-# LEAN_DECLARATION_PREAMBLE_RE); native_config.py holds the pure env/config readers.
+# LEAN_DECLARATION_PREAMBLE_RE); native_config.py holds the pure env/config readers;
+# native_state.py holds the module-level mutable de-dup caches (mutated in place, so the names
+# below share the very same cache objects) plus the _cache_once helper that maintains them.
 from epflemma_cli.lean_parsing import (  # noqa: E402
     LEAN_DECLARATION_PREAMBLE_RE,
     _declaration_entries_by_name_from_text,
@@ -170,6 +161,19 @@ from epflemma_cli.native_config import (  # noqa: E402
     _read_text_env,
     _utc_now_isoformat,
     _workflow_kind,
+)
+from epflemma_cli.native_state import (  # noqa: E402
+    _MANAGER_VERIFICATION_LOG_CACHE,
+    _MANAGER_VERIFICATION_LOG_CACHE_LIMIT,
+    _MANAGER_VERIFICATION_LOG_CACHE_ORDER,
+    _VERIFICATION_ADVISORY_CACHE,
+    _VERIFICATION_ADVISORY_CACHE_LIMIT,
+    _VERIFICATION_ADVISORY_CACHE_ORDER,
+    _VERIFICATION_ADVISORY_RESULT_CACHE,
+    _VERIFICATION_DECISION_LOG_CACHE,
+    _VERIFICATION_DECISION_LOG_CACHE_LIMIT,
+    _VERIFICATION_DECISION_LOG_CACHE_ORDER,
+    _cache_once,
 )
 
 
@@ -6426,20 +6430,6 @@ def _verification_task_has_aux_overrides(task: str) -> bool:
     if not isinstance(task_config, Mapping):
         return False
     return any(str(task_config.get(key, "") or "").strip() for key in ("model", "base_url", "api_key", "reasoning_effort"))
-
-
-def _cache_once(signature: str, *, cache: set[str], order: deque[str], limit: int) -> bool:
-    key = str(signature or "")
-    if not key:
-        return False
-    if key in cache:
-        return False
-    if len(order) >= limit:
-        old = order.popleft()
-        cache.discard(old)
-    order.append(key)
-    cache.add(key)
-    return True
 
 
 def _record_verifier_decision(
