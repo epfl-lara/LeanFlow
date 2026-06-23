@@ -135,7 +135,9 @@ _FINAL_SWEEP_AUTONOMY_KEYS = frozenset(
 # lean_parsing.py holds the pure Lean source-text/declaration parsers (plus
 # LEAN_DECLARATION_PREAMBLE_RE); native_config.py holds the pure env/config readers;
 # native_state.py holds the module-level mutable de-dup caches (mutated in place, so the names
-# below share the very same cache objects) plus the _cache_once helper that maintains them.
+# below share the very same cache objects) plus the _cache_once helper that maintains them;
+# queue_edit_guard.py holds the pure queue-edit-guard helpers (guard key, protected-declaration
+# inventory/diff, and source-text restoration) used by the single-queue-item edit guard.
 from epflemma_cli.lean_parsing import (  # noqa: E402
     LEAN_DECLARATION_PREAMBLE_RE,
     _declaration_entries_by_name_from_text,
@@ -174,6 +176,16 @@ from epflemma_cli.native_state import (  # noqa: E402
     _VERIFICATION_DECISION_LOG_CACHE_LIMIT,
     _VERIFICATION_DECISION_LOG_CACHE_ORDER,
     _cache_once,
+)
+from epflemma_cli.queue_edit_guard import (  # noqa: E402
+    _queue_edit_assigned_statement_signature,
+    _queue_edit_changed_protected_declarations,
+    _queue_edit_guard_key,
+    _queue_edit_initial_declaration_keys,
+    _queue_edit_protected_declarations,
+    _queue_edit_statement_signature,
+    _restore_assigned_declaration_against_before_text,
+    _restore_changed_protected_declarations,
 )
 
 
@@ -2676,34 +2688,6 @@ def _managed_pre_tool_call(agent: Any, function_name: str, args: Mapping[str, An
     return None
 
 
-def _queue_edit_guard_key(target_symbol: str, active_file: str) -> str:
-    try:
-        resolved = str(Path(active_file).resolve())
-    except Exception:
-        resolved = str(active_file or "")
-    return f"{target_symbol}\0{resolved}"
-
-
-def _queue_edit_initial_declaration_keys(
-    agent: Any,
-    active_file: str,
-    before_text: str,
-) -> set[tuple[str, str]]:
-    file_key = _queue_edit_guard_key("__file__", active_file)
-    state = dict(getattr(agent, "_managed_initial_declaration_keys_by_file", {}) or {})
-    stored = state.get(file_key)
-    if isinstance(stored, list):
-        return {tuple(item) for item in stored if isinstance(item, (list, tuple)) and len(item) == 2}
-    keys = {
-        key
-        for entry in _declaration_line_index_from_text(before_text)
-        if (key := _declaration_stable_key(entry)) is not None
-    }
-    state[file_key] = [list(key) for key in sorted(keys)]
-    setattr(agent, "_managed_initial_declaration_keys_by_file", state)
-    return keys
-
-
 def _document_formalization_source_declaration_names() -> set[str]:
     manifest_blocks = _document_formalization_manifest_blocks()
     if not manifest_blocks:
@@ -2757,103 +2741,6 @@ def _queue_edit_protect_assigned_statement(
             return False
         return key in _queue_edit_initial_declaration_keys(agent, active_file, before_text)
     return False
-
-
-def _queue_edit_statement_signature(entry: Mapping[str, Any]) -> str:
-    text = str(entry.get("text", "") or "")
-    idx = _find_assignment_marker_for_statement(text)
-    statement = text[:idx] if idx >= 0 else text
-    return re.sub(r"\s+", " ", _strip_lean_comments_and_strings(statement)).strip()
-
-
-def _queue_edit_assigned_statement_signature(content: str, target_symbol: str) -> str:
-    for entry in _declaration_line_index_from_text(content):
-        if _declaration_matches_target(entry, target_symbol):
-            return _queue_edit_statement_signature(entry)
-    return ""
-
-
-def _queue_edit_protected_declarations(content: str, target_symbol: str) -> list[dict[str, Any]]:
-    protected: list[dict[str, Any]] = []
-    for entry in _declaration_line_index_from_text(content):
-        key = _declaration_stable_key(entry)
-        if key is None or _declaration_matches_target(entry, target_symbol):
-            continue
-        protected.append(
-            {
-                "kind": key[0],
-                "name": key[1],
-                "text": str(entry.get("text", "") or "").strip(),
-                "line": int(entry.get("line", 0) or 0),
-            }
-        )
-    return protected
-
-
-def _queue_edit_changed_protected_declarations(
-    protected_declarations: Sequence[Mapping[str, Any]],
-    current_text: str,
-) -> list[dict[str, Any]]:
-    current_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    for entry in _declaration_line_index_from_text(current_text):
-        key = _declaration_stable_key(entry)
-        if key is not None and key not in current_by_key:
-            current_by_key[key] = entry
-
-    changed: list[dict[str, Any]] = []
-    for protected in protected_declarations:
-        key = (str(protected.get("kind", "") or ""), str(protected.get("name", "") or ""))
-        if not key[0] or not key[1]:
-            continue
-        current = current_by_key.get(key)
-        if current is None:
-            changed.append({"reason": "missing", "protected": dict(protected)})
-            continue
-        if str(current.get("text", "") or "").strip() != str(protected.get("text", "") or "").strip():
-            changed.append({"reason": "changed", "protected": dict(protected), "current": current})
-    return changed
-
-
-def _restore_changed_protected_declarations(current_text: str, changed: Sequence[Mapping[str, Any]]) -> str | None:
-    if not changed:
-        return current_text
-    if any(str(item.get("reason", "") or "") == "missing" for item in changed):
-        return None
-    lines = current_text.splitlines()
-    replacements = sorted(
-        (dict(item) for item in changed),
-        key=lambda item: int(dict(item.get("current") or {}).get("line", 0) or 0),
-        reverse=True,
-    )
-    for item in replacements:
-        current = dict(item.get("current") or {})
-        protected = dict(item.get("protected") or {})
-        start = int(current.get("line", 0) or 0)
-        end = int(current.get("end_line", 0) or 0)
-        if start <= 0 or end < start:
-            return None
-        replacement_lines = str(protected.get("text", "") or "").splitlines()
-        lines = lines[: start - 1] + replacement_lines + lines[end:]
-    restored = "\n".join(lines)
-    if current_text.endswith("\n"):
-        restored += "\n"
-    return restored
-
-
-def _restore_assigned_declaration_against_before_text(
-    before_text: str,
-    current_slice: str,
-    *,
-    start: int,
-    end: int,
-) -> str:
-    before_lines = before_text.splitlines()
-    replacement_lines = current_slice.splitlines()
-    restored_lines = before_lines[: start - 1] + replacement_lines + before_lines[end:]
-    restored_text = "\n".join(restored_lines)
-    if before_text.endswith("\n"):
-        restored_text += "\n"
-    return restored_text
 
 
 def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
