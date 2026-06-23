@@ -145,50 +145,17 @@ _FINAL_SWEEP_AUTONOMY_KEYS = frozenset(
 )
 
 
-def _utc_now_isoformat() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def _read_text_env(name: str, default: str = "") -> str:
-    return str(os.getenv(name, default) or "").strip()
-
-
-def _read_native_env(name: str, default: str = "") -> str:
-    return _read_text_env(
-        f"EPFLEMMA_NATIVE_{name}",
-        _read_text_env(f"OPENGAUSS_NATIVE_{name}", _read_text_env(f"GAUSS_NATIVE_{name}", default)),
-    )
-
-
-def _read_int_env(name: str, default: int, *, minimum: int = 1) -> int:
-    raw = _read_text_env(name, "")
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return max(minimum, value)
-
-
-def _managed_home() -> Path:
-    return Path(
-        _read_text_env(
-            "EPFLEMMA_HOME",
-            _read_text_env("OPENGAUSS_HOME", _read_text_env("GAUSS_HOME", str(Path.home() / ".epflemma"))),
-        )
-    ).expanduser()
-
-
-def _project_root() -> str:
-    return _read_text_env(
-        "EPFLEMMA_PROJECT_ROOT",
-        _read_text_env("OPENGAUSS_PROJECT_ROOT", _read_text_env("GAUSS_PROJECT_ROOT", os.getcwd())),
-    )
-
-
-def _workflow_kind() -> str:
-    return _read_native_env("WORKFLOW_KIND", "workflow").strip().lower()
+# Pure env/config readers live in native_config.py (Phase 2 leaf extraction). Re-exported here
+# for backwards compatibility — these names are referenced throughout this module and by tests.
+from epflemma_cli.native_config import (  # noqa: E402
+    _managed_home,
+    _project_root,
+    _read_int_env,
+    _read_native_env,
+    _read_text_env,
+    _utc_now_isoformat,
+    _workflow_kind,
+)
 
 
 def _manager_incremental_prepare_timeout_s() -> int:
