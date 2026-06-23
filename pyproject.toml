@@ -98,6 +98,7 @@ files = [
   "gauss_constants.py",
   "utils.py",
   "agent/log_formatting.py",
+  "agent/command_safety.py",
   "tools/response.py",
   "agent/managed_run.py",
   "epflemma_cli/native_config.py",
