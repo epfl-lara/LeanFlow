@@ -16,7 +16,6 @@ from typing import Any, Iterable, Mapping, Sequence
 from epflemma_cli.config import get_epflemma_home, load_config
 from epflemma_cli.project import EPFLemmaProject, discover_epflemma_project
 
-
 DEFAULT_SANDBOX_IMAGE = "epflemma/sandbox:local"
 DEFAULT_CONTAINERFILE = "containers/epflemma-sandbox.Containerfile"
 WORKFLOW_ALIASES = {

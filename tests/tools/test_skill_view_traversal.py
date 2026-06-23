@@ -5,9 +5,10 @@ reading arbitrary files (e.g., ~/.gauss/.env) via path traversal.
 """
 
 import json
-import pytest
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from tools.skills_tool import skill_view
 

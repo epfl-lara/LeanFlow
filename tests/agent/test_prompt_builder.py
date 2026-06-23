@@ -6,20 +6,19 @@ import logging
 import sys
 
 from agent.prompt_builder import (
-    _scan_context_content,
-    _truncate_content,
-    _parse_skill_file,
-    _read_skill_conditions,
-    _skill_should_show,
-    build_skills_system_prompt,
-    build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     MEMORY_GUIDANCE,
-    SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
+    SESSION_SEARCH_GUIDANCE,
+    _parse_skill_file,
+    _read_skill_conditions,
+    _scan_context_content,
+    _skill_should_show,
+    _truncate_content,
+    build_context_files_prompt,
+    build_skills_system_prompt,
 )
-
 
 # =========================================================================
 # Guidance constants

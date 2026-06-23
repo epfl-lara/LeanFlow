@@ -13,7 +13,6 @@ from typing import Any, Callable, Mapping
 
 import yaml
 
-
 EPFLEMMA_PROJECT_DIRNAME = ".epflemma"
 LEGACY_PROJECT_DIRNAMES = (".opengauss", ".gauss")
 EPFLEMMA_PROJECT_MANIFEST_FILENAME = "project.yaml"

@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
 PRODUCT_NAME = "EPFLemma"
 CLI_NAME = "epflemma"
 PRODUCT_TAGLINE = "AI for Math"

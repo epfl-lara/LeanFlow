@@ -10,7 +10,6 @@ from epflemma_cli.lean_workflow_specs import (
     validate_lean_specs,
 )
 
-
 SHIPPED_WORKFLOW_SPECS = {
     "prove",
     "formalize",

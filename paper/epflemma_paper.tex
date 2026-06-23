@@ -196,7 +196,7 @@ This separation has different benefits across the two model settings in our expe
 For \kimi~\citep{moonshot2026kimi}, workflow control is decisive in our two document-level runs: the full workflow finishes both sources, while no-queue variants exhaust the call budget.
 For \gpt, all document-level variants finish, so the observed benefit is not a binary success difference; the same structure instead improves token efficiency and preserves an explicit audit trail for the proof work.
 
-\method also introduces LeanProbe, a cached same-file verifier built on LeanInteract~\citep{leaninteract2025}, for repeated proof-repair checks.
+\method also introduces LeanProbe\footnote{\url{https://github.com/Lemmy00/LeanProbe}}, a cached same-file verifier built on LeanInteract~\citep{leaninteract2025}, for repeated proof-repair checks.
 LeanProbe gives the proving agent low-latency diagnostics and proof-state feedback while leaving final acceptance to standard \lean/Lake checks.
 In the sequential same-file benchmark summarized in \cref{tab:leanprobe-summary}, cached checking is roughly 9--14$\times$ faster than rerunning growing-prefix Lake checks.
 
@@ -398,7 +398,7 @@ After each edit, the proving LLM agent refreshes the structured \lean state and 
 \label{sec:leanprobe-tools}
 
 LeanProbe is a declaration-level verifier for repeated proof attempts in one \lean file.
-It is a standalone CLI, Python library, and MCP server built on LeanInteract~\citep{leaninteract2025}.
+It is a standalone CLI, Python library, and MCP server built on LeanInteract~\citep{leaninteract2025}, and is openly available at \href{https://github.com/Lemmy00/LeanProbe}{\texttt{Lemmy00/LeanProbe}}.
 At assignment time, LeanProbe runs a \emph{prepare} step for the active declaration: it checks imports, the file header, and all prior declarations, then stores the resulting environment immediately before the target.
 Each \emph{check} step replaces the target declaration with one candidate proof or helper block and checks it against that cached environment.
 The cache advances only after a complete declaration replacement is accepted, so failed candidates give diagnostics without changing the environment seen by later obligations.
@@ -665,7 +665,7 @@ The system is intended to assist expert formalizers rather than replace human ma
 \section{Document Case Study Details}
 \label{app:case-studies}
 
-The implementation is available at \href{https://github.com/epfl-lara/EPFLemma}{\texttt{epfl-lara/EPFLemma}}, and the generated formalization projects are available at \href{https://github.com/epfl-lara/AutoformalizedProjects}{\texttt{epfl-lara/AutoformalizedProjects}}.
+The \method implementation is available at \href{https://github.com/epfl-lara/EPFLemma}{\texttt{epfl-lara/EPFLemma}}, the LeanProbe verifier at \href{https://github.com/Lemmy00/LeanProbe}{\texttt{Lemmy00/LeanProbe}}, and the generated formalization projects at \href{https://github.com/epfl-lara/AutoformalizedProjects}{\texttt{epfl-lara/AutoformalizedProjects}}.
 Each released project is self-contained, pinning its own \lean toolchain and \mathlib revision (for example, \lean \texttt{v4.30.0-rc2} for the Pythagorean project and \texttt{v4.29.1} for Cramer--Wold), so builds are reproducible without a single global environment.
 The two case studies are also contributed to the community \href{https://github.com/Vilin97/lean-pool}{\texttt{lean-pool}} repository of AI-produced \lean developments (pull requests \href{https://github.com/Vilin97/lean-pool/pull/185}{\#185} and \href{https://github.com/Vilin97/lean-pool/pull/186}{\#186}).
 

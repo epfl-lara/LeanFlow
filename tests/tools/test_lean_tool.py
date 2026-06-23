@@ -6,11 +6,11 @@ from types import SimpleNamespace
 
 import model_tools
 import tools.lean_tool as lean_tool
-from epflemma_cli.workflow_state import load_verified_patch_status
 from epflemma_cli.lean_services import (
     LeanCapabilityReport,
     LeanSearchResult,
 )
+from epflemma_cli.workflow_state import load_verified_patch_status
 
 
 def test_lean_capabilities_tool_returns_structured_json(monkeypatch):

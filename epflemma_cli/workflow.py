@@ -6,24 +6,23 @@ import os
 import shlex
 import subprocess
 import sys
-from difflib import SequenceMatcher
 from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Mapping
 
-from epflemma_cli.project import (
-    EPFLemmaProject,
-    ProjectNotFoundError,
-    discover_epflemma_project,
-)
 from epflemma_cli.formalization_documents import (
     FormalizationDocumentContext,
     ensure_formalization_blueprint_skill,
     prepare_formalization_document_context,
 )
-from epflemma_cli.skill_core import default_workflow_skill
+from epflemma_cli.project import (
+    EPFLemmaProject,
+    ProjectNotFoundError,
+    discover_epflemma_project,
+)
 from epflemma_cli.runtime_provider import resolve_runtime_provider
-
+from epflemma_cli.skill_core import default_workflow_skill
 
 WORKFLOW_ALIAS_MAP = {
     "/draft": ("draft", "/draft", "/draft"),

@@ -22,7 +22,13 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from typing import Any, Dict, List
 
-from agent.usage_pricing import DEFAULT_PRICING, estimate_cost_usd, format_duration_compact, get_pricing, has_known_pricing
+from agent.usage_pricing import (
+    DEFAULT_PRICING,
+    estimate_cost_usd,
+    format_duration_compact,
+    get_pricing,
+    has_known_pricing,
+)
 
 _DEFAULT_PRICING = DEFAULT_PRICING
 
@@ -593,7 +599,7 @@ class InsightsEngine:
                     cost_cell = "     N/A"
                 lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,} {cost_cell}")
             if o.get("models_without_pricing"):
-                lines.append(f"  * Cost N/A for custom/self-hosted models")
+                lines.append("  * Cost N/A for custom/self-hosted models")
             lines.append("")
 
         # Platform breakdown

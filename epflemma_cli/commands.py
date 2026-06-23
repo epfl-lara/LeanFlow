@@ -7,7 +7,6 @@ from collections.abc import Callable, Mapping
 
 from prompt_toolkit.completion import Completer, Completion
 
-
 COMMANDS_BY_CATEGORY = {
     "Project": {
         "/project": "Initialize, create, or inspect the active EPFLemma project",

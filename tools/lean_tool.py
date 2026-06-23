@@ -42,7 +42,6 @@ from tools.file_operations import ShellFileOperations
 from tools.patch_parser import OperationType, parse_v4a_patch
 from tools.registry import registry
 
-
 LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S = 1200
 LEAN_REASONING_HELP_MIN_TIMEOUT_S = 1200
 LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S = LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S

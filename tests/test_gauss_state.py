@@ -1,8 +1,9 @@
 """Tests for gauss_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
 import time
-import pytest
 from pathlib import Path
+
+import pytest
 
 from gauss_state import SessionDB
 

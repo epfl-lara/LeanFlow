@@ -7,8 +7,9 @@ Path.is_relative_to() which handles directory boundaries correctly.
 """
 
 import os
-import pytest
 from pathlib import Path
+
+import pytest
 
 
 def _old_check_escapes(resolved: Path, skill_dir_resolved: Path) -> bool:

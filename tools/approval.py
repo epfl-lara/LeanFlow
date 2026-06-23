@@ -304,7 +304,7 @@ def _smart_approve(command: str, description: str) -> str:
     (openai/codex#13860).
     """
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client, auxiliary_max_tokens_param
+        from agent.auxiliary_client import auxiliary_max_tokens_param, get_text_auxiliary_client
 
         client, model = get_text_auxiliary_client(task="approval")
         if not client or not model:

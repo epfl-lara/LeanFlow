@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from epflemma_cli import workflow as workflow_mod
+from epflemma_cli.config import save_config
+from epflemma_cli.formalization_documents import FormalizationDocumentError
 from epflemma_cli.workflow import (
     WORKFLOW_ALIAS_MAP,
     describe_launch_plan,
@@ -12,8 +14,6 @@ from epflemma_cli.workflow import (
     resolve_workflow_request,
     rewrite_forgiving_workflow_command,
 )
-from epflemma_cli.config import save_config
-from epflemma_cli.formalization_documents import FormalizationDocumentError
 
 
 def _write_formalization_source(project: Path, relative: str = "docs/paper.tex") -> Path:

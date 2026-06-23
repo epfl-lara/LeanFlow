@@ -13,7 +13,7 @@ Covers the 9 bugs discovered while setting up TBLite evaluation:
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -241,8 +241,9 @@ class TestModalEnvironmentDefaults:
 
     def test_default_cwd_is_root(self):
         """ModalEnvironment default cwd should be /root, not ~."""
-        from tools.environments.modal import ModalEnvironment
         import inspect
+
+        from tools.environments.modal import ModalEnvironment
         sig = inspect.signature(ModalEnvironment.__init__)
         cwd_default = sig.parameters["cwd"].default
         assert cwd_default == "/root", (

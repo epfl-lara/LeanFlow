@@ -12,11 +12,11 @@ import contextlib
 import io
 import json
 import logging
+import os
 import queue
 import sys
 import threading
 import time
-import os
 
 # Force stderr logging so redirect_stdout doesn't swallow it
 logging.basicConfig(level=logging.DEBUG, stream=sys.stderr,
@@ -26,15 +26,17 @@ log = logging.getLogger("interrupt_test")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import MagicMock, patch
+
 from run_agent import AIAgent, IterationBudget
-from tools.interrupt import set_interrupt, is_interrupted
+from tools.interrupt import is_interrupted, set_interrupt
+
 
 def make_slow_response(delay=2.0):
     """API response that takes a while."""
     def create(**kwargs):
         log.info(f"   🌐 Mock API call starting (will take {delay}s)...")
         time.sleep(delay)
-        log.info(f"   🌐 Mock API call completed")
+        log.info("   🌐 Mock API call completed")
         resp = MagicMock()
         resp.choices = [MagicMock()]
         resp.choices[0].message.content = "Done with the task"

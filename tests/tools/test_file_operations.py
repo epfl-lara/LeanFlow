@@ -2,27 +2,27 @@
 
 import os
 import subprocess
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
+from epflemma_cli.lean_statement_guard import ALLOW_STATEMENT_EDITS_ENV
 from tools.file_operations import (
-    _is_write_denied,
-    WRITE_DENIED_PATHS,
-    WRITE_DENIED_PREFIXES,
-    ReadResult,
-    WriteResult,
-    PatchResult,
-    SearchResult,
-    SearchMatch,
-    LintResult,
-    ShellFileOperations,
     BINARY_EXTENSIONS,
     IMAGE_EXTENSIONS,
     MAX_LINE_LENGTH,
+    WRITE_DENIED_PATHS,
+    WRITE_DENIED_PREFIXES,
+    LintResult,
+    PatchResult,
+    ReadResult,
+    SearchMatch,
+    SearchResult,
+    ShellFileOperations,
+    WriteResult,
+    _is_write_denied,
 )
-from epflemma_cli.lean_statement_guard import ALLOW_STATEMENT_EDITS_ENV
-
 
 # =========================================================================
 # Write deny list

@@ -17,7 +17,6 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
 
 from epflemma_cli.config import get_env_value, get_epflemma_home
 
-
 logger = logging.getLogger(__name__)
 
 

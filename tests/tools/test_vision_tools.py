@@ -11,15 +11,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tools.vision_tools import (
-    _validate_image_url,
-    _handle_vision_analyze,
     _determine_mime_type,
+    _handle_vision_analyze,
     _image_to_base64_data_url,
-    vision_analyze_tool,
+    _validate_image_url,
     check_vision_requirements,
     get_debug_session_info,
+    vision_analyze_tool,
 )
-
 
 # ---------------------------------------------------------------------------
 # _validate_image_url — urlparse-based validation

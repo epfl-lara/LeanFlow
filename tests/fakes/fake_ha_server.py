@@ -25,7 +25,6 @@ import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-
 # -- Sample entity data -------------------------------------------------------
 
 ENTITY_STATES: List[Dict[str, Any]] = [

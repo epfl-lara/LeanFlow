@@ -9,7 +9,7 @@ import os
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 

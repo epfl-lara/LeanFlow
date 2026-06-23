@@ -9,7 +9,6 @@ from pathlib import Path
 from epflemma_cli.formalization_documents import inspect_formalization_document
 from tools.registry import registry
 
-
 PDF_READ_DEFAULT_MAX_CHARS = 24_000
 PDF_READ_MAX_CHARS = 120_000
 

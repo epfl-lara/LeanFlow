@@ -17,9 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import run_agent
-from run_agent import AIAgent
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
-
+from run_agent import AIAgent
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -2215,8 +2214,9 @@ class TestSafeWriter:
 
     def test_write_delegates_normally(self):
         """When stdout is healthy, _SafeWriter is transparent."""
-        from run_agent import _SafeWriter
         from io import StringIO
+
+        from run_agent import _SafeWriter
         inner = StringIO()
         writer = _SafeWriter(inner)
         writer.write("hello")
@@ -2224,8 +2224,9 @@ class TestSafeWriter:
 
     def test_write_catches_oserror(self):
         """OSError on write is silently caught, returns len(data)."""
-        from run_agent import _SafeWriter
         from unittest.mock import MagicMock
+
+        from run_agent import _SafeWriter
         inner = MagicMock()
         inner.write.side_effect = OSError(5, "Input/output error")
         writer = _SafeWriter(inner)
@@ -2234,8 +2235,9 @@ class TestSafeWriter:
 
     def test_flush_catches_oserror(self):
         """OSError on flush is silently caught."""
-        from run_agent import _SafeWriter
         from unittest.mock import MagicMock
+
+        from run_agent import _SafeWriter
         inner = MagicMock()
         inner.flush.side_effect = OSError(5, "Input/output error")
         writer = _SafeWriter(inner)
@@ -2244,8 +2246,9 @@ class TestSafeWriter:
     def test_print_survives_broken_stdout(self, monkeypatch):
         """print() through _SafeWriter doesn't crash on broken pipe."""
         import sys
-        from run_agent import _SafeWriter
         from unittest.mock import MagicMock
+
+        from run_agent import _SafeWriter
         broken = MagicMock()
         broken.write.side_effect = OSError(5, "Input/output error")
         original = sys.stdout
@@ -2258,6 +2261,7 @@ class TestSafeWriter:
     def test_installed_in_run_conversation(self, agent):
         """run_conversation installs _SafeWriter on stdio."""
         import sys
+
         from run_agent import _SafeWriter
         resp = _mock_response(content="Done", finish_reason="stop")
         agent.client.chat.completions.create.return_value = resp
@@ -2279,8 +2283,9 @@ class TestSafeWriter:
     def test_double_wrap_prevented(self):
         """Wrapping an already-wrapped stream doesn't add layers."""
         import sys
-        from run_agent import _SafeWriter
         from io import StringIO
+
+        from run_agent import _SafeWriter
         inner = StringIO()
         wrapped = _SafeWriter(inner)
         # isinstance check should prevent double-wrapping
@@ -2776,7 +2781,7 @@ class TestInterruptVprintForceTrue:
                 if "force=True" not in stripped:
                     violations.append(f"line {i}: {stripped}")
         assert not violations, (
-            f"Interrupt _vprint calls missing force=True:\n"
+            "Interrupt _vprint calls missing force=True:\n"
             + "\n".join(violations)
         )
 

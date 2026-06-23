@@ -16,7 +16,6 @@ import json
 import os
 import sys
 
-
 EVIDENCE_TYPES = [
     "git",
     "gh_api",

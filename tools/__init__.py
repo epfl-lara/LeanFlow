@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from importlib import import_module
 
-
 _MODULE_EXPORTS = {
     "tools.web_tools": (
         "web_search_tool",

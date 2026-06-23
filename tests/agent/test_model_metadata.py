@@ -11,30 +11,29 @@ Coverage levels:
 """
 
 import os
-import time
 import tempfile
+import time
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 from agent.model_metadata import (
+    _MODEL_CACHE_TTL,
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
     UNKNOWN_CONTEXT_LENGTH_FALLBACK,
-    estimate_tokens_rough,
     estimate_messages_tokens_rough,
-    get_model_context_length,
-    get_next_probe_tier,
-    get_cached_context_length,
-    parse_context_limit_from_error,
-    save_context_length,
+    estimate_tokens_rough,
     fetch_model_metadata,
     fetch_provider_model_metadata,
-    _MODEL_CACHE_TTL,
+    get_cached_context_length,
+    get_model_context_length,
+    get_next_probe_tier,
+    parse_context_limit_from_error,
+    save_context_length,
 )
-
 
 # =========================================================================
 # Token estimation

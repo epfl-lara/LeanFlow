@@ -9,6 +9,7 @@ asserts zero contamination from shell noise via _assert_clean().
 """
 
 import pytest
+
 pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
 
 
@@ -23,14 +24,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.environments.local import (
+    _OUTPUT_FENCE,
+    _SHELL_NOISE_SUBSTRINGS,
     LocalEnvironment,
     _clean_shell_noise,
     _extract_fenced_output,
-    _OUTPUT_FENCE,
-    _SHELL_NOISE_SUBSTRINGS,
 )
 from tools.file_operations import ShellFileOperations
-
 
 # ── Shared noise detection ───────────────────────────────────────────────
 # Every known shell noise pattern. If ANY of these appear in output that
@@ -518,7 +518,6 @@ class TestExpandPath:
         # The path should be returned as-is (no expansion).
         assert result == malicious
         # Verify the injected command did NOT execute
-        import os
         assert not os.path.exists("/tmp/_gauss_injection_test")
 
     def test_tilde_username_with_subpath(self, ops):

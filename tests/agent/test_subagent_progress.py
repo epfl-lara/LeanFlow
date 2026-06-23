@@ -10,14 +10,14 @@ Verifies that:
 
 import io
 import sys
-import time
 import threading
-import pytest
+import time
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agent.display import KawaiiSpinner
 from tools.delegate_tool import _build_child_progress_callback
-
 
 # =========================================================================
 # KawaiiSpinner.print_above tests

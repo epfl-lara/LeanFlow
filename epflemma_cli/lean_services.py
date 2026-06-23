@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
-import contextlib
 import io
 import json
 import os
@@ -20,6 +20,7 @@ from typing import Any, Mapping
 
 from epflemma_cli.file_locks import acquire_file_lock as _acquire_file_lock
 from epflemma_cli.file_locks import list_file_locks as _list_file_locks
+from epflemma_cli.lean_workflow_specs import get_lean_spec, list_specs
 from epflemma_cli.project import (
     ProjectManifestError,
     ProjectNotFoundError,
@@ -27,8 +28,6 @@ from epflemma_cli.project import (
     find_lean_project_root,
 )
 from epflemma_cli.workflow_state import append_workflow_outcome, workflow_outcomes_path
-from epflemma_cli.lean_workflow_specs import get_lean_spec, list_specs
-
 
 STANDARD_AXIOMS = {"propext", "Quot.sound", "Classical.choice"}
 LEAN_WORKER_DISPATCH_ENABLED = False

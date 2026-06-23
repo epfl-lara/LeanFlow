@@ -6,8 +6,8 @@ from pathlib import Path
 from epflemma_cli import mcp_bootstrap
 from epflemma_cli.mcp_bootstrap import (
     bootstrap_lean_mcp,
-    managed_mcp_power_status,
     managed_mcp_command_path,
+    managed_mcp_power_status,
     managed_mcp_server_status,
     write_managed_mcp_config,
 )

@@ -27,22 +27,24 @@ import copy
 import hashlib
 import json
 import logging
+
 logger = logging.getLogger(__name__)
 import os
 import random
 import re
 import sys
 import tempfile
-import time
-import threading
 import textwrap
-from types import SimpleNamespace
+import threading
+import time
 import uuid
-from typing import List, Dict, Any, Optional
-from openai import OpenAI
-import fire
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Dict, List, Optional
+
+import fire
+from openai import OpenAI
 
 # Load .env from the active EPFLemma home first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -67,39 +69,55 @@ os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_gauss_home))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 # Import our tool system
-from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
-from tools.terminal_tool import cleanup_vm
-from tools.interrupt import set_interrupt as _set_interrupt
-
 import requests
 
-from gauss_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
+from agent.context_compressor import ContextCompressor
+from agent.display import (
+    KawaiiSpinner,
+    _detect_tool_failure,
+)
+from agent.display import (
+    build_tool_preview as _build_tool_preview,
+)
+from agent.display import (
+    get_cute_tool_message as _get_cute_tool_message_impl,
+)
+from agent.display import (
+    get_tool_emoji as _get_tool_emoji,
+)
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_tokens_rough,
+    fetch_model_metadata,
+    get_model_context_length,
+    get_next_probe_tier,
+    parse_context_limit_from_error,
+    save_context_length,
+)
 
 # Agent internals extracted to agent/ package for modularity
 from agent.prompt_builder import (
-    DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    DEFAULT_AGENT_IDENTITY,
+    MEMORY_GUIDANCE,
+    PLATFORM_HINTS,
+    SESSION_SEARCH_GUIDANCE,
+    SKILLS_GUIDANCE,
+    build_context_files_prompt,
+    build_skills_system_prompt,
 )
-from agent.model_metadata import (
-    fetch_model_metadata, get_model_context_length,
-    estimate_tokens_rough, estimate_messages_tokens_rough,
-    get_next_probe_tier, parse_context_limit_from_error,
-    save_context_length,
-)
-from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt
-from agent.usage_pricing import estimate_cost_usd, has_known_pricing
-from agent.display import (
-    KawaiiSpinner, build_tool_preview as _build_tool_preview,
-    get_cute_tool_message as _get_cute_tool_message_impl,
-    _detect_tool_failure,
-    get_tool_emoji as _get_tool_emoji,
+from agent.trajectory import (
+    convert_scratchpad_to_think,
+    has_incomplete_scratchpad,
 )
 from agent.trajectory import (
-    convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+from agent.usage_pricing import estimate_cost_usd, has_known_pricing
+from gauss_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
+from model_tools import check_toolset_requirements, get_tool_definitions, handle_function_call
+from tools.interrupt import set_interrupt as _set_interrupt
+from tools.terminal_tool import cleanup_vm
 from utils import atomic_json_write
 
 
@@ -1508,7 +1526,7 @@ class AIAgent:
                     while j < len(messages) and messages[j]["role"] == "tool":
                         tool_msg = messages[j]
                         # Format tool response with XML tags
-                        tool_response = f"<tool_response>\n"
+                        tool_response = "<tool_response>\n"
                         
                         # Try to parse tool content as JSON if it looks like JSON
                         tool_content = tool_msg["content"]
@@ -1774,7 +1792,7 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
         if not self.quiet_mode and not suppress_interrupt_log:
-            print(f"\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
+            print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
     
     def clear_interrupt(self) -> None:
         """Clear any pending interrupt request and the global tool interrupt signal."""
@@ -2795,7 +2813,7 @@ class AIAgent:
             return False
 
         try:
-            from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
+            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
 
             new_token = resolve_anthropic_token()
         except Exception as exc:
@@ -5171,7 +5189,8 @@ class AIAgent:
                     summary_kwargs["extra_body"] = summary_extra_body
 
                 if self.api_mode == "anthropic_messages":
-                    from agent.anthropic_adapter import build_anthropic_kwargs as _bak, normalize_anthropic_response as _nar
+                    from agent.anthropic_adapter import build_anthropic_kwargs as _bak
+                    from agent.anthropic_adapter import normalize_anthropic_response as _nar
                     _ant_kw = _bak(model=self.model, messages=api_messages, tools=None,
                                    max_tokens=self.max_tokens, reasoning_config=self.reasoning_config)
                     summary_response = self._anthropic_messages_create(_ant_kw)
@@ -5201,7 +5220,8 @@ class AIAgent:
                     retry_msg, _ = self._normalize_codex_response(retry_response)
                     final_response = (retry_msg.content or "").strip() if retry_msg else ""
                 elif self.api_mode == "anthropic_messages":
-                    from agent.anthropic_adapter import build_anthropic_kwargs as _bak2, normalize_anthropic_response as _nar2
+                    from agent.anthropic_adapter import build_anthropic_kwargs as _bak2
+                    from agent.anthropic_adapter import normalize_anthropic_response as _nar2
                     _ant_kw2 = _bak2(model=self.model, messages=api_messages, tools=None,
                                      max_tokens=self.max_tokens, reasoning_config=self.reasoning_config)
                     retry_response = self._anthropic_messages_create(_ant_kw2)
@@ -5460,7 +5480,7 @@ class AIAgent:
             if self._interrupt_requested:
                 interrupted = True
                 if not self.quiet_mode and not bool(getattr(self, "_suppress_next_interrupt_log", False)):
-                    print(f"\n⚡ Breaking out of tool loop due to interrupt...")
+                    print("\n⚡ Breaking out of tool loop due to interrupt...")
                 break
             
             api_call_count += 1
@@ -5656,7 +5676,7 @@ class AIAgent:
                     if response_invalid:
                         # Stop spinner before printing error messages
                         if thinking_spinner:
-                            thinking_spinner.stop(f"(´;ω;`) oops, retrying...")
+                            thinking_spinner.stop("(´;ω;`) oops, retrying...")
                             thinking_spinner = None
                         if self.thinking_callback:
                             self.thinking_callback("")
@@ -5922,7 +5942,7 @@ class AIAgent:
                 except Exception as api_error:
                     # Stop spinner before printing error messages
                     if thinking_spinner:
-                        thinking_spinner.stop(f"(╥_╥) error, retrying...")
+                        thinking_spinner.stop("(╥_╥) error, retrying...")
                         thinking_spinner = None
                     if self.thinking_callback:
                         self.thinking_callback("")
@@ -6483,7 +6503,7 @@ class AIAgent:
                             if tc.function.name not in self.valid_tool_names:
                                 content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
                             else:
-                                content = f"Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
+                                content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tc.id,
@@ -6946,7 +6966,7 @@ def main(
     
     # Handle tool listing
     if list_tools:
-        from model_tools import get_all_tool_names, get_toolset_for_tool, get_available_toolsets
+        from model_tools import get_all_tool_names, get_available_toolsets, get_toolset_for_tool
         from toolsets import get_all_toolsets, get_toolset_info
         
         print("📋 Available Tools & Toolsets:")
@@ -7011,20 +7031,20 @@ def main(
             toolset = get_toolset_for_tool(tool_name)
             print(f"  📌 {tool_name} (from {toolset})")
         
-        print(f"\n💡 Usage Examples:")
-        print(f"  # Use predefined toolsets")
-        print(f"  python run_agent.py --enabled_toolsets=autoformalize --query='read this theorem and inspect the repo'")
-        print(f"  python run_agent.py --enabled_toolsets=file --query='update these Lean files'")
-        print(f"  python run_agent.py --enabled_toolsets=browser --query='open arxiv and inspect the paper page'")
-        print(f"  ")
-        print(f"  # Combine multiple toolsets")
-        print(f"  python run_agent.py --enabled_toolsets=web,file --query='look up docs and patch the workspace'")
-        print(f"  ")
-        print(f"  # Disable toolsets")
-        print(f"  python run_agent.py --disabled_toolsets=browser --query='work from local files only'")
-        print(f"  ")
-        print(f"  # Run with trajectory saving enabled")
-        print(f"  python run_agent.py --save_trajectories --query='your question here'")
+        print("\n💡 Usage Examples:")
+        print("  # Use predefined toolsets")
+        print("  python run_agent.py --enabled_toolsets=autoformalize --query='read this theorem and inspect the repo'")
+        print("  python run_agent.py --enabled_toolsets=file --query='update these Lean files'")
+        print("  python run_agent.py --enabled_toolsets=browser --query='open arxiv and inspect the paper page'")
+        print("  ")
+        print("  # Combine multiple toolsets")
+        print("  python run_agent.py --enabled_toolsets=web,file --query='look up docs and patch the workspace'")
+        print("  ")
+        print("  # Disable toolsets")
+        print("  python run_agent.py --disabled_toolsets=browser --query='work from local files only'")
+        print("  ")
+        print("  # Run with trajectory saving enabled")
+        print("  python run_agent.py --save_trajectories --query='your question here'")
         return
     
     # Parse toolset selection arguments
@@ -7040,9 +7060,9 @@ def main(
         print(f"🚫 Disabled toolsets: {disabled_toolsets_list}")
     
     if save_trajectories:
-        print(f"💾 Trajectory saving: ENABLED")
-        print(f"   - Successful conversations → trajectory_samples.jsonl")
-        print(f"   - Failed conversations → failed_trajectories.jsonl")
+        print("💾 Trajectory saving: ENABLED")
+        print("   - Successful conversations → trajectory_samples.jsonl")
+        print("   - Failed conversations → failed_trajectories.jsonl")
     
     # Initialize agent with provided parameters
     try:
@@ -7084,7 +7104,7 @@ def main(
     print(f"💬 Messages: {len(result['messages'])}")
     
     if result['final_response']:
-        print(f"\n🎯 FINAL RESPONSE:")
+        print("\n🎯 FINAL RESPONSE:")
         print("-" * 30)
         print(result['final_response'])
     

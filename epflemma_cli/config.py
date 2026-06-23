@@ -11,7 +11,6 @@ from typing import Any, Mapping
 
 import yaml
 
-
 EPFLEMMA_HOME_ENV = "EPFLEMMA_HOME"
 LEGACY_BRANDED_HOME_ENV = "OPENGAUSS_HOME"
 LEGACY_HOME_ENV = "GAUSS_HOME"

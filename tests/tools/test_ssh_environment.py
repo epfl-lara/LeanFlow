@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools.environments.ssh import SSHEnvironment
 from tools.environments import ssh as ssh_env
+from tools.environments.ssh import SSHEnvironment
 
 _SSH_HOST = os.getenv("TERMINAL_SSH_HOST", "")
 _SSH_USER = os.getenv("TERMINAL_SSH_USER", "")

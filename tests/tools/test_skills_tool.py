@@ -9,17 +9,17 @@ import pytest
 
 import tools.skills_tool as skills_tool_module
 from tools.skills_tool import (
+    MAX_DESCRIPTION_LENGTH,
+    _estimate_tokens,
+    _find_all_skills,
+    _get_category_from_path,
     _get_required_environment_variables,
     _parse_frontmatter,
     _parse_tags,
-    _get_category_from_path,
-    _estimate_tokens,
-    _find_all_skills,
     skill_matches_platform,
-    skills_list,
-    skills_categories,
     skill_view,
-    MAX_DESCRIPTION_LENGTH,
+    skills_categories,
+    skills_list,
 )
 
 
