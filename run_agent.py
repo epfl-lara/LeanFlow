@@ -248,24 +248,18 @@ _MAX_TOOL_WORKERS = 8
 _DEFAULT_MAX_TOOL_RESULT_CHARS = 100_000
 _LEAN_REASONING_HELP_MAX_TOOL_RESULT_CHARS = 260_000
 
-# Patterns that indicate a terminal command may modify/delete files.
-_DESTRUCTIVE_PATTERNS = re.compile(
-    r"""(?:^|\s|&&|\|\||;|`)(?:
-        rm\s|rmdir\s|
-        mv\s|
-        sed\s+-i|
-        truncate\s|
-        dd\s|
-        shred\s|
-        git\s+(?:reset|clean|checkout)\s
-    )""",
-    re.VERBOSE,
+
+# Re-exported leaf helpers extracted into the agent/ package, kept importable from
+# run_agent for backwards compatibility (tests + native_runner reference these paths):
+#   - agent/command_safety.py: destructive terminal-command detection
+#     (run_agent._is_destructive_command remains valid for internal call sites).
+#   - agent/log_formatting.py: tool argument/result log rendering
+#     (run_agent._wrap_log_text / _format_tool_result_for_log / ...).
+from agent.command_safety import (  # noqa: E402
+    _DESTRUCTIVE_PATTERNS,
+    _REDIRECT_OVERWRITE,
+    _is_destructive_command,
 )
-
-
-# Tool argument/result log formatting helpers live in agent/log_formatting.py.
-# Re-exported here for backwards compatibility (tests + native_runner reference
-# run_agent._wrap_log_text / _format_tool_result_for_log / ...).
 from agent.log_formatting import (  # noqa: E402
     _format_tool_args_for_log,
     _format_tool_result_for_log,
@@ -316,19 +310,6 @@ def _workflow_agent_event_details(agent: Any, **details: Any) -> dict[str, Any]:
     payload.setdefault("base_url", str(getattr(agent, "base_url", "") or ""))
     payload.setdefault("process_id", os.getpid())
     return payload
-# Output redirects that overwrite files (> but not >>)
-_REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
-
-
-def _is_destructive_command(cmd: str) -> bool:
-    """Heuristic: does this terminal command look like it modifies/deletes files?"""
-    if not cmd:
-        return False
-    if _DESTRUCTIVE_PATTERNS.search(cmd):
-        return True
-    if _REDIRECT_OVERWRITE.search(cmd):
-        return True
-    return False
 
 
 class AIAgent:
