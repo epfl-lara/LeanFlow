@@ -521,25 +521,55 @@ def ensure_epflemma_home(import_legacy: bool = True) -> Path:
     return home
 
 
+# Process-lifetime cache of the parsed config. load_config() is called from hot per-item loops
+# (e.g. workflow activity summarization at exit), and each uncached call does expensive work:
+# ensure_epflemma_home() (mkdir + chmod on several dirs, default-file checks) plus a YAML parse.
+# On a large history that turned exit cleanup into a multi-minute ~100% CPU spin. We memoize the
+# merged result and hand callers a deepcopy (they may freely mutate it); save_config() and
+# invalidate_config_cache() drop the cache so writers still observe their own changes.
+_CONFIG_CACHE: dict[str, Any] | None = None
+_CONFIG_CACHE_KEY: str | None = None  # the config path the cache was built for
+
+
+def invalidate_config_cache() -> None:
+    """Drop the in-process load_config() cache (call after writing the config file)."""
+    global _CONFIG_CACHE, _CONFIG_CACHE_KEY
+    _CONFIG_CACHE = None
+    _CONFIG_CACHE_KEY = None
+
+
 def load_config() -> dict[str, Any]:
+    global _CONFIG_CACHE, _CONFIG_CACHE_KEY
+    # Key the cache on the resolved config path so a changed EPFLEMMA_HOME (notably per-test
+    # isolation, but also any in-process home switch) is a cache miss and re-reads from disk.
+    path = get_config_path()
+    cache_key = str(path)
+    if _CONFIG_CACHE is not None and _CONFIG_CACHE_KEY == cache_key:
+        return deepcopy(_CONFIG_CACHE)
+
     ensure_epflemma_home()
     path = get_config_path()
     if not path.exists():
         ensure_epflemma_home(import_legacy=False)
         path.write_text(default_config_yaml(DEFAULT_CONFIG), encoding="utf-8")
         _secure_file(path)
-        return deepcopy(DEFAULT_CONFIG)
+        _CONFIG_CACHE = deepcopy(DEFAULT_CONFIG)
+        _CONFIG_CACHE_KEY = cache_key
+        return deepcopy(_CONFIG_CACHE)
 
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception:
-        return deepcopy(DEFAULT_CONFIG)
+        return deepcopy(DEFAULT_CONFIG)  # transient read/parse error: do not cache
     if not isinstance(payload, Mapping):
-        return deepcopy(DEFAULT_CONFIG)
+        return deepcopy(DEFAULT_CONFIG)  # malformed config: do not cache
     if any(key in payload for key in ("gauss", "opengauss")) and "epflemma" not in payload:
         payload = _transform_legacy_config(payload)
-        save_config(payload)
-    return _deep_merge(DEFAULT_CONFIG, payload)
+        save_config(payload)  # invalidates the cache; re-cached just below
+    merged = _deep_merge(DEFAULT_CONFIG, payload)
+    _CONFIG_CACHE = merged
+    _CONFIG_CACHE_KEY = cache_key
+    return deepcopy(merged)
 
 
 def save_config(config: Mapping[str, Any]) -> None:
@@ -547,6 +577,7 @@ def save_config(config: Mapping[str, Any]) -> None:
     path = get_config_path()
     path.write_text(yaml.safe_dump(dict(config), sort_keys=False), encoding="utf-8")
     _secure_file(path)
+    invalidate_config_cache()
 
 
 def _descend_config(config: dict[str, Any], key_path: str, create: bool = False) -> tuple[dict[str, Any], str]:
