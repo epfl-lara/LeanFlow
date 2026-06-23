@@ -38,6 +38,8 @@
 \definecolor{feedbackFrame}{HTML}{287D7D}
 \definecolor{feedbackBg}{HTML}{F0F7F7}
 \definecolor{leanError}{HTML}{9E2F2F}
+\definecolor{leanComment}{HTML}{6B7280}
+\definecolor{leanType}{HTML}{1F6F8B}
 \newtcolorbox{leanexamplebox}[1][]{
   enhanced,
   colback=epfCodeBg,
@@ -60,9 +62,9 @@
 }
 \newtcolorbox{leanfeedbackbox}{
   enhanced,
-  colback=feedbackBg,
-  colframe=feedbackFrame!55,
-  boxrule=0.35pt,
+  colback=white,
+  colframe=black!18,
+  boxrule=0.3pt,
   arc=1pt,
   left=0.9mm,
   right=0.9mm,
@@ -71,15 +73,15 @@
   boxsep=0pt,
   width=0.92\columnwidth,
   fontupper=\ttfamily\scriptsize,
-  borderline west={1.4pt}{0pt}{feedbackFrame!75},
+  borderline west={1.8pt}{0pt}{leanGoal!75},
   before skip=1.0mm,
   after skip=1.0mm
 }
 \newtcolorbox{leanerrorbox}{
   enhanced,
-  colback=leanError!6,
-  colframe=leanError!55,
-  boxrule=0.35pt,
+  colback=white,
+  colframe=black!18,
+  boxrule=0.3pt,
   arc=1pt,
   left=0.9mm,
   right=0.9mm,
@@ -88,7 +90,7 @@
   boxsep=0pt,
   width=0.92\columnwidth,
   fontupper=\ttfamily\scriptsize,
-  borderline west={1.4pt}{0pt}{leanError!75},
+  borderline west={1.8pt}{0pt}{leanError!75},
   before skip=1.0mm,
   after skip=1.0mm
 }
@@ -408,23 +410,23 @@ A failed candidate can be returned as model-readable \lean with compact comments
 \begin{figure}[H]
 \centering
 \begin{leanexamplebox}[title={LeanProbe feedback on a failed candidate}]
-\textcolor{leanKeyword}{theorem} add\_comm\_candidate (x y : Nat) :\\
+\textcolor{leanKeyword}{theorem} add\_comm\_candidate (x y : \textcolor{leanType}{Nat}) :\\
 \hspace*{1.0em}x + y = y + x := \textcolor{leanKeyword}{by}
 \begin{leanfeedbackbox}
-\textcolor{feedbackFrame}{/- \textless{}feedback\textgreater{}}\\
-\textcolor{feedbackFrame}{-- proof state:}\\
-x y : Nat\\
-\textcolor{leanGoal}{$\vdash$ x + y = y + x}\\
-\textcolor{feedbackFrame}{\textless{}/feedback\textgreater{} -/}
+\textcolor{leanComment}{/- \textless{}feedback\textgreater{}}\\
+\textcolor{leanComment}{-- proof state:}\\
+x y : \textcolor{leanType}{Nat}\\
+\textcolor{leanGoal}{$\vdash$} x + y = y + x\\
+\textcolor{leanComment}{\textless{}/feedback\textgreater{} -/}
 \end{leanfeedbackbox}
-\hspace*{1.0em}{\setlength{\fboxsep}{1pt}\colorbox{leanError!12}{\textcolor{leanError}{rfl}}}
+\hspace*{1.0em}\textcolor{leanError}{\underline{rfl}}
 \begin{leanerrorbox}
-\textcolor{leanError}{/- \textless{}feedback\textgreater{}}\\
-\textcolor{leanError}{-- type: error, msg: tactic 'rfl' failed}\\
-\textcolor{leanError}{\textless{}/feedback\textgreater{} -/}
+\textcolor{leanComment}{/- \textless{}feedback\textgreater{}}\\
+\textcolor{leanComment}{--} \textcolor{leanError}{error: tactic 'rfl' failed}\\
+\textcolor{leanComment}{\textless{}/feedback\textgreater{} -/}
 \end{leanerrorbox}
 \end{leanexamplebox}
-\caption{Example LeanProbe feedback embedded into a failed \lean candidate. The failing tactic is highlighted; LeanProbe injects the local proof state before it and the normalized diagnostic (red) after it as inline \lean comments.}
+\caption{Example LeanProbe feedback embedded into a failed \lean candidate. The proof state is injected before the failing tactic (green marker) and the diagnostic after it (red marker); the failing tactic is underlined in red.}
 \label{fig:leanprobe-feedback}
 \end{figure}
 This information is used for fast local repair inside the queue loop, not for final acceptance.
