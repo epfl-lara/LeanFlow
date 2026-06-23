@@ -9657,8 +9657,9 @@ def _drive_autonomous_followups(
                 "stopping to avoid a runaway loop",
                 cycle=cycle,
             )
+            ceiling_phase = "verified" if _live_state_is_verified(live_state) else "stalled"
             _persist_live_status(
-                history, compaction_state, checkpoint_state, live_state, phase="stalled"
+                history, compaction_state, checkpoint_state, live_state, phase=ceiling_phase
             )
             return history, compaction_state, checkpoint_state, live_state
         checkpoint_state = _journal_status()
@@ -9972,8 +9973,17 @@ def main() -> int:
             )
         if not _interactive_prompt_loop_allowed():
             # Headless run (stdin is not a TTY): there is no human to answer the prompt, so we
-            # must NOT block on input(). The autonomous followups have already run; persist the
-            # final state (resumable) and exit cleanly instead of hanging on a prompt forever.
+            # must NOT block on input(). The autonomous followups have already run; write the
+            # pre-exit checkpoint (mirroring the EOFError path below so resumability is preserved),
+            # persist the final state, and exit cleanly instead of hanging on a prompt forever.
+            if _is_autonomous_workflow() and history:
+                _write_workflow_checkpoint(
+                    history,
+                    agent,
+                    label="pre-exit checkpoint",
+                    trigger="pre-exit",
+                    force_filesystem_checkpoint=True,
+                )
             _terminate_descendant_agents(agent)
             _terminate_other_agents(agent)
             exit_phase = "exited" if _live_state_is_verified(live_state) else "paused"
