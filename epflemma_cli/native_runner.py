@@ -104,8 +104,6 @@ PROJECT_PROVE_MANAGER_SELECTED_FILE_MAX_CHARS = 5000
 PROJECT_PROVE_MANAGER_DECL_CONTEXT_MAX_CHARS = 1600
 PROJECT_PROVE_MANAGER_HINT_CONTEXT_MAX_CHARS = 1600
 PROJECT_PROVE_MANAGER_PENDING_DECL_LIMIT = 8
-MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S = 300
-MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S = 300
 ACTIVE_AGENT_STATUSES = {"active"}
 LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
@@ -185,6 +183,17 @@ from epflemma_cli.lean_parsing import (  # noqa: E402
     _text_self_approves_document_formalization_blueprint,
     _trim_declaration_region_end,
 )
+from epflemma_cli.manager_verification import (  # noqa: E402
+    MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S,
+    MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S,
+    _last_verification_record,
+    _manager_feedback_retry_key,
+    _manager_incremental_check_timeout_s,
+    _manager_incremental_prepare_timeout_s,
+    _verification_outcome,
+    _verification_review_system_prompt,
+    _verification_task_has_aux_overrides,
+)
 from epflemma_cli.native_config import (  # noqa: E402
     _managed_home,
     _project_root,
@@ -217,20 +226,6 @@ from epflemma_cli.queue_edit_guard import (  # noqa: E402
     _restore_assigned_declaration_against_before_text,
     _restore_changed_protected_declarations,
 )
-
-
-def _manager_incremental_prepare_timeout_s() -> int:
-    return _read_int_env(
-        "EPFLEMMA_MANAGER_INCREMENTAL_PREPARE_TIMEOUT_S",
-        MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S,
-    )
-
-
-def _manager_incremental_check_timeout_s() -> int:
-    return _read_int_env(
-        "EPFLEMMA_MANAGER_INCREMENTAL_CHECK_TIMEOUT_S",
-        MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S,
-    )
 
 
 def _workflow_display_name(workflow_kind: str | None = None) -> str:
@@ -1381,17 +1376,6 @@ def _store_last_verification(
     _flush_queue_manager(autonomy_state, mgr)
 
 
-def _last_verification_record(
-    autonomy_state: Mapping[str, Any] | None = None,
-    live_state: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    for source in (autonomy_state, live_state):
-        record = verification_to_mapping(verification_from_mapping(dict((source or {}).get("last_verification") or {})))
-        if record:
-            return record
-    return {}
-
-
 def _verification_status_text(record: Mapping[str, Any] | None) -> str:
     record = dict(record or {})
     if not record:
@@ -1421,19 +1405,6 @@ def _recent_verification_status(
     live_state: Mapping[str, Any] | None = None,
 ) -> str:
     return _verification_status_text(_last_verification_record(autonomy_state, live_state))
-
-
-def _verification_outcome(
-    autonomy_state: Mapping[str, Any] | None = None,
-    live_state: Mapping[str, Any] | None = None,
-) -> Literal["unverified", "ok", "failed"]:
-    record = _last_verification_record(autonomy_state, live_state)
-    if record:
-        return "ok" if bool(record.get("ok")) else "failed"
-    for source in (live_state, autonomy_state):
-        if isinstance(source, Mapping) and "verification_ok" in source:
-            return "ok" if bool(source.get("verification_ok")) else "failed"
-    return "unverified"
 
 
 def _record_manager_verification(
@@ -1635,16 +1606,6 @@ def _manager_final_report_feedback(
     else:
         lines.append("- next step: continue the same theorem; fix the returned manager feedback before reporting success again.")
     return "\n".join(lines)
-
-
-def _manager_feedback_retry_key(target_symbol: str, active_file: str) -> str:
-    file_key = str(active_file or "").strip()
-    if file_key:
-        try:
-            file_key = str(Path(file_key).expanduser().resolve())
-        except Exception:
-            pass
-    return f"{file_key}::{str(target_symbol or '').strip()}"
 
 
 def _manager_feedback_retry_count(
@@ -6189,23 +6150,6 @@ def _stamp_blueprint_statement_review_approved(
     return True
 
 
-def _verification_task_has_aux_overrides(task: str) -> bool:
-    task_key = str(task or "").strip().upper()
-    if task_key:
-        for suffix in ("MODEL", "BASE_URL", "API_KEY", "REASONING_EFFORT"):
-            if _read_text_env(f"AUXILIARY_{task_key}_{suffix}", "").strip():
-                return True
-    try:
-        config = load_config()
-    except Exception:
-        return False
-    aux = config.get("auxiliary", {}) if isinstance(config, Mapping) else {}
-    task_config = aux.get(task, {}) if isinstance(aux, Mapping) else {}
-    if not isinstance(task_config, Mapping):
-        return False
-    return any(str(task_config.get(key, "") or "").strip() for key in ("model", "base_url", "api_key", "reasoning_effort"))
-
-
 def _record_verifier_decision(
     *,
     task: str,
@@ -6335,20 +6279,6 @@ def _autoformalizer_advisory_block_issues(payload: Mapping[str, Any] | None) -> 
     if not findings:
         findings = ["configured verifier returned BLOCK without detailed findings"]
     return [f"configured autoformalizer verifier returned BLOCK: {finding}" for finding in findings]
-
-
-def _verification_review_system_prompt(task: str) -> str:
-    if task == BLUEPRINT_VERIFICATION_TASK:
-        return (
-            "You are an independent EPFLemma statement/source verifier. Review the source document, "
-            "blueprint, and Lean statement plan for fidelity. Start with PASS or BLOCK, then findings "
-            "and correction steps. This is not Lean-kernel proof evidence."
-        )
-    return (
-        "You are an independent EPFLemma autoformalization verifier. Review the handoff state and identify "
-        "source-fidelity, blueprint, import, or Lean-readiness blockers. Start with PASS or BLOCK, then findings "
-        "and correction steps. BLOCK forbids proof launch until the formalizer fixes the draft."
-    )
 
 
 def _run_advisory_verification_review(
