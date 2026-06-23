@@ -21,6 +21,20 @@ from typing import Any, Mapping
 from epflemma_cli.file_locks import acquire_file_lock as _acquire_file_lock
 from epflemma_cli.file_locks import list_file_locks as _list_file_locks
 
+# Phase 5: pure path-based declaration indexing / lookup helpers were extracted to
+# lean_declarations. Re-export them here (including LEAN_DECLARATION_PREAMBLE_RE) so existing
+# callers keep resolving them as ``lean_services.<name>`` unchanged. lean_declarations imports only
+# stdlib and does NOT import lean_services / native_runner, so this introduces no import cycle.
+from epflemma_cli.lean_declarations import (  # noqa: E402
+    LEAN_DECLARATION_PREAMBLE_RE,
+    _declaration_index,
+    _declaration_text_from_location,
+    _find_declaration_entry,
+    _find_symbol_line,
+    _split_declaration_statement_and_proof,
+    _surrounding_declarations,
+)
+
 # Phase 5: pure diagnostic / blocker / goal text parsers were extracted to lean_diagnostics.
 # Re-export them here so existing importers (lean_tool, native_runner, native_utils, doctor, tests)
 # keep resolving them as ``lean_services.<name>`` unchanged. lean_diagnostics imports only stdlib
@@ -51,10 +65,6 @@ from epflemma_cli.workflow_state import append_workflow_outcome, workflow_outcom
 
 STANDARD_AXIOMS = {"propext", "Quot.sound", "Classical.choice"}
 LEAN_WORKER_DISPATCH_ENABLED = False
-LEAN_DECLARATION_PREAMBLE_RE = (
-    r"^\s*(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial)\s+)*"
-    r"(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
-)
 SEARCH_PROVIDER_LABELS = {
     "local_search": "mcp-local-search",
     "leanexplore_local": "leanexplore-local",
@@ -1073,106 +1083,6 @@ def _project_sorry_stats(project_root: Path | None) -> tuple[int | None, list[st
         except Exception:
             files.append(str(path))
     return total, files
-
-
-def _declaration_index(path: Path) -> list[dict[str, Any]]:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except Exception:
-        return []
-    pattern = re.compile(LEAN_DECLARATION_PREAMBLE_RE)
-    entries: list[dict[str, Any]] = []
-    for line_number, line in enumerate(lines, start=1):
-        match = pattern.match(line)
-        if not match:
-            continue
-        name = (match.group(2) or "").strip()
-        if not name:
-            continue
-        entries.append({"kind": match.group(1), "name": name, "line": line_number})
-    for idx, entry in enumerate(entries):
-        start = entry["line"]
-        end = entries[idx + 1]["line"] - 1 if idx + 1 < len(entries) else len(lines)
-        entry["end_line"] = end
-        entry["text"] = "\n".join(lines[start - 1:end]).strip()
-    return entries
-
-
-def _find_symbol_line(path: Path, symbol: str | None) -> int | None:
-    wanted = str(symbol or "").strip()
-    if not wanted:
-        return None
-    for entry in _declaration_index(path):
-        if entry["name"] == wanted:
-            return int(entry["line"])
-    return None
-
-
-def _find_declaration_entry(path: Path, theorem_id: str) -> dict[str, Any] | None:
-    wanted = str(theorem_id or "").strip()
-    if not wanted:
-        return None
-    short_name = wanted.split(".")[-1]
-    for entry in _declaration_index(path):
-        name = str(entry.get("name", "") or "").strip()
-        if name in {wanted, short_name}:
-            return dict(entry)
-    return None
-
-
-def _surrounding_declarations(path: Path, theorem_id: str, *, window: int = 3) -> list[str]:
-    entries = _declaration_index(path)
-    if not entries:
-        return []
-    wanted = str(theorem_id or "").strip()
-    short_name = wanted.split(".")[-1]
-    for idx, entry in enumerate(entries):
-        name = str(entry.get("name", "") or "").strip()
-        if name not in {wanted, short_name}:
-            continue
-        start = max(0, idx - window)
-        end = min(len(entries), idx + window + 1)
-        return [
-            str(item.get("name", "") or "").strip()
-            for item in entries[start:end]
-            if str(item.get("name", "") or "").strip() and str(item.get("name", "") or "").strip() != name
-        ]
-    return []
-
-
-def _split_declaration_statement_and_proof(text: str) -> tuple[str, str]:
-    snippet = str(text or "").strip()
-    if not snippet:
-        return "", ""
-    match = re.search(r":=\s*by\b", snippet)
-    if match:
-        statement = snippet[: match.start()].rstrip()
-        proof = snippet[match.end() :].lstrip()
-        return statement, proof
-    statement_line = snippet.splitlines()[0].strip()
-    remainder = "\n".join(snippet.splitlines()[1:]).strip()
-    return statement_line, remainder
-
-
-def _declaration_text_from_location(file_path: Path, location: Mapping[str, Any]) -> str:
-    try:
-        decl_start = int(location.get("decl_start", 0) or 0)
-        proof_end = int(location.get("proof_end", 0) or 0)
-        decl_end = int(location.get("decl_end", 0) or 0)
-    except (TypeError, ValueError):
-        return ""
-    end_line = proof_end or decl_end
-    if decl_start <= 0 or end_line < decl_start:
-        return ""
-    try:
-        lines = file_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ""
-    if decl_start > len(lines):
-        return ""
-    start_idx = decl_start - 1
-    end_idx = min(end_line, len(lines))
-    return "\n".join(lines[start_idx:end_idx]).strip()
 
 
 def _scan_theorem_by_range(
