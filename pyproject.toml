@@ -100,4 +100,5 @@ files = [
   "agent/log_formatting.py",
   "tools/response.py",
   "agent/managed_run.py",
+  "epflemma_cli/native_config.py",
 ]
