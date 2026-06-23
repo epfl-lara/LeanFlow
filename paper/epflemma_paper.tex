@@ -1,5 +1,3 @@
-%%%%%%%% ICML 2026 WORKSHOP DRAFT %%%%%%%%%%%%%%%%%
-
 \documentclass{article}
 
 \usepackage{microtype}
@@ -9,7 +7,7 @@
 \usepackage{booktabs}
 \usepackage{hyperref}
 \newcommand{\theHalgorithm}{\arabic{algorithm}}
-\usepackage{icml2026}
+\usepackage[accepted]{icml2026}
 
 \usepackage{amsmath}
 \usepackage{amssymb}
@@ -22,7 +20,7 @@
 \usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,calc}
 
 % Rename the method here if the agent/product name changes.
-\newcommand{\method}{\textsc{LeanFlow}\xspace}
+\newcommand{\method}{LeanFlow\xspace}
 \newcommand{\kimi}{Kimi-K2.6\xspace}
 \newcommand{\gpt}{GPT-5.5\xspace}
 \newcommand{\lean}{Lean\xspace}
@@ -40,6 +38,8 @@
 \definecolor{feedbackFrame}{HTML}{287D7D}
 \definecolor{feedbackBg}{HTML}{F0F7F7}
 \definecolor{leanError}{HTML}{9E2F2F}
+\definecolor{leanComment}{HTML}{6B7280}
+\definecolor{leanType}{HTML}{1F6F8B}
 \newtcolorbox{leanexamplebox}[1][]{
   enhanced,
   colback=epfCodeBg,
@@ -62,17 +62,35 @@
 }
 \newtcolorbox{leanfeedbackbox}{
   enhanced,
-  colback=feedbackBg,
-  colframe=feedbackFrame!55,
-  boxrule=0.35pt,
+  colback=white,
+  colframe=black!18,
+  boxrule=0.3pt,
   arc=1pt,
   left=0.9mm,
   right=0.9mm,
   top=0.7mm,
   bottom=0.7mm,
   boxsep=0pt,
-  width=0.90\columnwidth,
+  width=0.92\columnwidth,
   fontupper=\ttfamily\scriptsize,
+  borderline west={1.8pt}{0pt}{leanGoal!75},
+  before skip=1.0mm,
+  after skip=1.0mm
+}
+\newtcolorbox{leanerrorbox}{
+  enhanced,
+  colback=white,
+  colframe=black!18,
+  boxrule=0.3pt,
+  arc=1pt,
+  left=0.9mm,
+  right=0.9mm,
+  top=0.7mm,
+  bottom=0.7mm,
+  boxsep=0pt,
+  width=0.92\columnwidth,
+  fontupper=\ttfamily\scriptsize,
+  borderline west={1.8pt}{0pt}{leanError!75},
   before skip=1.0mm,
   after skip=1.0mm
 }
@@ -137,12 +155,15 @@
 \icmltitle{\method: A Case Study in Workflow-Driven Lean Autoformalization}
 
   \begin{icmlauthorlist}
-    \icmlauthor{Anonymous Authors}{anon}
+    \icmlauthor{Lazar Milikic}{epfl}
+    \icmlauthor{Simon Guilloud}{epfl}
+    \icmlauthor{Khanh Nguyen}{epfl}
+    \icmlauthor{Viktor Kun{\v c}ak}{epfl}
   \end{icmlauthorlist}
 
-  \icmlaffiliation{anon}{Anonymous Institution}
-  \icmlcorrespondingauthor{Anonymous Authors}{anonymous@example.com}
-  \icmlkeywords{autoformalization, theorem proving, Lean, mathematical reasoning, agents}
+  \icmlaffiliation{epfl}{EPFL, Lausanne, Switzerland}
+  \icmlcorrespondingauthor{Lazar Milikic}{lazar.milikic@epfl.ch}
+  \icmlkeywords{autoformalization, theorem proving, Lean, LLM agents, document-level formalization, proof repair}
 
   \vskip 0.3in
 ]
@@ -150,17 +171,17 @@
 \printAffiliationsAndNotice{}
 
 \begin{abstract}
-  We present and evaluate \method, a \lean-specialized LLM-agent system for translating mathematical papers into buildable \lean projects.
-  Recent verifier-in-the-loop systems show that large formal artifacts can be produced, but it remains unclear which runtime mechanisms make document-to-project formalization reliable across model strengths.
-  We study this question on two previously unformalized mathematical papers in number theory and measure theory, using model ablations (\kimi and \gpt) and proof-workflow and toolset ablations; we report task outcome, API calls, input tokens, and output tokens.
-  The full workflow completes both document-level projects with \kimi while no-queue variants hit the 2000-call budget; with \gpt, it lowers model-side token use on both sources.
-  On complementary benchmarks, \method reaches 75.7\% BEq+ on RLM25, 97\% on FATE-H, and solves all five ICML 2026 AI for Math TCS challenge projects in our \gpt runs.
+  We present and evaluate \method, an LLM agent system specialized for translating mathematical papers into buildable \lean projects.
+  Recent verifier-in-the-loop systems show that large formal artifacts can be produced, but it remains unclear which runtime mechanisms affect completion, auditability, or efficiency in document-to-project formalization.
+  We study this question as a case study on two previously unformalized mathematical papers in number theory and measure theory, using model, proof-workflow, and toolset ablations with \kimi and \gpt; we report task outcome, API calls, input tokens, and output tokens.
+  With \kimi, the full workflow completes both document-level projects within the 2000-call budget, while no-queue variants hit the budget; with \gpt, all document-level variants complete, and the full workflow has the lowest or tied-lowest input-token cost on both sources.
+  As complementary calibration, \method reaches 75.7\% BEq+ on RLM25 and solves all five ICML 2026 AI for Math TCS challenge projects in our \gpt runs.
 \end{abstract}
 
 \section{Introduction}
 
 Autoformalization is moving from isolated theorem translation toward turning whole mathematical sources into \lean projects.
-Early language-model formalization work focused on translating individual natural-language statements into proof-assistant syntax~\citep{wu2022autoformalization}, and many theorem-proving benchmarks still ask the model to prove one supplied formal statement at a time~\citep{zheng2022minif2f,azerbayev2023proofnet,jiang2025fate}.
+Early language-model formalization work focused on translating individual natural-language statements into proof-assistant syntax~\citep{wu2022autoformalization}, and many theorem-proving benchmarks still ask the model to prove one supplied formal statement at a time~\citep{zheng2022minif2f,azerbayev2023proofnet}.
 A document-level agent faces a different problem: it must convert mathematical prose, \TeX{} structure, references, definitions, and proofs into a buildable \lean project while preserving the intended statements and managing a long sequence of dependent proof obligations.
 M2F~\citep{wang2026m2f} and recent textbook- or project-scale systems~\citep{gloeckle2026automatictextbookformalization,hariharan2026milestoneformalizationspherepacking,tsoukalas2026advancingmathematicsresearchaidriven} show that verifier-in-the-loop formalization can produce large \lean artifacts; this paper asks which parts of the runtime help agents keep the source claims fixed and finish the resulting proof work.
 
@@ -171,18 +192,18 @@ Before proof search, a statement/source gate checks that the generated declarati
 During proving, a programmatic workflow manager owns the theorem queue, failed-attempt memory, retry budgets, verification records, logs, and checkpoints.
 The model proposes edits and helper lemmas, while the manager assigns one target at a time and advances only after external \lean verification accepts the edit.
 
-This separation is useful across the two model settings in our experiments.
-For \kimi~\citep{moonshot2026kimi}, it turns a long, failure-prone transcript into bounded theorem assignments with explicit context and failure memory.
-For \gpt, the same structure reduces waste: the model can spend more of its budget on local proof search instead of rediscovering the active theorem, rechecking the whole project, or deciding for itself whether a run is finished.
+This separation has different benefits across the two model settings in our experiments.
+For \kimi~\citep{moonshot2026kimi}, workflow control is decisive in our two document-level runs: the full workflow finishes both sources, while no-queue variants exhaust the call budget.
+For \gpt, all document-level variants finish, so the observed benefit is not a binary success difference; the same structure instead improves token efficiency and preserves an explicit audit trail for the proof work.
 
 \method also introduces LeanProbe, a cached same-file verifier built on LeanInteract~\citep{leaninteract2025}, for repeated proof-repair checks.
 LeanProbe gives the proving agent low-latency diagnostics and proof-state feedback while leaving final acceptance to standard \lean/Lake checks.
 In the sequential same-file benchmark summarized in \cref{tab:leanprobe-summary}, cached checking is roughly 9--14$\times$ faster than rerunning growing-prefix Lake checks.
 
 Although proof-only benchmarks are a standard way to measure \lean agents, they do not exercise the full document-to-project workflow.
-In a proof-only setting such as FATE-H~\citep{jiang2025fate}, the formal statement is already provided and the system only has to replace the proof placeholder.
+In a proof-only setting, the formal statement is already provided and the system only has to replace the proof placeholder.
 Our main evaluation therefore ablates the components of \method on real document-level formalizations: queue management versus free-running proof loops, full \lean tools versus terminal-only interaction, and source-blueprint checkpoints versus direct source-to-code generation.
-We then report RLM25 statement autoformalization, FATE-H proof-only comparison, and the ICML 2026 AI for Math TCS challenge~\citep{ai4math2026challenge} as complementary measurements.
+We then report RLM25 statement autoformalization and the ICML 2026 AI for Math TCS challenge~\citep{ai4math2026challenge} as complementary measurements.
 
 The two document-level case studies are Frisch and Vaserstein's \emph{Parametrization of Pythagorean Triples by a Single Triple of Polynomials}~\citep{frisch2007pythagorean} and Lyons and Zumbrun's \emph{A Calculus Proof of the Cramer--Wold Theorem}~\citep{lyons2017cramerwold}.
 The Pythagorean source combines integer-valued polynomial definitions, an obstruction over $\mathbb{Z}[x_1,\ldots,x_n]$, explicit rational-polynomial witnesses, and custom plain-\TeX{} theorem macros.
@@ -192,24 +213,23 @@ Both require source-aware definitions and reusable \lean infrastructure that the
 
 This paper makes two contributions.
 First, it describes \method as an autonomous workflow for document-to-project formalization and proof repair: the runtime records how source claims become \lean declarations, reviews those declarations before proving, manages the proof queue, and uses LeanProbe for fast local feedback while keeping final acceptance in standard \lean/Lake checks.
-Second, it evaluates those design choices through ablations under \kimi and \gpt on document-level case studies, with complementary measurements on RLM25, FATE-H, and the AI for Math TCS challenge.
+Second, it evaluates those design choices through case-study ablations under \kimi and \gpt, distinguishing workflow effects on completion from effects on model-side efficiency and auditability.
 
 \section{Related Work}
 
 \paragraph{Formal theorem proving with language models.}
 Lean 4~\citep{demoura2021lean4} and \mathlib~\citep{mathlib2020} provide the verification substrate for many recent neural theorem-proving systems.
-Benchmarks such as miniF2F~\citep{zheng2022minif2f}, ProofNet~\citep{azerbayev2023proofnet}, PutnamBench~\citep{tsoukalas2024putnambench}, FATE~\citep{jiang2025fate}, FormalMATH~\citep{yu2025formalmath}, SorryDB~\citep{letson2026sorrydb}, and VeriSoftBench~\citep{xin2026verisoftbench} measure different proof-only or repository-scale capabilities.
+Benchmarks such as miniF2F~\citep{zheng2022minif2f}, ProofNet~\citep{azerbayev2023proofnet}, PutnamBench~\citep{tsoukalas2024putnambench}, FormalMATH~\citep{yu2025formalmath}, SorryDB~\citep{letson2026sorrydb}, and VeriSoftBench~\citep{xin2026verisoftbench} measure different proof-only or repository-scale capabilities.
 They provide useful calibration, but most start from an existing formal statement or repository context.
 \method instead studies the runtime needed when the source begins as mathematical prose, and the output must be a buildable project.
 
-% \paragraph{Autoformalization and document-scale formalization.}
 \paragraph{Autoformalization across scales.}
 Early LLM autoformalization work studied natural-language-to-formal translation at theorem scale~\citep{wu2022autoformalization}; later work improved process supervision and evaluation for \lean statements~\citep{lu2024process,poiroux2024reliable,poiroux2025rlmeval}.
-% M2F~\citep{wang2026m2f} is the closest systems reference: it formalizes long mathematical sources into \lean projects, audits matched statements, and repairs proofs under a pinned environment.
 M2F~\citep{wang2026m2f} and Automatic Textbook Formalization~\citep{gloeckle2026automatictextbookformalization} formalize long mathematical sources into \lean projects, audit generated statements, and repair proofs under a pinned environment.
 The Gauss project~\citep{hariharan2026milestoneformalizationspherepacking} completes a sorry-free formalization of the sphere-packing problem in dimension 8 from an existing blueprint and \lean development.
 AlphaProof Nexus~\citep{tsoukalas2026advancingmathematicsresearchaidriven} uses an agentic evolutionary framework for formal proof search over a large set of formalized conjectures.
-Our scope is smaller in document volume but different in emphasis: we isolate queue control, tool routing, statement handoff, and model-side budget under the two model settings in our experiments.
+An apples-to-apples comparison with M2F is difficult from the currently available public artifacts: reproducing our document-level runs under M2F would require the same source documents, model, \mathlib version, budget, prompts, workflow logs, tool surface, and final acceptance criteria.
+Our study is smaller in document volume but different in emphasis: we isolate queue control, tool routing, statement handoff, and model-side budget under the two model settings in our experiments.
 
 \paragraph{Lean tooling for agents.}
 Retrieval and environment access are central to practical \lean proving.
@@ -299,14 +319,14 @@ For PDFs, it records extracted text, metadata, and image inventories through loc
 
 The \emph{formalize} workflow next creates a project-local blueprint before the proof skeleton is considered ready.
 The blueprint is the durable source map for the run: it lists source statements, planned \lean names, dependencies, source locators, statement-fidelity checks, proof notes, and known scope changes.
-For each source theorem or lemma, it spells out the parts of the formal type that are easy to drift: object classes, quantifier order, parameter domains, codomains, hypotheses, side conditions, and follow-on equivalences.
+For each source theorem or lemma, it spells out the parts of the formal type that are most prone to drift: object classes, quantifier order, parameter domains, codomains, hypotheses, side conditions, and follow-on equivalences.
 The generated \lean module must type-check with theorem bodies left as \texttt{by sorry}; proof filling is deferred until the statement/source gate has approved the skeleton.
 
 \subsection{Statement/Source Gate}
 
 The statement/source gate checks the generated skeleton before proof search begins.
 Compilation only shows that a declaration is well typed; it does not show that the declaration is the theorem stated in the paper.
-\method therefore launches a fresh reviewer context over the blueprint, generated \lean declarations, and original source spans.
+\method therefore launches a fresh LLM reviewer context---a separate model context with no human in the loop---over the blueprint, generated \lean declarations, and original source spans.
 The reviewer can approve, reject, or request redrafting, but it does not fill proof bodies.
 If any check in \cref{tab:review-checks} fails, the formalizer returns to the skeleton before the \emph{prove} workflow starts; the prover should not receive a weakened, strengthened, or incomparable target.
 We call the version that passes this gate the \emph{reviewed skeleton}.
@@ -389,23 +409,23 @@ A failed candidate can be returned as model-readable \lean with compact comments
 \begin{figure}[H]
 \centering
 \begin{leanexamplebox}[title={LeanProbe feedback on a failed candidate}]
-\textcolor{leanKeyword}{theorem} add\_comm\_candidate (x y : Nat) :\\
-\hspace*{1.0em}x + y = y + x := by
+\textcolor{leanKeyword}{theorem} add\_comm\_candidate (x y : \textcolor{leanType}{Nat}) :\\
+\hspace*{1.0em}x + y = y + x := \textcolor{leanKeyword}{by}
 \begin{leanfeedbackbox}
-\textcolor{feedbackFrame}{/- \textless{}feedback\textgreater{}}\\
-\textcolor{feedbackFrame}{-- proof state:}\\
-x y : Nat\\
-\textcolor{leanGoal}{|- x + y = y + x}\\
-\textcolor{feedbackFrame}{\textless{}/feedback\textgreater{} -/}
+\textcolor{leanComment}{/- \textless{}feedback\textgreater{}}\\
+\textcolor{leanComment}{-- proof state:}\\
+x y : \textcolor{leanType}{Nat}\\
+\textcolor{leanGoal}{$\vdash$} x + y = y + x\\
+\textcolor{leanComment}{\textless{}/feedback\textgreater{} -/}
 \end{leanfeedbackbox}
-\hspace*{1.0em}rfl
-\begin{leanfeedbackbox}
-\textcolor{feedbackFrame}{/- \textless{}feedback\textgreater{}}\\
-\textcolor{leanError}{-- type: error, msg: unsolved goals}\\
-\textcolor{feedbackFrame}{\textless{}/feedback\textgreater{} -/}
-\end{leanfeedbackbox}
+\hspace*{1.0em}\textcolor{leanError}{\underline{rfl}}
+\begin{leanerrorbox}
+\textcolor{leanComment}{/- \textless{}feedback\textgreater{}}\\
+\textcolor{leanComment}{--} \textcolor{leanError}{error: tactic 'rfl' failed}\\
+\textcolor{leanComment}{\textless{}/feedback\textgreater{} -/}
+\end{leanerrorbox}
 \end{leanexamplebox}
-\caption{Example LeanProbe feedback embedded into a failed Lean candidate. The proof state is inserted before the failing tactic; the final diagnostic records the open goal.}
+\caption{Example LeanProbe feedback embedded into a failed \lean candidate. The proof state is injected before the failing tactic (green marker) and the diagnostic after it (red marker); the failing tactic is underlined in red.}
 \label{fig:leanprobe-feedback}
 \end{figure}
 This information is used for fast local repair inside the queue loop, not for final acceptance.
@@ -447,23 +467,24 @@ Frisch and Vaserstein's Pythagorean-polynomial paper~\citep{frisch2007pythagorea
 Lyons and Zumbrun's Cramer--Wold paper~\citep{lyons2017cramerwold} requires formalizing closed half-spaces as measurable sets, equality of measures from matching half-space values, the Crofton step from half-space values to average-distance functions, the odd-dimensional Laplacian recovery argument, and the even-to-odd embedding $\mathbb{R}^{2m}\hookrightarrow\mathbb{R}^{2m+1}$.
 \cref{app:case-studies} gives the detailed source-to-\lean decomposition for both case studies.
 To the best of our knowledge, neither source theorem had a prior proof-assistant formalization.
+The completed Pythagorean project comprises 83 \lean declarations (34 of them \texttt{theorem}/\texttt{lemma} statements) and the Cramer--Wold project 114 declarations (101 \texttt{theorem}/\texttt{lemma} statements); both build sorry-free and free of unapproved axioms.
 
 For the workflow ablations reported in \cref{tab:longform-ablation}, each source first runs through the pre-proof stages in \cref{fig:pipeline,alg:method}: source resolution, blueprint construction, statement generation with proof placeholders, and statement/source review.
 The result is a reviewed skeleton, i.e., a \lean statement layer that type-checks with theorem bodies left as placeholders and has passed the source-faithfulness checks in \cref{tab:review-checks}.
 The Pythagorean reviewed skeleton is produced with \kimi; the Cramer--Wold reviewed skeleton is produced with \gpt because the initial representation setup for probability measures, half-spaces, and the analytic inversion target requires more representation choices than the Pythagorean source.
-The proof runs in \cref{tab:longform-ablation} start from these reviewed skeletons, and there are no human proof edits during the ablated prover runs.
+Statement translation, skeleton construction, the statement/source gate, and proof repair all run autonomously, with no human edits to the reviewed skeletons or to the proof runs in \cref{tab:longform-ablation}; expert involvement is limited to verifying faithfulness after the fact (\cref{sec:threats}), because no automated faithfulness guarantee is currently available.
 
 \subsection{Workflow Ablations on Real Sources}
 
 The evaluation is based on ablation: it compares the full \method against variants that remove the queue manager and/or the specialized \lean tools.
-For each model, we run the full $2\times2$ design: queue versus no queue, and full tool surface versus terminal-only interaction. The corresponding \cref{tab:longform-ablation} is organized by source so that the final analysis can compare completion behavior and model-side budget within the same mathematical project.
+For each model, we run the full $2\times2$ design: queue versus no queue, and full tool surface versus terminal-only interaction. \cref{tab:longform-ablation} is organized by source so that completion behavior and model-side budget can be compared within the same mathematical project.
 All document-level proving runs have a maximum budget of 2000 prover-agent API calls, where one call is one model turn in the proof-repair loop.
 In the no-queue condition, an outer runner still keeps the prover running until the project succeeds or the call budget expires, but it disables the assignment and memory behavior in \cref{alg:method}, Step 6: the model is not restricted to a single top-of-queue theorem, and theorem-local failed-attempt history is not used to gate the next target.
 Source preflight, the statement/source gate, final \lean/Lake verification, and hygiene checks are held fixed across conditions.
 
 \begin{table*}[t]
 \centering
-\caption{Long-form workflow ablation on the two document-level case studies. Workflow abbreviations encode queue and tool configuration: Full = queue with full tools; NoQ+Tools = no queue with full tools; Q+CLI = queue with terminal-only interaction; NoQ+CLI = no queue with terminal-only interaction. Calls are prover-agent API calls with a 2000-call cap.}
+\caption{Long-form workflow ablation on the two document-level case studies. Workflow abbreviations encode queue and tool configuration: Full = queue with full tools; NoQ+Tools = no queue with full tools; Q+CLI = queue with terminal-only interaction; NoQ+CLI = no queue with terminal-only interaction. Outcome is \emph{success} when the requested project builds under $E$ from the reviewed skeleton with no remaining \texttt{sorry} and no unapproved axioms within the 2000-call budget, and \emph{failure} otherwise. Calls are prover-agent API calls with a 2000-call cap.}
 \label{tab:longform-ablation}
 \footnotesize
 \setlength{\tabcolsep}{3pt}
@@ -492,16 +513,16 @@ Cramer--Wold & \gpt & NoQ+CLI & \textbf{success} & 476 & 49.7M & 281.6K \\
 \end{tabular*}
 \end{table*}
 
-\cref{tab:longform-ablation} shows that queue management changes the outcome for \kimi on these document-level sources: both no-queue variants exhaust the 2000-call budget on both case studies, while full \method succeeds in 1043 calls on Pythagorean triples and 1278 calls on Cramer--Wold.
+\cref{tab:longform-ablation} shows that queue management is decisive for \kimi in these two document-level runs: both no-queue variants exhaust the 2000-call budget on both case studies, while full \method succeeds in 1043 calls on Pythagorean triples and 1278 calls on Cramer--Wold.
 The tool surface matters most on the analytic case study, where \kimi with a queue but terminal-only interaction still fails on Cramer--Wold.
-For \gpt, all document-level variants succeed, so the effect is mostly budget use rather than binary success; full \method has the lowest or tied-lowest input-token cost on both sources, although the Cramer--Wold no-queue/full-tools run uses slightly fewer calls at higher input-token cost.
+For \gpt, all document-level variants succeed, so these runs support an efficiency and auditability claim rather than a necessity claim; full \method has the lowest or tied-lowest input-token cost on both sources, although the Cramer--Wold no-queue/full-tools run uses slightly fewer calls at higher input-token cost.
 
 \subsection{RLM25 Autoformalization}
 
 We use RLM25~\citep{poiroux2025rlmeval,poiroux2024reliable} to test theorem-statement autoformalization for research mathematics under the same model/tool distinction.
 RLM25 is a collection of informal theorem statements drawn from research-level formalization projects; the system must synthesize the formal \lean statement, and the reference formal statement is used only for evaluation through BEq and BEq+.
 Because RLM25 contains independent theorem statements rather than complete source documents, we report it separately from the document-to-project case studies.
-\cref{tab:autoformalization-experiments} summarizes the completed \gpt runs. For \gpt, \method improves BEq+ from 72.9\% to 75.7\% while reducing calls and token use. The gap between type-checking and semantic-equivalence metrics reinforces why statement/source checks cannot be replaced by compilation alone: a well-typed declaration still needs an external faithfulness check against the intended mathematical claim.
+\cref{tab:autoformalization-experiments} summarizes the completed \gpt runs. For \gpt in this single run, \method reduces calls (3{,}541 vs.\ 4{,}053) and input tokens (203.2M vs.\ 236.6M) while slightly raising BEq+ (72.9\% to 75.7\%); we read the BEq+ change as a small effect rather than a significance claim, since these are single runs without variance estimates. The gap between type-checking and semantic-equivalence metrics reinforces why statement/source checks cannot be replaced by compilation alone: a well-typed declaration still needs an external faithfulness check against the intended mathematical claim.
 
 \begin{table}[t]
 \centering
@@ -520,30 +541,9 @@ Model & Workflow & Type-check & BEq & BEq+ & Calls & In tok. & Out tok. \\
 \end{tabular}}
 \end{table}
 
-\subsection{Proof-Only and Challenge Tasks}
+\subsection{Challenge Tasks}
 
-Proof-only tasks isolate theorem proving once formal statements are already provided.
-We first use FATE-H as a comparison point against M2F's proof-only result, as shown in \cref{tab:fate-calibration}.
-
-\begin{table}[t]
-\centering
-\caption{FATE-H proof-only comparison. The M2F row reports the published proof-success result; calls and tokens are available for our run only.}
-\label{tab:fate-calibration}
-\scriptsize
-\setlength{\tabcolsep}{5pt}
-\begin{tabular}{lllll}
-\toprule
-Model & Solved & Calls & In tok. & Out tok. \\
-\midrule
-\method (\gpt) & 97\% & 11729 & 932.3M & 5.4M \\
-M2F (GPT5.2 Pro) & 96\% & - & - & - \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\method solves 97\% of FATE-H, close to the 96\% proof-only result reported for M2F, but the run still requires 11,729 prover-agent calls and 932.3M input tokens.
-This supports using FATE-H as a hard proof-only comparison while keeping the main claims centered on document-level workflow behavior.
-
+Project-level proving tasks provide the formal statements and isolate proof construction.
 The ICML 2026 AI for Math Track 2 TCS proving challenge tests project-level algorithmic proof tasks in graph theory, combinatorics, computational complexity, and algorithm correctness using CSLib and a comparator-backed pass-rate metric~\citep{ai4math2026challenge}.
 The five challenge projects cover binary heap operations, a heap-backed Dijkstra proof, Kruskal minimum spanning trees, segment-tree construction and range queries, and treap invariant/runtime obligations.
 We run all five projects with \gpt under three conditions: full \method, no queue with LeanProbe still available, and no queue with only terminal \lean/Lake interaction.
@@ -627,27 +627,30 @@ We use a qualitative Pythagorean-polynomial comparison to check whether the sour
 The no-review condition skips the blueprint and statement/source review stages in Steps 3 and 5: after seeing the source, the model is asked to produce \lean translations directly, without a recorded source-to-declaration map or an independent faithfulness check before proving.
 The no-review draft and the reviewed skeleton both build, but they formalize different mathematical objects.
 The no-review draft would support a less source-faithful function-level formalization of the result: it defines the main witnesses as rational-valued functions on integer inputs.
-The reviewed skeleton is the source-faithful formalization: it defines the witnesses as rational multivariate polynomials and separately proves integer-valuedness, matching the paper's theorem.
-The detailed declaration-level contrast is reported in the Appendix~\ref{app:docs-case-study} (\cref{tab:pyth-skeleton-comparison}).
+The reviewed skeleton is the source-faithful version under the checks in \cref{tab:review-checks}: it defines the witnesses as rational multivariate polynomials and separately proves integer-valuedness, matching the paper's theorem.
+The detailed declaration-level contrast is reported in Appendix~\ref{app:docs-case-study} (\cref{tab:pyth-skeleton-comparison}).
 
 \section{Threats to Validity}
+\label{sec:threats}
 
 The evaluation has several limitations.
-First, project buildability is necessary but not sufficient: a project can build with a faithful theorem, a weakened theorem, or a theorem whose representation silently changed.
-We mitigate this through the statement/source gate, but the document-level skeletons still rely on expert judgment before proof ablations begin; source spans and blueprint decisions should therefore be released with the artifacts so disagreements are inspectable.
-Second, two document-level case studies cannot establish broad coverage across mathematics, and the Cramer--Wold skeleton was initialized with \gpt rather than \kimi because of its representation choices.
-Third, model comparisons are sensitive to model version, serving stack, context limit, retry policy, and tool latency.
-Calls and token counts are useful proxies for model-side effort, but they are not a full measure of wall-clock cost or human engineering cost.
+Buildability is necessary but not sufficient: a project can build while encoding a different claim.
+The statement/source gate runs autonomously, but we still confirm faithfulness by expert inspection, because there is currently no automated way to guarantee that a well-typed declaration matches the source; reducing this manual confirmation is important future work.
+The document-level evidence covers only two case studies; the Cramer--Wold skeleton was initialized with \gpt rather than \kimi because of its representation choices.
+The ablations are single runs, so they do not estimate variance; repeated document-level runs would be cleaner but expensive, since each can require hundreds to thousands of calls, tens to hundreds of millions of input tokens, and substantial wall-clock time.
+Several mechanisms also remain bundled: queue/tool ablations do not isolate blueprinting, statement review, failed-attempt memory, hygiene scanning, and LeanProbe feedback.
+The complementary benchmarks do not fully exercise document-to-project formalization, the \gpt rows show efficiency more than necessity, and we do not include a matched document-level M2F comparison.
+Calls and token counts are useful proxies for model-side effort, but not full measures of wall-clock, dollar, or human engineering cost.
 
 \section{Conclusion}
 
 \method treats autoformalization as an evolving \lean project with durable workflow state, not as independent theorem prompts.
 The central design choice is to keep project control outside the model: the runtime records source-to-\lean decisions, reviews statements before proof search, assigns proofs one at a time, checks candidate edits quickly, and accepts only builds that pass the verifier and contain no leftover placeholders or unapproved axioms.
-The current results show that this structure lets \kimi finish document-level sources that the no-queue variants do not finish within budget, helps \gpt spend less model budget, and separates statement synthesis, proof-only proving, and algorithmic proof workloads.
+The strongest document-level evidence is model-dependent: in our two case studies, workflow control is decisive for \kimi completion under budget, while for \gpt it mainly improves token efficiency and audit discipline because every document-level variant completes.
 
 \section*{Impact Statement}
 
-This paper presents work whose goal is to make \lean autoformalization more reliable, inspectable, and reproducible.
+This paper presents work whose goal is to make \lean autoformalization more inspectable, reproducible, and verifier-grounded.
 Potential positive impacts include reducing the engineering burden of proof repair, improving the auditability of machine-assisted formalization, and making document-level formal verification workflows easier to study.
 Potential risks include over-reliance on generated formal artifacts, mistaking buildability for source faithfulness, and unequal access to the compute and model resources needed for long formalization runs.
 \method is designed to mitigate these risks by recording source-to-\lean decisions, separating statement review from proof search, preserving workflow logs and checkpoints, and accepting final artifacts only after external \lean verification with no leftover placeholders or unapproved axioms.
@@ -661,6 +664,10 @@ The system is intended to assist expert formalizers rather than replace human ma
 \appendix
 \section{Document Case Study Details}
 \label{app:case-studies}
+
+The implementation is available at \href{https://github.com/epfl-lara/EPFLemma}{\texttt{epfl-lara/EPFLemma}}, and the generated formalization projects are available at \href{https://github.com/epfl-lara/AutoformalizedProjects}{\texttt{epfl-lara/AutoformalizedProjects}}.
+Each released project is self-contained, pinning its own \lean toolchain and \mathlib revision (for example, \lean \texttt{v4.30.0-rc2} for the Pythagorean project and \texttt{v4.29.1} for Cramer--Wold), so builds are reproducible without a single global environment.
+The two case studies are also contributed to the community \href{https://github.com/Vilin97/lean-pool}{\texttt{lean-pool}} repository of AI-produced \lean developments (pull requests \href{https://github.com/Vilin97/lean-pool/pull/185}{\#185} and \href{https://github.com/Vilin97/lean-pool/pull/186}{\#186}).
 
 \paragraph{Pythagorean-polynomial source.} \label{app:docs-case-study}
 The Frisch--Vaserstein source first defines Pythagorean triples, polynomial parametrization over $\mathbb{Z}[x_1,\ldots,x_n]$, and integer-valued parametrization over $\mathrm{Int}(\mathbb{Z}^n)\subseteq \mathbb{Q}[x_1,\ldots,x_n]$.
@@ -720,7 +727,8 @@ The formalization represents $\mathbb{R}^n$ as \lean Euclidean space, defines cl
 \]
 The first analytic proof block packages the Crofton/Fubini argument showing that half-space values determine $f_\mu$.
 The second proof block packages the odd-dimensional inversion step: after reindexing dimensions as $2m+1$, the needed kernel identity is that an $(m+1)$-fold Laplacian of the norm kernel recovers a nonzero multiple of the point mass at the origin.
-In \lean-facing terms, this required a tempered-distribution norm kernel, Fourier/Laplacian algebra for iterated Laplacians, transport between the Euclidean model used by PhysLean~\citep{physlean2025} and the project's odd-dimensional space, and a bridge from PhysLean's real distribution API to Mathlib's complex tempered distributions.
+In \lean-facing terms, this requires a tempered-distribution norm kernel, Fourier/Laplacian algebra for iterated Laplacians, transport between the Euclidean model used by PhysLib~\citep{physlean2025} and the project's odd-dimensional space, and a bridge from PhysLib's real distribution API to Mathlib's complex tempered distributions.
+The analytic formalization also produced reusable PhysLib infrastructure for distributional Laplacians of norm-kernel fundamental solutions, upstreamed in \href{https://github.com/leanprover-community/physlib/pull/1175}{\texttt{leanprover-community/physlib\#1175}}.
 The even-dimensional Cramer--Wold theorem is then reduced to the odd-dimensional one by embedding $\mathbb{R}^{2m}$ into $\mathbb{R}^{2m+1}$ and transporting half-space values along that embedding.
 The reviewed skeleton keeps the Crofton and inversion blocks as named proof targets rather than hiding them inside the final theorem; this makes it clear which missing analytic facts are mathematical infrastructure, not model-generated assumptions.
 
