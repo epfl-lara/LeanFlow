@@ -416,6 +416,18 @@ def _autonomous_stalled_limit() -> int:
         return 4
 
 
+def _autonomous_max_cycles() -> int:
+    """Absolute ceiling on autonomous continuation cycles — a safety backstop that guarantees the
+    autonomous loop terminates even if the "stalled"/"verified" stop conditions never fire. Set
+    generously so it does not cut off legitimate long proofs; override via AUTONOMOUS_MAX_CYCLES.
+    """
+    raw = _read_native_env("AUTONOMOUS_MAX_CYCLES", "120")
+    try:
+        return max(8, int(raw))
+    except ValueError:
+        return 120
+
+
 def _workflow_state_root() -> Path:
     project_root = Path(_project_root()).expanduser().resolve()
     if project_root.exists():
@@ -11119,6 +11131,23 @@ def _drive_autonomous_followups(
     cycle = 1
     while True:
         autonomy_state["current_cycle"] = cycle
+        # Hard backstop: even if the per-cycle "stalled" signature fails to stabilize (e.g. a
+        # volatile field keeps it from tripping) or _live_state_is_verified flaps, the autonomous
+        # loop must terminate. Without this the runner can spin continuation cycles indefinitely.
+        if cycle > _autonomous_max_cycles():
+            checkpoint_state = _journal_status()
+            live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
+            live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
+            _record_activity(
+                "autonomy-stop",
+                f"Autonomous workflow hit the hard cycle ceiling ({_autonomous_max_cycles()} cycles); "
+                "stopping to avoid a runaway loop",
+                cycle=cycle,
+            )
+            _persist_live_status(
+                history, compaction_state, checkpoint_state, live_state, phase="stalled"
+            )
+            return history, compaction_state, checkpoint_state, live_state
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
         live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
