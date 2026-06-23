@@ -101,4 +101,5 @@ files = [
   "tools/response.py",
   "agent/managed_run.py",
   "epflemma_cli/native_config.py",
+  "epflemma_cli/lean_parsing.py",
 ]
