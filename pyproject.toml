@@ -107,4 +107,5 @@ files = [
   "epflemma_cli/formalization_document_runner.py",
   "epflemma_cli/manager_verification.py",
   "epflemma_cli/native_utils.py",
+  "epflemma_cli/project_prove_manager.py",
 ]
