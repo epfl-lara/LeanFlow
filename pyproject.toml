@@ -109,4 +109,5 @@ files = [
   "epflemma_cli/manager_verification.py",
   "epflemma_cli/native_utils.py",
   "epflemma_cli/project_prove_manager.py",
+  "epflemma_cli/cli_handlers.py",
 ]
