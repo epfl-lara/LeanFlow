@@ -6,8 +6,7 @@ import shutil
 from pathlib import Path
 
 from rich import box
-from rich.console import Console
-from rich.console import Group
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -21,7 +20,6 @@ from epflemma_cli.branding import (
     get_product_tagline,
 )
 from epflemma_cli.commands import COMMANDS_BY_CATEGORY
-
 
 EPFL_EMMA_WORDMARK = "\n".join(
     [

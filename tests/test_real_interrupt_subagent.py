@@ -9,9 +9,9 @@ import os
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
-from tools.interrupt import set_interrupt, is_interrupted
+from tools.interrupt import is_interrupted, set_interrupt
 
 
 def _make_slow_api_response(delay=5.0):

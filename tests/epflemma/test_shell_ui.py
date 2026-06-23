@@ -4,9 +4,20 @@ from rich.console import Console
 
 from epflemma_cli.banner import render_help, render_workflow_status_panel
 from epflemma_cli.main import InteractiveShell, main
-from epflemma_cli.workflow_state import append_workflow_activity, append_workflow_run_log, load_workflow_live_status, reset_workflow_run_log, save_workflow_live_status
 from epflemma_cli.runtime_provider import list_runtime_provider_targets
-from epflemma_cli.workflow import NativeLaunchPlan, NativeWorkflowSpec, describe_launch_plan, resolve_workflow_request
+from epflemma_cli.workflow import (
+    NativeLaunchPlan,
+    NativeWorkflowSpec,
+    describe_launch_plan,
+    resolve_workflow_request,
+)
+from epflemma_cli.workflow_state import (
+    append_workflow_activity,
+    append_workflow_run_log,
+    load_workflow_live_status,
+    reset_workflow_run_log,
+    save_workflow_live_status,
+)
 
 
 def test_render_help_mentions_forgiving_workflow_commands():

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import json
+from pathlib import Path
 from typing import Any
 
 from epflemma_cli.branding import get_cli_command_name, get_product_name
@@ -14,7 +14,6 @@ from epflemma_cli.runtime_provider import (
     resolve_runtime_provider,
 )
 from tools.mcp_tool import get_mcp_status
-
 
 DOCTOR_MODES = {"all", "env", "mcp", "search", "web-search", "migrate", "cleanup"}
 WEB_SEARCH_SMOKE_QUERY = "prime number theorem formalization Lean"

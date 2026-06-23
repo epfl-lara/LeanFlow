@@ -1,11 +1,11 @@
 """Tests for --yolo (GAUSS_YOLO_MODE) approval bypass."""
 
 import os
+
 import pytest
 
 import tools.approval as approval_module
 import tools.tirith_security
-
 from tools.approval import (
     check_all_command_guards,
     check_dangerous_command,

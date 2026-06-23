@@ -5,8 +5,9 @@ and that each module uses a platform guard before invoking POSIX-only functions.
 """
 
 import ast
-import pytest
 from pathlib import Path
+
+import pytest
 
 # Files that must have Windows-safe process management
 GUARDED_FILES = [

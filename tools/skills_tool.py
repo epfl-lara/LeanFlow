@@ -73,9 +73,10 @@ import re
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
+
 from epflemma_cli.config import _ENV_VAR_NAME_RE, get_epflemma_home, load_config, load_env
 from epflemma_cli.lean_workflow_specs import specs_for_skill
 from epflemma_cli.skill_core import discover_skills as _og_discover_skills

@@ -31,8 +31,8 @@ from epflemma_cli.banner import (
     render_swarm_table,
     render_swarm_transcript,
     render_swarm_transcript_entry,
-    render_workflow_status_panel,
     render_workflow_launch,
+    render_workflow_status_panel,
 )
 from epflemma_cli.commands import SlashCommandCompleter
 from epflemma_cli.config import (
@@ -53,6 +53,7 @@ from epflemma_cli.local_models import (
     stop_local_runtime,
     use_local_runtime,
 )
+from epflemma_cli.mcp_bootstrap import bootstrap_lean_mcp
 from epflemma_cli.project import (
     ProjectNotFoundError,
     clone_project_template,
@@ -75,8 +76,13 @@ from epflemma_cli.sandbox_runtime import (
     sandbox_status,
 )
 from epflemma_cli.skill_core import discover_skill_commands, discover_skills, load_skill
-from epflemma_cli.mcp_bootstrap import bootstrap_lean_mcp
-from epflemma_cli.workflow import FORGIVING_WORKFLOW_ALIAS_MAP, describe_launch_plan, resolve_workflow_request, run_workflow, spawn_workflow
+from epflemma_cli.workflow import (
+    FORGIVING_WORKFLOW_ALIAS_MAP,
+    describe_launch_plan,
+    resolve_workflow_request,
+    run_workflow,
+    spawn_workflow,
+)
 from epflemma_cli.workflow_state import (
     enqueue_workflow_agent_message,
     load_workflow_checkpoints,
@@ -84,17 +90,16 @@ from epflemma_cli.workflow_state import (
     read_workflow_activity,
     read_workflow_run_log,
     request_project_workflow_runner_exit,
+    resolve_workflow_agent_id,
     save_workflow_live_status,
     summarize_workflow_agents,
     terminate_project_workflow_agents,
     terminate_workflow_agent,
-    resolve_workflow_agent_id,
-    workflow_agent_transcript_all,
-    workflow_agent_transcript,
     workflow_agent_detail,
+    workflow_agent_transcript,
+    workflow_agent_transcript_all,
 )
 from tools.mcp_tool import get_mcp_status
-
 
 WORKFLOW_COMMANDS = {
     "/draft",

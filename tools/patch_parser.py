@@ -30,9 +30,12 @@ Usage:
 
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import List, Optional, Tuple, Any
 from enum import Enum
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from tools.file_operations import PatchResult
 
 
 class OperationType(Enum):

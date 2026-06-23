@@ -20,11 +20,11 @@ Public API retained for the Lean-first runtime:
     check_tool_availability(quiet) -> tuple
 """
 
-import json
 import asyncio
-import os
+import json
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+import os
+from typing import Any, Dict, List, Optional, Tuple
 
 from tools.registry import registry
 from toolsets import resolve_toolset, validate_toolset

@@ -15,7 +15,8 @@ crashes due to a bad timezone string.
 
 import logging
 import os
-from datetime import datetime, timezone as _tz
+from datetime import datetime
+from datetime import timezone as _tz
 from pathlib import Path
 from typing import Optional
 

@@ -37,7 +37,9 @@ import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
+
 import httpx
+
 from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
 
@@ -87,7 +89,6 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
     Raises:
         Exception: If download fails after all retries
     """
-    import asyncio
     
     # Create parent directories if they don't exist
     destination.parent.mkdir(parents=True, exist_ok=True)

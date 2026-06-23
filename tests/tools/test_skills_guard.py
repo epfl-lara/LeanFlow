@@ -22,23 +22,22 @@ def _can_symlink():
 
 
 from tools.skills_guard import (
-    Finding,
-    ScanResult,
-    scan_file,
-    scan_skill,
-    should_allow_install,
-    format_scan_report,
-    content_hash,
-    _determine_verdict,
-    _resolve_trust_level,
-    _check_structure,
-    _unicode_char_name,
     INSTALL_POLICY,
     INVISIBLE_CHARS,
     MAX_FILE_COUNT,
     MAX_SINGLE_FILE_KB,
+    Finding,
+    ScanResult,
+    _check_structure,
+    _determine_verdict,
+    _resolve_trust_level,
+    _unicode_char_name,
+    content_hash,
+    format_scan_report,
+    scan_file,
+    scan_skill,
+    should_allow_install,
 )
-
 
 # ---------------------------------------------------------------------------
 # _resolve_trust_level
@@ -193,7 +192,7 @@ class TestScanFile:
 
     def test_detect_invisible_unicode(self, tmp_path):
         f = tmp_path / "hidden.md"
-        f.write_text(f"normal text\u200b with zero-width space\n")
+        f.write_text("normal text\u200b with zero-width space\n")
         findings = scan_file(f, "hidden.md")
         assert any(fi.pattern_id == "invisible_unicode" for fi in findings)
 

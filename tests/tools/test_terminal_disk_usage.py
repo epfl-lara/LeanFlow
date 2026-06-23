@@ -1,15 +1,16 @@
 """Tests for get_active_environments_info disk usage calculation."""
 
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
-
 # tools/__init__.py re-exports a *function* called ``terminal_tool`` which
 # shadows the module of the same name.  Use sys.modules to get the real module
 # so patch.object works correctly.
 import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
 import tools.terminal_tool  # noqa: F401 -- ensure module is loaded
+
 _tt_mod = sys.modules["tools.terminal_tool"]
 from tools.terminal_tool import get_active_environments_info
 

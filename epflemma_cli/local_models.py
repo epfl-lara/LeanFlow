@@ -15,7 +15,6 @@ import httpx
 
 from epflemma_cli.config import load_config, save_config
 
-
 SUPPORTED_LOCAL_RUNTIMES = ("vllm", "ollama", "llama_cpp")
 
 

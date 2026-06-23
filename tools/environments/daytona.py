@@ -6,10 +6,10 @@ and resumed on next creation, preserving the filesystem across sessions.
 """
 
 import logging
-import time
 import math
 import shlex
 import threading
+import time
 import uuid
 import warnings
 from typing import Optional
@@ -42,8 +42,8 @@ class DaytonaEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd, timeout=timeout)
 
         from daytona import (
-            Daytona,
             CreateSandboxFromImageParams,
+            Daytona,
             DaytonaError,
             Resources,
             SandboxState,

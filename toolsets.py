@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Toolset definitions for the EPFLemma kernel."""
 
-from typing import List, Dict, Any, Set, Optional
-
+from typing import Any, Dict, List, Optional, Set
 
 _FILE_TOOLS = ["read_file", "write_file", "patch", "search_files"]
 _WEB_TOOLS = ["web_search"]

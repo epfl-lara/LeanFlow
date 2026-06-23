@@ -14,7 +14,6 @@ from typing import Any
 
 from epflemma_cli.project import find_lean_project_root
 
-
 LOCAL_REPL_CANDIDATES = (
     ".lake/packages/repl",
     ".lake/build",

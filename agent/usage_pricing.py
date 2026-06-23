@@ -3,7 +3,6 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Dict
 
-
 MODEL_PRICING = {
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},

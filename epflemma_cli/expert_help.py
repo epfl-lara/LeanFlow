@@ -13,7 +13,6 @@ from typing import Any, Mapping
 from epflemma_cli.config import get_env_value, load_config
 from epflemma_cli.workflow_state import append_workflow_activity
 
-
 COMMAND_PROVIDER_ALIASES = {
     "codex": "codex",
     "codex-cli": "codex",

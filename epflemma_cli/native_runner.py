@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -13,11 +13,10 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from difflib import unified_diff
 from datetime import datetime, timezone
+from difflib import unified_diff
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
-
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -26,8 +25,20 @@ if str(REPO_ROOT) not in sys.path:
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import ContextCompressor
 from agent.model_metadata import estimate_messages_tokens_rough
+from epflemma_cli.config import load_config
 from epflemma_cli.file_locks import list_file_locks, release_all_file_locks
 from epflemma_cli.lean_incremental import lean_incremental_check
+from epflemma_cli.lean_services import (
+    actionable_diagnostic_line_numbers,
+    diagnostic_items,
+    diagnostics_indicate_actionable_failure,
+    lean_inspect,
+    lean_verify,
+    probe_capabilities,
+    recent_empty_search_streak,
+    route_workflow_step,
+)
+from epflemma_cli.lean_workflow_specs import specs_for_skill
 from epflemma_cli.queue_manager import (
     Classification,
     ManagerCheck,
@@ -39,19 +50,16 @@ from epflemma_cli.queue_manager import (
     verification_from_mapping,
     verification_to_mapping,
 )
-from epflemma_cli.lean_services import (
-    actionable_diagnostic_line_numbers,
-    diagnostic_items,
-    diagnostics_indicate_actionable_failure,
-    lean_inspect,
-    recent_empty_search_streak,
-    lean_verify,
-    probe_capabilities,
-    route_workflow_step,
-)
-from epflemma_cli.config import load_config
-from epflemma_cli.lean_workflow_specs import specs_for_skill
 from epflemma_cli.skill_core import load_skill
+from epflemma_cli.verification_providers import (
+    AUTOFORMALIZER_VERIFICATION_TASK,
+    BLUEPRINT_VERIFICATION_TASK,
+    is_command_verification_provider,
+    is_local_verification_provider,
+    resolve_verification_provider,
+    run_command_verification_review,
+    run_model_verification_review,
+)
 from epflemma_cli.workflow_state import (
     append_workflow_activity,
     append_workflow_run_log,
@@ -63,15 +71,6 @@ from epflemma_cli.workflow_state import (
     terminate_project_workflow_agents,
     terminate_workflow_agent_descendants,
     workflow_agent_detail,
-)
-from epflemma_cli.verification_providers import (
-    AUTOFORMALIZER_VERIFICATION_TASK,
-    BLUEPRINT_VERIFICATION_TASK,
-    is_command_verification_provider,
-    is_local_verification_provider,
-    resolve_verification_provider,
-    run_command_verification_review,
-    run_model_verification_review,
 )
 from run_agent import AIAgent
 
@@ -9067,7 +9066,7 @@ def _recommended_verification_command(active_file: str) -> str:
         )
     module_name = _module_name_for_file(active_file)
     if module_name:
-        return f"`lean_inspect` first, then `lean_verify(mode=module)` when the file is close to clean"
+        return "`lean_inspect` first, then `lean_verify(mode=module)` when the file is close to clean"
     return f"`lean_inspect` on {relative_label}, then final `lean_verify(mode=file_exact)` when close to clean"
 
 

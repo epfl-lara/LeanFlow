@@ -4,14 +4,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.skills_sync import (
-    _read_manifest,
-    _write_manifest,
-    _discover_bundled_skills,
-    _compute_relative_dest,
-    _dir_hash,
-    sync_skills,
     MANIFEST_FILE,
     SKILLS_DIR,
+    _compute_relative_dest,
+    _dir_hash,
+    _discover_bundled_skills,
+    _read_manifest,
+    _write_manifest,
+    sync_skills,
 )
 
 

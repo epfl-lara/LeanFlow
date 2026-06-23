@@ -1,6 +1,7 @@
 """Tests for agent/display.py — build_tool_preview()."""
 
 import pytest
+
 from agent.display import build_tool_preview
 
 

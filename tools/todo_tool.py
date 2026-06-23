@@ -15,8 +15,7 @@ Design:
 """
 
 import json
-from typing import Dict, Any, List, Optional
-
+from typing import Any, Dict, List, Optional
 
 # Valid status values for todo items
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}

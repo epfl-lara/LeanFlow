@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from epflemma_cli.lean_workflow_specs import specs_for_skill
 
+from epflemma_cli.lean_workflow_specs import specs_for_skill
 
 CURATED_BUILTIN_SKILLS = {
     "lean-proof-loop",

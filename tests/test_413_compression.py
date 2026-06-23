@@ -7,6 +7,7 @@ Verifies that:
 """
 
 import pytest
+
 pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
 
 
@@ -19,7 +20,6 @@ import pytest
 
 from agent.context_compressor import SUMMARY_PREFIX
 from run_agent import AIAgent
-
 
 # ---------------------------------------------------------------------------
 # Helpers

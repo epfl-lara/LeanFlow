@@ -7,8 +7,14 @@ import json
 
 from epflemma_cli.file_locks import (
     acquire_file_lock as _acquire_file_lock,
+)
+from epflemma_cli.file_locks import (
     list_file_locks as _list_file_locks,
+)
+from epflemma_cli.file_locks import (
     release_all_file_locks as _release_all_file_locks,
+)
+from epflemma_cli.file_locks import (
     release_file_lock as _release_file_lock,
 )
 from tools.registry import registry

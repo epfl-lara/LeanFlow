@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-
 SUPPORTED_FORMALIZATION_DOCUMENT_EXTENSIONS = {
     ".tex": "latex",
     ".pdf": "pdf",
@@ -1312,7 +1311,7 @@ def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata
                 "",
                 f"- Kind: {block.get('kind', 'statement')}",
                 f"- Source locator: `{source_relative}:{block.get('line', '?')}-{block.get('end_line') or block.get('line', '?')}`",
-                f"- Planned Lean declarations: _pending_",
+                "- Planned Lean declarations: _pending_",
                 f"- Dependencies: {', '.join(block.get('uses', []) or []) or '_pending_'}",
                 "- Formal statement review: _pending_",
                 "- Source qualifiers: _pending_",

@@ -3,11 +3,10 @@
 import json
 import time
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_oauth_token,
     _refresh_oauth_token,
@@ -24,7 +23,7 @@ from agent.anthropic_adapter import (
     resolve_anthropic_token,
     run_oauth_setup_token,
 )
-
+from agent.prompt_caching import apply_anthropic_cache_control
 
 # ---------------------------------------------------------------------------
 # Auth helpers

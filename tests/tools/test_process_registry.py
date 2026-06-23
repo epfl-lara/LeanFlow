@@ -3,17 +3,18 @@
 import json
 import os
 import time
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tools.environments.local import _GAUSS_PROVIDER_ENV_FORCE_PREFIX
 from tools.process_registry import (
+    FINISHED_TTL_SECONDS,
+    MAX_OUTPUT_CHARS,
+    MAX_PROCESSES,
     ProcessRegistry,
     ProcessSession,
-    MAX_OUTPUT_CHARS,
-    FINISHED_TTL_SECONDS,
-    MAX_PROCESSES,
 )
 
 

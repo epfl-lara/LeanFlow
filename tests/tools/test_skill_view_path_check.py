@@ -6,8 +6,9 @@ Now uses Path.is_relative_to() which handles all platforms correctly.
 """
 
 import os
-import pytest
 from pathlib import Path
+
+import pytest
 
 
 def _path_escapes_skill_dir(resolved: Path, skill_dir_resolved: Path) -> bool:

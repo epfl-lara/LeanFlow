@@ -8,7 +8,6 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-
 ALLOW_STATEMENT_EDITS_ENV = "EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS"
 
 _DECL_START_RE = re.compile(

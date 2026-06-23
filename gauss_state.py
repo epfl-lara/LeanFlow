@@ -20,8 +20,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Dict, Any, List, Optional
-
+from typing import Any, Dict, List, Optional
 
 DEFAULT_DB_PATH = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss")) / "state.db"
 

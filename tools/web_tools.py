@@ -43,16 +43,17 @@ Usage:
 #TODO: Store the pages in something
 #TODO: Tool to see what pages are available/saved to search over
 
+import asyncio
 import json
 import logging
 import os
 import re
-import asyncio
 import xml.etree.ElementTree as ET
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
 import requests
+
 from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
 
@@ -1598,7 +1599,7 @@ if __name__ == "__main__":
     print("  # - Final processed results")
     print("  # Logs saved to: ./logs/web_tools_debug_UUID.json")
     
-    print(f"\n📝 Run 'python test_web_tools_llm.py' to test LLM processing capabilities")
+    print("\n📝 Run 'python test_web_tools_llm.py' to test LLM processing capabilities")
 
 
 # ---------------------------------------------------------------------------

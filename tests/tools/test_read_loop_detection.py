@@ -17,15 +17,15 @@ Run with:  python -m pytest tests/tools/test_read_loop_detection.py -v
 
 import json
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
+    _read_tracker,
+    clear_read_tracker,
+    get_read_files_summary,
+    notify_other_tool_call,
     read_file_tool,
     search_tool,
-    get_read_files_summary,
-    clear_read_tracker,
-    notify_other_tool_call,
-    _read_tracker,
 )
 
 

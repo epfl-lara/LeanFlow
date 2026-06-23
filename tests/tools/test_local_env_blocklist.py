@@ -13,9 +13,9 @@ import threading
 from unittest.mock import MagicMock, patch
 
 from tools.environments.local import (
-    LocalEnvironment,
     _GAUSS_PROVIDER_ENV_BLOCKLIST,
     _GAUSS_PROVIDER_ENV_FORCE_PREFIX,
+    LocalEnvironment,
 )
 
 

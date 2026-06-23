@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0"]
+dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0", "ruff>=0.6", "mypy>=1.11"]
 mcp = ["mcp>=1.2.0"]
 pty = [
   "ptyprocess>=0.7.0; sys_platform != 'win32'",
@@ -71,3 +71,30 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
 ]
 addopts = "-m 'not integration' -n auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# Lenient initial ruleset for the refactor. Enforces import-sorting and high-signal
+# pyflakes checks (undefined names, redefinitions, f-string misuse) — the safe, mechanical
+# wins. The unused-import / unused-variable sweeps are DEFERRED to Phase 6:
+#   F401 (unused-import): this codebase re-exports module-level imports as patch targets /
+#         dynamic-access points without __all__ (e.g. tools.terminal_tool._interrupt_event),
+#         so blanket auto-removal silently breaks runtime + tests. Must be done per-file with
+#         __all__ / `# noqa: F401` annotations.
+#   F841 (unused-variable): ~40 occurrences, not safely auto-fixable (may hide bugs).
+select = ["F", "I"]
+ignore = ["F401", "F841"]
+
+[tool.mypy]
+python_version = "3.11"
+follow_imports = "silent"
+ignore_missing_imports = true
+# Incremental gate: ONLY these files are type-checked. The list grows each phase as
+# modules are extracted/cleaned. mypy needs explicit targets — overrides alone do not select.
+files = [
+  "gauss_constants.py",
+  "utils.py",
+]

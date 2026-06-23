@@ -1,26 +1,26 @@
 """Tests for tools/checkpoint_manager.py — CheckpointManager."""
 
+import json
 import logging
 import os
-import json
 import shutil
 import subprocess
-import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tools.checkpoint_manager import (
+    CHECKPOINT_BASE,
+    DEFAULT_EXCLUDES,
     CheckpointManager,
-    _shadow_repo_path,
+    _dir_file_count,
+    _git_env,
     _init_shadow_repo,
     _run_git,
-    _git_env,
-    _dir_file_count,
+    _shadow_repo_path,
     format_checkpoint_list,
-    DEFAULT_EXCLUDES,
-    CHECKPOINT_BASE,
 )
-
 
 # =========================================================================
 # Fixtures

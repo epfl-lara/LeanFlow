@@ -26,22 +26,22 @@ Usage:
     result = terminal_tool("python server.py", background=True)
 """
 
+import atexit
 import importlib.util
 import json
 import logging
 import os
 import platform
-import signal
-import sys
-import time
-import threading
-import atexit
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +51,11 @@ logger = logging.getLogger(__name__)
 # The terminal tool polls this during command execution so it can kill
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
-from tools.interrupt import set_interrupt as set_interrupt_event, is_interrupted, _interrupt_event
-
-
 # Add mini-swe-agent to path if not installed. In git worktrees the populated
 # submodule may live in the main checkout rather than the worktree itself.
 from minisweagent_path import ensure_minisweagent_on_path
+from tools.interrupt import _interrupt_event, is_interrupted
+from tools.interrupt import set_interrupt as set_interrupt_event
 
 ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
 
@@ -67,7 +66,6 @@ ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
 
 # Singularity helpers (scratch dir, SIF cache) now live in tools/environments/singularity.py
 from tools.environments.singularity import _get_scratch_dir
-
 
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = float(os.getenv("TERMINAL_DISK_WARNING_GB", "500"))
@@ -130,11 +128,19 @@ def set_approval_callback(cb):
 
 # Dangerous command detection + approval now consolidated in tools/approval.py
 from tools.approval import (
-    detect_dangerous_command as _detect_dangerous_command,
-    check_dangerous_command as _check_dangerous_command_impl,
-    check_all_command_guards as _check_all_guards_impl,
-    load_permanent_allowlist as _load_permanent_allowlist,
     DANGEROUS_PATTERNS,
+)
+from tools.approval import (
+    check_all_command_guards as _check_all_guards_impl,
+)
+from tools.approval import (
+    check_dangerous_command as _check_dangerous_command_impl,
+)
+from tools.approval import (
+    detect_dangerous_command as _detect_dangerous_command,
+)
+from tools.approval import (
+    load_permanent_allowlist as _load_permanent_allowlist,
 )
 
 
@@ -189,7 +195,6 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     so the prompt integrates with prompt_toolkit's UI.  Otherwise reads
     directly from /dev/tty with echo disabled.
     """
-    import sys
     import time as time_module
     
     # Use the registered callback when available (prompt_toolkit-compatible)
@@ -369,12 +374,11 @@ def _transform_sudo_command(command: str) -> tuple[str, str | None]:
 
 
 # Environment classes now live in tools/environments/
+from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
+from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
-from tools.environments.docker import DockerEnvironment as _DockerEnvironment
-from tools.environments.modal import ModalEnvironment as _ModalEnvironment
-
 
 # Tool description for LLM
 TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem persists between calls.
@@ -593,7 +597,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             sandbox_kwargs["memory"] = memory
         if disk > 0:
             try:
-                import inspect, modal
+                import inspect
+
+                import modal
                 if "ephemeral_disk" in inspect.signature(modal.Sandbox.create).parameters:
                     sandbox_kwargs["ephemeral_disk"] = disk
             except Exception:
@@ -1260,7 +1266,7 @@ if __name__ == "__main__":
     print("=" * 50)
     
     config = _get_env_config()
-    print(f"\nCurrent Configuration:")
+    print("\nCurrent Configuration:")
     print(f"  Environment type: {config['env_type']}")
     print(f"  Docker image: {config['docker_image']}")
     print(f"  Modal image: {config['modal_image']}")

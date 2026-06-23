@@ -13,7 +13,6 @@ from epflemma_cli.expert_help import (
 )
 from epflemma_cli.workflow_state import append_workflow_activity
 
-
 BLUEPRINT_VERIFICATION_TASK = "blueprint_verification"
 AUTOFORMALIZER_VERIFICATION_TASK = "autoformalizer_verification"
 VERIFICATION_TASKS = {

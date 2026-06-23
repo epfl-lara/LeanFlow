@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from urllib.parse import urlparse
 from typing import Any, Mapping, Optional
+from urllib.parse import urlparse
 
 from epflemma_cli.auth import (
     CODEX_BASE_URL,
@@ -17,7 +17,6 @@ from epflemma_cli.auth import (
 )
 from epflemma_cli.config import DEFAULT_CONFIG, get_env_value, load_config
 from epflemma_cli.local_models import resolve_active_local_runtime
-
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 

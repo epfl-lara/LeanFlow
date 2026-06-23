@@ -3,23 +3,23 @@
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.auxiliary_client import (
-    get_text_auxiliary_client,
-    get_vision_auxiliary_client,
-    get_available_vision_backends,
-    resolve_provider_client,
-    auxiliary_max_tokens_param,
-    _read_codex_access_token,
-    _get_auxiliary_provider,
     _build_call_kwargs,
+    _get_auxiliary_provider,
+    _read_codex_access_token,
+    _resolve_auto,
+    _resolve_forced_provider,
     _resolve_task_provider_model,
     _resolve_task_reasoning_effort,
-    _resolve_forced_provider,
-    _resolve_auto,
+    auxiliary_max_tokens_param,
+    get_available_vision_backends,
+    get_text_auxiliary_client,
+    get_vision_auxiliary_client,
+    resolve_provider_client,
 )
 
 

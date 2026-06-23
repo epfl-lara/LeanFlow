@@ -1,19 +1,20 @@
 """Tests for agent/insights.py — InsightsEngine analytics and reporting."""
 
 import time
-import pytest
 from pathlib import Path
 
-from gauss_state import SessionDB
+import pytest
+
 from agent.insights import (
+    _DEFAULT_PRICING,
     InsightsEngine,
-    _get_pricing,
+    _bar_chart,
     _estimate_cost,
     _format_duration,
-    _bar_chart,
+    _get_pricing,
     _has_known_pricing,
-    _DEFAULT_PRICING,
 )
+from gauss_state import SessionDB
 
 
 @pytest.fixture()

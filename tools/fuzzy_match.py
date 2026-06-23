@@ -29,8 +29,8 @@ Usage:
 """
 
 import re
-from typing import Tuple, Optional, List, Callable
 from difflib import SequenceMatcher
+from typing import Callable, List, Optional, Tuple
 
 UNICODE_MAP = {
     "\u201c": '"', "\u201d": '"',  # smart double quotes

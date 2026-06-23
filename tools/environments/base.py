@@ -1,8 +1,8 @@
 """Base class for all EPFLemma execution environment backends."""
 
-from abc import ABC, abstractmethod
 import os
 import subprocess
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 from epflemma_cli.config import get_epflemma_home

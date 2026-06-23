@@ -8,14 +8,13 @@ from pathlib import Path
 import pytest
 
 from model_tools import (
-    handle_function_call,
-    get_all_tool_names,
-    get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
+    get_all_tool_names,
+    get_toolset_for_tool,
+    handle_function_call,
 )
-
 
 # =========================================================================
 # handle_function_call

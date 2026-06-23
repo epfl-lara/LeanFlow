@@ -15,7 +15,6 @@ from typing import Any
 
 import yaml
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SPEC_ROOT = REPO_ROOT / "epflemma_specs"
 VALID_SPEC_KINDS = {"workflow", "worker", "helper"}

@@ -8,7 +8,6 @@ from urllib.error import HTTPError
 
 import pytest
 
-
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "publish_shared_template.py"
 
 

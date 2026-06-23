@@ -8,9 +8,9 @@ import json
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
-from tools.interrupt import set_interrupt, is_interrupted, _interrupt_event
+from tools.interrupt import _interrupt_event, is_interrupted, set_interrupt
 
 
 class TestInterruptPropagationToChild(unittest.TestCase):
