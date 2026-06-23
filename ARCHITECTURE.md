@@ -87,3 +87,37 @@ On a developer machine with real provider credentials (`~/.codex` auth, `~/.epfl
 several `tests/agent/test_auxiliary_client.py` provider-resolution cases and one
 `test_run_agent.py` logging case fail because the resolver finds locally-available providers the
 tests assume are absent. These pass in CI (empty API keys) and are unrelated to the refactor.
+
+## Decomposition progress (branch refactor/epflemma-decomposition)
+
+Behavior-preserving extractions completed so far (each: move verbatim → re-export shim from the
+original module → ruff/mypy gate → full suite green → one commit). All extracted modules are leaf
+modules (no back-import into their origin), keeping `origin._name` valid for callers and tests.
+
+**From `native_runner.py` (11,671 → ~10,400 lines):**
+- `native_config.py` — env/config readers (`_read_native_env`, `_managed_home`, `_project_root`, …)
+- `lean_parsing.py` — pure Lean source/declaration text parsers (comment/string stripping, decl extraction)
+- `native_state.py` — module-level mutable de-dup caches + `_cache_once`
+- `queue_edit_guard.py` — declaration-edit protect/restore guards
+- `formalization_document_runner.py` — `/formalize` workflow predicates + blueprint manifest parsers (25 fns)
+- `manager_verification.py` — verification-record/outcome + timeout/retry helpers
+- `native_utils.py` — shared leaf text/JSON/format helpers (`_single_line`, `_extract_json_payload`, …)
+- `project_prove_manager.py` — file-level work-queue sizing/prioritization helpers (20 fns)
+
+**From `lean_services.py` (2,847 lines):**
+- `lean_diagnostics.py` — diagnostic/blocker/goal text parsers (incl. the backtracking-fixed `diagnostic_items`)
+
+**From `main.py` (1,495 → 1,339 lines):**
+- `cli_handlers.py` — argparse handler/formatter functions (`_handle_config/_sandbox/_models`, …)
+
+**From `run_agent.py`:**
+- `agent/log_formatting.py` — tool arg/result log formatters (Phase 1)
+- `agent/command_safety.py` — destructive-command detection
+- `agent/managed_run.py` — typed managed-run contract (Phase 1.5)
+
+**Deferred (needs dependency-injection seams / method-surgery, not safe as one-shot moves):**
+the tightly-coupled orchestration cores — native_runner's `_build_live_proof_state`, the autonomous
+follow-up loop, `_run_managed_conversation`/`main`; the `AIAgent` method clusters (provider routing,
+tool executor, conversation manager, interrupt controller); `main.py`'s `InteractiveShell` (its callees
+are test-monkeypatched on `main`); and the provider/backend *abstractions* (ProviderRouter, Lean backend
+interface) which are redesigns rather than moves. These are the next, more invasive refactoring steps.
