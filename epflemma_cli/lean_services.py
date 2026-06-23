@@ -1182,9 +1182,17 @@ def diagnostic_items(text: str) -> list[dict[str, Any]]:
     if items:
         return items
 
+    # Anchor each diagnostic at a line start (^...$ + MULTILINE). Without the anchor, finditer
+    # re-attempts the lazy `.*?` prefix at every character offset, which is O(n^2) — and on a
+    # single long line that carries `:line:col:` coordinates but no `error:`/`warning:` token
+    # (e.g. a long goal-state / typeclass-trace line) it spins at ~100% CPU effectively forever.
+    # The `^` anchor only changes WHERE finditer restarts (line boundaries vs every offset); it
+    # does not change what any individual match consumes, so the parsed output is unchanged for
+    # realistic diagnostics. (Note: `\s*` can still span a newline, exactly as before — so a
+    # diagnostic whose message wraps to a continuation line parses identically to the old regex.)
     pattern = re.compile(
-        r"(?P<prefix>.*?):(?P<line>\d+):(?P<column>\d+):\s*(?P<severity>error|warning):\s*(?P<message>.*)",
-        flags=re.IGNORECASE,
+        r"^(?P<prefix>.*?):(?P<line>\d+):(?P<column>\d+):\s*(?P<severity>error|warning):\s*(?P<message>.*)$",
+        flags=re.IGNORECASE | re.MULTILINE,
     )
     for match in pattern.finditer(text or ""):
         line = _coerce_positive_int(match.group("line"))
