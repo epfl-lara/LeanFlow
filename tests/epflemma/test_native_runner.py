@@ -60,6 +60,25 @@ def test_verified_workflow_exits_without_prompt_when_stdin_is_not_interactive(mo
     assert runner._verified_workflow_should_exit_without_prompt({"phase": "verified"}) is True
 
 
+def test_interactive_prompt_loop_disallowed_when_stdin_not_tty(monkeypatch):
+    # Headless run: main() must not enter the blocking input() loop, or it hangs forever.
+    class _Stdin:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr(runner.sys, "stdin", _Stdin())
+    assert runner._interactive_prompt_loop_allowed() is False
+
+
+def test_interactive_prompt_loop_allowed_when_stdin_is_tty(monkeypatch):
+    class _Stdin:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(runner.sys, "stdin", _Stdin())
+    assert runner._interactive_prompt_loop_allowed() is True
+
+
 def test_run_managed_conversation_passes_through_result():
     class _Agent:
         def run_conversation(self, **kwargs):
@@ -8512,3 +8531,27 @@ def test_drive_autonomous_followups_records_transition_events(monkeypatch, tmp_p
     assert "theorem-transition" in event_types
     assert "theorem-context-cleared" in event_types
     assert "theorem-handoff-rebuilt" in event_types
+
+
+def test_autonomous_stop_reason_stalls_despite_volatile_elapsed(monkeypatch):
+    # Regression for the post-verification livelock: build_status carries a per-cycle
+    # "elapsed: <wall-clock>s" token. If that volatile token enters the stall signature, a
+    # genuinely no-progress autonomous loop never trips the "stalled" safety net and spins
+    # forever. The signature must ignore the elapsed token.
+    monkeypatch.setattr(runner, "_document_formalization_ready_for_prover_handoff", lambda ls: False)
+    monkeypatch.setattr(runner, "_document_formalization_waiting_for_independent_review", lambda ls: False)
+    autonomy_state: dict = {}
+    reasons = []
+    for i in range(8):
+        live_state = {
+            "active_file": "",  # -> _live_state_is_verified() is False, so we reach the stall logic
+            "active_file_label": "F.lean",
+            "target_symbol": "thm",
+            "diagnostics": "",
+            "goals": "",
+            # Only the elapsed token changes each cycle; everything else is identical.
+            "build_status": f"lake build succeeded | elapsed: {i}.123s",
+            "sorry_count": 0,
+        }
+        reasons.append(runner._autonomous_stop_reason([], live_state, autonomy_state))
+    assert "stalled" in reasons, f"stall net never tripped despite a stable state: {reasons}"

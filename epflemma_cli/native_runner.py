@@ -225,6 +225,16 @@ def _verified_workflow_should_exit_without_prompt(live_state: Mapping[str, Any])
     return _live_state_is_verified(live_state) and not _stdin_is_interactive()
 
 
+def _interactive_prompt_loop_allowed() -> bool:
+    """Whether main() may enter the blocking ``input()`` prompt loop.
+
+    Only when stdin is a real TTY. A headless run (no TTY — e.g. ``epflemma workflow prove``
+    launched from a script, pipe, or background process) has no human to answer the prompt, so
+    blocking on ``input()`` would hang the process forever. Such runs must exit cleanly instead.
+    """
+    return _stdin_is_interactive()
+
+
 def _is_autonomous_workflow() -> bool:
     return _workflow_kind() in AUTONOMOUS_WORKFLOW_KINDS
 
@@ -10925,12 +10935,23 @@ def _autonomous_stop_reason(
             return "continue"
         return "blocked"
 
+    # The stall signature detects a no-progress autonomous loop (same state N cycles in a row ->
+    # "stalled" -> stop). build_status carries a volatile "elapsed: <wall-clock>s" token (added by
+    # _verification_status_text) that changes every verification, which would reset stable_cycles
+    # every cycle and make the safety net never trip — letting the loop spin forever when the file
+    # is effectively done but _live_state_is_verified flaps. Strip that volatile token so a truly
+    # unchanging state is recognized as stalled.
+    stable_build_status = re.sub(
+        r"\s*\|?\s*elapsed:\s*[0-9.]+s",
+        "",
+        str((live_state or {}).get("build_status", "") or ""),
+    )
     signature = (
         str((live_state or {}).get("active_file_label", "") or ""),
         str((live_state or {}).get("target_symbol", "") or ""),
         str((live_state or {}).get("diagnostics", "") or ""),
         str((live_state or {}).get("goals", "") or ""),
-        str((live_state or {}).get("build_status", "") or ""),
+        stable_build_status,
         str((live_state or {}).get("sorry_count", "") or ""),
     )
     previous_signature = autonomy_state.get("continuation_live_state_signature")
@@ -11407,6 +11428,22 @@ def main() -> int:
                 live_state,
                 autonomy_state,
             )
+        if not _interactive_prompt_loop_allowed():
+            # Headless run (stdin is not a TTY): there is no human to answer the prompt, so we
+            # must NOT block on input(). The autonomous followups have already run; persist the
+            # final state (resumable) and exit cleanly instead of hanging on a prompt forever.
+            _terminate_descendant_agents(agent)
+            _terminate_other_agents(agent)
+            exit_phase = "exited" if _live_state_is_verified(live_state) else "paused"
+            _persist_live_status(
+                history, compaction_state, checkpoint_state, live_state, phase=exit_phase
+            )
+            _record_agent_activity(
+                agent,
+                "runner-exit",
+                "Managed workflow runner exited without interactive prompt (stdin not a TTY)",
+            )
+            return 0
         _print_interactive_mode_header(live_state)
 
         while True:

@@ -320,3 +320,31 @@ def test_load_config_rewrites_legacy_payload_and_persists_transform(monkeypatch,
     persisted = yaml.safe_load(get_config_path().read_text(encoding="utf-8"))
     assert "epflemma" in persisted
     assert "gauss" not in persisted
+
+
+def test_load_config_is_cached_and_isolated(monkeypatch, tmp_path):
+    # load_config() is hammered in per-item loops (workflow exit cleanup); it must be cheap and
+    # must not let callers corrupt the shared cache. Regression for a multi-minute exit hang.
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    from epflemma_cli import config
+
+    config.invalidate_config_cache()
+    first = config.load_config()
+    # Mutating a returned config must not leak into the cache (deepcopy isolation).
+    first["__scratch__"] = 123
+    assert "__scratch__" not in config.load_config()
+
+    # A write invalidates the cache so the new value is observed.
+    config.set_config_value("logging.activity_preview_chars", 4242)
+    assert config.load_config().get("logging", {}).get("activity_preview_chars") == 4242
+
+
+def test_load_config_cache_keys_on_home(monkeypatch, tmp_path):
+    from epflemma_cli import config
+
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "a"))
+    config.invalidate_config_cache()
+    config.set_config_value("logging.activity_preview_chars", 111)
+    # Switching home must re-read from the new location, not serve the stale cache.
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "b"))
+    assert config.load_config().get("logging", {}).get("activity_preview_chars") != 111
