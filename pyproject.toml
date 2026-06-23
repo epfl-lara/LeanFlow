@@ -97,4 +97,6 @@ ignore_missing_imports = true
 files = [
   "gauss_constants.py",
   "utils.py",
+  "agent/log_formatting.py",
+  "tools/response.py",
 ]
