@@ -1717,3 +1717,29 @@ def test_incremental_auto_probe_clamps_short_timeout(monkeypatch, tmp_path):
     assert captured["timeout_s"] == 60
     assert payload is not None
     assert payload["attempts"][0]["timing"]["budget_s"] == 60.0
+
+
+def test_diagnostic_items_parses_standard_lines():
+    out = lean_services.diagnostic_items(
+        "File.lean:12:7: error: unexpected token\n"
+        "C:/proj/File.lean:3:0: warning: unused variable x"
+    )
+    assert out == [
+        {"severity": "error", "message": "unexpected token", "line": 12},
+        {"severity": "warning", "message": "unused variable x", "line": 3},
+    ]
+
+
+def test_diagnostic_items_does_not_catastrophically_backtrack():
+    # Regression guard: a long single line carrying many `:n:n:` coordinates but NO
+    # error:/warning: token previously caused O(n^2) regex backtracking that pinned the
+    # autonomous runner at ~100% CPU forever. The anchored pattern parses it in well under a
+    # second (pre-fix this 32 KB input took ~10s; it scales quadratically).
+    import time
+
+    pathological = "1:" * 16000  # ~32 KB, no error/warning token -> no matches
+    start = time.perf_counter()
+    result = lean_services.diagnostic_items(pathological)
+    elapsed = time.perf_counter() - start
+    assert result == []
+    assert elapsed < 1.0, f"diagnostic_items took {elapsed:.2f}s — regex backtracking regression"
