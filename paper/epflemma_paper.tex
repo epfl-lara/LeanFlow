@@ -194,7 +194,7 @@ The model proposes edits and helper lemmas, while the manager assigns one target
 
 This separation has different benefits across the two model settings in our experiments.
 For \kimi~\citep{moonshot2026kimi}, workflow control is decisive in our two document-level runs: the full workflow finishes both sources, while no-queue variants exhaust the call budget.
-For \gpt, all document-level variants finish, so the observed benefit is not a binary success difference; the same structure instead reduces token use and preserves an explicit audit trail for the proof work.
+For \gpt, all document-level variants finish, so the observed benefit is not a binary success difference; the same structure instead improves token efficiency and preserves an explicit audit trail for the proof work.
 
 \method also introduces LeanProbe, a cached same-file verifier built on LeanInteract~\citep{leaninteract2025}, for repeated proof-repair checks.
 LeanProbe gives the proving agent low-latency diagnostics and proof-state feedback while leaving final acceptance to standard \lean/Lake checks.
@@ -223,7 +223,6 @@ Benchmarks such as miniF2F~\citep{zheng2022minif2f}, ProofNet~\citep{azerbayev20
 They provide useful calibration, but most start from an existing formal statement or repository context.
 \method instead studies the runtime needed when the source begins as mathematical prose, and the output must be a buildable project.
 
-% \paragraph{Autoformalization and document-scale formalization.}
 \paragraph{Autoformalization across scales.}
 Early LLM autoformalization work studied natural-language-to-formal translation at theorem scale~\citep{wu2022autoformalization}; later work improved process supervision and evaluation for \lean statements~\citep{lu2024process,poiroux2024reliable,poiroux2025rlmeval}.
 M2F~\citep{wang2026m2f} and Automatic Textbook Formalization~\citep{gloeckle2026automatictextbookformalization} formalize long mathematical sources into \lean projects, audit generated statements, and repair proofs under a pinned environment.
@@ -320,7 +319,7 @@ For PDFs, it records extracted text, metadata, and image inventories through loc
 
 The \emph{formalize} workflow next creates a project-local blueprint before the proof skeleton is considered ready.
 The blueprint is the durable source map for the run: it lists source statements, planned \lean names, dependencies, source locators, statement-fidelity checks, proof notes, and known scope changes.
-For each source theorem or lemma, it spells out the parts of the formal type that are easy to drift: object classes, quantifier order, parameter domains, codomains, hypotheses, side conditions, and follow-on equivalences.
+For each source theorem or lemma, it spells out the parts of the formal type that are most prone to drift: object classes, quantifier order, parameter domains, codomains, hypotheses, side conditions, and follow-on equivalences.
 The generated \lean module must type-check with theorem bodies left as \texttt{by sorry}; proof filling is deferred until the statement/source gate has approved the skeleton.
 
 \subsection{Statement/Source Gate}
@@ -478,7 +477,7 @@ Statement translation, skeleton construction, the statement/source gate, and pro
 \subsection{Workflow Ablations on Real Sources}
 
 The evaluation is based on ablation: it compares the full \method against variants that remove the queue manager and/or the specialized \lean tools.
-For each model, we run the full $2\times2$ design: queue versus no queue, and full tool surface versus terminal-only interaction. The corresponding \cref{tab:longform-ablation} is organized by source so that the final analysis can compare completion behavior and model-side budget within the same mathematical project.
+For each model, we run the full $2\times2$ design: queue versus no queue, and full tool surface versus terminal-only interaction. \cref{tab:longform-ablation} is organized by source so that completion behavior and model-side budget can be compared within the same mathematical project.
 All document-level proving runs have a maximum budget of 2000 prover-agent API calls, where one call is one model turn in the proof-repair loop.
 In the no-queue condition, an outer runner still keeps the prover running until the project succeeds or the call budget expires, but it disables the assignment and memory behavior in \cref{alg:method}, Step 6: the model is not restricted to a single top-of-queue theorem, and theorem-local failed-attempt history is not used to gate the next target.
 Source preflight, the statement/source gate, final \lean/Lake verification, and hygiene checks are held fixed across conditions.
@@ -629,7 +628,7 @@ The no-review condition skips the blueprint and statement/source review stages i
 The no-review draft and the reviewed skeleton both build, but they formalize different mathematical objects.
 The no-review draft would support a less source-faithful function-level formalization of the result: it defines the main witnesses as rational-valued functions on integer inputs.
 The reviewed skeleton is the source-faithful version under the checks in \cref{tab:review-checks}: it defines the witnesses as rational multivariate polynomials and separately proves integer-valuedness, matching the paper's theorem.
-The detailed declaration-level contrast is reported in the Appendix~\ref{app:docs-case-study} (\cref{tab:pyth-skeleton-comparison}).
+The detailed declaration-level contrast is reported in Appendix~\ref{app:docs-case-study} (\cref{tab:pyth-skeleton-comparison}).
 
 \section{Threats to Validity}
 \label{sec:threats}
@@ -728,7 +727,7 @@ The formalization represents $\mathbb{R}^n$ as \lean Euclidean space, defines cl
 \]
 The first analytic proof block packages the Crofton/Fubini argument showing that half-space values determine $f_\mu$.
 The second proof block packages the odd-dimensional inversion step: after reindexing dimensions as $2m+1$, the needed kernel identity is that an $(m+1)$-fold Laplacian of the norm kernel recovers a nonzero multiple of the point mass at the origin.
-In \lean-facing terms, this required a tempered-distribution norm kernel, Fourier/Laplacian algebra for iterated Laplacians, transport between the Euclidean model used by PhysLib~\citep{physlean2025} and the project's odd-dimensional space, and a bridge from PhysLib's real distribution API to Mathlib's complex tempered distributions.
+In \lean-facing terms, this requires a tempered-distribution norm kernel, Fourier/Laplacian algebra for iterated Laplacians, transport between the Euclidean model used by PhysLib~\citep{physlean2025} and the project's odd-dimensional space, and a bridge from PhysLib's real distribution API to Mathlib's complex tempered distributions.
 The analytic formalization also produced reusable PhysLib infrastructure for distributional Laplacians of norm-kernel fundamental solutions, upstreamed in \href{https://github.com/leanprover-community/physlib/pull/1175}{\texttt{leanprover-community/physlib\#1175}}.
 The even-dimensional Cramer--Wold theorem is then reduced to the odd-dimensional one by embedding $\mathbb{R}^{2m}$ into $\mathbb{R}^{2m+1}$ and transporting half-space values along that embedding.
 The reviewed skeleton keeps the Crofton and inversion blocks as named proof targets rather than hiding them inside the final theorem; this makes it clear which missing analytic facts are mathematical infrastructure, not model-generated assumptions.
