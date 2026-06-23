@@ -33,10 +33,9 @@ __all__ = [
 ]
 
 
-LEAN_DECLARATION_PREAMBLE_RE = (
-    r"^\s*(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial)\s+)*"
-    r"(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
-)
+# Single source of truth for the declaration-preamble pattern lives in lean_parsing; import (and
+# re-export, via __all__) it here rather than duplicating the literal, to avoid future drift.
+from epflemma_cli.lean_parsing import LEAN_DECLARATION_PREAMBLE_RE
 
 
 def _declaration_index(path: Path) -> list[dict[str, Any]]:
