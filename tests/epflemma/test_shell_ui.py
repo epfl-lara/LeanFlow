@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from rich.console import Console
 
+from epflemma_cli import cli_handlers
+from epflemma_cli import main as main_module
 from epflemma_cli.banner import render_help, render_workflow_status_panel
 from epflemma_cli.main import InteractiveShell, main
 from epflemma_cli.runtime_provider import list_runtime_provider_targets
@@ -18,6 +20,17 @@ from epflemma_cli.workflow_state import (
     reset_workflow_run_log,
     save_workflow_live_status,
 )
+
+
+def test_cli_handlers_reexport_identity():
+    # Phase 3 extraction: the moved handler/formatter functions must stay importable from
+    # epflemma_cli.main (re-export shim) and be the exact same objects defined in
+    # epflemma_cli.cli_handlers, so existing main.<name> references and tests keep working.
+    for name in cli_handlers.__all__:
+        assert hasattr(main_module, name), f"main lost re-export of {name}"
+        assert getattr(main_module, name) is getattr(cli_handlers, name), (
+            f"{name} is not the same object on main and cli_handlers"
+        )
 
 
 def test_render_help_mentions_forgiving_workflow_commands():
