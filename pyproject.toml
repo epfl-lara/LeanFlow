@@ -103,6 +103,7 @@ files = [
   "agent/managed_run.py",
   "epflemma_cli/native_config.py",
   "epflemma_cli/lean_diagnostics.py",
+  "epflemma_cli/lean_declarations.py",
   "epflemma_cli/lean_parsing.py",
   "epflemma_cli/native_state.py",
   "epflemma_cli/queue_edit_guard.py",
