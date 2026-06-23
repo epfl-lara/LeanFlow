@@ -4339,10 +4339,7 @@ class AIAgent:
                     self.post_tool_result_callback(name, args, function_result)
                 except Exception as cb_err:
                     logger.debug("post_tool_result_callback error: %s", cb_err)
-                appendix = getattr(self, "_post_tool_result_appendix", None)
-                if appendix:
-                    tool_msg["content"] = f"{tool_msg['content']}\n\n{appendix}"
-                    self._post_tool_result_appendix = None
+                self._apply_post_tool_result_appendix(tool_msg)
 
         if not self.quiet_mode:
             print(f"{self.log_prefix}└─ Tool batch complete")
@@ -4364,6 +4361,34 @@ class AIAgent:
                 remaining = self.max_iterations - api_call_count
                 tier = "⚠️  WARNING" if remaining <= self.max_iterations * 0.1 else "💡 CAUTION"
                 print(f"{self.log_prefix}{tier}: {remaining} iterations remaining")
+
+    def stage_tool_result_appendix(self, text: str) -> None:
+        """Managed-run contract (see agent.managed_run.ManagedRunContext).
+
+        Stage guidance text to be appended to the NEXT tool result the model sees. Repeated
+        calls before a tool result accumulate (blank-line separated). The staged text is
+        consumed and cleared exactly once by ``_apply_post_tool_result_appendix``. Backed by the
+        legacy ``_post_tool_result_appendix`` attribute so managed-runner code that sets that
+        attribute directly keeps working during the transition.
+        """
+        text = str(text or "").strip()
+        if not text:
+            return
+        previous = str(getattr(self, "_post_tool_result_appendix", "") or "").strip()
+        self._post_tool_result_appendix = f"{previous}\n\n{text}".strip() if previous else text
+
+    def _apply_post_tool_result_appendix(self, tool_msg: dict) -> None:
+        """Consume any staged post-tool-result appendix, appending it to ``tool_msg`` once.
+
+        Single source of truth for the appendix mechanism, shared by the sequential and
+        concurrent tool-execution paths. If a managed runner (or any post_tool_result_callback)
+        staged guidance via ``stage_tool_result_appendix`` / the ``_post_tool_result_appendix``
+        attribute, append it to the tool result content the model sees, then clear it (one-shot).
+        """
+        appendix = getattr(self, "_post_tool_result_appendix", None)
+        if appendix:
+            tool_msg["content"] = f"{tool_msg['content']}\n\n{appendix}"
+            self._post_tool_result_appendix = None
 
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
@@ -4641,10 +4666,7 @@ class AIAgent:
                     self.post_tool_result_callback(function_name, function_args, function_result)
                 except Exception as cb_err:
                     logger.debug("post_tool_result_callback error: %s", cb_err)
-                appendix = getattr(self, "_post_tool_result_appendix", None)
-                if appendix:
-                    tool_msg["content"] = f"{tool_msg['content']}\n\n{appendix}"
-                    self._post_tool_result_appendix = None
+                self._apply_post_tool_result_appendix(tool_msg)
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i
