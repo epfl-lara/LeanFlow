@@ -71,7 +71,7 @@ class BaseEnvironment(ABC):
             pass to Popen.  Callers that embed stdin via heredoc (modal,
             daytona) handle sudo_stdin in their own execute() method.
         """
-        from tools.terminal_tool import _transform_sudo_command
+        from tools.implementations.terminal_tool import _transform_sudo_command
         return _transform_sudo_command(command)
 
     def _build_run_kwargs(self, timeout: int | None,

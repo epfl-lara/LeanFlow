@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import run_agent
-from agent.api_caller import ApiCaller
+from agent.providers.api_caller import ApiCaller
 from run_agent import AIAgent, _resolve_api_caller
 
 

@@ -5,7 +5,7 @@ import json
 import pytest
 import yaml
 
-from epflemma_cli.runtime_provider import (
+from epflemma_cli.runtime.runtime_provider import (
     PROVIDER_SPECS,
     RuntimeProviderError,
     list_runtime_provider_targets,

@@ -7,8 +7,8 @@ without a back-import. The behavior tests exercise the trickiest helpers: JSON-p
 from fenced / noisy text, single-line collapsing + truncation, and message-text collection.
 """
 
-from epflemma_cli import native_runner
-from epflemma_cli import native_utils as nu
+from epflemma_cli.native import native_runner
+from epflemma_cli.native import native_utils as nu
 
 
 def test_native_runner_reexports_are_identical():

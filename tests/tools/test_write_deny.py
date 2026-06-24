@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.file_operations import _is_write_denied
+from tools.implementations.file_operations import _is_write_denied
 
 
 class TestWriteDenyExactPaths:

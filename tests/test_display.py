@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent.display import build_tool_preview
+from agent.display.display import build_tool_preview
 
 
 class TestBuildToolPreview:

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command
+from tools.mcp.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command
 
 
 def test_resolve_stdio_command_falls_back_to_gauss_node_bin(tmp_path):
@@ -15,7 +15,7 @@ def test_resolve_stdio_command_falls_back_to_gauss_node_bin(tmp_path):
     npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     npx_path.chmod(0o755)
 
-    with patch("tools.mcp_tool.shutil.which", return_value=None), \
+    with patch("tools.mcp.mcp_tool.shutil.which", return_value=None), \
          patch.dict(
              "os.environ",
              {"GAUSS_HOME": str(tmp_path), "EPFLEMMA_HOME": str(tmp_path)},
@@ -34,7 +34,7 @@ def test_resolve_stdio_command_respects_explicit_empty_path():
         seen_paths.append(path)
         return None
 
-    with patch("tools.mcp_tool.shutil.which", side_effect=_fake_which):
+    with patch("tools.mcp.mcp_tool.shutil.which", side_effect=_fake_which):
         command, env = _resolve_stdio_command("python", {"PATH": ""})
 
     assert command == "python"
@@ -73,7 +73,7 @@ def test_run_stdio_uses_resolved_command_and_prepended_path(tmp_path):
     mock_session_cm.__aexit__ = AsyncMock(return_value=False)
 
     async def _test():
-        with patch("tools.mcp_tool.shutil.which", return_value=None), \
+        with patch("tools.mcp.mcp_tool.shutil.which", return_value=None), \
              patch.dict(
                  "os.environ",
                  {
@@ -84,9 +84,9 @@ def test_run_stdio_uses_resolved_command_and_prepended_path(tmp_path):
                  },
                  clear=False,
              ), \
-             patch("tools.mcp_tool.StdioServerParameters") as mock_params, \
-             patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
-             patch("tools.mcp_tool.ClientSession", return_value=mock_session_cm):
+             patch("tools.mcp.mcp_tool.StdioServerParameters") as mock_params, \
+             patch("tools.mcp.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
+             patch("tools.mcp.mcp_tool.ClientSession", return_value=mock_session_cm):
             server = MCPServerTask("srv")
             await server.start({"command": "npx", "args": ["-y", "pkg"], "env": {"PATH": "/usr/bin"}})
 

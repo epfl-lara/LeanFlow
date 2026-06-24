@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from epflemma_cli.skill_core import (
+from epflemma_cli.runtime.skill_core import (
     CURATED_BUILTIN_SKILLS,
     build_skill_prompt,
     default_workflow_skill,

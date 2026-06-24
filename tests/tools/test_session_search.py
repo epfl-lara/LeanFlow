@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from tools.session_search_tool import (
+from tools.implementations.session_search_tool import (
     MAX_SESSION_CHARS,
     SESSION_SEARCH_SCHEMA,
     _format_conversation,
@@ -141,19 +141,19 @@ class TestTruncateAroundMatches:
 
 class TestSessionSearch:
     def test_no_db_returns_error(self):
-        from tools.session_search_tool import session_search
+        from tools.implementations.session_search_tool import session_search
         result = json.loads(session_search(query="test"))
         assert result["success"] is False
         assert "not available" in result["error"].lower()
 
     def test_empty_query_returns_error(self):
-        from tools.session_search_tool import session_search
+        from tools.implementations.session_search_tool import session_search
         mock_db = object()
         result = json.loads(session_search(query="", db=mock_db))
         assert result["success"] is False
 
     def test_whitespace_query_returns_error(self):
-        from tools.session_search_tool import session_search
+        from tools.implementations.session_search_tool import session_search
         mock_db = object()
         result = json.loads(session_search(query="   ", db=mock_db))
         assert result["success"] is False
@@ -162,7 +162,7 @@ class TestSessionSearch:
         """session_search should never return the current session."""
         from unittest.mock import MagicMock
 
-        from tools.session_search_tool import session_search
+        from tools.implementations.session_search_tool import session_search
 
         mock_db = MagicMock()
         current_sid = "20260304_120000_abc123"
@@ -185,7 +185,7 @@ class TestSessionSearch:
         """Other sessions should still be returned when current is excluded."""
         from unittest.mock import MagicMock
 
-        from tools.session_search_tool import session_search
+        from tools.implementations.session_search_tool import session_search
 
         mock_db = MagicMock()
         current_sid = "20260304_120000_abc123"
@@ -206,7 +206,7 @@ class TestSessionSearch:
         # Mock async_call_llm to raise RuntimeError → summarizer returns None
         from unittest.mock import AsyncMock
         from unittest.mock import patch as _patch
-        with _patch("tools.session_search_tool.async_call_llm",
+        with _patch("tools.implementations.session_search_tool.async_call_llm",
                      new_callable=AsyncMock,
                      side_effect=RuntimeError("no provider")):
             result = json.loads(session_search(

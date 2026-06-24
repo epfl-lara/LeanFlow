@@ -11,8 +11,8 @@ statement/proof split, and location-based text slicing.
 
 from __future__ import annotations
 
-from epflemma_cli import lean_declarations as ld
-from epflemma_cli import lean_services
+from epflemma_cli.lean import lean_declarations as ld
+from epflemma_cli.lean import lean_services
 
 
 def test_lean_services_reexports_are_identical():

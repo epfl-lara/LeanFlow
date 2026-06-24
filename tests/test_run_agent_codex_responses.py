@@ -459,7 +459,7 @@ def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
         return _RebuiltClient()
 
     monkeypatch.setattr(
-        "epflemma_cli.auth.resolve_codex_runtime_credentials",
+        "epflemma_cli.runtime.auth.resolve_codex_runtime_credentials",
         lambda force_refresh=True, allow_legacy_store=None: {
             "api_key": "new-codex-token",
             "base_url": "https://chatgpt.com/backend-api/codex",

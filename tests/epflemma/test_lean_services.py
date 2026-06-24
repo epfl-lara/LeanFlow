@@ -4,8 +4,8 @@ import sys
 import types
 from pathlib import Path
 
-from epflemma_cli import lean_services
-from epflemma_cli.lean_services import LeanCapabilityReport
+from epflemma_cli.lean import lean_services
+from epflemma_cli.lean.lean_services import LeanCapabilityReport
 
 
 def test_probe_capabilities_reports_managed_mcp_roles(monkeypatch, tmp_path):
@@ -32,7 +32,7 @@ def test_probe_capabilities_reports_managed_mcp_roles(monkeypatch, tmp_path):
         },
     )
     monkeypatch.setattr(
-        "tools.mcp_tool.get_mcp_status",
+        "tools.mcp.mcp_tool.get_mcp_status",
         lambda: [
             {
                 "name": "lean-lsp",
@@ -277,9 +277,9 @@ def test_probe_capabilities_reports_direct_leanexplore_api(monkeypatch, tmp_path
             "auto_try": "",
         },
     )
-    monkeypatch.setattr("tools.mcp_tool.get_mcp_status", lambda: [])
+    monkeypatch.setattr("tools.mcp.mcp_tool.get_mcp_status", lambda: [])
     monkeypatch.setattr(
-        "epflemma_cli.mcp_bootstrap.managed_mcp_power_status",
+        "epflemma_cli.cli.mcp_bootstrap.managed_mcp_power_status",
         lambda project_root=None: {},
     )
 
@@ -334,9 +334,9 @@ def test_probe_capabilities_reports_local_leanexplore_when_data_is_ready(monkeyp
             "auto_try": "",
         },
     )
-    monkeypatch.setattr("tools.mcp_tool.get_mcp_status", lambda: [])
+    monkeypatch.setattr("tools.mcp.mcp_tool.get_mcp_status", lambda: [])
     monkeypatch.setattr(
-        "epflemma_cli.mcp_bootstrap.managed_mcp_power_status",
+        "epflemma_cli.cli.mcp_bootstrap.managed_mcp_power_status",
         lambda project_root=None: {},
     )
 
@@ -755,7 +755,7 @@ def test_route_workflow_step_marks_search_exhausted_from_recent_empty_search_str
 
 
 def test_discover_lean_mcp_tools_prefers_raw_managed_tools_over_native_wrappers(monkeypatch):
-    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", lambda: None)
+    monkeypatch.setattr("tools.mcp.mcp_tool.discover_mcp_tools", lambda: None)
     monkeypatch.setattr(
         "tools.registry.registry.get_all_tool_names",
         lambda: [
@@ -819,7 +819,7 @@ def test_managed_mcp_wrapper_failure_disables_tool_for_current_run(monkeypatch, 
         },
     )
     monkeypatch.setattr(
-        "tools.mcp_tool.get_mcp_status",
+        "tools.mcp.mcp_tool.get_mcp_status",
         lambda: [
             {
                 "name": "lean-proof-auto",
@@ -1309,7 +1309,7 @@ def test_lean_proof_context_falls_back_to_local_slice_without_disabling_proof_au
         },
     )
     monkeypatch.setattr(
-        "tools.mcp_tool.get_mcp_status",
+        "tools.mcp.mcp_tool.get_mcp_status",
         lambda: [
             {
                 "name": "lean-proof-auto",
@@ -1701,7 +1701,7 @@ def test_incremental_auto_probe_clamps_short_timeout(monkeypatch, tmp_path):
             "has_sorry": False,
         }
 
-    import epflemma_cli.lean_incremental as lean_incremental
+    import epflemma_cli.lean.lean_incremental as lean_incremental
 
     monkeypatch.setattr(lean_incremental, "lean_incremental_check", _fake_incremental_check)
 

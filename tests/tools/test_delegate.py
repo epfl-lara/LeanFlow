@@ -15,7 +15,7 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from tools.delegate_tool import (
+from tools.implementations.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
     MAX_CONCURRENT_CHILDREN,
@@ -121,7 +121,7 @@ class TestDelegateTask(unittest.TestCase):
         result = json.loads(delegate_task(tasks=[{"context": "no goal here"}], parent_agent=parent))
         self.assertIn("error", result)
 
-    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.implementations.delegate_tool._run_single_child")
     def test_single_task_mode(self, mock_run):
         mock_run.return_value = {
             "task_index": 0, "status": "completed",
@@ -135,7 +135,7 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["summary"], "Done!")
         mock_run.assert_called_once()
 
-    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.implementations.delegate_tool._run_single_child")
     def test_batch_mode(self, mock_run):
         mock_run.side_effect = [
             {"task_index": 0, "status": "completed", "summary": "Result A", "api_calls": 2, "duration_seconds": 3.0},
@@ -153,7 +153,7 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][1]["summary"], "Result B")
         self.assertIn("total_duration_seconds", result)
 
-    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.implementations.delegate_tool._run_single_child")
     def test_batch_capped_at_3(self, mock_run):
         mock_run.return_value = {
             "task_index": 0, "status": "completed",
@@ -165,7 +165,7 @@ class TestDelegateTask(unittest.TestCase):
         # Should only run 3 tasks (MAX_CONCURRENT_CHILDREN)
         self.assertEqual(mock_run.call_count, 3)
 
-    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.implementations.delegate_tool._run_single_child")
     def test_batch_ignores_toplevel_goal(self, mock_run):
         """When tasks array is provided, top-level goal/context/toolsets are ignored."""
         mock_run.return_value = {
@@ -182,7 +182,7 @@ class TestDelegateTask(unittest.TestCase):
         call_args = mock_run.call_args
         self.assertEqual(call_args.kwargs.get("goal") or call_args[1].get("goal", call_args[0][1] if len(call_args[0]) > 1 else None), "Actual task")
 
-    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.implementations.delegate_tool._run_single_child")
     def test_failed_child_included_in_results(self, mock_run):
         mock_run.return_value = {
             "task_index": 0, "status": "error",
@@ -444,7 +444,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
 
-    @patch("epflemma_cli.runtime_provider.resolve_runtime_provider")
+    @patch("epflemma_cli.runtime.runtime_provider.resolve_runtime_provider")
     def test_provider_resolves_full_credentials(self, mock_resolve):
         """When delegation.provider is set, full credentials are resolved."""
         mock_resolve.return_value = {
@@ -504,7 +504,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
                 _resolve_delegation_credentials(cfg, parent)
         self.assertIn("OPENAI_API_KEY", str(ctx.exception))
 
-    @patch("epflemma_cli.runtime_provider.resolve_runtime_provider")
+    @patch("epflemma_cli.runtime.runtime_provider.resolve_runtime_provider")
     def test_nous_provider_resolves_nous_credentials(self, mock_resolve):
         """Nous provider resolves Nous Portal base_url and api_key."""
         mock_resolve.return_value = {
@@ -521,7 +521,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "nous-agent-key-xyz")
         mock_resolve.assert_called_once_with(requested="nous")
 
-    @patch("epflemma_cli.runtime_provider.resolve_runtime_provider")
+    @patch("epflemma_cli.runtime.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):
         """When provider resolution fails, ValueError is raised with helpful message."""
         mock_resolve.side_effect = RuntimeError("OPENROUTER_API_KEY not set")
@@ -532,7 +532,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIn("openrouter", str(ctx.exception).lower())
         self.assertIn("Cannot resolve", str(ctx.exception))
 
-    @patch("epflemma_cli.runtime_provider.resolve_runtime_provider")
+    @patch("epflemma_cli.runtime.runtime_provider.resolve_runtime_provider")
     def test_provider_resolves_but_no_api_key_raises(self, mock_resolve):
         """When provider resolves but has no API key, ValueError is raised."""
         mock_resolve.return_value = {
@@ -559,8 +559,8 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
 
-    @patch("tools.delegate_tool._load_config")
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.implementations.delegate_tool._load_config")
+    @patch("tools.implementations.delegate_tool._resolve_delegation_credentials")
     def test_config_provider_credentials_reach_child_agent(self, mock_creds, mock_cfg):
         """When delegation.provider is configured, child agent gets resolved credentials."""
         mock_cfg.return_value = {
@@ -593,8 +593,8 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], "sk-or-delegation-key")
             self.assertEqual(kwargs["api_mode"], "chat_completions")
 
-    @patch("tools.delegate_tool._load_config")
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.implementations.delegate_tool._load_config")
+    @patch("tools.implementations.delegate_tool._resolve_delegation_credentials")
     def test_cross_provider_delegation(self, mock_creds, mock_cfg):
         """Parent on Nous, subagent on OpenRouter — full credential switch."""
         mock_cfg.return_value = {
@@ -631,8 +631,8 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertNotEqual(kwargs["base_url"], parent.base_url)
             self.assertNotEqual(kwargs["api_key"], parent.api_key)
 
-    @patch("tools.delegate_tool._load_config")
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.implementations.delegate_tool._load_config")
+    @patch("tools.implementations.delegate_tool._resolve_delegation_credentials")
     def test_direct_endpoint_credentials_reach_child_agent(self, mock_creds, mock_cfg):
         mock_cfg.return_value = {
             "max_iterations": 45,
@@ -665,8 +665,8 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], "local-key")
             self.assertEqual(kwargs["api_mode"], "chat_completions")
 
-    @patch("tools.delegate_tool._load_config")
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.implementations.delegate_tool._load_config")
+    @patch("tools.implementations.delegate_tool._resolve_delegation_credentials")
     def test_empty_config_inherits_parent(self, mock_creds, mock_cfg):
         """When delegation config is empty, child inherits parent credentials."""
         mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
@@ -693,8 +693,8 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
 
-    @patch("tools.delegate_tool._load_config")
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.implementations.delegate_tool._load_config")
+    @patch("tools.implementations.delegate_tool._resolve_delegation_credentials")
     def test_credential_error_returns_json_error(self, mock_creds, mock_cfg):
         """When credential resolution fails, delegate_task returns a JSON error."""
         mock_cfg.return_value = {"model": "bad-model", "provider": "nonexistent"}
@@ -708,8 +708,8 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         self.assertIn("Cannot resolve", result["error"])
         self.assertIn("nonexistent", result["error"])
 
-    @patch("tools.delegate_tool._load_config")
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.implementations.delegate_tool._load_config")
+    @patch("tools.implementations.delegate_tool._resolve_delegation_credentials")
     def test_batch_mode_all_children_get_credentials(self, mock_creds, mock_cfg):
         """In batch mode, all children receive the resolved credentials."""
         mock_cfg.return_value = {
@@ -726,7 +726,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         }
         parent = _make_mock_parent(depth=0)
 
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("tools.implementations.delegate_tool._run_single_child") as mock_run:
             mock_run.return_value = {
                 "task_index": 0, "status": "completed",
                 "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
@@ -742,8 +742,8 @@ class TestDelegationProviderIntegration(unittest.TestCase):
                 self.assertEqual(call.kwargs.get("override_api_key"), "sk-or-batch")
                 self.assertEqual(call.kwargs.get("override_api_mode"), "chat_completions")
 
-    @patch("tools.delegate_tool._load_config")
-    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.implementations.delegate_tool._load_config")
+    @patch("tools.implementations.delegate_tool._resolve_delegation_credentials")
     def test_model_only_no_provider_inherits_parent_credentials(self, mock_creds, mock_cfg):
         """Setting only model (no provider) changes model but keeps parent credentials."""
         mock_cfg.return_value = {

@@ -10,8 +10,8 @@ keep resolving the extracted helpers without a back-import. The behavior tests e
 declaration-scoped diagnostic shaping, the queue-horizon summary, and the proof-status lines.
 """
 
-from epflemma_cli import native_runner
 from epflemma_cli import proof_state_builder as psb
+from epflemma_cli.native import native_runner
 
 
 def test_native_runner_reexports_are_identical():

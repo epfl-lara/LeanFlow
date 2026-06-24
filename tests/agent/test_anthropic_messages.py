@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.anthropic_messages import (
+from agent.providers.anthropic_messages import (
     AnthropicMessagePreparer,
     content_has_image_parts,
     materialize_data_url_for_vision,
@@ -154,9 +154,9 @@ def test_describe_caches_per_image(agent):
     import sys
     from types import ModuleType
 
-    mod = ModuleType("tools.vision_tools")
+    mod = ModuleType("tools.implementations.vision_tools")
     mod.vision_analyze_tool = fake_vision  # type: ignore[attr-defined]
-    with patch.dict(sys.modules, {"tools.vision_tools": mod}):
+    with patch.dict(sys.modules, {"tools.implementations.vision_tools": mod}):
         note1 = preparer.describe_image_for_anthropic_fallback("https://img/1.png", "user")
         note2 = preparer.describe_image_for_anthropic_fallback("https://img/1.png", "user")
 

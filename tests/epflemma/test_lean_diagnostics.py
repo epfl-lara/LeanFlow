@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import time
 
-from epflemma_cli import lean_diagnostics as ld
-from epflemma_cli import lean_services
+from epflemma_cli.lean import lean_diagnostics as ld
+from epflemma_cli.lean import lean_services
 
 
 def test_lean_services_reexports_are_identical():

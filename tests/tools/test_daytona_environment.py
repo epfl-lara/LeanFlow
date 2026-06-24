@@ -58,7 +58,7 @@ def daytona_sdk(monkeypatch):
 def make_env(daytona_sdk, monkeypatch):
     """Factory that creates a DaytonaEnvironment with a mocked SDK."""
     # Prevent is_interrupted from interfering
-    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    monkeypatch.setattr("tools.utilities.interrupt.is_interrupted", lambda: False)
 
     def _factory(
         sandbox=None,

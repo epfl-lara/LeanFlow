@@ -48,7 +48,7 @@ from openai import OpenAI
 
 # Load .env from the active EPFLemma home first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from epflemma_cli.env_loader import load_epflemma_dotenv
+from epflemma_cli.runtime.env_loader import load_epflemma_dotenv
 
 _gauss_home = Path(
     os.getenv("EPFLEMMA_HOME")
@@ -71,43 +71,31 @@ os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 # Import our tool system
 import requests
 
-from agent.anthropic_messages import (
-    AnthropicMessagePreparer,
-    content_has_image_parts,
-    materialize_data_url_for_vision,
-)
-from agent.api_caller import ApiCaller
-from agent.compression_policy import CompressionPolicy
-from agent.context_compressor import ContextCompressor
-from agent.conversation_manager import ConversationManager
-from agent.conversation_manager import clean_session_content as _clean_session_content
-from agent.display import (
+from agent.accounting.token_accounting import TokenAccounter
+from agent.accounting.usage_pricing import estimate_cost_usd, has_known_pricing
+from agent.compression.compression_policy import CompressionPolicy
+from agent.compression.context_compressor import ContextCompressor
+from agent.compression.conversation_manager import ConversationManager
+from agent.compression.conversation_manager import clean_session_content as _clean_session_content
+from agent.display.display import (
     KawaiiSpinner,
     _detect_tool_failure,
 )
-from agent.display import (
+from agent.display.display import (
     build_tool_preview as _build_tool_preview,
 )
-from agent.display import (
+from agent.display.display import (
     get_cute_tool_message as _get_cute_tool_message_impl,
 )
-from agent.display import (
+from agent.display.display import (
     get_tool_emoji as _get_tool_emoji,
 )
-from agent.interrupt_controller import InterruptController
-from agent.model_metadata import (
-    estimate_messages_tokens_rough,
-    estimate_tokens_rough,
-    fetch_model_metadata,
-    get_model_context_length,
-    get_next_probe_tier,
-    parse_context_limit_from_error,
-    save_context_length,
-)
-from agent.output_manager import OutputManager
+from agent.display.output_manager import OutputManager
+from agent.execution.interrupt_controller import InterruptController
+from agent.execution.tool_executor import ToolExecutor
 
 # Agent internals extracted to agent/ package for modularity
-from agent.prompt_builder import (
+from agent.prompting.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     MEMORY_GUIDANCE,
     PLATFORM_HINTS,
@@ -116,25 +104,37 @@ from agent.prompt_builder import (
     build_context_files_prompt,
     build_skills_system_prompt,
 )
-from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_manager import PromptManager
-from agent.provider_client import ProviderClientFactory
-from agent.reasoning_processor import ReasoningProcessor
-from agent.response_normalizer import ResponseNormalizer
-from agent.token_accounting import TokenAccounter
-from agent.tool_executor import ToolExecutor
-from agent.trajectory import (
+from agent.prompting.prompt_caching import apply_anthropic_cache_control
+from agent.prompting.prompt_manager import PromptManager
+from agent.prompting.reasoning_processor import ReasoningProcessor
+from agent.prompting.response_normalizer import ResponseNormalizer
+from agent.providers.anthropic_messages import (
+    AnthropicMessagePreparer,
+    content_has_image_parts,
+    materialize_data_url_for_vision,
+)
+from agent.providers.api_caller import ApiCaller
+from agent.providers.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_tokens_rough,
+    fetch_model_metadata,
+    get_model_context_length,
+    get_next_probe_tier,
+    parse_context_limit_from_error,
+    save_context_length,
+)
+from agent.providers.provider_client import ProviderClientFactory
+from agent.runtime.trajectory import (
     convert_scratchpad_to_think,
     has_incomplete_scratchpad,
 )
-from agent.trajectory import (
+from agent.runtime.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
-from agent.usage_pricing import estimate_cost_usd, has_known_pricing
-from gauss_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
+from core.constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
 from model_tools import check_toolset_requirements, get_tool_definitions, handle_function_call
-from tools.interrupt import set_interrupt as _set_interrupt
-from tools.terminal_tool import cleanup_vm
+from tools.implementations.terminal_tool import cleanup_vm
+from tools.utilities.interrupt import set_interrupt as _set_interrupt
 from utils import atomic_json_write
 
 
@@ -143,7 +143,7 @@ def _cleanup_optional_browser_state(task_id: str) -> None:
     del task_id
 
 
-from agent.runtime_helpers import (  # noqa: E402,F401
+from agent.runtime.runtime_helpers import (  # noqa: E402,F401
     _generate_short_session_id,
     _install_safe_stdio,
     _SafeWriter,
@@ -213,18 +213,18 @@ _LEAN_REASONING_HELP_MAX_TOOL_RESULT_CHARS = 260_000
 #     (run_agent._is_destructive_command remains valid for internal call sites).
 #   - agent/log_formatting.py: tool argument/result log rendering
 #     (run_agent._wrap_log_text / _format_tool_result_for_log / ...).
-from agent.command_safety import (  # noqa: E402
-    _DESTRUCTIVE_PATTERNS,
-    _REDIRECT_OVERWRITE,
-    _is_destructive_command,
-)
-from agent.log_formatting import (  # noqa: E402
+from agent.display.log_formatting import (  # noqa: E402
     _format_tool_args_for_log,
     _format_tool_result_for_log,
     _format_tool_result_for_log_with_limits,
     _summarize_arg_value,
     _truncate_log_lines,
     _wrap_log_text,
+)
+from agent.execution.command_safety import (  # noqa: E402
+    _DESTRUCTIVE_PATTERNS,
+    _REDIRECT_OVERWRITE,
+    _is_destructive_command,
 )
 
 
@@ -240,7 +240,7 @@ def _positive_int(value: Any, default: int) -> int:
 # re-exported here so call sites (and tests) continue to resolve
 # ``run_agent._resolve_X``. See that module for the rationale behind the
 # module-level + isinstance-guard pattern.
-from agent.collaborator_resolvers import (  # noqa: E402
+from agent.execution.collaborator_resolvers import (  # noqa: E402
     _resolve_anthropic_message_preparer,
     _resolve_api_caller,
     _resolve_compression_policy,
@@ -251,7 +251,7 @@ from agent.collaborator_resolvers import (  # noqa: E402
     _resolve_response_normalizer,
     _resolve_tool_executor,
 )
-from agent.workflow_events import (  # noqa: E402,F401
+from agent.runtime.workflow_events import (  # noqa: E402,F401
     _emit_workflow_event,
     _workflow_agent_event_details,
 )
@@ -548,7 +548,7 @@ class AIAgent:
             for handler in root_logger.handlers
         )
         if not has_errors_log_handler:
-            from agent.redact import RedactingFormatter
+            from agent.accounting.redact import RedactingFormatter
             error_log_dir.mkdir(parents=True, exist_ok=True)
             error_file_handler = RotatingFileHandler(
                 error_log_path, maxBytes=2 * 1024 * 1024, backupCount=2,
@@ -765,7 +765,7 @@ class AIAgent:
         self._cached_system_prompt = None
         
         # Filesystem checkpoint manager (transparent — not a tool)
-        from tools.checkpoint_manager import CheckpointManager
+        from tools.utilities.checkpoint_manager import CheckpointManager
         self._checkpoint_mgr = CheckpointManager(
             enabled=checkpoints_enabled,
             max_snapshots=checkpoint_max_snapshots,
@@ -791,7 +791,7 @@ class AIAgent:
                 logger.debug("Session DB create_session failed: %s", e)
         
         # In-memory todo list for task planning (one per agent/session)
-        from tools.todo_tool import TodoStore
+        from tools.implementations.todo_tool import TodoStore
         self._todo_store = TodoStore()
         
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
@@ -809,7 +809,7 @@ class AIAgent:
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
                 if self._memory_enabled or self._user_profile_enabled:
-                    from tools.memory_tool import MemoryStore
+                    from tools.implementations.memory_tool import MemoryStore
                     self._memory_store = MemoryStore(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
@@ -1149,7 +1149,7 @@ class AIAgent:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")
         try:
-            from tools.terminal_tool import clear_task_env_overrides
+            from tools.implementations.terminal_tool import clear_task_env_overrides
 
             clear_task_env_overrides(task_id)
         except Exception as e:
@@ -2208,7 +2208,7 @@ class AIAgent:
         # raw_codex=True because the main agent needs direct responses.stream()
         # access for Codex providers.
         try:
-            from agent.auxiliary_client import resolve_provider_client
+            from agent.providers.auxiliary_client import resolve_provider_client
             fb_client, _ = resolve_provider_client(
                 fb_provider, model=fb_model, raw_codex=True)
             if fb_client is None:
@@ -2560,7 +2560,7 @@ class AIAgent:
 
             # Use auxiliary client for the flush call when available --
             # it's cheaper and avoids Codex Responses API incompatibility.
-            from agent.auxiliary_client import call_llm as _call_llm
+            from agent.providers.auxiliary_client import call_llm as _call_llm
             _aux_available = True
             try:
                 response = _call_llm(
@@ -2585,7 +2585,9 @@ class AIAgent:
                 response = self._run_codex_stream(codex_kwargs)
             elif not _aux_available and self.api_mode == "anthropic_messages":
                 # Native Anthropic — use the Anthropic client directly
-                from agent.anthropic_adapter import build_anthropic_kwargs as _build_ant_kwargs
+                from agent.providers.anthropic_adapter import (
+                    build_anthropic_kwargs as _build_ant_kwargs,
+                )
                 ant_kwargs = _build_ant_kwargs(
                     model=self.model, messages=api_messages,
                     tools=[memory_tool_def], max_tokens=5120,
@@ -2609,7 +2611,9 @@ class AIAgent:
                 if assistant_msg and assistant_msg.tool_calls:
                     tool_calls = assistant_msg.tool_calls
             elif self.api_mode == "anthropic_messages" and not _aux_available:
-                from agent.anthropic_adapter import normalize_anthropic_response as _nar_flush
+                from agent.providers.anthropic_adapter import (
+                    normalize_anthropic_response as _nar_flush,
+                )
                 _flush_msg, _ = _nar_flush(response)
                 if _flush_msg and _flush_msg.tool_calls:
                     tool_calls = _flush_msg.tool_calls
@@ -2623,7 +2627,7 @@ class AIAgent:
                     try:
                         args = json.loads(tc.function.arguments)
                         flush_target = args.get("target", "memory")
-                        from tools.memory_tool import memory_tool as _memory_tool
+                        from tools.implementations.memory_tool import memory_tool as _memory_tool
                         result = _memory_tool(
                             action=args.get("action"),
                             target=flush_target,
@@ -2955,8 +2959,10 @@ class AIAgent:
                     summary_kwargs["extra_body"] = summary_extra_body
 
                 if self.api_mode == "anthropic_messages":
-                    from agent.anthropic_adapter import build_anthropic_kwargs as _bak
-                    from agent.anthropic_adapter import normalize_anthropic_response as _nar
+                    from agent.providers.anthropic_adapter import build_anthropic_kwargs as _bak
+                    from agent.providers.anthropic_adapter import (
+                        normalize_anthropic_response as _nar,
+                    )
                     _ant_kw = _bak(model=self.model, messages=api_messages, tools=None,
                                    max_tokens=self.max_tokens, reasoning_config=self.reasoning_config)
                     summary_response = self._anthropic_messages_create(_ant_kw)
@@ -2986,8 +2992,10 @@ class AIAgent:
                     retry_msg, _ = self._normalize_codex_response(retry_response)
                     final_response = (retry_msg.content or "").strip() if retry_msg else ""
                 elif self.api_mode == "anthropic_messages":
-                    from agent.anthropic_adapter import build_anthropic_kwargs as _bak2
-                    from agent.anthropic_adapter import normalize_anthropic_response as _nar2
+                    from agent.providers.anthropic_adapter import build_anthropic_kwargs as _bak2
+                    from agent.providers.anthropic_adapter import (
+                        normalize_anthropic_response as _nar2,
+                    )
                     _ant_kw2 = _bak2(model=self.model, messages=api_messages, tools=None,
                                      max_tokens=self.max_tokens, reasoning_config=self.reasoning_config)
                     retry_response = self._anthropic_messages_create(_ant_kw2)
@@ -3710,7 +3718,7 @@ class AIAgent:
                         and not anthropic_auth_retry_attempted
                     ):
                         anthropic_auth_retry_attempted = True
-                        from agent.anthropic_adapter import _is_oauth_token
+                        from agent.providers.anthropic_adapter import _is_oauth_token
                         if self._try_refresh_anthropic_client_credentials():
                             print(f"{self.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
                             continue
@@ -3986,7 +3994,7 @@ class AIAgent:
                 if self.api_mode == "codex_responses":
                     assistant_message, finish_reason = self._normalize_codex_response(response)
                 elif self.api_mode == "anthropic_messages":
-                    from agent.anthropic_adapter import normalize_anthropic_response
+                    from agent.providers.anthropic_adapter import normalize_anthropic_response
                     assistant_message, finish_reason = normalize_anthropic_response(response)
                 else:
                     assistant_message = response.choices[0].message

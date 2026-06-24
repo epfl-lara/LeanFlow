@@ -14,13 +14,13 @@ from __future__ import annotations
 from importlib import import_module
 
 _MODULE_EXPORTS = {
-    "tools.web_tools": (
+    "tools.implementations.web_tools": (
         "web_search_tool",
         "web_extract_tool",
         "web_crawl_tool",
         "check_firecrawl_api_key",
     ),
-    "tools.terminal_tool": (
+    "tools.implementations.terminal_tool": (
         "terminal_tool",
         "check_terminal_requirements",
         "cleanup_vm",
@@ -30,17 +30,17 @@ _MODULE_EXPORTS = {
         "clear_task_env_overrides",
         "TERMINAL_TOOL_DESCRIPTION",
     ),
-    "tools.vision_tools": (
+    "tools.implementations.vision_tools": (
         "vision_analyze_tool",
         "check_vision_requirements",
     ),
-    "tools.skills_tool": (
+    "tools.implementations.skills_tool": (
         "skills_list",
         "skill_view",
         "check_skills_requirements",
         "SKILLS_TOOL_DESCRIPTION",
     ),
-    "tools.lean_tool": (
+    "tools.implementations.lean_tool": (
         "lean_capabilities",
         "lean_inspect_tool",
         "lean_verify_tool",
@@ -53,7 +53,7 @@ _MODULE_EXPORTS = {
         "lean_worker_dispatch_tool",
         "check_lean_requirements",
     ),
-    "tools.file_tools": (
+    "tools.implementations.file_tools": (
         "read_file_tool",
         "write_file_tool",
         "patch_tool",
@@ -61,18 +61,18 @@ _MODULE_EXPORTS = {
         "get_file_tools",
         "clear_file_ops_cache",
     ),
-    "tools.todo_tool": (
+    "tools.implementations.todo_tool": (
         "todo_tool",
         "check_todo_requirements",
         "TODO_SCHEMA",
         "TodoStore",
     ),
-    "tools.clarify_tool": (
+    "tools.implementations.clarify_tool": (
         "clarify_tool",
         "check_clarify_requirements",
         "CLARIFY_SCHEMA",
     ),
-    "tools.delegate_tool": (
+    "tools.implementations.delegate_tool": (
         "delegate_task",
         "check_delegate_requirements",
         "DELEGATE_TASK_SCHEMA",
@@ -107,7 +107,7 @@ def __dir__():
 
 def check_file_requirements():
     """File tools only require the terminal backend to be available."""
-    from .terminal_tool import check_terminal_requirements
+    from .implementations.terminal_tool import check_terminal_requirements
 
     return check_terminal_requirements()
 

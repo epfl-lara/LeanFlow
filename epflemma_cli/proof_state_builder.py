@@ -22,9 +22,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from epflemma_cli.lean_parsing import _declaration_line_index_from_text
-from epflemma_cli.lean_services import diagnostic_items
-from epflemma_cli.native_utils import _format_diagnostic_for_model
+from epflemma_cli.lean.lean_parsing import _declaration_line_index_from_text
+from epflemma_cli.lean.lean_services import diagnostic_items
+from epflemma_cli.native.native_utils import _format_diagnostic_for_model
 
 __all__ = [
     "_line_in_declaration",

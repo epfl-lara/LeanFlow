@@ -6,7 +6,7 @@ import pytest
 
 from epflemma_cli import workflow as workflow_mod
 from epflemma_cli.config import save_config
-from epflemma_cli.formalization_documents import FormalizationDocumentError
+from epflemma_cli.formalization.formalization_documents import FormalizationDocumentError
 from epflemma_cli.workflow import (
     WORKFLOW_ALIAS_MAP,
     describe_launch_plan,

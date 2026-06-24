@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from model_tools import (
+from core.model_tools import (
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
@@ -113,7 +113,7 @@ def test_model_tools_discovery_stays_on_minimal_gauss_surface():
 import json
 import sys
 sys.path.insert(0, {str(repo_root)!r})
-import model_tools
+import core.model_tools as model_tools
 from tools.registry import registry
 print(json.dumps(sorted(set(entry.toolset for entry in registry._tools.values()))))
 """

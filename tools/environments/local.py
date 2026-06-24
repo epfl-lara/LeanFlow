@@ -13,7 +13,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 
 from tools.environments.base import BaseEnvironment
 from tools.environments.persistent_shell import PersistentShellMixin
-from tools.interrupt import is_interrupted
+from tools.utilities.interrupt import is_interrupted
 
 # Unique marker to isolate real command output from shell init/exit noise.
 # printf (no trailing newline) keeps the boundaries clean for splitting.
@@ -40,7 +40,7 @@ def _build_provider_env_blocklist() -> frozenset:
     blocked: set[str] = set()
 
     try:
-        from epflemma_cli.auth import PROVIDER_REGISTRY
+        from epflemma_cli.runtime.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
             blocked.update(pconfig.api_key_env_vars)
             if pconfig.base_url_env_var:

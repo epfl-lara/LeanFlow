@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from agent.redact import RedactingFormatter, redact_sensitive_text
+from agent.accounting.redact import RedactingFormatter, redact_sensitive_text
 
 
 class TestKnownPrefixes:

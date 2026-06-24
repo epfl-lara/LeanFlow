@@ -9,8 +9,8 @@ detection over noisy diagnostic text, structured + JSON goal-state parsing, and 
 diagnostic feedback reason that combines structured items with text fallbacks.
 """
 
-from epflemma_cli import lean_diagnostic_feedback as ldf
-from epflemma_cli import native_runner
+from epflemma_cli.lean import lean_diagnostic_feedback as ldf
+from epflemma_cli.native import native_runner
 
 _REEXPORTED = (
     "_declaration_diagnostic_feedback_reason",

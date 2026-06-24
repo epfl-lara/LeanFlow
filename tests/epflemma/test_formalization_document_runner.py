@@ -7,8 +7,8 @@ predicates that key off the live-state snapshot. The re-export-identity test pin
 to the same object on ``native_runner`` so existing callers resolve them without a back-import.
 """
 
-from epflemma_cli import formalization_document_runner as fdr
-from epflemma_cli import native_runner
+from epflemma_cli.formalization import formalization_document_runner as fdr
+from epflemma_cli.native import native_runner
 
 
 def test_native_runner_reexports_are_identical():

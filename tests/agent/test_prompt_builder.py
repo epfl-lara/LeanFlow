@@ -5,7 +5,7 @@ import importlib
 import logging
 import sys
 
-from agent.prompt_builder import (
+from agent.prompting.prompt_builder import (
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     MEMORY_GUIDANCE,
@@ -172,7 +172,7 @@ class TestParseSkillFile:
             raise OSError("read exploded")
 
         monkeypatch.setattr(type(skill_file), "read_text", boom)
-        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+        with caplog.at_level(logging.DEBUG, logger="agent.prompting.prompt_builder"):
             is_compat, frontmatter, desc = _parse_skill_file(skill_file)
 
         assert is_compat is True
@@ -188,7 +188,7 @@ class TestParseSkillFile:
         )
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("tools.implementations.skills_tool.sys") as mock_sys:
             mock_sys.platform = "linux"
             is_compat, _, _ = _parse_skill_file(skill_file)
         assert is_compat is False
@@ -209,16 +209,16 @@ class TestPromptBuilderImports:
         original_import = builtins.__import__
 
         def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-            if name == "tools.skills_tool" or (
+            if name == "tools.implementations.skills_tool" or (
                 name == "tools" and fromlist and "skills_tool" in fromlist
             ):
                 raise ModuleNotFoundError("simulated optional tool import failure")
             return original_import(name, globals, locals, fromlist, level)
 
-        monkeypatch.delitem(sys.modules, "agent.prompt_builder", raising=False)
+        monkeypatch.delitem(sys.modules, "agent.prompting.prompt_builder", raising=False)
         monkeypatch.setattr(builtins, "__import__", guarded_import)
 
-        module = importlib.import_module("agent.prompt_builder")
+        module = importlib.import_module("agent.prompting.prompt_builder")
 
         assert hasattr(module, "build_skills_system_prompt")
 
@@ -411,7 +411,7 @@ class TestReadSkillConditions:
             raise OSError("read exploded")
 
         monkeypatch.setattr(type(skill_file), "read_text", boom)
-        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+        with caplog.at_level(logging.DEBUG, logger="agent.prompting.prompt_builder"):
             conditions = _read_skill_conditions(skill_file)
 
         assert conditions == {}

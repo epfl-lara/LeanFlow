@@ -27,7 +27,7 @@ from prompt_toolkit.history import FileHistory
 from rich.console import Console
 
 from epflemma_cli import __version__
-from epflemma_cli.banner import (
+from epflemma_cli.cli.banner import (
     build_welcome_banner,
     render_help,
     render_local_runtime_table,
@@ -43,7 +43,7 @@ from epflemma_cli.banner import (
     render_workflow_launch,
     render_workflow_status_panel,
 )
-from epflemma_cli.cli_handlers import (
+from epflemma_cli.cli.cli_handlers import (
     _handle_config,
     _handle_models,
     _handle_sandbox,
@@ -54,7 +54,21 @@ from epflemma_cli.cli_handlers import (
     _print_project_power_setup,
     _project_payload,
 )
-from epflemma_cli.commands import SlashCommandCompleter, build_workflow_command_set
+from epflemma_cli.cli.commands import SlashCommandCompleter, build_workflow_command_set
+from epflemma_cli.cli.doctor import run_doctor
+from epflemma_cli.cli.mcp_bootstrap import bootstrap_lean_mcp
+from epflemma_cli.cli.shell_ui import (
+    bottom_toolbar as _build_bottom_toolbar,
+)
+from epflemma_cli.cli.shell_ui import (
+    prompt_focus_label as _build_prompt_focus_label,
+)
+from epflemma_cli.cli.shell_ui import (
+    prompt_message as _build_prompt_message,
+)
+from epflemma_cli.cli.shell_ui import (
+    toolbar_piece as _build_toolbar_piece,
+)
 from epflemma_cli.config import (
     ensure_epflemma_home,
     get_config_value,
@@ -62,8 +76,6 @@ from epflemma_cli.config import (
     load_config,
     set_config_value,
 )
-from epflemma_cli.doctor import run_doctor
-from epflemma_cli.env_loader import load_epflemma_dotenv
 from epflemma_cli.local_models import (
     get_local_runtime_status,
     list_local_runtimes,
@@ -73,8 +85,28 @@ from epflemma_cli.local_models import (
     stop_local_runtime,
     use_local_runtime,
 )
-from epflemma_cli.mcp_bootstrap import bootstrap_lean_mcp
-from epflemma_cli.project import (
+from epflemma_cli.runtime.env_loader import load_epflemma_dotenv
+from epflemma_cli.runtime.runtime_provider import (
+    format_runtime_provider_error,
+    list_runtime_provider_targets,
+    resolve_runtime_provider,
+)
+from epflemma_cli.runtime.sandbox_runtime import (
+    SandboxRuntimeError,
+    build_sandbox_image,
+    format_sandbox_status,
+    run_sandbox,
+    sandbox_status,
+)
+from epflemma_cli.runtime.skill_core import discover_skill_commands, discover_skills, load_skill
+from epflemma_cli.workflow import (
+    FORGIVING_WORKFLOW_ALIAS_MAP,
+    describe_launch_plan,
+    resolve_workflow_request,
+    run_workflow,
+    spawn_workflow,
+)
+from epflemma_cli.workflows.project import (
     ProjectNotFoundError,
     clone_project_template,
     discover_epflemma_project,
@@ -83,39 +115,7 @@ from epflemma_cli.project import (
     resolve_template_source,
     setup_project_power_modes,
 )
-from epflemma_cli.runtime_provider import (
-    format_runtime_provider_error,
-    list_runtime_provider_targets,
-    resolve_runtime_provider,
-)
-from epflemma_cli.sandbox_runtime import (
-    SandboxRuntimeError,
-    build_sandbox_image,
-    format_sandbox_status,
-    run_sandbox,
-    sandbox_status,
-)
-from epflemma_cli.shell_ui import (
-    bottom_toolbar as _build_bottom_toolbar,
-)
-from epflemma_cli.shell_ui import (
-    prompt_focus_label as _build_prompt_focus_label,
-)
-from epflemma_cli.shell_ui import (
-    prompt_message as _build_prompt_message,
-)
-from epflemma_cli.shell_ui import (
-    toolbar_piece as _build_toolbar_piece,
-)
-from epflemma_cli.skill_core import discover_skill_commands, discover_skills, load_skill
-from epflemma_cli.workflow import (
-    FORGIVING_WORKFLOW_ALIAS_MAP,
-    describe_launch_plan,
-    resolve_workflow_request,
-    run_workflow,
-    spawn_workflow,
-)
-from epflemma_cli.workflow_state import (
+from epflemma_cli.workflows.workflow_state import (
     enqueue_workflow_agent_message,
     load_workflow_checkpoints,
     load_workflow_live_status,
@@ -132,9 +132,9 @@ from epflemma_cli.workflow_state import (
     workflow_agent_transcript_all,
 )
 
-# Derived from the single COMMAND_REGISTRY in epflemma_cli.commands: the set of all
+# Derived from the single COMMAND_REGISTRY in epflemma_cli.cli.commands: the set of all
 # frontend workflow slash commands (canonical commands plus their long-form aliases).
-from tools.mcp_tool import get_mcp_status
+from tools.mcp.mcp_tool import get_mcp_status
 
 WORKFLOW_COMMANDS = build_workflow_command_set()
 

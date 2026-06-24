@@ -16,8 +16,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.display import KawaiiSpinner
-from tools.delegate_tool import _build_child_progress_callback
+from agent.display.display import KawaiiSpinner
+from tools.implementations.delegate_tool import _build_child_progress_callback
 
 # =========================================================================
 # KawaiiSpinner.print_above tests

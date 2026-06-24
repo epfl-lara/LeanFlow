@@ -1,6 +1,6 @@
 """Tests for the extracted native_config env readers + native_runner re-export (Phase 2)."""
 
-from epflemma_cli import native_config, native_runner
+from epflemma_cli.native import native_config, native_runner
 
 
 def test_native_runner_reexports_are_identical():

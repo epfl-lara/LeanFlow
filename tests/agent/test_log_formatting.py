@@ -3,7 +3,7 @@
 import json
 
 import run_agent
-from agent import log_formatting
+from agent.display import log_formatting
 
 
 def test_run_agent_reexports_match_module():

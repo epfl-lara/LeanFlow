@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.terminal_tool  # noqa: F401 -- ensure module is loaded
+import tools.implementations.terminal_tool  # noqa: F401 -- ensure module is loaded
 
-_tt_mod = sys.modules["tools.terminal_tool"]
-from tools.terminal_tool import _parse_env_var
+_tt_mod = sys.modules["tools.implementations.terminal_tool"]
+from tools.implementations.terminal_tool import _parse_env_var
 
 
 class TestParseEnvVar:

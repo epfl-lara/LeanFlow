@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.insights import (
+from agent.display.insights import (
     _DEFAULT_PRICING,
     InsightsEngine,
     _bar_chart,
@@ -14,7 +14,7 @@ from agent.insights import (
     _get_pricing,
     _has_known_pricing,
 )
-from gauss_state import SessionDB
+from core.state import SessionDB
 
 
 @pytest.fixture()

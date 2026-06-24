@@ -8,7 +8,8 @@ restoration, the assigned statement signature, and the guard key.
 
 from types import SimpleNamespace
 
-from epflemma_cli import native_runner, queue_edit_guard
+from epflemma_cli.native import native_runner
+from epflemma_cli.workflows import queue_edit_guard
 
 FILE = '''\
 theorem assigned_thm : True := by

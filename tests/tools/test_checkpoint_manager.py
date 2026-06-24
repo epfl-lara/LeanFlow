@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.checkpoint_manager import (
+from tools.utilities.checkpoint_manager import (
     CHECKPOINT_BASE,
     DEFAULT_EXCLUDES,
     CheckpointManager,
@@ -45,14 +45,14 @@ def checkpoint_base(tmp_path):
 @pytest.fixture()
 def mgr(work_dir, checkpoint_base, monkeypatch):
     """CheckpointManager with redirected checkpoint base."""
-    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+    monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
     return CheckpointManager(enabled=True, max_snapshots=50)
 
 
 @pytest.fixture()
 def disabled_mgr(checkpoint_base, monkeypatch):
     """Disabled CheckpointManager."""
-    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+    monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
     return CheckpointManager(enabled=False)
 
 
@@ -62,19 +62,19 @@ def disabled_mgr(checkpoint_base, monkeypatch):
 
 class TestShadowRepoPath:
     def test_deterministic(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         p1 = _shadow_repo_path(str(work_dir))
         p2 = _shadow_repo_path(str(work_dir))
         assert p1 == p2
 
     def test_different_dirs_different_paths(self, tmp_path, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         p1 = _shadow_repo_path(str(tmp_path / "a"))
         p2 = _shadow_repo_path(str(tmp_path / "b"))
         assert p1 != p2
 
     def test_under_checkpoint_base(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         p = _shadow_repo_path(str(work_dir))
         assert str(p).startswith(str(checkpoint_base))
 
@@ -85,20 +85,20 @@ class TestShadowRepoPath:
 
 class TestShadowRepoInit:
     def test_creates_git_repo(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         shadow = _shadow_repo_path(str(work_dir))
         err = _init_shadow_repo(shadow, str(work_dir))
         assert err is None
         assert (shadow / "HEAD").exists()
 
     def test_no_git_in_project_dir(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         shadow = _shadow_repo_path(str(work_dir))
         _init_shadow_repo(shadow, str(work_dir))
         assert not (work_dir / ".git").exists()
 
     def test_has_exclude_file(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         shadow = _shadow_repo_path(str(work_dir))
         _init_shadow_repo(shadow, str(work_dir))
         exclude = shadow / "info" / "exclude"
@@ -108,7 +108,7 @@ class TestShadowRepoInit:
         assert ".env" in content
 
     def test_has_workdir_file(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         shadow = _shadow_repo_path(str(work_dir))
         _init_shadow_repo(shadow, str(work_dir))
         workdir_file = shadow / "GAUSS_WORKDIR"
@@ -116,7 +116,7 @@ class TestShadowRepoInit:
         assert str(work_dir.resolve()) in workdir_file.read_text()
 
     def test_idempotent(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         shadow = _shadow_repo_path(str(work_dir))
         err1 = _init_shadow_repo(shadow, str(work_dir))
         err2 = _init_shadow_repo(shadow, str(work_dir))
@@ -146,7 +146,7 @@ class TestTakeCheckpoint:
         assert result is True
 
     def test_successful_checkpoint_does_not_log_expected_diff_exit(self, mgr, work_dir, caplog):
-        with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
+        with caplog.at_level(logging.ERROR, logger="tools.utilities.checkpoint_manager"):
             result = mgr.ensure_checkpoint(str(work_dir), "initial")
         assert result is True
         assert not any("diff --cached --quiet" in r.getMessage() for r in caplog.records)
@@ -395,7 +395,7 @@ class TestDirFileCount:
 
 class TestErrorResilience:
     def test_no_git_installed(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         mgr = CheckpointManager(enabled=True)
         # Mock git not found
         monkeypatch.setattr("shutil.which", lambda x: None)
@@ -410,8 +410,8 @@ class TestErrorResilience:
             stdout="",
             stderr="",
         )
-        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
-            with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
+        with patch("tools.utilities.checkpoint_manager.subprocess.run", return_value=completed):
+            with caplog.at_level(logging.ERROR, logger="tools.utilities.checkpoint_manager"):
                 ok, stdout, stderr = _run_git(
                     ["diff", "--cached", "--quiet"],
                     tmp_path / "shadow",
@@ -427,7 +427,7 @@ class TestErrorResilience:
         """Checkpoint failures should never raise — they're silently logged."""
         def broken_run_git(*args, **kwargs):
             raise OSError("git exploded")
-        monkeypatch.setattr("tools.checkpoint_manager._run_git", broken_run_git)
+        monkeypatch.setattr("tools.utilities.checkpoint_manager._run_git", broken_run_git)
         # Should not raise
         result = mgr.ensure_checkpoint(str(work_dir), "test")
         assert result is False

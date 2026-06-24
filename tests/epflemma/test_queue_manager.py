@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from epflemma_cli.queue_manager import (
+from epflemma_cli.workflows.queue_manager import (
     Classification,
     ManagerCheck,
     PrepareState,
