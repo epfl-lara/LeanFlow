@@ -111,7 +111,7 @@ class TestShadowRepoInit:
         monkeypatch.setattr("tools.utilities.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         shadow = _shadow_repo_path(str(work_dir))
         _init_shadow_repo(shadow, str(work_dir))
-        workdir_file = shadow / "GAUSS_WORKDIR"
+        workdir_file = shadow / "EPFLEMMA_WORKDIR"
         assert workdir_file.exists()
         assert str(work_dir.resolve()) in workdir_file.read_text()
 

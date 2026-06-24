@@ -6,7 +6,6 @@ import pytest
 
 from epflemma_cli.workflows.project import (
     EPFLEMMA_PROJECT_TEMPLATE_ENV,
-    LEGACY_PROJECT_TEMPLATE_ENVS,
     ProjectNotFoundError,
     detect_blueprint_markers,
     discover_epflemma_project,
@@ -92,11 +91,10 @@ def test_resolve_template_source_prefers_explicit_env_over_config():
     assert resolve_template_source(config, env) == "https://env.example/template.git"
 
 
-@pytest.mark.parametrize("legacy_env", LEGACY_PROJECT_TEMPLATE_ENVS)
-def test_resolve_template_source_falls_back_to_legacy_env_names(legacy_env):
-    env = {legacy_env: "https://legacy.example/template.git"}
-
-    assert resolve_template_source(None, env) == "https://legacy.example/template.git"
+@pytest.mark.parametrize("legacy_env", ("OPENGAUSS_BLUEPRINT_TEMPLATE_SOURCE", "GAUSS_BLUEPRINT_TEMPLATE_SOURCE"))
+def test_resolve_template_source_ignores_dropped_legacy_env_names(legacy_env):
+    # Legacy OPENGAUSS_/GAUSS_ template-source env names are dropped: they no longer resolve.
+    assert resolve_template_source(None, {legacy_env: "https://legacy.example/template.git"}) == ""
 
 
 def test_resolve_template_source_uses_config_when_env_empty():

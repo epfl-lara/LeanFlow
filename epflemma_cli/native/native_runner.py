@@ -421,7 +421,6 @@ def _base_active_skill() -> str:
 def _additional_skill_names() -> list[str]:
     raw = (
         _read_native_env("ADDITIONAL_SKILLS", "")
-        or _read_text_env("OPENGAUSS_NATIVE_ADDITIONAL_SKILLS", "")
     )
     values: list[str] = []
     for part in re.split(rf"[{re.escape(os.pathsep)}\n]+", str(raw or "")):
@@ -3482,8 +3481,6 @@ def _set_native_active_file(file_label: str) -> None:
 def _prove_file_scope_ordered_paths(project_root: str | os.PathLike[str] | None = None) -> list[Path]:
     raw = (
         _read_text_env("EPFLEMMA_PROVE_FILE_SCOPE", "")
-        or _read_text_env("OPENGAUSS_PROVE_FILE_SCOPE", "")
-        or _read_text_env("GAUSS_PROVE_FILE_SCOPE", "")
     ).strip()
     if not raw:
         return []
@@ -5793,7 +5790,6 @@ def _build_live_proof_state(
             active_file_label = active_file
     workflow_command = str(
         _read_native_env("WORKFLOW_COMMAND", "")
-        or _read_text_env("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")
     ).strip()
     empty_search_streak = recent_empty_search_streak(workflow_command=workflow_command) if workflow_command else 0
     search_exhausted = empty_search_streak >= 3
@@ -7972,7 +7968,7 @@ def _startup_user_message(
 
 
 def _managed_system_prompt() -> str:
-    context_path = _read_text_env("EPFLEMMA_WORKFLOW_CONTEXT", _read_text_env("GAUSS_AUTOFORMALIZE_CONTEXT"))
+    context_path = _read_text_env("EPFLEMMA_WORKFLOW_CONTEXT")
     context_text = ""
     if context_path:
         try:

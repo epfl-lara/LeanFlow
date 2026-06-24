@@ -11,7 +11,7 @@ Operational failures (spawn error, timeout, unknown exit code) respect
 the fail_open config setting. Programming errors propagate.
 
 Auto-install: if tirith is not found on PATH or at the configured path,
-it is automatically downloaded from GitHub releases to $GAUSS_HOME/bin/tirith.
+it is automatically downloaded from GitHub releases to $EPFLEMMA_HOME/bin/tirith.
 The download verifies SHA-256 checksums and cosign provenance (when cosign
 is available). Installation runs in a background thread so startup never
 blocks.
@@ -30,6 +30,8 @@ import tempfile
 import threading
 import time
 import urllib.request
+
+from core.home import epflemma_home
 
 logger = logging.getLogger(__name__)
 
@@ -100,24 +102,18 @@ _install_thread: threading.Thread | None = None
 _MARKER_TTL = 86400  # 24 hours
 
 
-def _get_gauss_home() -> str:
-    """Return the EPFLemma home directory, respecting legacy env vars.
+def _get_epflemma_home() -> str:
+    """Return the EPFLemma home directory as a string.
 
-    Matches the convention used throughout the codebase so tirith state stays
-    inside the active profile and tests get automatic isolation via GAUSS_HOME
-    monkeypatch.
+    Resolution (incl. the EPFLEMMA_HOME override that gives tests automatic isolation) lives in
+    core.home — tirith state stays inside the active profile via that single source of truth.
     """
-    return (
-        os.getenv("EPFLEMMA_HOME")
-        or os.getenv("OPENGAUSS_HOME")
-        or os.getenv("GAUSS_HOME")
-        or os.path.join(os.path.expanduser("~"), ".epflemma")
-    )
+    return str(epflemma_home())
 
 
 def _failure_marker_path() -> str:
     """Return the path to the install-failure marker file."""
-    return os.path.join(_get_gauss_home(), ".tirith-install-failed")
+    return os.path.join(_get_epflemma_home(), ".tirith-install-failed")
 
 
 def _read_failure_reason() -> str | None:
@@ -180,8 +176,8 @@ def _clear_install_failed():
 
 
 def _gauss_bin_dir() -> str:
-    """Return $GAUSS_HOME/bin, creating it if needed."""
-    d = os.path.join(_get_gauss_home(), "bin")
+    """Return $EPFLEMMA_HOME/bin, creating it if needed."""
+    d = os.path.join(_get_epflemma_home(), "bin")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -284,7 +280,7 @@ def _verify_checksum(archive_path: str, checksums_path: str, archive_name: str) 
 
 
 def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
-    """Download and install tirith to $GAUSS_HOME/bin/tirith.
+    """Download and install tirith to $EPFLEMMA_HOME/bin/tirith.
 
     Verifies provenance via cosign and SHA-256 checksum.
     Returns (installed_path, failure_reason).  On success failure_reason is "".
@@ -389,8 +385,8 @@ def _resolve_tirith_path(configured_path: str) -> str:
 
     For the default "tirith":
     1. PATH lookup via shutil.which
-    2. $GAUSS_HOME/bin/tirith (previously auto-installed)
-    3. Auto-install from GitHub releases → $GAUSS_HOME/bin/tirith
+    2. $EPFLEMMA_HOME/bin/tirith (previously auto-installed)
+    3. Auto-install from GitHub releases → $EPFLEMMA_HOME/bin/tirith
 
     Failed installs are cached for the process lifetime (and persisted to
     disk for 24h) to avoid repeated network attempts.

@@ -12,10 +12,10 @@ def test_read_native_env_namespace_fallback(monkeypatch):
     for var in ("EPFLEMMA_NATIVE_FOO", "OPENGAUSS_NATIVE_FOO", "GAUSS_NATIVE_FOO"):
         monkeypatch.delenv(var, raising=False)
     assert native_config._read_native_env("FOO", "dflt") == "dflt"
+    # Legacy OPENGAUSS_/GAUSS_ namespaces are dropped: only EPFLEMMA_NATIVE_ is honored.
     monkeypatch.setenv("GAUSS_NATIVE_FOO", "legacy")
-    assert native_config._read_native_env("FOO", "dflt") == "legacy"
     monkeypatch.setenv("OPENGAUSS_NATIVE_FOO", "branded")
-    assert native_config._read_native_env("FOO", "dflt") == "branded"
+    assert native_config._read_native_env("FOO", "dflt") == "dflt"
     monkeypatch.setenv("EPFLEMMA_NATIVE_FOO", "primary")
     assert native_config._read_native_env("FOO", "dflt") == "primary"
 

@@ -22,7 +22,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-DEFAULT_DB_PATH = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss")) / "state.db"
+from core.home import epflemma_home
+
+DEFAULT_DB_PATH = epflemma_home() / "state.db"
 
 SCHEMA_VERSION = 4
 

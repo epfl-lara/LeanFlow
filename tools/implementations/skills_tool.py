@@ -90,8 +90,8 @@ logger = logging.getLogger(__name__)
 # All skills live in ~/.epflemma/skills/ (seeded from bundled skills/ on install).
 # This is the single source of truth -- agent edits, hub installs, and bundled
 # skills all coexist here without polluting the git repo.
-GAUSS_HOME = get_epflemma_home()
-SKILLS_DIR = GAUSS_HOME / "skills"
+EPFLEMMA_HOME_DIR = get_epflemma_home()
+SKILLS_DIR = EPFLEMMA_HOME_DIR / "skills"
 
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
@@ -351,9 +351,9 @@ def _capture_required_environment_variables(
 
 
 def _is_gateway_surface() -> bool:
-    if os.getenv("GAUSS_GATEWAY_SESSION"):
+    if os.getenv("EPFLEMMA_GATEWAY_SESSION"):
         return True
-    return bool(os.getenv("GAUSS_SESSION_PLATFORM"))
+    return bool(os.getenv("EPFLEMMA_SESSION_PLATFORM"))
 
 
 def _get_terminal_backend_name() -> str:
@@ -551,14 +551,14 @@ def _parse_tags(tags_value) -> list[str]:
 def _get_disabled_skill_names() -> set[str]:
     """Load disabled skill names from config (once per call).
 
-    Resolves platform from ``GAUSS_PLATFORM`` env var, falls back to
+    Resolves platform from ``EPFLEMMA_PLATFORM`` env var, falls back to
     the global disabled list.
     """
     import os
     try:
         config = load_config()
         skills_cfg = config.get("skills", {})
-        resolved_platform = os.getenv("GAUSS_PLATFORM")
+        resolved_platform = os.getenv("EPFLEMMA_PLATFORM")
         if resolved_platform:
             platform_disabled = skills_cfg.get("platform_disabled", {}).get(resolved_platform)
             if platform_disabled is not None:
@@ -574,7 +574,7 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
     try:
         config = load_config()
         skills_cfg = config.get("skills", {})
-        resolved_platform = platform or os.getenv("GAUSS_PLATFORM")
+        resolved_platform = platform or os.getenv("EPFLEMMA_PLATFORM")
         if resolved_platform:
             platform_disabled = skills_cfg.get("platform_disabled", {}).get(resolved_platform)
             if platform_disabled is not None:
@@ -940,7 +940,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     try:
         SKILLS_DIR.mkdir(parents=True, exist_ok=True)
         local_skills = _find_all_skills()
-        default_skills_dir = GAUSS_HOME / "skills"
+        default_skills_dir = EPFLEMMA_HOME_DIR / "skills"
         if local_skills or SKILLS_DIR != default_skills_dir:
             all_skills = [
                 {

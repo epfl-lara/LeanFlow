@@ -196,12 +196,14 @@ def test_get_epflemma_home_prefers_explicit_env(monkeypatch, tmp_path):
     assert get_epflemma_home() == Path(str(tmp_path / "explicit"))
 
 
-def test_get_epflemma_home_uses_branded_legacy_when_explicit_unset(monkeypatch, tmp_path):
+def test_get_epflemma_home_ignores_dropped_legacy_env(monkeypatch, tmp_path):
+    # Legacy OPENGAUSS_HOME / GAUSS_HOME are fully dropped: with EPFLEMMA_HOME unset, the home
+    # resolves to the ~/.epflemma default regardless of any legacy env var still in the shell.
     monkeypatch.delenv("EPFLEMMA_HOME", raising=False)
     monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "branded"))
     monkeypatch.setenv("GAUSS_HOME", str(tmp_path / "legacy"))
 
-    assert get_epflemma_home() == Path(str(tmp_path / "branded"))
+    assert get_epflemma_home() == Path.home() / ".epflemma"
 
 
 def test_get_epflemma_home_ignores_legacy_gauss_unless_dotepflemma(monkeypatch, tmp_path):

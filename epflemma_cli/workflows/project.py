@@ -19,7 +19,6 @@ LEGACY_PROJECT_DIRNAMES = (".opengauss", ".gauss")
 EPFLEMMA_PROJECT_MANIFEST_FILENAME = "project.yaml"
 EPFLEMMA_PROJECT_SCHEMA_VERSION = 1
 EPFLEMMA_PROJECT_TEMPLATE_ENV = "EPFLEMMA_BLUEPRINT_TEMPLATE_SOURCE"
-LEGACY_PROJECT_TEMPLATE_ENVS = ("OPENGAUSS_BLUEPRINT_TEMPLATE_SOURCE", "GAUSS_BLUEPRINT_TEMPLATE_SOURCE")
 EPFLEMMA_PROJECT_TEMPLATE_CONFIG_KEY = "epflemma.project.template_source"
 
 _BLUEPRINT_MARKERS = (
@@ -271,7 +270,7 @@ def resolve_template_source(
     env: Mapping[str, str] | None = None,
 ) -> str:
     env_map = env or {}
-    for env_name in (EPFLEMMA_PROJECT_TEMPLATE_ENV, *LEGACY_PROJECT_TEMPLATE_ENVS):
+    for env_name in (EPFLEMMA_PROJECT_TEMPLATE_ENV,):
         configured = str(env_map.get(env_name, "") or "").strip()
         if configured:
             return configured

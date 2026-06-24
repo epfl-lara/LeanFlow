@@ -116,7 +116,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             except (subprocess.TimeoutExpired, OSError):
                 return [""]
 
-        delim = f"__GAUSS_SEP_{self._session_id}__"
+        delim = f"__EPFLEMMA_SEP_{self._session_id}__"
         script = "; ".join(
             f"cat {p} 2>/dev/null; echo '{delim}'" for p in paths
         )

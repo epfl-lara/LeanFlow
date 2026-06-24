@@ -34,35 +34,20 @@ class FormalizationDocumentContext:
     def to_env(self) -> dict[str, str]:
         return {
             "EPFLEMMA_FORMALIZATION_DOCUMENT": str(self.source_path),
-            "OPENGAUSS_FORMALIZATION_DOCUMENT": str(self.source_path),
             "EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE": self.source_relative,
-            "OPENGAUSS_FORMALIZATION_DOCUMENT_RELATIVE": self.source_relative,
             "EPFLEMMA_FORMALIZATION_REQUEST_KIND": str(self.metadata.get("document_request_kind", "file") or "file"),
-            "OPENGAUSS_FORMALIZATION_REQUEST_KIND": str(self.metadata.get("document_request_kind", "file") or "file"),
             "EPFLEMMA_FORMALIZATION_REQUEST_RELATIVE": str(
                 self.metadata.get("document_request_relative", self.source_relative) or self.source_relative
             ),
-            "OPENGAUSS_FORMALIZATION_REQUEST_RELATIVE": str(
-                self.metadata.get("document_request_relative", self.source_relative) or self.source_relative
-            ),
             "EPFLEMMA_FORMALIZATION_SELECTED_SOURCE": self.source_relative,
-            "OPENGAUSS_FORMALIZATION_SELECTED_SOURCE": self.source_relative,
             "EPFLEMMA_FORMALIZATION_DOCUMENT_KIND": self.source_kind,
-            "OPENGAUSS_FORMALIZATION_DOCUMENT_KIND": self.source_kind,
             "EPFLEMMA_FORMALIZATION_CONTEXT": str(self.context_path),
-            "OPENGAUSS_FORMALIZATION_CONTEXT": str(self.context_path),
             "EPFLEMMA_WORKFLOW_CONTEXT": str(self.context_path),
-            "GAUSS_AUTOFORMALIZE_CONTEXT": str(self.context_path),
             "EPFLEMMA_FORMALIZATION_MANIFEST": str(self.manifest_path),
-            "OPENGAUSS_FORMALIZATION_MANIFEST": str(self.manifest_path),
             "EPFLEMMA_FORMALIZATION_BLUEPRINT": str(self.blueprint_path),
-            "OPENGAUSS_FORMALIZATION_BLUEPRINT": str(self.blueprint_path),
             "EPFLEMMA_FORMALIZATION_BLUEPRINT_SKILL": str(self.blueprint_skill_path),
-            "OPENGAUSS_FORMALIZATION_BLUEPRINT_SKILL": str(self.blueprint_skill_path),
             "EPFLEMMA_FORMALIZATION_EXTRACTED_TEXT": str(self.extracted_text_path),
-            "OPENGAUSS_FORMALIZATION_EXTRACTED_TEXT": str(self.extracted_text_path),
             "EPFLEMMA_FORMALIZATION_TARGET_FILE": self.target_lean_relative,
-            "OPENGAUSS_FORMALIZATION_TARGET_FILE": self.target_lean_relative,
         }
 
 

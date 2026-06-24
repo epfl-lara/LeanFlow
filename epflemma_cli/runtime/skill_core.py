@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from core.home import epflemma_home
 from epflemma_cli.lean.lean_workflow_specs import specs_for_skill
 
 CURATED_BUILTIN_SKILLS = {
@@ -56,16 +57,8 @@ def _builtin_root() -> Path:
 
 
 def _epflemma_home() -> Path:
-    explicit = str(os.getenv("EPFLEMMA_HOME", "") or "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    branded_legacy = str(os.getenv("OPENGAUSS_HOME", "") or "").strip()
-    if branded_legacy:
-        return Path(branded_legacy).expanduser()
-    legacy = str(os.getenv("GAUSS_HOME", "") or "").strip()
-    if legacy and Path(legacy).expanduser().name in {".epflemma", ".opengauss"}:
-        return Path(legacy).expanduser()
-    return Path.home() / ".epflemma"
+    # Single source of truth — legacy ~/.opengauss / ~/.gauss resolution lives in core.home only.
+    return epflemma_home()
 
 
 def _user_root() -> Path:

@@ -113,7 +113,7 @@ def test_timeout_floors_at_one_second(agent):
 
 
 def test_timeout_falls_back_to_env(agent, monkeypatch):
-    monkeypatch.setenv("GAUSS_API_TIMEOUT", "55.0")
+    monkeypatch.setenv("EPFLEMMA_API_TIMEOUT", "55.0")
     # Non-numeric/absent timeout in kwargs -> env default.
     assert agent._provider_request_timeout_seconds({}) == 55.0
 

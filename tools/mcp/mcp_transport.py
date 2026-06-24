@@ -114,13 +114,7 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
             resolved_command = which_hit
         elif resolved_command in {"npx", "npm", "node"}:
             epflemma_home = os.path.expanduser(
-                os.getenv(
-                    "EPFLEMMA_HOME",
-                    os.getenv(
-                        "OPENGAUSS_HOME",
-                        os.getenv("GAUSS_HOME", os.path.join(os.path.expanduser("~"), ".epflemma")),
-                    ),
-                )
+                os.getenv("EPFLEMMA_HOME", os.path.join(os.path.expanduser("~"), ".epflemma"))
             )
             candidates = [
                 os.path.join(epflemma_home, "node", "bin", resolved_command),
@@ -146,10 +140,7 @@ def _resolve_stdio_cwd(server_name: str, config: dict) -> str | None:
 
     if str(server_name or "").startswith("lean-"):
         project_root = str(
-            os.getenv(
-                "EPFLEMMA_PROJECT_ROOT",
-                os.getenv("OPENGAUSS_PROJECT_ROOT", os.getenv("GAUSS_PROJECT_ROOT", "")),
-            )
+            os.getenv("EPFLEMMA_PROJECT_ROOT", "")
             or ""
         ).strip()
         if project_root:
@@ -214,7 +205,6 @@ def _augment_lean_stdio_env(server_name: str, env: dict, cwd: str | None) -> dic
 
     updated.setdefault("LEAN_PROJECT_PATH", cwd)
     updated.setdefault("EPFLEMMA_PROJECT_ROOT", cwd)
-    updated.setdefault("OPENGAUSS_PROJECT_ROOT", cwd)
     return updated
 
 

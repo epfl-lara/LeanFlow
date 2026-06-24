@@ -32,15 +32,18 @@ def _isolate_gauss_home(tmp_path, monkeypatch):
     (fake_epflemma_home / "memories").mkdir()
     (fake_epflemma_home / "workflow-state").mkdir()
     (fake_epflemma_home / "local-models").mkdir()
-    monkeypatch.setenv("GAUSS_HOME", str(fake_home))
     monkeypatch.setenv("EPFLEMMA_HOME", str(fake_epflemma_home))
+    # The one-time legacy seed reads the retired ~/.gauss / ~/.opengauss homes directly via
+    # core.home.legacy_homes(); point it at the throwaway fake home so tests never read or copy
+    # the developer's real retired state. Tests exercising migration populate fake_home themselves.
+    monkeypatch.setattr("core.home.legacy_homes", lambda: (fake_home,))
     monkeypatch.setenv("EPFLEMMA_QUEUE_INVARIANT_CHECKS", "1")
     # Tests should not inherit the agent's current gateway/messaging surface.
     # Individual tests that need gateway behavior set these explicitly.
-    monkeypatch.delenv("GAUSS_SESSION_PLATFORM", raising=False)
-    monkeypatch.delenv("GAUSS_SESSION_CHAT_ID", raising=False)
-    monkeypatch.delenv("GAUSS_SESSION_CHAT_NAME", raising=False)
-    monkeypatch.delenv("GAUSS_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("EPFLEMMA_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("EPFLEMMA_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("EPFLEMMA_SESSION_CHAT_NAME", raising=False)
+    monkeypatch.delenv("EPFLEMMA_GATEWAY_SESSION", raising=False)
 
     # Importing run_agent (and a few CLI entrypoints) runs load_epflemma_dotenv() at
     # module-import time, which is *before* this fixture runs on the first test that

@@ -344,8 +344,6 @@ def container_run_command(
     command.extend(["--tmpfs", "/tmp:rw,nosuid,nodev,size=1g"])
     command.extend(["--tmpfs", "/run:rw,nosuid,nodev,noexec,size=128m"])
     command.extend(["--env", "EPFLEMMA_HOME=/epflemma-home"])
-    command.extend(["--env", "OPENGAUSS_HOME=/epflemma-home"])
-    command.extend(["--env", "GAUSS_HOME=/epflemma-home"])
     command.extend(["--env", "HOME=/epflemma-home"])
     command.extend(["--env", "EPFLEMMA_SANDBOX=1"])
     command.extend(["--env", f"EPFLEMMA_SANDBOX_RUN_ID={sandbox_run.run_id}"])

@@ -31,10 +31,12 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.home import epflemma_home
+
 logger = logging.getLogger(__name__)
 
 # Where memory files live
-MEMORY_DIR = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss")) / "memories"
+MEMORY_DIR = epflemma_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
 

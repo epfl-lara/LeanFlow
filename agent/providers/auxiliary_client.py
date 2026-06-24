@@ -273,7 +273,7 @@ def _read_main_model() -> str:
     so the auxiliary client can use the same model as the main agent when no
     dedicated auxiliary model is available.
     """
-    from_env = os.getenv("OPENAI_MODEL") or os.getenv("GAUSS_MODEL") or os.getenv("LLM_MODEL")
+    from_env = os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL")
     if from_env:
         return from_env.strip()
     try:

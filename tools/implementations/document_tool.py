@@ -27,7 +27,6 @@ def formalization_document_inspect_tool(
     root = (
         project_root
         or os.getenv("EPFLEMMA_PROJECT_ROOT", "")
-        or os.getenv("OPENGAUSS_PROJECT_ROOT", "")
         or cwd
         or os.getcwd()
     )
@@ -51,7 +50,6 @@ def read_pdf_tool(
     root = (
         project_root
         or os.getenv("EPFLEMMA_PROJECT_ROOT", "")
-        or os.getenv("OPENGAUSS_PROJECT_ROOT", "")
         or cwd
         or os.getcwd()
     )

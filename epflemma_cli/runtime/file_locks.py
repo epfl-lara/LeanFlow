@@ -9,6 +9,8 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from core.home import epflemma_home
+
 PROJECT_STATE_DIRNAME = ".epflemma"
 LEGACY_PROJECT_DIRNAMES = (".opengauss", ".gauss")
 
@@ -25,22 +27,12 @@ def _utc_now_iso() -> str:
 
 
 def _epflemma_home() -> Path:
-    explicit = str(os.getenv("EPFLEMMA_HOME", "") or "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    branded_legacy = str(os.getenv("OPENGAUSS_HOME", "") or "").strip()
-    if branded_legacy:
-        return Path(branded_legacy).expanduser()
-    legacy = str(os.getenv("GAUSS_HOME", "") or "").strip()
-    if legacy and Path(legacy).expanduser().name in {".epflemma", ".opengauss"}:
-        return Path(legacy).expanduser()
-    return Path.home() / ".epflemma"
+    # Single source of truth — legacy ~/.opengauss / ~/.gauss resolution lives in core.home only.
+    return epflemma_home()
 
 
 def _project_lock_root() -> Path | None:
     explicit = str(os.getenv("EPFLEMMA_PROJECT_ROOT", "") or "").strip()
-    if not explicit:
-        explicit = str(os.getenv("OPENGAUSS_PROJECT_ROOT", "") or "").strip()
     candidates: list[Path] = []
     if explicit:
         candidates.append(Path(explicit).expanduser())

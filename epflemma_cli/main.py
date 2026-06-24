@@ -134,8 +134,6 @@ WORKFLOW_COMMANDS = build_workflow_command_set()
 def _seed_environment() -> None:
     home = get_epflemma_home()
     os.environ.setdefault("EPFLEMMA_HOME", str(home))
-    os.environ.setdefault("OPENGAUSS_HOME", str(home))
-    os.environ.setdefault("GAUSS_HOME", str(home))
 
 
 def _load_runtime_env(*, cwd: Path | None = None) -> None:

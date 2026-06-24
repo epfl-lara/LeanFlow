@@ -13,14 +13,14 @@ from typing import Any
 
 import yaml
 
+from core import home as _core_home
+from core.home import DEFAULT_HOME, HOME_ENV, epflemma_home, migrate_legacy_home
+
 logger = logging.getLogger(__name__)
 
-EPFLEMMA_HOME_ENV = "EPFLEMMA_HOME"
-LEGACY_BRANDED_HOME_ENV = "OPENGAUSS_HOME"
-LEGACY_HOME_ENV = "GAUSS_HOME"
-LEGACY_BRANDED_HOME_DEFAULT = Path.home() / ".opengauss"
-LEGACY_HOME_DEFAULT = Path.home() / ".gauss"
-EPFLEMMA_HOME_DEFAULT = Path.home() / ".epflemma"
+# Home resolution lives in core.home (the low layer); these aliases preserve the public names.
+EPFLEMMA_HOME_ENV = HOME_ENV
+EPFLEMMA_HOME_DEFAULT = DEFAULT_HOME
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Legacy config carried a large registry of optional env vars for removed
@@ -290,42 +290,12 @@ the current Lean task cleanly.
 
 
 def get_epflemma_home() -> Path:
-    explicit = os.getenv(EPFLEMMA_HOME_ENV, "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    branded_legacy = os.getenv(LEGACY_BRANDED_HOME_ENV, "").strip()
-    if branded_legacy:
-        return Path(branded_legacy).expanduser()
-    legacy = os.getenv(LEGACY_HOME_ENV, "").strip()
-    if legacy and Path(legacy).expanduser().name == ".epflemma":
-        return Path(legacy).expanduser()
-    return EPFLEMMA_HOME_DEFAULT
+    return epflemma_home()
 
 
 def get_legacy_homes() -> list[Path]:
-    homes: list[Path] = []
-    explicit_envs = (
-        (LEGACY_HOME_ENV, None),
-        (LEGACY_BRANDED_HOME_ENV, None),
-    )
-    fallback_defaults = (
-        LEGACY_BRANDED_HOME_DEFAULT,
-        LEGACY_HOME_DEFAULT,
-    )
-
-    for env_name, _ in explicit_envs:
-        value = os.getenv(env_name, "").strip()
-        if not value:
-            continue
-        candidate = Path(value).expanduser()
-        if candidate not in homes:
-            homes.append(candidate)
-
-    for default in fallback_defaults:
-        candidate = Path(default).expanduser()
-        if candidate not in homes:
-            homes.append(candidate)
-    return homes
+    """Retired homes consulted *only* to seed a fresh install (config/.env one-time import)."""
+    return list(_core_home.legacy_homes())
 
 
 def get_config_path() -> Path:
@@ -517,6 +487,7 @@ def ensure_epflemma_home(import_legacy: bool = True) -> Path:
     home = get_epflemma_home()
     if import_legacy:
         _import_legacy_home(home)
+        migrate_legacy_home(home)
     home.mkdir(parents=True, exist_ok=True)
     _secure_dir(home)
     _ensure_default_soul_md(home)

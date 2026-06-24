@@ -20,8 +20,6 @@ logger = logging.getLogger("run_agent")
 def _emit_workflow_event(event_type: str, message: str, **details: Any) -> None:
     if not (
         os.getenv("EPFLEMMA_PROJECT_ROOT")
-        or os.getenv("OPENGAUSS_PROJECT_ROOT")
-        or os.getenv("GAUSS_PROJECT_ROOT")
     ):
         return
     try:
