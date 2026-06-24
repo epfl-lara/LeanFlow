@@ -117,6 +117,14 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
 
 
 def _normalize_model_name(model: str) -> str:
+    """Canonical generic model-name normalization: trimmed + lowercased.
+
+    Single source of truth for case-insensitive model lookups. Re-exported by
+    agent.model_capabilities as ``normalize_model_key`` (the unified
+    model-capabilities façade), so context and pricing code share one
+    implementation without an import cycle (the façade imports this; this module
+    never imports the façade).
+    """
     return str(model or "").strip().lower()
 
 

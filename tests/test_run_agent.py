@@ -1380,7 +1380,7 @@ class TestRunConversation:
         assert result["completed"] is True
         assert "Starting conversation" in output
         assert "verified proof milestone" in output
-        assert "API step 1/180" in output
+        assert "API step 1/200" in output
         assert "Tokens: input 1,234 · output 56 · total 1,290" in output
         assert "Cost estimate: step $" in output
 
