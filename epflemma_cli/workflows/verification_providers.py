@@ -100,6 +100,7 @@ def run_command_verification_review(
     cwd: str = "",
     timeout_s: int = 1200,
 ) -> VerificationReviewResult:
+    """Execute a verification review via a command-based expert provider and return its output and status. Normalizes the provider name, invokes run_command_expert_help with the given prompt and timeout, and constructs a VerificationReviewResult with command execution details including exit status and response truncation. Records telemetry before and after execution."""
     normalized = normalize_verification_provider(provider)
     _record_verification_activity(
         "verification-review-request",
@@ -159,6 +160,7 @@ def run_model_verification_review(
     timeout_s: int = 1200,
     max_tokens: int = 12000,
 ) -> VerificationReviewResult:
+    """Execute a verification review via an LLM call, building optional system/user message pair and capturing model response, timeout behavior, and error states. Handles RuntimeError (provider unavailable) and generic exceptions distinctly, returning a VerificationReviewResult with the model's content or appropriate error message. Records telemetry before and after execution."""
     normalized = normalize_verification_provider(provider)
     effective_provider = None if normalized == "auto" else normalized
     messages = []

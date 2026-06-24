@@ -130,6 +130,7 @@ def _collect_diagnostic_items(value: Any) -> list[dict[str, Any]]:
 
 
 def diagnostic_items(text: str) -> list[dict[str, Any]]:
+    """Extract and deduplicate diagnostics from JSON payloads or file:line:col:severity:message text. Tries JSON parsing first, then falls back to anchored regex (^...$ MULTILINE) to parse diagnostics from structured text output; the anchoring prevents O(n^2) backtracking on long lines without diagnostic tokens."""
     items: list[dict[str, Any]] = []
     seen: set[tuple[str, int | None, str]] = set()
     for value in _json_diagnostic_values(text):

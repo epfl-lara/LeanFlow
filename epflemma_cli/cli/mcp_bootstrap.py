@@ -250,6 +250,7 @@ def _ensure_managed_server_entry(entry: CommentedMap, *, spec: ManagedMCPServerS
 
 
 def write_managed_mcp_config(home: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    """Ensure the EPFLemma config file contains entries for all managed Lean MCP servers with correct command paths, roles, and power-mode environments (REPL timeout, Loogle cache dir, local-search instructions)."""
     home_path = Path(home).expanduser().resolve() if home else ensure_epflemma_home(import_legacy=False)
     home_path.mkdir(parents=True, exist_ok=True)
     _secure_dir(home_path)
@@ -421,6 +422,7 @@ def managed_mcp_power_status(
     *,
     project_root: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
+    """Detect the readiness state of REPL and local Loogle backend for lean-lsp: report REPL binary path, availability, and configuration; scan Loogle cache directory for compatibility with project Lean toolchain; return a status dict for each subsystem."""
     home_path = Path(home).expanduser().resolve() if home else get_epflemma_home()
     config_path = home_path / get_config_path().name
     _yaml, doc = _load_bootstrap_document(config_path)
@@ -479,6 +481,7 @@ def managed_mcp_power_status(
 
 
 def managed_mcp_server_status(home: str | os.PathLike[str] | None = None) -> dict[str, dict[str, Any]]:
+    """Check installation and configuration health of each managed MCP server (lean-lsp, lean-proof-auto, lean-explore): verify venv and command exist, config matches expected paths, and enabled flag is set; attach lean-lsp power modes; flag if bootstrap is recommended."""
     home_path = Path(home).expanduser().resolve() if home else get_epflemma_home()
     config_path = home_path / get_config_path().name
     _yaml, doc = _load_bootstrap_document(config_path)
@@ -512,6 +515,7 @@ def managed_mcp_server_status(home: str | os.PathLike[str] | None = None) -> dic
 
 
 def bootstrap_lean_mcp(*, home: str | os.PathLike[str] | None = None, python_bin: str | None = None) -> dict[str, Any]:
+    """Install all managed MCP servers into isolated virtualenvs, patch lean-lsp Loogle search paths, generate config entries with power-mode environment variables, and return detailed installation report including server venvs, command paths, and power-mode status."""
     home_path = Path(home).expanduser().resolve() if home else ensure_epflemma_home(import_legacy=False)
     managed_root = managed_mcp_root(home_path)
     (managed_root / "venvs").mkdir(parents=True, exist_ok=True)

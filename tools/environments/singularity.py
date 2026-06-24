@@ -216,6 +216,7 @@ class SingularityEnvironment(BaseEnvironment):
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
                 stdin_data: str | None = None) -> dict:
+        """Execute a command in the Singularity container instance, merging any required sudo stdin with caller-provided input, and return output with returncode. Respects the configured timeout and detects interrupts to gracefully terminate or kill the subprocess."""
         if not self._instance_started:
             return {"output": "Instance not started", "returncode": -1}
 

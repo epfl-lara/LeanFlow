@@ -143,6 +143,7 @@ def _format_tool_result_for_log_with_limits(
     plain_tail: int,
     string_char_threshold: int,
 ) -> list[str]:
+    """Format a tool result string for log display with configurable truncation per content type. Parses JSON dicts and lists to apply type-aware truncation (multiline strings, long strings, structured objects get independent head/tail limits); falls back to plain-text wrapping and truncation for non-JSON. Wraps all output lines at 104–106 chars."""
     try:
         parsed = json.loads(function_result)
     except Exception:

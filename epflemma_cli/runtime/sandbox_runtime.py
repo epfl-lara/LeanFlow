@@ -105,6 +105,7 @@ def settings_from_config(
     env_file: str | Path | None = None,
     network: bool | None = None,
 ) -> SandboxSettings:
+    """Build SandboxSettings from config file and optional overrides, resolving paths and defaults. Merges epflemma.sandbox config dict with provided engine/image/env_file/network parameters, filling missing values from fallbacks."""
     config = load_config()
     epflemma = config.get("epflemma") if isinstance(config, Mapping) else {}
     sandbox = epflemma.get("sandbox") if isinstance(epflemma, Mapping) else {}
@@ -322,6 +323,7 @@ def container_run_command(
     settings: SandboxSettings,
     tty: bool | None = None,
 ) -> list[str]:
+    """Build a container engine CLI invocation for a sandbox run with mounts, environment, security constraints, and optional MCP bootstrap. Returns the full [engine, run, ...] command array ready for subprocess.call()."""
     uid = os.getuid() if hasattr(os, "getuid") else None
     gid = os.getgid() if hasattr(os, "getgid") else None
     cache_dir = settings.cache_dir.expanduser().resolve()
@@ -405,6 +407,7 @@ def run_sandbox(
     network: bool | None = None,
     tty: bool | None = None,
 ) -> int:
+    """Execute an EPFLemma workflow in a container: prepare worktree, verify image, launch container, export patch, write status.json. Returns the container's exit code; writes patch and status artifacts to run_dir."""
     settings = settings_from_config(engine=engine, image=image, env_file=env_file, network=network)
     resolved_engine = resolve_container_engine(settings.engine)
     ensure_container_engine_usable(resolved_engine)
@@ -477,6 +480,7 @@ def sandbox_status(
     image: str | None = None,
     env_file: str | Path | None = None,
 ) -> dict[str, Any]:
+    """Probe container engine, image availability, and recent sandbox runs; return aggregated status dict. Includes engine_ready flag, image_ready flag, and last 8 status.json files sorted by mtime."""
     settings = settings_from_config(engine=engine, image=image, env_file=env_file)
     engine_error = ""
     resolved_engine = ""

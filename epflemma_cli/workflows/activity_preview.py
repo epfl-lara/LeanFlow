@@ -80,6 +80,7 @@ def _summarize_requested_tools(tool_calls: list[dict[str, Any]]) -> str:
 
 
 def _agent_event_preview(event: Mapping[str, Any]) -> str:
+    """Convert a workflow activity event into a human-facing preview string. Routes on event type (assistant-response, tool-call, tool-result, api-request, etc.) and extracts a concise snippet—content, reasoning, queued tools, error status—respecting the configured character budget; returns a formatted preview or generic fallback message."""
     details = event.get("details")
     details = details if isinstance(details, dict) else {}
     event_type = str(event.get("type", "") or "")

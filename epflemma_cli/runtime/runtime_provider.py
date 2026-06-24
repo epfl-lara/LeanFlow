@@ -370,6 +370,7 @@ def resolve_runtime_provider(
     explicit_api_key: str | None = None,
     explicit_base_url: str | None = None,
 ) -> dict[str, Any]:
+    """Return a resolved runtime provider configuration dict by dispatching on the requested provider (local, codex, anthropic, named custom, or OpenAI-compatible). Explicit API key/base_url override env/config values; missing model defaults to config. Raises RuntimeProviderError if credentials cannot be located."""
     requested_provider = resolve_requested_provider(requested)
 
     if requested_provider == "local":

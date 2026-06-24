@@ -122,6 +122,7 @@ class OutputManager:
         )
 
     def log_session_usage_summary(self) -> None:
+        """Print the session usage summary (once) with API call counts, token totals for this turn and full session, and cost estimate; skips if already logged or in quiet mode. Pulls data from the TokenAccounter and formats provider-reported or estimated costs."""
         agent = self._agent
         if agent._usage_summary_logged:
             return
@@ -182,6 +183,7 @@ class OutputManager:
         # Resolve pricing helpers on run_agent at call time so tests that patch
         # run_agent.has_known_pricing / run_agent.estimate_cost_usd intercept.
         # Imported lazily to avoid an import cycle.
+        """Print per-step token counts and cost estimate. Shows input/output/total tokens for this call plus session running total; if pricing is available for the model, estimates step and session costs; otherwise reports pricing unavailable."""
         import run_agent
 
         agent = self._agent

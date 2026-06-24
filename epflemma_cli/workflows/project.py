@@ -163,6 +163,7 @@ def setup_project_power_modes(
     *,
     progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    """Configure REPL acceleration by detecting and building the leanprover-community/repl dependency. Probes for an existing REPL binary, appends the dependency to lakefile.toml if absent, runs `lake update` and `lake build repl`, then returns a structured report (repl_available, repl_path, status, messages)."""
     root = Path(lean_root).expanduser().resolve()
     messages: list[str] = []
 
@@ -352,6 +353,7 @@ def _maybe_import_legacy_project(root: Path) -> None:
 
 
 def load_epflemma_project(target: str | Path) -> EPFLemmaProject:
+    """Load an existing EPFLemma project from a manifest file (or directory path), validate its schema and structure, auto-migrate legacy manifests if needed, and return an EPFLemmaProject with all resolved paths, metadata, and blueprint markers."""
     candidate = Path(target).expanduser().resolve()
 
     if candidate.is_file():
@@ -452,6 +454,7 @@ def discover_epflemma_project(start: str | Path) -> EPFLemmaProject:
 
 
 def initialize_epflemma_project(root: str | Path, *, name: str | None = None) -> EPFLemmaProject:
+    """Initialize a new EPFLemma project by creating the .epflemma directory structure and manifest within a Lean 4 project root, or return the loaded project if one already exists. Detects blueprint markers and records creation timestamp."""
     project_root = Path(root).expanduser().resolve()
     if not project_root.exists():
         raise ProjectCommandError(f"Project root does not exist: {project_root}")

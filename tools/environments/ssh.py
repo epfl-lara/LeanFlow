@@ -149,6 +149,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
     def _execute_oneshot(self, command: str, cwd: str = "", *,
                          timeout: int | None = None,
                          stdin_data: str | None = None) -> dict:
+        """Execute a single SSH command, streaming output via background reader thread and handling interruption/timeout. Returns dict with combined stdout/stderr and exit code; returns 130 if interrupted, or calls _timeout_result() if the effective timeout is exceeded."""
         work_dir = cwd or self.cwd
         exec_command, sudo_stdin = self._prepare_command(command)
         wrapped = f'cd {work_dir} && {exec_command}'

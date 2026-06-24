@@ -73,6 +73,7 @@ def build_welcome_banner(
     project_label: str,
     local_runtime: str,
 ) -> None:
+    """Render the EPFLemma welcome banner with wordmark, metrics (model/route/runtime), and launch path hints. Adapts content density based on terminal width (simplified at <90 cols) and prints to console."""
     cli_name = get_cli_command_name()
     product_name = get_product_name()
     width = shutil.get_terminal_size().columns
@@ -182,6 +183,7 @@ def render_swarm_table(console: Console, *, agents: list[dict[str, object]]) -> 
 
 
 def render_swarm_agent_panel(console: Console, *, agent: dict[str, object], recent_limit: int = 5) -> None:
+    """Display a single workflow agent's metadata panel (ID, task, parent, state, depth, model, provider, API/tool call counts) and optional recent activity log truncated to recent_limit events."""
     table = Table.grid(padding=(0, 1))
     table.add_column(style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
     table.add_column(style=BRAND_COLORS["text"])
@@ -285,6 +287,7 @@ def render_status_panel(
 
 
 def render_provider_panel(console: Console, *, resolved: dict[str, str], requested: str, targets: list[dict[str, str]]) -> None:
+    """Show the resolved provider configuration (requested vs actual provider, API mode, base URL, model, reasoning effort) and list available target providers to choose from."""
     current = Table.grid(padding=(0, 1))
     current.add_column(style=f"bold {BRAND_COLORS['primary_soft']}", no_wrap=True)
     current.add_column(style=BRAND_COLORS["text"])
@@ -363,6 +366,7 @@ def render_workflow_launch(console: Console, *, launch_summary: dict[str, str]) 
 
 
 def render_workflow_status_panel(console: Console, *, status: dict[str, object], activities: list[dict[str, object]] | None = None) -> None:
+    """Display live managed workflow state including phase, workflow kind, provider/model, active file/theorem, project manager queue (if enabled), build/warning-cleanup status, sorry count, and optional recent activity table. Flags stale snapshots in phase display."""
     workflow_name = str(status.get("workflow_kind", "[none]") or "[none]")
     workflow_name = WORKFLOW_DISPLAY_NAMES.get(workflow_name, workflow_name)
     phase = str(status.get("phase", "[none]") or "[none]")

@@ -47,6 +47,7 @@ def read_pdf_tool(
     project_root: str = "",
     max_chars: int = PDF_READ_DEFAULT_MAX_CHARS,
 ) -> str:
+    """Extract and return text from a project-local PDF file with bounded output. Validates input is a PDF, truncates extracted text to max_chars (bounded 1k–120k), and returns metadata including section structure, extraction quality, and truncation flags."""
     root = (
         project_root
         or os.getenv("EPFLEMMA_PROJECT_ROOT", "")

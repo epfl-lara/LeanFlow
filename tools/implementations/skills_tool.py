@@ -216,6 +216,7 @@ def _get_required_environment_variables(
     frontmatter: dict[str, Any],
     legacy_env_vars: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    """Collect and normalize environment variable requirements from frontmatter, merging current `required_environment_variables`, `setup.collect_secrets`, and legacy `prerequisites.env_vars` sources. Deduplicates by env name, validates against _ENV_VAR_NAME_RE, and adds default prompts plus optional help and required_for metadata."""
     setup = _normalize_setup_metadata(frontmatter)
     required_raw = frontmatter.get("required_environment_variables")
     if isinstance(required_raw, dict):
@@ -282,6 +283,7 @@ def _capture_required_environment_variables(
     skill_name: str,
     missing_entries: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Invoke the registered secret capture callback for each missing env var entry, returning a result dict with remaining unset names and setup_skipped flag. Suppresses callback exceptions and marks entries as failed when callback returns success=false or raises."""
     if not missing_entries:
         return {
             "missing_names": [],
@@ -718,6 +720,7 @@ def _first_body_line(body: str) -> str:
 
 
 def _local_skill_payload(name: str, file_path: str | None = None) -> dict[str, Any] | None:
+    """Build the complete skill response payload for skill_view, supporting two modes: if file_path is set, return the linked file content with path-traversal validation; otherwise return full skill metadata including required env vars, readiness status, missing vars after capture attempt, and setup notes. Returns None if skill not found."""
     resolved = _resolve_local_skill(name)
     if resolved is None:
         return None

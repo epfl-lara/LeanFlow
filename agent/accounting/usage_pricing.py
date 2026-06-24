@@ -50,6 +50,7 @@ DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
 
 def get_pricing(model_name: str) -> dict[str, float]:
+    """Return USD-per-1M-token pricing (input/output) for a model, falling back through exact match, longest prefix match, substring patterns, and finally zeros. Handles model names with paths (e.g. 'org/claude-3-opus-v2') by extracting the bare suffix and lowercasing."""
     if not model_name:
         return DEFAULT_PRICING
 

@@ -50,6 +50,7 @@ def dispatch_worker(
     parent_agent: Any = None,
     owner_id: str = "",
 ) -> LeanWorkerResult:
+    """Route a Lean worker request to either plan-mode return or full agent delegation, with optional file locking. Acquires a file lock if requested, builds a worker prompt from the request spec, and either returns the prompt for planning or delegates execution to an agent with terminal/file/skills/coordination toolsets; records outcome in workflow state."""
     worker = request.worker.strip()
     lock_result: dict[str, Any] | None = None
     if request.use_file_lock and request.file_path and owner_id:

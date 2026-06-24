@@ -84,6 +84,7 @@ def _cleanup_payload(cwd: Path) -> dict[str, Any]:
 
 
 def _web_search_payload() -> tuple[dict[str, Any], list[str]]:
+    """Smoke-test the web_search tool by executing a query and validating tool exposure, Lean-first guidance, and result availability. Returns a status payload and list of diagnostic issues."""
     issues: list[str] = []
     payload: dict[str, Any] = {
         "available": False,
@@ -169,6 +170,7 @@ def _web_search_payload() -> tuple[dict[str, Any], list[str]]:
 
 
 def _doctor_payload(active_cwd: str | Path | None = None, *, mode: str = "all") -> tuple[dict[str, Any], list[str]]:
+    """Build a mode-filtered diagnostic payload aggregating Lean project health, runtime provider, MCP, search providers, and optional migration/cleanup guidance. Returns the complete payload dict and accumulated issues list."""
     ensure_epflemma_home()
     cwd = Path(active_cwd or Path.cwd()).expanduser().resolve()
     normalized_mode = _normalize_mode(mode)
@@ -247,6 +249,7 @@ def _doctor_payload(active_cwd: str | Path | None = None, *, mode: str = "all") 
 
 
 def _format_doctor_report(payload: dict[str, Any]) -> str:
+    """Format a doctor payload into a human-readable text report, branching on mode (web-search or full diagnostics) and rendering each section with status indicators and issue summaries."""
     if payload.get("mode") == "web-search":
         web_search = dict(payload.get("web_search", {}) or {})
         lines = [

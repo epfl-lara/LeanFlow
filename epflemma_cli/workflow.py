@@ -164,6 +164,7 @@ def _normalize_workflow_args(project_root: Path, cwd: Path, workflow_args: str) 
 
 
 def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
+    """Build a human-readable summary dict of a launch plan for display, capturing workflow name, command, project, runtime provider, model, skill, agent count, and optional fields like formalization metadata, verifier providers, or explicit goals."""
     runtime_model = str(plan.runtime.get("model") or plan.child_env.get("EPFLEMMA_NATIVE_MODEL", "") or "")
     runtime_name = str(plan.runtime.get("runtime", "") or "")
     provider = str(plan.runtime.get("provider", "") or "")
@@ -231,6 +232,7 @@ def rewrite_forgiving_workflow_command(raw: str) -> str:
 
 
 def parse_workflow_command(command: str) -> NativeWorkflowSpec:
+    """Parse a workflow command string (e.g., "/lean4:prove file.lean --agents 2 --provider openai") into a NativeWorkflowSpec, extracting workflow kind, canonical/backend commands, parallelism, expert/verifier providers, and additional skills."""
     normalized = rewrite_forgiving_workflow_command(command)
     if not normalized:
         raise ValueError("workflow command must not be empty")
@@ -369,6 +371,7 @@ def resolve_workflow_request(
     requested_provider: str | None = None,
     active_skill: str | None = None,
 ) -> NativeLaunchPlan:
+    """Resolve a raw workflow command into a complete NativeLaunchPlan by discovering the project, resolving runtime, normalizing file paths, preparing formalization context if needed, selecting skills, and populating the environment for the native runner subprocess."""
     workflow = parse_workflow_command(command)
     cwd = Path(active_cwd or os.getcwd()).expanduser().resolve()
     project = discover_epflemma_project(cwd)
@@ -530,6 +533,7 @@ def run_workflow(
     requested_provider: str | None = None,
     active_skill: str | None = None,
 ) -> int:
+    """Execute a workflow command synchronously as a subprocess in the project root, waiting for completion and handling KeyboardInterrupt gracefully with escalating termination (terminate → kill), returning the process exit code."""
     plan, process = spawn_workflow(
         command,
         active_cwd=active_cwd,

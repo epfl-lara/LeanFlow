@@ -38,6 +38,7 @@ class DaytonaEnvironment(BaseEnvironment):
         persistent_filesystem: bool = True,
         task_id: str = "default",
     ):
+        """Initialize a Daytona cloud sandbox with optional persistence. Resumes a stopped sandbox for the task_id if persistent_filesystem=True, otherwise creates a fresh one; detects the actual home directory inside the sandbox to resolve cwd correctly."""
         self._requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
 
@@ -168,6 +169,7 @@ class DaytonaEnvironment(BaseEnvironment):
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
                 stdin_data: str | None = None) -> dict:
+        """Execute a shell command in the sandbox with stdin support and timeout enforcement. Wraps execution in a shell timeout utility and thread-based polling to reliably enforce deadlines and handle interrupts by stopping the sandbox; retries on DaytonaError after sandbox restart."""
         with self._lock:
             self._ensure_sandbox_ready()
 

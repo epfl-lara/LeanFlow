@@ -152,6 +152,7 @@ def close_incremental_sessions() -> None:
 
 
 def lean_incremental_capabilities(cwd: str | Path | None = None) -> dict[str, Any]:
+    """Return a dict reporting availability of incremental Lean checking and any degradation reasons. Detects project root, local REPL binary, and LeanProbe capabilities; includes active sessions and max code sessions from the probe."""
     project_root = _resolve_project_root(cwd)
     repl_dir = _local_repl_dir(project_root) if project_root else None
     degraded: list[str] = []
@@ -197,6 +198,7 @@ def lean_incremental_check(
     include_tactics: bool = False,
     timeout_s: int = 60,
 ) -> dict[str, Any]:
+    """Dispatch an incremental Lean check (prepare_file, check_target, or feedback) via LeanProbe. Validates project root, file existence, and local REPL; routes the action to the appropriate LeanProbe method and normalizes the result payload."""
     epf_action = _epflemma_action(action)
     project_root = _resolve_project_root(cwd, file_path)
     if project_root is None:

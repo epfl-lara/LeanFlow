@@ -92,6 +92,7 @@ class _CodexCompletionsAdapter:
         self._model = model
 
     def create(self, **kwargs) -> Any:
+        """Translate OpenAI chat.completions kwargs to Codex Responses API, stream the response, and return a chat.completions-shaped result. Extracts system/user messages, converts multimodal content blocks (text/image_url) to Responses format, handles tool definitions, and reshapes output (text, function calls, usage) to match OpenAI response objects."""
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
         temperature = kwargs.get("temperature")
@@ -264,6 +265,7 @@ class _AnthropicCompletionsAdapter:
         self._model = model
 
     def create(self, **kwargs) -> Any:
+        """Translate OpenAI chat.completions kwargs through Anthropic Messages API using anthropic_adapter helpers, then reshape the response back to chat.completions format. Normalizes tool_choice format, delegates request building to build_anthropic_kwargs, and wraps Anthropic response (message, finish_reason, usage) in a compatible result object."""
         from agent.providers.anthropic_adapter import (
             build_anthropic_kwargs,
             normalize_anthropic_response,

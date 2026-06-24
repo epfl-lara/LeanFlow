@@ -324,6 +324,7 @@ def _collect_tex_project_assets(entrypoint: Path, directory: Path, included_tex:
 
 
 def _discover_tex_project_entrypoint(project_root: Path, directory: Path) -> _FormalizationDocumentSelection:
+    """Locate and score the primary TeX entrypoint in a directory, build its include closure, and return project metadata. Scans all .tex files, ranks them by heuristics (documentclass, begin{document}, common names like main.tex), and fails if multiple files tie for best score. Returns a FormalizationDocumentSelection with the entrypoint path, transitive TeX includes, bibliography files, figures, and support assets."""
     tex_files = _tex_files_under(directory)
     if not tex_files:
         raise FormalizationDocumentError(

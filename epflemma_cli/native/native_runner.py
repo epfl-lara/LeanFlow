@@ -521,6 +521,7 @@ def _persist_live_status(
     *,
     phase: str = "",
 ) -> None:
+    """Build and write live workflow status snapshot from agent history and autonomy state. Releases file locks on workflow exit; constructs full status payload with declaration queue, verification state, goal/diagnostic info, and proof progress metrics."""
     checkpoint_state = dict(checkpoint_state or _journal_status())
     live_state = dict(live_state or _build_live_proof_state(history, checkpoint_state))
     current_checkpoint = dict(checkpoint_state.get("current") or {})
@@ -840,6 +841,7 @@ def _record_managed_reasoning_policy(
     phase: str,
     cycle: int | None = None,
 ) -> None:
+    """Record applied reasoning effort policy and escalate to high-effort if failed-attempt threshold reached. Logs policy phase, target theorem, attempt count relative to threshold; escalates and prints confirmation if high-effort has not been previously attempted."""
     current = dict(live_state or {})
     autonomy = dict(autonomy_state or {})
     target_symbol, active_file = _queue_assignment_identity(current)
@@ -1542,6 +1544,7 @@ def _manager_check_for_feedback_kind(
     target_symbol: str,
     manager_check: Mapping[str, Any],
 ) -> ManagerCheck:
+    """Classify manager verification output into structured feedback categories (sorry/error/warning/open goals/future evidence). Scans diagnostic items and file output to determine what kind of theorem blocker is present and whether targets exist outside the assigned declaration."""
     entry = _find_declaration_entry(active_file, target_symbol)
     output = str(manager_check.get("output", "") or manager_check.get("error", "") or "")
     parsed = diagnostic_items(output)
@@ -1657,6 +1660,7 @@ def _review_agent_final_report(
     result: Mapping[str, Any],
     autonomy_state: Mapping[str, Any],
 ) -> dict[str, Any]:
+    """Verify agent-claimed queue success with manager check; enforce cleanup policy and manage retry limits. Returns updated result with manager verification attached; applies cleanup denial, retry exhaustion logic, and baseline restoration if theorem feedback is not resolved."""
     updated = dict(result)
     if not _single_queue_item_turn_enabled():
         return updated
@@ -1918,6 +1922,7 @@ def _check_formalization_raw_lean_edit_result(
     function_name: str,
     args: Mapping[str, Any] | None,
 ) -> bool:
+    """Verify generated Lean edits immediately after patch/write_file in formalization mode. Returns True and records activity; feeds Lean diagnostics back to agent on failure, or prints success confirmation and continues."""
     if function_name not in {"patch", "write_file"}:
         return False
     edit_paths = _formalization_lean_edit_paths(function_name, args)
@@ -2069,6 +2074,7 @@ def _note_non_search_tool_progress(agent: Any, function_name: str) -> None:
     autonomy_state["search_progress"] = tracker
 
 def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: str) -> None:
+    """Monitor lean_search tool usage per theorem and emit nudge if repetition or call-count thresholds hit. Updates autonomy state tracker with query, result count, and streak metrics; appends progress nudge to agent feedback if search-only stalling is detected."""
     autonomy_state = getattr(agent, "_managed_autonomy_state", None)
     if not isinstance(autonomy_state, dict):
         return
@@ -2255,6 +2261,7 @@ def _document_formalization_pre_tool_guard(
     function_name: str,
     args: Mapping[str, Any] | None,
 ) -> str | None:
+    """Guard document formalization edits: reject self-approved blueprint, enforce planner blueprint before Lean drafts, block early completion/sorry-removal in planner phase. Returns JSON error or None if allowed; prevents verification bypass and out-of-phase Lean edits."""
     if function_name not in {"patch", "write_file", "apply_verified_patch"}:
         return None
     target_path = _document_formalization_target_path()
@@ -2445,6 +2452,7 @@ def _queue_edit_protect_assigned_statement(
     return False
 
 def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
+    """Restore file to pre-edit state if a Lean edit removed the assigned theorem, changed its statement signature, or modified protected declarations outside assignment scope. Returns guard message summarizing what was restored; called post-edit to enforce queue boundaries."""
     if function_name not in {"patch", "write_file", "apply_verified_patch"}:
         return ""
     snapshot = dict(getattr(agent, "_managed_queue_edit_snapshot", {}) or {})
@@ -2539,6 +2547,7 @@ def _finish_queue_step_boundary(
     verification_tool: str,
     manager_verification: Mapping[str, Any] | None = None,
 ) -> None:
+    """Finalize queue item turn at step boundary: record verification, determine theorem feedback (sorry/error/warning), manage retry limits, escalate reasoning on hard-retry exhaustion, and decide whether to continue same turn or yield queue. Central decision gate for queue progression."""
     live_state: dict[str, Any] = {}
     item: dict[str, Any] = {}
     still_blocked = False
@@ -2894,6 +2903,7 @@ def _handle_managed_tool_result(
     args: Mapping[str, Any] | None,
     _result: str,
 ) -> None:
+    """Dispatch managed queue callbacks on tool result: track search progress, record formalization verifications, detect and respond to post-edit verification outcomes, invoke step boundary on theorem feedback. Central hook for autonomous managed-queue loop state updates."""
     _sync_disabled_tools_from_result(agent, function_name, _result)
     if not _single_queue_item_turn_enabled() or _agent_interrupted(agent):
         return
@@ -3306,6 +3316,7 @@ def _prove_file_scope_ordered_paths(project_root: str | os.PathLike[str] | None 
 
 
 def _collect_project_prove_file_candidates(project_root: str | os.PathLike[str] | None = None) -> list[dict[str, Any]]:
+    """Collect all proof-work files in project with sorry counts, dependency graphs, and difficulty metrics; return list of candidate records ranked by scope order if configured."""
     root = Path(project_root or _project_root())
     if not root.is_dir():
         return []
@@ -3378,6 +3389,7 @@ def _llm_prioritize_project_prove_files(candidates: Sequence[Mapping[str, Any]])
     # NOTE: intentionally NOT extracted to project_prove_manager — the test suite monkeypatches
     # ``native_runner.call_llm`` to drive this ranking, so the ``call_llm`` lookup must resolve in
     # the native_runner namespace. It still calls the extracted pure rankers via the re-export shim.
+    """Rank proof-work candidates using LLM (with fallback heuristic order) by file-import dependencies, theorem difficulty, and project structure; return ordered labels, ranking source, and reasoning."""
     fallback = _project_prove_fallback_order(candidates)
     if not candidates:
         return [], "fallback", "no candidate files"
@@ -3615,6 +3627,7 @@ def _declaration_work_queue(
     project_root: str = "",
     scope: str = "",
 ) -> list[dict[str, Any]]:
+    """Build queue of declarations to prove in active file (file scope) or project-wide (project scope) based on sorry count, diagnostics, and declaration metadata; respect diagnostic line hints when available."""
     requested_scope = scope or _declaration_queue_scope()
     queue: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -3702,6 +3715,7 @@ def _prepare_queue_assignment_state(
     autonomy_state: dict[str, Any],
     live_state: Mapping[str, Any] | None,
 ) -> None:
+    """Assign or clear current queue item in queue manager, perform LeanInteract incremental warmup on target symbol, and validate queue invariants for the prove-loop cycle."""
     current = dict(live_state or {})
     if _document_formalization_handoff_blocked_state(current) or _document_formalization_ready_for_prover_handoff(current):
         mgr = _queue_manager_from_state(autonomy_state, current)
@@ -3912,6 +3926,7 @@ def _queue_assignment_block(
     live_state: Mapping[str, Any],
     autonomy_state: Mapping[str, Any] | None = None,
 ) -> str:
+    """Generate formatted proof-context block describing the assigned queue item, file, current blockers, verification strategy, and disabled tools for the prover agent's turn."""
     item = dict(live_state.get("current_queue_item") or {})
     if not item:
         return ""
@@ -3988,6 +4003,7 @@ def _remember_failed_attempt(
     refresh_baseline: bool = True,
     reason: str = "",
 ) -> None:
+    """Record a failed proof attempt in the queue manager with proof shape, blocker reason, and cycle number; refresh baseline state and announce feedback to user."""
     if not live_state:
         return
     item = dict(live_state.get("current_queue_item") or {})
@@ -4448,6 +4464,7 @@ def _maybe_announce_final_file_sweep_state(
     autonomy_state: dict[str, Any],
     live_state: Mapping[str, Any] | None,
 ) -> None:
+    """Announce file-sweep state transitions (document review gate, prover handoff, draft remains, already clean, or sweep needed) when declaration queue empties; idempotent per announcement type."""
     current = dict(live_state or {})
     active_file = str(current.get("active_file", "") or "").strip()
     queue_empty = (
@@ -4600,6 +4617,7 @@ def _stamp_blueprint_statement_review_approved(
     provider: str,
     active_file: str = "",
 ) -> bool:
+    """Update formalization blueprint markdown to mark statement/source verification as approved by verifier, check off review checklists, and set status to ready for prove workflow."""
     blueprint_path = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
     if not blueprint_path:
         return False
@@ -4768,6 +4786,7 @@ def _run_configured_blueprint_verification(
     live_state: Mapping[str, Any],
     autonomy_state: dict[str, Any],
 ) -> dict[str, Any]:
+    """Run configured document formalization statement/source review verifier, process PASS/BLOCK decision, stamp approval on success, and record feedback or blocking findings in autonomy state."""
     provider = resolve_verification_provider(BLUEPRINT_VERIFICATION_TASK)
     if (
         provider in {"main", "auto"}
@@ -4977,6 +4996,7 @@ def _maybe_run_document_formalization_review_agent(
     return True
 
 def _final_file_sweep_block(live_state: Mapping[str, Any]) -> str:
+    """Build a queue-status and instructions block for whole-file inspection; returns either warning-cleanup-only guidance (if cleanup is pending) or standard final-sweep instructions."""
     active_file = str(live_state.get("active_file", "") or live_state.get("active_file_label", "") or "[unknown]")
     active_file_label = _display_file_label(live_state) or active_file
     blocker = str(live_state.get("current_blocker", "") or live_state.get("diagnostics", "") or "unknown remaining issue").strip()
@@ -5240,6 +5260,7 @@ def _handle_api_step_budget_exhaustion(
     cycle: int = 0,
     phase: str,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
+    """Record a failed proof attempt when API step limit exhausts mid-queue-item, restore the declaration to baseline `sorry`, and hand off to the manager with updated proof state."""
     if not _single_queue_item_turn_enabled() or not _result_exhausted_api_steps(result, agent):
         return history, dict(live_state or {}), False
     if not _same_queue_assignment_still_blocked(autonomy_state, live_state):
@@ -5331,6 +5352,7 @@ def _build_live_proof_state(
     checkpoint_state: Mapping[str, Any] | None = None,
     autonomy_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Construct a comprehensive proof-state snapshot from history and Lean inspection: resolves active file/target, enriches declaration queue with live diagnostics/goals/verification data, and checks document-formalization handoff gates."""
     active_file = _resolve_active_file(history, checkpoint_state)
     target_symbol = _resolve_target_symbol(history, checkpoint_state)
     capability_report = probe_capabilities(_project_root()).to_dict()
@@ -5802,6 +5824,7 @@ def _document_formalization_handoff_verification(
     last_verification: Mapping[str, Any] | None = None,
     completion: bool = False,
 ) -> dict[str, Any]:
+    """Verify that a document-formalization target file is ready for prover handoff: checks planner draft, blueprint plan, blueprint checklist, import alignment, module hierarchy, and project-level verification completeness."""
     if not _document_formalization_requested() or not active_file:
         return {"ok": True, "issues": [], "summary": "document formalization not active"}
 
@@ -6094,6 +6117,7 @@ def _log_manager_verification(
     warnings: int | None = None,
     sorry_count: int | None = None,
 ) -> None:
+    """Deduplicate and log a manager verification result (file or project scope) with scope, file, tool, cache, and diagnostic metrics; caches signatures to avoid spam."""
     scope = str(scope or ("project" if full_project else "file"))
     status = "passed" if ok else "failed"
     file_label = _relative_file_label(active_file) or active_file or "[unknown]"
@@ -6164,6 +6188,7 @@ def _promote_live_state_to_verified(
     live_state: Mapping[str, Any] | None,
     autonomy_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Elevate a live-proof state to verified by running explicit Lean builds (file and optionally project scope) and processing document-formalization gates, final-sweep warning cleanup, and goal/sorry cleanup checks."""
     normalized = dict(live_state or {})
     if not normalized or not normalized.get("active_file"):
         return normalized
@@ -6612,6 +6637,7 @@ def _generate_checkpoint_summary(
     note: str = "",
     live_state: Mapping[str, Any] | None = None,
 ) -> str:
+    """Compress recent session history into a structured checkpoint handoff summary (goal, workflow, state, findings, blockers, next steps) via LLM compression or fallback text extraction."""
     metadata = _snapshot_metadata()
     transcript = _format_turns_for_snapshot(history[-18:])
     prompt = f"""Create a persisted workflow checkpoint handoff for a later assistant resuming an autonomous Lean session.
@@ -6713,6 +6739,7 @@ def _write_workflow_checkpoint(
     force_filesystem_checkpoint: bool = False,
     live_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Persist a workflow checkpoint: compresses history to summary, extracts active files/blockers/target symbols, builds a checkpoint entry with metadata and success state, and writes to index and filesystem."""
     _ensure_workflow_state_root()
     metadata = _snapshot_metadata()
     if live_state is None:
@@ -6853,6 +6880,7 @@ def _auto_compact_history(
     }
 
 def _build_agent() -> AIAgent:
+    """Instantiate the managed AIAgent from environment configuration: reads model, credentials, max-turns, reasoning-effort, and tool-task overrides; configures pre/post-tool-call callbacks and sets up activity logging."""
     model = _read_native_env("MODEL")
     base_url = _read_native_env("BASE_URL")
     api_key = _read_native_env("API_KEY")
@@ -6988,6 +7016,7 @@ def _run_managed_conversation(
     on_interrupt: Callable[[], None] | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
+    """Run agent.run_conversation() in a daemon thread with interruptible KeyboardInterrupt handling; returns conversation result, error payload, or interrupted/timeout signals to the manager loop."""
     managed_task_id = str(getattr(agent, "_managed_tool_task_id", "") or "").strip()
     if managed_task_id and not kwargs.get("task_id"):
         kwargs["task_id"] = managed_task_id
@@ -7260,6 +7289,7 @@ def _run_background_control_loop(
     live_state: dict[str, Any],
     autonomy_state: dict[str, Any],
 ) -> int:
+    """Poll a workflow inbox for remote commands and execute queued user prompts with autonomous followups; exit on receipt of an exit command or verified completion."""
     agent_id = str(getattr(agent, "session_id", "") or "")
     last_seq = 0
     announced_waiting = False
@@ -7519,6 +7549,7 @@ def _startup_user_message(
     live_state: Mapping[str, Any] | None = None,
     autonomy_state: Mapping[str, Any] | None = None,
 ) -> str:
+    """Build the initial workflow prompt, incorporating the active skill contract, route decision, queue assignment, and resumption context or custom STARTUP_PROMPT, appended with live proof state."""
     startup_prompt = _read_native_env("STARTUP_PROMPT")
     workflow_command = _read_native_env("WORKFLOW_COMMAND")
     workflow_kind = _workflow_kind()
@@ -7750,6 +7781,7 @@ def _autonomous_stop_reason(
     live_state: Mapping[str, Any] | None,
     autonomy_state: dict[str, Any],
 ) -> str:
+    """Determine whether the autonomous loop should continue, block (awaiting external input), transition phases (formalization to prover), or stop (verified/stalled/blocked). Tracks stable state signatures to detect loops and manages document-formalization handoff gates."""
     if _document_formalization_ready_for_prover_handoff(live_state):
         if _document_formalization_organization_phase_needed(live_state, autonomy_state):
             autonomy_state["document_formalization_organization_turn_started"] = True
@@ -7855,6 +7887,7 @@ def _autonomous_continuation_prompt(
     cycle_number: int,
     autonomy_state: Mapping[str, Any] | None = None,
 ) -> str:
+    """Build the continuation prompt for an autonomous cycle, specifying verification gates (file or project scope), queue assignments, and route decisions. Includes policy notes for document-formalization work and swarm delegation."""
     declaration_scope = str(live_state.get("declaration_scope", "") or _declaration_queue_scope())
     document_handoff = dict(live_state.get("document_formalization_handoff", {}) or {})
     document_handoff_blocked = _document_formalization_requested() and not bool(document_handoff.get("ok", True))
@@ -7973,6 +8006,7 @@ def _drive_autonomous_followups(
     checkpoint_state: dict[str, Any],
     autonomy_state: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Execute the autonomous continuation loop: rebuild history on theorem transitions, poll for stop conditions, run managed conversation turns, compact history, and detect API budget/step-boundary exhaustion until a stop reason is reached or the cycle ceiling is hit."""
     if not _is_autonomous_workflow():
         live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
         return history, compaction_state, checkpoint_state, live_state
@@ -8160,6 +8194,7 @@ def _print_live_proof_state(live_state: Mapping[str, Any], section: str = "") ->
     print(str(live_state.get("message", "No live proof state available.") or "No live proof state available."))
 
 def main() -> int:
+    """Initialize the managed workflow runner: load checkpoints, build initial state, run a startup conversation, execute autonomous followups, then enter either an interactive prompt loop or background control loop to handle resume/exit signals."""
     _install_workflow_run_log_capture()
     agent = _build_agent()
     try:

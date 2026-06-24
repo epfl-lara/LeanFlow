@@ -276,6 +276,7 @@ class InteractiveShell:
         render_help(self.console)
 
     def show_status(self, argv: list[str] | None = None) -> int:
+        """Display overall shell status (project, provider, model, local runtime) and optionally show a specific workflow agent's details if agent-id is provided."""
         argv = argv or []
         render_status_panel(
             self.console,
@@ -315,6 +316,7 @@ class InteractiveShell:
         return 0
 
     def _run_swarm_command(self, argv: list[str]) -> int:
+        """Dispatch /swarm subcommands: list workflow agents, kill an agent by ID, or attach to an agent's transcript with a live-follow loop and interactive prompt handling."""
         agents = self._workflow_agents(activity_limit=8)
         if not argv:
             if not agents:
@@ -523,6 +525,7 @@ class InteractiveShell:
         return 0
 
     def _run_project_command(self, argv: list[str]) -> int:
+        """Dispatch /project subcommands: init (initialize Lean workspace), create (clone template), and show (render project state). Updates shell cwd on successful init/create."""
         if not argv:
             try:
                 project = discover_epflemma_project(self.cwd)
@@ -682,6 +685,7 @@ class InteractiveShell:
         return 1
 
     def _run_workflow_command(self, raw: str) -> int:
+        """Parse workflow request, deduplicate against active agents, build live-status payload (including formalization metadata), spawn background process, and display launch confirmation."""
         try:
             plan = resolve_workflow_request(raw, active_cwd=self.cwd, active_skill=self.active_skill or None)
         except ProjectNotFoundError as exc:
@@ -787,6 +791,7 @@ class InteractiveShell:
         return 0
 
     def _shutdown_project_workflows(self) -> None:
+        """Gracefully shut down all running workflow agents for the current project. First requests graceful exit with timeout, then forcefully interrupts via SIGINT if needed."""
         project_root = ""
         try:
             project = discover_epflemma_project(self.cwd)
@@ -864,6 +869,7 @@ class InteractiveShell:
         )
 
     def _handle_command(self, raw: str) -> bool:
+        """Parse and dispatch raw shell input to slash-command handlers, workflow commands, and exit/control flow. Return False to exit the REPL; True to continue."""
         stripped = raw.strip()
         if not stripped:
             return True

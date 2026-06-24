@@ -90,6 +90,7 @@ class AnthropicMessagePreparer:
         self.image_fallback_cache: dict[str, str] = {}
 
     def describe_image_for_anthropic_fallback(self, image_url: str, role: str) -> str:
+        """Analyze an image and return a memoized textual description via vision_analyze_tool. Materializes data: URLs to temp files, handles image fetch errors gracefully, and formats the analysis result with optional vision_analyze hints for non-data URLs."""
         cache_key = hashlib.sha256(str(image_url or "").encode("utf-8")).hexdigest()
         cached = self.image_fallback_cache.get(cache_key)
         if cached:
@@ -139,6 +140,7 @@ class AnthropicMessagePreparer:
         return note
 
     def preprocess_anthropic_content(self, content: Any, role: str) -> Any:
+        """Flatten multimodal content (text + image parts) into a single text string by describing images and concatenating text. Image descriptions are placed first, followed by textual content, separated by double newlines; returns the original content unchanged if no images are present."""
         if not content_has_image_parts(content):
             return content
 
