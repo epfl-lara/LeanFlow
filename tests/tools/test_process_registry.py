@@ -163,12 +163,6 @@ class TestActiveQueries:
         assert registry.has_active_processes("t1") is True
         assert registry.has_active_processes("t2") is False
 
-    def test_has_active_for_session(self, registry):
-        s = _make_session()
-        s.session_key = "gw_session_1"
-        registry._running[s.id] = s
-        assert registry.has_active_for_session("gw_session_1") is True
-        assert registry.has_active_for_session("other") is False
 
     def test_exited_not_active(self, registry):
         s = _make_session(task_id="t1", exited=True, exit_code=0)

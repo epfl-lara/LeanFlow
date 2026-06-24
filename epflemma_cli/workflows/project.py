@@ -19,7 +19,6 @@ LEGACY_PROJECT_DIRNAMES = (".opengauss", ".gauss")
 EPFLEMMA_PROJECT_MANIFEST_FILENAME = "project.yaml"
 EPFLEMMA_PROJECT_SCHEMA_VERSION = 1
 EPFLEMMA_PROJECT_TEMPLATE_ENV = "EPFLEMMA_BLUEPRINT_TEMPLATE_SOURCE"
-EPFLEMMA_PROJECT_TEMPLATE_CONFIG_KEY = "epflemma.project.template_source"
 
 _BLUEPRINT_MARKERS = (
     "lean-toolchain",
@@ -45,8 +44,6 @@ class ProjectCommandError(EPFLemmaProjectError):
     """Raised when a project-management command cannot be completed."""
 
 
-class ProjectTemplateUnavailableError(ProjectCommandError):
-    """Raised when `/project create` has no configured template source."""
 
 
 @dataclass(frozen=True)

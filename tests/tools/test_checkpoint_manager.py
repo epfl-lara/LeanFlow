@@ -19,7 +19,6 @@ from tools.utilities.checkpoint_manager import (
     _init_shadow_repo,
     _run_git,
     _shadow_repo_path,
-    format_checkpoint_list,
 )
 
 # =========================================================================
@@ -355,24 +354,8 @@ class TestGitEnvIsolation:
 
 
 # =========================================================================
-# format_checkpoint_list
 # =========================================================================
 
-class TestFormatCheckpointList:
-    def test_empty_list(self):
-        result = format_checkpoint_list([], "/some/dir")
-        assert "No checkpoints" in result
-
-    def test_formats_entries(self):
-        cps = [
-            {"hash": "abc123", "short_hash": "abc1", "timestamp": "2026-03-09T21:15:00-07:00", "reason": "before write_file"},
-            {"hash": "def456", "short_hash": "def4", "timestamp": "2026-03-09T21:10:00-07:00", "reason": "before patch"},
-        ]
-        result = format_checkpoint_list(cps, "/home/user/project")
-        assert "abc1" in result
-        assert "def4" in result
-        assert "before write_file" in result
-        assert "/rollback" in result
 
 
 # =========================================================================

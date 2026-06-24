@@ -48,7 +48,6 @@ from epflemma_cli.workflows.queue_item_predicates import (  # noqa: E402,F401
     _current_queue_item,
     _current_queue_status,
     _inspection_queue_item_is_queue_blocker,
-    _queue_item_has_diagnostic_reason,
     _queue_item_has_error_diagnostic,
     _queue_item_has_sorry_reason,
 )
@@ -455,12 +454,6 @@ def _runner_lean_prompt_enabled() -> bool:
 def _runner_owner_id() -> str:
     return _read_native_env("RUNNER_OWNER", "")
 
-def _autonomous_followup_limit() -> int:
-    raw = _read_native_env("AUTONOMOUS_FOLLOWUPS", "6")
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return 6
 
 def _autonomous_blocked_limit() -> int:
     raw = _read_native_env("AUTONOMOUS_BLOCKED_LIMIT", "3")
@@ -1176,28 +1169,6 @@ def _restore_final_sweep_baseline(
         return False
     return True
 
-def _final_sweep_warning_cleanup_due(
-    autonomy_state: Mapping[str, Any] | None,
-    live_state: Mapping[str, Any] | None,
-) -> tuple[bool, int, str]:
-    """Spec ([:672](docs/product-reference.md:672)): grant exactly one whole-file
-    warning-cleanup opportunity when the queue is empty and only warnings
-    remain. Returns ``(due, warning_count, warning_summary)``."""
-    if not isinstance(autonomy_state, dict):
-        return False, 0, ""
-    if bool(autonomy_state.get("final_sweep_cleanup_attempted")):
-        return False, 0, ""
-    current = dict(live_state or {})
-    if str(current.get("declaration_scope", "") or "") != "file":
-        return False, 0, ""
-    if int(current.get("declaration_queue_total", 0) or 0) != 0:
-        return False, 0, ""
-    if not str(current.get("active_file", "") or "").strip():
-        return False, 0, ""
-    count, summary = _active_file_warning_summary(current)
-    if count <= 0:
-        return False, 0, ""
-    return True, count, summary
 
 def _with_warning_cleanup_state(
     live_state: Mapping[str, Any] | None,
@@ -1565,17 +1536,6 @@ def _manager_feedback_retry_signature(
     }
     return json.dumps(basis, sort_keys=True, ensure_ascii=False)
 
-def _clear_all_manager_feedback_retries_except(
-    autonomy_state: Mapping[str, Any],
-    *,
-    target_symbol: str,
-    active_file: str,
-) -> None:
-    if not isinstance(autonomy_state, dict):
-        return
-    mgr = _queue_manager_from_state(autonomy_state)
-    mgr.clear_all_retries_except(_queue_key(target_symbol, active_file))
-    _flush_queue_manager(autonomy_state, mgr)
 
 def _manager_check_for_feedback_kind(
     active_file: str,
@@ -3291,13 +3251,6 @@ def _resolve_checkpoint_ref(ref: str) -> dict[str, Any] | None:
             return entry
     return None
 
-def _discover_lean_mcp_tool_names() -> dict[str, str]:
-    capability = probe_capabilities(_project_root()).to_dict()
-    mcp_tools = dict(capability.get("mcp_tools", {}) or {})
-    return {
-        "diagnostics": str(mcp_tools.get("diagnostics", "") or ""),
-        "goals": str(mcp_tools.get("goals", "") or ""),
-    }
 
 def _snapshot_metadata() -> dict[str, Any]:
     return {
@@ -3351,8 +3304,6 @@ def _prove_file_scope_ordered_paths(project_root: str | os.PathLike[str] | None 
             scope.append(resolved)
     return scope
 
-def _prove_file_scope_paths(project_root: str | os.PathLike[str] | None = None) -> set[Path]:
-    return set(_prove_file_scope_ordered_paths(project_root))
 
 def _collect_project_prove_file_candidates(project_root: str | os.PathLike[str] | None = None) -> list[dict[str, Any]]:
     root = Path(project_root or _project_root())
@@ -3926,27 +3877,6 @@ def _attempt_proof_shape_from_delta(
             return _single_line(" ".join(diff_lines[:8]), 240)
     return _attempt_proof_shape(live_state)
 
-def _prune_failed_attempt_entries(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not attempts:
-        return []
-    limit = _failed_attempt_entry_limit()
-    keep_counts: dict[tuple[str, str], int] = {}
-    keep_indices: set[int] = set()
-    for idx in range(len(attempts) - 1, -1, -1):
-        attempt = dict(attempts[idx] or {})
-        key = (
-            str(attempt.get("target_symbol", "") or "").strip(),
-            str(attempt.get("active_file", "") or "").strip(),
-        )
-        if not key[0] or not key[1]:
-            keep_indices.add(idx)
-            continue
-        count = int(keep_counts.get(key, 0) or 0)
-        if count >= limit:
-            continue
-        keep_counts[key] = count + 1
-        keep_indices.add(idx)
-    return [dict(attempts[idx]) for idx in range(len(attempts)) if idx in keep_indices]
 
 def _clear_failed_attempts_for_theorem(
     autonomy_state: dict[str, Any],
@@ -5378,39 +5308,7 @@ def _handle_api_step_budget_exhaustion(
     )
     return updated_history, updated_live_state, True
 
-def _flatten_text_fragments(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        stripped = value.strip()
-        return [stripped] if stripped else []
-    if isinstance(value, Mapping):
-        fragments: list[str] = []
-        preferred_keys = ("message", "content", "text", "severity", "line", "column", "goal", "range", "file_path")
-        for key in preferred_keys:
-            if key in value:
-                fragments.extend(_flatten_text_fragments(value[key]))
-        if fragments:
-            return fragments
-        for nested in value.values():
-            fragments.extend(_flatten_text_fragments(nested))
-        return fragments
-    if isinstance(value, list):
-        fragments: list[str] = []
-        for item in value:
-            fragments.extend(_flatten_text_fragments(item))
-        return fragments
-    return [str(value)]
 
-def _summarize_tool_payload(payload: Mapping[str, Any], *, limit: int = 6) -> str:
-    if payload.get("error"):
-        return f"error: {payload['error']}"
-    fragments = _flatten_text_fragments(payload)
-    deduped: list[str] = []
-    for fragment in fragments:
-        if fragment and fragment not in deduped:
-            deduped.append(fragment)
-    return "\n".join(deduped[:limit]) if deduped else "unavailable"
 
 def _query_live_diagnostics(active_file: str, target_symbol: str = "") -> str:
     if not active_file:

@@ -642,28 +642,7 @@ class ProcessRegistry:
                 for s in self._running.values()
             )
 
-    def has_active_for_session(self, session_key: str) -> bool:
-        """Check if there are active processes for a gateway session key."""
-        with self._lock:
-            return any(
-                s.session_key == session_key and not s.exited
-                for s in self._running.values()
-            )
 
-    def kill_all(self, task_id: str = None) -> int:
-        """Kill all running processes, optionally filtered by task_id. Returns count killed."""
-        with self._lock:
-            targets = [
-                s for s in self._running.values()
-                if (task_id is None or s.task_id == task_id) and not s.exited
-            ]
-
-        killed = 0
-        for session in targets:
-            result = self.kill_process(session.id)
-            if result.get("status") in ("killed", "already_exited"):
-                killed += 1
-        return killed
 
     # ----- Cleanup / Pruning -----
 
@@ -684,10 +663,6 @@ class ProcessRegistry:
             oldest_id = min(self._finished, key=lambda sid: self._finished[sid].started_at)
             del self._finished[oldest_id]
 
-    def cleanup_expired(self):
-        """Public method to prune expired finished sessions."""
-        with self._lock:
-            self._prune_if_needed()
 
     # ----- Checkpoint (crash recovery) -----
 

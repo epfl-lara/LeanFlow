@@ -22,8 +22,6 @@ def _utc_now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
 
-def _utc_now_iso() -> str:
-    return _utc_now().isoformat()
 
 
 def _epflemma_home() -> Path:
