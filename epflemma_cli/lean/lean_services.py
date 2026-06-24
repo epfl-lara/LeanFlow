@@ -220,6 +220,7 @@ _BACKEND = LeanBackend()
 
 
 def recent_empty_search_streak(*, workflow_command: str, limit: int = 6) -> int:
+    """Return the count of consecutive empty lean-search results from the workflow outcomes log, up to limit."""
     path = workflow_outcomes_path()
     if not path.is_file():
         return 0
@@ -539,6 +540,7 @@ def _leanexplore_local_search(query: str, *, limit: int = 10) -> tuple[list[dict
 
 
 def _discover_lean_mcp_tools() -> dict[str, str]:
+    """Discover available Lean MCP tools in the registry and map each to its primary capability (diagnostics, goals, multi_attempt, etc.). Returns a dict with capability keys and tool names as values, or empty strings if not found."""
     raw_tool_names, raw_tool_set = _discover_raw_mcp_tool_names()
 
     discovered = {
@@ -631,6 +633,7 @@ def _helper_tools() -> dict[str, bool]:
 
 
 def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabilityReport:
+    """Assemble a comprehensive LeanCapabilityReport of system binaries, available MCP tools, search providers, incremental verifier, power modes, and degradation reasons at cwd."""
     explicit = str(os.getenv("EPFLEMMA_PROJECT_ROOT", "") or "").strip()
     base = Path(cwd or explicit or os.getcwd()).expanduser().resolve()
     project_root, project_error = _project_root(base)
@@ -815,6 +818,7 @@ def _goals_text(
 
 
 def lean_sorries(scope: str = "project", target: str = "", cwd: str | os.PathLike[str] | None = None) -> list[LeanSorryFinding]:
+    """Enumerate all sorry occurrences in target file or project, excluding comments, with line numbers and declaration context."""
     project_root, _ = _project_root(cwd)
     if scope == "file" and target:
         paths = [Path(target).expanduser().resolve()]
@@ -859,6 +863,7 @@ def lean_inspect(
     line: int | None = None,
     symbol: str | None = None,
 ) -> LeanInspection:
+    """Inspect a Lean file for blockers (diagnostics, goals, sorries) and return a queue of actionable declarations by kind and reason."""
     report = probe_capabilities(cwd)
     file_path = Path(target).expanduser().resolve()
     project_root = Path(report.project_root).resolve() if report.project_root else None
@@ -923,6 +928,7 @@ def lean_verify(
     cwd: str | os.PathLike[str] | None = None,
     mode: str = "project",
 ) -> LeanVerificationResult:
+    """Run lake build at project, module, or file-level, returning exit code and compiler output to assess proof state."""
     project_root, _ = _project_root(cwd)
     root = Path(project_root) if project_root else None
     normalized_mode = str(mode or "project").strip().lower()
@@ -981,6 +987,7 @@ def lean_search(
     limit: int = 10,
     file_path: str = "",
 ) -> LeanSearchResult:
+    """Search for definitions/lemmas by query using MCP providers (semantic, regex) in priority order per mode (auto/local/semantic/natural-language/type-pattern), with fallback to ripgrep and empty-streak detection."""
     report = probe_capabilities(cwd)
     attempted: list[str] = []
     results: list[dict[str, Any]] = []
@@ -1265,6 +1272,7 @@ def _local_incremental_auto_probe(
     timeout_s: int,
     report: LeanCapabilityReport,
 ) -> dict[str, Any] | None:
+    """Probe one theorem against multiple automation methods using the local LeanInteract incremental verifier, returning attempts with diagnostics, timing, and a recommended mode; returns None if incremental is unavailable."""
     incremental = report.incremental if isinstance(report.incremental, Mapping) else {}
     if not bool(incremental.get("available", False)):
         return None
@@ -1366,6 +1374,7 @@ def lean_proof_context(
     include_similar_proofs: bool = True,
     similarity_threshold: float = 0.7,
 ) -> dict[str, Any]:
+    """Query the proof-context MCP for theorem statement, original proof, hypotheses, in-scope decls, and similar proofs, with fallback to local declaration extraction on backend failure."""
     report = probe_capabilities(cwd)
     canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
     target_path = Path(canonical_file_path).expanduser().resolve() if canonical_file_path else Path("")
@@ -1517,6 +1526,7 @@ def lean_multi_attempt(
     cwd: str | os.PathLike[str] | None = None,
     column: int | None = None,
 ) -> dict[str, Any]:
+    """Test a list of 2-6 short tactic candidates at one proof location via MCP, validating syntax and constraint bounds before backend submission."""
     report = probe_capabilities(cwd)
     normalized_attempts = _normalize_multi_attempt_candidates(attempts)
     validation_reasons = _multi_attempt_validation_reasons(normalized_attempts)
@@ -1565,6 +1575,7 @@ def lean_auto_probe(
     methods: list[str] | None = None,
     timeout_s: int = 60,
 ) -> dict[str, Any]:
+    """Test theorem proof with specified automation methods (aesop, aesop?, grind by default), attempting local incremental check first; if unavailable or methods specified, delegate to managed MCP wrapper and return attempts with recommended mode."""
     report = probe_capabilities(cwd)
     tool_name = report.mcp_tools.get("auto_probe", "")
     canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
@@ -1692,6 +1703,7 @@ def lean_auto_try(
     cwd: str | os.PathLike[str] | None = None,
     timeout_s: int = 10,
 ) -> dict[str, Any]:
+    """Validate a proof attempt against a theorem, checking for unsupported project options before invoking the backend; return proof state, diagnostics, and success flag, disabling the tool if harness construction fails."""
     report = probe_capabilities(cwd)
     canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
     tool_name = report.mcp_tools.get("auto_try", "")
@@ -1789,6 +1801,7 @@ def lean_axioms(
     cwd: str | os.PathLike[str] | None = None,
     file_path: str = "",
 ) -> LeanAxiomReport:
+    """Generate axiom report for a target declaration, identifying standard vs. custom axioms and flagging Classical/choice dependencies; return None if project or file path missing, or module resolution fails."""
     project_root, _ = _project_root(cwd)
     root = Path(project_root) if project_root else None
     target_file = Path(file_path).expanduser().resolve() if file_path else None
@@ -1879,6 +1892,7 @@ def route_workflow_step(
     autonomy_state: Mapping[str, Any] | None = None,
     cwd: str | os.PathLike[str] | None = None,
 ) -> WorkflowRouteDecision:
+    """Route a workflow step to the appropriate skill (prove/formalize/review/refactor/golf) and optional worker based on blocker kind, search exhaustion, and repeated attempt count; classify the current blocker and recommend delegation to proof-repair, axiom-eliminator, or sorry-filler-deep if applicable."""
     current = dict(live_state or {})
     autonomy = dict(autonomy_state or {})
     report = probe_capabilities(cwd)

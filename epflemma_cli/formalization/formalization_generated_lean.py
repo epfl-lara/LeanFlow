@@ -349,6 +349,7 @@ def _document_formalization_blueprint_inventory_issues(
     blueprint_text: str,
     target_text: str,
 ) -> list[str]:
+    """Validate blueprint entries against generated Lean declarations and required fidelity metadata. Checks that each source inventory entry in the blueprint has a concrete source locator, planned declarations that exist in generated files, statement verification approval, proof notes, and resolved qualifiers/coverage/scope-change fields; returns a list of diagnostic issues blocking formalization."""
     issues: list[str] = []
     entries = _blueprint_source_inventory_entries(blueprint_text)
     target_entries = _declaration_entries_by_name_from_text(target_text)

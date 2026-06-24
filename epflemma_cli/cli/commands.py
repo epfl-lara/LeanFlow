@@ -208,6 +208,7 @@ class SlashCommandCompleter(Completer):
             count += 1
 
     def get_completions(self, document, complete_event):
+        """Yield slash-command and path completions for the prompt_toolkit shell. Completes built-in and skill commands with descriptions when text starts with '/', otherwise completes file paths if detected in the trailing word."""
         text = document.text_before_cursor
         if not text.startswith("/"):
             path_word = self._extract_path_word(text)

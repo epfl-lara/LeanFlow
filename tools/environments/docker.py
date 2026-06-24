@@ -174,6 +174,7 @@ class DockerEnvironment(BaseEnvironment):
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
     ):
+        """Initialize a hardened Docker container with configurable resource limits, security constraints, and optional persistent mounts. Validates Docker availability, builds security args (capabilities, tmpfs, PID limits), and sets up writable workspace via tmpfs (ephemeral) or bind mounts (persistent)."""
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
@@ -332,6 +333,7 @@ class DockerEnvironment(BaseEnvironment):
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
                 stdin_data: str | None = None) -> dict:
+        """Execute a bash command in the container via docker exec with output streaming. Handles working-directory expansion (~), merges stdin with optional sudo password, enforces timeout via polling, and returns {output, returncode}. Supports interruption via is_interrupted()."""
         exec_command, sudo_stdin = self._prepare_command(command)
         work_dir = cwd or self.cwd
         effective_timeout = timeout or self.timeout

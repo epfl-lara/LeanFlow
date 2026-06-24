@@ -100,6 +100,7 @@ class ModalEnvironment(BaseEnvironment):
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
                 stdin_data: str | None = None) -> dict:
+        """Execute a command via Modal with interrupt polling and sudo password masking. Injects stdin via heredoc if provided, and pipes sudo passwords through printf -S to avoid exposing them on the local machine. Returns {"output": str, "returncode": int}; on interrupt, terminates the sandbox and returns code 130."""
         if stdin_data is not None:
             marker = f"EPFLEMMA_EOF_{uuid.uuid4().hex[:8]}"
             while marker in stdin_data:

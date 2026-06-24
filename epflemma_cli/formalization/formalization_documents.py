@@ -82,6 +82,7 @@ def _select_formalization_document(
     cwd: str | Path,
     workflow_args: str,
 ) -> _FormalizationDocumentSelection:
+    """Parse and resolve a formalization document path (file or directory) from a user request, validating extension and project locality. Returns a _FormalizationDocumentSelection with resolved source path, kind (latex/pdf), and discovery metadata; raises FormalizationDocumentError on invalid input."""
     root = Path(project_root).expanduser().resolve()
     base = Path(cwd).expanduser().resolve()
     raw = _strip_wrapping_quotes(workflow_args)
@@ -189,6 +190,7 @@ def ensure_formalization_blueprint_skill(
     blueprint_path: str | Path | None = None,
     source_relative: str = "",
 ) -> Path | None:
+    """Generate and register a transient Lean skill that embeds the blueprint and source document metadata for a target .lean file. Writes a SKILL.md file to .epflemma/skills/, extracted from the blueprint and optional source label; returns the skill path or None if blueprint does not exist."""
     root = Path(project_root).expanduser().resolve()
     if not target_lean_relative:
         return None
@@ -243,6 +245,7 @@ def inspect_formalization_document(
     project_root: str | Path | None = None,
     cwd: str | Path | None = None,
 ) -> dict[str, Any]:
+    """Return a flat inspection dict of a document's resolved source path, extracted text/metadata, and discovery details. Calls _select_formalization_document and extracts LaTeX or PDF summary, bounded to context excerpt size."""
     base = Path(cwd or Path.cwd()).expanduser().resolve()
     root = Path(project_root).expanduser().resolve() if project_root else base
     selection = _select_formalization_document(root, base, str(path))
@@ -278,6 +281,7 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata: Mapping[str, Any]) -> str:
+    """Build a preflight blueprint Markdown template from source relative path and extracted metadata. Lists planner checklist, import plan, theorem inventory, and proof guidance placeholders; truncates to MAX_THEOREM_BLOCKS extracted LaTeX/PDF blocks."""
     blocks = list(metadata.get("theorem_blocks", []) or [])
     lines = [
         f"# Formalization Blueprint: {source_relative}",
@@ -433,6 +437,7 @@ def prepare_formalization_document_context(
     workflow_args: str,
     project_label: str = "",
 ) -> FormalizationDocumentContext:
+    """Orchestrate the formalization document intake: resolve source, extract metadata, scaffold state directory (.epflemma/workflow-state), initialize target Lean file and blueprint, register the blueprint skill, and return a FormalizationDocumentContext with paths to context markdown, manifest, extracted text, and blueprint. Writes manifests and initializes the Lean import chain."""
     root = Path(project_root).expanduser().resolve()
     base = Path(cwd).expanduser().resolve()
     selection = _select_formalization_document(root, base, workflow_args)

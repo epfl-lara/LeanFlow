@@ -149,6 +149,7 @@ def acquire_file_lock(
     ttl_seconds: int = 1800,
     force: bool = False,
 ) -> dict[str, Any]:
+    """Acquire an exclusive file lock for autonomous workflow coordination. Reserves the file under `owner_id` with a TTL (default 30m); fails if another owner holds the lock unless `force=True`. Returns success dict with expiry timestamp."""
     normalized = _resolve_path(path)
     if not normalized:
         return {"success": False, "error": "path required"}

@@ -515,6 +515,7 @@ def invalidate_config_cache() -> None:
 
 
 def load_config() -> dict[str, Any]:
+    """Return the merged EPFLemma configuration with process-lifetime caching. Reads config.yaml from EPFLEMMA_HOME, merges it with defaults, and caches the result keyed by config path to detect per-test home changes; callers receive a deepcopy and may freely mutate it. Handles legacy gauss/opengauss format and transient read errors (which bypass caching). Does not cache on malformed payloads."""
     global _CONFIG_CACHE, _CONFIG_CACHE_KEY
     # Key the cache on the resolved config path so a changed EPFLEMMA_HOME (notably per-test
     # isolation, but also any in-process home switch) is a cache miss and re-reads from disk.

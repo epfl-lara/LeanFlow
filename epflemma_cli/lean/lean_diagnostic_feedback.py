@@ -165,6 +165,7 @@ def _declaration_diagnostic_feedback_reason(
     *texts: str,
     structured_items: Sequence[Mapping[str, Any]] = (),
 ) -> str:
+    """Return a human-readable diagnostic reason (error/warning message with line number) for a declaration, or empty string if none found. Prefers structured diagnostic items (from manager_check) to locate warnings that plain-text regex cannot; falls back to parsing text diagnostics in `<file>:<line>:<col>:` format."""
     entry = _find_declaration_entry(active_file, label)
     if not entry:
         return ""

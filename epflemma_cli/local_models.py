@@ -143,6 +143,7 @@ def get_local_runtime_status(runtime: str) -> dict[str, Any]:
 
 
 def start_local_runtime(runtime: str, *, model: str, host: str | None = None, port: int | None = None) -> dict[str, Any]:
+    """Start a local model server (vllm/ollama/llama_cpp) as a subprocess, returning its status; returns existing runtime status if already running. Resolves host/port from arguments or config, builds the runtime-specific command with extra args, spawns it in a new session with log appending, and persists pid/model/command to state."""
     if runtime not in SUPPORTED_LOCAL_RUNTIMES:
         raise ValueError(f"Unsupported runtime: {runtime}")
 

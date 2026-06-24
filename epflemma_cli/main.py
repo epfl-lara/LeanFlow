@@ -138,6 +138,7 @@ def _load_runtime_env(*, cwd: Path | None = None) -> None:
     load_epflemma_dotenv(epflemma_home=get_epflemma_home(), project_env=project_env)
 
 def _build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser with all CLI subcommands and options. Constructs a hierarchical parser for version, status, config, doctor, mcp, project, workflow, sandbox, provider, and models commands, each with their own nested subparsers and flags."""
     parser = argparse.ArgumentParser(
         prog="epflemma",
         description="EPFLemma Lean AI for Math shell",
@@ -324,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     # Invariant: env (EPFLEMMA_HOME/etc) is seeded here BEFORE any handler runs. tools.mcp.mcp_tool
     # is imported at module load but only reads env at call time, so the order is safe — keep
     # it that way (do not add module-load-time env reads to the MCP import chain). (B2)
+    """Entry point: seed environment (EPFLEMMA_HOME, .env), parse CLI args, and dispatch to command handlers. If no command is given, launch the interactive shell; _seed_environment() must run before MCP imports to ensure env is initialized at module load time."""
     _seed_environment()
     ensure_epflemma_home()
     _load_runtime_env()

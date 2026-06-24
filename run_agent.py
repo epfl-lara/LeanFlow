@@ -1594,6 +1594,7 @@ class AIAgent:
         return items
 
     def _preflight_codex_input_items(self, raw_items: Any) -> list[dict[str, Any]]:
+        """Validate and normalize input items for Codex Responses API. Accepts function_calls, function_call_outputs, reasoning items, and user/assistant messages, normalizing all argument strings to JSON and enforcing required fields (call_id, name). Raises ValueError on invalid structure or missing required fields."""
         if not isinstance(raw_items, list):
             raise ValueError("Codex Responses input must be a list of input items.")
 
@@ -1685,6 +1686,7 @@ class AIAgent:
         *,
         allow_stream: bool = False,
     ) -> dict[str, Any]:
+        """Validate and normalize a Codex Responses API request dict. Checks required fields (model, instructions, input), normalizes all string fields, validates and normalizes tools list, enforces store=false contract, and passes through optional fields (reasoning, temperature, max_output_tokens, tool_choice, etc.). Raises ValueError on invalid structure or unsupported fields."""
         if not isinstance(api_kwargs, dict):
             raise ValueError("Codex Responses request must be a dict.")
 

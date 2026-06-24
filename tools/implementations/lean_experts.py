@@ -361,6 +361,7 @@ def _validate_helper_skeletons(
     cwd: str,
     timeout_s: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Validate proposed helper-lemma skeletons via incremental Lean checks, building accepted skeletons cumulatively to check each new helper against all previously-valid ones. Mutates each helper dict with check_status, ready_to_insert, check_diagnostics, and validation_order; returns the list and a summary of validated/ready counts for the decompose-helpers response."""
     target_skeleton = _target_sorry_skeleton(theorem_statement)
     if not target_skeleton:
         for helper in helpers:

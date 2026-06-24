@@ -149,6 +149,7 @@ def discover_skill_commands(cwd: str | os.PathLike[str] | None = None) -> dict[s
 
 
 def find_skill(name: str, cwd: str | os.PathLike[str] | None = None) -> SkillRecord | None:
+    """Return a SkillRecord matching the given name, path, or command name, or None if not found. Supports discovery across builtin, user, and project skill directories; accepts slash-prefixed names, file paths, and normalized names. Falls back to parsing SKILL.md from a provided file path if no discovered skill matches."""
     raw_requested = (name or "").strip()
     if raw_requested.startswith("/") and Path(raw_requested).expanduser().exists() or raw_requested.startswith(("~", ".")):
         requested = raw_requested
@@ -260,6 +261,7 @@ def default_workflow_skill(workflow_kind: str) -> str:
 
 
 def build_skill_prompt(name: str, cwd: str | os.PathLike[str] | None = None) -> str:
+    """Build a formatted prompt string from a skill, including its content, linked workflow specs from lean_workflow_specs, and supporting file references. Returns empty string if skill not found."""
     payload = load_skill(name, cwd)
     if not payload:
         return ""

@@ -71,6 +71,7 @@ def _render_context_markdown(
     manifest_path: Path,
     metadata: Mapping[str, Any],
 ) -> str:
+    """Build the complete Markdown formalization-planner context document from preflight metadata. Assembles source/target paths, hardcoded workflow contract, detected theorem blocks and sections, optional TeX project discovery, preflight degradation notes, and bounded source excerpt into a single context string for the formalization planner AI."""
     title = str(metadata.get("title", "") or "").strip()
     blocks = list(metadata.get("theorem_blocks", []) or [])
     sections = list(metadata.get("sections", []) or [])

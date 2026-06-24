@@ -110,6 +110,7 @@ def _provider_env_name(provider: str) -> str:
 
 
 def resolve_expert_command_template(provider: str, task: str = "lean_reasoning") -> str:
+    """Resolve a command template for executing expert help via a specified provider. Checks task-specific environment variables and config first, then provider environment variables, falling back to task fallbacks and finally DEFAULT_COMMAND_TEMPLATES."""
     provider = normalize_expert_provider(provider)
     task_template = _read_task_env(task, "COMMAND_TEMPLATE")
     if task_template:
@@ -177,6 +178,7 @@ def run_command_expert_help(
     cwd: str = "",
     timeout_s: int = 1200,
 ) -> ExpertCommandResult:
+    """Execute an expert help command via subprocess, streaming prompt through stdin or temp file. Manages timeout, truncates response to max_response_chars, records activity to workflow log, and returns result with exit status, stderr, and truncation state."""
     provider = normalize_expert_provider(provider)
     if provider not in DEFAULT_COMMAND_TEMPLATES:
         raise RuntimeError(f"{provider!r} is not a command expert provider")

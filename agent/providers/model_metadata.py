@@ -209,6 +209,7 @@ def fetch_provider_model_metadata(
     api_key: str = "",
     force_refresh: bool = False,
 ) -> dict[str, dict[str, Any]]:
+    """Fetch and cache model metadata from a custom base_url endpoint's /models API. Handles varying response formats (data/models keys), extracts context lengths, and returns normalized model lookups; caches per-provider with 1-hour TTL."""
     normalized_base_url = str(base_url or "").strip().rstrip("/")
     if not normalized_base_url:
         return {}

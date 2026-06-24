@@ -678,6 +678,7 @@ class TheoremQueueManager:
 
     @classmethod
     def from_autonomy_state(cls, autonomy_state: Mapping[str, Any]) -> TheoremQueueManager:
+        """Reconstruct queue state from a legacy autonomy_state dict checkpoint. Deserializes all internal state (current assignment, failed attempts, retry counters, outcomes, verification, disabled tools, reasoning efforts) with validation and path normalization for checkpoint resume compatibility."""
         mgr = cls()
 
         assignment = dict(autonomy_state.get("current_queue_assignment") or {})

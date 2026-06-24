@@ -287,6 +287,10 @@ def save_workflow_live_status(payload: Mapping[str, Any]) -> None:
 
 
 def append_workflow_activity(event_type: str, message: str, **details: Any) -> None:
+    """Append a timestamped activity event to run and agent activity streams with workflow context.
+
+    Enriches event details with environment variables for workflow kind, skill, prompt, and project root; persists run metadata. Events are locked and appended to both run-scoped and agent-scoped JSONL files.
+    """
     ensure_workflow_state_root()
     normalized_details = dict(details)
     env_workflow_kind = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", ""))
@@ -539,6 +543,10 @@ def _normalize_workflow_live_status_payload(payload: Mapping[str, Any] | None) -
 
 
 def enqueue_workflow_agent_message(agent_ref: str, text: str, *, kind: str = "message") -> dict[str, Any]:
+    """Enqueue a user message to a live workflow agent's inbox after validating process liveness.
+
+    Rejects if agent process is dead or in terminal state. Appends message to agent inbox, records sequence number, and logs agent-input-queued activity.
+    """
     agent_id = resolve_workflow_agent_id(agent_ref)
     if not agent_id:
         return {"success": False, "error": "Agent not found or ambiguous."}
@@ -599,6 +607,10 @@ _TERMINAL_AGENT_STATUSES = {"completed", "exited", "stopped", "interrupted", "de
 
 
 def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]]:
+    """Build live agent summaries from all activity events with status tracking, process checks, and live-phase correlation.
+
+    Merges run metadata, extracts task labels and model details, tracks API and tool call counts, detects dead processes, and syncs active task status from live_status.json. Returns agents ordered by recency.
+    """
     events = _read_all_workflow_activity()
     by_agent: dict[str, dict[str, Any]] = {}
     run_metadata_cache: dict[str, dict[str, Any]] = {}
@@ -783,6 +795,10 @@ def workflow_agent_detail(agent_id: str, *, activity_limit: int = 5) -> dict[str
 
 
 def workflow_agent_transcript(agent_id: str, *, limit: int = 12) -> list[dict[str, Any]]:
+    """Extract conversation-shaped transcript for an agent, mapping activity events to roles (user/assistant/tool-call/event).
+
+    Filters to conversation events, previews tool I/O, and returns most recent turn limit with all supporting tool exchanges.
+    """
     events = read_workflow_activity(
         limit=max(1, limit * 8),
         agent_id=agent_id,
@@ -876,6 +892,10 @@ def terminate_workflow_agent(agent_ref: str) -> dict[str, Any]:
 
 
 def terminate_workflow_agent_descendants(agent_ref: str) -> dict[str, Any]:
+    """Recursively terminate all child agents spawned by a given agent via parent_agent_session_id edges.
+
+    Traverses descendant graph, sends SIGINT to each live child, and reports counts of terminated and failed processes.
+    """
     agent_id = resolve_workflow_agent_id(agent_ref)
     if not agent_id:
         return {"success": False, "error": "Agent not found or ambiguous."}
@@ -946,6 +966,10 @@ def request_project_workflow_runner_exit(
     exclude_agent_id: str = "",
     exclude_process_id: int = 0,
 ) -> dict[str, Any]:
+    """Queue graceful exit messages to all top-level (parent-less) workflow agents in a project with live processes.
+
+    Excludes specified agent and process IDs; agents must be active and in the target project root to receive the exit signal.
+    """
     normalized_root = str(project_root or "").strip()
     summaries = summarize_workflow_agents(activity_limit=1)
     results: list[dict[str, Any]] = []
@@ -989,6 +1013,10 @@ def terminate_project_workflow_agents(
     exclude_agent_id: str = "",
     exclude_process_id: int = 0,
 ) -> dict[str, Any]:
+    """Forcefully terminate all non-terminal workflow agents in a project via SIGINT, excluding specified process and agent IDs.
+
+    Only targets agents with matching project_root that are not already exited/stopped/completed and have live processes.
+    """
     normalized_root = str(project_root or "").strip()
     summaries = summarize_workflow_agents(activity_limit=1)
     results: list[dict[str, Any]] = []

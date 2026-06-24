@@ -360,6 +360,7 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
     def _execute_oneshot(self, command: str, cwd: str = "", *,
                          timeout: int | None = None,
                          stdin_data: str | None = None) -> dict:
+        """Execute a command as a oneshot subprocess with interrupt/timeout support and noise-free output extraction. Spawns daemon threads to write stdin and drain stdout in parallel, preventing I/O deadlocks on large inputs; uses fence markers to isolate real output from shell initialization noise; polls for user interrupts or timeout, killing the process group appropriately on either condition."""
         work_dir = cwd or self.cwd or os.getcwd()
         effective_timeout = timeout or self.timeout
         exec_command, sudo_stdin = self._prepare_command(command)

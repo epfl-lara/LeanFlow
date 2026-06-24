@@ -251,6 +251,7 @@ class ApiCaller:
         request_client_holder = {"client": None}
 
         def _call():
+            """Execute streaming chat completion request and reconstruct response as mock ChatCompletion. Accumulates streamed content and tool-call deltas in real-time, forwarding content to stream_callback, then assembles them into a SimpleNamespace mock response object stored in the closure's result dict for the parent thread to retrieve."""
             try:
                 stream_kwargs = {**api_kwargs, "stream": True}
                 request_client_holder["client"] = agent._create_request_openai_client(
