@@ -237,6 +237,8 @@ def _positive_int(value: Any, default: int) -> int:
 # re-exported here so call sites (and tests) continue to resolve
 # ``run_agent._resolve_X``. See that module for the rationale behind the
 # module-level + isinstance-guard pattern.
+import contextlib
+
 from agent.execution.collaborator_resolvers import (  # noqa: E402
     _resolve_anthropic_message_preparer,
     _resolve_api_caller,
@@ -1967,7 +1969,7 @@ class AIAgent:
             except Exception:
                 pass
         try:
-            setattr(response, "output", repaired_output)
+            response.output = repaired_output
         except Exception:
             if isinstance(response, dict):
                 response_payload = dict(response)
@@ -2067,10 +2069,8 @@ class AIAgent:
         if new_token == self._anthropic_api_key:
             return False
 
-        try:
+        with contextlib.suppress(Exception):
             self._anthropic_client.close()
-        except Exception:
-            pass
 
         try:
             self._anthropic_client = self._provider_client_factory().build_anthropic_client(
@@ -3363,10 +3363,8 @@ class AIAgent:
                                 content = None
                                 # Try choices first — _interruptible_api_call converts all
                                 # providers (including Anthropic) to this format.
-                                try:
+                                with contextlib.suppress(AttributeError, IndexError):
                                     content = response.choices[0].message.content
-                                except (AttributeError, IndexError):
-                                    pass
                                 # Fallback: Anthropic native content blocks
                                 if not content and self.api_mode == "anthropic_messages":
                                     text_parts = [
@@ -4092,10 +4090,8 @@ class AIAgent:
                     ).strip()
                     first_line = _think_text.split('\n')[0][:80] if _think_text else ""
                     if first_line:
-                        try:
+                        with contextlib.suppress(Exception):
                             self.tool_progress_callback("_thinking", first_line)
-                        except Exception:
-                            pass
 
                 _emit_workflow_event(
                     "assistant-response",

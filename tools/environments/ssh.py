@@ -1,5 +1,6 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
+import contextlib
 import logging
 import shutil
 import subprocess
@@ -136,18 +137,14 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             return
         cmd = self._build_ssh_command()
         cmd.append(f"pkill -P {self._shell_pid} 2>/dev/null; true")
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired, OSError):
             subprocess.run(cmd, capture_output=True, timeout=5)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
 
     def _cleanup_temp_files(self):
         cmd = self._build_ssh_command()
         cmd.append(f"rm -f {self._temp_prefix}-*")
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired, OSError):
             subprocess.run(cmd, capture_output=True, timeout=5)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
 
     def _execute_oneshot(self, command: str, cwd: str = "", *,
                          timeout: int | None = None,
@@ -226,7 +223,5 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
                 subprocess.run(cmd, capture_output=True, timeout=5)
             except (OSError, subprocess.SubprocessError):
                 pass
-            try:
+            with contextlib.suppress(OSError):
                 self.control_socket.unlink()
-            except OSError:
-                pass

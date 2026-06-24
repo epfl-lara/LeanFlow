@@ -7,6 +7,7 @@ comment-preserving YAML edits only for the managed MCP entries.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import stat
@@ -118,17 +119,13 @@ def managed_mcp_python_path(name: str, home: str | os.PathLike[str] | None = Non
 
 
 def _secure_file(path: Path) -> None:
-    try:
+    with contextlib.suppress(OSError):
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
 
 
 def _secure_dir(path: Path) -> None:
-    try:
+    with contextlib.suppress(OSError):
         path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-    except OSError:
-        pass
 
 
 def _commented_map(value: Mapping[str, Any] | None = None) -> CommentedMap:
@@ -236,9 +233,7 @@ def _ensure_managed_server_entry(entry: CommentedMap, *, spec: ManagedMCPServerS
                 env[key] = value
     entry["role"] = spec.role
     entry["managed"] = True
-    if "enabled" not in entry:
-        entry["enabled"] = spec.default_enabled
-    elif (
+    if "enabled" not in entry or (
         spec.name == "lean-explore"
         and previous_enabled is False
         and previous_args == ["mcp", "serve", "--backend", "api"]

@@ -941,7 +941,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         SKILLS_DIR.mkdir(parents=True, exist_ok=True)
         local_skills = _find_all_skills()
         default_skills_dir = EPFLEMMA_HOME_DIR / "skills"
-        if local_skills or SKILLS_DIR != default_skills_dir:
+        if local_skills or default_skills_dir != SKILLS_DIR:
             all_skills = [
                 {
                     **skill,

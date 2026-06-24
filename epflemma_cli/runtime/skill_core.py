@@ -150,9 +150,7 @@ def discover_skill_commands(cwd: str | os.PathLike[str] | None = None) -> dict[s
 
 def find_skill(name: str, cwd: str | os.PathLike[str] | None = None) -> SkillRecord | None:
     raw_requested = (name or "").strip()
-    if raw_requested.startswith("/") and Path(raw_requested).expanduser().exists():
-        requested = raw_requested
-    elif raw_requested.startswith(("~", ".")):
+    if raw_requested.startswith("/") and Path(raw_requested).expanduser().exists() or raw_requested.startswith(("~", ".")):
         requested = raw_requested
     else:
         requested = raw_requested.lstrip("/")

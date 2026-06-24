@@ -106,7 +106,7 @@ def test_sourcegraph_code_query_keeps_identifiers_and_drops_filler():
 
     assert "Nat.Prime" in queries[0][2]
     assert "theorem" not in queries[0][2]
-    assert "Lean code" == queries[0][1]
+    assert queries[0][1] == "Lean code"
 
 
 def test_code_only_query_skips_paper_providers():

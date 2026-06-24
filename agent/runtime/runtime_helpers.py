@@ -8,6 +8,7 @@ issued-id set + lock, read nowhere else) and a broken-pipe-safe stdout/stderr wr
 
 from __future__ import annotations
 
+import contextlib
 import random
 import sys
 import threading
@@ -53,10 +54,8 @@ class _SafeWriter:
             return len(data) if isinstance(data, str) else 0
 
     def flush(self):
-        try:
+        with contextlib.suppress(OSError):
             self._inner.flush()
-        except OSError:
-            pass
 
     def fileno(self):
         return self._inner.fileno()

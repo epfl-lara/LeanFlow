@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import subprocess
@@ -292,19 +293,13 @@ def run_command_expert_help(
         return result
     finally:
         if prompt_file_path:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(prompt_file_path)
-            except OSError:
-                pass
         if output_file_path:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(output_file_path)
-            except OSError:
-                pass
 
 
 def record_expert_help_activity(event_type: str, message: str, **details: Any) -> None:
-    try:
+    with contextlib.suppress(Exception):
         append_workflow_activity(event_type, message, **details)
-    except Exception:
-        pass

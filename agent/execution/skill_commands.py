@@ -75,7 +75,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
 def _local_skill_override_active() -> bool:
     default_skills_dir = skills_tool_module.EPFLEMMA_HOME_DIR / "skills"
-    return skills_tool_module.SKILLS_DIR != default_skills_dir
+    return default_skills_dir != skills_tool_module.SKILLS_DIR
 
 
 def _discover_local_skill_commands() -> dict[str, dict[str, Any]]:

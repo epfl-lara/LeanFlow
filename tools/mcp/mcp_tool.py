@@ -154,6 +154,8 @@ _MAX_BACKOFF_SECONDS = 60
 # this introduces no import cycle.  MCPServerTask.run() (below) instantiates
 # SamplingHandler via this re-export.
 # ---------------------------------------------------------------------------
+import contextlib
+
 from tools.mcp.mcp_sampling import (  # noqa: E402
     SamplingHandler,
     _default_sampling_audit_path,
@@ -363,10 +365,8 @@ class MCPServerTask:
                     self.name,
                 )
                 self._task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await self._task
-                except asyncio.CancelledError:
-                    pass
         self.session = None
 
 

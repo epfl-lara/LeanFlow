@@ -10,6 +10,7 @@ backwards compatibility.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -118,10 +119,8 @@ def _agent_event_preview(event: Mapping[str, Any]) -> str:
                 parts.append(f"{message_count} messages")
             approx_tokens = details.get("approx_tokens")
             if approx_tokens is not None:
-                try:
+                with contextlib.suppress(Exception):
                     parts.append(f"~{int(approx_tokens):,} tokens")
-                except Exception:
-                    pass
             return " · ".join(parts)
     if event_type == "conversation-start":
         prompt = _shorten_text(details.get("user_message", ""), limit=activity_limit)

@@ -41,6 +41,7 @@ reference — so creating a normalizer never triggers an import cycle.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -266,10 +267,8 @@ class ResponseNormalizer:
             logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")
 
         if reasoning_text and agent.reasoning_callback:
-            try:
+            with contextlib.suppress(Exception):
                 agent.reasoning_callback(reasoning_text)
-            except Exception:
-                pass
 
         msg = {
             "role": "assistant",

@@ -36,6 +36,7 @@ via the small ``_ra()`` accessor below, exactly as ``ToolExecutor`` resolves the
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -134,10 +135,8 @@ class ApiCaller:
         finally:
             close_fn = getattr(stream_or_response, "close", None)
             if callable(close_fn):
-                try:
+                with contextlib.suppress(Exception):
                     close_fn()
-                except Exception:
-                    pass
 
         if terminal_response is not None:
             return terminal_response
@@ -205,13 +204,11 @@ class ApiCaller:
                 )
                 next_heartbeat_at += heartbeat_seconds
             if elapsed_seconds >= timeout_seconds:
-                try:
+                with contextlib.suppress(Exception):
                     agent._abort_inflight_provider_request(
                         request_client_holder,
                         reason="request_timeout_abort",
                     )
-                except Exception:
-                    pass
                 raise TimeoutError(
                     f"Provider request exceeded {timeout_seconds:.0f}s without a response."
                 )
@@ -279,10 +276,8 @@ class ApiCaller:
 
                     if delta and delta.content:
                         content_parts.append(delta.content)
-                        try:
+                        with contextlib.suppress(Exception):
                             stream_callback(delta.content)
-                        except Exception:
-                            pass
 
                     if delta and delta.tool_calls:
                         for tc_delta in delta.tool_calls:
@@ -372,13 +367,11 @@ class ApiCaller:
                 )
                 next_heartbeat_at += heartbeat_seconds
             if elapsed_seconds >= timeout_seconds:
-                try:
+                with contextlib.suppress(Exception):
                     agent._abort_inflight_provider_request(
                         request_client_holder,
                         reason="stream_request_timeout_abort",
                     )
-                except Exception:
-                    pass
                 raise TimeoutError(
                     f"Provider request exceeded {timeout_seconds:.0f}s without a response."
                 )

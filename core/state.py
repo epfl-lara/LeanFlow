@@ -14,6 +14,7 @@ Key design decisions:
 - Session source tagging ('cli', 'telegram', 'discord', etc.) for filtering
 """
 
+import contextlib
 import json
 import os
 import re
@@ -548,10 +549,8 @@ class SessionDB:
         for row in rows:
             msg = dict(row)
             if msg.get("tool_calls"):
-                try:
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
             result.append(msg)
         return result
 
@@ -573,10 +572,8 @@ class SessionDB:
             if row["tool_name"]:
                 msg["tool_name"] = row["tool_name"]
             if row["tool_calls"]:
-                try:
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
                     msg["tool_calls"] = json.loads(row["tool_calls"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
             messages.append(msg)
         return messages
 

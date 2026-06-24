@@ -14,6 +14,7 @@ compatibility, so ``run_agent._resolve_X`` (used by call sites and tests)
 continues to resolve. This module must NOT import ``run_agent`` (no cycle).
 """
 
+import contextlib
 from typing import Any
 
 from agent.compression.compression_policy import CompressionPolicy
@@ -40,10 +41,8 @@ def _resolve_tool_executor(agent: Any) -> ToolExecutor:
     executor = getattr(agent, "_tool_executor_obj", None)
     if not isinstance(executor, ToolExecutor):
         executor = ToolExecutor(agent)
-        try:
+        with contextlib.suppress(Exception):
             agent._tool_executor_obj = executor
-        except Exception:
-            pass
     return executor
 
 
@@ -60,10 +59,8 @@ def _resolve_conversation_manager(agent: Any) -> ConversationManager:
     manager = getattr(agent, "_conversation_manager_obj", None)
     if not isinstance(manager, ConversationManager):
         manager = ConversationManager(agent)
-        try:
+        with contextlib.suppress(Exception):
             agent._conversation_manager_obj = manager
-        except Exception:
-            pass
     return manager
 
 
@@ -81,10 +78,8 @@ def _resolve_compression_policy(agent: Any) -> CompressionPolicy:
     policy = getattr(agent, "_compression_policy_obj", None)
     if not isinstance(policy, CompressionPolicy):
         policy = CompressionPolicy(agent)
-        try:
+        with contextlib.suppress(Exception):
             agent._compression_policy_obj = policy
-        except Exception:
-            pass
     return policy
 
 
@@ -102,10 +97,8 @@ def _resolve_interrupt_controller(agent: Any) -> InterruptController:
     controller = getattr(agent, "_interrupts", None)
     if not isinstance(controller, InterruptController):
         controller = InterruptController()
-        try:
+        with contextlib.suppress(Exception):
             agent._interrupts = controller
-        except Exception:
-            pass
     return controller
 
 
@@ -123,10 +116,8 @@ def _resolve_api_caller(agent: Any) -> ApiCaller:
     caller = getattr(agent, "_api_caller_obj", None)
     if not isinstance(caller, ApiCaller):
         caller = ApiCaller(agent)
-        try:
+        with contextlib.suppress(Exception):
             agent._api_caller_obj = caller
-        except Exception:
-            pass
     return caller
 
 
@@ -143,10 +134,8 @@ def _resolve_response_normalizer(agent: Any) -> ResponseNormalizer:
     normalizer = getattr(agent, "_response_normalizer_obj", None)
     if not isinstance(normalizer, ResponseNormalizer):
         normalizer = ResponseNormalizer(agent)
-        try:
+        with contextlib.suppress(Exception):
             agent._response_normalizer_obj = normalizer
-        except Exception:
-            pass
     return normalizer
 
 
@@ -163,10 +152,8 @@ def _resolve_anthropic_message_preparer(agent: Any) -> AnthropicMessagePreparer:
     preparer = getattr(agent, "_anthropic_message_preparer_obj", None)
     if not isinstance(preparer, AnthropicMessagePreparer):
         preparer = AnthropicMessagePreparer(agent)
-        try:
+        with contextlib.suppress(Exception):
             agent._anthropic_message_preparer_obj = preparer
-        except Exception:
-            pass
     return preparer
 
 
@@ -189,10 +176,8 @@ def _resolve_prompt_manager(agent: Any) -> PromptManager:
     manager = getattr(agent, "_prompt_manager_obj", None)
     if not isinstance(manager, PromptManager):
         manager = PromptManager(agent)
-        try:
+        with contextlib.suppress(Exception):
             agent._prompt_manager_obj = manager
-        except Exception:
-            pass
     return manager
 
 
@@ -209,8 +194,6 @@ def _resolve_output_manager(agent: Any) -> OutputManager:
     manager = getattr(agent, "_output_manager_obj", None)
     if not isinstance(manager, OutputManager):
         manager = OutputManager(agent)
-        try:
+        with contextlib.suppress(Exception):
             agent._output_manager_obj = manager
-        except Exception:
-            pass
     return manager

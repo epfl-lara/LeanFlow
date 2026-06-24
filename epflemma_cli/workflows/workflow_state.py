@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -55,17 +56,16 @@ _APPEND_LOCK = threading.Lock()
 def _locked_append(path: Path, text: str) -> None:
     """Append ``text`` to ``path`` under an exclusive in-process + cross-process lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _APPEND_LOCK:
-        with path.open("a", encoding="utf-8") as handle:
-            if fcntl is not None:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                except OSError:
-                    logger.debug(
-                        "flock unavailable for %s; append not cross-process locked", path, exc_info=True
-                    )
-            handle.write(text)
-            handle.flush()
+    with _APPEND_LOCK, path.open("a", encoding="utf-8") as handle:
+        if fcntl is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                logger.debug(
+                    "flock unavailable for %s; append not cross-process locked", path, exc_info=True
+                )
+        handle.write(text)
+        handle.flush()
 
 WORKFLOW_TASK_LABELS = {
     "autoprove": "prove",
@@ -657,10 +657,8 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
         active_skill = str(details.get("active_skill", "") or "")
         if active_skill:
             summary["active_skill"] = active_skill
-        try:
+        with contextlib.suppress(Exception):
             summary["delegate_depth"] = int(details.get("delegate_depth", summary["delegate_depth"]) or 0)
-        except Exception:
-            pass
         summary["task_label"] = _workflow_task_label(
             str(summary.get("workflow_kind", "") or ""),
             str(summary.get("active_skill", "") or ""),
@@ -702,15 +700,11 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
             else:
                 summary["status"] = "stopped"
                 summary["finished_at"] = timestamp
-            try:
+            with contextlib.suppress(Exception):
                 summary["api_calls"] = max(int(details.get("api_calls", 0) or 0), int(summary["api_calls"] or 0))
-            except Exception:
-                pass
         elif event_type == "api-request":
-            try:
+            with contextlib.suppress(Exception):
                 summary["api_calls"] = max(int(details.get("iteration", 0) or 0), int(summary["api_calls"] or 0))
-            except Exception:
-                pass
         elif event_type == "tool-call":
             summary["tool_calls"] = int(summary["tool_calls"] or 0) + 1
         elif event_type == "agent-input-queued":
@@ -829,13 +823,7 @@ def workflow_agent_transcript(agent_id: str, *, limit: int = 12) -> list[dict[st
         elif event_type == "tool-result":
             role = "tool-result"
             content = _agent_event_preview(event)
-        elif event_type == "conversation-end":
-            role = "event"
-            content = _agent_event_preview(event)
-        elif event_type == "agent-awaiting-input":
-            role = "event"
-            content = _agent_event_preview(event)
-        elif event_type == "runner-exit":
+        elif event_type == "conversation-end" or event_type == "agent-awaiting-input" or event_type == "runner-exit":
             role = "event"
             content = _agent_event_preview(event)
         transcript.append(

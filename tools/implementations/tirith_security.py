@@ -17,6 +17,7 @@ is available). Installation runs in a background thread so startup never
 blocks.
 """
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -169,10 +170,8 @@ def _mark_install_failed(reason: str = ""):
 
 def _clear_install_failed():
     """Remove the failure marker after successful install."""
-    try:
+    with contextlib.suppress(OSError):
         os.unlink(_failure_marker_path())
-    except OSError:
-        pass
 
 
 def _gauss_bin_dir() -> str:

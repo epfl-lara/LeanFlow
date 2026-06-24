@@ -5,6 +5,7 @@ is snapshotted on cleanup and restored on next creation, so installed packages,
 project files, and config changes survive across sessions.
 """
 
+import contextlib
 import json
 import logging
 import threading
@@ -137,10 +138,8 @@ class ModalEnvironment(BaseEnvironment):
         while t.is_alive():
             t.join(timeout=0.2)
             if is_interrupted():
-                try:
+                with contextlib.suppress(Exception):
                     self._inner.stop()
-                except Exception:
-                    pass
                 return {
                     "output": "[Command interrupted - Modal sandbox terminated]",
                     "returncode": 130,

@@ -18,6 +18,7 @@ re-export.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
@@ -85,10 +86,8 @@ def _verification_outcome(
 def _manager_feedback_retry_key(target_symbol: str, active_file: str) -> str:
     file_key = str(active_file or "").strip()
     if file_key:
-        try:
+        with contextlib.suppress(Exception):
             file_key = str(Path(file_key).expanduser().resolve())
-        except Exception:
-            pass
     return f"{file_key}::{str(target_symbol or '').strip()}"
 
 

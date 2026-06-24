@@ -21,6 +21,7 @@ Update logic:
 The manifest lives at ~/.gauss/skills/.bundled_manifest.
 """
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -93,10 +94,8 @@ def _write_manifest(entries: dict[str, str]):
                 os.fsync(f.fileno())
             os.replace(tmp_path, MANIFEST_FILE)
         except BaseException:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
             raise
     except Exception as e:
         logger.debug("Failed to write skills manifest %s: %s", MANIFEST_FILE, e, exc_info=True)

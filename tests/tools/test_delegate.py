@@ -499,9 +499,8 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             os.environ,
             {"OPENROUTER_API_KEY": "env-openrouter-key", "OPENAI_API_KEY": ""},
             clear=False,
-        ):
-            with self.assertRaises(ValueError) as ctx:
-                _resolve_delegation_credentials(cfg, parent)
+        ), self.assertRaises(ValueError) as ctx:
+            _resolve_delegation_credentials(cfg, parent)
         self.assertIn("OPENAI_API_KEY", str(ctx.exception))
 
     @patch("epflemma_cli.runtime.runtime_provider.resolve_runtime_provider")
