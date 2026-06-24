@@ -45,7 +45,7 @@ from epflemma_cli.cli_handlers import (
     _print_project_power_setup,
     _project_payload,
 )
-from epflemma_cli.commands import SlashCommandCompleter
+from epflemma_cli.commands import SlashCommandCompleter, build_workflow_command_set
 from epflemma_cli.config import (
     ensure_epflemma_home,
     get_config_value,
@@ -86,6 +86,18 @@ from epflemma_cli.sandbox_runtime import (
     run_sandbox,
     sandbox_status,
 )
+from epflemma_cli.shell_ui import (
+    bottom_toolbar as _build_bottom_toolbar,
+)
+from epflemma_cli.shell_ui import (
+    prompt_focus_label as _build_prompt_focus_label,
+)
+from epflemma_cli.shell_ui import (
+    prompt_message as _build_prompt_message,
+)
+from epflemma_cli.shell_ui import (
+    toolbar_piece as _build_toolbar_piece,
+)
 from epflemma_cli.skill_core import discover_skill_commands, discover_skills, load_skill
 from epflemma_cli.workflow import (
     FORGIVING_WORKFLOW_ALIAS_MAP,
@@ -112,17 +124,9 @@ from epflemma_cli.workflow_state import (
 )
 from tools.mcp_tool import get_mcp_status
 
-WORKFLOW_COMMANDS = {
-    "/draft",
-    "/review",
-    "/checkpoint",
-    "/refactor",
-    "/golf",
-    "/prove",
-    "/formalize",
-    "/autoprove",
-    "/autoformalize",
-}
+# Derived from the single COMMAND_REGISTRY in epflemma_cli.commands: the set of all
+# frontend workflow slash commands (canonical commands plus their long-form aliases).
+WORKFLOW_COMMANDS = build_workflow_command_set()
 
 
 def _seed_environment() -> None:
@@ -419,53 +423,25 @@ class InteractiveShell:
 
     @staticmethod
     def _toolbar_piece(value: str, max_len: int = 22) -> str:
-        text = str(value or "-")
-        if len(text) <= max_len:
-            return text
-        return f"{text[:max_len - 3]}..."
+        return _build_toolbar_piece(value, max_len)
 
     def _prompt_focus_label(self) -> str:
-        theorem = self._target_label()
-        if theorem != "-":
-            return theorem
-        workflow_status = self._workflow_status_payload()
-        file_label = str(workflow_status.get("active_file_label", "") or "").strip()
-        if file_label not in {"", "-", "[unknown]", "[launching]"}:
-            return Path(file_label).name
-        build = str(workflow_status.get("build_status", "") or "").strip()
-        if build not in {"", "-", "unknown", "workflow launching"}:
-            return build
-        return "-"
+        return _build_prompt_focus_label(self._workflow_status_payload(), self._target_label())
 
     def _prompt_message(self) -> FormattedText:
-        project = self._toolbar_piece(self._project_name(), 28)
-        phase = self._toolbar_piece(self._phase_label(), 18)
-        theorem = self._prompt_focus_label()
-        status_suffix = phase
-        if theorem and theorem != "-":
-            status_suffix = f"{status_suffix} · {self._toolbar_piece(theorem, 28)}"
-        return FormattedText(
-            [
-                ("fg:#ff5a5f bold", project),
-                ("fg:#b0b0b0", "  "),
-                ("fg:#d9d9d9", status_suffix),
-                ("", "\n"),
-                ("fg:#f5f5f5 bold", "› "),
-            ]
+        return _build_prompt_message(
+            self._project_name(),
+            self._phase_label(),
+            self._prompt_focus_label(),
         )
 
     def _bottom_toolbar(self) -> str:
-        workflow_status = self._workflow_status_payload()
-        phase = str(workflow_status.get("phase", "idle") or "idle")
-        file_label = str(workflow_status.get("active_file_label", "") or "-")
-        build = str(workflow_status.get("build_status", "") or "-")
-        model = self._toolbar_piece(self._model_label(), 22)
-        file_short = self._toolbar_piece(Path(file_label).name if file_label != "-" else "-", 18)
-        theorem = self._toolbar_piece(self._target_label(), 16)
-        skill = self._toolbar_piece(self._active_skill_label(), 18)
-        latest = self._latest_activity_label()
-        return (
-            f" @ {model} | {phase} | {build} | {file_short} | {theorem} | {skill} | {latest} "
+        return _build_bottom_toolbar(
+            self._workflow_status_payload(),
+            self._model_label(),
+            self._target_label(),
+            self._active_skill_label(),
+            self._latest_activity_label(),
         )
 
     def show_banner(self) -> None:

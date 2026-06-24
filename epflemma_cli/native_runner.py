@@ -78,11 +78,6 @@ MANAGED_SNAPSHOT_PREFIX = (
     "to preserve context space. Use this snapshot as the authoritative handoff "
     "for prior work, but still inspect the live project state before repeating work."
 )
-WORKFLOW_CHECKPOINT_PREFIX = (
-    "[EPFLEMMA-NATIVE WORKFLOW CHECKPOINT] This persisted workflow handoff captures a "
-    "previous autonomous milestone. Use it as the source of truth for resuming this "
-    "managed session, and reconcile it with the current filesystem before redoing work."
-)
 LIVE_PROOF_STATE_PREFIX = (
     "[EPFLEMMA-NATIVE LIVE PROOF STATE] This is the latest runner-refreshed Lean state "
     "for the active workflow. Treat it as current unless newer tool results contradict it."
@@ -101,8 +96,6 @@ FAILED_ATTEMPT_ESCALATION_NUDGE_INTERVAL = 8
 ACTIVE_AGENT_STATUSES = {"active"}
 LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
-PROOF_DECLARATION_KINDS = {"theorem", "lemma", "example"}
-CONSTRUCTION_DECLARATION_KINDS = {"def", "instance", "class", "structure"}
 _QUEUE_MANAGER_STATE_KEYS = TheoremQueueManager.OWNED_AUTONOMY_KEYS
 
 # Final-sweep warning-cleanup state. Lives directly on autonomy_state because
@@ -131,7 +124,12 @@ _FINAL_SWEEP_AUTONOMY_KEYS = frozenset(
 # queue_edit_guard.py holds the pure queue-edit-guard helpers (guard key, protected-declaration
 # inventory/diff, and source-text restoration) used by the single-queue-item edit guard;
 # formalization_document_runner.py holds the cleanly-pure /formalize document-formalization
-# helpers (workflow-phase predicates and the blueprint-manifest text parsers).
+# helpers (workflow-phase predicates and the blueprint-manifest text parsers);
+# lean_module_paths.py holds the pure Lean module-name / import-path helpers that translate
+# between Lean source text, module names, and on-disk file paths;
+# formalization_generated_lean.py holds the document-formalization generated-Lean inspection
+# helpers (discover/read/inspect the generated .lean files for a /formalize run, plus the
+# blueprint-inventory fidelity checks and the PROOF_/CONSTRUCTION_DECLARATION_KINDS sets).
 from epflemma_cli.formalization_document_runner import (  # noqa: E402
     _BLUEPRINT_UNRESOLVED_FIDELITY_RE,
     _autoformalizer_advisory_review_due,
@@ -160,6 +158,49 @@ from epflemma_cli.formalization_document_runner import (  # noqa: E402
     _document_formalization_review_prompt,
     _document_formalization_waiting_for_independent_review,
 )
+from epflemma_cli.formalization_generated_lean import (  # noqa: E402
+    CONSTRUCTION_DECLARATION_KINDS,
+    PROOF_DECLARATION_KINDS,
+    _document_formalization_blueprint_inventory_issues,
+    _document_formalization_construction_sorry_issues,
+    _document_formalization_generated_proof_sorry_count,
+    _document_formalization_needs_planner_draft,
+    _filter_document_formalization_proof_queue,
+    _formalization_generated_imports,
+    _formalization_generated_lean_paths,
+    _formalization_generated_lean_text,
+    _formalization_generated_module_names,
+    _formalization_generated_prove_scope,
+    _formalization_manifest_payload,
+    _lean_comment_has_source_proof_notes,
+    _lean_declaration_preceding_comment_window,
+    _topologically_order_project_paths,
+)
+from epflemma_cli.lean_diagnostic_feedback import (  # noqa: E402
+    _declaration_diagnostic_feedback_reason,
+    _declaration_name_safe_for_diagnostic_match,
+    _declaration_prefix_text,
+    _declaration_slice_text,
+    _diagnostic_reason_for_entry,
+    _diagnostics_indicate_failure,
+    _diagnostics_indicate_hard_failure,
+    _diagnostics_indicate_queue_blocker,
+    _goals_still_open,
+    _is_anonymous_declaration_label,
+    _nearest_declaration_name,
+    _queue_diagnostic_items,
+    _queue_diagnostic_line_numbers,
+)
+from epflemma_cli.lean_module_paths import (  # noqa: E402
+    _blueprint_import_plan_imports,
+    _lean_decl_names_from_planned_value,
+    _lean_imports_from_file,
+    _lean_imports_from_text,
+    _module_file_for_module,
+    _module_name_for_file,
+    _root_module_file_for_module,
+    _valid_lean_module_name,
+)
 from epflemma_cli.lean_parsing import (  # noqa: E402
     LEAN_DECLARATION_PREAMBLE_RE,
     _declaration_entries_by_name_from_text,
@@ -187,6 +228,26 @@ from epflemma_cli.manager_verification import (  # noqa: E402
     _verification_outcome,
     _verification_review_system_prompt,
     _verification_task_has_aux_overrides,
+)
+from epflemma_cli.native_checkpoints import (  # noqa: E402,F401
+    WORKFLOW_CHECKPOINT_PREFIX,
+    _checkpoint_matches_current_workflow,
+    _checkpoint_replay_history,
+    _ensure_workflow_state_root,
+    _latest_filesystem_checkpoint_hash,
+    _load_checkpoint_snapshot,
+    _load_current_checkpoint,
+    _load_workflow_index,
+    _read_json_file,
+    _resume_plan_from_checkpoint,
+    _rollback_to_checkpoint,
+    _save_workflow_index,
+    _workflow_replay_message,
+    _workflow_state_current_path,
+    _workflow_state_index_path,
+    _workflow_state_root,
+    _write_current_checkpoint,
+    _write_json_file,
 )
 from epflemma_cli.native_config import (  # noqa: E402
     _managed_home,
@@ -259,6 +320,14 @@ from epflemma_cli.project_prove_manager import (  # noqa: E402
     _project_prove_transitive_paths,
     _project_prove_worked_example_count,
 )
+from epflemma_cli.proof_state_builder import (  # noqa: E402
+    _declaration_line_index,
+    _diagnostics_for_queue_horizon,
+    _find_declaration_entry,
+    _line_in_declaration,
+    _proof_status_lines_for_queue_horizon,
+    _queue_horizon_summary,
+)
 from epflemma_cli.queue_edit_guard import (  # noqa: E402
     _queue_edit_assigned_statement_signature,
     _queue_edit_changed_protected_declarations,
@@ -268,6 +337,13 @@ from epflemma_cli.queue_edit_guard import (  # noqa: E402
     _queue_edit_statement_signature,
     _restore_assigned_declaration_against_before_text,
     _restore_changed_protected_declarations,
+)
+from epflemma_cli.verification_review import (  # noqa: E402
+    _autoformalizer_advisory_block_issues,
+    _print_verification_review_summary,
+    _verification_review_decision,
+    _verification_review_findings,
+    _verification_review_result_payload,
 )
 
 
@@ -410,121 +486,8 @@ def _autonomous_max_cycles() -> int:
         return 120
 
 
-def _workflow_state_root() -> Path:
-    project_root = Path(_project_root()).expanduser().resolve()
-    if project_root.exists():
-        return project_root / ".epflemma" / "workflow-state"
-    return _managed_home() / "workflow-state"
-
-
-def _workflow_state_index_path() -> Path:
-    return _workflow_state_root() / "index.json"
-
-
-def _workflow_state_current_path() -> Path:
-    return _workflow_state_root() / "current.json"
-
-
 def _active_skill() -> str:
     return _effective_skill_name()
-
-
-def _ensure_workflow_state_root() -> Path:
-    root = _workflow_state_root()
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-def _read_json_file(path: Path) -> dict[str, Any]:
-    try:
-        if path.is_file():
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(payload, dict):
-                return payload
-    except KeyboardInterrupt:
-        raise
-    except Exception:
-        pass
-    return {}
-
-
-def _write_json_file(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-
-
-def _load_workflow_index() -> list[dict[str, Any]]:
-    payload = _read_json_file(_workflow_state_index_path())
-    checkpoints = payload.get("checkpoints")
-    if isinstance(checkpoints, list):
-        return [dict(entry) for entry in checkpoints if isinstance(entry, Mapping)]
-    return []
-
-
-def _save_workflow_index(entries: list[dict[str, Any]]) -> None:
-    _write_json_file(
-        _workflow_state_index_path(),
-        {"version": 1, "checkpoints": entries},
-    )
-
-
-def _write_current_checkpoint(entry: Mapping[str, Any]) -> None:
-    payload = {
-        "version": 1,
-        "checkpoint_id": entry.get("checkpoint_id", ""),
-        "label": entry.get("label", ""),
-        "created_at": entry.get("created_at", ""),
-        "snapshot_path": entry.get("snapshot_path", ""),
-        "linked_filesystem_checkpoint": entry.get("linked_filesystem_checkpoint", ""),
-    }
-    _write_json_file(_workflow_state_current_path(), payload)
-
-
-def _load_checkpoint_snapshot(snapshot_path: str) -> dict[str, Any] | None:
-    if not snapshot_path:
-        return None
-    path = Path(snapshot_path)
-    payload = _read_json_file(path)
-    return payload or None
-
-
-def _checkpoint_matches_current_workflow(snapshot: Mapping[str, Any]) -> bool:
-    """Return whether a persisted checkpoint belongs to this workflow launch."""
-    current_kind = _workflow_kind()
-    checkpoint_kind = str(snapshot.get("workflow_kind", "") or "").strip().lower()
-    if current_kind and checkpoint_kind and checkpoint_kind != current_kind:
-        return False
-
-    current_command = " ".join(_read_native_env("WORKFLOW_COMMAND").split())
-    checkpoint_command = " ".join(str(snapshot.get("workflow_command", "") or "").split())
-    if current_command and checkpoint_command and checkpoint_command != current_command:
-        return False
-
-    current_root = str(Path(_project_root()).expanduser().resolve())
-    checkpoint_root_raw = str(snapshot.get("project_root", "") or "").strip()
-    if checkpoint_root_raw:
-        try:
-            checkpoint_root = str(Path(checkpoint_root_raw).expanduser().resolve())
-        except Exception:
-            checkpoint_root = checkpoint_root_raw
-        if checkpoint_root != current_root:
-            return False
-
-    return True
-
-
-def _load_current_checkpoint() -> dict[str, Any] | None:
-    payload = _read_json_file(_workflow_state_current_path())
-    checkpoint_id = str(payload.get("checkpoint_id", "") or "").strip()
-    snapshot_path = str(payload.get("snapshot_path", "") or "").strip()
-    if not checkpoint_id or not snapshot_path:
-        return None
-    snapshot = _load_checkpoint_snapshot(snapshot_path)
-    if snapshot is None:
-        return None
-    if not _checkpoint_matches_current_workflow(snapshot):
-        return None
-    return snapshot
 
 
 def _journal_status() -> dict[str, Any]:
@@ -1671,14 +1634,6 @@ def _clear_all_manager_feedback_retries_except(
     mgr = _queue_manager_from_state(autonomy_state)
     mgr.clear_all_retries_except(_queue_key(target_symbol, active_file))
     _flush_queue_manager(autonomy_state, mgr)
-
-
-def _line_in_declaration(entry: Mapping[str, Any] | None, line: Any) -> bool:
-    if not isinstance(line, int) or line <= 0 or not entry:
-        return False
-    start = int(entry.get("line", 0) or 0)
-    end = int(entry.get("end_line", 0) or start)
-    return bool(start > 0 and start <= line <= max(start, end))
 
 
 def _manager_check_for_feedback_kind(
@@ -3634,105 +3589,6 @@ def _set_native_active_file(file_label: str) -> None:
     os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] = normalized
 
 
-def _formalization_manifest_payload() -> dict[str, Any]:
-    manifest = _read_text_env("EPFLEMMA_FORMALIZATION_MANIFEST", "").strip()
-    if not manifest:
-        return {}
-    try:
-        payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return dict(payload) if isinstance(payload, Mapping) else {}
-
-
-def _formalization_generated_lean_paths(active_file: str = "") -> list[Path]:
-    root = Path(_project_root()).expanduser().resolve()
-    paths: list[Path] = []
-
-    def _add(candidate: str | os.PathLike[str] | None) -> None:
-        raw = str(candidate or "").strip()
-        if not raw:
-            return
-        path = Path(raw).expanduser()
-        if not path.is_absolute():
-            path = root / path
-        try:
-            resolved = path.resolve()
-            resolved.relative_to(root)
-        except Exception:
-            return
-        if resolved.suffix == ".lean" and resolved.is_file() and resolved not in paths:
-            paths.append(resolved)
-
-    _add(active_file)
-    payload = _formalization_manifest_payload()
-    _add(payload.get("target_lean_relative"))
-    _add(payload.get("target_lean_path"))
-
-    directory_seeds = [path.parent for path in paths if path.name == "Main.lean"]
-    for seed in list(directory_seeds):
-        if not seed.is_dir():
-            continue
-        for path in sorted(seed.rglob("*.lean"), key=lambda item: str(item.relative_to(seed)).lower()):
-            _add(path)
-        parent_module_file = seed.with_suffix(".lean")
-        _add(parent_module_file)
-
-    return paths
-
-
-def _topologically_order_project_paths(paths: Sequence[Path], root: Path) -> list[Path]:
-    unique_paths: list[Path] = []
-    for path in paths:
-        try:
-            resolved = path.resolve()
-        except Exception:
-            continue
-        if resolved not in unique_paths:
-            unique_paths.append(resolved)
-    if len(unique_paths) <= 1:
-        return unique_paths
-    module_to_path = {
-        module: path
-        for path in unique_paths
-        for module in [_module_name_for_project_path(path, root)]
-        if module
-    }
-    imports_by_path, _imported_by_path, _modules = _project_prove_dependency_graph(unique_paths, module_to_path)
-    path_set = {path.resolve() for path in unique_paths}
-    ordered: list[Path] = []
-    visiting: set[Path] = set()
-    visited: set[Path] = set()
-
-    def _visit(path: Path) -> None:
-        resolved = path.resolve()
-        if resolved in visited:
-            return
-        if resolved in visiting:
-            return
-        visiting.add(resolved)
-        for dependency in sorted(imports_by_path.get(resolved, set()) & path_set, key=lambda item: str(item)):
-            _visit(dependency)
-        visiting.discard(resolved)
-        visited.add(resolved)
-        ordered.append(resolved)
-
-    for path in sorted(unique_paths, key=lambda item: str(item)):
-        _visit(path)
-    return ordered
-
-
-def _formalization_generated_prove_scope(active_file: str = "") -> list[str]:
-    root = Path(_project_root()).expanduser().resolve()
-    paths = _topologically_order_project_paths(_formalization_generated_lean_paths(active_file), root)
-    labels: list[str] = []
-    for path in paths:
-        label = _relative_project_file_label(path, root)
-        if label and label not in labels:
-            labels.append(label)
-    return labels
-
-
 def _prove_file_scope_ordered_paths(project_root: str | os.PathLike[str] | None = None) -> list[Path]:
     raw = (
         _read_text_env("EPFLEMMA_PROVE_FILE_SCOPE", "")
@@ -4083,226 +3939,6 @@ def _declaration_queue_scope() -> str:
     return "file" if active_file else "project"
 
 
-def _declaration_line_index(active_file: str) -> list[dict[str, Any]]:
-    if not active_file:
-        return []
-    path = Path(active_file)
-    try:
-        content = path.read_text(encoding="utf-8")
-    except Exception:
-        return []
-    return _declaration_line_index_from_text(content)
-
-
-def _find_declaration_entry(active_file: str, label: str) -> dict[str, Any] | None:
-    wanted = str(label or "").strip()
-    if not active_file or not wanted:
-        return None
-    for entry in _declaration_line_index(active_file):
-        if str(entry.get("name", "") or "").strip() == wanted:
-            return entry
-    return None
-
-
-def _declaration_prefix_text(active_file: str, label: str, *, max_lines: int = 200) -> str:
-    entry = _find_declaration_entry(active_file, label)
-    if not entry:
-        return ""
-    cutoff = int(entry.get("end_line", 0) or 0)
-    if cutoff <= 0:
-        return ""
-    path = Path(active_file)
-    try:
-        all_lines = path.read_text(encoding="utf-8").splitlines()
-    except Exception:
-        return ""
-    start = 1
-    end = min(cutoff, len(all_lines))
-    text = "\n".join(all_lines[:end]).strip()
-    if not text:
-        return ""
-    lines = text.splitlines()
-    if len(lines) > max_lines:
-        text = "\n".join(lines[-max_lines:])
-        start = end - max_lines + 1
-    return f"Current file prefix ending at `{label}` ({start}-{end}):\n{text}"
-
-
-def _declaration_slice_text(active_file: str, label: str, *, max_lines: int = 40) -> str:
-    entry = _find_declaration_entry(active_file, label)
-    if not entry:
-        return ""
-    start = int(entry.get("line", 0) or 0)
-    end = int(entry.get("end_line", 0) or 0)
-    text = str(entry.get("text", "") or "").strip()
-    if not text:
-        return ""
-    lines = text.splitlines()
-    if len(lines) > max_lines:
-        text = "\n".join(lines[:max_lines]) + "\n-- [truncated declaration slice]"
-    return f"Assigned declaration slice ({start}-{end}):\n{text}"
-
-
-def _nearest_declaration_name(active_file: str, line_number: int | None) -> str:
-    if not active_file or not isinstance(line_number, int) or line_number <= 0:
-        return ""
-    entries = _declaration_line_index(active_file)
-    current = ""
-    for entry in entries:
-        if int(entry.get("line", 0) or 0) > line_number:
-            break
-        current = str(entry.get("name", "") or "")
-    return current
-
-
-def _queue_diagnostic_items(text: str) -> list[dict[str, Any]]:
-    return [
-        item
-        for item in diagnostic_items(text)
-        if str(item.get("severity", "") or "").strip().lower() == "error"
-    ]
-
-
-def _queue_diagnostic_line_numbers(text: str) -> list[int]:
-    items = diagnostic_items(text)
-    if items:
-        values: list[int] = []
-        for item in _queue_diagnostic_items(text):
-            line = item.get("line")
-            if isinstance(line, int) and line > 0 and line not in values:
-                values.append(line)
-        return values
-    return _extract_diagnostic_line_numbers(text)
-
-
-def _diagnostics_indicate_queue_blocker(text: str) -> bool:
-    items = diagnostic_items(text)
-    if items:
-        return bool(_queue_diagnostic_items(text))
-    lowered = (text or "").lower()
-    cleared_tokens = (
-        "no errors found",
-        "no errors",
-        "without errors",
-    )
-    if any(token in lowered for token in cleared_tokens):
-        for token in cleared_tokens:
-            lowered = lowered.replace(token, "")
-    blocker_patterns = (
-        r"\berror\b",
-        r"\berrors\b",
-        r"\bunsolved\b",
-        r"\bfailed\b",
-        r"\btype mismatch\b",
-        r"\bunknown option\b",
-    )
-    return any(re.search(pattern, lowered) for pattern in blocker_patterns)
-
-
-def _is_anonymous_declaration_label(label: str) -> bool:
-    normalized = str(label or "").strip().lower()
-    return normalized.startswith("[anonymous ")
-
-
-def _declaration_name_safe_for_diagnostic_match(name: str) -> bool:
-    normalized = str(name or "").strip()
-    if not normalized or _is_anonymous_declaration_label(normalized):
-        return False
-    if len(normalized) >= 4:
-        return True
-    return bool(re.search(r"[^A-Za-z]", normalized))
-
-
-def _diagnostic_reason_for_entry(entry: Mapping[str, Any], diagnostic_lines: list[int]) -> str:
-    if not diagnostic_lines:
-        return ""
-    start = int(entry.get("line", 0) or 0)
-    end = int(entry.get("end_line", 0) or start)
-    if start <= 0:
-        return ""
-    for line_number in diagnostic_lines:
-        if start <= int(line_number) <= max(start, end):
-            return f"diagnostic near line {line_number}"
-    return ""
-
-
-def _declaration_diagnostic_feedback_reason(
-    active_file: str,
-    label: str,
-    *texts: str,
-    structured_items: Sequence[Mapping[str, Any]] = (),
-) -> str:
-    entry = _find_declaration_entry(active_file, label)
-    if not entry:
-        return ""
-    start = int(entry.get("line", 0) or 0)
-    end = int(entry.get("end_line", 0) or start)
-    if start <= 0:
-        return ""
-
-    def _structured_diagnostic_line(diagnostic: Mapping[str, Any]) -> int | None:
-        for key in ("line", "start_line", "file_line"):
-            value = diagnostic.get(key)
-            if isinstance(value, int):
-                return value
-        for key in ("file_start", "start"):
-            value = diagnostic.get(key)
-            if isinstance(value, Mapping):
-                line = value.get("line")
-                if isinstance(line, int):
-                    return line
-        return None
-
-    # Prefer the manager_check's structured messages when available. The text
-    # fallbacks below only catch diagnostics that come in `<file>:<line>:<col>:`
-    # form (lake / lean_inspect output); `lean_incremental_check` returns
-    # warnings as plain `warning: ...` lines that the regex cannot locate, so
-    # the structured path is the only way to honour the spec's per-theorem
-    # warning-cleanup opportunity for warnings the targeted check surfaced.
-    for diagnostic in structured_items or ():
-        if not isinstance(diagnostic, Mapping):
-            continue
-        line = _structured_diagnostic_line(diagnostic)
-        if not (isinstance(line, int) and start <= line <= max(start, end)):
-            continue
-        severity = str(diagnostic.get("severity", "") or "diagnostic").strip().lower()
-        if severity not in {"warning", "error"}:
-            continue
-        message = _single_line(str(diagnostic.get("message", "") or ""), 180)
-        return (
-            f"{severity} near line {line}: {message}"
-            if message
-            else f"{severity} near line {line}"
-        )
-    for text in texts:
-        if not text:
-            continue
-        parsed_items = diagnostic_items(text)
-        for diagnostic in parsed_items:
-            line = diagnostic.get("line")
-            if isinstance(line, int) and start <= line <= max(start, end):
-                severity = str(diagnostic.get("severity", "") or "diagnostic").strip().lower()
-                if severity not in {"warning", "error"}:
-                    continue
-                message = _single_line(str(diagnostic.get("message", "") or ""), 180)
-                return (
-                    f"{severity} near line {line}: {message}"
-                    if message
-                    else f"{severity} near line {line}"
-                )
-        if not parsed_items:
-            lowered_text = text.lower()
-            if re.search(r":\d+:\d+:\s*info:", lowered_text) and not re.search(
-                r":\d+:\d+:\s*(?:warning|error):",
-                lowered_text,
-            ):
-                continue
-            reason = _diagnostic_reason_for_entry(entry, _extract_diagnostic_line_numbers(text))
-            if reason:
-                return reason
-    return ""
-
-
 def _declaration_work_queue(
     active_file: str,
     issue_text: str,
@@ -4392,98 +4028,6 @@ def _declaration_work_queue(
             active_label = active_file
         _append(active_file, active_label, ["diagnostics unresolved"])
     return queue
-
-
-def _queue_horizon_summary(
-    *,
-    declaration_scope: str,
-    queue_needs_final_file_sweep: bool,
-    current_queue_item: Mapping[str, Any] | None,
-    declaration_queue_summary: str,
-    declaration_queue_total: int = 0,
-) -> str:
-    if declaration_scope != "file" or queue_needs_final_file_sweep:
-        return declaration_queue_summary or "[none]"
-    item = dict(current_queue_item or {})
-    if not item:
-        return "[none]"
-    label = str(item.get("label", "") or "[unnamed]")
-    reasons = ", ".join(str(reason) for reason in item.get("reasons", []) or [] if str(reason).strip()) or "pending"
-    hidden_count = max(0, int(declaration_queue_total or 0) - 1)
-    lines = [
-        f"- assigned declaration: {label} - {reasons}",
-        (
-            f"- future queue items: hidden until the manager assigns them ({hidden_count} pending)"
-            if hidden_count
-            else "- future queue items: no further queue items pending (0 pending)"
-        ),
-    ]
-    return "\n".join(lines)
-
-
-def _diagnostics_for_queue_horizon(
-    *,
-    active_file: str,
-    target_symbol: str,
-    diagnostics: str,
-    declaration_scope: str,
-    queue_needs_final_file_sweep: bool,
-) -> str:
-    text = str(diagnostics or "").strip()
-    if declaration_scope != "file" or queue_needs_final_file_sweep or not target_symbol:
-        return text or "unavailable"
-    entry = _find_declaration_entry(active_file, target_symbol)
-    parsed = diagnostic_items(text)
-    if parsed and entry:
-        scoped = [item for item in parsed if _line_in_declaration(entry, item.get("line"))]
-        if scoped:
-            lines = [_format_diagnostic_for_model(item) for item in scoped[:12]]
-            hidden = len(scoped) - len(lines)
-            if hidden > 0:
-                lines.append(f"- ... plus {hidden} more diagnostic(s) in the assigned declaration")
-            return "\n".join(lines)
-        return (
-            "No diagnostics in the assigned declaration. "
-            "Diagnostics from future queue items are hidden until the manager assigns them."
-        )
-    lowered = text.lower()
-    if not text or "no errors found" in lowered or "no diagnostics" in lowered or "no errors" in lowered:
-        return text or "No diagnostics in the assigned declaration."
-    return (
-        "Diagnostics could not be scoped reliably for the assigned declaration. "
-        "Use `lean_inspect` on the assigned declaration before editing."
-    )
-
-
-def _proof_status_lines_for_queue_horizon(
-    *,
-    active_file: str,
-    target_symbol: str,
-    declaration_scope: str,
-    queue_needs_final_file_sweep: bool,
-    sorry_count: Any,
-    project_sorry_count: Any,
-    project_sorry_files: list[str],
-) -> list[str]:
-    if declaration_scope == "file" and target_symbol and not queue_needs_final_file_sweep:
-        entry = _find_declaration_entry(active_file, target_symbol)
-        if entry:
-            has_sorry = "yes" if entry.get("has_sorry") else "no"
-        else:
-            has_sorry = "[unknown]"
-        return [
-            f"assigned declaration has sorry: {has_sorry}",
-            "future declaration sorry counts: hidden until manager assignment",
-        ]
-    return [
-        f"sorry count: {sorry_count if sorry_count is not None else '[unknown]'}",
-        f"project sorry count: {project_sorry_count if project_sorry_count is not None else '[unknown]'}",
-        (
-            "project files with sorry: " + ", ".join(project_sorry_files)
-            if project_sorry_files
-            else "project files with sorry: [none]"
-        ),
-    ]
 
 
 def _queue_item_has_diagnostic_reason(item: Mapping[str, Any]) -> bool:
@@ -5640,100 +5184,6 @@ def _record_verifier_decision(
     )
 
 
-def _verification_review_result_payload(result: Any) -> dict[str, Any]:
-    return {
-        "task": str(getattr(result, "task", "") or ""),
-        "provider": str(getattr(result, "provider", "") or ""),
-        "mode": str(getattr(result, "mode", "") or ""),
-        "status": str(getattr(result, "status", "") or ""),
-        "command": list(getattr(result, "command", []) or []),
-        "exit_status": getattr(result, "exit_status", None),
-        "response": _bounded_verifier_response(str(getattr(result, "response", "") or "")),
-        "response_chars": int(getattr(result, "response_chars", 0) or 0),
-        "max_response_chars": int(getattr(result, "max_response_chars", 0) or 0),
-        "truncated": bool(getattr(result, "truncated", False)),
-        "timed_out": bool(getattr(result, "timed_out", False)),
-        "model": str(getattr(result, "model", "") or ""),
-        "error": str(getattr(result, "error", "") or ""),
-    }
-
-
-def _verification_review_decision(payload: Mapping[str, Any] | None) -> str:
-    response = str((payload or {}).get("response", "") or "").strip()
-    if not response:
-        return ""
-    parsed = _extract_json_payload(response)
-    if isinstance(parsed, Mapping):
-        for key in ("decision", "status", "result"):
-            value = str(parsed.get(key, "") or "").strip().upper()
-            if value in {"PASS", "BLOCK"}:
-                return value
-    match = re.search(
-        r"^\s*(?:[#>*_`\-]+\s*)?(?:Decision\s*[:=-]\s*)?\**(PASS|BLOCK)\**\b",
-        response,
-        flags=re.IGNORECASE,
-    )
-    if not match:
-        match = re.search(r"\bDecision\s*[:=-]\s*(PASS|BLOCK)\b", response, flags=re.IGNORECASE)
-    return match.group(1).upper() if match else ""
-
-
-def _verification_review_findings(payload: Mapping[str, Any] | None, *, limit: int = 5) -> list[str]:
-    response = str((payload or {}).get("response", "") or "").strip()
-    if not response:
-        return []
-    parsed = _extract_json_payload(response)
-    findings: list[str] = []
-    if isinstance(parsed, Mapping):
-        raw_findings = parsed.get("findings") or parsed.get("issues") or parsed.get("blockers") or []
-        if isinstance(raw_findings, list):
-            for item in raw_findings:
-                text = _single_line(item, 240)
-                if text:
-                    findings.append(text)
-                    if len(findings) >= limit:
-                        return findings
-    for line in response.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if re.match(r"^(PASS|BLOCK)\b", stripped, flags=re.IGNORECASE):
-            continue
-        bullet = re.match(r"^(?:[-*]|\d+[.)])\s+(.*)$", stripped)
-        if bullet:
-            finding = _single_line(bullet.group(1), 240)
-            if finding:
-                findings.append(finding)
-        elif "block" in stripped.lower() or "missing" in stripped.lower() or "fix" in stripped.lower():
-            findings.append(_single_line(stripped, 240))
-        if len(findings) >= limit:
-            break
-    if findings:
-        return findings
-    return [_single_line(response, 240)] if response else []
-
-
-def _print_verification_review_summary(payload: Mapping[str, Any]) -> None:
-    provider = str(payload.get("provider", "") or "verifier")
-    task = str(payload.get("task", "") or "verification").replace("_", " ")
-    decision = _verification_review_decision(payload) or str(payload.get("status", "") or "reviewed")
-    findings = _verification_review_findings(payload, limit=3)
-    print(f"{task.title()} verifier feedback ({provider}): {decision}")
-    for finding in findings:
-        print(f"- {finding}")
-
-
-def _autoformalizer_advisory_block_issues(payload: Mapping[str, Any] | None) -> list[str]:
-    if not payload:
-        return []
-    if _verification_review_decision(payload) != "BLOCK":
-        return []
-    findings = _verification_review_findings(payload, limit=4)
-    if not findings:
-        findings = ["configured verifier returned BLOCK without detailed findings"]
-    return [f"configured autoformalizer verifier returned BLOCK: {finding}" for finding in findings]
-
-
 def _run_advisory_verification_review(
     *,
     task: str,
@@ -6811,83 +6261,6 @@ def _attach_live_proof_state(user_message: str, live_state: Mapping[str, Any]) -
     return "\n\n".join(part for part in parts if part).strip()
 
 
-def _diagnostics_indicate_failure(diagnostics: str) -> bool:
-    return diagnostics_indicate_actionable_failure(diagnostics)
-
-
-def _diagnostics_indicate_hard_failure(diagnostics: str) -> bool:
-    items = diagnostic_items(diagnostics)
-    if items:
-        return any(
-            str(item.get("severity", "") or "").strip().lower() == "error"
-            for item in items
-        )
-    lowered = (diagnostics or "").lower()
-    for token in ("no errors found", "no errors", "without errors"):
-        lowered = lowered.replace(token, "")
-    hard_patterns = (
-        r"\berror\b",
-        r"\berrors\b",
-        r"\bunsolved\b",
-        r"\btype mismatch\b",
-        r"\bunknown constant\b",
-        r"\bfailed to synthesize\b",
-        r"\bdeterministic timeout\b",
-        r"\bmaximum number of heartbeats\b",
-        r"\btactic execution\b",
-    )
-    return any(re.search(pattern, lowered) for pattern in hard_patterns)
-
-
-def _goals_still_open(goals: str) -> bool:
-    def _structured_goals_still_open(value: Any) -> bool:
-        if value is None:
-            return False
-        if isinstance(value, str):
-            lowered_value = value.lower()
-            if not lowered_value or "unavailable" in lowered_value:
-                return False
-            cleared_tokens = (
-                "no goals",
-                "goals accomplished",
-                "proof complete",
-                "no remaining goals",
-            )
-            if any(token in lowered_value for token in cleared_tokens):
-                return False
-            return "⊢" in value or bool(re.search(r"\bgoal\b", lowered_value))
-        if isinstance(value, list):
-            return any(_structured_goals_still_open(item) for item in value)
-        if isinstance(value, Mapping):
-            if "goals" in value:
-                return _structured_goals_still_open(value.get("goals"))
-            if "goal" in value:
-                return _structured_goals_still_open(value.get("goal"))
-            if "term_goal" in value:
-                return _structured_goals_still_open(value.get("term_goal"))
-            return False
-        return False
-
-    lowered = (goals or "").lower()
-    if not lowered or "unavailable" in lowered:
-        return False
-    try:
-        parsed = json.loads(goals)
-    except Exception:
-        parsed = None
-    if parsed is not None:
-        return _structured_goals_still_open(parsed)
-    cleared_tokens = (
-        "no goals",
-        "goals accomplished",
-        "proof complete",
-        "no remaining goals",
-    )
-    if any(token in lowered for token in cleared_tokens):
-        return False
-    return "⊢" in goals or "goal" in lowered
-
-
 def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     if not live_state:
         return False
@@ -6948,408 +6321,6 @@ def _live_state_is_verified(live_state: Mapping[str, Any] | None) -> bool:
     if _goals_still_open(goals):
         return False
     return verification_passed
-
-
-def _document_formalization_needs_planner_draft(active_file: str) -> bool:
-    if not _document_formalization_requested() or not active_file:
-        return False
-    generated_paths = _formalization_generated_lean_paths(active_file)
-    if generated_paths:
-        for path in generated_paths:
-            try:
-                generated_text = path.read_text(encoding="utf-8")
-            except Exception:
-                continue
-            if re.search(LEAN_DECLARATION_PREAMBLE_RE, generated_text, flags=re.MULTILINE):
-                return False
-    try:
-        text = Path(active_file).read_text(encoding="utf-8")
-    except Exception:
-        return False
-    has_declaration = bool(re.search(LEAN_DECLARATION_PREAMBLE_RE, text, flags=re.MULTILINE))
-    if has_declaration:
-        return False
-    non_import_lines = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip() and not line.lstrip().startswith("--") and not line.lstrip().startswith("import ")
-    ]
-    if not non_import_lines:
-        return True
-    return "EPFLemma formalization target scaffold" in text or "EPFLemma created this file as the active formalization target" in text
-
-
-def _lean_imports_from_text(text: str) -> list[str]:
-    imports: list[str] = []
-    for match in re.finditer(
-        r"^\s*import\s+([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)\b",
-        _strip_lean_comments_and_strings(str(text or "")),
-        flags=re.MULTILINE,
-    ):
-        module = match.group(1).strip()
-        if module and module not in imports:
-            imports.append(module)
-    return imports
-
-
-def _lean_imports_from_file(path: Path) -> list[str]:
-    try:
-        return _lean_imports_from_text(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-
-def _valid_lean_module_name(value: str) -> bool:
-    text = str(value or "").strip()
-    if not text:
-        return False
-    return all(re.match(r"^[A-Za-z_][A-Za-z0-9_']*$", part) for part in text.split("."))
-
-
-def _blueprint_import_plan_imports(text: str) -> list[str]:
-    section = _blueprint_import_plan_section(text)
-    if not section:
-        return []
-    imports: list[str] = []
-
-    def _add(module: str) -> None:
-        normalized = str(module or "").strip()
-        if normalized.endswith(".lean") or "/" in normalized:
-            return
-        if _valid_lean_module_name(normalized) and normalized not in imports:
-            imports.append(normalized)
-
-    for match in re.finditer(
-        r"^\s*import\s+([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)\b",
-        section,
-        flags=re.MULTILINE,
-    ):
-        _add(match.group(1))
-    in_non_direct_subsection = False
-    for line in section.splitlines():
-        lowered = line.lower()
-        if re.match(r"^\s*#{1,6}\s+", line) or re.match(r"^\s*(?:direct|suggested|search|notes?)\s*:", lowered):
-            in_non_direct_subsection = any(token in lowered for token in ("suggest", "search", "candidate", "transitive", "note"))
-            continue
-        if any(token in lowered for token in ("suggested search", "search module", "candidate module", "transitive", "not required", "prover may")):
-            continue
-        if in_non_direct_subsection:
-            continue
-        if not line.lstrip().startswith("-"):
-            continue
-        code_span = re.search(r"`([^`]+)`", line)
-        if code_span:
-            _add(code_span.group(1))
-            continue
-        bullet = re.search(
-            r"-\s*([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*)\b",
-            line,
-        )
-        if bullet:
-            _add(bullet.group(1))
-    return imports
-
-
-def _lean_decl_names_from_planned_value(value: str) -> list[str]:
-    names: list[str] = []
-
-    def _add(raw: str) -> None:
-        candidate = str(raw or "").strip()
-        candidate = candidate.split(":", 1)[0].strip()
-        candidate = candidate.split(" ", 1)[0].strip()
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_'.]*$", candidate) and candidate not in names:
-            names.append(candidate)
-
-    for span in re.findall(r"`([^`]+)`", str(value or "")):
-        _add(span)
-    if not names:
-        for chunk in re.split(r"[,;]|\band\b", str(value or "")):
-            _add(chunk)
-    return names
-
-
-def _formalization_generated_lean_text(
-    active_file: str,
-    *,
-    active_text: str = "",
-) -> str:
-    chunks: list[str] = []
-    active_path = Path(active_file).expanduser() if active_file else None
-    try:
-        active_resolved = active_path.resolve() if active_path is not None else None
-    except Exception:
-        active_resolved = active_path
-    for path in _formalization_generated_lean_paths(active_file):
-        try:
-            resolved = path.resolve()
-        except Exception:
-            resolved = path
-        try:
-            text = (
-                str(active_text or "")
-                if active_resolved is not None and resolved == active_resolved and active_text
-                else path.read_text(encoding="utf-8")
-            )
-        except Exception:
-            continue
-        label = _relative_file_label(str(path)) or str(path)
-        chunks.append(f"/- EPFLemma generated file: {label} -/\n{text}")
-    if chunks:
-        return "\n\n".join(chunks)
-    return str(active_text or "")
-
-
-def _formalization_generated_imports(active_file: str, *, active_text: str = "") -> list[str]:
-    imports: list[str] = []
-    active_path = Path(active_file).expanduser() if active_file else None
-    try:
-        active_resolved = active_path.resolve() if active_path is not None else None
-    except Exception:
-        active_resolved = active_path
-    for path in _formalization_generated_lean_paths(active_file):
-        try:
-            resolved = path.resolve()
-        except Exception:
-            resolved = path
-        try:
-            text = (
-                str(active_text or "")
-                if active_resolved is not None and resolved == active_resolved and active_text
-                else path.read_text(encoding="utf-8")
-            )
-        except Exception:
-            continue
-        for module in _lean_imports_from_text(text):
-            if module not in imports:
-                imports.append(module)
-    if not imports and active_text:
-        imports = _lean_imports_from_text(active_text)
-    return imports
-
-
-def _formalization_generated_module_names(active_file: str) -> set[str]:
-    root = Path(_project_root()).expanduser().resolve()
-    modules: set[str] = set()
-    for path in _formalization_generated_lean_paths(active_file):
-        module = _module_name_for_project_path(path, root)
-        if module:
-            modules.add(module)
-    return modules
-
-
-def _document_formalization_construction_sorry_issues(active_file: str, target_text: str = "") -> list[str]:
-    issues: list[str] = []
-    scanned_paths = _formalization_generated_lean_paths(active_file)
-    if not scanned_paths and active_file:
-        scanned_paths = [Path(active_file)]
-    for path in scanned_paths:
-        try:
-            text = (
-                str(target_text or "")
-                if active_file and path.resolve() == Path(active_file).expanduser().resolve() and target_text
-                else path.read_text(encoding="utf-8")
-            )
-        except Exception:
-            continue
-        for entry in _declaration_line_index_from_text(text):
-            kind = str(entry.get("kind", "") or "").strip().lower()
-            if kind not in CONSTRUCTION_DECLARATION_KINDS or not entry.get("has_sorry"):
-                continue
-            name = str(entry.get("name", "") or "").strip() or f"[{kind} at line {entry.get('line', '?')}]"
-            line = int(entry.get("line", 0) or 0)
-            label = _relative_file_label(str(path))
-            location = f"{label}:{line}" if line > 0 else label
-            issues.append(
-                f"construction gap before proof handoff: `{name}` is a {kind} declaration with `sorry` at {location}; "
-                "finish the construction or rewrite it as an explicit theorem/lemma proof obligation before `/prove`"
-            )
-    return issues
-
-
-def _document_formalization_generated_proof_sorry_count(active_file: str = "") -> int:
-    total = 0
-    for path in _formalization_generated_lean_paths(active_file):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except Exception:
-            continue
-        for entry in _declaration_line_index_from_text(text):
-            if str(entry.get("kind", "") or "").strip().lower() in PROOF_DECLARATION_KINDS and entry.get("has_sorry"):
-                total += 1
-    return total
-
-
-def _filter_document_formalization_proof_queue(queue: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    if not (_workflow_kind() == "formalize" and _document_formalization_requested()):
-        return [dict(item) for item in queue if isinstance(item, Mapping)]
-    filtered: list[dict[str, Any]] = []
-    for item in queue:
-        if not isinstance(item, Mapping):
-            continue
-        kind = str(item.get("kind", "") or "").strip().lower()
-        if kind in PROOF_DECLARATION_KINDS:
-            filtered.append(dict(item))
-    return filtered
-
-
-def _lean_declaration_preceding_comment_window(
-    target_text: str,
-    entry: Mapping[str, Any],
-    *,
-    max_lines: int = 16,
-) -> str:
-    try:
-        line = int(entry.get("line", 0) or 0)
-    except Exception:
-        line = 0
-    if line <= 1:
-        return ""
-    lines = str(target_text or "").splitlines()
-    start = max(0, line - max_lines - 1)
-    end = max(0, min(line - 1, len(lines)))
-    return "\n".join(lines[start:end]).strip()
-
-
-def _lean_comment_has_source_proof_notes(comment: str) -> bool:
-    lowered = str(comment or "").lower()
-    required_markers = (
-        "source proof",
-        "proof sketch",
-        "proof strategy",
-        "prover notes",
-        "paper proof",
-    )
-    return any(marker in lowered for marker in required_markers)
-
-
-def _document_formalization_blueprint_inventory_issues(
-    blueprint_text: str,
-    target_text: str,
-) -> list[str]:
-    issues: list[str] = []
-    entries = _blueprint_source_inventory_entries(blueprint_text)
-    target_entries = _declaration_entries_by_name_from_text(target_text)
-    target_decl_names = set(target_entries)
-    for block in _document_formalization_manifest_blocks():
-        label = block["label"]
-        kind = block["kind"]
-        requires_proof_notes = bool(block.get("has_proof")) or kind in {"theorem", "lemma", "proposition", "corollary"}
-        entry = entries.get(label, "")
-        if not entry:
-            issues.append(f"blueprint is missing source inventory entry `{label}`")
-            continue
-        locator = _blueprint_first_bullet_value(
-            entry,
-            ("Source locator", "Source location", "Source line/page", "Source lines", "Source page"),
-        )
-        if _blueprint_value_missing(locator):
-            issues.append(f"blueprint entry `{label}` is missing a concrete source locator")
-        elif _document_formalization_requested():
-            source_relative = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip()
-            if source_relative and source_relative not in locator:
-                issues.append(
-                    f"blueprint entry `{label}` source locator should include `{source_relative}` so the prover can reopen the source"
-                )
-        planned = _blueprint_first_bullet_value(
-            entry,
-            (
-                "Planned Lean declarations",
-                "Planned Lean declaration",
-                "Formal names",
-                "Formal name",
-                "Lean declarations",
-                "Lean declaration",
-            ),
-        )
-        planned_block = (
-            _blueprint_bullet_block(entry, "Planned Lean declarations")
-            or _blueprint_bullet_block(entry, "Planned Lean declaration")
-            or _blueprint_bullet_block(entry, "Lean declarations")
-            or _blueprint_bullet_block(entry, "Lean declaration")
-        )
-        if _blueprint_value_missing(planned):
-            planned = planned_block
-        elif planned_block and planned_block not in planned:
-            planned = f"{planned}\n{planned_block}"
-        if _blueprint_value_missing(planned):
-            issues.append(f"blueprint entry `{label}` has no concrete planned Lean declarations")
-            planned_names: list[str] = []
-        else:
-            planned_names = _lean_decl_names_from_planned_value(planned)
-            if not planned_names:
-                issues.append(f"blueprint entry `{label}` planned declarations are not parseable")
-            else:
-                missing = [name for name in planned_names if name not in target_decl_names]
-                if missing:
-                    issues.append(
-                        f"blueprint entry `{label}` names declarations missing from generated Lean files: "
-                        + ", ".join(f"`{name}`" for name in missing)
-                    )
-
-        review = _blueprint_bullet_block(entry, "Formal statement review") or _blueprint_bullet_value(entry, "Formal statement review")
-        if _blueprint_block_missing(review):
-            issues.append(f"blueprint entry `{label}` is missing a statement-fidelity review")
-        source_qualifiers = _blueprint_fidelity_field(entry, ("Source qualifiers", "Source qualifier", "Fidelity axes"))
-        if _blueprint_fidelity_field_unresolved(source_qualifiers):
-            issues.append(f"blueprint entry `{label}` is missing resolved source qualifiers / fidelity axes")
-        lean_coverage = _blueprint_fidelity_field(entry, ("Lean coverage", "Formal coverage", "Lean statement coverage"))
-        if _blueprint_fidelity_field_unresolved(lean_coverage):
-            issues.append(f"blueprint entry `{label}` is missing resolved Lean coverage for the source qualifiers")
-        scope_changes = _blueprint_fidelity_field(entry, ("Scope changes", "Intentional scope changes", "Scope change"))
-        if _blueprint_fidelity_field_unresolved(scope_changes):
-            issues.append(f"blueprint entry `{label}` must explicitly record scope changes, or `none`")
-
-        verification = _blueprint_first_bullet_value(
-            entry,
-            (
-                "Statement verification status",
-                "Statement/source verification",
-                "Source verification status",
-                "Verification status",
-            ),
-        )
-        if _blueprint_value_missing(verification):
-            issues.append(
-                f"blueprint entry `{label}` is missing statement/source verification approval; "
-                "run the review workflow to check and correct the planned Lean statements before proving"
-            )
-        elif not re.search(r"\b(approved|verified|reviewed|accepted)\b", verification, flags=re.IGNORECASE):
-            issues.append(
-                f"blueprint entry `{label}` statement/source verification is not approved"
-            )
-
-        notes = _blueprint_first_bullet_value(entry, ("Source proof / prover notes", "Proof strategy", "Prover notes"))
-        if _blueprint_value_missing(notes):
-            issues.append(f"blueprint entry `{label}` is missing source proof/prover notes")
-        if requires_proof_notes and notes.lower() in {"none", "none needed", "n/a"}:
-            issues.append(f"blueprint entry `{label}` needs prover notes for its {kind}")
-        if requires_proof_notes:
-            for name in planned_names:
-                target_entry = target_entries.get(name, {})
-                decl_kind = str(target_entry.get("kind", "") or "").strip().lower()
-                if decl_kind not in {"theorem", "lemma", "example"}:
-                    continue
-                comment = _lean_declaration_preceding_comment_window(target_text, target_entry)
-                if not _lean_comment_has_source_proof_notes(comment):
-                    issues.append(
-                        f"Lean doc comment above `{name}` is missing source proof/prover notes"
-                    )
-    return issues
-
-
-def _root_module_file_for_module(module_name: str) -> tuple[str, Path] | None:
-    if not module_name or "." not in module_name:
-        return None
-    root_module = module_name.split(".", 1)[0]
-    if not _valid_lean_module_name(root_module):
-        return None
-    return root_module, Path(_project_root()) / f"{root_module}.lean"
-
-
-def _module_file_for_module(module_name: str) -> Path | None:
-    if not _valid_lean_module_name(module_name):
-        return None
-    return Path(_project_root()) / Path(*module_name.split(".")).with_suffix(".lean")
 
 
 def _document_formalization_handoff_verification(
@@ -7589,22 +6560,6 @@ def _document_formalization_handoff_verification(
             issues=advisory_findings,
         )
     return {"ok": ok, "issues": issues, "summary": summary}
-
-
-def _module_name_for_file(active_file: str) -> str:
-    if not active_file:
-        return ""
-    try:
-        relative = Path(active_file).resolve().relative_to(Path(_project_root()).resolve())
-    except Exception:
-        return ""
-    parts = list(relative.parts)
-    if not parts or not parts[-1].endswith(".lean"):
-        return ""
-    parts[-1] = parts[-1][:-5]
-    if any(not re.match(r"^[A-Za-z_][A-Za-z0-9_']*$", part) for part in parts):
-        return ""
-    return ".".join(parts)
 
 
 def _canonical_file_verification_command(active_file: str) -> str:
@@ -8103,20 +7058,6 @@ def _success_state(text: str, blocker_summary: str) -> str:
     return "in-progress"
 
 
-def _workflow_replay_message(summary_text: str) -> dict[str, Any]:
-    body = summary_text.strip()
-    if not body.startswith(WORKFLOW_CHECKPOINT_PREFIX):
-        body = f"{WORKFLOW_CHECKPOINT_PREFIX}\n\n{body}" if body else WORKFLOW_CHECKPOINT_PREFIX
-    return {"role": "assistant", "content": body}
-
-
-def _checkpoint_replay_history(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
-    summary_text = _message_text(entry.get("summary_text")).strip()
-    if not summary_text:
-        return []
-    return [_workflow_replay_message(summary_text)]
-
-
 def _fallback_checkpoint_summary(
     history: list[dict[str, Any]],
     *,
@@ -8305,25 +7246,6 @@ def _prune_history(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
 
     pruned.reverse()
     return pruned, pruned_messages
-
-
-def _latest_filesystem_checkpoint_hash(agent: AIAgent, *, reason: str = "", force: bool = False) -> str:
-    checkpoint_mgr = getattr(agent, "_checkpoint_mgr", None)
-    if checkpoint_mgr is None or not getattr(checkpoint_mgr, "enabled", False):
-        return ""
-    working_dir = _project_root()
-    if force:
-        try:
-            checkpoint_mgr.ensure_checkpoint(working_dir, reason or "workflow checkpoint")
-        except Exception:
-            return ""
-    try:
-        checkpoints = checkpoint_mgr.list_checkpoints(working_dir)
-    except Exception:
-        return ""
-    if not checkpoints:
-        return ""
-    return str(checkpoints[0].get("hash", "") or "")
 
 
 def _write_workflow_checkpoint(
@@ -9825,29 +8747,6 @@ def _print_live_proof_state(live_state: Mapping[str, Any], section: str = "") ->
         print(str(live_state.get("goals", "unavailable") or "unavailable"))
         return
     print(str(live_state.get("message", "No live proof state available.") or "No live proof state available."))
-
-
-def _resume_plan_from_checkpoint(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
-    _write_current_checkpoint(entry)
-    return _checkpoint_replay_history(entry)
-
-
-def _rollback_to_checkpoint(agent: AIAgent, entry: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str]:
-    checkpoint_hash = str(entry.get("linked_filesystem_checkpoint", "") or "").strip()
-    if not checkpoint_hash:
-        return _checkpoint_replay_history(entry), "Checkpoint has no linked filesystem snapshot; only plan state was resumed."
-    checkpoint_mgr = getattr(agent, "_checkpoint_mgr", None)
-    if checkpoint_mgr is None or not getattr(checkpoint_mgr, "enabled", False):
-        return _checkpoint_replay_history(entry), "Filesystem checkpoints are unavailable; only plan state was resumed."
-    result = checkpoint_mgr.restore(_project_root(), checkpoint_hash)
-    if not result.get("success"):
-        error = str(result.get("error", "restore failed") or "restore failed")
-        return _checkpoint_replay_history(entry), f"Filesystem rollback failed: {error}"
-    message = (
-        f"Restored filesystem to {result.get('restored_to', checkpoint_hash[:8])} "
-        f"({result.get('reason', 'unknown')})."
-    )
-    return _checkpoint_replay_history(entry), message
 
 
 def main() -> int:
