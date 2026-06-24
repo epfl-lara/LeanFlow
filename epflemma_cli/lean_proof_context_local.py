@@ -12,8 +12,9 @@ and introduces no import cycle.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from epflemma_cli.lean_declarations import (
     _declaration_text_from_location,

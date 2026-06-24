@@ -28,7 +28,7 @@ class ProviderConfig:
     inference_base_url: str
     api_key_env_vars: tuple[str, ...] = ()
     base_url_env_var: str = ""
-    extra: Dict[str, Any] | None = None
+    extra: dict[str, Any] | None = None
 
 
 PROVIDER_REGISTRY = {

@@ -183,15 +183,15 @@ class MCPServerTask:
 
     def __init__(self, name: str):
         self.name = name
-        self.session: Optional[Any] = None
+        self.session: Any | None = None
         self.tool_timeout: float = _DEFAULT_TOOL_TIMEOUT
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._ready = asyncio.Event()
         self._shutdown_event = asyncio.Event()
         self._tools: list = []
-        self._error: Optional[Exception] = None
+        self._error: Exception | None = None
         self._config: dict = {}
-        self._sampling: Optional[SamplingHandler] = None
+        self._sampling: SamplingHandler | None = None
         self._registered_tool_names: list[str] = []
 
     def _is_http(self) -> bool:
@@ -357,7 +357,7 @@ class MCPServerTask:
         if self._task and not self._task.done():
             try:
                 await asyncio.wait_for(self._task, timeout=10)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "MCP server '%s' shutdown timed out, cancelling task",
                     self.name,
@@ -374,11 +374,11 @@ class MCPServerTask:
 # Module-level state
 # ---------------------------------------------------------------------------
 
-_servers: Dict[str, MCPServerTask] = {}
+_servers: dict[str, MCPServerTask] = {}
 
 # Dedicated event loop running in a background daemon thread.
-_mcp_loop: Optional[asyncio.AbstractEventLoop] = None
-_mcp_thread: Optional[threading.Thread] = None
+_mcp_loop: asyncio.AbstractEventLoop | None = None
+_mcp_thread: threading.Thread | None = None
 
 # Protects _mcp_loop, _mcp_thread, and _servers from concurrent access.
 _lock = threading.Lock()
@@ -410,28 +410,13 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
 
 
 # ---------------------------------------------------------------------------
-# Config loading
+# Config loading -- _load_mcp_config lives in tools/mcp_config.py and is
+# re-exported so callers/tests that resolve tools.mcp_tool._load_mcp_config
+# (including the patch sites in tests) keep working.  Its callers
+# (discover_mcp_tools, get_mcp_status) stay here.  mcp_config does NOT import
+# mcp_tool, so this introduces no import cycle.
 # ---------------------------------------------------------------------------
-
-def _load_mcp_config() -> Dict[str, dict]:
-    """Read ``mcp_servers`` from the Gauss config file.
-
-    Returns a dict of ``{server_name: server_config}`` or empty dict.
-    Server config can contain either ``command``/``args``/``env`` for stdio
-    transport or ``url``/``headers`` for HTTP transport, plus optional
-    ``timeout`` and ``connect_timeout`` overrides.
-    """
-    try:
-        from epflemma_cli.config import load_config
-        config = load_config()
-        servers = config.get("mcp_servers")
-        if not servers or not isinstance(servers, dict):
-            return {}
-        return servers
-    except Exception as exc:
-        logger.debug("Failed to load MCP config: %s", exc)
-        return {}
-
+from tools.mcp_config import _load_mcp_config  # noqa: E402,F401
 
 # ---------------------------------------------------------------------------
 # Server connection helper
@@ -487,7 +472,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 })
 
             # Collect text from content blocks
-            parts: List[str] = []
+            parts: list[str] = []
             for block in (result.content or []):
                 if hasattr(block, "text"):
                     parts.append(block.text)
@@ -569,7 +554,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
         async def _call():
             result = await server.session.read_resource(uri)
             # read_resource returns ReadResourceResult with .contents list
-            parts: List[str] = []
+            parts: list[str] = []
             contents = result.contents if hasattr(result, "contents") else []
             for block in contents:
                 if hasattr(block, "text"):
@@ -708,170 +693,23 @@ def _make_check_fn(server_name: str):
 # Discovery & registration
 # ---------------------------------------------------------------------------
 
-def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
-    """Convert an MCP tool listing to the Gauss registry schema format.
-
-    Args:
-        server_name: The logical server name for prefixing.
-        mcp_tool:    An MCP ``Tool`` object with ``.name``, ``.description``,
-                     and ``.inputSchema``.
-
-    Returns:
-        A dict suitable for ``registry.register(schema=...)``.
-    """
-    # Sanitize: replace hyphens and dots with underscores for LLM API compatibility
-    safe_tool_name = mcp_tool.name.replace("-", "_").replace(".", "_")
-    safe_server_name = server_name.replace("-", "_").replace(".", "_")
-    prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
-    return {
-        "name": prefixed_name,
-        "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
-        "parameters": mcp_tool.inputSchema if mcp_tool.inputSchema else {
-            "type": "object",
-            "properties": {},
-        },
-    }
+# Schema conversion + utility-schema selection helpers live in
+# tools/mcp_schema.py and are re-exported so callers/tests that resolve
+# tools.mcp_tool.<name> keep working.  mcp_schema does NOT import mcp_tool, so
+# this introduces no import cycle.
+from tools.mcp_schema import (  # noqa: E402,F401
+    _UTILITY_CAPABILITY_METHODS,
+    _build_utility_schemas,
+    _convert_mcp_schema,
+    _normalize_name_filter,
+    _parse_boolish,
+    _select_utility_schemas,
+)
 
 
-def _build_utility_schemas(server_name: str) -> List[dict]:
-    """Build schemas for the MCP utility tools (resources & prompts).
-
-    Returns a list of (schema, handler_factory_name) tuples encoded as dicts
-    with keys: schema, handler_key.
-    """
-    safe_name = server_name.replace("-", "_").replace(".", "_")
-    return [
-        {
-            "schema": {
-                "name": f"mcp_{safe_name}_list_resources",
-                "description": f"List available resources from MCP server '{server_name}'",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-            "handler_key": "list_resources",
-        },
-        {
-            "schema": {
-                "name": f"mcp_{safe_name}_read_resource",
-                "description": f"Read a resource by URI from MCP server '{server_name}'",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "uri": {
-                            "type": "string",
-                            "description": "URI of the resource to read",
-                        },
-                    },
-                    "required": ["uri"],
-                },
-            },
-            "handler_key": "read_resource",
-        },
-        {
-            "schema": {
-                "name": f"mcp_{safe_name}_list_prompts",
-                "description": f"List available prompts from MCP server '{server_name}'",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-            "handler_key": "list_prompts",
-        },
-        {
-            "schema": {
-                "name": f"mcp_{safe_name}_get_prompt",
-                "description": f"Get a prompt by name from MCP server '{server_name}'",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "Name of the prompt to retrieve",
-                        },
-                        "arguments": {
-                            "type": "object",
-                            "description": "Optional arguments to pass to the prompt",
-                        },
-                    },
-                    "required": ["name"],
-                },
-            },
-            "handler_key": "get_prompt",
-        },
-    ]
-
-
-def _normalize_name_filter(value: Any, label: str) -> set[str]:
-    """Normalize include/exclude config to a set of tool names."""
-    if value is None:
-        return set()
-    if isinstance(value, str):
-        return {value}
-    if isinstance(value, (list, tuple, set)):
-        return {str(item) for item in value}
-    logger.warning("MCP config %s must be a string or list of strings; ignoring %r", label, value)
-    return set()
-
-
-def _parse_boolish(value: Any, default: bool = True) -> bool:
-    """Parse a bool-like config value with safe fallback."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "1", "yes", "on"}:
-            return True
-        if lowered in {"false", "0", "no", "off"}:
-            return False
-    logger.warning("MCP config expected a boolean-ish value, got %r; using default=%s", value, default)
-    return default
-
-
-_UTILITY_CAPABILITY_METHODS = {
-    "list_resources": "list_resources",
-    "read_resource": "read_resource",
-    "list_prompts": "list_prompts",
-    "get_prompt": "get_prompt",
-}
-
-
-def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dict) -> List[dict]:
-    """Select utility schemas based on config and server capabilities."""
-    tools_filter = config.get("tools") or {}
-    resources_enabled = _parse_boolish(tools_filter.get("resources"), default=True)
-    prompts_enabled = _parse_boolish(tools_filter.get("prompts"), default=True)
-
-    selected: List[dict] = []
-    for entry in _build_utility_schemas(server_name):
-        handler_key = entry["handler_key"]
-        if handler_key in {"list_resources", "read_resource"} and not resources_enabled:
-            logger.debug("MCP server '%s': skipping utility '%s' (resources disabled)", server_name, handler_key)
-            continue
-        if handler_key in {"list_prompts", "get_prompt"} and not prompts_enabled:
-            logger.debug("MCP server '%s': skipping utility '%s' (prompts disabled)", server_name, handler_key)
-            continue
-
-        required_method = _UTILITY_CAPABILITY_METHODS[handler_key]
-        if not hasattr(server.session, required_method):
-            logger.debug(
-                "MCP server '%s': skipping utility '%s' (session lacks %s)",
-                server_name,
-                handler_key,
-                required_method,
-            )
-            continue
-        selected.append(entry)
-    return selected
-
-
-def _existing_tool_names() -> List[str]:
+def _existing_tool_names() -> list[str]:
     """Return tool names for all currently connected servers."""
-    names: List[str] = []
+    names: list[str] = []
     for _sname, server in _servers.items():
         if hasattr(server, "_registered_tool_names"):
             names.extend(server._registered_tool_names)
@@ -882,7 +720,7 @@ def _existing_tool_names() -> List[str]:
     return names
 
 
-async def _discover_and_register_server(name: str, config: dict) -> List[str]:
+async def _discover_and_register_server(name: str, config: dict) -> list[str]:
     """Connect to a single MCP server, discover tools, and register them.
 
     Also registers utility tools for MCP Resources and Prompts support
@@ -901,7 +739,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     with _lock:
         _servers[name] = server
 
-    registered_names: List[str] = []
+    registered_names: list[str] = []
     toolset_name = f"mcp-{name}"
 
     # Selective tool loading: honour include/exclude lists from config.
@@ -987,7 +825,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def discover_mcp_tools() -> List[str]:
+def discover_mcp_tools() -> list[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
     Called from ``model_tools._discover_tools()``. Safe to call even when
@@ -1023,10 +861,10 @@ def discover_mcp_tools() -> List[str]:
     # Start the background event loop for MCP connections
     _ensure_mcp_loop()
 
-    all_tools: List[str] = []
+    all_tools: list[str] = []
     failed_count = 0
 
-    async def _discover_one(name: str, cfg: dict) -> List[str]:
+    async def _discover_one(name: str, cfg: dict) -> list[str]:
         """Connect to a single server and return its registered tool names."""
         return await _discover_and_register_server(name, cfg)
 
@@ -1075,7 +913,7 @@ def discover_mcp_tools() -> List[str]:
     return _existing_tool_names()
 
 
-def get_mcp_status() -> List[dict]:
+def get_mcp_status() -> list[dict]:
     """Return status of all configured MCP servers for banner display.
 
     Returns a list of dicts with keys: name, transport, tools, connected.
@@ -1092,7 +930,7 @@ def get_mcp_status() -> List[dict]:
     with _lock:
         active_servers = dict(_servers)
 
-    result: List[dict] = []
+    result: list[dict] = []
     all_names = list(dict.fromkeys([*configured.keys(), *managed_status.keys()]))
     for name in all_names:
         cfg = configured.get(name, {})

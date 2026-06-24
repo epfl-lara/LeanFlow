@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import signal
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Mapping
+from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from epflemma_cli.activity_preview import (  # noqa: F401
     _activity_preview_limit,
@@ -22,9 +24,22 @@ from epflemma_cli.activity_preview import (  # noqa: F401
     _tool_result_preview,
 )
 from epflemma_cli.config import load_config
+from epflemma_cli.workflow_json_io import (  # noqa: F401
+    read_json_file,
+    write_json_file,
+)
+from epflemma_cli.workflow_state_paths import (  # noqa: F401
+    LEGACY_PROJECT_DIRNAMES,
+    PROJECT_STATE_DIRNAME,
+    _discover_project_root,
+    _epflemma_home,
+    _project_root_from_env,
+    _project_state_root,
+    workflow_state_root,
+)
 
-PROJECT_STATE_DIRNAME = ".epflemma"
-LEGACY_PROJECT_DIRNAMES = (".opengauss", ".gauss")
+logger = logging.getLogger(__name__)
+
 WORKFLOW_TASK_LABELS = {
     "autoprove": "prove",
     "autoformalize": "formalize",
@@ -38,53 +53,6 @@ WORKFLOW_TASK_LABELS = {
 }
 WORKFLOW_RUN_SCOPE_TOP_LEVEL = "top-level"
 WORKFLOW_RUN_SCOPE_BACKGROUND = "background-session"
-
-
-def _epflemma_home() -> Path:
-    explicit = str(os.getenv("EPFLEMMA_HOME", "") or "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    branded_legacy = str(os.getenv("OPENGAUSS_HOME", "") or "").strip()
-    if branded_legacy:
-        return Path(branded_legacy).expanduser()
-    legacy = str(os.getenv("GAUSS_HOME", "") or "").strip()
-    if legacy and Path(legacy).expanduser().name in {".epflemma", ".opengauss"}:
-        return Path(legacy).expanduser()
-    return Path.home() / ".epflemma"
-
-
-def _project_root_from_env() -> Path | None:
-    explicit = str(os.getenv("EPFLEMMA_PROJECT_ROOT", "") or "").strip()
-    if not explicit:
-        explicit = str(os.getenv("OPENGAUSS_PROJECT_ROOT", "") or "").strip()
-    if explicit:
-        candidate = Path(explicit).expanduser()
-        if candidate.exists():
-            return candidate.resolve()
-    return None
-
-
-def _discover_project_root(start: Path | None = None) -> Path | None:
-    base = (start or Path.cwd()).expanduser().resolve()
-    for candidate in (base, *base.parents):
-        epflemma_manifest = candidate / PROJECT_STATE_DIRNAME / "project.yaml"
-        if epflemma_manifest.is_file():
-            return candidate
-        for dirname in LEGACY_PROJECT_DIRNAMES:
-            if (candidate / dirname / "project.yaml").is_file():
-                return candidate
-    return None
-
-
-def _project_state_root() -> Path | None:
-    project_root = _project_root_from_env() or _discover_project_root()
-    if project_root is None:
-        return None
-    return project_root / PROJECT_STATE_DIRNAME / "workflow-state"
-
-
-def workflow_state_root() -> Path:
-    return _project_state_root() or (_epflemma_home() / "workflow-state")
 
 
 def ensure_workflow_state_root() -> Path:
@@ -218,7 +186,7 @@ def _persist_workflow_run_metadata(
         payload["project_root"] = project_root
     if process_id > 0:
         payload["process_id"] = process_id
-    payload["updated_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    payload["updated_at"] = datetime.now(UTC).replace(microsecond=0).isoformat()
     if "created_at" not in payload:
         payload["created_at"] = payload["updated_at"]
     write_json_file(path, payload)
@@ -262,7 +230,7 @@ def _workflow_run_id() -> str:
     run_id = str(os.getenv("EPFLEMMA_WORKFLOW_RUN_ID", "") or "").strip()
     if run_id:
         return run_id
-    started = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    started = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     workflow_kind = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_KIND", ""))
     task = _workflow_task_label(
         workflow_kind,
@@ -277,22 +245,6 @@ def _workflow_run_id() -> str:
 
 def workflow_timestamped_run_log_path() -> Path:
     return workflow_runs_root() / f"{_workflow_run_id()}.log"
-
-
-def read_json_file(path: Path) -> dict[str, Any]:
-    try:
-        if path.is_file():
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(payload, dict):
-                return payload
-    except Exception:
-        pass
-    return {}
-
-
-def write_json_file(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def load_workflow_live_status() -> dict[str, Any]:
@@ -330,7 +282,7 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
     )
     project_root = _project_root_from_env()
     normalized_details.setdefault("project_root", str(project_root) if project_root else "")
-    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    timestamp = datetime.now(UTC).replace(microsecond=0).isoformat()
     run_id = _workflow_run_id()
     agent_id = str(normalized_details.get("agent_session_id", "") or "")
     try:
@@ -391,7 +343,7 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
 def append_workflow_outcome(kind: str, payload: Mapping[str, Any]) -> None:
     ensure_workflow_state_root()
     entry = {
-        "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "kind": str(kind or "").strip() or "outcome",
         "workflow_kind": str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_KIND", "")),
         "workflow_command": str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")),
@@ -415,8 +367,8 @@ def write_verified_patch_checkpoint(
 ) -> dict[str, Any]:
     """Persist a pre-edit snapshot for apply_verified_patch."""
     ensure_workflow_state_root()
-    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    checkpoint_id = f"vpatch-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+    timestamp = datetime.now(UTC).replace(microsecond=0).isoformat()
+    checkpoint_id = f"vpatch-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
     before_bytes = before_content.encode("utf-8", errors="replace")
     payload = {
         "version": 1,
@@ -444,7 +396,7 @@ def write_verified_patch_checkpoint(
 def save_verified_patch_status(payload: Mapping[str, Any]) -> None:
     """Persist the latest apply_verified_patch status for resume/queue logic."""
     status = dict(payload or {})
-    status.setdefault("timestamp", datetime.now(timezone.utc).replace(microsecond=0).isoformat())
+    status.setdefault("timestamp", datetime.now(UTC).replace(microsecond=0).isoformat())
     write_json_file(
         workflow_verified_patch_status_path(),
         {
@@ -587,7 +539,7 @@ def enqueue_workflow_agent_message(agent_ref: str, text: str, *, kind: str = "me
     seq = len(read_workflow_agent_inbox(agent_id)) + 1
     entry = {
         "seq": seq,
-        "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "kind": str(kind or "message"),
         "text": message,
     }

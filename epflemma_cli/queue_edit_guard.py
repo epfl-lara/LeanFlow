@@ -26,8 +26,9 @@ a Lean-services-backed helper). Those still resolve the names moved here via the
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from epflemma_cli.lean_parsing import (
     _declaration_line_index_from_text,

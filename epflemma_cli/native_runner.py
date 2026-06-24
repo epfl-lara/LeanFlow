@@ -5,17 +5,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import unified_diff
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
+from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -38,6 +42,15 @@ from epflemma_cli.lean_services import (
     route_workflow_step,
 )
 from epflemma_cli.lean_workflow_specs import specs_for_skill
+from epflemma_cli.queue_item_predicates import (  # noqa: E402,F401
+    _attempt_proof_shape,
+    _current_queue_item,
+    _current_queue_status,
+    _inspection_queue_item_is_queue_blocker,
+    _queue_item_has_diagnostic_reason,
+    _queue_item_has_error_diagnostic,
+    _queue_item_has_sorry_reason,
+)
 from epflemma_cli.queue_manager import (
     Classification,
     ManagerCheck,
@@ -83,7 +96,6 @@ LIVE_PROOF_STATE_PREFIX = (
     "for the active workflow. Treat it as current unless newer tool results contradict it."
 )
 AUTONOMOUS_WORKFLOW_KINDS = {"prove", "formalize"}
-PROJECT_SCAN_SKIP_DIRS = {".artifacts", ".git", ".lake", ".epflemma", ".opengauss", ".gauss", "build"}
 WORKFLOW_STEP_BOUNDARY_INTERRUPT = "[epflemma-native workflow step boundary]"
 STARTUP_SKILL_CONTRACT_MAX_CHARS = 7000
 MANAGER_WARNING_RETRY_LIMIT = 1
@@ -257,6 +269,15 @@ from epflemma_cli.native_config import (  # noqa: E402
     _read_text_env,
     _utc_now_isoformat,
     _workflow_kind,
+)
+from epflemma_cli.native_lean_files import (  # noqa: E402,F401
+    _count_project_sorries,
+    _count_sorries,
+    _extract_active_files,
+    _find_symbol_line,
+    _project_lean_files,
+    _resolve_active_file,
+    _resolve_target_symbol,
 )
 from epflemma_cli.native_state import (  # noqa: E402
     _MANAGER_VERIFICATION_LOG_CACHE,
@@ -2971,7 +2992,10 @@ def _finish_queue_step_boundary(
             try:
                 setattr(agent, "_post_tool_result_appendix", "\n".join(feedback_lines))
             except Exception:
-                pass
+                logger.debug(
+                    "Could not set _post_tool_result_appendix for manager-verification escalation feedback",
+                    exc_info=True,
+                )
             if not bool(getattr(agent, "quiet_mode", False)):
                 if cleanup_feedback_reason and not still_blocked:
                     retry_count = int(manager_check.get("feedback_retry_count", 0) or 0)
@@ -3438,140 +3462,6 @@ def _snapshot_metadata() -> dict[str, Any]:
     }
 
 
-def _extract_active_files(text: str) -> list[str]:
-    seen: list[str] = []
-    for match in re.findall(r"[\w./-]+\.lean\b", text or ""):
-        normalized = match.strip()
-        if normalized.startswith("a//") or normalized.startswith("b//"):
-            normalized = normalized[2:]
-        project_root = _project_root()
-        try:
-            path = Path(normalized).expanduser()
-            if not path.is_absolute() and project_root:
-                candidate = (Path(project_root) / path).resolve()
-                if candidate.is_file():
-                    normalized = str(candidate.relative_to(Path(project_root).resolve()))
-            elif path.is_absolute() and path.is_file() and project_root:
-                try:
-                    normalized = str(path.resolve().relative_to(Path(project_root).resolve()))
-                except Exception:
-                    normalized = str(path.resolve())
-        except Exception:
-            normalized = match.strip()
-        if normalized and normalized not in seen:
-            seen.append(normalized)
-    return seen[:8]
-
-
-def _resolve_active_file(history: list[dict[str, Any]], checkpoint_state: Mapping[str, Any] | None = None) -> str:
-    configured_active_file = _read_native_env("ACTIVE_FILE")
-    if configured_active_file:
-        configured_path = Path(configured_active_file)
-        if configured_path.is_file():
-            return str(configured_path.resolve())
-        candidate = Path(_project_root()) / configured_active_file
-        if candidate.is_file():
-            return str(candidate.resolve())
-
-    workflow_command = _read_native_env("WORKFLOW_COMMAND")
-    command_files = _extract_active_files(workflow_command)
-    if command_files:
-        candidate = Path(_project_root()) / command_files[0]
-        if candidate.is_file():
-            return str(candidate)
-
-    current = (checkpoint_state or {}).get("current") or {}
-    for file_name in current.get("active_files") or []:
-        candidate = Path(_project_root()) / str(file_name)
-        if candidate.is_file():
-            return str(candidate)
-
-    recent_text = _collect_message_text(history[-16:])
-    for file_name in _extract_active_files(recent_text):
-        direct = Path(file_name)
-        if direct.is_file():
-            return str(direct)
-        candidate = Path(_project_root()) / file_name
-        if candidate.is_file():
-            return str(candidate)
-
-    return ""
-
-
-def _resolve_target_symbol(history: list[dict[str, Any]], checkpoint_state: Mapping[str, Any] | None = None) -> str:
-    current = (checkpoint_state or {}).get("current") or {}
-    target = str(current.get("target_symbol", "") or "").strip()
-    if target:
-        return target
-    return _extract_target_symbol(_read_native_env("WORKFLOW_COMMAND"))
-
-
-def _find_symbol_line(active_file: str, target_symbol: str) -> int | None:
-    if not active_file or not target_symbol:
-        return None
-    try:
-        lines = Path(active_file).read_text(encoding="utf-8").splitlines()
-    except Exception:
-        return None
-    pattern = re.compile(rf"\b(?:theorem|lemma|def)\s+{re.escape(target_symbol)}\b")
-    for idx, line in enumerate(lines, start=1):
-        if pattern.search(line):
-            return idx
-    return None
-
-
-def _count_sorries(active_file: str) -> int | None:
-    if not active_file:
-        return None
-    try:
-        text = Path(active_file).read_text(encoding="utf-8")
-    except Exception:
-        return None
-    sanitized = _strip_lean_comments_and_strings(text)
-    return len(re.findall(r"\bsorry\b", sanitized))
-
-
-def _project_lean_files(project_root: str) -> list[Path]:
-    root = Path(project_root)
-    if not root.is_dir():
-        return []
-    paths: list[Path] = []
-    try:
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [
-                name for name in dirnames
-                if name not in PROJECT_SCAN_SKIP_DIRS
-            ]
-            base = Path(dirpath)
-            for filename in filenames:
-                if filename.endswith(".lean"):
-                    paths.append(base / filename)
-    except OSError:
-        return []
-    return sorted(paths)
-
-
-def _count_project_sorries(project_root: str) -> tuple[int | None, list[str]]:
-    if not project_root:
-        return None, []
-    total = 0
-    files: list[str] = []
-    try:
-        for path in _project_lean_files(project_root):
-            count = _count_sorries(str(path))
-            if not isinstance(count, int) or count <= 0:
-                continue
-            total += count
-            try:
-                label = str(path.resolve().relative_to(Path(project_root).resolve()))
-            except Exception:
-                label = str(path)
-            files.append(f"{label} ({count})")
-    except Exception:
-        return None, []
-    return total, files[:8]
-
-
 def _workflow_command_has_explicit_lean_file() -> bool:
     return bool(_extract_active_files(_read_native_env("WORKFLOW_COMMAND")))
 
@@ -4028,92 +3918,6 @@ def _declaration_work_queue(
             active_label = active_file
         _append(active_file, active_label, ["diagnostics unresolved"])
     return queue
-
-
-def _queue_item_has_diagnostic_reason(item: Mapping[str, Any]) -> bool:
-    reasons = " ".join(str(reason or "") for reason in item.get("reasons", []) or []).lower()
-    return bool(
-        "diagnostic" in reasons
-        or "error" in reasons
-        or "unsolved" in reasons
-        or "type mismatch" in reasons
-        or "failed" in reasons
-    )
-
-
-def _queue_item_has_sorry_reason(item: Mapping[str, Any]) -> bool:
-    return any(str(reason or "").strip().lower() == "contains sorry" for reason in item.get("reasons", []) or [])
-
-
-def _queue_item_has_error_diagnostic(item: Mapping[str, Any], active_file: str, diagnostics: str) -> bool:
-    label = str(item.get("label", "") or "").strip()
-    entry = _find_declaration_entry(active_file, label)
-    if not entry:
-        return False
-    for diagnostic in diagnostic_items(diagnostics):
-        if str(diagnostic.get("severity", "") or "").strip().lower() != "error":
-            continue
-        if _line_in_declaration(entry, diagnostic.get("line")):
-            return True
-    return False
-
-
-def _inspection_queue_item_is_queue_blocker(item: Mapping[str, Any], active_file: str, diagnostics: str) -> bool:
-    if _queue_item_has_sorry_reason(item):
-        return True
-    if _queue_item_has_error_diagnostic(item, active_file, diagnostics):
-        return True
-    reasons = " ".join(str(reason or "") for reason in item.get("reasons", []) or []).lower()
-    return bool(
-        "error" in reasons
-        or "unsolved" in reasons
-        or "type mismatch" in reasons
-        or "failed" in reasons
-    )
-
-
-def _current_queue_item(queue: list[dict[str, Any]], active_file: str) -> dict[str, Any] | None:
-    if not queue or not active_file:
-        return None
-    mgr = TheoremQueueManager()
-    mgr.set_active_file(active_file)
-    mgr.replace_queue(queue)
-    selected = mgr.select_next(is_present_in_file=lambda label: bool(_find_declaration_entry(active_file, label)))
-    if selected is None:
-        return None
-    for item in queue:
-        if str(item.get("label", "") or "").strip() == selected.label:
-            return dict(item)
-    return {"label": selected.label, "reasons": list(selected.reasons)}
-
-
-def _current_queue_status(live_state: Mapping[str, Any]) -> str:
-    blocker = str(live_state.get("current_blocker", "") or "").strip()
-    if blocker:
-        return "blocked"
-    item = dict(live_state.get("current_queue_item") or {})
-    reasons = ", ".join(item.get("reasons", []) or []).strip()
-    if "sorry" in reasons:
-        return "pending"
-    return "in-progress"
-
-
-def _attempt_proof_shape(live_state: Mapping[str, Any] | None) -> str:
-    item = dict((live_state or {}).get("current_queue_item") or {})
-    active_file = str((live_state or {}).get("active_file", "") or "")
-    label = str(item.get("label", "") or (live_state or {}).get("target_symbol", "") or "").strip()
-    slice_text = _declaration_slice_text(active_file, label) if active_file and label else ""
-    if not slice_text:
-        slice_text = str((live_state or {}).get("current_queue_item_slice", "") or "").strip()
-    if not slice_text:
-        return "[no attempted proof shape recorded]"
-    _, _, body = slice_text.partition(":\n")
-    snippet = body.strip() or slice_text
-    lines = [line.rstrip() for line in snippet.splitlines() if line.strip()]
-    if len(lines) > 6:
-        lines = lines[:6]
-    text = " ".join(lines)
-    return _single_line(text, 240)
 
 
 def _prepare_queue_assignment_state(
@@ -6071,7 +5875,7 @@ def _build_live_proof_state(
     )
     project_prove_summary = _project_prove_manager_summary(autonomy_state)
     body = "\n".join(
-        (
+        
             [
                 LIVE_PROOF_STATE_PREFIX,
                 "",
@@ -6118,7 +5922,7 @@ def _build_live_proof_state(
                 "Proof status:",
                 *model_proof_status,
             ]
-        )
+        
     ).strip()
     live_state = {
         "active_file": active_file,
@@ -6187,7 +5991,7 @@ def _build_live_proof_state(
         live_project_prove_summary = _project_prove_manager_summary(autonomy_state)
         live_document_handoff = dict(live_state.get("document_formalization_handoff", {}) or {})
         live_state["message"] = "\n".join(
-            (
+            
                 [
                     LIVE_PROOF_STATE_PREFIX,
                     "",
@@ -6234,7 +6038,7 @@ def _build_live_proof_state(
                     "Proof status:",
                     *live_proof_status,
                 ]
-            )
+            
         ).strip()
     return live_state
 

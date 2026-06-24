@@ -18,8 +18,9 @@ or any symbol tests monkeypatch on native_runner, and this module does NOT impor
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from epflemma_cli.lean_parsing import _declaration_line_index_from_text
 from epflemma_cli.lean_services import diagnostic_items

@@ -56,7 +56,7 @@ _CREDENTIAL_PATTERN = re.compile(
 # Security helpers
 # ---------------------------------------------------------------------------
 
-def _build_safe_env(user_env: Optional[dict]) -> dict:
+def _build_safe_env(user_env: dict | None) -> dict:
     """Build a filtered environment dict for stdio subprocesses.
 
     Only passes through safe baseline variables (PATH, HOME, etc.) and XDG_*
@@ -303,7 +303,7 @@ def _effective_connect_timeout(name: str, config: dict) -> float:
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
 
-    def _find_missing(current: BaseException) -> Optional[str]:
+    def _find_missing(current: BaseException) -> str | None:
         nested = getattr(current, "exceptions", None)
         if nested:
             for child in nested:
@@ -325,10 +325,10 @@ def _format_connect_error(exc: BaseException) -> str:
                     return missing
         return None
 
-    def _flatten_messages(current: BaseException) -> List[str]:
+    def _flatten_messages(current: BaseException) -> list[str]:
         nested = getattr(current, "exceptions", None)
         if nested:
-            flattened: List[str] = []
+            flattened: list[str] = []
             for child in nested:
                 flattened.extend(_flatten_messages(child))
             return flattened
@@ -353,7 +353,7 @@ def _format_connect_error(exc: BaseException) -> str:
             )
         return _sanitize_error(message)
 
-    deduped: List[str] = []
+    deduped: list[str] = []
     for item in _flatten_messages(exc):
         if item not in deduped:
             deduped.append(item)

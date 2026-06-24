@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +17,7 @@ _LOCK_FILE_MUTEX = threading.Lock()
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc).replace(microsecond=0)
+    return datetime.now(UTC).replace(microsecond=0)
 
 
 def _utc_now_iso() -> str:

@@ -113,7 +113,7 @@ class DaytonaEnvironment(BaseEnvironment):
             self._sandbox.start()
             logger.info("Daytona: restarted sandbox %s", self._sandbox.id)
 
-    def _exec_in_thread(self, exec_command: str, cwd: Optional[str], timeout: int) -> dict:
+    def _exec_in_thread(self, exec_command: str, cwd: str | None, timeout: int) -> dict:
         """Run exec in a background thread with interrupt polling.
 
         The Daytona SDK's exec(timeout=...) parameter is unreliable (the
@@ -170,8 +170,8 @@ class DaytonaEnvironment(BaseEnvironment):
         return result_holder["value"]
 
     def execute(self, command: str, cwd: str = "", *,
-                timeout: Optional[int] = None,
-                stdin_data: Optional[str] = None) -> dict:
+                timeout: int | None = None,
+                stdin_data: str | None = None) -> dict:
         with self._lock:
             self._ensure_sandbox_ready()
 

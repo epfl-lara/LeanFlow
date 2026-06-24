@@ -22,7 +22,7 @@ import logging
 import math
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -121,7 +121,7 @@ class SamplingHandler:
         self.audit_jsonl_path = Path(configured_path).expanduser() if configured_path else _default_sampling_audit_path()
 
         # Per-instance state
-        self._rate_timestamps: List[float] = []
+        self._rate_timestamps: list[float] = []
         self._tool_loop_count = 0
         self.metrics = {"requests": 0, "errors": 0, "tokens_used": 0, "tool_use_count": 0}
 
@@ -129,7 +129,7 @@ class SamplingHandler:
         if not self.audit_jsonl_enabled:
             return
         entry = {
-            "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat(),
             "server": self.server_name,
             "event": event,
             "payload": payload,
@@ -156,7 +156,7 @@ class SamplingHandler:
 
     # -- Model resolution ----------------------------------------------------
 
-    def _resolve_model(self, preferences) -> Optional[str]:
+    def _resolve_model(self, preferences) -> str | None:
         """Config override > server hint > None (use default)."""
         if self.model_override:
             return self.model_override
@@ -176,7 +176,7 @@ class SamplingHandler:
         items = block.content if isinstance(block.content, list) else [block.content]
         return "\n".join(item.text for item in items if hasattr(item, "text"))
 
-    def _convert_messages(self, params) -> List[dict]:
+    def _convert_messages(self, params) -> list[dict]:
         """Convert MCP SamplingMessages to OpenAI format.
 
         Uses ``msg.content_as_list`` (SDK helper) so single-block and
@@ -184,7 +184,7 @@ class SamplingHandler:
         with ``isinstance`` on real SDK types when available, falling back
         to duck-typing via ``hasattr`` for compatibility.
         """
-        messages: List[dict] = []
+        messages: list[dict] = []
         for msg in params.messages:
             blocks = msg.content_as_list if hasattr(msg, "content_as_list") else (
                 msg.content if isinstance(msg.content, list) else [msg.content]
@@ -205,7 +205,7 @@ class SamplingHandler:
 
             # Emit assistant tool_calls message
             if tool_uses:
-                tc_list: List[dict] = []
+                tc_list: list[dict] = []
                 for tu in tool_uses:
                     tc_list.append({
                         "id": getattr(tu, "id", f"call_{len(tc_list)}"),
@@ -466,7 +466,7 @@ class SamplingHandler:
             response = await asyncio.wait_for(
                 asyncio.to_thread(_sync_call), timeout=self.timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.metrics["errors"] += 1
             self._append_audit_event("error", kind="timeout", timeout=self.timeout)
             return self._error(

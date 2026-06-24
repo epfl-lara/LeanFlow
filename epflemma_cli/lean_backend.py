@@ -51,6 +51,6 @@ class LeanBackend:
 
         return lean_services._run_command(cmd, cwd=cwd)
 
-    def is_available(self, report: "LeanCapabilityReport", capability: str) -> bool:
+    def is_available(self, report: LeanCapabilityReport, capability: str) -> bool:
         """True when ``capability`` resolved to a non-empty managed tool in ``report``."""
         return bool(report.mcp_tools.get(capability))

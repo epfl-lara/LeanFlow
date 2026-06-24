@@ -19,8 +19,9 @@ introduces no import cycle.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 __all__ = [
     "LEAN_DECLARATION_PREAMBLE_RE",

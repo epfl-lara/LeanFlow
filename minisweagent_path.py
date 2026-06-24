@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 
-def _read_gitdir(repo_root: Path) -> Optional[Path]:
+def _read_gitdir(repo_root: Path) -> Path | None:
     """Resolve the gitdir referenced by ``repo_root/.git`` when it is a file."""
     git_marker = repo_root / ".git"
     if not git_marker.is_file():
@@ -41,7 +41,7 @@ def _read_gitdir(repo_root: Path) -> Optional[Path]:
     return gitdir
 
 
-def discover_minisweagent_src(repo_root: Optional[Path] = None) -> Optional[Path]:
+def discover_minisweagent_src(repo_root: Path | None = None) -> Path | None:
     """Return the best available ``mini-swe-agent/src`` path, if any.
 
     Search order:
@@ -73,7 +73,7 @@ def discover_minisweagent_src(repo_root: Optional[Path] = None) -> Optional[Path
     return None
 
 
-def ensure_minisweagent_on_path(repo_root: Optional[Path] = None) -> Optional[Path]:
+def ensure_minisweagent_on_path(repo_root: Path | None = None) -> Path | None:
     """Ensure ``minisweagent`` is importable by prepending its src dir to sys.path.
 
     Returns the inserted/discovered path, or ``None`` if the package is already

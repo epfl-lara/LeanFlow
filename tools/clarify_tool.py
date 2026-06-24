@@ -12,7 +12,8 @@ a thin dispatcher that delegates to a platform-provided callback.
 """
 
 import json
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any, Dict, List, Optional
 
 # Maximum number of predefined choices the agent can offer.
 # A 5th "Other (type your answer)" option is always appended by the UI.
@@ -21,8 +22,8 @@ MAX_CHOICES = 4
 
 def clarify_tool(
     question: str,
-    choices: Optional[List[str]] = None,
-    callback: Optional[Callable] = None,
+    choices: list[str] | None = None,
+    callback: Callable | None = None,
 ) -> str:
     """
     Ask the user a question, optionally with multiple-choice options.

@@ -103,13 +103,13 @@ except Exception as e:
 # Backward-compat constants  (built once after discovery)
 # =============================================================================
 
-TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
+TOOL_TO_TOOLSET_MAP: dict[str, str] = registry.get_tool_to_toolset_map()
 
-TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
+TOOLSET_REQUIREMENTS: dict[str, dict] = registry.get_toolset_requirements()
 
 # Resolved tool names from the last get_tool_definitions() call.
 # Used by the active runtime to track which tools are available in this session.
-_last_resolved_tool_names: List[str] = []
+_last_resolved_tool_names: list[str] = []
 
 
 # =============================================================================
@@ -127,10 +127,10 @@ _LEGACY_TOOLSET_MAP = {
 # =============================================================================
 
 def get_tool_definitions(
-    enabled_toolsets: List[str] = None,
-    disabled_toolsets: List[str] = None,
+    enabled_toolsets: list[str] = None,
+    disabled_toolsets: list[str] = None,
     quiet_mode: bool = False,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
 
@@ -222,12 +222,12 @@ _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 
 def handle_function_call(
     function_name: str,
-    function_args: Dict[str, Any],
-    task_id: Optional[str] = None,
-    user_task: Optional[str] = None,
-    enabled_tools: Optional[List[str]] = None,
-    owner_id: Optional[str] = None,
-    parent_agent: Optional[Any] = None,
+    function_args: dict[str, Any],
+    task_id: str | None = None,
+    user_task: str | None = None,
+    enabled_tools: list[str] | None = None,
+    owner_id: str | None = None,
+    parent_agent: Any | None = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -278,26 +278,26 @@ def handle_function_call(
 # Backward-compat wrapper functions
 # =============================================================================
 
-def get_all_tool_names() -> List[str]:
+def get_all_tool_names() -> list[str]:
     """Return all registered tool names."""
     return registry.get_all_tool_names()
 
 
-def get_toolset_for_tool(tool_name: str) -> Optional[str]:
+def get_toolset_for_tool(tool_name: str) -> str | None:
     """Return the toolset a tool belongs to."""
     return registry.get_toolset_for_tool(tool_name)
 
 
-def get_available_toolsets() -> Dict[str, dict]:
+def get_available_toolsets() -> dict[str, dict]:
     """Return toolset availability info for UI display."""
     return registry.get_available_toolsets()
 
 
-def check_toolset_requirements() -> Dict[str, bool]:
+def check_toolset_requirements() -> dict[str, bool]:
     """Return {toolset: available_bool} for every registered toolset."""
     return registry.check_toolset_requirements()
 
 
-def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[dict]]:
+def check_tool_availability(quiet: bool = False) -> tuple[list[str], list[dict]]:
     """Return (available_toolsets, unavailable_info)."""
     return registry.check_tool_availability(quiet=quiet)

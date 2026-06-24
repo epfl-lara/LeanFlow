@@ -29,10 +29,10 @@ _DOCKER_SEARCH_PATHS = [
     "/Applications/Docker.app/Contents/Resources/bin/docker",
 ]
 
-_docker_executable: Optional[str] = None  # resolved once, cached
+_docker_executable: str | None = None  # resolved once, cached
 
 
-def find_docker() -> Optional[str]:
+def find_docker() -> str | None:
     """Locate the docker CLI binary.
 
     Checks ``shutil.which`` first (respects PATH), then probes well-known
@@ -79,7 +79,7 @@ _SECURITY_ARGS = [
 ]
 
 
-_storage_opt_ok: Optional[bool] = None  # cached result across instances
+_storage_opt_ok: bool | None = None  # cached result across instances
 
 
 def _ensure_docker_available() -> None:
@@ -107,7 +107,7 @@ def _ensure_docker_available() -> None:
             text=True,
             timeout=5,
         )
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
         logger.error(
             "Docker backend selected but the resolved docker executable '%s' could "
             "not be executed.",
@@ -116,8 +116,8 @@ def _ensure_docker_available() -> None:
         )
         raise RuntimeError(
             "Docker executable could not be executed. Check your Docker installation."
-        )
-    except subprocess.TimeoutExpired:
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
         logger.error(
             "Docker backend selected but '%s version' timed out. "
             "The Docker daemon may not be running.",
@@ -126,7 +126,7 @@ def _ensure_docker_available() -> None:
         )
         raise RuntimeError(
             "Docker daemon is not responding. Ensure Docker is running and try again."
-        )
+        ) from exc
     except Exception:
         logger.error(
             "Unexpected error while checking Docker availability.",
@@ -181,7 +181,7 @@ class DockerEnvironment(BaseEnvironment):
         self._base_image = image
         self._persistent = persistent_filesystem
         self._task_id = task_id
-        self._container_id: Optional[str] = None
+        self._container_id: str | None = None
         logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
@@ -243,8 +243,8 @@ class DockerEnvironment(BaseEnvironment):
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
             logger.debug(f"Skipping docker cwd mount: host_cwd is not a valid directory: {host_cwd}")
 
-        self._workspace_dir: Optional[str] = None
-        self._home_dir: Optional[str] = None
+        self._workspace_dir: str | None = None
+        self._home_dir: str | None = None
         writable_args = []
         if self._persistent:
             sandbox = get_sandbox_dir() / "docker" / task_id

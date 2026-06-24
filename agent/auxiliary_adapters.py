@@ -54,7 +54,7 @@ def _convert_content_for_responses(content: Any) -> Any:
     if not isinstance(content, list):
         return str(content) if content else ""
 
-    converted: List[Dict[str, Any]] = []
+    converted: list[dict[str, Any]] = []
     for part in content:
         if not isinstance(part, dict):
             continue
@@ -65,7 +65,7 @@ def _convert_content_for_responses(content: Any) -> Any:
             # chat.completions nests the URL: {"image_url": {"url": "..."}}
             image_data = part.get("image_url", {})
             url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data)
-            entry: Dict[str, Any] = {"type": "input_image", "image_url": url}
+            entry: dict[str, Any] = {"type": "input_image", "image_url": url}
             # Preserve detail if specified
             detail = image_data.get("detail") if isinstance(image_data, dict) else None
             if detail:
@@ -100,7 +100,7 @@ class _CodexCompletionsAdapter:
         # Convert chat.completions multimodal content blocks to Responses
         # API format (input_text / input_image instead of text / image_url).
         instructions = "You are a helpful assistant."
-        input_msgs: List[Dict[str, Any]] = []
+        input_msgs: list[dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content") or ""
@@ -112,7 +112,7 @@ class _CodexCompletionsAdapter:
                     "content": _convert_content_for_responses(content),
                 })
 
-        resp_kwargs: Dict[str, Any] = {
+        resp_kwargs: dict[str, Any] = {
             "model": model,
             "instructions": instructions,
             "input": input_msgs or [{"role": "user", "content": ""}],
@@ -141,8 +141,8 @@ class _CodexCompletionsAdapter:
                 resp_kwargs["tools"] = converted
 
         # Stream and collect the response
-        text_parts: List[str] = []
-        tool_calls_raw: List[Any] = []
+        text_parts: list[str] = []
+        tool_calls_raw: list[Any] = []
         usage = None
 
         try:

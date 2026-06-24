@@ -12,7 +12,8 @@ backwards compatibility; the names are referenced throughout that module and by 
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 __all__ = [
     "LEAN_DECLARATION_PREAMBLE_RE",

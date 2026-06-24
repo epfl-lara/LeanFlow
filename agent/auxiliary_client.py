@@ -57,7 +57,7 @@ from gauss_constants import OPENROUTER_BASE_URL
 logger = logging.getLogger(__name__)
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
-_API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
+_API_KEY_PROVIDER_AUX_MODELS: dict[str, str] = {
     "zai": "glm-4.5-flash",
     "kimi-coding": "kimi-k2-turbo-preview",
     "minimax": "MiniMax-M2.5-highspeed",
@@ -80,14 +80,13 @@ NOUS_EXTRA_BODY = {"tags": ["product=epflemma-agent"]}
 # Set at resolve time — True if the auxiliary client points to Nous Portal
 auxiliary_is_nous: bool = False
 
-_AUXILIARY_TASK_FALLBACKS: Dict[str, str] = {
+_AUXILIARY_TASK_FALLBACKS: dict[str, str] = {
     "lean_decompose_helpers": "lean_reasoning",
 }
 
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "gemini-3-flash"
-_NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 # Codex fallback: uses the Responses API (the only endpoint the Codex
 # OAuth token can access) with a fast model for auxiliary tasks.
@@ -121,41 +120,20 @@ from agent.auxiliary_adapters import (  # noqa: E402,F401
     _convert_content_for_responses,
 )
 
-
-def _read_nous_auth() -> Optional[dict]:
-    """Read and validate ~/.gauss/auth.json for an active Nous provider.
-
-    Returns the provider state dict if Nous is active with tokens,
-    otherwise None.
-    """
-    try:
-        auth_path = get_epflemma_home() / "auth.json"
-        if not auth_path.is_file():
-            return None
-        data = json.loads(auth_path.read_text())
-        if data.get("active_provider") != "nous":
-            return None
-        provider = data.get("providers", {}).get("nous", {})
-        # Must have at least an access_token or agent_key
-        if not provider.get("agent_key") and not provider.get("access_token"):
-            return None
-        return provider
-    except Exception as exc:
-        logger.debug("Could not read Nous auth: %s", exc)
-        return None
+# Nous Portal auth/endpoint helpers live in agent/auxiliary_nous.py. They read
+# ~/.gauss/auth.json and resolve the Nous API key/base URL with no auxiliary
+# routing state, so they were extracted as a closed cluster (with the default
+# base-URL constant) and re-exported here — every importer and test keeps
+# resolving auxiliary_client.<name>.
+from agent.auxiliary_nous import (  # noqa: E402,F401
+    _NOUS_DEFAULT_BASE_URL,
+    _nous_api_key,
+    _nous_base_url,
+    _read_nous_auth,
+)
 
 
-def _nous_api_key(provider: dict) -> str:
-    """Extract the best API key from a Nous provider state dict."""
-    return provider.get("agent_key") or provider.get("access_token", "")
-
-
-def _nous_base_url() -> str:
-    """Resolve the Nous inference base URL from env or default."""
-    return os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
-
-
-def _read_codex_access_token() -> Optional[str]:
+def _read_codex_access_token() -> str | None:
     """Read a valid Codex OAuth access token from EPFLemma auth state.
 
     EPFLemma's auth.json is authoritative when present. Legacy ``~/.codex``
@@ -177,7 +155,7 @@ def _load_runtime_config() -> dict[str, Any]:
         return {}
 
 
-def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
+def _resolve_api_key_provider() -> tuple[OpenAI | None, str | None]:
     """Try each API-key provider in PROVIDER_REGISTRY order.
 
     Returns (client, model) for the first provider whose env var is set,
@@ -236,7 +214,7 @@ def _get_auxiliary_provider(task: str = "") -> str:
     return "auto"
 
 
-def _get_auxiliary_env_override(task: str, suffix: str) -> Optional[str]:
+def _get_auxiliary_env_override(task: str, suffix: str) -> str | None:
     """Read an auxiliary env override from AUXILIARY_* or CONTEXT_* prefixes."""
     if not task:
         return None
@@ -247,7 +225,7 @@ def _get_auxiliary_env_override(task: str, suffix: str) -> Optional[str]:
     return None
 
 
-def _auxiliary_fallback_task(task: str = None) -> Optional[str]:
+def _auxiliary_fallback_task(task: str = None) -> str | None:
     return _AUXILIARY_TASK_FALLBACKS.get(str(task or "").strip())
 
 
@@ -259,14 +237,14 @@ def _auxiliary_task_config(config: dict[str, Any], task: str = None) -> dict[str
     return task_config if isinstance(task_config, dict) else {}
 
 
-def _task_config_text(config: dict[str, Any], key: str) -> Optional[str]:
+def _task_config_text(config: dict[str, Any], key: str) -> str | None:
     value = config.get(key)
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
 
 
-def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_openrouter() -> tuple[OpenAI | None, str | None]:
     or_key = os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
@@ -275,7 +253,7 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
                    default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
 
-def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_nous() -> tuple[OpenAI | None, str | None]:
     nous = _read_nous_auth()
     if not nous:
         return None, None
@@ -308,11 +286,11 @@ def _read_main_model() -> str:
             if isinstance(default, str) and default.strip():
                 return default.strip()
     except Exception:
-        pass
+        logger.debug("Could not read main model from runtime config", exc_info=True)
     return ""
 
 
-def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
+def _resolve_custom_runtime() -> tuple[str | None, str | None]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
     This covers both env-driven OPENAI_BASE_URL setups and config-saved custom
@@ -346,7 +324,7 @@ def _current_custom_base_url() -> str:
     return custom_base or ""
 
 
-def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_custom_endpoint() -> tuple[OpenAI | None, str | None]:
     custom_base, custom_key = _resolve_custom_runtime()
     if not custom_base or not custom_key:
         return None, None
@@ -355,7 +333,7 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
 
-def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
+def _try_codex() -> tuple[Any | None, str | None]:
     codex_token = _read_codex_access_token()
     if not codex_token:
         return None, None
@@ -364,7 +342,7 @@ def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
     return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
 
-def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
+def _try_anthropic() -> tuple[Any | None, str | None]:
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
     except ImportError:
@@ -380,7 +358,7 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     return AnthropicAuxiliaryClient(real_client, model, token, _ANTHROPIC_DEFAULT_BASE_URL), model
 
 
-def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[str]]:
+def _resolve_forced_provider(forced: str) -> tuple[OpenAI | None, str | None]:
     """Resolve a specific forced provider.  Returns (None, None) if creds missing."""
     if forced == "openrouter":
         client, model = _try_openrouter()
@@ -414,7 +392,7 @@ def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[st
     return None, None
 
 
-def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
+def _resolve_auto() -> tuple[OpenAI | None, str | None]:
     """Full auto-detection chain: OpenRouter → Nous → custom → Codex → API-key → None."""
     for try_fn in (_try_openrouter, _try_nous, _try_custom_endpoint,
                    _try_codex, _resolve_api_key_provider):
@@ -464,7 +442,7 @@ def resolve_provider_client(
     raw_codex: bool = False,
     explicit_base_url: str = None,
     explicit_api_key: str = None,
-) -> Tuple[Optional[Any], Optional[str]]:
+) -> tuple[Any | None, str | None]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
 
@@ -659,7 +637,7 @@ def resolve_provider_client(
 
 # ── Public API ──────────────────────────────────────────────────────────────
 
-def get_text_auxiliary_client(task: str = "") -> Tuple[Optional[OpenAI], Optional[str]]:
+def get_text_auxiliary_client(task: str = "") -> tuple[OpenAI | None, str | None]:
     """Return (client, default_model_slug) for text-only auxiliary tasks.
 
     Args:
@@ -704,7 +682,7 @@ _VISION_AUTO_PROVIDER_ORDER = (
 )
 
 
-def _normalize_vision_provider(provider: Optional[str]) -> str:
+def _normalize_vision_provider(provider: str | None) -> str:
     provider = (provider or "auto").strip().lower()
     if provider == "codex":
         return "openai-codex"
@@ -713,7 +691,7 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
     return provider
 
 
-def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:
+def _resolve_strict_vision_backend(provider: str) -> tuple[Any | None, str | None]:
     provider = _normalize_vision_provider(provider)
     if provider == "openrouter":
         return _try_openrouter()
@@ -732,7 +710,7 @@ def _strict_vision_backend_available(provider: str) -> bool:
     return _resolve_strict_vision_backend(provider)[0] is not None
 
 
-def _preferred_main_vision_provider() -> Optional[str]:
+def _preferred_main_vision_provider() -> str | None:
     """Return the selected main provider when it is also a supported vision backend."""
     try:
         config = _load_runtime_config()
@@ -746,7 +724,7 @@ def _preferred_main_vision_provider() -> Optional[str]:
     return None
 
 
-def get_available_vision_backends() -> List[str]:
+def get_available_vision_backends() -> list[str]:
     """Return the currently available vision backends in auto-selection order.
 
     This is the single source of truth for setup, tool gating, and runtime
@@ -763,13 +741,13 @@ def get_available_vision_backends() -> List[str]:
 
 
 def resolve_vision_provider_client(
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
+    provider: str | None = None,
+    model: str | None = None,
     *,
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
     async_mode: bool = False,
-) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
+) -> tuple[str | None, Any | None, str | None]:
     """Resolve the client actually used for vision tasks.
 
     Direct endpoint overrides take precedence over provider selection. Explicit
@@ -782,7 +760,7 @@ def resolve_vision_provider_client(
     )
     requested = _normalize_vision_provider(requested)
 
-    def _finalize(resolved_provider: str, sync_client: Any, default_model: Optional[str]):
+    def _finalize(resolved_provider: str, sync_client: Any, default_model: str | None):
         if sync_client is None:
             return resolved_provider, None, None
         final_model = resolved_model or default_model
@@ -821,7 +799,7 @@ def resolve_vision_provider_client(
     return requested, client, final_model
 
 
-def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
+def get_vision_auxiliary_client() -> tuple[OpenAI | None, str | None]:
     """Return (client, default_model_slug) for vision/multimodal auxiliary tasks."""
     _, client, final_model = resolve_vision_provider_client(async_mode=False)
     return client, final_model
@@ -873,7 +851,7 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 # constructing clients and calling .chat.completions.create().
 
 # Client cache: (provider, async_mode, base_url, api_key) -> (client, default_model)
-_client_cache: Dict[tuple, tuple] = {}
+_client_cache: dict[tuple, tuple] = {}
 
 
 def _get_cached_client(
@@ -882,7 +860,7 @@ def _get_cached_client(
     async_mode: bool = False,
     base_url: str = None,
     api_key: str = None,
-) -> Tuple[Optional[Any], Optional[str]]:
+) -> tuple[Any | None, str | None]:
     """Get or create a cached client for the given provider.
 
     Only explicit endpoint credentials are cached. Env/config-driven provider
@@ -912,7 +890,7 @@ def _resolve_task_provider_model(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
-) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+) -> tuple[str, str | None, str | None, str | None]:
     """Determine provider + model for a call.
 
     Priority:
@@ -1033,16 +1011,16 @@ def _build_call_kwargs(
     provider: str,
     model: str,
     messages: list,
-    temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None,
-    tools: Optional[list] = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    tools: list | None = None,
     timeout: float = 30.0,
-    extra_body: Optional[dict] = None,
-    base_url: Optional[str] = None,
-    reasoning_effort: Optional[str] = None,
+    extra_body: dict | None = None,
+    base_url: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "timeout": timeout,
@@ -1083,23 +1061,17 @@ def _build_call_kwargs(
     return kwargs
 
 
-def _is_rcp_base_url(base_url: str) -> bool:
-    normalized = str(base_url or "").lower()
-    return "inference.rcp.epfl.ch" in normalized or "inference-rcp.epfl.ch" in normalized
+# RCP (EPFL inference cluster) base-URL/reasoning-effort helpers live in
+# agent/auxiliary_rcp.py. They are pure stdlib predicates with no auxiliary
+# routing state, so they were extracted as a closed cluster and re-exported here
+# — every importer and test keeps resolving auxiliary_client.<name>.
+from agent.auxiliary_rcp import (  # noqa: E402,F401
+    _is_rcp_base_url,
+    _map_rcp_reasoning_effort,
+)
 
 
-def _map_rcp_reasoning_effort(effort: str) -> str:
-    normalized = str(effort or "medium").strip().lower()
-    if normalized in {"low", "medium", "high"}:
-        return normalized
-    if normalized == "minimal":
-        return "low"
-    if normalized in {"xhigh", "auto"}:
-        return "high" if normalized == "xhigh" else "medium"
-    return "medium"
-
-
-def _resolve_task_reasoning_effort(task: str = None) -> Optional[str]:
+def _resolve_task_reasoning_effort(task: str = None) -> str | None:
     if not task:
         return None
     env_value = _get_auxiliary_env_override(task, "REASONING_EFFORT")

@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 
 def _native_backend_status_indicates_failure(payload: Mapping[str, Any]) -> bool:

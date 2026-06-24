@@ -38,10 +38,11 @@ class only owns the *bookkeeping* and the invariant checks.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Iterable, Mapping, Sequence
+from typing import Any, ClassVar
 
 # ---------------------------------------------------------------------------
 # Pure value types, tunables, and mapping/classification helpers now live in
@@ -224,7 +225,7 @@ class TheoremQueueManager:
         active_file: str = "",
         slice_text: str = "",
         prepare: PrepareState | None = None,
-    ) -> "TheoremQueueManager":
+    ) -> TheoremQueueManager:
         """Return a view copy with `item` assigned, without mutating self."""
         copy = TheoremQueueManager(
             warning_retry_limit=self._warning_retry_limit,
@@ -482,7 +483,7 @@ class TheoremQueueManager:
     def classify(self, check: ManagerCheck) -> Classification:
         return classify_check(check)
 
-    def decide(self, check: ManagerCheck) -> "Decision":
+    def decide(self, check: ManagerCheck) -> Decision:
         """High-level branch policy for one manager gate.
 
         This is where the spec's step 7 ("Branch on the classification")
@@ -677,7 +678,7 @@ class TheoremQueueManager:
     # is in place we can migrate to a typed JSON schema.
 
     @classmethod
-    def from_autonomy_state(cls, autonomy_state: Mapping[str, Any]) -> "TheoremQueueManager":
+    def from_autonomy_state(cls, autonomy_state: Mapping[str, Any]) -> TheoremQueueManager:
         mgr = cls()
 
         assignment = dict(autonomy_state.get("current_queue_assignment") or {})

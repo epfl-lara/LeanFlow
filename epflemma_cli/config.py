@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import stat
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 EPFLEMMA_HOME_ENV = "EPFLEMMA_HOME"
 LEGACY_BRANDED_HOME_ENV = "OPENGAUSS_HOME"
@@ -494,7 +498,11 @@ def _import_legacy_home(home: Path) -> None:
                 transformed = _transform_legacy_config(payload if isinstance(payload, Mapping) else {})
                 save_config(transformed)
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to migrate legacy config %s to new format; skipping import",
+                    legacy_config,
+                    exc_info=True,
+                )
 
         legacy_env = legacy_home / ".env"
         if legacy_env.exists() and not get_env_path().exists():

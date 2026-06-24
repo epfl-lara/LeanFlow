@@ -29,8 +29,9 @@ import io
 import json
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 SEARCH_PROVIDER_LABELS = {
     "local_search": "mcp-local-search",

@@ -69,8 +69,8 @@ class HunkLine:
 @dataclass
 class Hunk:
     """A group of changes within a file."""
-    context_hint: Optional[str] = None
-    lines: List[HunkLine] = field(default_factory=list)
+    context_hint: str | None = None
+    lines: list[HunkLine] = field(default_factory=list)
 
 
 @dataclass
@@ -78,12 +78,12 @@ class PatchOperation:
     """A single operation in a V4A patch."""
     operation: OperationType
     file_path: str
-    new_path: Optional[str] = None  # For move operations
-    hunks: List[Hunk] = field(default_factory=list)
-    content: Optional[str] = None  # For add file operations
+    new_path: str | None = None  # For move operations
+    hunks: list[Hunk] = field(default_factory=list)
+    content: str | None = None  # For add file operations
 
 
-def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[str]]:
+def parse_v4a_patch(patch_content: str) -> tuple[list[PatchOperation], str | None]:
     """
     Parse a V4A format patch.
     
@@ -96,7 +96,7 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
         - If failed: ([], error_description)
     """
     lines = patch_content.split('\n')
-    operations: List[PatchOperation] = []
+    operations: list[PatchOperation] = []
     
     # Find patch boundaries
     start_idx = None
@@ -118,8 +118,8 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
     
     # Parse operations between boundaries
     i = start_idx + 1
-    current_op: Optional[PatchOperation] = None
-    current_hunk: Optional[Hunk] = None
+    current_op: PatchOperation | None = None
+    current_hunk: Hunk | None = None
     
     while i < end_idx:
         line = lines[i]
@@ -224,7 +224,7 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
     return operations, None
 
 
-def apply_v4a_operations(operations: List[PatchOperation], 
+def apply_v4a_operations(operations: list[PatchOperation], 
                           file_ops: Any) -> 'PatchResult':
     """
     Apply V4A patch operations using a file operations interface.
@@ -312,7 +312,7 @@ def apply_v4a_operations(operations: List[PatchOperation],
     )
 
 
-def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
+def _apply_add(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
     """Apply an add file operation."""
     # Extract content from hunks (all + lines)
     content_lines = []
@@ -333,7 +333,7 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     return True, diff
 
 
-def _read_raw_for_guard(file_ops: Any, path: str) -> Optional[str]:
+def _read_raw_for_guard(file_ops: Any, path: str) -> str | None:
     """Read raw file contents for guards without line-number decoration."""
     if hasattr(file_ops, "_exec") and hasattr(file_ops, "_escape_shell_arg"):
         result = file_ops._exec(f"cat {file_ops._escape_shell_arg(path)} 2>/dev/null")
@@ -351,7 +351,7 @@ def _read_raw_for_guard(file_ops: Any, path: str) -> Optional[str]:
     return "\n".join(lines)
 
 
-def _lean_statement_delete_error(file_ops: Any, path: str, *, action: str) -> Optional[str]:
+def _lean_statement_delete_error(file_ops: Any, path: str, *, action: str) -> str | None:
     """Return a guard error for deleting or moving Lean statements."""
     from epflemma_cli.lean_statement_guard import (
         should_guard_lean_statement_path,
@@ -379,7 +379,7 @@ def _lean_statement_delete_error(file_ops: Any, path: str, *, action: str) -> Op
     return result.error
 
 
-def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
+def _apply_delete(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
     """Apply a delete file operation."""
     # Read file first for diff
     read_result = file_ops.read_file(op.file_path)
@@ -402,7 +402,7 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     return True, diff
 
 
-def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
+def _apply_move(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
     """Apply a move file operation."""
     guard_error = _lean_statement_delete_error(file_ops, op.file_path, action="move")
     if guard_error:
@@ -420,7 +420,7 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     return True, diff
 
 
-def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
+def _apply_update(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
     """Apply an update file operation."""
     # Read current content
     read_result = file_ops.read_file(op.file_path, limit=10000)

@@ -27,7 +27,7 @@ from aiohttp.test_utils import TestServer
 
 # -- Sample entity data -------------------------------------------------------
 
-ENTITY_STATES: List[Dict[str, Any]] = [
+ENTITY_STATES: list[dict[str, Any]] = [
     {
         "entity_id": "light.bedroom",
         "state": "on",
@@ -86,11 +86,11 @@ class FakeHAServer:
         self.token = token
 
         # Observability -- tests inspect these after exercising the adapter.
-        self.received_service_calls: List[Dict[str, Any]] = []
-        self.received_notifications: List[Dict[str, Any]] = []
+        self.received_service_calls: list[dict[str, Any]] = []
+        self.received_notifications: list[dict[str, Any]] = []
 
         # Control -- tests push events, server forwards them over WS.
-        self._event_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+        self._event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
         # Flag to simulate auth rejection.
         self.reject_auth = False
@@ -99,9 +99,9 @@ class FakeHAServer:
         self.force_500 = False
 
         # Internal bookkeeping.
-        self._app: Optional[web.Application] = None
-        self._server: Optional[TestServer] = None
-        self._ws_connections: List[web.WebSocketResponse] = []
+        self._app: web.Application | None = None
+        self._server: TestServer | None = None
+        self._ws_connections: list[web.WebSocketResponse] = []
 
     # -- Public helpers --------------------------------------------------------
 
@@ -113,7 +113,7 @@ class FakeHAServer:
         port = self._server.port
         return f"http://{host}:{port}"
 
-    async def push_event(self, event_data: Dict[str, Any]) -> None:
+    async def push_event(self, event_data: dict[str, Any]) -> None:
         """Enqueue a state_changed event for delivery over WebSocket."""
         await self._event_queue.put(event_data)
 
@@ -161,7 +161,7 @@ class FakeHAServer:
 
     # -- Auth helper -----------------------------------------------------------
 
-    def _check_rest_auth(self, request: web.Request) -> Optional[web.Response]:
+    def _check_rest_auth(self, request: web.Request) -> web.Response | None:
         """Return a 401 response if the Bearer token is wrong, else None."""
         auth = request.headers.get("Authorization", "")
         if auth != f"Bearer {self.token}":
@@ -223,7 +223,7 @@ class FakeHAServer:
                         "type": "event",
                         "event": event_data,
                     })
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
         except (ConnectionResetError, asyncio.CancelledError):
             pass

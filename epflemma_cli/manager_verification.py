@@ -18,8 +18,9 @@ re-export.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 from epflemma_cli.config import load_config
 from epflemma_cli.native_config import _read_int_env, _read_text_env

@@ -29,8 +29,9 @@ Usage:
 """
 
 import re
+from collections.abc import Callable
 from difflib import SequenceMatcher
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 UNICODE_MAP = {
     "\u201c": '"', "\u201d": '"',  # smart double quotes
@@ -47,7 +48,7 @@ def _unicode_normalize(text: str) -> str:
 
 
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
-                            replace_all: bool = False) -> Tuple[str, int, Optional[str]]:
+                            replace_all: bool = False) -> tuple[str, int, str | None]:
     """
     Find and replace text using a chain of increasingly fuzzy matching strategies.
     
@@ -69,7 +70,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         return content, 0, "old_string and new_string are identical"
     
     # Try each matching strategy in order
-    strategies: List[Tuple[str, Callable]] = [
+    strategies: list[tuple[str, Callable]] = [
         ("exact", _strategy_exact),
         ("line_trimmed", _strategy_line_trimmed),
         ("whitespace_normalized", _strategy_whitespace_normalized),
@@ -99,7 +100,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     return content, 0, "Could not find a match for old_string in the file"
 
 
-def _apply_replacements(content: str, matches: List[Tuple[int, int]], new_string: str) -> str:
+def _apply_replacements(content: str, matches: list[tuple[int, int]], new_string: str) -> str:
     """
     Apply replacements at the given positions.
     
@@ -126,7 +127,7 @@ def _apply_replacements(content: str, matches: List[Tuple[int, int]], new_string
 # Matching Strategies
 # =============================================================================
 
-def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
+def _strategy_exact(content: str, pattern: str) -> list[tuple[int, int]]:
     """Strategy 1: Exact string match."""
     matches = []
     start = 0
@@ -139,7 +140,7 @@ def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
     return matches
 
 
-def _strategy_line_trimmed(content: str, pattern: str) -> List[Tuple[int, int]]:
+def _strategy_line_trimmed(content: str, pattern: str) -> list[tuple[int, int]]:
     """
     Strategy 2: Match with line-by-line whitespace trimming.
     
@@ -159,7 +160,7 @@ def _strategy_line_trimmed(content: str, pattern: str) -> List[Tuple[int, int]]:
     )
 
 
-def _strategy_whitespace_normalized(content: str, pattern: str) -> List[Tuple[int, int]]:
+def _strategy_whitespace_normalized(content: str, pattern: str) -> list[tuple[int, int]]:
     """
     Strategy 3: Collapse multiple whitespace to single space.
     """
@@ -180,7 +181,7 @@ def _strategy_whitespace_normalized(content: str, pattern: str) -> List[Tuple[in
     return _map_normalized_positions(content, content_normalized, matches_in_normalized)
 
 
-def _strategy_indentation_flexible(content: str, pattern: str) -> List[Tuple[int, int]]:
+def _strategy_indentation_flexible(content: str, pattern: str) -> list[tuple[int, int]]:
     """
     Strategy 4: Ignore indentation differences entirely.
     
@@ -201,7 +202,7 @@ def _strategy_indentation_flexible(content: str, pattern: str) -> List[Tuple[int
     )
 
 
-def _strategy_escape_normalized(content: str, pattern: str) -> List[Tuple[int, int]]:
+def _strategy_escape_normalized(content: str, pattern: str) -> list[tuple[int, int]]:
     """
     Strategy 5: Convert escape sequences to actual characters.
     
@@ -220,7 +221,7 @@ def _strategy_escape_normalized(content: str, pattern: str) -> List[Tuple[int, i
     return _strategy_exact(content, pattern_unescaped)
 
 
-def _strategy_trimmed_boundary(content: str, pattern: str) -> List[Tuple[int, int]]:
+def _strategy_trimmed_boundary(content: str, pattern: str) -> list[tuple[int, int]]:
     """
     Strategy 6: Trim whitespace from first and last lines only.
     
@@ -263,7 +264,7 @@ def _strategy_trimmed_boundary(content: str, pattern: str) -> List[Tuple[int, in
     return matches
 
 
-def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
+def _strategy_block_anchor(content: str, pattern: str) -> list[tuple[int, int]]:
     """
     Strategy 7: Match by anchoring on first and last lines.
     Adjusted with permissive thresholds and unicode normalization.
@@ -316,7 +317,7 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
     return matches
 
 
-def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]:
+def _strategy_context_aware(content: str, pattern: str) -> list[tuple[int, int]]:
     """
     Strategy 8: Line-by-line similarity with 50% threshold.
     
@@ -356,9 +357,9 @@ def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]
 # Helper Functions
 # =============================================================================
 
-def _find_normalized_matches(content: str, content_lines: List[str],
-                              content_normalized_lines: List[str],
-                              pattern: str, pattern_normalized: str) -> List[Tuple[int, int]]:
+def _find_normalized_matches(content: str, content_lines: list[str],
+                              content_normalized_lines: list[str],
+                              pattern: str, pattern_normalized: str) -> list[tuple[int, int]]:
     """
     Find matches in normalized content and map back to original positions.
     
@@ -396,7 +397,7 @@ def _find_normalized_matches(content: str, content_lines: List[str],
 
 
 def _map_normalized_positions(original: str, normalized: str,
-                               normalized_matches: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+                               normalized_matches: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """
     Map positions from normalized string back to original.
     

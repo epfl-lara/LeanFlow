@@ -79,7 +79,7 @@ class ContextCompressor:
 
         self.summary_model = summary_model_override or ""
 
-    def update_from_response(self, usage: Dict[str, Any]):
+    def update_from_response(self, usage: dict[str, Any]):
         """Update tracked token usage from API response."""
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
@@ -90,12 +90,12 @@ class ContextCompressor:
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         return tokens >= self.threshold_tokens
 
-    def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
+    def should_compress_preflight(self, messages: list[dict[str, Any]]) -> bool:
         """Quick pre-flight check using rough estimate (before API call)."""
         rough_estimate = estimate_messages_tokens_rough(messages)
         return rough_estimate >= self.threshold_tokens
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """Get current compression status for display/logging."""
         return {
             "last_prompt_tokens": self.last_prompt_tokens,
@@ -107,7 +107,7 @@ class ContextCompressor:
             "prune_tool_output": self.prune_tool_output,
         }
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> Optional[str]:
+    def _generate_summary(self, turns_to_summarize: list[dict[str, Any]]) -> str | None:
         """Generate a concise summary of conversation turns.
 
         Tries the auxiliary model first, then falls back to the user's main
@@ -203,7 +203,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
             return tc.get("id", "")
         return getattr(tc, "id", "") or ""
 
-    def _sanitize_tool_pairs(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _sanitize_tool_pairs(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs after compression.
 
         Two failure modes:
@@ -245,7 +245,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
         # 2. Add stub results for assistant tool_calls whose results were dropped
         missing_results = surviving_call_ids - result_call_ids
         if missing_results:
-            patched: List[Dict[str, Any]] = []
+            patched: list[dict[str, Any]] = []
             for msg in messages:
                 patched.append(msg)
                 if msg.get("role") == "assistant":
@@ -263,7 +263,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
 
         return messages
 
-    def _prune_stale_tool_outputs(self, messages: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], int]:
+    def _prune_stale_tool_outputs(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
         """Trim old tool-result payloads while preserving recent turns.
 
         This is a lightweight version of Kilo/OpenCode-style stale output pruning:
@@ -274,7 +274,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
         if not self.prune_tool_output:
             return [dict(message) for message in messages], 0
 
-        pruned_messages: List[Dict[str, Any]] = []
+        pruned_messages: list[dict[str, Any]] = []
         recent_user_turns = 0
         pruned_count = 0
 
@@ -297,7 +297,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
         pruned_messages.reverse()
         return pruned_messages, pruned_count
 
-    def _align_boundary_forward(self, messages: List[Dict[str, Any]], idx: int) -> int:
+    def _align_boundary_forward(self, messages: list[dict[str, Any]], idx: int) -> int:
         """Push a compress-start boundary forward past any orphan tool results.
 
         If ``messages[idx]`` is a tool result, slide forward until we hit a
@@ -307,7 +307,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
             idx += 1
         return idx
 
-    def _align_boundary_backward(self, messages: List[Dict[str, Any]], idx: int) -> int:
+    def _align_boundary_backward(self, messages: list[dict[str, Any]], idx: int) -> int:
         """Pull a compress-end boundary backward to avoid splitting a
         tool_call / result group.
 
@@ -325,7 +325,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
             idx -= 1
         return idx
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
+    def compress(self, messages: list[dict[str, Any]], current_tokens: int = None) -> list[dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Keeps first N + last N turns, summarizes everything in between.

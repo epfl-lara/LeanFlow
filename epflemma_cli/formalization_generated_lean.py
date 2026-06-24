@@ -20,8 +20,9 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from epflemma_cli.formalization_document_runner import (
     _blueprint_block_missing,

@@ -101,7 +101,7 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
-def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
+def read_claude_code_credentials() -> dict[str, Any] | None:
     """Read refreshable Claude Code OAuth credentials from ~/.claude/.credentials.json.
 
     This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
@@ -125,13 +125,13 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
                         "expiresAt": oauth_data.get("expiresAt", 0),
                         "source": "claude_code_credentials_file",
                     }
-        except (json.JSONDecodeError, OSError, IOError) as e:
+        except (json.JSONDecodeError, OSError) as e:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
 
     return None
 
 
-def read_claude_managed_key() -> Optional[str]:
+def read_claude_managed_key() -> str | None:
     """Read Claude's native managed key from ~/.claude.json for diagnostics only."""
     claude_json = Path.home() / ".claude.json"
     if claude_json.exists():
@@ -140,12 +140,12 @@ def read_claude_managed_key() -> Optional[str]:
             primary_key = data.get("primaryApiKey", "")
             if isinstance(primary_key, str) and primary_key.strip():
                 return primary_key.strip()
-        except (json.JSONDecodeError, OSError, IOError) as e:
+        except (json.JSONDecodeError, OSError) as e:
             logger.debug("Failed to read ~/.claude.json: %s", e)
     return None
 
 
-def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
+def is_claude_code_token_valid(creds: dict[str, Any]) -> bool:
     """Check if Claude Code credentials have a non-expired access token."""
     import time
 
@@ -160,7 +160,7 @@ def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
     return now_ms < (expires_at - 60_000)
 
 
-def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
+def _refresh_oauth_token(creds: dict[str, Any]) -> str | None:
     """Attempt to refresh an expired Claude Code OAuth token.
 
     Uses the same token endpoint and client_id as Claude Code / OpenCode.
@@ -232,11 +232,11 @@ def _write_claude_code_credentials(access_token: str, refresh_token: str, expire
         cred_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
         # Restrict permissions (credentials file)
         cred_path.chmod(0o600)
-    except (OSError, IOError) as e:
+    except OSError as e:
         logger.debug("Failed to write refreshed credentials: %s", e)
 
 
-def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] = None) -> Optional[str]:
+def _resolve_claude_code_token_from_credentials(creds: dict[str, Any] | None = None) -> str | None:
     """Resolve a token from Claude Code credential files, refreshing if needed."""
     creds = creds or read_claude_code_credentials()
     if creds and is_claude_code_token_valid(creds):
@@ -251,7 +251,7 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
     return None
 
 
-def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[str, Any]]) -> Optional[str]:
+def _prefer_refreshable_claude_code_token(env_token: str, creds: dict[str, Any] | None) -> str | None:
     """Prefer Claude Code creds when a persisted env OAuth token would shadow refresh.
 
     Gauss historically persisted setup tokens into ANTHROPIC_TOKEN. That makes
@@ -273,7 +273,7 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
-def get_anthropic_token_source(token: Optional[str] = None) -> str:
+def get_anthropic_token_source(token: str | None = None) -> str:
     """Best-effort source classification for an Anthropic credential token."""
     token = (token or "").strip()
     if not token:
@@ -302,7 +302,7 @@ def get_anthropic_token_source(token: Optional[str] = None) -> str:
     return "unknown"
 
 
-def resolve_anthropic_token() -> Optional[str]:
+def resolve_anthropic_token() -> str | None:
     """Resolve an Anthropic token from all available sources.
 
     Priority:
@@ -346,7 +346,7 @@ def resolve_anthropic_token() -> Optional[str]:
     return None
 
 
-def run_oauth_setup_token() -> Optional[str]:
+def run_oauth_setup_token() -> str | None:
     """Run 'claude setup-token' interactively and return the resulting token.
 
     Checks multiple sources after the subprocess completes:
@@ -420,7 +420,7 @@ def _sanitize_tool_id(tool_id: str) -> str:
     return sanitized or "tool_0"
 
 
-def _convert_openai_image_part_to_anthropic(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _convert_openai_image_part_to_anthropic(part: dict[str, Any]) -> dict[str, Any] | None:
     """Convert an OpenAI-style image block to Anthropic's image source format."""
     image_data = part.get("image_url", {})
     url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data)
@@ -453,7 +453,7 @@ def _convert_openai_image_part_to_anthropic(part: Dict[str, Any]) -> Optional[Di
     return None
 
 
-def _convert_user_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
+def _convert_user_content_part_to_anthropic(part: Any) -> dict[str, Any] | None:
     if isinstance(part, dict):
         ptype = part.get("type")
         if ptype == "text":
@@ -482,7 +482,7 @@ def _convert_user_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any
     return None
 
 
-def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
+def convert_tools_to_anthropic(tools: list[dict]) -> list[dict]:
     """Convert OpenAI tool definitions to Anthropic format."""
     if not tools:
         return []
@@ -497,7 +497,7 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     return result
 
 
-def _image_source_from_openai_url(url: str) -> Dict[str, str]:
+def _image_source_from_openai_url(url: str) -> dict[str, str]:
     """Convert an OpenAI-style image URL/data URL into Anthropic image source."""
     url = str(url or "").strip()
     if not url:
@@ -519,7 +519,7 @@ def _image_source_from_openai_url(url: str) -> Dict[str, str]:
     return {"type": "url", "url": url}
 
 
-def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
+def _convert_content_part_to_anthropic(part: Any) -> dict[str, Any] | None:
     """Convert a single OpenAI-style content part to Anthropic format."""
     if part is None:
         return None
@@ -531,7 +531,7 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
     ptype = part.get("type")
 
     if ptype == "input_text":
-        block: Dict[str, Any] = {"type": "text", "text": part.get("text", "")}
+        block: dict[str, Any] = {"type": "text", "text": part.get("text", "")}
     elif ptype in {"image_url", "input_image"}:
         image_value = part.get("image_url", {})
         url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
@@ -558,8 +558,8 @@ def _convert_content_to_anthropic(content: Any) -> Any:
 
 
 def convert_messages_to_anthropic(
-    messages: List[Dict],
-) -> Tuple[Optional[Any], List[Dict]]:
+    messages: list[dict],
+) -> tuple[Any | None, list[dict]]:
     """Convert OpenAI-format messages to Anthropic format.
 
     Returns (system_prompt, anthropic_messages).
@@ -709,12 +709,12 @@ def convert_messages_to_anthropic(
 
 def build_anthropic_kwargs(
     model: str,
-    messages: List[Dict],
-    tools: Optional[List[Dict]],
-    max_tokens: Optional[int],
-    reasoning_config: Optional[Dict[str, Any]],
-    tool_choice: Optional[str] = None,
-) -> Dict[str, Any]:
+    messages: list[dict],
+    tools: list[dict] | None,
+    max_tokens: int | None,
+    reasoning_config: dict[str, Any] | None,
+    tool_choice: str | None = None,
+) -> dict[str, Any]:
     """Build kwargs for anthropic.messages.create()."""
     system, anthropic_messages = convert_messages_to_anthropic(messages)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
@@ -722,7 +722,7 @@ def build_anthropic_kwargs(
     model = normalize_model_name(model)
     effective_max_tokens = max_tokens or 16384
 
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "model": model,
         "messages": anthropic_messages,
         "max_tokens": effective_max_tokens,
@@ -768,7 +768,7 @@ def build_anthropic_kwargs(
 
 def normalize_anthropic_response(
     response,
-) -> Tuple[SimpleNamespace, str]:
+) -> tuple[SimpleNamespace, str]:
     """Normalize Anthropic response to match the shape expected by AIAgent.
 
     Returns (assistant_message, finish_reason) where assistant_message has

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,8 @@ from epflemma_cli.expert_help import (
     run_command_expert_help,
 )
 from epflemma_cli.workflow_state import append_workflow_activity
+
+logger = logging.getLogger(__name__)
 
 BLUEPRINT_VERIFICATION_TASK = "blueprint_verification"
 AUTOFORMALIZER_VERIFICATION_TASK = "autoformalizer_verification"
@@ -86,7 +89,7 @@ def _record_verification_activity(event_type: str, message: str, **details: Any)
     try:
         append_workflow_activity(event_type, message, **details)
     except Exception:
-        pass
+        logger.debug("Failed to append verification telemetry activity", exc_info=True)
 
 
 def run_command_verification_review(

@@ -48,16 +48,16 @@ class PromptManager:
 
     def __init__(self, agent: Any) -> None:
         self._agent = agent
-        self._cached: Optional[str] = None
+        self._cached: str | None = None
 
     # -- cache --------------------------------------------------------------
 
     @property
-    def cached(self) -> Optional[str]:
+    def cached(self) -> str | None:
         return self._cached
 
     @cached.setter
-    def cached(self, value: Optional[str]) -> None:
+    def cached(self, value: str | None) -> None:
         self._cached = value
 
     def invalidate(self) -> None:
@@ -74,7 +74,7 @@ class PromptManager:
 
     # -- build --------------------------------------------------------------
 
-    def build_system_prompt(self, system_message: Optional[str] = None) -> str:
+    def build_system_prompt(self, system_message: str | None = None) -> str:
         """
         Assemble the full system prompt from all layers.
 
@@ -161,8 +161,8 @@ class PromptManager:
 
     def resolve_active_system_prompt(
         self,
-        system_message: Optional[str] = None,
-        conversation_history: Optional[List[dict]] = None,
+        system_message: str | None = None,
+        conversation_history: list[dict] | None = None,
     ) -> str:
         """Return the active system prompt, building + persisting it if needed.
 

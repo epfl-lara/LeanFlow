@@ -10,8 +10,9 @@ import shutil
 import subprocess
 import sys
 import uuid
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from epflemma_cli.config import get_epflemma_home, load_config
 from epflemma_cli.project import EPFLemmaProject, discover_epflemma_project

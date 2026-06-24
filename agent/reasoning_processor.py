@@ -71,7 +71,7 @@ class ReasoningProcessor:
         return re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
 
     @staticmethod
-    def extract_reasoning(assistant_message: Any) -> Optional[str]:
+    def extract_reasoning(assistant_message: Any) -> str | None:
         """
         Extract reasoning/thinking content from an assistant message.
 

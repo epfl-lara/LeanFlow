@@ -72,11 +72,11 @@ class ConversationManager:
     names.
     """
 
-    def __init__(self, agent: "AIAgent") -> None:
+    def __init__(self, agent: AIAgent) -> None:
         self._agent = agent
 
     # ── User-message persistence override ───────────────────────────────────
-    def apply_persist_user_message_override(self, messages: List[Dict]) -> None:
+    def apply_persist_user_message_override(self, messages: list[dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
 
         Some call paths need an API-only user-message variant without letting
@@ -96,7 +96,7 @@ class ConversationManager:
                 msg["content"] = override
 
     # ── Persistence orchestration ───────────────────────────────────────────
-    def persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def persist_session(self, messages: list[dict], conversation_history: list[dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
@@ -113,7 +113,7 @@ class ConversationManager:
         agent._save_session_log(messages)
         agent._flush_messages_to_session_db(messages, conversation_history)
 
-    def flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def flush_messages_to_session_db(self, messages: list[dict], conversation_history: list[dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
 
         Uses _last_flushed_db_idx to track which messages have already been
@@ -152,7 +152,7 @@ class ConversationManager:
             logger.debug("Session DB append_message failed: %s", e)
 
     # ── JSON session log ────────────────────────────────────────────────────
-    def save_session_log(self, messages: List[Dict[str, Any]] = None):
+    def save_session_log(self, messages: list[dict[str, Any]] = None):
         """
         Save the full raw session to a JSON file.
 
@@ -235,7 +235,7 @@ class ConversationManager:
 
         return json.dumps(formatted_tools, ensure_ascii=False)
 
-    def convert_to_trajectory_format(self, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
+    def convert_to_trajectory_format(self, messages: list[dict[str, Any]], user_query: str, completed: bool) -> list[dict[str, Any]]:
         """
         Convert internal message format to trajectory format for saving.
 
@@ -399,7 +399,7 @@ class ConversationManager:
 
         return trajectory
 
-    def save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool):
+    def save_trajectory(self, messages: list[dict[str, Any]], user_query: str, completed: bool):
         """
         Save conversation trajectory to JSONL file.
 

@@ -41,7 +41,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import fire
 from openai import OpenAI
@@ -143,70 +143,11 @@ def _cleanup_optional_browser_state(task_id: str) -> None:
     del task_id
 
 
-_issued_session_ids: set[str] = set()
-_issued_session_ids_lock = threading.Lock()
-
-
-def _generate_short_session_id() -> str:
-    for _ in range(100):
-        candidate = f"{random.randint(0, 99999):05d}"
-        with _issued_session_ids_lock:
-            if candidate not in _issued_session_ids:
-                _issued_session_ids.add(candidate)
-                return candidate
-    # Extremely unlikely fallback.
-    return f"{int(time.time() * 1000) % 100000:05d}"
-
-class _SafeWriter:
-    """Transparent stdio wrapper that catches OSError from broken pipes.
-
-    When gauss-agent runs as a systemd service, Docker container, or headless
-    daemon, the stdout/stderr pipe can become unavailable (idle timeout, buffer
-    exhaustion, socket reset). Any print() call then raises
-    ``OSError: [Errno 5] Input/output error``, which can crash agent setup or
-    run_conversation() — especially via double-fault when an except handler
-    also tries to print.
-
-    This wrapper delegates all writes to the underlying stream and silently
-    catches OSError. It is transparent when the wrapped stream is healthy.
-    """
-
-    __slots__ = ("_inner",)
-
-    def __init__(self, inner):
-        object.__setattr__(self, "_inner", inner)
-
-    def write(self, data):
-        try:
-            return self._inner.write(data)
-        except OSError:
-            return len(data) if isinstance(data, str) else 0
-
-    def flush(self):
-        try:
-            self._inner.flush()
-        except OSError:
-            pass
-
-    def fileno(self):
-        return self._inner.fileno()
-
-    def isatty(self):
-        try:
-            return self._inner.isatty()
-        except OSError:
-            return False
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
-
-
-def _install_safe_stdio() -> None:
-    """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
-    for stream_name in ("stdout", "stderr"):
-        stream = getattr(sys, stream_name, None)
-        if stream is not None and not isinstance(stream, _SafeWriter):
-            setattr(sys, stream_name, _SafeWriter(stream))
+from agent.runtime_helpers import (  # noqa: E402,F401
+    _generate_short_session_id,
+    _install_safe_stdio,
+    _SafeWriter,
+)
 
 
 class IterationBudget:
@@ -295,40 +236,6 @@ def _positive_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
-def _emit_workflow_event(event_type: str, message: str, **details: Any) -> None:
-    if not (
-        os.getenv("EPFLEMMA_PROJECT_ROOT")
-        or os.getenv("OPENGAUSS_PROJECT_ROOT")
-        or os.getenv("GAUSS_PROJECT_ROOT")
-    ):
-        return
-    try:
-        from epflemma_cli.workflow_state import append_workflow_activity
-
-        append_workflow_activity(event_type, message, **details)
-    except Exception:
-        logger.debug("Failed to append workflow event %s", event_type, exc_info=True)
-
-
-def _workflow_agent_event_details(agent: Any, **details: Any) -> dict[str, Any]:
-    payload = dict(details)
-    payload.setdefault("agent_session_id", str(getattr(agent, "session_id", "") or ""))
-    payload.setdefault(
-        "parent_agent_session_id",
-        str(getattr(agent, "_parent_session_id", "") or ""),
-    )
-    try:
-        payload.setdefault("delegate_depth", int(getattr(agent, "_delegate_depth", 0) or 0))
-    except Exception:
-        payload.setdefault("delegate_depth", 0)
-    payload.setdefault("model", str(getattr(agent, "model", "") or ""))
-    payload.setdefault("provider", str(getattr(agent, "provider", "") or ""))
-    payload.setdefault("api_mode", str(getattr(agent, "api_mode", "") or ""))
-    payload.setdefault("base_url", str(getattr(agent, "base_url", "") or ""))
-    payload.setdefault("process_id", os.getpid())
-    return payload
-
-
 # Lazy collaborator accessors extracted into agent/collaborator_resolvers.py,
 # re-exported here so call sites (and tests) continue to resolve
 # ``run_agent._resolve_X``. See that module for the rationale behind the
@@ -343,6 +250,10 @@ from agent.collaborator_resolvers import (  # noqa: E402
     _resolve_prompt_manager,
     _resolve_response_normalizer,
     _resolve_tool_executor,
+)
+from agent.workflow_events import (  # noqa: E402,F401
+    _emit_workflow_event,
+    _workflow_agent_event_details,
 )
 
 
@@ -363,8 +274,8 @@ class AIAgent:
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
         max_iterations: int = 200,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
-        enabled_toolsets: List[str] = None,
-        disabled_toolsets: List[str] = None,
+        enabled_toolsets: list[str] = None,
+        disabled_toolsets: list[str] = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
         quiet_mode: bool = False,
@@ -375,9 +286,9 @@ class AIAgent:
         log_preview_chars: int = 1600,
         tool_output_head_lines: int = 28,
         tool_output_tail_lines: int = 12,
-        providers_allowed: List[str] = None,
-        providers_ignored: List[str] = None,
-        providers_order: List[str] = None,
+        providers_allowed: list[str] = None,
+        providers_ignored: list[str] = None,
+        providers_order: list[str] = None,
         provider_sort: str = None,
         provider_require_parameters: bool = False,
         provider_data_collection: str = None,
@@ -390,19 +301,19 @@ class AIAgent:
         clarify_callback: callable = None,
         step_callback: callable = None,
         max_tokens: int = None,
-        reasoning_config: Dict[str, Any] = None,
+        reasoning_config: dict[str, Any] = None,
         seed: int = 42,
         temperature: float = 0.3,
         top_p: float = None,
         top_k: int = None,
         min_p: float = None,
-        prefill_messages: List[Dict[str, Any]] = None,
+        prefill_messages: list[dict[str, Any]] = None,
         platform: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
         session_db=None,
         iteration_budget: "IterationBudget" = None,
-        fallback_model: Dict[str, Any] = None,
+        fallback_model: dict[str, Any] = None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
@@ -765,7 +676,7 @@ class AIAgent:
                     else:
                         print(f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
             except Exception as e:
-                raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
+                raise RuntimeError(f"Failed to initialize OpenAI client: {e}") from e
         
         # Provider fallback — a single backup model/provider tried when the
         # primary is exhausted (rate-limit, overload, connection failure).
@@ -845,7 +756,7 @@ class AIAgent:
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
         
         # Track conversation messages for session logging
-        self._session_messages: List[Dict[str, Any]] = []
+        self._session_messages: list[dict[str, Any]] = []
         
         # Cached system prompt -- built once per session, only rebuilt on
         # compression. The cache lives on self._prompt_manager_obj; this
@@ -1105,11 +1016,11 @@ class AIAgent:
     # truth for the cache while preserving its lifetime/invalidation semantics.
 
     @property
-    def _cached_system_prompt(self) -> Optional[str]:
+    def _cached_system_prompt(self) -> str | None:
         return _resolve_prompt_manager(self).cached
 
     @_cached_system_prompt.setter
-    def _cached_system_prompt(self, value: Optional[str]) -> None:
+    def _cached_system_prompt(self, value: str | None) -> None:
         _resolve_prompt_manager(self).cached = value
 
     def _vprint(self, *args, force: bool = False, **kwargs):
@@ -1153,7 +1064,7 @@ class AIAgent:
         self,
         user_message: str,
         assistant_content: str,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
     ) -> bool:
         """Detect a planning/ack message that should continue instead of ending the turn."""
         if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
@@ -1221,7 +1132,7 @@ class AIAgent:
         return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
     
     
-    def _extract_reasoning(self, assistant_message) -> Optional[str]:
+    def _extract_reasoning(self, assistant_message) -> str | None:
         """Thin wrapper delegating to ``ReasoningProcessor.extract_reasoning``.
 
         Kept on AIAgent so ResponseNormalizer.build_assistant_message (which calls
@@ -1241,23 +1152,24 @@ class AIAgent:
             from tools.terminal_tool import clear_task_env_overrides
 
             clear_task_env_overrides(task_id)
-        except Exception:
-            pass
+        except Exception as e:
+            if self.verbose_logging:
+                logging.warning(f"Failed to clear env overrides for task {task_id}: {e}")
         _cleanup_optional_browser_state(task_id)
 
-    def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
+    def _apply_persist_user_message_override(self, messages: list[dict]) -> None:
         """Thin delegating wrapper to ``ConversationManager.apply_persist_user_message_override``."""
         return _resolve_conversation_manager(self).apply_persist_user_message_override(messages)
 
-    def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _persist_session(self, messages: list[dict], conversation_history: list[dict] = None):
         """Thin delegating wrapper to ``ConversationManager.persist_session``."""
         return _resolve_conversation_manager(self).persist_session(messages, conversation_history)
 
-    def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _flush_messages_to_session_db(self, messages: list[dict], conversation_history: list[dict] = None):
         """Thin delegating wrapper to ``ConversationManager.flush_messages_to_session_db``."""
         return _resolve_conversation_manager(self).flush_messages_to_session_db(messages, conversation_history)
 
-    def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
+    def _get_messages_up_to_last_assistant(self, messages: list[dict]) -> list[dict]:
         """
         Get messages up to (but not including) the last assistant turn.
         
@@ -1292,15 +1204,15 @@ class AIAgent:
         """Thin delegating wrapper to ``ConversationManager.format_tools_for_system_message``."""
         return _resolve_conversation_manager(self).format_tools_for_system_message()
 
-    def _convert_to_trajectory_format(self, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
+    def _convert_to_trajectory_format(self, messages: list[dict[str, Any]], user_query: str, completed: bool) -> list[dict[str, Any]]:
         """Thin delegating wrapper to ``ConversationManager.convert_to_trajectory_format``."""
         return _resolve_conversation_manager(self).convert_to_trajectory_format(messages, user_query, completed)
 
-    def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool):
+    def _save_trajectory(self, messages: list[dict[str, Any]], user_query: str, completed: bool):
         """Thin delegating wrapper to ``ConversationManager.save_trajectory``."""
         return _resolve_conversation_manager(self).save_trajectory(messages, user_query, completed)
     
-    def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
+    def _mask_api_key_for_logs(self, key: str | None) -> str | None:
         if not key:
             return None
         if len(key) <= 12:
@@ -1309,11 +1221,11 @@ class AIAgent:
 
     def _dump_api_request_debug(
         self,
-        api_kwargs: Dict[str, Any],
+        api_kwargs: dict[str, Any],
         *,
         reason: str,
-        error: Optional[Exception] = None,
-    ) -> Optional[Path]:
+        error: Exception | None = None,
+    ) -> Path | None:
         """
         Dump a debug-friendly HTTP request record for chat.completions.create().
 
@@ -1332,7 +1244,7 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Could not extract API key for debug dump: %s", e)
 
-            dump_payload: Dict[str, Any] = {
+            dump_payload: dict[str, Any] = {
                 "timestamp": datetime.now().isoformat(),
                 "session_id": self.session_id,
                 "reason": reason,
@@ -1348,7 +1260,7 @@ class AIAgent:
             }
 
             if error is not None:
-                error_info: Dict[str, Any] = {
+                error_info: dict[str, Any] = {
                     "type": type(error).__name__,
                     "message": str(error),
                 }
@@ -1398,7 +1310,7 @@ class AIAgent:
         """
         return _clean_session_content(content)
 
-    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
+    def _save_session_log(self, messages: list[dict[str, Any]] = None):
         """Thin delegating wrapper to ``ConversationManager.save_session_log``."""
         return _resolve_conversation_manager(self).save_session_log(messages)
 
@@ -1450,7 +1362,7 @@ class AIAgent:
         """Unregister a child agent from interrupt propagation (thread-safe)."""
         _resolve_interrupt_controller(self).unregister_child(child)
 
-    def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
+    def _hydrate_todo_store(self, history: list[dict[str, Any]]) -> None:
         """
         Recover todo state from conversation history.
         
@@ -1533,13 +1445,13 @@ class AIAgent:
         """
         _resolve_prompt_manager(self).invalidate()
 
-    def _responses_tools(self, tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
+    def _responses_tools(self, tools: list[dict[str, Any]] | None = None) -> list[dict[str, Any]] | None:
         """Convert chat-completions tool schemas to Responses function-tool schemas."""
         source_tools = tools if tools is not None else self.tools
         if not source_tools:
             return None
 
-        converted: List[Dict[str, Any]] = []
+        converted: list[dict[str, Any]] = []
         for item in source_tools:
             fn = item.get("function", {}) if isinstance(item, dict) else {}
             name = fn.get("name")
@@ -1555,7 +1467,7 @@ class AIAgent:
         return converted or None
 
     @staticmethod
-    def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
+    def _split_responses_tool_id(raw_id: Any) -> tuple[str | None, str | None]:
         """Split a stored tool id into (call_id, response_item_id)."""
         if not isinstance(raw_id, str):
             return None, None
@@ -1574,7 +1486,7 @@ class AIAgent:
     def _derive_responses_function_call_id(
         self,
         call_id: str,
-        response_item_id: Optional[str] = None,
+        response_item_id: str | None = None,
     ) -> str:
         """Build a valid Responses `function_call.id` (must start with `fc_`)."""
         if isinstance(response_item_id, str):
@@ -1600,9 +1512,9 @@ class AIAgent:
         digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
         return f"fc_{digest}"
 
-    def _chat_messages_to_responses_input(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _chat_messages_to_responses_input(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert internal chat-style messages to Responses input items."""
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
 
         for msg in messages:
             if not isinstance(msg, dict):
@@ -1688,11 +1600,11 @@ class AIAgent:
 
         return items
 
-    def _preflight_codex_input_items(self, raw_items: Any) -> List[Dict[str, Any]]:
+    def _preflight_codex_input_items(self, raw_items: Any) -> list[dict[str, Any]]:
         if not isinstance(raw_items, list):
             raise ValueError("Codex Responses input must be a list of input items.")
 
-        normalized: List[Dict[str, Any]] = []
+        normalized: list[dict[str, Any]] = []
         for idx, item in enumerate(raw_items):
             if not isinstance(item, dict):
                 raise ValueError(f"Codex Responses input[{idx}] must be an object.")
@@ -1779,7 +1691,7 @@ class AIAgent:
         api_kwargs: Any,
         *,
         allow_stream: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not isinstance(api_kwargs, dict):
             raise ValueError("Codex Responses request must be a dict.")
 
@@ -1850,7 +1762,7 @@ class AIAgent:
             "reasoning", "include", "max_output_tokens", "temperature",
             "tool_choice", "parallel_tool_calls", "prompt_cache_key",
         }
-        normalized: Dict[str, Any] = {
+        normalized: dict[str, Any] = {
             "model": model,
             "instructions": instructions,
             "input": normalized_input,
@@ -2359,7 +2271,7 @@ class AIAgent:
     # ── End provider fallback ──────────────────────────────────────────────
 
     @property
-    def _anthropic_image_fallback_cache(self) -> Dict[str, str]:
+    def _anthropic_image_fallback_cache(self) -> dict[str, str]:
         """Per-image Anthropic vision-fallback description memo.
 
         The cache now lives on the AnthropicMessagePreparer collaborator; this
@@ -2369,7 +2281,7 @@ class AIAgent:
         return _resolve_anthropic_message_preparer(self).image_fallback_cache
 
     @_anthropic_image_fallback_cache.setter
-    def _anthropic_image_fallback_cache(self, value: Dict[str, str]) -> None:
+    def _anthropic_image_fallback_cache(self, value: dict[str, str]) -> None:
         _resolve_anthropic_message_preparer(self).image_fallback_cache = value
 
     @staticmethod
@@ -2378,7 +2290,7 @@ class AIAgent:
         return content_has_image_parts(content)
 
     @staticmethod
-    def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Optional[Path]]:
+    def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Path | None]:
         """Thin wrapper delegating to AnthropicMessagePreparer (agent/anthropic_messages.py)."""
         return materialize_data_url_for_vision(image_url)
 
@@ -2825,7 +2737,7 @@ class AIAgent:
             assistant_message, messages, effective_task_id, api_call_count
         )
 
-    def _get_budget_warning(self, api_call_count: int) -> Optional[str]:
+    def _get_budget_warning(self, api_call_count: int) -> str | None:
         """Return a budget pressure string, or None if not yet needed.
 
         Two-tier system:
@@ -3118,11 +3030,11 @@ class AIAgent:
         self,
         user_message: str,
         system_message: str = None,
-        conversation_history: List[Dict[str, Any]] = None,
+        conversation_history: list[dict[str, Any]] = None,
         task_id: str = None,
-        stream_callback: Optional[callable] = None,
-        persist_user_message: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        stream_callback: Callable | None = None,
+        persist_user_message: str | None = None,
+    ) -> dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
 
@@ -4733,7 +4645,7 @@ class AIAgent:
 
         return result
 
-    def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
+    def chat(self, message: str, stream_callback: Callable | None = None) -> str:
         """
         Simple chat interface that returns just the final response.
 

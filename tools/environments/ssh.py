@@ -84,8 +84,8 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             if result.returncode != 0:
                 error_msg = result.stderr.strip() or result.stdout.strip()
                 raise RuntimeError(f"SSH connection failed: {error_msg}")
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"SSH connection to {self.user}@{self.host} timed out")
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"SSH connection to {self.user}@{self.host} timed out") from exc
 
     _poll_interval: float = 0.15
 

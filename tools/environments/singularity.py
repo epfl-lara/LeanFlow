@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 _SNAPSHOT_STORE = get_epflemma_home() / "singularity_snapshots.json"
 
 
-def _load_snapshots() -> Dict[str, str]:
+def _load_snapshots() -> dict[str, str]:
     if _SNAPSHOT_STORE.exists():
         try:
             return json.loads(_SNAPSHOT_STORE.read_text())
@@ -34,7 +34,7 @@ def _load_snapshots() -> Dict[str, str]:
     return {}
 
 
-def _save_snapshots(data: Dict[str, str]) -> None:
+def _save_snapshots(data: dict[str, str]) -> None:
     _SNAPSHOT_STORE.parent.mkdir(parents=True, exist_ok=True)
     _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
 
@@ -175,7 +175,7 @@ class SingularityEnvironment(BaseEnvironment):
         self._instance_started = False
         self._persistent = persistent_filesystem
         self._task_id = task_id
-        self._overlay_dir: Optional[Path] = None
+        self._overlay_dir: Path | None = None
 
         # Resource limits
         self._cpu = cpu
@@ -218,8 +218,8 @@ class SingularityEnvironment(BaseEnvironment):
             self._instance_started = True
             logger.info("Singularity instance %s started (persistent=%s)", 
                         self.instance_id, self._persistent)
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("Instance start timed out")
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Instance start timed out") from exc
 
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,

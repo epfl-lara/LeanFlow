@@ -85,8 +85,10 @@ line-length = 100
 #         so blanket auto-removal silently breaks runtime + tests. Must be done per-file with
 #         __all__ / `# noqa: F401` annotations.
 #   F841 (unused-variable): ~40 occurrences, not safely auto-fixable (may hide bugs).
-select = ["F", "I"]
-ignore = ["F401", "F841"]
+select = ["F", "I", "UP"]
+# UP035 (deprecated typing imports) left to F401-style cleanup; UP022/UP042 are manual,
+# behavior-sensitive (subprocess capture_output / StrEnum) — deferred.
+ignore = ["F401", "F841", "UP035", "UP022", "UP042"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -98,7 +100,11 @@ files = [
   "gauss_constants.py",
   "utils.py",
   "agent/log_formatting.py",
+  "agent/workflow_events.py",
+  "agent/runtime_helpers.py",
   "agent/auxiliary_adapters.py",
+  "agent/auxiliary_rcp.py",
+  "agent/auxiliary_nous.py",
   "agent/model_capabilities.py",
   "agent/command_safety.py",
   "agent/token_accounting.py",
@@ -115,11 +121,14 @@ files = [
   "tools/lean_patch.py",
   "agent/managed_run.py",
   "epflemma_cli/native_config.py",
+  "epflemma_cli/native_lean_files.py",
   "epflemma_cli/lean_diagnostics.py",
   "epflemma_cli/lean_attempt_helpers.py",
   "epflemma_cli/lean_declarations.py",
   "epflemma_cli/lean_proof_context_local.py",
   "epflemma_cli/lean_backend.py",
+  "epflemma_cli/lean_models.py",
+  "epflemma_cli/lean_worker_dispatch.py",
   "epflemma_cli/lean_diagnostic_feedback.py",
   "epflemma_cli/lean_search_providers.py",
   "epflemma_cli/lean_automation.py",
@@ -130,9 +139,13 @@ files = [
   "epflemma_cli/native_state.py",
   "epflemma_cli/queue_edit_guard.py",
   "epflemma_cli/queue_models.py",
+  "epflemma_cli/queue_item_predicates.py",
   "epflemma_cli/formalization_document_runner.py",
   "epflemma_cli/formalization_generated_lean.py",
   "epflemma_cli/document_extraction.py",
+  "epflemma_cli/formalization_markdown.py",
+  "epflemma_cli/formalization_models.py",
+  "epflemma_cli/formalization_tex_discovery.py",
   "epflemma_cli/manager_verification.py",
   "epflemma_cli/native_utils.py",
   "epflemma_cli/activity_preview.py",
@@ -143,4 +156,16 @@ files = [
   "epflemma_cli/shell_ui.py",
   "tools/mcp_transport.py",
   "tools/mcp_sampling.py",
+  "tools/mcp_config.py",
+  "agent/prompt_caching.py",
+  "agent/usage_pricing.py",
+  "agent/redact.py",
+  "epflemma_cli/branding.py",
+  "epflemma_cli/env_loader.py",
+  "epflemma_cli/lean_workflow_specs.py",
+  "tools/interrupt.py",
+  "tools/openrouter_client.py",
+  "tools/debug_helpers.py",
+  "epflemma_cli/workflow_state_paths.py",
+  "epflemma_cli/workflow_json_io.py",
 ]

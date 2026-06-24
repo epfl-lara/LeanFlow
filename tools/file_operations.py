@@ -96,14 +96,14 @@ class ReadResult:
     total_lines: int = 0
     file_size: int = 0
     truncated: bool = False
-    hint: Optional[str] = None
+    hint: str | None = None
     is_binary: bool = False
     is_image: bool = False
-    base64_content: Optional[str] = None
-    mime_type: Optional[str] = None
-    dimensions: Optional[str] = None  # For images: "WIDTHxHEIGHT"
-    error: Optional[str] = None
-    similar_files: List[str] = field(default_factory=list)
+    base64_content: str | None = None
+    mime_type: str | None = None
+    dimensions: str | None = None  # For images: "WIDTHxHEIGHT"
+    error: str | None = None
+    similar_files: list[str] = field(default_factory=list)
     
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None and v != []}
@@ -114,8 +114,8 @@ class WriteResult:
     """Result from writing a file."""
     bytes_written: int = 0
     dirs_created: bool = False
-    error: Optional[str] = None
-    warning: Optional[str] = None
+    error: str | None = None
+    warning: str | None = None
     
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None}
@@ -126,11 +126,11 @@ class PatchResult:
     """Result from patching a file."""
     success: bool = False
     diff: str = ""
-    files_modified: List[str] = field(default_factory=list)
-    files_created: List[str] = field(default_factory=list)
-    files_deleted: List[str] = field(default_factory=list)
-    lint: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
+    files_modified: list[str] = field(default_factory=list)
+    files_created: list[str] = field(default_factory=list)
+    files_deleted: list[str] = field(default_factory=list)
+    lint: dict[str, Any] | None = None
+    error: str | None = None
     
     def to_dict(self) -> dict:
         result = {"success": self.success}
@@ -161,12 +161,12 @@ class SearchMatch:
 @dataclass
 class SearchResult:
     """Result from searching."""
-    matches: List[SearchMatch] = field(default_factory=list)
-    files: List[str] = field(default_factory=list)
-    counts: Dict[str, int] = field(default_factory=dict)
+    matches: list[SearchMatch] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
     total_count: int = 0
     truncated: bool = False
-    error: Optional[str] = None
+    error: str | None = None
     
     def to_dict(self) -> dict:
         result = {"total_count": self.total_count}
@@ -240,7 +240,7 @@ class FileOperations(ABC):
     
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
-               file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
+               file_glob: str | None = None, limit: int = 50, offset: int = 0,
                output_mode: str = "content", context: int = 0) -> SearchResult:
         """Search for content or files."""
         ...
@@ -314,7 +314,7 @@ class ShellFileOperations(FileOperations):
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
         
         # Cache for command availability checks
-        self._command_cache: Dict[str, bool] = {}
+        self._command_cache: dict[str, bool] = {}
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
@@ -438,7 +438,7 @@ class ShellFileOperations(FileOperations):
         )
         return ''.join(diff)
 
-    def _validate_lean_statement_write(self, path: str, content: str) -> Optional[str]:
+    def _validate_lean_statement_write(self, path: str, content: str) -> str | None:
         """Return an error when a Lean write would alter protected statements."""
         from epflemma_cli.lean_statement_guard import (
             should_guard_lean_statement_path,
@@ -836,7 +836,7 @@ class ShellFileOperations(FileOperations):
     # =========================================================================
     
     def search(self, pattern: str, path: str = ".", target: str = "content",
-               file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
+               file_glob: str | None = None, limit: int = 50, offset: int = 0,
                output_mode: str = "content", context: int = 0) -> SearchResult:
         """
         Search for content or files.
@@ -916,7 +916,7 @@ class ShellFileOperations(FileOperations):
             total_count=len(files)
         )
     
-    def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
+    def _search_content(self, pattern: str, path: str, file_glob: str | None,
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search for content inside files (grep-like)."""
         # Try ripgrep first (fast), fallback to grep (slower but works)
@@ -933,7 +933,7 @@ class ShellFileOperations(FileOperations):
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation"
             )
     
-    def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
+    def _search_with_rg(self, pattern: str, path: str, file_glob: str | None,
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search using ripgrep."""
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
@@ -1032,7 +1032,7 @@ class ShellFileOperations(FileOperations):
                 truncated=total > offset + limit
             )
     
-    def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
+    def _search_with_grep(self, pattern: str, path: str, file_glob: str | None,
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""
         cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches

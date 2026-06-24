@@ -1,3 +1,9 @@
+"""Model pricing table + cost estimation for usage accounting.
+
+Holds per-model USD-per-1M-token input/output rates; estimate_cost_usd / has_known_pricing
+fall back gracefully (zero / False) on models absent from the table.
+"""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -44,7 +50,7 @@ MODEL_PRICING = {
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
 
-def get_pricing(model_name: str) -> Dict[str, float]:
+def get_pricing(model_name: str) -> dict[str, float]:
     if not model_name:
         return DEFAULT_PRICING
 

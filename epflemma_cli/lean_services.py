@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -14,9 +15,9 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from epflemma_cli.file_locks import acquire_file_lock as _acquire_file_lock
 from epflemma_cli.file_locks import list_file_locks as _list_file_locks
@@ -148,6 +149,7 @@ from epflemma_cli.lean_sorry_stats import (  # noqa: E402
     _count_sorries,
     _project_sorry_stats,
 )
+from epflemma_cli.lean_worker_dispatch import _worker_prompt, dispatch_worker  # noqa: F401
 from epflemma_cli.lean_workflow_specs import get_lean_spec, list_specs
 from epflemma_cli.project import (
     ProjectManifestError,
@@ -156,6 +158,8 @@ from epflemma_cli.project import (
     find_lean_project_root,
 )
 from epflemma_cli.workflow_state import append_workflow_outcome, workflow_outcomes_path
+
+logger = logging.getLogger(__name__)
 
 STANDARD_AXIOMS = {"propext", "Quot.sound", "Classical.choice"}
 LEAN_WORKER_DISPATCH_ENABLED = False
@@ -382,133 +386,17 @@ def _disable_proof_auto_backend_for_run(*, cwd: str | os.PathLike[str] | None = 
             _disable_mcp_tool_for_run(tool_name, cwd=cwd)
 
 
-@dataclass(frozen=True)
-class LeanCapabilityReport:
-    cwd: str
-    project_root: str
-    project_valid: bool
-    project_error: str
-    binaries: dict[str, bool]
-    mcp_tools: dict[str, str]
-    search_providers: list[str]
-    helper_tools: dict[str, bool]
-    workers: list[str]
-    degraded_reasons: list[str]
-    mcp_server_roles: dict[str, str] = field(default_factory=dict)
-    managed_mcp_servers: dict[str, bool] = field(default_factory=dict)
-    power_modes: dict[str, Any] = field(default_factory=dict)
-    incremental: dict[str, Any] = field(default_factory=dict)
-    remote_search_policy: str = "public-fallbacks-enabled"
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class LeanSorryFinding:
-    file: str
-    line: int
-    declaration: str
-    preview: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class LeanInspection:
-    target: str
-    project_root: str
-    diagnostics: str
-    goals: str
-    sorry_count: int | None
-    project_sorry_count: int | None
-    blocker_kind: str
-    queue_items: list[dict[str, Any]] = field(default_factory=list)
-    capability_report: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class LeanVerificationResult:
-    ok: bool
-    mode: str
-    command: str
-    target: str
-    output: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class LeanSearchResult:
-    query: str
-    mode: str
-    attempted_providers: list[str]
-    results: list[dict[str, Any]]
-    degraded_reasons: list[str]
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class LeanAxiomReport:
-    target: str
-    file_path: str
-    ok: bool
-    axioms: list[str]
-    custom_axioms: list[str]
-    classical: bool
-    choice: bool
-    note: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class WorkflowRouteDecision:
-    workflow_kind: str
-    skill_name: str
-    route_action: str
-    blocker_kind: str
-    recommended_worker: str
-    search_exhausted: bool
-    reason: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class LeanWorkerRequest:
-    worker: str
-    goal: str
-    context: str
-    file_path: str = ""
-    line: int | None = None
-    use_file_lock: bool = True
-    allow_delegation: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class LeanWorkerResult:
-    worker: str
-    mode: str
-    dispatched: bool
-    summary: str
-    result: Any = None
-    lock: dict[str, Any] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+from epflemma_cli.lean_models import (  # noqa: F401
+    LeanAxiomReport,
+    LeanCapabilityReport,
+    LeanInspection,
+    LeanSearchResult,
+    LeanSorryFinding,
+    LeanVerificationResult,
+    LeanWorkerRequest,
+    LeanWorkerResult,
+    WorkflowRouteDecision,
+)
 
 
 def _repo_root() -> Path:
@@ -589,7 +477,7 @@ def _invoke_json_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, An
         if isinstance(payload, dict):
             return payload
     except Exception:
-        pass
+        logger.debug("Failed to parse JSON tool output for %s", tool_name, exc_info=True)
     return {"raw": raw}
 
 
@@ -1018,7 +906,7 @@ def lean_inspect(
                     "end_line": entry["end_line"],
                     "reasons": reasons,
                     "blocker_signature": hashlib.sha1(
-                        f"{file_path}:{entry['line']}:{','.join(reasons)}".encode("utf-8")
+                        f"{file_path}:{entry['line']}:{','.join(reasons)}".encode()
                     ).hexdigest()[:12],
                     "search_hints": [entry["name"], entry["kind"]],
                     "verification_gate": f"lake env lean {file_path.name}",
@@ -2097,91 +1985,3 @@ def route_workflow_step(
     )
     append_workflow_outcome("workflow-route", decision.to_dict())
     return decision
-
-
-def _worker_prompt(worker: str, request: LeanWorkerRequest) -> str:
-    record = get_lean_spec(worker)
-    title = record.title if record else worker
-    summary = record.summary if record else worker
-    parts = [
-        f"Native Lean worker: {title}",
-        summary,
-        "",
-        f"Goal: {request.goal}",
-    ]
-    if request.file_path:
-        parts.append(f"File: {request.file_path}")
-    if request.line:
-        parts.append(f"Line: {request.line}")
-    if request.context:
-        parts.extend(["", "Context:", request.context])
-    if record:
-        parts.extend(
-            [
-                "",
-                "Worker contract:",
-                f"- route action(s): {', '.join(record.route_actions) or '[none]'}",
-                f"- tools: {', '.join(record.tools) or '[none]'}",
-            ]
-        )
-    return "\n".join(parts).strip()
-
-
-def dispatch_worker(
-    request: LeanWorkerRequest,
-    *,
-    parent_agent: Any = None,
-    owner_id: str = "",
-) -> LeanWorkerResult:
-    worker = request.worker.strip()
-    lock_result: dict[str, Any] | None = None
-    if request.use_file_lock and request.file_path and owner_id:
-        lock_result = _acquire_file_lock(
-            request.file_path,
-            owner_id=owner_id,
-            purpose=f"lean-worker:{worker}",
-            ttl_seconds=1800,
-            force=False,
-        )
-        if not lock_result.get("success"):
-            result = LeanWorkerResult(
-                worker=worker,
-                mode="plan",
-                dispatched=False,
-                summary=f"File lock unavailable for {request.file_path}: {lock_result.get('error', 'unknown error')}",
-                lock=lock_result,
-            )
-            append_workflow_outcome("lean-worker", result.to_dict())
-            return result
-
-    prompt = _worker_prompt(worker, request)
-    if not request.allow_delegation or parent_agent is None:
-        result = LeanWorkerResult(
-            worker=worker,
-            mode="plan",
-            dispatched=False,
-            summary=prompt,
-            lock=lock_result,
-        )
-        append_workflow_outcome("lean-worker", result.to_dict())
-        return result
-
-    from tools.delegate_tool import delegate_task
-
-    delegated = delegate_task(
-        goal=request.goal,
-        context=prompt,
-        toolsets=["terminal", "file", "skills", "coordination"],
-        parent_agent=parent_agent,
-        max_iterations=40,
-    )
-    result = LeanWorkerResult(
-        worker=worker,
-        mode="delegate",
-        dispatched=True,
-        summary=f"Delegated {worker}",
-        result=delegated,
-        lock=lock_result,
-    )
-    append_workflow_outcome("lean-worker", result.to_dict())
-    return result

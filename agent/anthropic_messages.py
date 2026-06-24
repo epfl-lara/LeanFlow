@@ -55,7 +55,7 @@ def content_has_image_parts(content: Any) -> bool:
     return False
 
 
-def materialize_data_url_for_vision(image_url: str) -> tuple[str, Optional[Path]]:
+def materialize_data_url_for_vision(image_url: str) -> tuple[str, Path | None]:
     header, _, data = str(image_url or "").partition(",")
     mime = "image/jpeg"
     if header.startswith("data:"):
@@ -86,7 +86,7 @@ class AnthropicMessagePreparer:
 
     def __init__(self, agent: Any) -> None:
         self._agent = agent
-        self.image_fallback_cache: Dict[str, str] = {}
+        self.image_fallback_cache: dict[str, str] = {}
 
     def describe_image_for_anthropic_fallback(self, image_url: str, role: str) -> str:
         cache_key = hashlib.sha256(str(image_url or "").encode("utf-8")).hexdigest()
@@ -105,7 +105,7 @@ class AnthropicMessagePreparer:
         )
 
         vision_source = str(image_url or "")
-        cleanup_path: Optional[Path] = None
+        cleanup_path: Path | None = None
         if vision_source.startswith("data:"):
             vision_source, cleanup_path = materialize_data_url_for_vision(vision_source)
 
@@ -143,8 +143,8 @@ class AnthropicMessagePreparer:
         if not content_has_image_parts(content):
             return content
 
-        text_parts: List[str] = []
-        image_notes: List[str] = []
+        text_parts: list[str] = []
+        image_notes: list[str] = []
         for part in content:
             if isinstance(part, str):
                 if part.strip():
