@@ -23,6 +23,81 @@ Always activate the repo venv before Python commands:
 source .venv/bin/activate
 ```
 
+## Quality gate — run before every commit
+
+Every change must pass all four. CI (`.github/workflows/tests.yml`) enforces them on push/PR.
+
+```bash
+source .venv/bin/activate
+ruff format .          # black-compatible auto-format (CI runs `ruff format --check .`)
+ruff check .           # lint: pyflakes (F), import-sort (I), pyupgrade (UP)
+mypy                   # type-check the gated module set (pyproject [tool.mypy] files=[...])
+python -m pytest -q    # full suite
+```
+
+- Config lives in `pyproject.toml` (`[tool.ruff]`, `[tool.ruff.format]`, `[tool.ruff.lint]`, `[tool.mypy]`).
+- `ruff format` is the formatter the project standardized on — it is black-compatible, so there is **no
+  separate `black` dependency**. Do not hand-format; let the tool do it.
+- As you clean/extract a module, **add it to the mypy `files` list** so its types stay checked.
+- The suite is green except **one known xdist flake**
+  (`tests/tools/test_mcp_tool.py::...::test_existing_tool_names_reflect_registered_subset`): it passes in
+  isolation (`-n0`) and only fails under full-parallel runs. Ignore *only* that one; investigate any other failure.
+
+## Coding standards
+
+**Write modular code.** One module = one responsibility. The layering is strict and one-directional:
+`core/` (depends on nothing above it) → `agent/` and `tools/` → `epflemma_cli/`. Never import "up" the
+stack (e.g. `core/` must not import `epflemma_cli`). When a file grows past a few hundred lines or starts
+mixing concerns, **extract a cohesive leaf module** (a sibling in the same subpackage) instead of growing
+it. `run_agent.py` and `epflemma_cli/native/native_runner.py` are legacy monoliths — put new logic in a
+focused module and call it; do not pile onto them. Group new modules into the existing subpackages
+(`agent/{accounting,execution,prompting,providers,compression,display,runtime}/`,
+`tools/{implementations,utilities,mcp,environments}/`,
+`epflemma_cli/{lean,native,formalization,workflows,cli,runtime}/`) and update `ARCHITECTURE.md` when you move/add modules.
+
+**Document as you go.** Every module opens with a docstring stating its responsibility. Every non-trivial
+function gets a concise docstring: a one-line imperative summary (`Return …`, `Build …`, `Drive …`) plus key
+behavior, side effects, or the non-obvious "why". Match the terse, technical house style — no param-by-param
+`:param:` walls, no filler ("Helper function."), no restating the name. Add inline comments for *why*, not
+*what*, and only where the logic is non-obvious. Type-hint signatures.
+
+**Write tests.** New behavior ships with tests. **Before refactoring coupled code, write characterization
+tests that pin the current behavior first** (see `tests/test_golden_cores.py`, `tests/agent/test_managed_run.py`).
+Keep the full suite green.
+
+### Anti-patterns we already paid for — do NOT repeat
+
+- **Never blanket-remove "unused" imports.** Many module-level imports are deliberate re-exports /
+  monkeypatch targets reached dynamically — `run_agent.OpenAI`, `…terminal_tool._interrupt_event` — or via
+  `run_agent`'s ~46 lazy-import surface (`run_agent._get_tool_emoji` is referenced through module-attribute
+  access ruff cannot see). `ruff` flags them as F401 but removing them breaks runtime and tests *silently*.
+  F401 is intentionally ignored. Remove a dead import only with per-file evidence (no static, dynamic, test,
+  or registry reference); never run a blanket `ruff --select F --fix`.
+- **`native_runner.py` is coupled to its tests by design.** `tests/epflemma/test_native_runner.py`
+  monkeypatches internals via `setattr(runner, NAME, …)`. A function moved into a sibling module that calls
+  those helpers by bare name binds to *its own* import and silently bypasses the patch. Do not extract from
+  `native_runner` until those tests move off `setattr`-monkeypatching.
+- **One home authority.** All home/state paths resolve through `core.home.epflemma_home()`
+  (`$EPFLEMMA_HOME` or `~/.epflemma`). Don't add per-module home resolvers or read `~/.gauss` / `GAUSS_HOME`.
+- **The native-workflow env contract is `EPFLEMMA_`-only.** `epflemma_cli/workflow.py` sets
+  `EPFLEMMA_NATIVE_*` / `EPFLEMMA_PROJECT_ROOT`; `native_config` reads them. No `OPENGAUSS_`/`GAUSS_` arms.
+- **Don't reintroduce legacy naming** (`gauss_*` modules, `GAUSS_`/`OPENGAUSS_` env or home prefixes) — see
+  "What Not To Reintroduce".
+
+## Documentation map
+
+When you want to understand or change something, this is where it is written down — keep these in sync:
+
+- **`README.md`** — product overview: what EPFLemma is, install, the core workflows.
+- **`AGENTS.md`** (this file) — how to work in the repo: standards, the quality gate, layout, anti-patterns.
+- **`ARCHITECTURE.md`** — the authoritative module map, the subpackage layout, the refactoring history, and
+  the load-bearing invariants (public imports, the run_conversation result schema, the tool self-registration
+  contract). **Update it whenever modules move or the public surface changes.**
+- **`CONTRIBUTING.md`** — contribution basics and the skill-vs-tool decision.
+- **In-code docstrings** — the per-module / per-function reference (the primary source of truth for behavior).
+- **`docs/`** — deeper operational references (`product-reference.md`, `native-lean-workflow-surface.md`,
+  `sandbox-runtime.md`).
+
 ## Main Active Codepaths
 
 ```text
