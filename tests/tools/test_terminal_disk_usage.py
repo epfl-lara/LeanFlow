@@ -9,10 +9,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import tools.terminal_tool  # noqa: F401 -- ensure module is loaded
+import tools.implementations.terminal_tool  # noqa: F401 -- ensure module is loaded
 
-_tt_mod = sys.modules["tools.terminal_tool"]
-from tools.terminal_tool import get_active_environments_info
+_tt_mod = sys.modules["tools.implementations.terminal_tool"]
+from tools.implementations.terminal_tool import get_active_environments_info
 
 # 1 MiB of data so the rounded MB value is clearly distinguishable
 _1MB = b"x" * (1024 * 1024)

@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from agent.prompt_caching import (
+from agent.prompting.prompt_caching import (
     _apply_cache_marker,
     apply_anthropic_cache_control,
 )

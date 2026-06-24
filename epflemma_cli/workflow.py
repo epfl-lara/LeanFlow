@@ -12,24 +12,24 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-from epflemma_cli.commands import (
+from epflemma_cli.cli.commands import (
     build_forgiving_workflow_alias_map,
     build_workflow_alias_map,
 )
-from epflemma_cli.formalization_documents import (
+from epflemma_cli.formalization.formalization_documents import (
     FormalizationDocumentContext,
     ensure_formalization_blueprint_skill,
     prepare_formalization_document_context,
 )
-from epflemma_cli.project import (
+from epflemma_cli.runtime.runtime_provider import resolve_runtime_provider
+from epflemma_cli.runtime.skill_core import default_workflow_skill
+from epflemma_cli.workflows.project import (
     EPFLemmaProject,
     ProjectNotFoundError,
     discover_epflemma_project,
 )
-from epflemma_cli.runtime_provider import resolve_runtime_provider
-from epflemma_cli.skill_core import default_workflow_skill
 
-# Routing tables derived from the single COMMAND_REGISTRY in epflemma_cli.commands.
+# Routing tables derived from the single COMMAND_REGISTRY in epflemma_cli.cli.commands.
 # WORKFLOW_ALIAS_MAP: frontend command (incl. long-form aliases) -> (workflow_kind,
 # canonical_command, backend_command). FORGIVING_WORKFLOW_ALIAS_MAP: slash-less name ->
 # canonical slash command.
@@ -347,7 +347,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
 
 
 def _native_runner_module() -> str:
-    return "epflemma_cli.native_runner"
+    return "epflemma_cli.native.native_runner"
 
 
 def _dedupe_skills(values: list[str]) -> tuple[str, ...]:

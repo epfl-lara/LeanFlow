@@ -1,7 +1,7 @@
 """Tests for agent/command_safety.py and its re-export from run_agent (Phase 4 extraction)."""
 
 import run_agent
-from agent import command_safety
+from agent.execution import command_safety
 
 
 def test_run_agent_reexports_match_module():

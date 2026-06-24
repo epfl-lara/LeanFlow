@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from epflemma_cli.formalization_documents import (
+from epflemma_cli.formalization.formalization_documents import (
     FormalizationDocumentError,
     inspect_formalization_document,
     prepare_formalization_document_context,

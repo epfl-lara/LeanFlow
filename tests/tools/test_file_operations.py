@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from epflemma_cli.lean_statement_guard import ALLOW_STATEMENT_EDITS_ENV
-from tools.file_operations import (
+from epflemma_cli.lean.lean_statement_guard import ALLOW_STATEMENT_EDITS_ENV
+from tools.implementations.file_operations import (
     BINARY_EXTENSIONS,
     IMAGE_EXTENSIONS,
     MAX_LINE_LENGTH,

@@ -6,8 +6,8 @@ from itertools import chain, repeat
 
 import pytest
 
-from epflemma_cli import native_runner as runner
-from epflemma_cli.workflow_state import read_workflow_activity
+from epflemma_cli.native import native_runner as runner
+from epflemma_cli.workflows.workflow_state import read_workflow_activity
 
 
 class _FakeCompressor:
@@ -2541,7 +2541,7 @@ def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
     monkeypatch.delenv("EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS", raising=False)
     monkeypatch.setattr(runner, "AIAgent", _Agent)
     monkeypatch.setattr(
-        "tools.terminal_tool.register_task_env_overrides",
+        "tools.implementations.terminal_tool.register_task_env_overrides",
         lambda task_id, overrides: registered.append((task_id, overrides)),
     )
 

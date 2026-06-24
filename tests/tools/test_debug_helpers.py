@@ -4,7 +4,7 @@ import json
 import os
 from unittest.mock import patch
 
-from tools.debug_helpers import DebugSession
+from tools.utilities.debug_helpers import DebugSession
 
 
 class TestDebugSessionDisabled:

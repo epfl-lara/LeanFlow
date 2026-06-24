@@ -1,6 +1,6 @@
 """B1: concurrent workflow-state appends must not interleave or lose JSON-lines.
 
-`epflemma_cli.workflow_state._locked_append` serializes appends so that the parallel `/swarm`
+`epflemma_cli.workflows.workflow_state._locked_append` serializes appends so that the parallel `/swarm`
 agents (threads within a process via the module lock; subprocesses via fcntl.flock) cannot corrupt
 the activity/outcome/run-log streams. These tests exercise the in-process locking layer directly.
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import threading
 
-from epflemma_cli import workflow_state as ws
+from epflemma_cli.workflows import workflow_state as ws
 
 
 def test_locked_append_no_interleave_or_loss_under_threads(tmp_path):

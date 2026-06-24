@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, PropertyMock, patch
 
-from tools.interrupt import is_interrupted, set_interrupt
+from tools.utilities.interrupt import is_interrupted, set_interrupt
 
 
 def _make_slow_api_response(delay=5.0):
@@ -77,7 +77,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
         parent.iteration_budget = IterationBudget(max_total=100)
         parent._client_kwargs = {"api_key": "test", "base_url": "http://localhost:1"}
 
-        from tools.delegate_tool import _run_single_child
+        from tools.implementations.delegate_tool import _run_single_child
 
         child_started = threading.Event()
         result_holder = [None]

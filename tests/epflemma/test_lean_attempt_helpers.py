@@ -13,8 +13,8 @@ through comment stripping, and the full-proof-block guard), and the attempt-diag
 
 from __future__ import annotations
 
-from epflemma_cli import lean_attempt_helpers as h
-from epflemma_cli import lean_services
+from epflemma_cli.lean import lean_attempt_helpers as h
+from epflemma_cli.lean import lean_services
 
 _REEXPORTED = (
     "MULTI_ATTEMPT_MIN_CANDIDATES",

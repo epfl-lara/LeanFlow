@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.skills_sync import (
+from tools.utilities.skills_sync import (
     MANIFEST_FILE,
     SKILLS_DIR,
     _compute_relative_dest,
@@ -18,7 +18,7 @@ from tools.skills_sync import (
 class TestReadWriteManifest:
     def test_read_missing_manifest(self, tmp_path):
         with patch(
-            "tools.skills_sync.MANIFEST_FILE",
+            "tools.utilities.skills_sync.MANIFEST_FILE",
             tmp_path / "nonexistent",
         ):
             result = _read_manifest()
@@ -28,7 +28,7 @@ class TestReadWriteManifest:
         manifest_file = tmp_path / ".bundled_manifest"
         entries = {"skill-a": "abc123", "skill-b": "def456", "skill-c": "789012"}
 
-        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+        with patch("tools.utilities.skills_sync.MANIFEST_FILE", manifest_file):
             _write_manifest(entries)
             result = _read_manifest()
 
@@ -38,7 +38,7 @@ class TestReadWriteManifest:
         manifest_file = tmp_path / ".bundled_manifest"
         entries = {"zebra": "hash1", "alpha": "hash2", "middle": "hash3"}
 
-        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+        with patch("tools.utilities.skills_sync.MANIFEST_FILE", manifest_file):
             _write_manifest(entries)
 
         lines = manifest_file.read_text().strip().splitlines()
@@ -50,7 +50,7 @@ class TestReadWriteManifest:
         manifest_file = tmp_path / ".bundled_manifest"
         manifest_file.write_text("skill-a\nskill-b\n")
 
-        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+        with patch("tools.utilities.skills_sync.MANIFEST_FILE", manifest_file):
             result = _read_manifest()
 
         assert result == {"skill-a": "", "skill-b": ""}
@@ -59,7 +59,7 @@ class TestReadWriteManifest:
         manifest_file = tmp_path / ".bundled_manifest"
         manifest_file.write_text("skill-a:hash1\n\n  \nskill-b:hash2\n")
 
-        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+        with patch("tools.utilities.skills_sync.MANIFEST_FILE", manifest_file):
             result = _read_manifest()
 
         assert result == {"skill-a": "hash1", "skill-b": "hash2"}
@@ -69,7 +69,7 @@ class TestReadWriteManifest:
         manifest_file = tmp_path / ".bundled_manifest"
         manifest_file.write_text("old-skill\nnew-skill:abc123\n")
 
-        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+        with patch("tools.utilities.skills_sync.MANIFEST_FILE", manifest_file):
             result = _read_manifest()
 
         assert result == {"old-skill": "", "new-skill": "abc123"}
@@ -161,9 +161,9 @@ class TestSyncSkills:
         """Return context manager stack for patching sync globals."""
         from contextlib import ExitStack
         stack = ExitStack()
-        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
-        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
-        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch("tools.utilities.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.utilities.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.utilities.skills_sync.MANIFEST_FILE", manifest_file))
         return stack
 
     def test_fresh_install_copies_all(self, tmp_path):
@@ -349,7 +349,7 @@ class TestSyncSkills:
             result = sync_skills(quiet=True)
 
         assert "removed-skill" in result["cleaned"]
-        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+        with patch("tools.utilities.skills_sync.MANIFEST_FILE", manifest_file):
             manifest = _read_manifest()
         assert "removed-skill" not in manifest
 
@@ -369,7 +369,7 @@ class TestSyncSkills:
         assert (user_skill / "SKILL.md").read_text() == "# User modified"
 
     def test_nonexistent_bundled_dir(self, tmp_path):
-        with patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
+        with patch("tools.utilities.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
             result = sync_skills(quiet=True)
         assert result == {
             "copied": [], "updated": [], "skipped": 0,

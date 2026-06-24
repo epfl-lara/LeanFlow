@@ -23,8 +23,8 @@ if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
 try:
-    import tools.terminal_tool  # noqa: F401
-    _tt_mod = sys.modules["tools.terminal_tool"]
+    import tools.implementations.terminal_tool  # noqa: F401
+    _tt_mod = sys.modules["tools.implementations.terminal_tool"]
 except ImportError:
     pytest.skip("gauss-agent tools not importable (missing deps)", allow_module_level=True)
 
@@ -129,7 +129,7 @@ class TestCwdHandling:
 
     def test_docker_default_cwd_maps_current_directory_when_enabled(self):
         """Docker should use /workspace when cwd mounting is explicitly enabled."""
-        with patch("tools.terminal_tool.os.getcwd", return_value="/home/user/project"):
+        with patch("tools.implementations.terminal_tool.os.getcwd", return_value="/home/user/project"):
             with patch.dict(os.environ, {
                 "TERMINAL_ENV": "docker",
                 "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE": "true",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta, timezone
 
-from epflemma_cli.file_locks import (
+from epflemma_cli.runtime.file_locks import (
     acquire_file_lock,
     describe_lock,
     ensure_file_lock,
@@ -11,7 +11,7 @@ from epflemma_cli.file_locks import (
     release_all_file_locks,
     release_file_lock,
 )
-from tools.file_tools import write_file_tool
+from tools.implementations.file_tools import write_file_tool
 
 
 def test_acquire_file_lock_blocks_other_owner(monkeypatch, tmp_path):

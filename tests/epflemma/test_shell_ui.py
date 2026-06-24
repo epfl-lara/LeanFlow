@@ -2,18 +2,18 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from epflemma_cli import cli_handlers
 from epflemma_cli import main as main_module
-from epflemma_cli.banner import render_help, render_workflow_status_panel
+from epflemma_cli.cli import cli_handlers
+from epflemma_cli.cli.banner import render_help, render_workflow_status_panel
 from epflemma_cli.main import InteractiveShell, main
-from epflemma_cli.runtime_provider import list_runtime_provider_targets
+from epflemma_cli.runtime.runtime_provider import list_runtime_provider_targets
 from epflemma_cli.workflow import (
     NativeLaunchPlan,
     NativeWorkflowSpec,
     describe_launch_plan,
     resolve_workflow_request,
 )
-from epflemma_cli.workflow_state import (
+from epflemma_cli.workflows.workflow_state import (
     append_workflow_activity,
     append_workflow_run_log,
     load_workflow_live_status,
@@ -25,7 +25,7 @@ from epflemma_cli.workflow_state import (
 def test_cli_handlers_reexport_identity():
     # Phase 3 extraction: the moved handler/formatter functions must stay importable from
     # epflemma_cli.main (re-export shim) and be the exact same objects defined in
-    # epflemma_cli.cli_handlers, so existing main.<name> references and tests keep working.
+    # epflemma_cli.cli.cli_handlers, so existing main.<name> references and tests keep working.
     for name in cli_handlers.__all__:
         assert hasattr(main_module, name), f"main lost re-export of {name}"
         assert getattr(main_module, name) is getattr(cli_handlers, name), (
@@ -265,7 +265,7 @@ def test_describe_launch_plan_formats_provider_and_model(tmp_path):
             "base_url": "http://127.0.0.1:8000/v1",
         },
         child_env={"EPFLEMMA_NATIVE_ACTIVE_SKILL": "lean-proof-loop"},
-        argv=["python", "-m", "epflemma_cli.native_runner"],
+        argv=["python", "-m", "epflemma_cli.native.native_runner"],
         active_skill="lean-proof-loop",
         toolset_name="epflemma-native",
     )
@@ -345,14 +345,14 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
         ),
         runtime={"provider": "custom", "model": "zai-org/GLM-5.1", "base_url": "https://inference.rcp.epfl.ch/v1"},
         child_env={},
-        argv=["python", "-m", "epflemma_cli.native_runner"],
+        argv=["python", "-m", "epflemma_cli.native.native_runner"],
         active_skill="lean-proof-loop",
         toolset_name="epflemma-native",
     )
 
     monkeypatch.setattr("epflemma_cli.shell.resolve_workflow_request", lambda *args, **kwargs: fake_plan)
     monkeypatch.setattr("epflemma_cli.shell.describe_launch_plan", lambda plan: {"workflow": "prove", "command": "/prove Main.lean", "project": "Demo", "project_root": str(tmp_path), "provider": "custom", "base_url": "https://inference.rcp.epfl.ch/v1", "model": "zai-org/GLM-5.1", "skill": "lean-proof-loop", "agents": "1"})
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
+    monkeypatch.setattr("epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: True)
 
     class _FakeProcess:
         pid = 43210
@@ -386,7 +386,7 @@ def test_interactive_workflow_launch_reuses_existing_matching_runner(monkeypatch
         ),
         runtime={"provider": "custom", "model": "zai-org/GLM-5.1", "base_url": "https://inference.rcp.epfl.ch/v1"},
         child_env={},
-        argv=["python", "-m", "epflemma_cli.native_runner"],
+        argv=["python", "-m", "epflemma_cli.native.native_runner"],
         active_skill="lean-proof-loop",
         toolset_name="epflemma-native",
     )
@@ -434,7 +434,7 @@ def test_workflow_cli_provider_override_passes_through(monkeypatch, tmp_path):
             "reasoning_effort": "xhigh",
         },
         child_env={},
-        argv=["python", "-m", "epflemma_cli.native_runner"],
+        argv=["python", "-m", "epflemma_cli.native.native_runner"],
         active_skill="lean-proof-loop",
         toolset_name="epflemma-native",
     )

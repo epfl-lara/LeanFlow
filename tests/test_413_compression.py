@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import SUMMARY_PREFIX
+from agent.compression.context_compressor import SUMMARY_PREFIX
 from run_agent import AIAgent
 
 # ---------------------------------------------------------------------------

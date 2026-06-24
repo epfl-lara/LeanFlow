@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.managed_run import MANAGED_SCRATCH_ATTRS, ManagedRunAgent
+from agent.runtime.managed_run import MANAGED_SCRATCH_ATTRS, ManagedRunAgent
 from run_agent import AIAgent
 
 

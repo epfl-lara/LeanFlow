@@ -1,6 +1,7 @@
 """Tests for the extracted lean_parsing pure parsers + native_runner re-export (Phase 2)."""
 
-from epflemma_cli import lean_parsing, native_runner
+from epflemma_cli.lean import lean_parsing
+from epflemma_cli.native import native_runner
 
 
 def test_native_runner_reexports_are_identical():

@@ -9,8 +9,8 @@ work-queue orchestration still living there resolves the extracted helpers witho
 
 from pathlib import Path
 
-from epflemma_cli import native_runner
-from epflemma_cli import project_prove_manager as ppm
+from epflemma_cli.native import native_runner
+from epflemma_cli.workflows import project_prove_manager as ppm
 
 
 def test_native_runner_reexports_are_identical():

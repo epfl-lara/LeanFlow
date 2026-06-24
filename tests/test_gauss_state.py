@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from gauss_state import SessionDB
+from core.state import SessionDB
 
 
 @pytest.fixture()
@@ -264,7 +264,7 @@ class TestFTS5Search:
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
-        from gauss_state import SessionDB
+        from core.state import SessionDB
         s = SessionDB._sanitize_fts5_query
         assert s('hello world') == 'hello world'
         assert '+' not in s('C++')

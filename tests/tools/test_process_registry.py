@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools.environments.local import _GAUSS_PROVIDER_ENV_FORCE_PREFIX
-from tools.process_registry import (
+from tools.utilities.process_registry import (
     FINISHED_TTL_SECONDS,
     MAX_OUTPUT_CHARS,
     MAX_PROCESSES,
@@ -242,7 +242,7 @@ class TestSpawnEnvSanitization:
             "TELEGRAM_BOT_TOKEN": "bot-secret",
             "FIRECRAWL_API_KEY": "fc-secret",
         }, clear=True), \
-            patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+            patch("tools.utilities.process_registry._find_shell", return_value="/bin/bash"), \
             patch("subprocess.Popen", side_effect=fake_popen), \
             patch("threading.Thread", return_value=fake_thread), \
             patch.object(registry, "_write_checkpoint"):
@@ -270,7 +270,7 @@ class TestSpawnEnvSanitization:
 
 class TestCheckpoint:
     def test_write_checkpoint(self, registry, tmp_path):
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
+        with patch("tools.utilities.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
             s = _make_session()
             registry._running[s.id] = s
             registry._write_checkpoint()
@@ -280,7 +280,7 @@ class TestCheckpoint:
             assert data[0]["session_id"] == s.id
 
     def test_recover_no_file(self, registry, tmp_path):
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "missing.json"):
+        with patch("tools.utilities.process_registry.CHECKPOINT_PATH", tmp_path / "missing.json"):
             assert registry.recover_from_checkpoint() == 0
 
     def test_recover_dead_pid(self, registry, tmp_path):
@@ -291,7 +291,7 @@ class TestCheckpoint:
             "pid": 999999999,  # almost certainly not running
             "task_id": "t1",
         }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+        with patch("tools.utilities.process_registry.CHECKPOINT_PATH", checkpoint):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 0
 
@@ -318,16 +318,16 @@ class TestKillProcess:
 
 class TestProcessToolHandler:
     def test_list_action(self):
-        from tools.process_registry import _handle_process
+        from tools.utilities.process_registry import _handle_process
         result = json.loads(_handle_process({"action": "list"}))
         assert "processes" in result
 
     def test_poll_missing_session_id(self):
-        from tools.process_registry import _handle_process
+        from tools.utilities.process_registry import _handle_process
         result = json.loads(_handle_process({"action": "poll"}))
         assert "error" in result
 
     def test_unknown_action(self):
-        from tools.process_registry import _handle_process
+        from tools.utilities.process_registry import _handle_process
         result = json.loads(_handle_process({"action": "unknown_action"}))
         assert "error" in result

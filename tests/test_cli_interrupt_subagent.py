@@ -18,7 +18,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, PropertyMock, patch
 
-from tools.interrupt import is_interrupted, set_interrupt
+from tools.utilities.interrupt import is_interrupted, set_interrupt
 
 
 class TestCLISubagentInterrupt(unittest.TestCase):
@@ -97,7 +97,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
 
         # Patch AIAgent to use our mock
         from run_agent import IterationBudget
-        from tools.delegate_tool import _run_single_child
+        from tools.implementations.delegate_tool import _run_single_child
 
         parent.iteration_budget = IterationBudget(max_total=100)
 

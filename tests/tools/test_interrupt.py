@@ -17,7 +17,7 @@ class TestInterruptModule:
     """Tests for tools/interrupt.py"""
 
     def test_set_and_check(self):
-        from tools.interrupt import is_interrupted, set_interrupt
+        from tools.utilities.interrupt import is_interrupted, set_interrupt
         set_interrupt(False)
         assert not is_interrupted()
 
@@ -29,7 +29,7 @@ class TestInterruptModule:
 
     def test_thread_safety(self):
         """Set from one thread, check from another."""
-        from tools.interrupt import is_interrupted, set_interrupt
+        from tools.utilities.interrupt import is_interrupted, set_interrupt
         set_interrupt(False)
 
         seen = {"value": False}
@@ -172,7 +172,7 @@ class TestSIGKILLEscalation:
     def test_sigterm_trap_killed_within_2s(self):
         """A process that traps SIGTERM should be SIGKILL'd after 1s grace."""
         from tools.environments.local import LocalEnvironment
-        from tools.interrupt import set_interrupt
+        from tools.utilities.interrupt import set_interrupt
 
         set_interrupt(False)
         env = LocalEnvironment(cwd="/tmp", timeout=30)

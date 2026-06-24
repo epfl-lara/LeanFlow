@@ -6,8 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from epflemma_cli.project import initialize_epflemma_project
-from epflemma_cli.sandbox_runtime import (
+from epflemma_cli.runtime.sandbox_runtime import (
     SandboxSettings,
     build_sandbox_image,
     container_run_command,
@@ -18,6 +17,7 @@ from epflemma_cli.sandbox_runtime import (
     resolve_container_engine,
     sandbox_status,
 )
+from epflemma_cli.workflows.project import initialize_epflemma_project
 
 
 def _settings(tmp_path: Path) -> SandboxSettings:
@@ -39,16 +39,16 @@ def test_normalize_epflemma_args_accepts_shell_style_workflows() -> None:
 
 
 def test_resolve_container_engine_prefers_rootless_podman_on_linux(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.sys.platform", "linux")
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.shutil.which", lambda name: f"/usr/bin/{name}" if name in {"podman", "docker"} else None)
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.check_container_engine_usable", lambda _name: "")
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.sys.platform", "linux")
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.shutil.which", lambda name: f"/usr/bin/{name}" if name in {"podman", "docker"} else None)
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.check_container_engine_usable", lambda _name: "")
     assert resolve_container_engine("auto") == "podman"
 
 
 def test_resolve_container_engine_falls_back_to_usable_docker(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.sys.platform", "linux")
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.shutil.which", lambda name: f"/usr/bin/{name}" if name in {"podman", "docker"} else None)
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.check_container_engine_usable", lambda name: "podman broken" if name == "podman" else "")
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.sys.platform", "linux")
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.shutil.which", lambda name: f"/usr/bin/{name}" if name in {"podman", "docker"} else None)
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.check_container_engine_usable", lambda name: "podman broken" if name == "podman" else "")
     assert resolve_container_engine("auto") == "docker"
 
 
@@ -147,8 +147,8 @@ def test_export_sandbox_patch_captures_worktree_edits(tmp_path: Path) -> None:
 
 def test_sandbox_status_reports_missing_engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.load_config", lambda: {})
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.shutil.which", lambda _name: None)
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.load_config", lambda: {})
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.shutil.which", lambda _name: None)
 
     payload = sandbox_status()
 
@@ -159,13 +159,13 @@ def test_sandbox_status_reports_missing_engine(monkeypatch: pytest.MonkeyPatch, 
 
 def test_sandbox_status_reports_unusable_engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.settings_from_config", lambda **_kwargs: settings)
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.resolve_container_engine", lambda _requested: "docker")
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.settings_from_config", lambda **_kwargs: settings)
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.resolve_container_engine", lambda _requested: "docker")
 
     def _fake_run(*_args, **_kwargs):
         return subprocess.CompletedProcess(["docker", "info"], 1, stderr="permission denied\n")
 
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.subprocess.run", _fake_run)
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.subprocess.run", _fake_run)
 
     payload = sandbox_status()
 
@@ -179,10 +179,10 @@ def test_sandbox_status_includes_recent_runs(monkeypatch: pytest.MonkeyPatch, tm
     run_dir = settings.runs_dir / "run-a"
     run_dir.mkdir(parents=True)
     (run_dir / "status.json").write_text(json.dumps({"run_id": "run-a", "status": "failed"}), encoding="utf-8")
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.settings_from_config", lambda **_kwargs: settings)
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.resolve_container_engine", lambda _requested: "docker")
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.check_container_engine_usable", lambda _engine: "")
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.image_exists", lambda _engine, _image: True)
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.settings_from_config", lambda **_kwargs: settings)
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.resolve_container_engine", lambda _requested: "docker")
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.check_container_engine_usable", lambda _engine: "")
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.image_exists", lambda _engine, _image: True)
 
     payload = sandbox_status()
 
@@ -206,11 +206,11 @@ def test_build_sandbox_image_can_bake_local_lean_explore(monkeypatch: pytest.Mon
     settings = _settings(tmp_path)
     captured: dict[str, list[str]] = {}
 
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.settings_from_config", lambda **_kwargs: settings)
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.resolve_container_engine", lambda _requested: "docker")
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.ensure_container_engine_usable", lambda _engine: None)
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.repository_root", lambda: repo)
-    monkeypatch.setattr("epflemma_cli.sandbox_runtime.subprocess.call", lambda argv: captured.setdefault("argv", argv) and 0)
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.settings_from_config", lambda **_kwargs: settings)
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.resolve_container_engine", lambda _requested: "docker")
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.ensure_container_engine_usable", lambda _engine: None)
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.repository_root", lambda: repo)
+    monkeypatch.setattr("epflemma_cli.runtime.sandbox_runtime.subprocess.call", lambda argv: captured.setdefault("argv", argv) and 0)
 
     assert build_sandbox_image(local_lean_explore=True) == 0
 

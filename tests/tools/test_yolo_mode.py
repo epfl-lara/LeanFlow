@@ -4,9 +4,9 @@ import os
 
 import pytest
 
-import tools.approval as approval_module
-import tools.tirith_security
-from tools.approval import (
+import tools.implementations.tirith_security
+import tools.utilities.approval as approval_module
+from tools.utilities.approval import (
     check_all_command_guards,
     check_dangerous_command,
     detect_dangerous_command,
@@ -83,7 +83,7 @@ class TestYoloMode:
             called["value"] = True
             return {"action": "block", "findings": [], "summary": "should never run"}
 
-        monkeypatch.setattr(tools.tirith_security, "check_command_security", fake_check)
+        monkeypatch.setattr(tools.implementations.tirith_security, "check_command_security", fake_check)
 
         result = check_all_command_guards("rm -rf /", "local")
         assert result["approved"]

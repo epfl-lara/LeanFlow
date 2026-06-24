@@ -10,7 +10,7 @@ from pathlib import Path
 
 from tools.environments.base import BaseEnvironment
 from tools.environments.persistent_shell import PersistentShellMixin
-from tools.interrupt import is_interrupted
+from tools.utilities.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 

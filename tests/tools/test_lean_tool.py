@@ -5,14 +5,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import model_tools
-import tools.lean_experts as lean_experts
-import tools.lean_patch as lean_patch
-import tools.lean_tool as lean_tool
-from epflemma_cli.lean_services import (
+import tools.implementations.lean_experts as lean_experts
+import tools.implementations.lean_patch as lean_patch
+import tools.implementations.lean_tool as lean_tool
+from epflemma_cli.lean.lean_services import (
     LeanCapabilityReport,
     LeanSearchResult,
 )
-from epflemma_cli.workflow_state import load_verified_patch_status
+from epflemma_cli.workflows.workflow_state import load_verified_patch_status
 
 
 def test_lean_capabilities_tool_returns_structured_json(monkeypatch):
@@ -376,7 +376,7 @@ def test_lean_reasoning_help_tool_uses_command_provider(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("AUXILIARY_LEAN_REASONING_PROVIDER", "codex")
     monkeypatch.setenv("AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE", "codex-helper --read-only")
-    monkeypatch.setattr("epflemma_cli.expert_help.subprocess.run", _fake_run)
+    monkeypatch.setattr("epflemma_cli.cli.expert_help.subprocess.run", _fake_run)
 
     payload = json.loads(
         lean_tool.lean_reasoning_help_tool(
@@ -413,7 +413,7 @@ def test_lean_reasoning_help_codex_default_reads_last_message_file(monkeypatch, 
 
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("AUXILIARY_LEAN_REASONING_PROVIDER", "codex")
-    monkeypatch.setattr("epflemma_cli.expert_help.subprocess.run", _fake_run)
+    monkeypatch.setattr("epflemma_cli.cli.expert_help.subprocess.run", _fake_run)
 
     payload = json.loads(
         lean_tool.lean_reasoning_help_tool(

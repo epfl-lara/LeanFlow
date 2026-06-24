@@ -2,7 +2,7 @@
 
 from collections import deque
 
-from epflemma_cli import native_runner, native_state
+from epflemma_cli.native import native_runner, native_state
 
 
 def test_native_runner_reexports_are_identical():

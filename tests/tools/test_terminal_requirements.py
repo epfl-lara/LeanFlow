@@ -1,7 +1,7 @@
 import importlib
 import logging
 
-terminal_tool_module = importlib.import_module("tools.terminal_tool")
+terminal_tool_module = importlib.import_module("tools.implementations.terminal_tool")
 
 
 def _clear_terminal_env(monkeypatch):

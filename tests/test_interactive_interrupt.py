@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent, IterationBudget
-from tools.interrupt import is_interrupted, set_interrupt
+from tools.utilities.interrupt import is_interrupted, set_interrupt
 
 
 def make_slow_response(delay=2.0):
@@ -109,7 +109,7 @@ def main() -> int:
             mock_client.close = MagicMock()
             MockOpenAI.return_value = mock_client
 
-            from tools.delegate_tool import _run_single_child
+            from tools.implementations.delegate_tool import _run_single_child
 
             # Signal that child is about to start
             original_init = AIAgent.__init__

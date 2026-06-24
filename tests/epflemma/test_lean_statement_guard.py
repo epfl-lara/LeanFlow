@@ -1,6 +1,6 @@
 import pytest
 
-from epflemma_cli.lean_statement_guard import (
+from epflemma_cli.lean.lean_statement_guard import (
     ALLOW_STATEMENT_EDITS_ENV,
     should_guard_lean_statement_path,
     validate_lean_statement_edit,

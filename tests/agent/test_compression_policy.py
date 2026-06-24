@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.compression_policy import CompressionPolicy
+from agent.compression.compression_policy import CompressionPolicy
 from run_agent import AIAgent, _resolve_compression_policy
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from tools.document_tool import formalization_document_inspect_tool, read_pdf_tool
+from tools.implementations.document_tool import formalization_document_inspect_tool, read_pdf_tool
 
 
 def test_formalization_document_inspect_tool_returns_latex_summary(tmp_path):
@@ -41,7 +41,7 @@ def test_read_pdf_tool_returns_extracted_text(monkeypatch):
             "degraded_reasons": [],
         }
 
-    monkeypatch.setattr("tools.document_tool.inspect_formalization_document", fake_inspect)
+    monkeypatch.setattr("tools.implementations.document_tool.inspect_formalization_document", fake_inspect)
 
     payload = json.loads(
         read_pdf_tool(
@@ -67,7 +67,7 @@ def test_read_pdf_tool_rejects_non_pdf(monkeypatch):
             "source_relative": path,
         }
 
-    monkeypatch.setattr("tools.document_tool.inspect_formalization_document", fake_inspect)
+    monkeypatch.setattr("tools.implementations.document_tool.inspect_formalization_document", fake_inspect)
 
     payload = json.loads(read_pdf_tool("docs/paper.tex", cwd="/project", project_root="/project"))
 

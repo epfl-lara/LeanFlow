@@ -21,7 +21,7 @@ def _can_symlink():
         return False
 
 
-from tools.skills_guard import (
+from tools.implementations.skills_guard import (
     INSTALL_POLICY,
     INVISIBLE_CHARS,
     MAX_FILE_COUNT,

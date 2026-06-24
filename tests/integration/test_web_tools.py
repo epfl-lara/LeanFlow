@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import List
 
 # Import the web tools to test (updated path after moving tools/)
-from tools.web_tools import (
+from tools.implementations.web_tools import (
     check_auxiliary_model,
     check_firecrawl_api_key,
     get_debug_session_info,

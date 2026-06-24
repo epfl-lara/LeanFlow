@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 
 from epflemma_cli.config import get_epflemma_home
 from tools.environments.base import BaseEnvironment
-from tools.interrupt import is_interrupted
+from tools.utilities.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 

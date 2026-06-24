@@ -10,9 +10,9 @@ verification helpers still living there) resolve them without a back-import.
 
 import os
 
-from epflemma_cli import manager_verification as mv
-from epflemma_cli import native_runner
-from epflemma_cli.verification_providers import (
+from epflemma_cli.native import native_runner
+from epflemma_cli.workflows import manager_verification as mv
+from epflemma_cli.workflows.verification_providers import (
     AUTOFORMALIZER_VERIFICATION_TASK,
     BLUEPRINT_VERIFICATION_TASK,
 )

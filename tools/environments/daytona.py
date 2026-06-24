@@ -15,7 +15,7 @@ import warnings
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment
-from tools.interrupt import is_interrupted
+from tools.utilities.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 

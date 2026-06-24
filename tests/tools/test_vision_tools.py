@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.vision_tools import (
+from tools.implementations.vision_tools import (
     _determine_mime_type,
     _handle_vision_analyze,
     _image_to_base64_data_url,
@@ -150,7 +150,7 @@ class TestHandleVisionAnalyze:
     def test_returns_awaitable(self):
         """The handler must return an Awaitable (coroutine) since it's registered as async."""
         with patch(
-            "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+            "tools.implementations.vision_tools.vision_analyze_tool", new_callable=AsyncMock
         ) as mock_tool:
             mock_tool.return_value = json.dumps({"result": "ok"})
             result = _handle_vision_analyze(
@@ -167,7 +167,7 @@ class TestHandleVisionAnalyze:
     def test_prompt_contains_question(self):
         """The full prompt should incorporate the user's question."""
         with patch(
-            "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+            "tools.implementations.vision_tools.vision_analyze_tool", new_callable=AsyncMock
         ) as mock_tool:
             mock_tool.return_value = json.dumps({"result": "ok"})
             coro = _handle_vision_analyze(
@@ -187,7 +187,7 @@ class TestHandleVisionAnalyze:
         """AUXILIARY_VISION_MODEL env var should override DEFAULT_VISION_MODEL."""
         with (
             patch(
-                "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+                "tools.implementations.vision_tools.vision_analyze_tool", new_callable=AsyncMock
             ) as mock_tool,
             patch.dict(os.environ, {"AUXILIARY_VISION_MODEL": "custom/model-v1"}),
         ):
@@ -204,7 +204,7 @@ class TestHandleVisionAnalyze:
         """Without AUXILIARY_VISION_MODEL, model should be None (let call_llm resolve default)."""
         with (
             patch(
-                "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+                "tools.implementations.vision_tools.vision_analyze_tool", new_callable=AsyncMock
             ) as mock_tool,
             patch.dict(os.environ, {}, clear=False),
         ):
@@ -224,7 +224,7 @@ class TestHandleVisionAnalyze:
     def test_empty_args_graceful(self):
         """Missing keys should default to empty strings, not raise."""
         with patch(
-            "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+            "tools.implementations.vision_tools.vision_analyze_tool", new_callable=AsyncMock
         ) as mock_tool:
             mock_tool.return_value = json.dumps({"result": "ok"})
             result = _handle_vision_analyze({})
@@ -243,9 +243,9 @@ class TestErrorLoggingExcInfo:
     @pytest.mark.asyncio
     async def test_download_failure_logs_exc_info(self, tmp_path, caplog):
         """After max retries, the download error should include exc_info."""
-        from tools.vision_tools import _download_image
+        from tools.implementations.vision_tools import _download_image
 
-        with patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls:
+        with patch("tools.implementations.vision_tools.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
@@ -254,7 +254,7 @@ class TestErrorLoggingExcInfo:
 
             dest = tmp_path / "image.jpg"
             with (
-                caplog.at_level(logging.ERROR, logger="tools.vision_tools"),
+                caplog.at_level(logging.ERROR, logger="tools.implementations.vision_tools"),
                 pytest.raises(ConnectionError),
             ):
                 await _download_image(
@@ -270,13 +270,13 @@ class TestErrorLoggingExcInfo:
     async def test_analysis_error_logs_exc_info(self, caplog):
         """When vision_analyze_tool encounters an error, it should log with exc_info."""
         with (
-            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.implementations.vision_tools._validate_image_url", return_value=True),
             patch(
-                "tools.vision_tools._download_image",
+                "tools.implementations.vision_tools._download_image",
                 new_callable=AsyncMock,
                 side_effect=Exception("download boom"),
             ),
-            caplog.at_level(logging.ERROR, logger="tools.vision_tools"),
+            caplog.at_level(logging.ERROR, logger="tools.implementations.vision_tools"),
         ):
             result = await vision_analyze_tool(
                 "https://example.com/img.jpg", "describe this", "test/model"
@@ -302,13 +302,13 @@ class TestErrorLoggingExcInfo:
             return dest
 
         with (
-            patch("tools.vision_tools._validate_image_url", return_value=True),
-            patch("tools.vision_tools._download_image", side_effect=fake_download),
+            patch("tools.implementations.vision_tools._validate_image_url", return_value=True),
+            patch("tools.implementations.vision_tools._download_image", side_effect=fake_download),
             patch(
-                "tools.vision_tools._image_to_base64_data_url",
+                "tools.implementations.vision_tools._image_to_base64_data_url",
                 return_value="data:image/jpeg;base64,abc",
             ),
-            caplog.at_level(logging.WARNING, logger="tools.vision_tools"),
+            caplog.at_level(logging.WARNING, logger="tools.implementations.vision_tools"),
         ):
             # Mock the async_call_llm function to return a mock response
             mock_response = MagicMock()
@@ -317,7 +317,7 @@ class TestErrorLoggingExcInfo:
             mock_response.choices = [mock_choice]
 
             with (
-                patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response),
+                patch("tools.implementations.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response),
             ):
                 # Make unlink fail to trigger cleanup warning
                 original_unlink = Path.unlink

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from epflemma_cli.lean_workflow_specs import (
+from epflemma_cli.lean.lean_workflow_specs import (
     get_lean_spec,
     list_specs,
     load_lean_specs,

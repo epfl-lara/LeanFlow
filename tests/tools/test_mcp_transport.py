@@ -1,13 +1,13 @@
 """Tests for tools/mcp_transport.py (stdio/HTTP transport plumbing).
 
 Covers re-export identity (every moved name is the SAME object on
-``tools.mcp_tool``) plus a few behavior checks on the trickiest helpers.
+``tools.mcp.mcp_tool``) plus a few behavior checks on the trickiest helpers.
 """
 
 import os
 
-import tools.mcp_tool as mcp_tool
-import tools.mcp_transport as mcp_transport
+import tools.mcp.mcp_tool as mcp_tool
+import tools.mcp.mcp_transport as mcp_transport
 
 _REEXPORTED = [
     "_build_safe_env",
@@ -44,10 +44,10 @@ class TestReExportIdentity:
         import importlib
         import sys
 
-        sys.modules.pop("tools.mcp_tool", None)
-        sys.modules.pop("tools.mcp_transport", None)
-        importlib.import_module("tools.mcp_transport")
-        assert "tools.mcp_tool" not in sys.modules
+        sys.modules.pop("tools.mcp.mcp_tool", None)
+        sys.modules.pop("tools.mcp.mcp_transport", None)
+        importlib.import_module("tools.mcp.mcp_transport")
+        assert "tools.mcp.mcp_tool" not in sys.modules
 
 
 class TestBuildSafeEnv:

@@ -5,7 +5,7 @@ from typing import List, Optional
 
 import pytest
 
-from tools.clarify_tool import (
+from tools.implementations.clarify_tool import (
     CLARIFY_SCHEMA,
     MAX_CHOICES,
     check_clarify_requirements,

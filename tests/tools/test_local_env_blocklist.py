@@ -49,7 +49,7 @@ def _run_with_env(extra_os_env=None, self_env=None):
 
     with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
          patch("subprocess.Popen", side_effect=_make_fake_popen(captured)), \
-         patch("tools.terminal_tool._interrupt_event", fake_interrupt), \
+         patch("tools.implementations.terminal_tool._interrupt_event", fake_interrupt), \
          patch.dict(os.environ, test_environ, clear=True):
         env.execute("echo hello")
 
@@ -196,7 +196,7 @@ class TestBlocklistCoverage:
     def test_registry_vars_are_in_blocklist(self):
         """Every api_key_env_var and base_url_env_var from PROVIDER_REGISTRY
         must appear in the blocklist — ensures no drift."""
-        from epflemma_cli.auth import PROVIDER_REGISTRY
+        from epflemma_cli.runtime.auth import PROVIDER_REGISTRY
 
         for pconfig in PROVIDER_REGISTRY.values():
             for var in pconfig.api_key_env_vars:

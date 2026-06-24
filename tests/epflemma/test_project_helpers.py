@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from epflemma_cli.project import (
+from epflemma_cli.workflows.project import (
     EPFLEMMA_PROJECT_TEMPLATE_ENV,
     LEGACY_PROJECT_TEMPLATE_ENVS,
     ProjectNotFoundError,
@@ -149,8 +149,8 @@ def test_setup_project_power_modes_adds_repl_to_lakefile_toml(monkeypatch, tmp_p
             repl.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
         return 0, "", 0.1
 
-    monkeypatch.setattr("epflemma_cli.project.shutil.which", lambda name: "/usr/bin/lake" if name == "lake" else None)
-    monkeypatch.setattr("epflemma_cli.project._run_power_setup_command", _fake_run)
+    monkeypatch.setattr("epflemma_cli.workflows.project.shutil.which", lambda name: "/usr/bin/lake" if name == "lake" else None)
+    monkeypatch.setattr("epflemma_cli.workflows.project._run_power_setup_command", _fake_run)
     progress: list[str] = []
 
     report = setup_project_power_modes(root, progress=progress.append)
@@ -171,7 +171,7 @@ def test_setup_project_power_modes_does_not_duplicate_existing_repl(monkeypatch,
         encoding="utf-8",
     )
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
-    monkeypatch.setattr("epflemma_cli.project.shutil.which", lambda name: None)
+    monkeypatch.setattr("epflemma_cli.workflows.project.shutil.which", lambda name: None)
 
     report = setup_project_power_modes(root)
 
@@ -183,7 +183,7 @@ def test_setup_project_power_modes_does_not_duplicate_existing_repl(monkeypatch,
 def test_setup_project_power_modes_leaves_lakefile_lean_manual(monkeypatch, tmp_path):
     root = _make_lean_root(tmp_path / "proj")
     original = (root / "lakefile.lean").read_text(encoding="utf-8")
-    monkeypatch.setattr("epflemma_cli.project.shutil.which", lambda name: "/usr/bin/lake")
+    monkeypatch.setattr("epflemma_cli.workflows.project.shutil.which", lambda name: "/usr/bin/lake")
 
     report = setup_project_power_modes(root)
 

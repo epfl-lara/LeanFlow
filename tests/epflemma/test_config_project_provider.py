@@ -3,8 +3,8 @@ from __future__ import annotations
 import yaml
 
 from epflemma_cli.config import get_config_path, load_config
-from epflemma_cli.project import discover_epflemma_project, initialize_epflemma_project
-from epflemma_cli.runtime_provider import RuntimeProviderError, resolve_runtime_provider
+from epflemma_cli.runtime.runtime_provider import RuntimeProviderError, resolve_runtime_provider
+from epflemma_cli.workflows.project import discover_epflemma_project, initialize_epflemma_project
 
 
 def test_load_config_imports_legacy_gauss_payload(monkeypatch, tmp_path):

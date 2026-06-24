@@ -2,8 +2,8 @@
 
 from unittest.mock import patch as mock_patch
 
-import tools.approval as approval_module
-from tools.approval import (
+import tools.utilities.approval as approval_module
+from tools.utilities.approval import (
     approve_session,
     clear_session,
     detect_dangerous_command,

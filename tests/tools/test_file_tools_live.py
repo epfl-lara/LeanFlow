@@ -30,7 +30,7 @@ from tools.environments.local import (
     _clean_shell_noise,
     _extract_fenced_output,
 )
-from tools.file_operations import ShellFileOperations
+from tools.implementations.file_operations import ShellFileOperations
 
 # ── Shared noise detection ───────────────────────────────────────────────
 # Every known shell noise pattern. If ANY of these appear in output that

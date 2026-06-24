@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from tools.patch_parser import (
+from tools.utilities.patch_parser import (
     OperationType,
     apply_v4a_operations,
     parse_v4a_patch,

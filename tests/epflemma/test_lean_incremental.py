@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from epflemma_cli import lean_incremental as li
+from epflemma_cli.lean import lean_incremental as li
 
 
 @pytest.fixture(autouse=True)

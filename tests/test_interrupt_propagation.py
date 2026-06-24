@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, PropertyMock, patch
 
-from tools.interrupt import _interrupt_event, is_interrupted, set_interrupt
+from tools.utilities.interrupt import _interrupt_event, is_interrupted, set_interrupt
 
 
 class TestInterruptPropagationToChild(unittest.TestCase):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from epflemma_cli.env_loader import load_epflemma_dotenv
+from epflemma_cli.runtime.env_loader import load_epflemma_dotenv
 
 
 def _clean_env(monkeypatch, *names: str) -> None:
