@@ -11,10 +11,11 @@ resolving ``epflemma_cli.queue_manager.<name>``.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Tunables (lifted from native_runner so callers can keep their env-var knobs)
@@ -55,7 +56,7 @@ class TheoremKey:
     active_file: str  # normalized absolute path
 
     @classmethod
-    def make(cls, target_symbol: str, active_file: str) -> "TheoremKey":
+    def make(cls, target_symbol: str, active_file: str) -> TheoremKey:
         return cls(
             target_symbol=(target_symbol or "").strip(),
             active_file=_normalize_path(active_file),
@@ -84,7 +85,7 @@ class QueueItem:
     verification_gate: str = ""
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "QueueItem":
+    def from_mapping(cls, raw: Mapping[str, Any]) -> QueueItem:
         return cls(
             label=str(raw.get("label", "") or "").strip(),
             kind=str(raw.get("kind", "") or "").strip(),
@@ -118,7 +119,7 @@ class PrepareState:
     error: str = ""
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any] | None) -> "PrepareState":
+    def from_mapping(cls, raw: Mapping[str, Any] | None) -> PrepareState:
         raw = raw or {}
         return cls(
             success=bool(raw.get("success", False)),

@@ -23,6 +23,7 @@ resolving them as ``native_runner.<name>``.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,8 @@ from epflemma_cli.native_config import (
 )
 from epflemma_cli.native_utils import _message_text
 from run_agent import AIAgent
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "WORKFLOW_CHECKPOINT_PREFIX",
@@ -95,7 +98,9 @@ def _read_json_file(path: Path) -> dict[str, Any]:
     except KeyboardInterrupt:
         raise
     except Exception:
-        pass
+        # Best-effort journal read: keep swallowing any failure (incl. UnicodeDecodeError on a
+        # corrupt file) and return {}, but log at DEBUG so corruption is visible.
+        logger.debug("Failed to read JSON journal file %s", path, exc_info=True)
     return {}
 
 

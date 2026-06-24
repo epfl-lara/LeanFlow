@@ -53,7 +53,7 @@ class CompressionPolicy:
     ``AIAgent`` methods of the same names.
     """
 
-    def __init__(self, agent: "AIAgent") -> None:
+    def __init__(self, agent: AIAgent) -> None:
         self._agent = agent
 
     # ── Core compression ────────────────────────────────────────────────────

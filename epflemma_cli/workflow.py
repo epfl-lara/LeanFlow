@@ -6,10 +6,11 @@ import os
 import shlex
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from epflemma_cli.commands import (
     build_forgiving_workflow_alias_map,

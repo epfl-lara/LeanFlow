@@ -39,7 +39,7 @@ _EPFLEMMA_CORE_TOOLS = [
 ]
 
 
-TOOLSETS: Dict[str, Dict[str, Any]] = {
+TOOLSETS: dict[str, dict[str, Any]] = {
     "web": {
         "description": "Web research tools",
         "tools": _WEB_TOOLS,
@@ -113,16 +113,16 @@ TOOLSETS: Dict[str, Dict[str, Any]] = {
 }
 
 
-def get_toolset(name: str) -> Optional[Dict[str, Any]]:
+def get_toolset(name: str) -> dict[str, Any] | None:
     return TOOLSETS.get(name)
 
 
-def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
+def resolve_toolset(name: str, visited: set[str] = None) -> list[str]:
     if visited is None:
         visited = set()
 
     if name in {"all", "*"}:
-        all_tools: Set[str] = set()
+        all_tools: set[str] = set()
         for toolset_name in get_toolset_names():
             all_tools.update(resolve_toolset(toolset_name, visited.copy()))
         return list(all_tools)
@@ -141,18 +141,18 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     return list(tools)
 
 
-def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
+def resolve_multiple_toolsets(toolset_names: list[str]) -> list[str]:
     all_tools = set()
     for name in toolset_names:
         all_tools.update(resolve_toolset(name))
     return list(all_tools)
 
 
-def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
+def get_all_toolsets() -> dict[str, dict[str, Any]]:
     return TOOLSETS.copy()
 
 
-def get_toolset_names() -> List[str]:
+def get_toolset_names() -> list[str]:
     return list(TOOLSETS.keys())
 
 
@@ -160,7 +160,7 @@ def validate_toolset(name: str) -> bool:
     return name in TOOLSETS or name in {"all", "*"}
 
 
-def create_custom_toolset(name: str, description: str, tools: List[str], includes: List[str] = None):
+def create_custom_toolset(name: str, description: str, tools: list[str], includes: list[str] = None):
     TOOLSETS[name] = {
         "description": description,
         "tools": list(tools),
@@ -168,7 +168,7 @@ def create_custom_toolset(name: str, description: str, tools: List[str], include
     }
 
 
-def get_toolset_info(name: str) -> Optional[Dict[str, Any]]:
+def get_toolset_info(name: str) -> dict[str, Any] | None:
     toolset = get_toolset(name)
     if not toolset:
         return None

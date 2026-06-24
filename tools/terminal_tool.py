@@ -400,10 +400,10 @@ Do NOT use vim/nano/interactive tools without pty=true — they hang without a p
 """
 
 # Global state for environment lifecycle management
-_active_environments: Dict[str, Any] = {}
-_last_activity: Dict[str, float] = {}
+_active_environments: dict[str, Any] = {}
+_last_activity: dict[str, float] = {}
 _env_lock = threading.Lock()
-_creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
+_creation_locks: dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
 _cleanup_thread = None
 _cleanup_running = False
@@ -416,10 +416,10 @@ _cleanup_running = False
 #
 # This is never exposed to the model -- only infrastructure code calls it.
 # Thread-safe because each task_id is unique per rollout.
-_task_env_overrides: Dict[str, Dict[str, Any]] = {}
+_task_env_overrides: dict[str, dict[str, Any]] = {}
 
 
-def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
+def register_task_env_overrides(task_id: str, overrides: dict[str, Any]):
     """
     Register environment overrides for a specific task/rollout.
 
@@ -457,14 +457,14 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
     raw = os.getenv(name, default)
     try:
         return converter(raw)
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError) as exc:
         raise ValueError(
             f"Invalid value for {name}: {raw!r} (expected {type_label}). "
             f"Check ~/.gauss/.env or environment variables."
-        )
+        ) from exc
 
 
-def _get_env_config() -> Dict[str, Any]:
+def _get_env_config() -> dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
@@ -740,7 +740,7 @@ def _stop_cleanup_thread():
             pass
 
 
-def get_active_environments_info() -> Dict[str, Any]:
+def get_active_environments_info() -> dict[str, Any]:
     """Get information about currently active environments."""
     info = {
         "count": len(_active_environments),
@@ -852,11 +852,11 @@ atexit.register(_atexit_cleanup)
 def terminal_tool(
     command: str,
     background: bool = False,
-    timeout: Optional[int] = None,
-    task_id: Optional[str] = None,
+    timeout: int | None = None,
+    task_id: str | None = None,
     force: bool = False,
-    workdir: Optional[str] = None,
-    check_interval: Optional[int] = None,
+    workdir: str | None = None,
+    check_interval: int | None = None,
     pty: bool = False,
 ) -> str:
     """

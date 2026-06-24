@@ -6,9 +6,10 @@ import os
 import shlex
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from epflemma_cli.config import get_env_value, load_config
 from epflemma_cli.workflow_state import append_workflow_activity

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from epflemma_cli.auth import (
@@ -142,7 +143,7 @@ def _get_model_config() -> dict[str, Any]:
     return {}
 
 
-def resolve_requested_provider(requested: Optional[str] = None) -> str:
+def resolve_requested_provider(requested: str | None = None) -> str:
     if requested and requested.strip():
         return _normalize_provider_name(requested)
 
@@ -158,7 +159,7 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     return "auto"
 
 
-def _load_named_custom_provider(requested_provider: str) -> Optional[dict[str, str]]:
+def _load_named_custom_provider(requested_provider: str) -> dict[str, str] | None:
     requested_norm = _normalize_provider_name(requested_provider or "")
     if not requested_norm or requested_norm in {
         "auto",
@@ -198,8 +199,8 @@ def _load_named_custom_provider(requested_provider: str) -> Optional[dict[str, s
 def _resolve_openai_compatible_runtime(
     *,
     requested_provider: str,
-    explicit_api_key: Optional[str] = None,
-    explicit_base_url: Optional[str] = None,
+    explicit_api_key: str | None = None,
+    explicit_base_url: str | None = None,
 ) -> dict[str, Any]:
     model_cfg = _get_model_config()
     cfg_base_url = str(model_cfg.get("base_url", "") or "").strip()
@@ -377,9 +378,9 @@ def _resolve_local_runtime() -> dict[str, Any]:
 
 def resolve_runtime_provider(
     *,
-    requested: Optional[str] = None,
-    explicit_api_key: Optional[str] = None,
-    explicit_base_url: Optional[str] = None,
+    requested: str | None = None,
+    explicit_api_key: str | None = None,
+    explicit_base_url: str | None = None,
 ) -> dict[str, Any]:
     requested_provider = resolve_requested_provider(requested)
 

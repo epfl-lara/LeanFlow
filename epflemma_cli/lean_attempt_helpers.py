@@ -17,7 +17,8 @@ cycle. Existing callers keep resolving them as ``lean_services.<name>`` unchange
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 MULTI_ATTEMPT_MIN_CANDIDATES = 2
 MULTI_ATTEMPT_MAX_CANDIDATES = 6

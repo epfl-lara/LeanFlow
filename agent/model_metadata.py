@@ -18,10 +18,10 @@ from gauss_constants import OPENROUTER_MODELS_URL
 
 logger = logging.getLogger(__name__)
 
-_model_metadata_cache: Dict[str, Dict[str, Any]] = {}
+_model_metadata_cache: dict[str, dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
-_provider_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
-_provider_model_metadata_cache_time: Dict[str, float] = {}
+_provider_model_metadata_cache: dict[str, dict[str, dict[str, Any]]] = {}
+_provider_model_metadata_cache_time: dict[str, float] = {}
 _MODEL_CACHE_TTL = 3600
 UNKNOWN_CONTEXT_LENGTH_FALLBACK = 200_000
 
@@ -81,7 +81,7 @@ DEFAULT_CONTEXT_LENGTHS = {
 }
 
 
-def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
+def fetch_model_metadata(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
     """Fetch model metadata from OpenRouter (cached for 1 hour)."""
     global _model_metadata_cache, _model_metadata_cache_time
 
@@ -128,7 +128,7 @@ def _normalize_model_name(model: str) -> str:
     return str(model or "").strip().lower()
 
 
-def _extract_context_length_from_entry(entry: Dict[str, Any] | None) -> Optional[int]:
+def _extract_context_length_from_entry(entry: dict[str, Any] | None) -> int | None:
     if not isinstance(entry, dict):
         return None
     candidates = [entry]
@@ -157,9 +157,9 @@ def _extract_context_length_from_entry(entry: Dict[str, Any] | None) -> Optional
 
 
 def _lookup_metadata_context_length(
-    metadata: Dict[str, Dict[str, Any]],
+    metadata: dict[str, dict[str, Any]],
     model: str,
-) -> tuple[bool, Optional[int]]:
+) -> tuple[bool, int | None]:
     if not metadata:
         return False, None
     normalized_model = _normalize_model_name(model)
@@ -171,7 +171,7 @@ def _lookup_metadata_context_length(
     return False, None
 
 
-def _lookup_default_context_length(model: str) -> Optional[int]:
+def _lookup_default_context_length(model: str) -> int | None:
     normalized_model = _normalize_model_name(model)
     for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
         if _normalize_model_name(default_model) == normalized_model:
@@ -183,7 +183,7 @@ def _lookup_default_context_length(model: str) -> Optional[int]:
     return None
 
 
-def _lookup_configured_context_length(model: str) -> Optional[int]:
+def _lookup_configured_context_length(model: str) -> int | None:
     try:
         from epflemma_cli.config import load_config
 
@@ -215,7 +215,7 @@ def fetch_provider_model_metadata(
     base_url: str,
     api_key: str = "",
     force_refresh: bool = False,
-) -> Dict[str, Dict[str, Any]]:
+) -> dict[str, dict[str, Any]]:
     normalized_base_url = str(base_url or "").strip().rstrip("/")
     if not normalized_base_url:
         return {}
@@ -241,7 +241,7 @@ def fetch_provider_model_metadata(
         if not isinstance(models, list):
             models = []
 
-        cache: Dict[str, Dict[str, Any]] = {}
+        cache: dict[str, dict[str, Any]] = {}
         for entry in models:
             if not isinstance(entry, dict):
                 continue
@@ -269,7 +269,7 @@ def _get_context_cache_path() -> Path:
     return gauss_home / "context_length_cache.yaml"
 
 
-def _load_context_cache() -> Dict[str, int]:
+def _load_context_cache() -> dict[str, int]:
     """Load the model+provider → context_length cache from disk."""
     path = _get_context_cache_path()
     if not path.exists():
@@ -304,14 +304,14 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
         logger.debug("Failed to save context length cache: %s", e)
 
 
-def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
+def get_cached_context_length(model: str, base_url: str) -> int | None:
     """Look up a previously discovered context length for model+provider."""
     key = f"{model}@{base_url}"
     cache = _load_context_cache()
     return cache.get(key)
 
 
-def get_next_probe_tier(current_length: int) -> Optional[int]:
+def get_next_probe_tier(current_length: int) -> int | None:
     """Return the next lower probe tier, or None if already at minimum."""
     for tier in CONTEXT_PROBE_TIERS:
         if tier < current_length:
@@ -319,7 +319,7 @@ def get_next_probe_tier(current_length: int) -> Optional[int]:
     return None
 
 
-def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
+def parse_context_limit_from_error(error_msg: str) -> int | None:
     """Try to extract the actual context limit from an API error message.
 
     Many providers include the limit in their error text, e.g.:
@@ -401,7 +401,7 @@ def estimate_tokens_rough(text: str) -> int:
     return len(text) // 4
 
 
-def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
+def estimate_messages_tokens_rough(messages: list[dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
     total_chars = sum(len(str(msg)) for msg in messages)
     return total_chars // 4

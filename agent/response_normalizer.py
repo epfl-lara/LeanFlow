@@ -71,7 +71,7 @@ class ResponseNormalizer:
         if not isinstance(content, list):
             return ""
 
-        chunks: List[str] = []
+        chunks: list[str] = []
         for part in content:
             ptype = getattr(part, "type", None)
             if ptype not in {"output_text", "text"}:
@@ -85,7 +85,7 @@ class ResponseNormalizer:
         """Extract a compact reasoning text from a Responses reasoning item."""
         summary = getattr(item, "summary", None)
         if isinstance(summary, list):
-            chunks: List[str] = []
+            chunks: list[str] = []
             for part in summary:
                 text = getattr(part, "text", None)
                 if isinstance(text, str) and text:
@@ -120,10 +120,10 @@ class ResponseNormalizer:
                 error_msg = str(error_obj) if error_obj else f"Responses API returned status '{response_status}'"
             raise RuntimeError(error_msg)
 
-        content_parts: List[str] = []
-        reasoning_parts: List[str] = []
-        reasoning_items_raw: List[Dict[str, Any]] = []
-        tool_calls: List[Any] = []
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        reasoning_items_raw: list[dict[str, Any]] = []
+        tool_calls: list[Any] = []
         has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
         saw_commentary_phase = False
         saw_final_answer_phase = False
@@ -159,7 +159,7 @@ class ResponseNormalizer:
                 # subsequent turns to maintain coherent reasoning chains.
                 encrypted = getattr(item, "encrypted_content", None)
                 if isinstance(encrypted, str) and encrypted:
-                    raw_item: Dict[str, Any] = {"type": "reasoning", "encrypted_content": encrypted}
+                    raw_item: dict[str, Any] = {"type": "reasoning", "encrypted_content": encrypted}
                     item_id = getattr(item, "id", None)
                     if isinstance(item_id, str) and item_id:
                         raw_item["id"] = item_id

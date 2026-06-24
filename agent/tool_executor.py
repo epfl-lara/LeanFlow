@@ -47,7 +47,7 @@ class ToolExecutor:
     methods.
     """
 
-    def __init__(self, agent: "AIAgent") -> None:
+    def __init__(self, agent: AIAgent) -> None:
         self._agent = agent
 
     # ── Dispatcher ──────────────────────────────────────────────────────────
@@ -229,7 +229,11 @@ class ToolExecutor:
                         work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
                         agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
                 except Exception:
-                    pass
+                    logger.warning(
+                        "Failed to create safety checkpoint before %s; proceeding without it",
+                        function_name,
+                        exc_info=True,
+                    )
 
             # Checkpoint before destructive terminal commands
             if function_name == "terminal" and agent._checkpoint_mgr.enabled:
@@ -241,7 +245,10 @@ class ToolExecutor:
                             cwd, f"before terminal: {cmd[:60]}"
                         )
                 except Exception:
-                    pass
+                    logger.warning(
+                        "Failed to create safety checkpoint before destructive terminal command; proceeding without it",
+                        exc_info=True,
+                    )
 
             parsed_calls.append((tool_call, function_name, function_args))
 
@@ -485,7 +492,12 @@ class ToolExecutor:
                             work_dir, f"before {function_name}"
                         )
                 except Exception:
-                    pass  # never block tool execution
+                    # never block tool execution
+                    logger.warning(
+                        "Failed to create safety checkpoint before %s; proceeding without it",
+                        function_name,
+                        exc_info=True,
+                    )
 
             # Checkpoint before destructive terminal commands
             if function_name == "terminal" and agent._checkpoint_mgr.enabled:
@@ -497,7 +509,11 @@ class ToolExecutor:
                             cwd, f"before terminal: {cmd[:60]}"
                         )
                 except Exception:
-                    pass  # never block tool execution
+                    # never block tool execution
+                    logger.warning(
+                        "Failed to create safety checkpoint before destructive terminal command; proceeding without it",
+                        exc_info=True,
+                    )
 
             tool_start_time = time.time()
             preflight_result = self.preflight_tool_call(function_name, function_args)

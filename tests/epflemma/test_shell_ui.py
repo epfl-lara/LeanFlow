@@ -171,7 +171,7 @@ def test_main_mcp_status_json(monkeypatch, capsys):
 def test_interactive_mcp_status_prints_sampling_metrics(monkeypatch, capsys):
     shell = InteractiveShell()
     monkeypatch.setattr(
-        "epflemma_cli.main.get_mcp_status",
+        "epflemma_cli.shell.get_mcp_status",
         lambda: [
             {
                 "name": "lean-lsp",
@@ -209,7 +209,7 @@ def test_main_mcp_bootstrap_json(monkeypatch, capsys):
 def test_interactive_mcp_bootstrap_prints_summary(monkeypatch, capsys):
     shell = InteractiveShell()
     monkeypatch.setattr(
-        "epflemma_cli.main.bootstrap_lean_mcp",
+        "epflemma_cli.shell.bootstrap_lean_mcp",
         lambda: {
             "success": True,
             "home": "/tmp/home",
@@ -350,15 +350,15 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
         toolset_name="epflemma-native",
     )
 
-    monkeypatch.setattr("epflemma_cli.main.resolve_workflow_request", lambda *args, **kwargs: fake_plan)
-    monkeypatch.setattr("epflemma_cli.main.describe_launch_plan", lambda plan: {"workflow": "prove", "command": "/prove Main.lean", "project": "Demo", "project_root": str(tmp_path), "provider": "custom", "base_url": "https://inference.rcp.epfl.ch/v1", "model": "zai-org/GLM-5.1", "skill": "lean-proof-loop", "agents": "1"})
+    monkeypatch.setattr("epflemma_cli.shell.resolve_workflow_request", lambda *args, **kwargs: fake_plan)
+    monkeypatch.setattr("epflemma_cli.shell.describe_launch_plan", lambda plan: {"workflow": "prove", "command": "/prove Main.lean", "project": "Demo", "project_root": str(tmp_path), "provider": "custom", "base_url": "https://inference.rcp.epfl.ch/v1", "model": "zai-org/GLM-5.1", "skill": "lean-proof-loop", "agents": "1"})
     monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
 
     class _FakeProcess:
         pid = 43210
 
-    monkeypatch.setattr("epflemma_cli.main.spawn_workflow", lambda *args, **kwargs: (fake_plan, _FakeProcess()))
-    monkeypatch.setattr("epflemma_cli.main.load_workflow_live_status", lambda: {})
+    monkeypatch.setattr("epflemma_cli.shell.spawn_workflow", lambda *args, **kwargs: (fake_plan, _FakeProcess()))
+    monkeypatch.setattr("epflemma_cli.shell.load_workflow_live_status", lambda: {})
 
     assert shell._run_workflow_command("/prove Main.lean") == 0
     output = capsys.readouterr().out
@@ -391,7 +391,7 @@ def test_interactive_workflow_launch_reuses_existing_matching_runner(monkeypatch
         toolset_name="epflemma-native",
     )
 
-    monkeypatch.setattr("epflemma_cli.main.resolve_workflow_request", lambda *args, **kwargs: fake_plan)
+    monkeypatch.setattr("epflemma_cli.shell.resolve_workflow_request", lambda *args, **kwargs: fake_plan)
     monkeypatch.setattr(
         shell,
         "_workflow_agents",
@@ -406,7 +406,7 @@ def test_interactive_workflow_launch_reuses_existing_matching_runner(monkeypatch
             }
         ],
     )
-    monkeypatch.setattr("epflemma_cli.main.spawn_workflow", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not spawn duplicate workflow")))
+    monkeypatch.setattr("epflemma_cli.shell.spawn_workflow", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not spawn duplicate workflow")))
 
     assert shell._run_workflow_command("/prove Main.lean") == 0
     output = capsys.readouterr().out
@@ -520,7 +520,7 @@ def test_top_level_kill_command_interrupts_agent(monkeypatch, tmp_path, capsys):
     shell = InteractiveShell()
 
     monkeypatch.setattr(
-        "epflemma_cli.main.terminate_workflow_agent",
+        "epflemma_cli.shell.terminate_workflow_agent",
         lambda agent_id: {"success": True, "agent_id": "12345", "process_id": 24680},
     )
 
@@ -549,7 +549,7 @@ def test_shell_exit_interrupts_current_project_workflows(monkeypatch, tmp_path, 
     shell.cwd = root
 
     monkeypatch.setattr(
-        "epflemma_cli.main.terminate_project_workflow_agents",
+        "epflemma_cli.shell.terminate_project_workflow_agents",
         lambda project_root: {"success": True, "count": 1, "terminated": ["12345"], "failed": []},
     )
 
@@ -579,15 +579,15 @@ def test_shell_exit_requests_clean_runner_exit_before_escalating(monkeypatch, tm
     seen: list[str] = []
 
     monkeypatch.setattr(
-        "epflemma_cli.main.request_project_workflow_runner_exit",
+        "epflemma_cli.shell.request_project_workflow_runner_exit",
         lambda project_root: {"success": True, "count": 1, "queued": ["12345"], "failed": []},
     )
     monkeypatch.setattr(
-        "epflemma_cli.main.workflow_agent_detail",
+        "epflemma_cli.shell.workflow_agent_detail",
         lambda agent_id, activity_limit=1: {"agent_id": agent_id, "status": "exited", "process_id": 0},
     )
     monkeypatch.setattr(
-        "epflemma_cli.main.terminate_project_workflow_agents",
+        "epflemma_cli.shell.terminate_project_workflow_agents",
         lambda project_root: seen.append(project_root) or {"success": True, "count": 1, "terminated": ["12345"], "failed": []},
     )
 
@@ -617,7 +617,7 @@ def test_shell_exit_interrupts_live_runner_when_no_registered_agents(monkeypatch
     signalled: list[tuple[str, int, int]] = []
 
     monkeypatch.setattr(
-        "epflemma_cli.main.terminate_project_workflow_agents",
+        "epflemma_cli.shell.terminate_project_workflow_agents",
         lambda project_root: {"success": True, "count": 0, "terminated": [], "failed": []},
     )
     monkeypatch.setattr(
@@ -626,7 +626,7 @@ def test_shell_exit_interrupts_live_runner_when_no_registered_agents(monkeypatch
         lambda: {"project_root": str(root), "phase": "paused", "process_id": 24680},
     )
     monkeypatch.setattr(
-        "epflemma_cli.main.os.killpg",
+        "epflemma_cli.shell.os.killpg",
         lambda process_id, sig: signalled.append(("killpg", process_id, int(sig))),
     )
 
@@ -704,12 +704,12 @@ def test_swarm_agent_view_can_queue_follow_up_prompt(monkeypatch, tmp_path, caps
     queued = {}
     prompts = iter(["Try the continuity lemma next.", "/exit"])
 
-    monkeypatch.setattr("epflemma_cli.main.resolve_workflow_agent_id", lambda ref: "12345")
-    monkeypatch.setattr("epflemma_cli.main.workflow_agent_detail", lambda *args, **kwargs: dict(agent))
-    monkeypatch.setattr("epflemma_cli.main.workflow_agent_transcript", lambda *args, **kwargs: list(transcript))
-    monkeypatch.setattr("epflemma_cli.main.workflow_agent_transcript_all", lambda *args, **kwargs: list(transcript))
+    monkeypatch.setattr("epflemma_cli.shell.resolve_workflow_agent_id", lambda ref: "12345")
+    monkeypatch.setattr("epflemma_cli.shell.workflow_agent_detail", lambda *args, **kwargs: dict(agent))
+    monkeypatch.setattr("epflemma_cli.shell.workflow_agent_transcript", lambda *args, **kwargs: list(transcript))
+    monkeypatch.setattr("epflemma_cli.shell.workflow_agent_transcript_all", lambda *args, **kwargs: list(transcript))
     monkeypatch.setattr(
-        "epflemma_cli.main.enqueue_workflow_agent_message",
+        "epflemma_cli.shell.enqueue_workflow_agent_message",
         lambda agent_id, text: queued.setdefault("payload", {"success": True, "agent_id": agent_id, "text": text}),
     )
     monkeypatch.setattr(shell.session, "prompt", lambda *args, **kwargs: next(prompts))

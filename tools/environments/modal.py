@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _SNAPSHOT_STORE = get_epflemma_home() / "modal_snapshots.json"
 
 
-def _load_snapshots() -> Dict[str, str]:
+def _load_snapshots() -> dict[str, str]:
     """Load snapshot ID mapping from disk."""
     if _SNAPSHOT_STORE.exists():
         try:
@@ -32,7 +32,7 @@ def _load_snapshots() -> Dict[str, str]:
     return {}
 
 
-def _save_snapshots(data: Dict[str, str]) -> None:
+def _save_snapshots(data: dict[str, str]) -> None:
     """Persist snapshot ID mapping to disk."""
     _SNAPSHOT_STORE.parent.mkdir(parents=True, exist_ok=True)
     _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
@@ -53,7 +53,7 @@ class ModalEnvironment(BaseEnvironment):
         image: str,
         cwd: str = "/root",
         timeout: int = 60,
-        modal_sandbox_kwargs: Optional[Dict[str, Any]] = None,
+        modal_sandbox_kwargs: dict[str, Any] | None = None,
         persistent_filesystem: bool = True,
         task_id: str = "default",
     ):

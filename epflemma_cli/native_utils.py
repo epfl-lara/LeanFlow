@@ -19,8 +19,9 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from epflemma_cli.config import load_config
 from epflemma_cli.lean_services import (

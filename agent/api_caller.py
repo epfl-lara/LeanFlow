@@ -67,7 +67,7 @@ class ApiCaller:
     to the former ``AIAgent`` methods.
     """
 
-    def __init__(self, agent: "AIAgent") -> None:
+    def __init__(self, agent: AIAgent) -> None:
         self._agent = agent
 
     # ── Codex Responses streaming ───────────────────────────────────────────

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from epflemma_cli.file_locks import (
     acquire_file_lock,
@@ -151,7 +151,7 @@ def test_expired_lock_is_cleaned_up_on_next_acquire(monkeypatch, tmp_path):
     payload = json.loads(lock_file.read_text(encoding="utf-8"))
     normalized = str(target.resolve())
     payload["locks"][normalized]["expires_at"] = (
-        datetime.now(timezone.utc) - timedelta(seconds=1)
+        datetime.now(UTC) - timedelta(seconds=1)
     ).isoformat()
     lock_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 

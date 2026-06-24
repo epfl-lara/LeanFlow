@@ -6,10 +6,11 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 import yaml
 
@@ -483,7 +484,7 @@ def initialize_epflemma_project(root: str | Path, *, name: str | None = None) ->
         "name": (name or project_root.name or "epflemma-project").strip(),
         "kind": "lean4",
         "lean_root": ".",
-        "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "paths": {
             "runtime": ".epflemma/runtime",
             "cache": ".epflemma/cache",

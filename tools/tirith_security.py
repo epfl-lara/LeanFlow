@@ -131,7 +131,7 @@ def _read_failure_reason() -> str | None:
         mtime = os.path.getmtime(p)
         if (time.time() - mtime) >= _MARKER_TTL:
             return None
-        with open(p, "r") as f:
+        with open(p) as f:
             return f.read().strip()
     except OSError:
         return None

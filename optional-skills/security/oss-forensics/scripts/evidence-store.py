@@ -48,7 +48,7 @@ IOC_TYPES = [
 
 
 def _now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds") + "Z"
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds") + "Z"
 
 
 def _sha256(content: str) -> str:
@@ -71,9 +71,9 @@ class EvidenceStore:
         }
         if os.path.exists(filepath):
             try:
-                with open(filepath, "r", encoding="utf-8") as handle:
+                with open(filepath, encoding="utf-8") as handle:
                     self.data = json.load(handle)
-            except (json.JSONDecodeError, IOError) as exc:
+            except (OSError, json.JSONDecodeError) as exc:
                 print(f"Error loading evidence store '{filepath}': {exc}", file=sys.stderr)
                 print("Hint: The file might be corrupted. Check for manual edits or syntax errors.", file=sys.stderr)
                 raise SystemExit(1) from exc

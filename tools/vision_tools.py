@@ -34,8 +34,9 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Awaitable
 from pathlib import Path
-from typing import Any, Awaitable, Dict, Optional
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -153,7 +154,7 @@ def _determine_mime_type(image_path: Path) -> str:
     return mime_types.get(extension, 'image/jpeg')
 
 
-def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None) -> str:
+def _image_to_base64_data_url(image_path: Path, mime_type: str | None = None) -> str:
     """
     Convert an image file to a base64-encoded data URL.
     
@@ -389,7 +390,7 @@ def check_vision_requirements() -> bool:
         return False
 
 
-def get_debug_session_info() -> Dict[str, Any]:
+def get_debug_session_info() -> dict[str, Any]:
     """
     Get information about the current debug session.
     
@@ -476,7 +477,7 @@ VISION_ANALYZE_SCHEMA = {
 }
 
 
-def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
+def _handle_vision_analyze(args: dict[str, Any], **kw: Any) -> Awaitable[str]:
     image_url = args.get("image_url", "")
     question = args.get("question", "")
     full_prompt = (

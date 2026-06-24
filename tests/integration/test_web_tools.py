@@ -144,7 +144,7 @@ class WebToolsTester:
         
         return True
     
-    def test_web_search(self) -> List[str]:
+    def test_web_search(self) -> list[str]:
         """Test web search functionality"""
         print_section("Test 1: Web Search")
         
@@ -244,7 +244,7 @@ class WebToolsTester:
         
         return extracted_urls
     
-    async def test_web_extract(self, urls: List[str] = None):
+    async def test_web_extract(self, urls: list[str] = None):
         """Test web content extraction"""
         print_section("Test 2: Web Extract (without LLM)")
         
@@ -349,7 +349,7 @@ class WebToolsTester:
                     import traceback
                     print(f"    Traceback: {traceback.format_exc()}")
     
-    async def test_web_extract_with_llm(self, urls: List[str] = None):
+    async def test_web_extract_with_llm(self, urls: list[str] = None):
         """Test web extraction with LLM processing"""
         print_section("Test 3: Web Extract (with Gemini LLM)")
         

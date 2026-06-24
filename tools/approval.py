@@ -108,7 +108,7 @@ def submit_pending(session_key: str, approval: dict):
         _pending[session_key] = approval
 
 
-def pop_pending(session_key: str) -> Optional[dict]:
+def pop_pending(session_key: str) -> dict | None:
     """Retrieve and remove a pending approval for a session."""
     with _lock:
         return _pending.pop(session_key, None)

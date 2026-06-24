@@ -38,9 +38,9 @@ def _apply_cache_marker(msg: dict, cache_marker: dict) -> None:
 
 
 def apply_anthropic_cache_control(
-    api_messages: List[Dict[str, Any]],
+    api_messages: list[dict[str, Any]],
     cache_ttl: str = "5m",
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Apply system_and_3 caching strategy to messages for Anthropic models.
 
     Places up to 4 cache_control breakpoints: system prompt + last 3 non-system messages.

@@ -32,10 +32,11 @@ Two distinct kinds of coupling exist — keep them separate:
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping, Optional, Protocol, runtime_checkable
+from collections.abc import Callable, Mapping
+from typing import Any, Optional, Protocol, runtime_checkable
 
 # Callback signatures AIAgent invokes during the conversation loop.
-PreToolCallCallback = Callable[[str, Mapping[str, Any]], Optional[str]]
+PreToolCallCallback = Callable[[str, Mapping[str, Any]], str | None]
 PostToolResultCallback = Callable[[str, Mapping[str, Any], str], None]
 ToolProgressCallback = Callable[..., None]
 StepCallback = Callable[[int, "list[str]"], None]
@@ -60,10 +61,10 @@ class ManagedRunAgent(Protocol):
     type-annotate managed-runner helpers so the coupling is checked rather than implicit.
     """
 
-    pre_tool_call_callback: Optional[PreToolCallCallback]
-    post_tool_result_callback: Optional[PostToolResultCallback]
-    tool_progress_callback: Optional[ToolProgressCallback]
-    step_callback: Optional[StepCallback]
+    pre_tool_call_callback: PreToolCallCallback | None
+    post_tool_result_callback: PostToolResultCallback | None
+    tool_progress_callback: ToolProgressCallback | None
+    step_callback: StepCallback | None
 
     def stage_tool_result_appendix(self, text: str) -> None:
         """Stage one-shot guidance appended to the next tool result (accumulates if repeated)."""

@@ -17,7 +17,8 @@ does NOT import ``native_runner``, so the re-export introduces no import cycle.
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from epflemma_cli.native_utils import (
     _bounded_verifier_response,

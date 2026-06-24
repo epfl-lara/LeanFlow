@@ -28,7 +28,7 @@ MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
 
 
-def _format_timestamp(ts: Union[int, float, str, None]) -> str:
+def _format_timestamp(ts: int | float | str | None) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
 
     Returns "unknown" for None, str(ts) if conversion fails.
@@ -54,7 +54,7 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     return str(ts)
 
 
-def _format_conversation(messages: List[Dict[str, Any]]) -> str:
+def _format_conversation(messages: list[dict[str, Any]]) -> str:
     """Format session messages into a readable transcript for summarization."""
     parts = []
     for msg in messages:
@@ -125,8 +125,8 @@ def _truncate_around_matches(
 
 
 async def _summarize_session(
-    conversation_text: str, query: str, session_meta: Dict[str, Any]
-) -> Optional[str]:
+    conversation_text: str, query: str, session_meta: dict[str, Any]
+) -> str | None:
     """Summarize a single session conversation focused on the search query."""
     system_prompt = (
         "You are reviewing a past conversation transcript to help recall what happened. "
@@ -289,7 +289,7 @@ def session_search(
                 )
 
         # Summarize all sessions in parallel
-        async def _summarize_all() -> List[Union[str, Exception]]:
+        async def _summarize_all() -> list[str | Exception]:
             """Summarize all sessions in parallel."""
             coros = [
                 _summarize_session(text, query, meta)
