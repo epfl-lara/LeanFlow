@@ -17,7 +17,7 @@ shell spawns `epflemma workflow …` subprocesses for managed runs.
 
 ```
 EPFLemma/
-├── run_agent.py            # AIAgent conversation loop (monolith → Phase 4)
+├── run_agent.py            # AIAgent conversation loop (collaborators extracted → agent/; loop deferred)
 ├── epflemma_agent.py       # epflemma-agent entry shim
 ├── model_tools.py          # tool registry API: get_tool_definitions / handle_function_call
 ├── toolsets.py             # named toolset definitions
@@ -37,13 +37,21 @@ EPFLemma/
 
 ## Monoliths being decomposed
 
+Line counts below are **current** (post-decomposition on `refactor/epflemma-deep`); the
+"Target" column records what was carved off. The remaining bulk in each file is the coupled
+core called out under "Deferred".
+
 | File | Lines | Target |
 |---|---|---|
-| `epflemma_cli/native_runner.py` | 11,671 | Phase 2: leaves → `native_state` boundary → cluster modules → `proof_state_builder` last |
-| `run_agent.py` (`AIAgent`) | 7,123 | Phase 4: TokenAccounter, ResponseNormalizer, ProviderRouter, ToolExecutor, ConversationManager, InterruptController, ApiCallOrchestrator |
-| `epflemma_cli/lean_services.py` | 2,847 | Phase 5: lean_diagnostics / search_providers / automation / backends |
-| `agent/auxiliary_client.py` | 1,626 | Phase 5: resolution / vision / call_llm behind ProviderRouter |
-| `epflemma_cli/main.py` | 1,495 | Phase 3: shell / cli_handlers / shell_ui + one COMMAND_REGISTRY |
+| `epflemma_cli/native_runner.py` | 11,671 → 9,158 | Phase 2: leaves → `native_state` boundary → cluster modules → `proof_state_builder` / `verification_review` / `lean_module_paths`; managed-conversation/follow-up core deferred |
+| `run_agent.py` (`AIAgent`) | 7,123 → 4,966 | Phase 4: collaborators (TokenAccounter, ProviderClientFactory, ToolExecutor, ConversationManager, InterruptController, ResponseNormalizer, ReasoningProcessor, PromptManager, ApiCaller, CompressionPolicy, AnthropicMessagePreparer, OutputManager) + `collaborator_resolvers`; `run_conversation` loop deferred |
+| `epflemma_cli/lean_services.py` | 2,847 → 2,187 | Phase 5: lean_diagnostics / declarations / search_providers / automation / attempt_helpers / sorry_stats / proof_context_local + `lean_backend` wrapper; full backend abstraction deferred |
+| `tools/mcp_tool.py` | 1,638 → 1,193 | Phase 5: `mcp_transport` (stdio/HTTP plumbing) + `mcp_sampling` (server-initiated LLM requests) split out |
+| `epflemma_cli/main.py` | 1,331 → 1,315 | Phase 3: `cli_handlers` + `shell_ui` (presentation helpers) split out; `InteractiveShell` deferred (test-monkeypatched) |
+| `agent/auxiliary_client.py` | 1,314 | Phase 5: `auxiliary_adapters` (provider routing) split out; metadata+pricing behind `model_capabilities` |
+| `epflemma_cli/formalization_documents.py` | 1,126 | Phase 5: `document_extraction` (text/LaTeX/PDF extraction layer) split out |
+| `epflemma_cli/workflow_state.py` | 1,116 | Phase 3: `activity_preview` (event/status shaping) split out |
+| `tools/lean_tool.py` | 759 | Phase 5: `lean_experts` (advisor tools) + `lean_patch` (verified-patch apply) split out |
 
 ## Load-bearing invariants
 
@@ -81,43 +89,147 @@ EPFLemma/
   settings but do not select targets — the explicit `files` list does.)
 - CI runs ruff → mypy → pytest (`.github/workflows/tests.yml`).
 
-## Known pre-existing local test failures
+## Test-suite status
 
-On a developer machine with real provider credentials (`~/.codex` auth, `~/.epflemma` config),
-several `tests/agent/test_auxiliary_client.py` provider-resolution cases and one
-`test_run_agent.py` logging case fail because the resolver finds locally-available providers the
-tests assume are absent. These pass in CI (empty API keys) and are unrelated to the refactor.
+The full suite is green except **one pre-existing xdist flake**:
+`tests/tools/test_mcp_tool.py::TestMCPSelectiveToolLoading::test_existing_tool_names_reflect_registered_subset`
+fails only under full-parallel `-n auto` (parallel workers pollute the module-global tool
+registry with `mcp_lean_lsp_*` entries); it passes in isolation and reproduces identically at the
+branch base. Two earlier classes of local failure were FIXED on this branch: the
+`tests/agent/test_auxiliary_client.py` failures (test-ordering pollution — a conftest autouse
+fixture now snapshots/restores provider env between tests) and the `test_non_quiet_logging`
+assertion (stale `1/180` fixture vs the default `max_iterations=200`).
 
-## Decomposition progress (branch refactor/epflemma-decomposition)
+## Decomposition progress (branch refactor/epflemma-deep)
 
 Behavior-preserving extractions completed so far (each: move verbatim → re-export shim from the
 original module → ruff/mypy gate → full suite green → one commit). All extracted modules are leaf
 modules (no back-import into their origin), keeping `origin._name` valid for callers and tests.
 
-**From `native_runner.py` (11,671 → ~10,400 lines):**
-- `native_config.py` — env/config readers (`_read_native_env`, `_managed_home`, `_project_root`, …)
-- `lean_parsing.py` — pure Lean source/declaration text parsers (comment/string stripping, decl extraction)
-- `native_state.py` — module-level mutable de-dup caches + `_cache_once`
-- `queue_edit_guard.py` — declaration-edit protect/restore guards
-- `formalization_document_runner.py` — `/formalize` workflow predicates + blueprint manifest parsers (25 fns)
-- `manager_verification.py` — verification-record/outcome + timeout/retry helpers
-- `native_utils.py` — shared leaf text/JSON/format helpers (`_single_line`, `_extract_json_payload`, …)
-- `project_prove_manager.py` — file-level work-queue sizing/prioritization helpers (20 fns)
+### From `run_agent.py` (the `AIAgent` god class)
 
-**From `lean_services.py` (2,847 lines):**
-- `lean_diagnostics.py` — diagnostic/blocker/goal text parsers (incl. the backtracking-fixed `diagnostic_items`)
+Phase 4 carved the `AIAgent` method clusters into single-responsibility **collaborators** under
+`agent/`. `AIAgent` retains its public surface and now delegates: each collaborator is reached
+through a lazy `_resolve_*(agent)` module-level accessor (which lazily constructs and caches the
+collaborator if absent, so a bare-constructed or test-built agent still works), with thin method
+wrappers and `@property` shims forwarding the old attribute/method names. This preserves the
+patch/monkeypatch surface tests rely on while moving the logic out.
 
-**From `main.py` (1,495 → 1,339 lines):**
-- `cli_handlers.py` — argparse handler/formatter functions (`_handle_config/_sandbox/_models`, …)
+- `agent/token_accounting.py` — `TokenAccounter`: cumulative token/cost counters.
+- `agent/provider_client.py` — `ProviderClientFactory`: provider/OpenAI client construction + credential refresh.
+- `agent/tool_executor.py` — `ToolExecutor`: concurrent/sequential tool-call dispatch for a turn.
+- `agent/conversation_manager.py` — `ConversationManager`: session/message persistence + per-turn API-message shaping.
+- `agent/interrupt_controller.py` — `InterruptController`: `threading.Event`-backed interrupt state (requested flag, message, children).
+- `agent/response_normalizer.py` — `ResponseNormalizer`: raw provider response → normalized assistant response.
+- `agent/reasoning_processor.py` — `ReasoningProcessor`: thinking/reasoning-block (mostly pure) text helpers.
+- `agent/prompt_manager.py` — `PromptManager`: per-session system-prompt build/cache/invalidate lifecycle.
+- `agent/api_caller.py` — `ApiCaller`: mediation between the agent loop and the provider API call.
+- `agent/compression_policy.py` — `CompressionPolicy`: when/how context compression fires.
+- `agent/anthropic_messages.py` — `AnthropicMessagePreparer`: Anthropic message-preparation cluster.
+- `agent/output_manager.py` — `OutputManager`: conversation-start / token-usage / session-usage logging.
+- `agent/collaborator_resolvers.py` — the lazy `_resolve_X(agent)` accessors that materialize/cache each collaborator on first use (re-exported on `run_agent`).
+- `agent/command_safety.py` — destructive-command detection (Phase 4).
+- `agent/log_formatting.py` — pure tool arg/result log formatters (Phase 1).
+- `agent/managed_run.py` — typed managed-run contract (Phase 1.5).
 
-**From `run_agent.py`:**
-- `agent/log_formatting.py` — tool arg/result log formatters (Phase 1)
-- `agent/command_safety.py` — destructive-command detection
-- `agent/managed_run.py` — typed managed-run contract (Phase 1.5)
+### From `native_runner.py`
 
-**Deferred (needs dependency-injection seams / method-surgery, not safe as one-shot moves):**
-the tightly-coupled orchestration cores — native_runner's `_build_live_proof_state`, the autonomous
-follow-up loop, `_run_managed_conversation`/`main`; the `AIAgent` method clusters (provider routing,
-tool executor, conversation manager, interrupt controller); `main.py`'s `InteractiveShell` (its callees
-are test-monkeypatched on `main`); and the provider/backend *abstractions* (ProviderRouter, Lean backend
-interface) which are redesigns rather than moves. These are the next, more invasive refactoring steps.
+- `native_config.py` — env/config readers (`_read_native_env`, `_managed_home`, `_project_root`, …).
+- `lean_parsing.py` — pure Lean source/declaration text parsers (comment/string stripping, decl extraction).
+- `native_state.py` — module-level mutable de-dup caches + `_cache_once`.
+- `queue_edit_guard.py` — declaration-edit protect/restore guards.
+- `formalization_document_runner.py` — `/formalize` workflow predicates + blueprint manifest parsers.
+- `manager_verification.py` — verification-record/outcome + timeout/retry helpers.
+- `native_utils.py` — shared leaf text/JSON/format helpers (`_single_line`, `_extract_json_payload`, …).
+- `project_prove_manager.py` — file-level work-queue sizing/prioritization helpers.
+- `proof_state_builder.py` — pure proof-state text/snapshot shaping helpers (safe subset).
+- `lean_diagnostic_feedback.py` — pure diagnostic / goal text parsers (safe subset).
+- `native_checkpoints.py` — workflow-state and checkpoint persistence helpers (safe subset).
+- `verification_review.py` — verification-decision / advisory text parsers (safe subset).
+- `lean_module_paths.py` — pure Lean module-name ↔ import-path ↔ on-disk-path translation helpers (safe subset).
+- `formalization_generated_lean.py` — generated-Lean inspection helpers (safe subset).
+
+### From `lean_services.py`
+
+- `lean_diagnostics.py` — diagnostic/blocker/goal text parsers (incl. the backtracking-fixed `diagnostic_items`).
+- `lean_declarations.py` — pure path-based Lean declaration indexing / lookup helpers.
+- `lean_search_providers.py` — stateless Lean search-provider helpers.
+- `lean_automation.py` — pure Lean auto-prove normalization / parsing helpers.
+- `lean_attempt_helpers.py` — pure multi-attempt / path / comment text helpers.
+- `lean_sorry_stats.py` — pure `sorry`-counting helpers.
+- `lean_proof_context_local.py` — pure local proof-context assembly helpers (safe subset).
+- `lean_backend.py` — `LeanBackend`, a thin façade forwarding to the LSP/MCP JSON tool invoker
+  (`_invoke_json_tool`), the Lake/subprocess runner (`_run_command`), and a capability reader.
+  A first, partial realization of the deferred backend abstraction: it wraps the existing
+  primitives verbatim (resolving them lazily off `lean_services` for monkeypatch safety) without
+  owning backend state — the full LSP/REPL/Lake interface redesign remains deferred.
+
+### From `main.py`
+
+- `cli_handlers.py` — argparse handler/formatter functions (`_handle_config/_sandbox/_models`, …).
+- `shell_ui.py` — pure presentation helpers (prompt / bottom-toolbar formatters) that turn
+  already-gathered shell state into display strings; `InteractiveShell` delegates through thin
+  wrappers, so the data-gathering accessors tests monkeypatch stay on the shell.
+- Shell slash-command routing is now unified in `commands.py` behind a single `COMMAND_REGISTRY`
+  (`tuple[WorkflowCommandSpec, …]`), replacing the scattered per-command branches.
+
+### From `formalization_documents.py`
+
+- `document_extraction.py` — the text/LaTeX/PDF extraction layer: turns a resolved source file
+  into a structured summary (theorem blocks, sections, references, extracted text). A closed
+  set under "calls" that reaches no origin-mutable state, re-exported on `formalization_documents`.
+
+### From `queue_manager.py`
+
+- `queue_models.py` — the `TheoremQueueManager` queue dataclasses + legacy dict<->typed mapping (verbatim move).
+
+### From `workflow_state.py`
+
+- `activity_preview.py` — pure activity/event-shaping helpers for managed-workflow status views.
+
+### From `auxiliary_client.py`
+
+- `agent/auxiliary_adapters.py` — OpenAI-client-compatible provider adapters for the auxiliary router.
+- Model metadata (`agent/model_metadata.py`) + pricing are unified behind the
+  `agent/model_capabilities.py` façade.
+
+### From `tools/lean_tool.py`
+
+- `tools/lean_experts.py` — auxiliary LLM-advisor Lean tools.
+- `tools/lean_patch.py` — verified-patch application tool.
+
+### From `tools/mcp_tool.py`
+
+- `tools/mcp_transport.py` — stdio/HTTP transport plumbing for MCP servers.
+- `tools/mcp_sampling.py` — `SamplingHandler`: the server-initiated `sampling/createMessage`
+  callback (server asks the agent's LLM to complete a message) plus its numeric-coercion /
+  audit-path helpers; re-exported on `mcp_tool`.
+
+### Bug fixes landed alongside the moves
+
+- **Test-pollution fix:** importing `run_agent` ran `load_epflemma_dotenv()` at import time before
+  the autouse `_isolate_gauss_home` fixture had set `EPFLEMMA_HOME`, leaking the developer's real
+  `.env` provider-resolution vars (`EPFLEMMA_*`/`OPENGAUSS_*`/`GAUSS_*`) into the session and
+  breaking `tests/agent/test_auxiliary_client.py` whenever `test_run_agent` ran first. The fixture
+  now strips those vars (`monkeypatch.delenv`, auto-restored) so resolution starts clean regardless
+  of test order. No production behavior changed.
+- **Workflow-termination fixes:** the headless stdin-exit guard now writes the pre-exit workflow
+  checkpoint (`force_filesystem_checkpoint=True`) for autonomous workflows, restoring resumability
+  on headless non-verified exits; the hard cycle-ceiling stop now labels its phase by
+  `_live_state_is_verified` (verified vs stalled) instead of always "stalled"; and
+  `mcp_bootstrap._write_bootstrap_document` now calls `invalidate_config_cache()` after writing the
+  managed config directly (it bypasses `config.save_config`), fixing a stale `load_config()` cache
+  that returned the pre-bootstrap config later in the same process.
+
+### Deferred (needs dependency-injection seams / method-surgery, not safe as one-shot moves)
+
+The still-coupled cores that resist behavior-preserving one-shot moves:
+
+- `native_runner.py`: the autonomous follow-up loop and `_run_managed_conversation` / `main`.
+- `AIAgent`: the `run_conversation` main loop and its retry/recovery orchestration.
+- `main.py`: `InteractiveShell` (its callees are test-monkeypatched on `main`).
+- `lean_services.py`: the full backend **abstraction** (the LSP/REPL/Lake interface), which is a
+  redesign rather than a move. The `LeanBackend` wrapper (`lean_backend.py`) is a first partial
+  step; routing all call sites through it is the remaining invasive work.
+
+These are the next, more invasive refactoring steps.
