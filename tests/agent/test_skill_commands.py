@@ -192,40 +192,6 @@ Generate some audio.
         assert len(calls) == 1
         assert calls[0][0] == "TENOR_API_KEY"
 
-    def test_gateway_still_loads_skill_but_returns_setup_guidance(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.delenv("TENOR_API_KEY", raising=False)
-
-        def fail_if_called(var_name, prompt, metadata=None):
-            raise AssertionError(
-                "gateway flow should not try secure in-band secret capture"
-            )
-
-        monkeypatch.setattr(
-            skills_tool_module,
-            "_secret_capture_callback",
-            fail_if_called,
-            raising=False,
-        )
-
-        with patch.dict(
-            os.environ, {"EPFLEMMA_SESSION_PLATFORM": "telegram"}, clear=False
-        ), patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(
-                tmp_path,
-                "test-skill",
-                frontmatter_extra=(
-                    "required_environment_variables:\n"
-                    "  - name: TENOR_API_KEY\n"
-                    "    prompt: Tenor API key\n"
-                ),
-            )
-            scan_skill_commands()
-            msg = build_skill_invocation_message("/test-skill", "do stuff")
-
-        assert msg is not None
-        assert "local cli" in msg.lower()
 
     def test_preserves_remaining_remote_setup_warning(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "ssh")

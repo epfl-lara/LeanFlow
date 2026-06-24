@@ -290,13 +290,6 @@ def _capture_required_environment_variables(
         }
 
     missing_names = [entry["name"] for entry in missing_entries]
-    if _is_gateway_surface():
-        return {
-            "missing_names": missing_names,
-            "setup_skipped": False,
-            "gateway_setup_hint": _gateway_setup_hint(),
-        }
-
     if _secret_capture_callback is None:
         return {
             "missing_names": missing_names,
@@ -350,10 +343,6 @@ def _capture_required_environment_variables(
     }
 
 
-def _is_gateway_surface() -> bool:
-    if os.getenv("EPFLEMMA_GATEWAY_SESSION"):
-        return True
-    return bool(os.getenv("EPFLEMMA_SESSION_PLATFORM"))
 
 
 def _get_terminal_backend_name() -> str:
@@ -393,13 +382,6 @@ def _remaining_required_environment_names(
     return remaining
 
 
-def _gateway_setup_hint() -> str:
-    try:
-        from gateway.platforms.base import GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
-
-        return GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
-    except Exception:
-        return "Secure secret entry is not available. Load this skill in the local CLI to be prompted, or add the key to ~/.gauss/.env manually."
 
 
 def _build_setup_note(
