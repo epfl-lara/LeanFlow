@@ -38,7 +38,7 @@ class only owns the *bookkeeping* and the invariant checks.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -82,7 +82,6 @@ class QueueInvariantError(AssertionError):
     Callers can run with ``EPFLEMMA_QUEUE_INVARIANT_CHECKS=1`` to turn these
     on. Off by default so production never crashes on a paranoid check.
     """
-
 
 class TheoremQueueManager:
     """Owns all per-theorem queue state for one autonomous workflow run.
@@ -871,7 +870,6 @@ class TheoremQueueManager:
             }
 
         return out
-
 
 @dataclass(frozen=True)
 class Decision:

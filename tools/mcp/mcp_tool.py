@@ -76,7 +76,7 @@ import re
 import shutil
 import subprocess
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,6 @@ from tools.mcp.mcp_transport import (  # noqa: E402
 _DEFAULT_TOOL_TIMEOUT = 120      # seconds for tool calls
 _MAX_RECONNECT_RETRIES = 5
 _MAX_BACKOFF_SECONDS = 60
-
 
 # ---------------------------------------------------------------------------
 # Sampling -- server-initiated LLM requests (MCP sampling/createMessage).
@@ -369,7 +368,6 @@ class MCPServerTask:
                     await self._task
         self.session = None
 
-
 # ---------------------------------------------------------------------------
 # Module-level state
 # ---------------------------------------------------------------------------
@@ -382,7 +380,6 @@ _mcp_thread: threading.Thread | None = None
 
 # Protects _mcp_loop, _mcp_thread, and _servers from concurrent access.
 _lock = threading.Lock()
-
 
 def _ensure_mcp_loop():
     """Start the background event loop thread if not already running."""
@@ -398,7 +395,6 @@ def _ensure_mcp_loop():
         )
         _mcp_thread.start()
 
-
 def _run_on_mcp_loop(coro, timeout: float = 30):
     """Schedule a coroutine on the MCP event loop and block until done."""
     with _lock:
@@ -407,7 +403,6 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
         raise RuntimeError("MCP event loop is not running")
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     return future.result(timeout=timeout)
-
 
 # ---------------------------------------------------------------------------
 # Config loading -- _load_mcp_config lives in tools/mcp_config.py and is
@@ -436,7 +431,6 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
     server = MCPServerTask(name)
     await server.start(config)
     return server
-
 
 # ---------------------------------------------------------------------------
 # Handler / check-fn factories
@@ -493,7 +487,6 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
     return _handler
 
-
 def _make_list_resources_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists resources from an MCP server."""
 
@@ -535,7 +528,6 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
 
     return _handler
 
-
 def _make_read_resource_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that reads a resource by URI from an MCP server."""
 
@@ -576,7 +568,6 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             })
 
     return _handler
-
 
 def _make_list_prompts_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists prompts from an MCP server."""
@@ -623,7 +614,6 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             })
 
     return _handler
-
 
 def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that gets a prompt by name from an MCP server."""
@@ -677,7 +667,6 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
 
     return _handler
 
-
 def _make_check_fn(server_name: str):
     """Return a check function that verifies the MCP connection is alive."""
 
@@ -687,7 +676,6 @@ def _make_check_fn(server_name: str):
         return server is not None and server.session is not None
 
     return _check
-
 
 # ---------------------------------------------------------------------------
 # Discovery & registration
@@ -718,7 +706,6 @@ def _existing_tool_names() -> list[str]:
             schema = _convert_mcp_schema(server.name, mcp_tool)
             names.append(schema["name"])
     return names
-
 
 async def _discover_and_register_server(name: str, config: dict) -> list[str]:
     """Connect to a single MCP server, discover tools, and register them.
@@ -820,7 +807,6 @@ async def _discover_and_register_server(name: str, config: dict) -> list[str]:
     )
     return registered_names
 
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -912,7 +898,6 @@ def discover_mcp_tools() -> list[str]:
     # Return ALL registered tools (existing + newly discovered)
     return _existing_tool_names()
 
-
 def get_mcp_status() -> list[dict]:
     """Return status of all configured MCP servers for banner display.
 
@@ -973,7 +958,6 @@ def get_mcp_status() -> list[dict]:
 
     return result
 
-
 def shutdown_mcp_servers():
     """Close all MCP server connections and stop the background loop.
 
@@ -1012,7 +996,6 @@ def shutdown_mcp_servers():
             logger.debug("Error during MCP shutdown: %s", exc)
 
     _stop_mcp_loop()
-
 
 def _stop_mcp_loop():
     """Stop the background event loop and join its thread."""

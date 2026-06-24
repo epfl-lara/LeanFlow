@@ -22,7 +22,7 @@ import cycle, since ``auxiliary_client`` re-exports these names.
 
 import logging
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any
 
 from openai import OpenAI
 

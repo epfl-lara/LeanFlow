@@ -13,7 +13,6 @@ import threading
 import time
 import uuid
 import warnings
-from typing import Optional
 
 from tools.environments.base import BaseEnvironment
 from tools.utilities.interrupt import is_interrupted

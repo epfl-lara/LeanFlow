@@ -9,7 +9,7 @@ Pure functions -- no class state, no AIAgent dependency.
 """
 
 import copy
-from typing import Any, Dict, List
+from typing import Any
 
 
 def _apply_cache_marker(msg: dict, cache_marker: dict) -> None:

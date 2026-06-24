@@ -49,7 +49,7 @@ import logging
 import os
 import re
 import xml.etree.ElementTree as ET
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import urljoin
 
 import requests
@@ -128,7 +128,6 @@ DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 DEFAULT_SUMMARIZER_MODEL = os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
-
 
 async def process_content_with_llm(
     content: str, 
@@ -212,7 +211,6 @@ async def process_content_with_llm(
     except Exception as e:
         logger.debug("Error processing content with LLM: %s", e)
         return f"[Failed to process content: {str(e)[:100]}. Content size: {len(content):,} chars]"
-
 
 async def _call_summarizer_llm(
     content: str, 
@@ -310,7 +308,6 @@ Create a markdown summary that captures all key information in a well-organized,
                 raise last_error
     
     return None
-
 
 async def _process_large_content_chunked(
     content: str, 
@@ -435,7 +432,6 @@ Create a single, unified markdown summary."""
             fallback = fallback[:max_output_size] + "\n\n[... truncated due to synthesis failure ...]"
         return fallback
 
-
 def clean_base64_images(text: str) -> str:
     """
     Remove base64 encoded images from text to reduce token count and clutter.
@@ -467,7 +463,6 @@ def clean_base64_images(text: str) -> str:
     cleaned_text = re.sub(base64_pattern, '[BASE64_IMAGE_REMOVED]', cleaned_text)
     
     return cleaned_text
-
 
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
@@ -573,7 +568,6 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         # NOTE: `error` is rebound as a local in this function's provider loop,
         # so the imported error() helper is shadowed here; use dumps() directly.
         return dumps({"error": error_msg})
-
 
 async def web_extract_tool(
     urls: list[str], 
@@ -837,7 +831,6 @@ async def web_extract_tool(
         _debug.save()
 
         return error(error_msg)
-
 
 async def web_crawl_tool(
     url: str, 
@@ -1127,7 +1120,6 @@ async def web_crawl_tool(
 
         return error(error_msg)
 
-
 # Convenience function to check if API key is available
 def check_firecrawl_api_key() -> bool:
     """
@@ -1141,11 +1133,9 @@ def check_firecrawl_api_key() -> bool:
     """
     return bool(os.getenv("FIRECRAWL_API_KEY") or os.getenv("FIRECRAWL_API_URL"))
 
-
 def check_research_search_available() -> bool:
     """Free research search is available without paid keys or configured services."""
     return True
-
 
 def check_auxiliary_model() -> bool:
     """Check if an auxiliary text model is available for LLM content processing."""
@@ -1159,11 +1149,9 @@ def check_auxiliary_model() -> bool:
     except Exception:
         return False
 
-
 def get_debug_session_info() -> dict[str, Any]:
     """Get information about the current debug session."""
     return _debug.get_session_info()
-
 
 if __name__ == "__main__":
     """
@@ -1242,7 +1230,6 @@ if __name__ == "__main__":
     print("  # Logs saved to: ./logs/web_tools_debug_UUID.json")
     
     print("\n📝 Run 'python test_web_tools_llm.py' to test LLM processing capabilities")
-
 
 # ---------------------------------------------------------------------------
 # Registry

@@ -25,7 +25,6 @@ import json
 import os
 import sys
 from datetime import datetime
-from typing import List
 
 # Import the web tools to test (updated path after moving tools/)
 from tools.implementations.web_tools import (

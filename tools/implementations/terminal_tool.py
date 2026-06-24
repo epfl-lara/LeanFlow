@@ -41,10 +41,9 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Global interrupt event: set by the agent when a user interrupt arrives.
@@ -59,7 +58,6 @@ from tools.utilities.interrupt import set_interrupt as set_interrupt_event
 
 ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
 
-
 # =============================================================================
 # Custom Singularity Environment with more space
 # =============================================================================
@@ -69,7 +67,6 @@ from tools.environments.singularity import _get_scratch_dir
 
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = float(os.getenv("TERMINAL_DISK_WARNING_GB", "500"))
-
 
 def _check_disk_usage_warning():
     """Check if total disk usage exceeds warning threshold."""
@@ -98,7 +95,6 @@ def _check_disk_usage_warning():
     except Exception as e:
         return False
 
-
 # Session-cached sudo password (persists until CLI exits)
 _cached_sudo_password: str = ""
 
@@ -110,12 +106,10 @@ _cached_sudo_password: str = ""
 _sudo_password_callback = None
 _approval_callback = None
 
-
 def set_sudo_password_callback(cb):
     """Register a callback for sudo password prompts (used by CLI)."""
     global _sudo_password_callback
     _sudo_password_callback = cb
-
 
 def set_approval_callback(cb):
     """Register a callback for dangerous command approval prompts (used by CLI)."""
@@ -149,12 +143,10 @@ def _check_dangerous_command(command: str, env_type: str) -> dict:
     return _check_dangerous_command_impl(command, env_type,
                                          approval_callback=_approval_callback)
 
-
 def _check_all_guards(command: str, env_type: str) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_approval_callback)
-
 
 def _handle_sudo_failure(output: str, env_type: str) -> str:
     """
@@ -179,7 +171,6 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
             return output + "\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to ~/.gauss/.env on the agent machine."
     
     return output
-
 
 def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     """
@@ -304,7 +295,6 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         if "EPFLEMMA_SPINNER_PAUSE" in os.environ:
             del os.environ["EPFLEMMA_SPINNER_PAUSE"]
 
-
 def _transform_sudo_command(command: str) -> tuple[str, str | None]:
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
@@ -372,7 +362,6 @@ def _transform_sudo_command(command: str) -> tuple[str, str | None]:
     # Trailing newline is required: sudo -S reads one line for the password.
     return transformed, sudo_password + "\n"
 
-
 # Environment classes now live in tools/environments/
 import contextlib
 
@@ -420,7 +409,6 @@ _cleanup_running = False
 # Thread-safe because each task_id is unique per rollout.
 _task_env_overrides: dict[str, dict[str, Any]] = {}
 
-
 def register_task_env_overrides(task_id: str, overrides: dict[str, Any]):
     """
     Register environment overrides for a specific task/rollout.
@@ -438,7 +426,6 @@ def register_task_env_overrides(task_id: str, overrides: dict[str, Any]):
         overrides: Dict of config keys to override
     """
     _task_env_overrides[task_id] = overrides
-
 
 def clear_task_env_overrides(task_id: str):
     """
@@ -464,7 +451,6 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
             f"Invalid value for {name}: {raw!r} (expected {type_label}). "
             f"Check ~/.gauss/.env or environment variables."
         ) from exc
-
 
 def _get_env_config() -> dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
@@ -539,7 +525,6 @@ def _get_env_config() -> dict[str, Any]:
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
     }
-
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
@@ -638,7 +623,6 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', 'modal', 'daytona', or 'ssh'")
 
-
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     """Clean up environments that have been inactive for longer than lifetime_seconds."""
     global _active_environments, _last_activity
@@ -702,7 +686,6 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
             else:
                 logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
-
 def _cleanup_thread_worker():
     """Background thread worker that periodically cleans up inactive environments."""
     global _cleanup_running
@@ -719,7 +702,6 @@ def _cleanup_thread_worker():
                 break
             time.sleep(1)
 
-
 def _start_cleanup_thread():
     """Start the background cleanup thread if not already running."""
     global _cleanup_thread, _cleanup_running
@@ -730,7 +712,6 @@ def _start_cleanup_thread():
             _cleanup_thread = threading.Thread(target=_cleanup_thread_worker, daemon=True)
             _cleanup_thread.start()
 
-
 def _stop_cleanup_thread():
     """Stop the background cleanup thread."""
     global _cleanup_running
@@ -738,7 +719,6 @@ def _stop_cleanup_thread():
     if _cleanup_thread is not None:
         with contextlib.suppress(SystemExit, KeyboardInterrupt):
             _cleanup_thread.join(timeout=5)
-
 
 def get_active_environments_info() -> dict[str, Any]:
     """Get information about currently active environments."""
@@ -763,7 +743,6 @@ def get_active_environments_info() -> dict[str, Any]:
     
     info["total_disk_usage_mb"] = round(total_size / (1024 * 1024), 2)
     return info
-
 
 def cleanup_all_environments():
     """Clean up ALL active environments. Use with caution."""
@@ -792,7 +771,6 @@ def cleanup_all_environments():
     if cleaned > 0:
         logger.info("Cleaned %d environments", cleaned)
     return cleaned
-
 
 def cleanup_vm(task_id: str):
     """Manually clean up a specific environment by task_id."""
@@ -837,7 +815,6 @@ def cleanup_vm(task_id: str):
         else:
             logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
-
 def _atexit_cleanup():
     """Stop cleanup thread and shut down all remaining sandboxes on exit."""
     _stop_cleanup_thread()
@@ -847,7 +824,6 @@ def _atexit_cleanup():
         cleanup_all_environments()
 
 atexit.register(_atexit_cleanup)
-
 
 def terminal_tool(
     command: str,
@@ -1179,7 +1155,6 @@ def terminal_tool(
             "status": "error"
         }, ensure_ascii=False)
 
-
 def check_terminal_requirements() -> bool:
     """Check if all requirements for the terminal tool are met.
 
@@ -1259,7 +1234,6 @@ def check_terminal_requirements() -> bool:
         logger.error("Terminal requirements check failed: %s", e, exc_info=True)
         return False
 
-
 if __name__ == "__main__":
     # Simple test when run directly
     print("Terminal Tool Module (mini-swe-agent backend)")
@@ -1300,7 +1274,6 @@ if __name__ == "__main__":
     print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', '~/.gauss/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
-
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -1346,7 +1319,6 @@ TERMINAL_SCHEMA = {
     }
 }
 
-
 def _handle_terminal(args, **kw):
     return terminal_tool(
         command=args.get("command"),
@@ -1357,7 +1329,6 @@ def _handle_terminal(args, **kw):
         check_interval=args.get("check_interval"),
         pty=args.get("pty", False),
     )
-
 
 registry.register(
     name="terminal",

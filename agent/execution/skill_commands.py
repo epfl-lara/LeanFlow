@@ -10,7 +10,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import tools.implementations.skills_tool as skills_tool_module
 from epflemma_cli.runtime.skill_core import discover_skill_commands, find_skill, load_skill
@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: dict[str, dict[str, Any]] = {}
 _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
-
 
 def build_plan_path(
     user_instruction: str = "",
@@ -40,7 +39,6 @@ def build_plan_path(
     slug = slug or "conversation-plan"
     timestamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
     return Path(".gauss") / "plans" / f"{timestamp}-{slug}.md"
-
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
@@ -72,11 +70,9 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
     return loaded_skill, skill_dir, skill_name
 
-
 def _local_skill_override_active() -> bool:
     default_skills_dir = skills_tool_module.EPFLEMMA_HOME_DIR / "skills"
     return default_skills_dir != skills_tool_module.SKILLS_DIR
-
 
 def _discover_local_skill_commands() -> dict[str, dict[str, Any]]:
     commands: dict[str, dict[str, Any]] = {}
@@ -92,7 +88,6 @@ def _discover_local_skill_commands() -> dict[str, dict[str, Any]]:
             "source": "local",
         }
     return commands
-
 
 def _build_skill_message(
     loaded_skill: dict[str, Any],
@@ -154,7 +149,6 @@ def _build_skill_message(
 
     return "\n".join(parts)
 
-
 def scan_skill_commands() -> dict[str, dict[str, Any]]:
     """Return the current EPFLemma skill command map."""
     global _skill_commands
@@ -170,13 +164,11 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
         logger.debug("Failed to scan EPFLemma skill commands", exc_info=True)
     return _skill_commands
 
-
 def get_skill_commands() -> dict[str, dict[str, Any]]:
     """Return the current skill commands mapping (scan first if empty)."""
     if not _skill_commands:
         scan_skill_commands()
     return _skill_commands
-
 
 def build_skill_invocation_message(
     cmd_key: str,
@@ -214,7 +206,6 @@ def build_skill_invocation_message(
         user_instruction=user_instruction,
         runtime_note=runtime_note,
     )
-
 
 def build_preloaded_skills_prompt(
     skill_identifiers: list[str],

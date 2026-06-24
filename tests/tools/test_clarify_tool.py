@@ -1,7 +1,6 @@
 """Tests for tools/clarify_tool.py - Interactive clarifying questions."""
 
 import json
-from typing import List, Optional
 
 import pytest
 
@@ -60,7 +59,6 @@ class TestClarifyToolBasics:
         result = json.loads(clarify_tool("What do you want?"))
         assert "error" in result
         assert "not available" in result["error"].lower()
-
 
 class TestClarifyToolChoicesValidation:
     """Tests for choices parameter validation."""
@@ -123,7 +121,6 @@ class TestClarifyToolChoicesValidation:
         clarify_tool("Pick", choices=[1, 2, 3], callback=mock_callback)  # type: ignore
         assert choices_received == ["1", "2", "3"]
 
-
 class TestClarifyToolCallbackHandling:
     """Tests for callback error handling."""
 
@@ -156,14 +153,12 @@ class TestClarifyToolCallbackHandling:
         result = json.loads(clarify_tool("Q?", callback=mock_callback))
         assert result["user_response"] == "response with spaces"
 
-
 class TestCheckClarifyRequirements:
     """Tests for the requirements check function."""
 
     def test_always_returns_true(self):
         """clarify tool has no external requirements."""
         assert check_clarify_requirements() is True
-
 
 class TestClarifySchema:
     """Tests for the OpenAI function-calling schema."""

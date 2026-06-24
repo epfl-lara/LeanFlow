@@ -17,7 +17,6 @@ import shlex
 import signal
 import sys
 import time
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -138,14 +137,12 @@ from tools.mcp.mcp_tool import get_mcp_status
 
 WORKFLOW_COMMANDS = build_workflow_command_set()
 
-
 def _mcp_status_payload() -> dict[str, Any]:
     servers = list(get_mcp_status())
     return {
         "servers": servers,
         "count": len(servers),
     }
-
 
 class InteractiveShell:
     def __init__(self) -> None:

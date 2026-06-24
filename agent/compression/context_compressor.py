@@ -7,7 +7,7 @@ protecting head and tail context.
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from agent.providers.auxiliary_client import call_llm
 from agent.providers.model_metadata import (
@@ -27,7 +27,6 @@ SUMMARY_PREFIX = (
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 STALE_TOOL_OUTPUT_MARKER = "[Old tool result content cleared during context compaction]"
-
 
 class ContextCompressor:
     """Compresses conversation context when approaching the model's context limit.

@@ -24,7 +24,6 @@ import os
 import time
 from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import List, Optional
 
 from core.home import epflemma_home
 from tools.mcp.mcp_transport import _sanitize_error
@@ -52,7 +51,6 @@ try:
 except ImportError:
     logger.debug("MCP sampling types not available -- sampling disabled")
 
-
 # ---------------------------------------------------------------------------
 # Home / audit-path helpers
 # ---------------------------------------------------------------------------
@@ -61,10 +59,8 @@ def _epflemma_home() -> Path:
     # Single source of truth — legacy ~/.opengauss / ~/.gauss resolution lives in core.home only.
     return epflemma_home()
 
-
 def _default_sampling_audit_path() -> Path:
     return _epflemma_home() / "logs" / "mcp-sampling.jsonl"
-
 
 # ---------------------------------------------------------------------------
 # Sampling -- server-initiated LLM requests (MCP sampling/createMessage)
@@ -83,7 +79,6 @@ def _safe_numeric(value, default, coerce=int, minimum=1):
         return max(result, minimum)
     except (TypeError, ValueError, OverflowError):
         return default
-
 
 class SamplingHandler:
     """Handles sampling/createMessage requests for a single MCP server.

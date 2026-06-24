@@ -35,7 +35,7 @@ Two distinct kinds of coupling exist — keep them separate:
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 # Callback signatures AIAgent invokes during the conversation loop.
 PreToolCallCallback = Callable[[str, Mapping[str, Any]], str | None]

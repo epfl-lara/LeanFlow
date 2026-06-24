@@ -9,7 +9,6 @@ import shlex
 import signal
 import sys
 import time
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -130,16 +129,13 @@ from tools.mcp.mcp_tool import get_mcp_status
 
 WORKFLOW_COMMANDS = build_workflow_command_set()
 
-
 def _seed_environment() -> None:
     home = get_epflemma_home()
     os.environ.setdefault("EPFLEMMA_HOME", str(home))
 
-
 def _load_runtime_env(*, cwd: Path | None = None) -> None:
     project_env = (cwd or Path.cwd()).resolve() / ".env"
     load_epflemma_dotenv(epflemma_home=get_epflemma_home(), project_env=project_env)
-
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -248,7 +244,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     return parser
 
-
 def _handle_project(args: argparse.Namespace) -> int:
     if args.project_command == "init":
         project = initialize_epflemma_project(args.path, name=args.name or None)
@@ -276,7 +271,6 @@ def _handle_project(args: argparse.Namespace) -> int:
         return 0
     raise SystemExit("Unknown project command")
 
-
 def _handle_status(args: argparse.Namespace) -> int:
     workflow = load_workflow_live_status()
     sandbox = sandbox_status()
@@ -295,14 +289,12 @@ def _handle_status(args: argparse.Namespace) -> int:
     print(format_sandbox_status(sandbox))
     return 0
 
-
 def _mcp_status_payload() -> dict[str, Any]:
     servers = list(get_mcp_status())
     return {
         "servers": servers,
         "count": len(servers),
     }
-
 
 def _handle_mcp(args: argparse.Namespace) -> int:
     command = getattr(args, "mcp_command", None) or "status"
@@ -324,7 +316,6 @@ def _handle_mcp(args: argparse.Namespace) -> int:
             _print_mcp_bootstrap(payload)
         return 0
     raise SystemExit("Unknown MCP command")
-
 
 from epflemma_cli.shell import InteractiveShell  # noqa: F401
 
@@ -422,7 +413,6 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

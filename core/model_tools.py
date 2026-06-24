@@ -24,13 +24,12 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from tools.registry import registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
-
 
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
@@ -60,7 +59,6 @@ def _run_async(coro):
             return future.result(timeout=300)
     return asyncio.run(coro)
 
-
 # =============================================================================
 # Tool Discovery  (importing each module triggers its registry.register calls)
 # =============================================================================
@@ -89,7 +87,6 @@ def _discover_tools():
         except Exception as e:
             logger.debug("Could not import %s: %s", mod_name, e)
 
-
 _discover_tools()
 
 # MCP tool discovery (external MCP servers from config)
@@ -111,7 +108,6 @@ TOOLSET_REQUIREMENTS: dict[str, dict] = registry.get_toolset_requirements()
 # Used by the active runtime to track which tools are available in this session.
 _last_resolved_tool_names: list[str] = []
 
-
 # =============================================================================
 # Legacy toolset name mapping  (old _tools-suffixed names -> tool name lists)
 # =============================================================================
@@ -120,7 +116,6 @@ _LEGACY_TOOLSET_MAP = {
     "web_tools": ["web_search"],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
 }
-
 
 # =============================================================================
 # get_tool_definitions  (the main schema provider)
@@ -208,7 +203,6 @@ def get_tool_definitions(
 
     return filtered_tools
 
-
 # =============================================================================
 # handle_function_call  (the main dispatcher)
 # =============================================================================
@@ -218,7 +212,6 @@ def get_tool_definitions(
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
 _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
-
 
 def handle_function_call(
     function_name: str,
@@ -273,7 +266,6 @@ def handle_function_call(
         logger.error(error_msg)
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
-
 # =============================================================================
 # Backward-compat wrapper functions
 # =============================================================================
@@ -282,21 +274,17 @@ def get_all_tool_names() -> list[str]:
     """Return all registered tool names."""
     return registry.get_all_tool_names()
 
-
 def get_toolset_for_tool(tool_name: str) -> str | None:
     """Return the toolset a tool belongs to."""
     return registry.get_toolset_for_tool(tool_name)
-
 
 def get_available_toolsets() -> dict[str, dict]:
     """Return toolset availability info for UI display."""
     return registry.get_available_toolsets()
 
-
 def check_toolset_requirements() -> dict[str, bool]:
     """Return {toolset: available_bool} for every registered toolset."""
     return registry.check_toolset_requirements()
-
 
 def check_tool_availability(quiet: bool = False) -> tuple[list[str], list[dict]]:
     """Return (available_toolsets, unavailable_info)."""

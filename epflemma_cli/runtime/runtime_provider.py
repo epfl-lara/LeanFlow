@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from epflemma_cli.config import DEFAULT_CONFIG, get_env_value, load_config
