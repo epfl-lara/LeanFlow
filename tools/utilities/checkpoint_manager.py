@@ -523,32 +523,3 @@ class CheckpointManager:
         # is fragile for a background feature.  We just limit the log view.
         logger.debug("Checkpoint repo has %d commits (limit %d)", count, self.max_snapshots)
 
-def format_checkpoint_list(checkpoints: list[dict], directory: str) -> str:
-    """Format checkpoint list for display to user."""
-    if not checkpoints:
-        return f"No checkpoints found for {directory}"
-
-    lines = [f"📸 Checkpoints for {directory}:\n"]
-    for i, cp in enumerate(checkpoints, 1):
-        # Parse ISO timestamp to something readable
-        ts = cp["timestamp"]
-        if "T" in ts:
-            ts = ts.split("T")[1].split("+")[0].split("-")[0][:5]  # HH:MM
-            date = cp["timestamp"].split("T")[0]
-            ts = f"{date} {ts}"
-
-        # Build change summary
-        files = cp.get("files_changed", 0)
-        ins = cp.get("insertions", 0)
-        dele = cp.get("deletions", 0)
-        if files:
-            stat = f"  ({files} file{'s' if files != 1 else ''}, +{ins}/-{dele})"
-        else:
-            stat = ""
-
-        lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
-
-    lines.append("\n  /rollback <N>             restore to checkpoint N")
-    lines.append("  /rollback diff <N>        preview changes since checkpoint N")
-    lines.append("  /rollback <N> <file>      restore a single file from checkpoint N")
-    return "\n".join(lines)

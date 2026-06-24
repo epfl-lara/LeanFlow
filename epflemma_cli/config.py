@@ -307,8 +307,6 @@ def get_env_path() -> Path:
     return get_epflemma_home() / ".env"
 
 
-def get_install_root_path() -> Path:
-    return get_epflemma_home() / "install-root"
 
 
 def _secure_dir(path: Path) -> None:

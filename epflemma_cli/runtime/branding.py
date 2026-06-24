@@ -38,16 +38,5 @@ def get_product_subtitle() -> str:
     return PRODUCT_SUBTITLE
 
 
-def get_brand_note() -> str:
-    return BRAND_NOTE
 
 
-def format_home_path(path: Path) -> str:
-    target = Path(path).expanduser()
-    home = Path.home().expanduser()
-    try:
-        rel = target.relative_to(home)
-    except ValueError:
-        return str(target)
-    rel_text = rel.as_posix()
-    return "~" if rel_text == "." else f"~/{rel_text}"

@@ -81,8 +81,6 @@ LEAN_REPL_TIMEOUT_SECONDS = "60"
 LEAN_REPL_MEM_MB = "8192"
 
 
-def managed_lean_mcp_specs() -> dict[str, ManagedMCPServerSpec]:
-    return dict(MANAGED_LEAN_MCP_SPECS)
 
 
 def managed_mcp_root(home: str | os.PathLike[str] | None = None) -> Path:
@@ -113,9 +111,6 @@ def managed_mcp_command_path(name: str, home: str | os.PathLike[str] | None = No
     return _venv_bin_dir(managed_mcp_venv_dir(name, home)) / f"{spec.console_script}{suffix}"
 
 
-def managed_mcp_python_path(name: str, home: str | os.PathLike[str] | None = None) -> Path:
-    suffix = ".exe" if os.name == "nt" else ""
-    return _venv_bin_dir(managed_mcp_venv_dir(name, home)) / f"python{suffix}"
 
 
 def _secure_file(path: Path) -> None:

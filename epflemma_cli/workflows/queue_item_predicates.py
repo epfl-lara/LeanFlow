@@ -18,17 +18,6 @@ from epflemma_cli.proof_state_builder import _find_declaration_entry, _line_in_d
 from epflemma_cli.workflows.queue_manager import TheoremQueueManager
 
 
-def _queue_item_has_diagnostic_reason(item: Mapping[str, Any]) -> bool:
-    reasons = " ".join(str(reason or "") for reason in item.get("reasons", []) or []).lower()
-    return bool(
-        "diagnostic" in reasons
-        or "error" in reasons
-        or "unsolved" in reasons
-        or "type mismatch" in reasons
-        or "failed" in reasons
-    )
-
-
 def _queue_item_has_sorry_reason(item: Mapping[str, Any]) -> bool:
     return any(str(reason or "").strip().lower() == "contains sorry" for reason in item.get("reasons", []) or [])
 
