@@ -160,7 +160,6 @@ files = [
   "epflemma_cli/runtime/env_loader.py",
   "epflemma_cli/lean/lean_workflow_specs.py",
   "tools/utilities/interrupt.py",
-  "tools/utilities/openrouter_client.py",
   "tools/utilities/debug_helpers.py",
   "epflemma_cli/workflows/workflow_state_paths.py",
   "epflemma_cli/workflows/workflow_json_io.py",
