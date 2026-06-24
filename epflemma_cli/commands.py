@@ -4,8 +4,94 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 
 from prompt_toolkit.completion import Completer, Completion
+
+
+@dataclass(frozen=True)
+class WorkflowCommandSpec:
+    """Single source of truth for one EPFLemma workflow slash command.
+
+    ``command`` is the canonical frontend slash command (e.g. ``/prove``).
+    ``aliases`` are additional long-form frontend slash commands that route to the
+    same workflow (e.g. ``/autoprove``). ``workflow_kind`` / ``backend_command`` mirror
+    the routing tuple consumed by the native runner, and ``description`` is the help
+    text shown in the shell command help.
+    """
+
+    command: str
+    workflow_kind: str
+    backend_command: str
+    description: str
+    aliases: tuple[str, ...] = field(default_factory=tuple)
+
+
+# The canonical, ordered registry of workflow commands. Every workflow routing table
+# in the CLI (COMMANDS_BY_CATEGORY["Workflow"], main.WORKFLOW_COMMANDS,
+# workflow.WORKFLOW_ALIAS_MAP, workflow.FORGIVING_WORKFLOW_ALIAS_MAP) is DERIVED from
+# this single structure so the command surface stays consistent in one place.
+COMMAND_REGISTRY: tuple[WorkflowCommandSpec, ...] = (
+    WorkflowCommandSpec("/draft", "draft", "/draft", "Run the Lean draft workflow"),
+    WorkflowCommandSpec("/review", "review", "/review", "Run the Lean review workflow"),
+    WorkflowCommandSpec("/checkpoint", "checkpoint", "/checkpoint", "Run the Lean checkpoint workflow"),
+    WorkflowCommandSpec("/refactor", "refactor", "/refactor", "Run the Lean refactor workflow"),
+    WorkflowCommandSpec("/golf", "golf", "/golf", "Run the Lean proof golfing workflow"),
+    WorkflowCommandSpec(
+        "/prove",
+        "prove",
+        "/prove",
+        "Run the autonomous Lean proving workflow; add --agents N for explicit swarm mode",
+        aliases=("/autoprove",),
+    ),
+    WorkflowCommandSpec(
+        "/formalize",
+        "formalize",
+        "/formalize",
+        "Formalize a project-local .tex/.pdf document; add --agents N for explicit swarm mode",
+        aliases=("/autoformalize",),
+    ),
+)
+
+
+def _workflow_category_commands() -> dict[str, str]:
+    """Build the Workflow help section (canonical commands only) from the registry."""
+    return {spec.command: spec.description for spec in COMMAND_REGISTRY}
+
+
+def build_workflow_alias_map() -> dict[str, tuple[str, str, str]]:
+    """Derive the frontend-command -> (kind, canonical, backend) routing table.
+
+    Canonical commands are emitted first (in registry order), then their long-form
+    aliases, preserving the historical iteration order of ``WORKFLOW_ALIAS_MAP``.
+    """
+    alias_map: dict[str, tuple[str, str, str]] = {}
+    for spec in COMMAND_REGISTRY:
+        alias_map[spec.command] = (spec.workflow_kind, spec.command, spec.backend_command)
+    for spec in COMMAND_REGISTRY:
+        for alias in spec.aliases:
+            alias_map[alias] = (spec.workflow_kind, spec.command, spec.backend_command)
+    return alias_map
+
+
+def build_forgiving_workflow_alias_map() -> dict[str, str]:
+    """Derive the slash-less-name -> canonical-slash-command forgiving routing table."""
+    forgiving: dict[str, str] = {}
+    for spec in COMMAND_REGISTRY:
+        forgiving[spec.command[1:]] = spec.command
+        for alias in spec.aliases:
+            forgiving[alias[1:]] = spec.command
+    return forgiving
+
+
+def build_workflow_command_set() -> set[str]:
+    """Derive the set of all frontend workflow slash commands (canonical + aliases)."""
+    commands: set[str] = set()
+    for spec in COMMAND_REGISTRY:
+        commands.add(spec.command)
+        commands.update(spec.aliases)
+    return commands
+
 
 COMMANDS_BY_CATEGORY = {
     "Project": {
@@ -13,15 +99,7 @@ COMMANDS_BY_CATEGORY = {
         "/cd": "Change the shell working directory",
         "/pwd": "Show the current shell working directory",
     },
-    "Workflow": {
-        "/draft": "Run the Lean draft workflow",
-        "/review": "Run the Lean review workflow",
-        "/checkpoint": "Run the Lean checkpoint workflow",
-        "/refactor": "Run the Lean refactor workflow",
-        "/golf": "Run the Lean proof golfing workflow",
-        "/prove": "Run the autonomous Lean proving workflow; add --agents N for explicit swarm mode",
-        "/formalize": "Formalize a project-local .tex/.pdf document; add --agents N for explicit swarm mode",
-    },
+    "Workflow": _workflow_category_commands(),
     "Runtime": {
         "/status": "Show the current project, provider, model, and runtime summary",
         "/kill": "Interrupt a workflow agent by id",

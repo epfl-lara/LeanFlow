@@ -19,7 +19,12 @@ from typing import Any, Mapping
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
-from epflemma_cli.config import ensure_epflemma_home, get_config_path, get_epflemma_home
+from epflemma_cli.config import (
+    ensure_epflemma_home,
+    get_config_path,
+    get_epflemma_home,
+    invalidate_config_cache,
+)
 
 
 @dataclass(frozen=True)
@@ -202,6 +207,11 @@ def _write_bootstrap_document(path: Path, yaml: YAML, payload: CommentedMap) -> 
     with path.open("w", encoding="utf-8") as handle:
         yaml.dump(payload, handle)
     _secure_file(path)
+    # This writes the managed config file directly (preserving comments via ruamel) rather than
+    # through config.save_config(), so it must drop the in-process load_config() cache itself —
+    # otherwise a later load_config() in the same process returns the pre-bootstrap config.
+    if path.name == get_config_path().name:
+        invalidate_config_cache()
 
 
 def _ensure_managed_server_entry(entry: CommentedMap, *, spec: ManagedMCPServerSpec, home: Path) -> None:

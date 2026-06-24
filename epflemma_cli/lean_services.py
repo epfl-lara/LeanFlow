@@ -21,6 +21,53 @@ from typing import Any, Mapping
 from epflemma_cli.file_locks import acquire_file_lock as _acquire_file_lock
 from epflemma_cli.file_locks import list_file_locks as _list_file_locks
 
+# Phase 5: pure multi-attempt validation / path / comment text helpers (and the MULTI_ATTEMPT_*
+# bounds) were extracted to lean_attempt_helpers. Re-export them here so the in-module callers
+# (_count_sorries / lean_inspect / lean_multi_attempt / _local_incremental_auto_probe / lean_auto_probe
+# and _canonical_tool_file_path) keep resolving them as ``lean_services.<name>`` unchanged.
+# lean_attempt_helpers imports only stdlib and does NOT import lean_services / native_runner, so this
+# introduces no import cycle.
+from epflemma_cli.lean_attempt_helpers import (  # noqa: E402
+    MULTI_ATTEMPT_MAX_CANDIDATES,
+    MULTI_ATTEMPT_MAX_CHARS,
+    MULTI_ATTEMPT_MAX_LINES,
+    MULTI_ATTEMPT_MIN_CANDIDATES,
+    _multi_attempt_validation_reasons,
+    _normalize_multi_attempt_candidates,
+    _strip_comments_and_strings,
+    _strip_diff_path_prefix,
+    _summarize_attempt_diagnostics,
+)
+
+# Phase 5: pure auto-prove normalization / parsing helpers (native-backend failure classifiers and
+# message extractors, the unsupported-option preflight, probe-success / replacement / diagnostics
+# shaping, and the objective->search-depth map) plus the UNSUPPORTED_PROOF_AUTO_OPTIONS constant were
+# extracted to lean_automation. Re-export them here so the in-module auto-prove orchestrators
+# (_invoke_native_mcp_wrapper / _normalize_native_backend_status / _local_incremental_auto_probe /
+# lean_auto_probe / lean_auto_search / lean_auto_try) keep resolving them as ``lean_services.<name>``
+# unchanged. lean_automation imports only stdlib and does NOT import lean_services / native_runner, so
+# this introduces no import cycle.
+from epflemma_cli.lean_automation import (  # noqa: E402
+    UNSUPPORTED_PROOF_AUTO_OPTIONS,
+    _auto_probe_attempt_succeeded,
+    _auto_search_depth_for_objective,
+    _automation_probe_replacement,
+    _incremental_probe_diagnostics,
+    _native_backend_failure_message,
+    _native_backend_status_indicates_failure,
+    _proof_auto_harness_failure_message,
+    _proof_auto_unsupported_option_reason,
+)
+
+# Phase 5 (#4 lean backend): a thin LeanBackend façade over the two backend primitives below
+# (_invoke_json_tool / _run_command) plus a capability-availability reader. lean_backend owns NO
+# backend state and forwards verbatim, resolving _invoke_json_tool / _run_command lazily off this
+# module at call time so test monkeypatches on those names still apply. It imports only stdlib at
+# load and does NOT import lean_services / native_runner, so this introduces no import cycle. The
+# stateful primitives (and their discovery / disable-for-run helpers) stay below; the JSON-tool /
+# Lake invocation call sites route through ``_BACKEND`` instead of calling the primitive directly.
+from epflemma_cli.lean_backend import LeanBackend  # noqa: E402
+
 # Phase 5: pure path-based declaration indexing / lookup helpers were extracted to
 # lean_declarations. Re-export them here (including LEAN_DECLARATION_PREAMBLE_RE) so existing
 # callers keep resolving them as ``lean_services.<name>`` unchanged. lean_declarations imports only
@@ -54,6 +101,53 @@ from epflemma_cli.lean_diagnostics import (  # noqa: E402
     diagnostic_items,
     diagnostics_indicate_actionable_failure,
 )
+
+# Phase 5: the pure local proof-context fallback assembler (_local_proof_context_payload rebuilds a
+# proof-context payload from an on-disk declaration slice, with no MCP backend or run state) was
+# extracted to lean_proof_context_local. Re-export it here so the in-module orchestrator
+# (lean_proof_context) and tests that call ``lean_services._local_proof_context_payload`` keep
+# resolving it unchanged. lean_proof_context_local imports only stdlib plus lean_declarations and
+# does NOT import lean_services / native_runner, so this introduces no import cycle.
+from epflemma_cli.lean_proof_context_local import (  # noqa: E402
+    _local_proof_context_payload,
+)
+
+# Phase 5: stateless Lean search-provider helpers (LeanExplore env/key/cache readers, the remote API
+# search, and the search-payload normalizers) plus the SEARCH_PROVIDER_LABELS constant were extracted
+# to lean_search_providers. Re-export them here so existing importers and the in-module orchestrators
+# (lean_search / probe_capabilities) keep resolving them as ``lean_services.<name>`` unchanged. The
+# stateful local-service trio (_leanexplore_local_service / _leanexplore_local_search and their globals)
+# and _rg_search stay below. lean_search_providers imports only stdlib and does NOT import
+# lean_services / native_runner, so this introduces no import cycle.
+from epflemma_cli.lean_search_providers import (  # noqa: E402
+    _LEANEXPLORE_LOCAL_REQUIRED_ENTRIES,
+    SEARCH_PROVIDER_LABELS,
+    _decode_nested_result,
+    _format_search_payload_item,
+    _is_leanexplore_reranker_load_error,
+    _leanexplore_api_key,
+    _leanexplore_api_search,
+    _leanexplore_backend_preference,
+    _leanexplore_cache_root,
+    _leanexplore_local_cache_path,
+    _leanexplore_local_status,
+    _leanexplore_local_verbose,
+    _model_to_plain_dict,
+    _quiet_leanexplore_local_output,
+    _search_payload_fragments,
+)
+
+# Phase 5: the pure ``sorry``-counting helpers (_count_sorries reads a single .lean file;
+# _project_sorry_stats walks a project tree and aggregates the counts) were extracted to
+# lean_sorry_stats. Re-export them here so existing callers (lean_inspect and tests that
+# monkeypatch ``lean_services._project_sorry_stats``) keep resolving them as
+# ``lean_services.<name>`` unchanged. lean_sorry_stats imports only stdlib plus
+# lean_attempt_helpers and does NOT import lean_services / native_runner, so this introduces no
+# import cycle.
+from epflemma_cli.lean_sorry_stats import (  # noqa: E402
+    _count_sorries,
+    _project_sorry_stats,
+)
 from epflemma_cli.lean_workflow_specs import get_lean_spec, list_specs
 from epflemma_cli.project import (
     ProjectManifestError,
@@ -65,17 +159,6 @@ from epflemma_cli.workflow_state import append_workflow_outcome, workflow_outcom
 
 STANDARD_AXIOMS = {"propext", "Quot.sound", "Classical.choice"}
 LEAN_WORKER_DISPATCH_ENABLED = False
-SEARCH_PROVIDER_LABELS = {
-    "local_search": "mcp-local-search",
-    "leanexplore_local": "leanexplore-local",
-    "leanexplore_api": "leanexplore-api",
-    "leanfinder": "mcp-leanfinder",
-    "leansearch": "mcp-leansearch",
-    "loogle": "mcp-loogle",
-    "leanexplore": "mcp-leanexplore",
-    "project_rg": "project-rg",
-    "mathlib_rg": "mathlib-rg",
-}
 MANAGED_MCP_TOOL_MAP = {
     "diagnostics": ("mcp_lean_lsp_lean_diagnostic_messages",),
     "goals": ("mcp_lean_lsp_lean_goal", "mcp_lean_lsp_lean_term_goal"),
@@ -125,11 +208,12 @@ MCP_CAPABILITY_DISABLED_LABELS = {
     "auto_search": "lean automation search MCP",
 }
 _DISABLED_MCP_TOOLS_BY_RUN: dict[str, set[str]] = {}
-MULTI_ATTEMPT_MIN_CANDIDATES = 2
-MULTI_ATTEMPT_MAX_CANDIDATES = 6
-MULTI_ATTEMPT_MAX_LINES = 12
-MULTI_ATTEMPT_MAX_CHARS = 700
 LOCAL_INCREMENTAL_AUTO_PROBE_MIN_TIMEOUT_S = 60
+
+# Phase 5 (#4 lean backend): shared stateless façade over the backend primitives. The wrapper
+# forwards verbatim and resolves _invoke_json_tool / _run_command lazily off this module, so this
+# stays behaviour-identical even when tests monkeypatch those names on lean_services.
+_BACKEND = LeanBackend()
 
 
 def recent_empty_search_streak(*, workflow_command: str, limit: int = 6) -> int:
@@ -221,13 +305,6 @@ def _apply_disabled_mcp_tools(
     return reasons
 
 
-def _strip_diff_path_prefix(file_path: str) -> str:
-    normalized = str(file_path or "").strip()
-    if normalized.startswith("a//") or normalized.startswith("b//"):
-        return normalized[2:]
-    return normalized
-
-
 def _canonical_tool_file_path(
     file_path: str,
     *,
@@ -271,53 +348,6 @@ def _canonical_tool_file_path(
             return str(active_candidate)
 
     return str(primary or normalized)
-
-
-def _summarize_attempt_diagnostics(attempts: list[dict[str, Any]]) -> list[str]:
-    summaries: list[str] = []
-    for attempt in attempts:
-        diagnostics = attempt.get("diagnostics")
-        if not isinstance(diagnostics, list):
-            continue
-        for diagnostic in diagnostics:
-            if not isinstance(diagnostic, Mapping):
-                continue
-            message = " ".join(str(diagnostic.get("message", "") or "").split()).strip()
-            if message:
-                summaries.append(message[:220])
-                break
-        if len(summaries) >= 2:
-            break
-    return summaries
-
-
-def _normalize_multi_attempt_candidates(attempts: list[str]) -> list[str]:
-    return [str(item or "").strip() for item in list(attempts or []) if str(item or "").strip()]
-
-
-def _multi_attempt_validation_reasons(attempts: list[str]) -> list[str]:
-    reasons: list[str] = []
-    count = len(attempts)
-    if count < MULTI_ATTEMPT_MIN_CANDIDATES or count > MULTI_ATTEMPT_MAX_CANDIDATES:
-        reasons.append(
-            f"lean_multi_attempt expects {MULTI_ATTEMPT_MIN_CANDIDATES}-{MULTI_ATTEMPT_MAX_CANDIDATES} concrete tactic candidates at one proof location"
-        )
-    declaration_pattern = re.compile(r"^\s*(theorem|lemma|example|def|instance|class|structure)\b")
-    for snippet in attempts:
-        sanitized = _strip_comments_and_strings(snippet)
-        if re.search(r"\bsorry\b", sanitized):
-            reasons.append("lean_multi_attempt candidates must not contain `sorry`")
-            break
-    for snippet in attempts:
-        lines = [line for line in str(snippet).splitlines() if line.strip()]
-        if (
-            len(str(snippet)) > MULTI_ATTEMPT_MAX_CHARS
-            or len(lines) > MULTI_ATTEMPT_MAX_LINES
-            or declaration_pattern.match(str(snippet))
-        ):
-            reasons.append("lean_multi_attempt expects short local tactic candidates, not full proof blocks")
-            break
-    return list(dict.fromkeys(reasons))
 
 
 def _discover_raw_mcp_tool_names() -> tuple[list[str], set[str]]:
@@ -563,103 +593,14 @@ def _invoke_json_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, An
     return {"raw": raw}
 
 
-def _leanexplore_api_key() -> str:
-    return str(os.getenv("LEANEXPLORE_API_KEY", "") or "").strip()
-
-
-_LEANEXPLORE_LOCAL_REQUIRED_ENTRIES = (
-    "lean_explore.db",
-    "informalization_faiss.index",
-    "informalization_faiss_ids_map.json",
-    "bm25_ids_map.json",
-    "bm25_name_raw",
-    "bm25_name_spaced",
-)
+# Stateful LeanExplore local-service singleton: kept in lean_services (alongside _leanexplore_local_service
+# / _leanexplore_local_search below) so the ``global`` rebinds and the tests'
+# ``monkeypatch.setattr(lean_services, "_LEANEXPLORE_LOCAL_*", ...)`` keep resolving in one namespace. The
+# stateless readers / normalizers and SEARCH_PROVIDER_LABELS / _LEANEXPLORE_LOCAL_REQUIRED_ENTRIES live in
+# lean_search_providers and are re-exported above.
 _LEANEXPLORE_LOCAL_SERVICE: Any | None = None
 _LEANEXPLORE_LOCAL_SERVICE_LOCK = threading.Lock()
 _LEANEXPLORE_LOCAL_RERANK_DISABLED = False
-
-
-def _leanexplore_backend_preference() -> str:
-    value = str(
-        os.getenv("EPFLEMMA_LEANEXPLORE_BACKEND", "")
-        or os.getenv("LEANEXPLORE_BACKEND", "")
-        or "auto"
-    ).strip().lower()
-    return value if value in {"auto", "local", "api", "off", "disabled"} else "auto"
-
-
-def _leanexplore_cache_root() -> Path:
-    return Path(os.getenv("LEAN_EXPLORE_CACHE_DIR", "~/.lean_explore/cache")).expanduser()
-
-
-def _leanexplore_local_cache_path() -> Path | None:
-    cache_root = _leanexplore_cache_root()
-    candidates: list[Path] = []
-    version = str(os.getenv("LEAN_EXPLORE_VERSION", "") or "").strip()
-    if version:
-        candidates.append(cache_root / version)
-    active_version_file = cache_root.parent / "active_version"
-    try:
-        active_version = active_version_file.read_text(encoding="utf-8").strip()
-    except Exception:
-        active_version = ""
-    if active_version:
-        candidates.append(cache_root / active_version)
-    if cache_root.is_dir():
-        candidates.extend(path for path in cache_root.iterdir() if path.is_dir())
-    for candidate in candidates:
-        if all((candidate / entry).exists() for entry in _LEANEXPLORE_LOCAL_REQUIRED_ENTRIES):
-            return candidate
-    return None
-
-
-def _leanexplore_local_status() -> dict[str, Any]:
-    try:
-        package_available = importlib.util.find_spec("lean_explore.search") is not None
-    except (ImportError, AttributeError, ValueError):
-        package_available = False
-    cache_path = _leanexplore_local_cache_path()
-    return {
-        "package_available": package_available,
-        "data_ready": cache_path is not None,
-        "cache_path": str(cache_path or ""),
-        "available": bool(package_available and cache_path is not None),
-    }
-
-
-def _model_to_plain_dict(value: Any) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        return dict(value)
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        dumped = model_dump()
-        return dict(dumped) if isinstance(dumped, Mapping) else {"value": dumped}
-    as_dict = getattr(value, "dict", None)
-    if callable(as_dict):
-        dumped = as_dict()
-        return dict(dumped) if isinstance(dumped, Mapping) else {"value": dumped}
-    return {"value": value}
-
-
-def _is_leanexplore_reranker_load_error(exc: Exception) -> bool:
-    message = str(exc)
-    return "Cannot copy out of meta tensor" in message and "to_empty()" in message
-
-
-def _leanexplore_local_verbose() -> bool:
-    value = str(os.getenv("EPFLEMMA_LEANEXPLORE_VERBOSE", "") or os.getenv("LEANEXPLORE_VERBOSE", "") or "")
-    return value.strip().lower() in {"1", "true", "yes", "on", "debug"}
-
-
-@contextlib.contextmanager
-def _quiet_leanexplore_local_output():
-    if _leanexplore_local_verbose():
-        yield
-        return
-    sink = io.StringIO()
-    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-        yield
 
 
 def _leanexplore_local_service() -> Any:
@@ -716,125 +657,6 @@ def _leanexplore_local_search(query: str, *, limit: int = 10) -> tuple[list[dict
                 entry[key] = value
         results.append(entry)
     return results, ""
-
-
-def _leanexplore_api_search(query: str, *, limit: int = 10) -> tuple[list[dict[str, Any]], str]:
-    api_key = _leanexplore_api_key()
-    if not api_key:
-        return [], "LEANEXPLORE_API_KEY is not configured"
-    try:
-        import httpx
-
-        response = httpx.get(
-            "https://www.leanexplore.com/api/v2/search",
-            params={"q": query, "limit": max(1, int(limit or 10))},
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=15.0,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception as exc:
-        return [], f"LeanExplore API search failed: {exc}"
-    if not isinstance(payload, Mapping):
-        return [], "LeanExplore API returned an unexpected payload"
-    raw_results = payload.get("results", [])
-    if not isinstance(raw_results, list):
-        return [], "LeanExplore API returned results in an unexpected format"
-    results: list[dict[str, Any]] = []
-    for item in raw_results[:limit]:
-        if isinstance(item, Mapping):
-            entry = {
-                "provider": SEARCH_PROVIDER_LABELS["leanexplore_api"],
-                "match": _format_search_payload_item(item)[:400],
-            }
-            for key in ("id", "name", "module", "source_link"):
-                value = item.get(key)
-                if value not in (None, ""):
-                    entry[key] = value
-            results.append(entry)
-        else:
-            fragment = str(item).strip()
-            if fragment:
-                results.append(
-                    {
-                        "provider": SEARCH_PROVIDER_LABELS["leanexplore_api"],
-                        "match": fragment[:400],
-                    }
-                )
-    return results, ""
-
-
-def _decode_nested_result(payload: Mapping[str, Any]) -> dict[str, Any]:
-    result = payload.get("result")
-    if isinstance(result, Mapping):
-        return dict(result)
-    if isinstance(result, str):
-        text = result.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```[a-zA-Z0-9_-]*\n", "", text)
-            text = re.sub(r"\n```$", "", text)
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            return {"text": result}
-        if isinstance(parsed, Mapping):
-            return dict(parsed)
-        return {"value": parsed}
-    return dict(payload)
-
-
-def _format_search_payload_item(item: Any) -> str:
-    if isinstance(item, Mapping):
-        name = str(item.get("name", "") or "").strip()
-        module = str(item.get("module", "") or "").strip()
-        description = str(
-            item.get("description", "")
-            or item.get("informalization", "")
-            or item.get("docstring", "")
-            or item.get("source_text", "")
-            or ""
-        ).strip()
-        source_link = str(item.get("source_link", "") or "").strip()
-        parts = []
-        if name:
-            parts.append(name)
-        if module:
-            parts.append(f"[{module}]")
-        if description:
-            parts.append(description)
-        if source_link:
-            parts.append(source_link)
-        if parts:
-            return " - ".join(parts)
-        return json.dumps(dict(item), sort_keys=True, default=str)
-    if isinstance(item, list):
-        return "; ".join(_format_search_payload_item(part) for part in item)
-    return str(item).strip()
-
-
-def _search_payload_fragments(payload: Mapping[str, Any], *, limit: int) -> list[str]:
-    decoded = _decode_nested_result(payload)
-    candidates: list[Any] = []
-    for key in ("results", "matches", "items", "declarations"):
-        value = decoded.get(key)
-        if isinstance(value, list):
-            candidates.extend(value)
-            break
-    if not candidates:
-        for value in decoded.values():
-            if isinstance(value, str) and value.strip():
-                candidates.append(value)
-            elif isinstance(value, list):
-                candidates.extend(value[:limit])
-
-    fragments: list[str] = []
-    for item in candidates:
-        fragment = _format_search_payload_item(item)
-        if fragment:
-            fragments.append(fragment)
-        if len(fragments) >= limit:
-            break
-    return fragments
 
 
 def _discover_lean_mcp_tools() -> dict[str, str]:
@@ -1051,40 +873,6 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
     )
 
 
-def _strip_comments_and_strings(text: str) -> str:
-    text = re.sub(r"/-.*?-/", "", text, flags=re.DOTALL)
-    text = re.sub(r"--.*", "", text)
-    text = re.sub(r'"(?:\\.|[^"\\])*"', '""', text)
-    return text
-
-
-def _count_sorries(path: Path) -> int | None:
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except Exception:
-        return None
-    return len(re.findall(r"\bsorry\b", _strip_comments_and_strings(raw)))
-
-
-def _project_sorry_stats(project_root: Path | None) -> tuple[int | None, list[str]]:
-    if project_root is None or not project_root.is_dir():
-        return None, []
-    total = 0
-    files: list[str] = []
-    for path in project_root.rglob("*.lean"):
-        if any(part in {".git", ".lake", ".epflemma", "build"} for part in path.parts):
-            continue
-        count = _count_sorries(path)
-        if not count:
-            continue
-        total += count
-        try:
-            files.append(str(path.relative_to(project_root)))
-        except Exception:
-            files.append(str(path))
-    return total, files
-
-
 def _scan_theorem_by_range(
     file_path: Path,
     *,
@@ -1094,7 +882,7 @@ def _scan_theorem_by_range(
     tool_name = _discover_internal_managed_mcp_tool("scan_theorem")
     if not tool_name:
         return {}
-    raw = _invoke_json_tool(
+    raw = _BACKEND.invoke_tool(
         tool_name,
         {
             "file": str(file_path),
@@ -1109,54 +897,10 @@ def _scan_theorem_by_range(
     return {}
 
 
-def _local_proof_context_payload(
-    file_path: Path,
-    theorem_id: str,
-    *,
-    degraded_reasons: list[str],
-    scan_payload: Mapping[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    entry = _find_declaration_entry(file_path, theorem_id)
-    if not entry:
-        return None
-    theorem_name = str(entry.get("name", "") or theorem_id).strip()
-    theorem = dict(scan_payload.get("theorem") or {}) if isinstance(scan_payload, Mapping) else {}
-    location = dict(theorem.get("location") or {}) if isinstance(theorem.get("location"), Mapping) else {}
-    local_text = _declaration_text_from_location(file_path, location) if location else ""
-    if not local_text:
-        local_text = str(entry.get("text", "") or "")
-    statement, proof = _split_declaration_statement_and_proof(local_text)
-    metadata = {
-        "fallback_source": "local-declaration-slice",
-        "declaration_kind": str(entry.get("kind", "") or theorem.get("kind", "")),
-        "line": int(entry.get("line", 0) or 0),
-        "end_line": int(entry.get("end_line", 0) or 0),
-        "scan_theorem": dict(scan_payload or {}) if isinstance(scan_payload, Mapping) and scan_payload else {},
-    }
-    if location:
-        metadata["location"] = location
-    return {
-        "success": True,
-        "status": "local-fallback",
-        "backend_tool": "local-declaration-slice",
-        "degraded_reasons": list(dict.fromkeys(degraded_reasons)),
-        "file_path": str(file_path),
-        "theorem_id": theorem_name,
-        "theorem_statement": statement,
-        "original_proof": proof,
-        "hypotheses": [],
-        "in_scope": _surrounding_declarations(file_path, theorem_name),
-        "namespace": theorem_name.rsplit(".", 1)[0] if "." in theorem_name else "",
-        "similar_proofs": [],
-        "metadata": metadata,
-        "timing": {},
-    }
-
-
 def _diagnostics_text(file_path: Path, project_root: Path | None, mcp_tools: Mapping[str, str]) -> str:
     diagnostics_tool = str(mcp_tools.get("diagnostics", "") or "")
     if diagnostics_tool:
-        payload = _invoke_json_tool(
+        payload = _BACKEND.invoke_tool(
             diagnostics_tool,
             {"file_path": str(file_path), "path": str(file_path)},
         )
@@ -1169,7 +913,7 @@ def _diagnostics_text(file_path: Path, project_root: Path | None, mcp_tools: Map
         relative = str(file_path.resolve().relative_to(project_root.resolve()))
     except Exception:
         relative = str(file_path)
-    _, output = _run_command(["lake", "env", "lean", relative], cwd=project_root)
+    _, output = _BACKEND.run_command(["lake", "env", "lean", relative], cwd=project_root)
     return output or "no diagnostics available"
 
 
@@ -1183,7 +927,7 @@ def _goals_text(
 ) -> str:
     goals_tool = str(mcp_tools.get("goals", "") or "")
     if goals_tool:
-        payload = _invoke_json_tool(
+        payload = _BACKEND.invoke_tool(
             goals_tool,
             {
                 "file_path": str(file_path),
@@ -1321,7 +1065,7 @@ def lean_verify(
     else:
         normalized_mode = "project"
         command = ["lake", "build"]
-    code, output = _run_command(command, cwd=root)
+    code, output = _BACKEND.run_command(command, cwd=root)
     result = LeanVerificationResult(
         ok=code == 0,
         mode=normalized_mode,
@@ -1336,7 +1080,7 @@ def lean_verify(
 def _rg_search(root: Path, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
     if not shutil.which("rg") or not root.is_dir():
         return []
-    code, output = _run_command(
+    code, output = _BACKEND.run_command(
         ["rg", "-n", "-m", str(limit), "--color", "never", query, str(root)],
         cwd=root,
     )
@@ -1397,20 +1141,20 @@ def lean_search(
             _append_provider("leanexplore_local")
         if allow_remote_api and leanexplore_api_available and leanexplore_preference != "local":
             _append_provider("leanexplore_api")
-        if report.mcp_tools.get("leanexplore"):
+        if _BACKEND.is_available(report, "leanexplore"):
             _append_provider("leanexplore", report.mcp_tools["leanexplore"])
 
-    if normalized_mode in {"auto", "local"} and report.mcp_tools.get("local_search"):
+    if normalized_mode in {"auto", "local"} and _BACKEND.is_available(report, "local_search"):
         _append_provider("local_search", report.mcp_tools["local_search"])
     if normalized_mode in {"auto", "semantic", "natural-language", "natural"}:
         _append_leanexplore_semantic_fallbacks(allow_remote_api=True)
     if normalized_mode == "local":
         _append_leanexplore_semantic_fallbacks(allow_remote_api=False)
-    if normalized_mode in {"auto", "semantic"} and report.mcp_tools.get("leanfinder"):
+    if normalized_mode in {"auto", "semantic"} and _BACKEND.is_available(report, "leanfinder"):
         _append_provider("leanfinder", report.mcp_tools["leanfinder"])
-    if normalized_mode in {"auto", "natural-language", "natural"} and report.mcp_tools.get("leansearch"):
+    if normalized_mode in {"auto", "natural-language", "natural"} and _BACKEND.is_available(report, "leansearch"):
         _append_provider("leansearch", report.mcp_tools["leansearch"])
-    if normalized_mode in {"auto", "type-pattern", "type"} and report.mcp_tools.get("loogle"):
+    if normalized_mode in {"auto", "type-pattern", "type"} and _BACKEND.is_available(report, "loogle"):
         _append_provider("loogle", report.mcp_tools["loogle"])
     if normalized_mode in {"type-pattern", "type"}:
         _append_leanexplore_semantic_fallbacks(allow_remote_api=True)
@@ -1434,7 +1178,7 @@ def lean_search(
             if api_error:
                 degraded.append(api_error)
             continue
-        payload = _invoke_json_tool(
+        payload = _BACKEND.invoke_tool(
             tool_name,
             {
                 "query": query,
@@ -1529,7 +1273,7 @@ def _invoke_native_mcp_wrapper(
         )
         append_workflow_outcome(outcome_kind, payload)
         return payload
-    raw = _invoke_json_tool(tool_name, arguments)
+    raw = _BACKEND.invoke_tool(tool_name, arguments)
     if raw.get("error"):
         _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
         payload = _wrapper_unavailable_result(
@@ -1569,23 +1313,6 @@ def _invoke_native_mcp_wrapper(
     return payload
 
 
-def _native_backend_status_indicates_failure(payload: Mapping[str, Any]) -> bool:
-    failure_statuses = {"rejected", "failed", "failure", "error", "invalid"}
-    for key in ("status", "validation_status", "result_status"):
-        status = str(payload.get(key, "") or "").strip().lower()
-        if status in failure_statuses:
-            return True
-    return False
-
-
-def _native_backend_failure_message(payload: Mapping[str, Any]) -> str:
-    for key in ("error_message", "error", "message", "failure", "reason", "status"):
-        value = str(payload.get(key, "") or "").strip()
-        if value:
-            return " ".join(value.split())[:500]
-    return ""
-
-
 def _normalize_native_backend_status(
     payload: dict[str, Any],
     *,
@@ -1616,36 +1343,6 @@ def _normalize_native_backend_status(
     elif failure_message:
         degraded_reasons.append(f"{outcome_kind} backend rejected: {failure_message}")
     payload["degraded_reasons"] = list(dict.fromkeys(degraded_reasons))
-
-
-def _proof_auto_harness_failure_message(payload: Mapping[str, Any]) -> str:
-    parts: list[str] = []
-    for key in ("error_message", "error", "message", "failure", "reason", "status", "text"):
-        value = str(payload.get(key, "") or "").strip()
-        if value:
-            parts.append(value)
-    parts.extend(str(reason) for reason in list(payload.get("degraded_reasons") or []) if str(reason).strip())
-    text = " ".join(" ".join(part.split()) for part in parts)
-    lowered = text.lower()
-    if "failed to construct harness" in lowered or "unsafe value range shape" in lowered:
-        return text[:700] or "proof-auto backend failed to construct a proof harness"
-    return ""
-
-
-UNSUPPORTED_PROOF_AUTO_OPTIONS = {
-    "linter.style.longLine": "lean-auto-try backend does not support project-level `set_option linter.style.longLine`",
-}
-
-
-def _proof_auto_unsupported_option_reason(file_path: str | os.PathLike[str]) -> str:
-    try:
-        text = Path(file_path).read_text(encoding="utf-8")
-    except OSError:
-        return ""
-    for option, reason in UNSUPPORTED_PROOF_AUTO_OPTIONS.items():
-        if re.search(rf"(?m)^\s*set_option\s+{re.escape(option)}\b", text):
-            return reason
-    return ""
 
 
 def _local_auto_try_preflight_failure(
@@ -1684,60 +1381,6 @@ def _local_auto_try_preflight_failure(
     }
     append_workflow_outcome("lean-auto-try", payload)
     return payload
-
-
-def _auto_probe_attempt_succeeded(payload: Mapping[str, Any]) -> bool:
-    if bool(payload.get("success", False)):
-        return True
-    classification = str(payload.get("classification", "") or "").strip().lower()
-    if classification in {"trivial", "promising", "solved", "success"}:
-        return True
-    status = str(payload.get("status", "") or "").strip().lower()
-    return status in {"trivial", "promising", "solved", "success"}
-
-
-def _automation_probe_replacement(entry: Mapping[str, Any], method: str) -> str:
-    text = str(entry.get("text", "") or "").strip()
-    tactic = str(method or "").strip()
-    if not text or not tactic:
-        return ""
-    match = re.search(r":=\s*by\b", text)
-    if match:
-        return text[: match.end()].rstrip() + f"\n  {tactic}\n"
-    if re.search(r"\b(sorry|by)\b", text):
-        return re.sub(r"\b(sorry|by\s+.*)\s*$", f"by\n  {tactic}", text, count=1, flags=re.DOTALL)
-    return ""
-
-
-def _incremental_probe_diagnostics(result: Mapping[str, Any]) -> list[dict[str, Any]]:
-    diagnostics = []
-    for message in list(result.get("messages") or [])[:6]:
-        if not isinstance(message, Mapping):
-            continue
-        location = None
-        file_start = message.get("file_start")
-        if isinstance(file_start, Mapping):
-            location = {
-                "file": str(result.get("file", "") or ""),
-                "line": file_start.get("line"),
-                "column": file_start.get("column"),
-            }
-        diagnostics.append(
-            {
-                "severity": str(message.get("severity", "") or "info"),
-                "message": str(message.get("message", "") or ""),
-                "location": location,
-            }
-        )
-    if not diagnostics and str(result.get("error", "") or "").strip():
-        diagnostics.append(
-            {
-                "severity": "error",
-                "message": str(result.get("error", "") or ""),
-                "location": None,
-            }
-        )
-    return diagnostics
 
 
 def _local_incremental_auto_probe(
@@ -1842,20 +1485,6 @@ def _local_incremental_auto_probe(
     }
 
 
-def _auto_search_depth_for_objective(objective: str) -> str:
-    normalized = str(objective or "").strip().lower()
-    mapping = {
-        "quick": "quick",
-        "fast": "quick",
-        "balanced": "normal",
-        "normal": "normal",
-        "deep": "deep",
-        "thorough": "deep",
-        "exhaustive": "exhaustive",
-    }
-    return mapping.get(normalized, "normal")
-
-
 def lean_proof_context(
     file_path: str,
     theorem_id: str,
@@ -1892,7 +1521,7 @@ def lean_proof_context(
         )
         append_workflow_outcome("lean-proof-context", payload)
         return payload
-    raw = _invoke_json_tool(
+    raw = _BACKEND.invoke_tool(
         tool_name,
         {
             "file": canonical_file_path,
@@ -2100,7 +1729,7 @@ def lean_auto_probe(
 
     attempts_payload: list[dict[str, Any]] = []
     for method in normalized_methods:
-        raw = _invoke_json_tool(
+        raw = _BACKEND.invoke_tool(
             tool_name,
             {
                 "file": canonical_file_path,
@@ -2213,7 +1842,7 @@ def lean_auto_try(
         )
         append_workflow_outcome("lean-auto-try", payload)
         return payload
-    raw = _invoke_json_tool(
+    raw = _BACKEND.invoke_tool(
         tool_name,
         {
             "file": canonical_file_path,
@@ -2328,7 +1957,7 @@ def lean_axioms(
             relative = str(temp_path.relative_to(root))
         except Exception:
             relative = str(temp_path)
-        _, output = _run_command(["lake", "env", "lean", relative], cwd=root)
+        _, output = _BACKEND.run_command(["lake", "env", "lean", relative], cwd=root)
     finally:
         temp_path.unlink(missing_ok=True)
     axioms = sorted(

@@ -11,6 +11,10 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Mapping
 
+from epflemma_cli.commands import (
+    build_forgiving_workflow_alias_map,
+    build_workflow_alias_map,
+)
 from epflemma_cli.formalization_documents import (
     FormalizationDocumentContext,
     ensure_formalization_blueprint_skill,
@@ -24,30 +28,14 @@ from epflemma_cli.project import (
 from epflemma_cli.runtime_provider import resolve_runtime_provider
 from epflemma_cli.skill_core import default_workflow_skill
 
-WORKFLOW_ALIAS_MAP = {
-    "/draft": ("draft", "/draft", "/draft"),
-    "/review": ("review", "/review", "/review"),
-    "/checkpoint": ("checkpoint", "/checkpoint", "/checkpoint"),
-    "/refactor": ("refactor", "/refactor", "/refactor"),
-    "/golf": ("golf", "/golf", "/golf"),
-    "/prove": ("prove", "/prove", "/prove"),
-    "/formalize": ("formalize", "/formalize", "/formalize"),
-    "/autoprove": ("prove", "/prove", "/prove"),
-    "/autoformalize": ("formalize", "/formalize", "/formalize"),
-}
+# Routing tables derived from the single COMMAND_REGISTRY in epflemma_cli.commands.
+# WORKFLOW_ALIAS_MAP: frontend command (incl. long-form aliases) -> (workflow_kind,
+# canonical_command, backend_command). FORGIVING_WORKFLOW_ALIAS_MAP: slash-less name ->
+# canonical slash command.
+WORKFLOW_ALIAS_MAP = build_workflow_alias_map()
 
 
-FORGIVING_WORKFLOW_ALIAS_MAP = {
-    "draft": "/draft",
-    "review": "/review",
-    "checkpoint": "/checkpoint",
-    "refactor": "/refactor",
-    "golf": "/golf",
-    "prove": "/prove",
-    "autoprove": "/prove",
-    "formalize": "/formalize",
-    "autoformalize": "/formalize",
-}
+FORGIVING_WORKFLOW_ALIAS_MAP = build_forgiving_workflow_alias_map()
 
 
 @dataclass(frozen=True)
