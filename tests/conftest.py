@@ -42,6 +42,34 @@ def _isolate_gauss_home(tmp_path, monkeypatch):
     monkeypatch.delenv("GAUSS_SESSION_CHAT_NAME", raising=False)
     monkeypatch.delenv("GAUSS_GATEWAY_SESSION", raising=False)
 
+    # Importing run_agent (and a few CLI entrypoints) runs load_epflemma_dotenv() at
+    # module-import time, which is *before* this fixture runs on the first test that
+    # imports them. With EPFLEMMA_HOME still unset at that point it resolves to the
+    # real ~/.epflemma and loads the developer's real .env into os.environ with
+    # override=True. Those provider-resolution vars then leak into every later test in
+    # the same process (notably tests/agent/test_auxiliary_client.py, whose own
+    # _clean_env only strips the unprefixed OPENAI_* names). Strip the .env-injected
+    # provider vars here so provider resolution starts from a clean slate regardless of
+    # test order. monkeypatch.delenv restores the originals at teardown.
+    for _prefix in ("EPFLEMMA_", "OPENGAUSS_", "GAUSS_", ""):
+        for _suffix in (
+            "OPENAI_BASE_URL", "OPENAI_API_KEY",
+            "OPENROUTER_BASE_URL", "OPENROUTER_API_KEY",
+        ):
+            monkeypatch.delenv(_prefix + _suffix, raising=False)
+    for _key in list(os.environ):
+        # Provider/auxiliary routing vars that a real ~/.epflemma/.env can inject.
+        if (
+            _key.startswith("AUXILIARY_")
+            or _key.startswith("CONTEXT_")
+            or _key.startswith("EPFLEMMA_CODEX_")
+            or _key.startswith("EPFLEMMA_EXPERT_")
+            or _key == "EPFLEMMA_INFERENCE_PROVIDER"
+            or _key.endswith("_API_KEY")
+            or _key.endswith("_BASE_URL")
+        ):
+            monkeypatch.delenv(_key, raising=False)
+
 
 @pytest.fixture()
 def tmp_dir(tmp_path):
