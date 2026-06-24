@@ -37,21 +37,34 @@ EPFLemma/
 
 ## Monoliths being decomposed
 
-Line counts below are **current** (post-decomposition on `refactor/epflemma-deep`); the
+Line counts below are **current** (post-decomposition on `refactor/epflemma-cores`); the
 "Target" column records what was carved off. The remaining bulk in each file is the coupled
 core called out under "Deferred".
 
 | File | Lines | Target |
 |---|---|---|
-| `epflemma_cli/native_runner.py` | 11,671 → 9,158 | Phase 2: leaves → `native_state` boundary → cluster modules → `proof_state_builder` / `verification_review` / `lean_module_paths`; managed-conversation/follow-up core deferred |
-| `run_agent.py` (`AIAgent`) | 7,123 → 4,966 | Phase 4: collaborators (TokenAccounter, ProviderClientFactory, ToolExecutor, ConversationManager, InterruptController, ResponseNormalizer, ReasoningProcessor, PromptManager, ApiCaller, CompressionPolicy, AnthropicMessagePreparer, OutputManager) + `collaborator_resolvers`; `run_conversation` loop deferred |
-| `epflemma_cli/lean_services.py` | 2,847 → 2,187 | Phase 5: lean_diagnostics / declarations / search_providers / automation / attempt_helpers / sorry_stats / proof_context_local + `lean_backend` wrapper; full backend abstraction deferred |
-| `tools/mcp_tool.py` | 1,638 → 1,193 | Phase 5: `mcp_transport` (stdio/HTTP plumbing) + `mcp_sampling` (server-initiated LLM requests) split out |
-| `epflemma_cli/main.py` | 1,331 → 1,315 | Phase 3: `cli_handlers` + `shell_ui` (presentation helpers) split out; `InteractiveShell` deferred (test-monkeypatched) |
-| `agent/auxiliary_client.py` | 1,314 | Phase 5: `auxiliary_adapters` (provider routing) split out; metadata+pricing behind `model_capabilities` |
-| `epflemma_cli/formalization_documents.py` | 1,126 | Phase 5: `document_extraction` (text/LaTeX/PDF extraction layer) split out |
-| `epflemma_cli/workflow_state.py` | 1,116 | Phase 3: `activity_preview` (event/status shaping) split out |
-| `tools/lean_tool.py` | 759 | Phase 5: `lean_experts` (advisor tools) + `lean_patch` (verified-patch apply) split out |
+| `epflemma_cli/native_runner.py` | 11,671 → 8,962 | Phase 2: leaves → `native_state` boundary → cluster modules → `proof_state_builder` / `verification_review` / `lean_module_paths` / `native_lean_files` / `queue_item_predicates`; managed-conversation/follow-up core deferred |
+| `run_agent.py` (`AIAgent`) | 7,123 → 4,878 | Phase 4: 12 collaborators + `collaborator_resolvers`; Phase 4 module-level leaves `workflow_events` + `runtime_helpers`; `run_conversation` loop deferred |
+| `epflemma_cli/lean_services.py` | 2,847 → 1,987 | Phase 5: lean_diagnostics / declarations / search_providers / automation / attempt_helpers / sorry_stats / proof_context_local + `lean_backend` wrapper + `lean_models` (result dataclasses) + `lean_worker_dispatch`; full backend abstraction deferred |
+| `tools/web_tools.py` | 1,670 → 1,309 | Phase 5: `web_research_providers` (arXiv/Semantic-Scholar/Crossref/Sourcegraph search + provider-ordering router + constants) split out |
+| `agent/auxiliary_client.py` | 1,626 → 1,286 | Phase 5: `auxiliary_adapters` (routing) + `model_capabilities` (metadata+pricing) + `auxiliary_rcp` (RCP predicates) + `auxiliary_nous` (Nous auth/endpoint) split out |
+| `tools/mcp_tool.py` | 1,638 → 1,029 | Phase 5: `mcp_transport` (stdio/HTTP) + `mcp_sampling` (server-initiated LLM) + `mcp_schema` (schema/utility-schema/config-filter) + `mcp_config` (`_load_mcp_config`) split out |
+| `epflemma_cli/workflow_state.py` | 1,325 → 1,068 | Phase 3: `activity_preview` (event/status shaping) + `workflow_state_paths` (path-root discovery) + `workflow_json_io` (read/write JSON) split out |
+| `epflemma_cli/formalization_documents.py` | 1,512 → 536 | Phase 5: `document_extraction` + `formalization_markdown` + `formalization_models` + `formalization_tex_discovery` split out |
+| `epflemma_cli/main.py` | 1,331 → 426 | Phase 3: `cli_handlers` + `shell_ui` + `shell` (`InteractiveShell` REPL) split out; main.py is now a thin argparse dispatcher |
+| `tools/lean_tool.py` | 1,693 → 759 | Phase 5: `lean_experts` (advisor tools) + `lean_patch` (verified-patch apply) split out |
+
+### Phase 6 hardening (code-cleaning / improvement; behavior-preserving)
+
+- **mypy gate** grown to **71** modules (all extracted leaves that pass cleanly).
+- **Silent-swallow logging**: 10 highest-value `except: pass` sites now log (debug/warning) without
+  changing control flow — persistence loads, checkpoint-before-mutation, telemetry writes.
+- **ruff `UP` modernization** applied tree-wide (~875 fixes: PEP585 `list/dict`, PEP604 `X | None`,
+  `datetime.UTC`, OSError aliases) and **`UP` is now enforced** in the lint config (`select=[F,I,UP]`,
+  ignoring the unsafe/manual `UP035`/`UP022`/`UP042`). Requires Python ≥3.11 (already pinned).
+- **ruff `B904`** exception chaining (`raise … from exc`) at 7 sites for better tracebacks.
+- Verified: full pytest suite green, `ruff`+`mypy` clean, plus codex + a 4-reviewer adversarial pass
+  (0 HIGH/0 MED findings).
 
 ## Load-bearing invariants
 
@@ -100,7 +113,11 @@ branch base. Two earlier classes of local failure were FIXED on this branch: the
 fixture now snapshots/restores provider env between tests) and the `test_non_quiet_logging`
 assertion (stale `1/180` fixture vs the default `max_iterations=200`).
 
-## Decomposition progress (branch refactor/epflemma-deep)
+## Decomposition progress (branches refactor/epflemma-deep → refactor/epflemma-cores)
+
+> The first wave (`refactor/epflemma-deep`) was squashed and merged to `main`; the follow-on
+> `refactor/epflemma-cores` branch continues with further leaf extractions (the `shell`, `lean_models`,
+> `formalization_*`, `native_lean_files`, `queue_item_predicates` modules below).
 
 Behavior-preserving extractions completed so far (each: move verbatim → re-export shim from the
 original module → ruff/mypy gate → full suite green → one commit). All extracted modules are leaf
@@ -148,6 +165,10 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 - `verification_review.py` — verification-decision / advisory text parsers (safe subset).
 - `lean_module_paths.py` — pure Lean module-name ↔ import-path ↔ on-disk-path translation helpers (safe subset).
 - `formalization_generated_lean.py` — generated-Lean inspection helpers (safe subset).
+- `native_lean_files.py` — active-file/target-symbol resolution + per-file/project `sorry` counting
+  (imports the native_config / native_utils / lean_parsing leaves; no cycle).
+- `queue_item_predicates.py` — pure queue-item classification predicates (sorry vs diagnostic
+  blocker, current-item/status selection, attempted-proof shape).
 
 ### From `lean_services.py`
 
@@ -158,6 +179,9 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 - `lean_attempt_helpers.py` — pure multi-attempt / path / comment text helpers.
 - `lean_sorry_stats.py` — pure `sorry`-counting helpers.
 - `lean_proof_context_local.py` — pure local proof-context assembly helpers (safe subset).
+- `lean_models.py` — the frozen Lean result/report dataclasses (`LeanCapabilityReport`,
+  `LeanSorryFinding`, `LeanInspection`, `LeanVerificationResult`, `LeanSearchResult`,
+  `LeanAxiomReport`, `WorkflowRouteDecision`, `LeanWorkerRequest`, `LeanWorkerResult`).
 - `lean_backend.py` — `LeanBackend`, a thin façade forwarding to the LSP/MCP JSON tool invoker
   (`_invoke_json_tool`), the Lake/subprocess runner (`_run_command`), and a capability reader.
   A first, partial realization of the deferred backend abstraction: it wraps the existing
@@ -168,8 +192,12 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 
 - `cli_handlers.py` — argparse handler/formatter functions (`_handle_config/_sandbox/_models`, …).
 - `shell_ui.py` — pure presentation helpers (prompt / bottom-toolbar formatters) that turn
-  already-gathered shell state into display strings; `InteractiveShell` delegates through thin
-  wrappers, so the data-gathering accessors tests monkeypatch stay on the shell.
+  already-gathered shell state into display strings.
+- `shell.py` — the full `InteractiveShell` REPL (prompt-toolkit loop, slash-command dispatch,
+  workflow launch/monitor, status rendering), re-exported from `main` for the historical
+  `from epflemma_cli.main import InteractiveShell` surface. main.py is now a thin argparse
+  dispatcher (~425 lines). Tests driving shell methods patch collaborators on `epflemma_cli.shell`;
+  tests driving `main()` patch them on `epflemma_cli.main` (both import the names independently).
 - Shell slash-command routing is now unified in `commands.py` behind a single `COMMAND_REGISTRY`
   (`tuple[WorkflowCommandSpec, …]`), replacing the scattered per-command branches.
 
@@ -178,6 +206,14 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 - `document_extraction.py` — the text/LaTeX/PDF extraction layer: turns a resolved source file
   into a structured summary (theorem blocks, sections, references, extracted text). A closed
   set under "calls" that reaches no origin-mutable state, re-exported on `formalization_documents`.
+- `formalization_markdown.py` — planner-context Markdown rendering (theorem blocks, sections,
+  TeX-project discovery, source excerpt); imports only the `document_extraction` leaf.
+- `formalization_models.py` — the `FormalizationDocumentError` exception + the
+  `FormalizationDocumentContext` / `_FormalizationDocumentSelection` frozen dataclasses (shared
+  data types, decoupled so the TeX-discovery leaf can use them without a cycle).
+- `formalization_tex_discovery.py` — path resolution + TeX-project entrypoint/include/asset
+  discovery (19 helpers + the `TEX_PROJECT_*` constants); imports only stdlib, `document_extraction`
+  and `formalization_models`. formalization_documents.py is now a focused selection/context-prep module.
 
 ### From `queue_manager.py`
 
