@@ -339,7 +339,7 @@ class ShellFileOperations(FileOperations):
     def _has_command(self, cmd: str) -> bool:
         """Check if a command exists in the environment (cached)."""
         if cmd not in self._command_cache:
-            result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
+            result = self._exec(f"command -v {self._escape_shell_arg(cmd)} >/dev/null 2>&1 && echo 'yes'")
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
         return self._command_cache[cmd]
     
@@ -406,9 +406,12 @@ class ShellFileOperations(FileOperations):
                 slash_idx = rest.find('/')
                 username = rest[:slash_idx] if slash_idx >= 0 else rest
                 if username and re.fullmatch(r'[a-zA-Z0-9._-]+', username):
-                    expand_result = self._exec(f"echo {path}")
+                    # Expand ONLY the validated ~username via the shell; append the (unvalidated)
+                    # path remainder in Python so a tail like "~root/$(...)" can't inject. (B3)
+                    expand_result = self._exec(f"echo ~{username}")
                     if expand_result.exit_code == 0 and expand_result.stdout.strip():
-                        return expand_result.stdout.strip()
+                        user_home = expand_result.stdout.strip()
+                        return user_home + (rest[slash_idx:] if slash_idx >= 0 else "")
         
         return path
     

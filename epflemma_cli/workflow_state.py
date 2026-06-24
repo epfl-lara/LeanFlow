@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import signal
+import threading
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timezone
@@ -39,6 +40,32 @@ from epflemma_cli.workflow_state_paths import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+
+try:
+    import fcntl  # POSIX advisory file locking
+except ImportError:  # pragma: no cover - non-POSIX (Windows)
+    fcntl = None  # type: ignore[assignment]
+
+# Serializes activity/outcome/log appends so concurrent /swarm agents cannot interleave or
+# lose JSON-lines: _APPEND_LOCK guards threads within this process; fcntl.flock guards across
+# subprocesses. Best-effort — degrades to in-process-only if flock is unavailable.
+_APPEND_LOCK = threading.Lock()
+
+
+def _locked_append(path: Path, text: str) -> None:
+    """Append ``text`` to ``path`` under an exclusive in-process + cross-process lock."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _APPEND_LOCK:
+        with path.open("a", encoding="utf-8") as handle:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                except OSError:
+                    logger.debug(
+                        "flock unavailable for %s; append not cross-process locked", path, exc_info=True
+                    )
+            handle.write(text)
+            handle.flush()
 
 WORKFLOW_TASK_LABELS = {
     "autoprove": "prove",
@@ -334,10 +361,7 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
     if agent_id:
         paths.append(workflow_agent_activity_path(agent_id, task_label))
     for path in paths:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(serialized)
-            handle.write("\n")
+        _locked_append(path, serialized + "\n")
 
 
 def append_workflow_outcome(kind: str, payload: Mapping[str, Any]) -> None:
@@ -350,10 +374,7 @@ def append_workflow_outcome(kind: str, payload: Mapping[str, Any]) -> None:
         "payload": dict(payload or {}),
     }
     path = workflow_outcomes_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, sort_keys=True))
-        handle.write("\n")
+    _locked_append(path, json.dumps(entry, sort_keys=True) + "\n")
 
 
 def write_verified_patch_checkpoint(
@@ -543,9 +564,7 @@ def enqueue_workflow_agent_message(agent_ref: str, text: str, *, kind: str = "me
         "kind": str(kind or "message"),
         "text": message,
     }
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, sort_keys=True))
-        handle.write("\n")
+    _locked_append(path, json.dumps(entry, sort_keys=True) + "\n")
     append_workflow_activity(
         "agent-input-queued",
         "Queued user message for workflow agent",
@@ -1032,10 +1051,8 @@ def append_workflow_run_log(text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     timestamped_path = workflow_timestamped_run_log_path()
     timestamped_path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(text)
-    with timestamped_path.open("a", encoding="utf-8") as handle:
-        handle.write(text)
+    _locked_append(path, text)
+    _locked_append(timestamped_path, text)
 
 
 def read_workflow_run_log(tail_lines: int = 120) -> str:
@@ -1044,7 +1061,8 @@ def read_workflow_run_log(tail_lines: int = 120) -> str:
         return ""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-    except Exception:
+    except (OSError, UnicodeDecodeError):
+        logger.debug("Failed to read workflow run log %s", path, exc_info=True)
         return ""
     tail = lines[-max(1, tail_lines):]
     return "\n".join(tail)
