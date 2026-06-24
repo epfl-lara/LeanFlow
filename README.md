@@ -1,16 +1,15 @@
 # EPFLemma
 
-EPFLemma is a Lean-first automation shell for mathematical coding agents.
+EPFLemma is a Lean-first AI automation tool. It drives a language model inside a real Lean 4 project to repair proofs, formalize mathematics from source documents, and verify a whole project until no `sorry` remains.
 
-Use it when you want an agent to work inside a Lean project, inspect Lean diagnostics and goals, repair proofs, formalize statements, and keep going until the project is actually clean.
-
-The installed command is:
+Point it at a Lean file or project and it inspects diagnostics and goals, edits proofs, re-verifies with Lean after every step, and keeps going — with workflow logs, checkpoints, and resumable state — until the target actually builds clean.
 
 ```bash
-epflemma
+epflemma                          # interactive shell
+epflemma workflow prove Main.lean # or run a workflow directly
 ```
 
-The product is intentionally narrow. It is not a general chat assistant, browser workflow runner, scheduler, marketplace, or data-generation platform. The supported surface is Lean automation: proof repair, formalization, project verification, workflow logs, checkpoints, resumability, provider routing, local runtimes, and user-approved multi-agent runs.
+The scope is deliberately narrow: Lean automation — proof repair, formalization, and project verification — plus the machinery that supports it: provider routing, local model runtimes, a host-isolated sandbox, and opt-in multi-agent runs. It is not a general chat assistant.
 
 ## Quick Start
 
@@ -165,8 +164,6 @@ EPFLemma keeps user-level state separate from project workflow state:
 
 Workflow state includes activity, logs, checkpoints, file locks, route decisions, failed-attempt history, project prove-manager plans, and outcomes. This is what lets long Lean runs resume without starting blind.
 
-EPFLemma can coexist with an older `gauss` install. It uses `~/.epflemma` and `.epflemma/`; it does not overwrite `~/.gauss` or the `gauss` binary.
-
 ## Skills And Specs
 
 EPFLemma steers agents with a small curated Lean skill core in `epflemma_skills/`.
@@ -230,8 +227,8 @@ epflemma workflow --provider codex prove Main.lean
 For local runtimes:
 
 ```bash
-epflemma models local use vllm google/gemma-4-31B-it
-epflemma models local start vllm google/gemma-4-31B-it
+epflemma models local use vllm google/gemma-3-27b-it
+epflemma models local start vllm google/gemma-3-27b-it
 epflemma models local status vllm
 epflemma provider --requested local
 ```
@@ -273,12 +270,12 @@ epflemma workflow autoformalize docs/paper-directory --prompt "focus on the main
 
 ## Documentation
 
-The README is now the human entry point. Deeper operational details live in:
+This README is the entry point. Deeper references:
 
-- [Product reference](docs/product-reference.md): full detailed documentation that used to live in the README.
-- [Sandbox runtime](docs/sandbox-runtime.md): isolated container runtime, patch export, install, and update flow.
-- [Native Lean workflow surface](docs/native-lean-workflow-surface.md): native Lean workflow and tool contract.
-- [Autonomous workflow context carryover](docs/autonomous-workflow-context-carryover-analysis.md): historical analysis and current context-reset behavior.
+- [Product reference](docs/product-reference.md): the full, detailed feature documentation.
+- [Sandbox runtime](docs/sandbox-runtime.md): the isolated container runtime, patch export, install, and update flow.
+- [Native Lean workflow surface](docs/native-lean-workflow-surface.md): the native Lean workflow and tool contract.
+- [Architecture](ARCHITECTURE.md): the module map and internals. [Contributing](AGENTS.md): coding standards and the quality gate.
 
 ## Development
 
@@ -291,18 +288,15 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e '.[dev]'
 ```
 
-Run focused tests:
+Before committing, run the quality gate (format, lint, types, tests):
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/epflemma -q -n 0
+ruff format .          # black-compatible formatter (CI checks with `ruff format --check .`)
+ruff check .           # lint
+mypy                   # type-check the gated module set
+python -m pytest -q    # full suite
 ```
 
-Recommended broader verification:
-
-```bash
-source .venv/bin/activate
-python -m pytest tests/epflemma tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py -q -n 0
-python -m epflemma_cli.main --help
-./scripts/install-internal.sh
-```
+Coding standards, the layering rules, and the gotchas to avoid are documented in
+[AGENTS.md](AGENTS.md); the module map is in [ARCHITECTURE.md](ARCHITECTURE.md).
