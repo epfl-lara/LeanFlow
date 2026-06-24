@@ -31,7 +31,6 @@ Usage:
 import re
 from collections.abc import Callable
 from difflib import SequenceMatcher
-from typing import List, Optional, Tuple
 
 UNICODE_MAP = {
     "\u201c": '"', "\u201d": '"',  # smart double quotes

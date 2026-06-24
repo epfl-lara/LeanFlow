@@ -20,13 +20,12 @@ import concurrent.futures
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from agent.providers.auxiliary_client import async_call_llm
 
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
-
 
 def _format_timestamp(ts: int | float | str | None) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
@@ -52,7 +51,6 @@ def _format_timestamp(ts: int | float | str | None) -> str:
     except Exception as e:
         logging.debug("Unexpected error formatting timestamp %s: %s", ts, e, exc_info=True)
     return str(ts)
-
 
 def _format_conversation(messages: list[dict[str, Any]]) -> str:
     """Format session messages into a readable transcript for summarization."""
@@ -86,7 +84,6 @@ def _format_conversation(messages: list[dict[str, Any]]) -> str:
             parts.append(f"[{role}]: {content}")
 
     return "\n\n".join(parts)
-
 
 def _truncate_around_matches(
     full_text: str, query: str, max_chars: int = MAX_SESSION_CHARS
@@ -122,7 +119,6 @@ def _truncate_around_matches(
     prefix = "...[earlier conversation truncated]...\n\n" if start > 0 else ""
     suffix = "\n\n...[later conversation truncated]..." if end < len(full_text) else ""
     return prefix + truncated + suffix
-
 
 async def _summarize_session(
     conversation_text: str, query: str, session_meta: dict[str, Any]
@@ -178,7 +174,6 @@ async def _summarize_session(
                     exc_info=True,
                 )
                 return None
-
 
 def session_search(
     query: str,
@@ -345,7 +340,6 @@ def session_search(
         logging.error("Session search failed: %s", e, exc_info=True)
         return json.dumps({"success": False, "error": f"Search failed: {str(e)}"}, ensure_ascii=False)
 
-
 def check_session_search_requirements() -> bool:
     """Requires SQLite state database and an auxiliary text model."""
     try:
@@ -353,7 +347,6 @@ def check_session_search_requirements() -> bool:
         return DEFAULT_DB_PATH.parent.exists()
     except ImportError:
         return False
-
 
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
@@ -394,7 +387,6 @@ SESSION_SEARCH_SCHEMA = {
         "required": ["query"],
     },
 }
-
 
 # --- Registry ---
 from tools.registry import registry

@@ -19,7 +19,7 @@ Usage::
 
 import asyncio
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiohttp
 from aiohttp import web

@@ -25,7 +25,6 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Set
 
 from core.home import epflemma_home
 
@@ -66,7 +65,6 @@ _GIT_TIMEOUT: int = max(10, min(60, int(os.getenv("EPFLEMMA_CHECKPOINT_TIMEOUT",
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
 
-
 # ---------------------------------------------------------------------------
 # Shadow repo helpers
 # ---------------------------------------------------------------------------
@@ -77,7 +75,6 @@ def _shadow_repo_path(working_dir: str) -> Path:
     dir_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:16]
     return CHECKPOINT_BASE / dir_hash
 
-
 def _git_env(shadow_repo: Path, working_dir: str) -> dict:
     """Build env dict that redirects git to the shadow repo."""
     env = os.environ.copy()
@@ -87,7 +84,6 @@ def _git_env(shadow_repo: Path, working_dir: str) -> dict:
     env.pop("GIT_NAMESPACE", None)
     env.pop("GIT_ALTERNATE_OBJECT_DIRECTORIES", None)
     return env
-
 
 def _run_git(
     args: list[str],
@@ -134,7 +130,6 @@ def _run_git(
         logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)
         return False, "", str(exc)
 
-
 def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> str | None:
     """Initialise shadow repo if needed.  Returns error string or None."""
     if (shadow_repo / "HEAD").exists():
@@ -162,7 +157,6 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> str | None:
     logger.debug("Initialised checkpoint repo at %s for %s", shadow_repo, working_dir)
     return None
 
-
 def _dir_file_count(path: str) -> int:
     """Quick file count estimate (stops early if over _MAX_FILES)."""
     count = 0
@@ -174,7 +168,6 @@ def _dir_file_count(path: str) -> int:
     except (PermissionError, OSError):
         pass
     return count
-
 
 # ---------------------------------------------------------------------------
 # CheckpointManager
@@ -529,7 +522,6 @@ class CheckpointManager:
         # Full pruning would require rebase --onto or filter-branch which
         # is fragile for a background feature.  We just limit the log view.
         logger.debug("Checkpoint repo has %d commits (limit %d)", count, self.max_snapshots)
-
 
 def format_checkpoint_list(checkpoints: list[dict], directory: str) -> str:
     """Format checkpoint list for display to user."""

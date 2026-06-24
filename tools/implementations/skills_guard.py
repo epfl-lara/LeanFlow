@@ -27,7 +27,6 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import List, Tuple
 
 # ---------------------------------------------------------------------------
 # Hardcoded trust configuration
@@ -45,7 +44,6 @@ INSTALL_POLICY = {
 
 VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}
 
-
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -60,7 +58,6 @@ class Finding:
     match: str
     description: str
 
-
 @dataclass
 class ScanResult:
     skill_name: str
@@ -70,7 +67,6 @@ class ScanResult:
     findings: list[Finding] = field(default_factory=list)
     scanned_at: str = ""
     summary: str = ""
-
 
 # ---------------------------------------------------------------------------
 # Threat patterns — (regex, pattern_id, severity, category, description)
@@ -519,7 +515,6 @@ INVISIBLE_CHARS = {
     '\u2069',  # pop directional isolate
 }
 
-
 # ---------------------------------------------------------------------------
 # Scanning functions
 # ---------------------------------------------------------------------------
@@ -588,7 +583,6 @@ def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
 
     return findings
 
-
 def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     """
     Scan all files in a skill directory for security threats.
@@ -635,7 +629,6 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         summary=summary,
     )
 
-
 def should_allow_install(result: ScanResult, force: bool = False) -> tuple[bool, str]:
     """
     Determine whether a skill should be installed based on scan result and trust.
@@ -664,7 +657,6 @@ def should_allow_install(result: ScanResult, force: bool = False) -> tuple[bool,
         f"Blocked ({result.trust_level} source + {result.verdict} verdict, "
         f"{len(result.findings)} findings). Use --force to override."
     )
-
 
 def format_scan_report(result: ScanResult) -> str:
     """
@@ -696,7 +688,6 @@ def format_scan_report(result: ScanResult) -> str:
 
     return "\n".join(lines)
 
-
 def content_hash(skill_path: Path) -> str:
     """Compute a SHA-256 hash of all files in a skill directory for integrity tracking."""
     h = hashlib.sha256()
@@ -710,7 +701,6 @@ def content_hash(skill_path: Path) -> str:
     elif skill_path.is_file():
         h.update(skill_path.read_bytes())
     return f"sha256:{h.hexdigest()[:16]}"
-
 
 # ---------------------------------------------------------------------------
 # Structural checks
@@ -832,7 +822,6 @@ def _check_structure(skill_dir: Path) -> list[Finding]:
 
     return findings
 
-
 def _unicode_char_name(char: str) -> str:
     """Get a readable name for an invisible unicode character."""
     names = {
@@ -856,7 +845,6 @@ def _unicode_char_name(char: str) -> str:
     }
     return names.get(char, f"U+{ord(char):04X}")
 
-
 # ---------------------------------------------------------------------------
 # LLM security audit
 # ---------------------------------------------------------------------------
@@ -877,7 +865,6 @@ Skill content:
 
 Respond ONLY with a JSON object (no other text):
 {{"verdict": "safe"|"caution"|"dangerous", "findings": [{{"description": "...", "severity": "critical"|"high"|"medium"|"low"}}]}}"""
-
 
 def llm_audit_skill(skill_path: Path, static_result: ScanResult,
                     model: str = None) -> ScanResult:
@@ -978,7 +965,6 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
         ),
     )
 
-
 def _parse_llm_response(text: str, skill_name: str) -> list[Finding]:
     """Parse the LLM's JSON response into Finding objects."""
     import json as json_mod
@@ -1018,7 +1004,6 @@ def _parse_llm_response(text: str, skill_name: str) -> list[Finding]:
 
     return findings
 
-
 def _get_configured_model() -> str:
     """Load the user's configured model from ~/.epflemma/config.yaml."""
     try:
@@ -1027,7 +1012,6 @@ def _get_configured_model() -> str:
         return config.get("model", "")
     except Exception:
         return ""
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -1044,7 +1028,6 @@ def _resolve_trust_level(source: str) -> str:
             return "trusted"
     return "community"
 
-
 def _determine_verdict(findings: list[Finding]) -> str:
     """Determine the overall verdict from a list of findings."""
     if not findings:
@@ -1058,7 +1041,6 @@ def _determine_verdict(findings: list[Finding]) -> str:
     if has_high:
         return "caution"
     return "caution"
-
 
 def _build_summary(name: str, source: str, trust: str, verdict: str, findings: list[Finding]) -> str:
     """Build a one-line summary of the scan result."""

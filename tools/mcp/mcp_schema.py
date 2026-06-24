@@ -12,7 +12,7 @@ so it introduces no import cycle.
 """
 
 import logging
-from typing import Any, List
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

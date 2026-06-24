@@ -44,13 +44,12 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from epflemma_cli.config import get_epflemma_home
 from tools.environments.local import _find_shell, _sanitize_subprocess_env
 
 logger = logging.getLogger(__name__)
-
 
 # Checkpoint file for crash recovery (gateway only)
 CHECKPOINT_PATH = get_epflemma_home() / "processes.json"
@@ -59,7 +58,6 @@ CHECKPOINT_PATH = get_epflemma_home() / "processes.json"
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
-
 
 @dataclass
 class ProcessSession:
@@ -81,7 +79,6 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: threading.Thread | None = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
-
 
 class ProcessRegistry:
     """
@@ -770,10 +767,8 @@ class ProcessRegistry:
 
         return recovered
 
-
 # Module-level singleton
 process_registry = ProcessRegistry()
-
 
 # ---------------------------------------------------------------------------
 # Registry -- the "process" tool schema + handler
@@ -824,7 +819,6 @@ PROCESS_SCHEMA = {
     }
 }
 
-
 def _handle_process(args, **kw):
     from tools.response import dumps, error
     task_id = kw.get("task_id")
@@ -851,7 +845,6 @@ def _handle_process(args, **kw):
         elif action == "submit":
             return dumps(process_registry.submit_stdin(session_id, str(args.get("data", ""))))
     return error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit")
-
 
 registry.register(
     name="process",

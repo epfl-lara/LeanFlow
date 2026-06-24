@@ -20,7 +20,7 @@ import json
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any
 
 from agent.accounting.usage_pricing import (
     DEFAULT_PRICING,

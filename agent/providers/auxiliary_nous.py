@@ -13,7 +13,6 @@ import cycle, since ``auxiliary_client`` re-exports these names.
 import json
 import logging
 import os
-from typing import Optional
 
 from epflemma_cli.config import get_epflemma_home
 

@@ -35,7 +35,7 @@ at call time (also keeping any test monkeypatch of it intercepting).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from agent.providers.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 

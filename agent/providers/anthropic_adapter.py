@@ -15,7 +15,7 @@ import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 try:
     import anthropic as _anthropic_sdk

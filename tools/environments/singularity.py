@@ -14,7 +14,6 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
 
 from epflemma_cli.config import get_epflemma_home
 from tools.environments.base import BaseEnvironment
@@ -24,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 _SNAPSHOT_STORE = get_epflemma_home() / "singularity_snapshots.json"
 
-
 def _load_snapshots() -> dict[str, str]:
     if _SNAPSHOT_STORE.exists():
         try:
@@ -33,11 +31,9 @@ def _load_snapshots() -> dict[str, str]:
             pass
     return {}
 
-
 def _save_snapshots(data: dict[str, str]) -> None:
     _SNAPSHOT_STORE.parent.mkdir(parents=True, exist_ok=True)
     _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
-
 
 # -------------------------------------------------------------------------
 # Singularity helpers (scratch dir, SIF cache, SIF building)
@@ -71,7 +67,6 @@ def _get_scratch_dir() -> Path:
     sandbox.mkdir(parents=True, exist_ok=True)
     return sandbox
 
-
 def _get_apptainer_cache_dir() -> Path:
     """Get the Apptainer cache directory for SIF images."""
     cache_dir = os.getenv("APPTAINER_CACHEDIR")
@@ -84,9 +79,7 @@ def _get_apptainer_cache_dir() -> Path:
     cache_path.mkdir(parents=True, exist_ok=True)
     return cache_path
 
-
 _sif_build_lock = threading.Lock()
-
 
 def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
     """Get or build a SIF image from a docker:// URL.
@@ -140,7 +133,6 @@ def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
         except Exception as e:
             logger.warning("SIF build error: %s, falling back to docker:// URL", e)
             return image
-
 
 # -------------------------------------------------------------------------
 # SingularityEnvironment

@@ -33,7 +33,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Write-path deny list — blocks writes to sensitive system/credential files
@@ -74,7 +74,6 @@ WRITE_DENIED_PREFIXES = [
     ]
 ]
 
-
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
     resolved = os.path.realpath(os.path.expanduser(path))
@@ -84,7 +83,6 @@ def _is_write_denied(path: str) -> bool:
         if resolved.startswith(prefix):
             return True
     return False
-
 
 # =============================================================================
 # Result Data Classes
@@ -109,7 +107,6 @@ class ReadResult:
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None and v != []}
 
-
 @dataclass
 class WriteResult:
     """Result from writing a file."""
@@ -120,7 +117,6 @@ class WriteResult:
     
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None}
-
 
 @dataclass
 class PatchResult:
@@ -149,7 +145,6 @@ class PatchResult:
             result["error"] = self.error
         return result
 
-
 @dataclass
 class SearchMatch:
     """A single search match."""
@@ -157,7 +152,6 @@ class SearchMatch:
     line_number: int
     content: str
     mtime: float = 0.0  # Modification time for sorting
-
 
 @dataclass
 class SearchResult:
@@ -186,7 +180,6 @@ class SearchResult:
             result["error"] = self.error
         return result
 
-
 @dataclass
 class LintResult:
     """Result from linting a file."""
@@ -203,13 +196,11 @@ class LintResult:
             "output": self.output
         }
 
-
 @dataclass
 class ExecuteResult:
     """Result from executing a shell command."""
     stdout: str = ""
     exit_code: int = 0
-
 
 # =============================================================================
 # Abstract Interface
@@ -245,7 +236,6 @@ class FileOperations(ABC):
                output_mode: str = "content", context: int = 0) -> SearchResult:
         """Search for content or files."""
         ...
-
 
 # =============================================================================
 # Shell-based Implementation
@@ -287,7 +277,6 @@ LINTERS = {
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
 MAX_FILE_SIZE = 50 * 1024  # 50KB
-
 
 class ShellFileOperations(FileOperations):
     """
@@ -1116,7 +1105,6 @@ class ShellFileOperations(FileOperations):
                             content=m.group(4)[:500]
                         ))
 
-            
             total = len(matches)
             page = matches[offset:offset + limit]
             return SearchResult(

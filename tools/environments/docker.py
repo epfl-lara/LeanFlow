@@ -12,7 +12,6 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Optional
 
 from tools.environments.base import BaseEnvironment
 from tools.utilities.interrupt import is_interrupted

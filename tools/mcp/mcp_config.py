@@ -11,7 +11,6 @@ introduces no import cycle.
 """
 
 import logging
-from typing import Dict
 
 logger = logging.getLogger(__name__)
 

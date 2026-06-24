@@ -7,7 +7,7 @@ Only the static helpers and file-write logic live here.
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

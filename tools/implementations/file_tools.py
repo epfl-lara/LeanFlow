@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import threading
-from typing import Optional
 
 from agent.accounting.redact import redact_sensitive_text
 from epflemma_cli.runtime.file_locks import ensure_file_lock
@@ -17,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
-
 def _is_expected_write_exception(exc: Exception) -> bool:
     """Return True for expected write denials that should not hit error logs."""
     if isinstance(exc, PermissionError):
@@ -25,7 +23,6 @@ def _is_expected_write_exception(exc: Exception) -> bool:
     if isinstance(exc, OSError) and exc.errno in _EXPECTED_WRITE_ERRNOS:
         return True
     return False
-
 
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
@@ -37,7 +34,6 @@ _file_ops_cache: dict = {}
 #   "read_history": set of (path, offset, limit) tuples for get_read_files_summary
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
-
 
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     """Get or create ShellFileOperations for a terminal environment.
@@ -165,7 +161,6 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _file_ops_cache[task_id] = file_ops
     return file_ops
 
-
 def clear_file_ops_cache(task_id: str = None):
     """Clear the file operations cache."""
     with _file_ops_lock:
@@ -173,7 +168,6 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.pop(task_id, None)
         else:
             _file_ops_cache.clear()
-
 
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
@@ -222,7 +216,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
     except Exception as e:
         return error(str(e))
 
-
 def get_read_files_summary(task_id: str = "default") -> list:
     """Return a list of files read in this session for the given task.
 
@@ -242,7 +235,6 @@ def get_read_files_summary(task_id: str = "default") -> list:
             for p, regions in sorted(seen_paths.items())
         ]
 
-
 def clear_read_tracker(task_id: str = None):
     """Clear the read tracker.
 
@@ -255,7 +247,6 @@ def clear_read_tracker(task_id: str = None):
             _read_tracker.pop(task_id, None)
         else:
             _read_tracker.clear()
-
 
 def notify_other_tool_call(task_id: str = "default"):
     """Reset consecutive read/search counter for a task.
@@ -272,7 +263,6 @@ def notify_other_tool_call(task_id: str = "default"):
             task_data["last_key"] = None
             task_data["consecutive"] = 0
 
-
 def _guard_file_lock(path: str, owner_id: str, purpose: str) -> dict | None:
     result = ensure_file_lock(path, owner_id=owner_id, purpose=purpose)
     if result.get("success"):
@@ -282,7 +272,6 @@ def _guard_file_lock(path: str, owner_id: str, purpose: str) -> dict | None:
         "path": path,
         "lock": result.get("lock"),
     }
-
 
 def write_file_tool(path: str, content: str, task_id: str = "default", owner_id: str = "") -> str:
     """Write content to a file."""
@@ -300,7 +289,6 @@ def write_file_tool(path: str, content: str, task_id: str = "default", owner_id:
         else:
             logger.error("write_file error: %s: %s", type(e).__name__, e, exc_info=True)
         return error(str(e))
-
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
@@ -335,7 +323,6 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         return result_json
     except Exception as e:
         return error(str(e))
-
 
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
@@ -394,7 +381,6 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     except Exception as e:
         return error(str(e))
 
-
 FILE_TOOLS = [
     {"name": "read_file", "function": read_file_tool},
     {"name": "write_file", "function": write_file_tool},
@@ -402,11 +388,9 @@ FILE_TOOLS = [
     {"name": "search_files", "function": search_tool}
 ]
 
-
 def get_file_tools():
     """Get the list of file tool definitions."""
     return FILE_TOOLS
-
 
 # ---------------------------------------------------------------------------
 # Schemas + Registry
@@ -482,17 +466,14 @@ SEARCH_FILES_SCHEMA = {
     }
 }
 
-
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
     return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
-
 
 def _handle_write_file(args, **kw):
     tid = kw.get("task_id") or "default"
     owner = str(kw.get("owner_id", "") or "")
     return write_file_tool(path=args.get("path", ""), content=args.get("content", ""), task_id=tid, owner_id=owner)
-
 
 def _handle_patch(args, **kw):
     tid = kw.get("task_id") or "default"
@@ -501,7 +482,6 @@ def _handle_patch(args, **kw):
         mode=args.get("mode", "replace"), path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid, owner_id=owner)
-
 
 def _handle_search_files(args, **kw):
     tid = kw.get("task_id") or "default"
@@ -512,7 +492,6 @@ def _handle_search_files(args, **kw):
         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
-
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖")
 registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️")

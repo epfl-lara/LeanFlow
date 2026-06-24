@@ -36,7 +36,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any
 
 from agent.prompting.prompt_caching import apply_anthropic_cache_control
 from agent.runtime.trajectory import convert_scratchpad_to_think

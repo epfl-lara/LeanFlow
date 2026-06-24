@@ -41,7 +41,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 import fire
 from openai import OpenAI
@@ -139,7 +139,6 @@ def _cleanup_optional_browser_state(task_id: str) -> None:
     """Browser session cleanup was removed with the legacy browser surface."""
     del task_id
 
-
 from agent.runtime.runtime_helpers import (  # noqa: E402,F401
     _generate_short_session_id,
     _install_safe_stdio,
@@ -192,7 +191,6 @@ class IterationBudget:
         with self._lock:
             return max(0, self.max_total - self._used)
 
-
 # Tools that must never run concurrently (interactive / user-facing).
 # When any of these appear in a batch, we fall back to sequential execution.
 _NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
@@ -202,7 +200,6 @@ _MAX_TOOL_WORKERS = 8
 
 _DEFAULT_MAX_TOOL_RESULT_CHARS = 100_000
 _LEAN_REASONING_HELP_MAX_TOOL_RESULT_CHARS = 260_000
-
 
 # Re-exported leaf helpers extracted into the agent/ package, kept importable from
 # run_agent for backwards compatibility (tests + native_runner reference these paths):
@@ -231,7 +228,6 @@ def _positive_int(value: Any, default: int) -> int:
     except Exception:
         return default
     return parsed if parsed > 0 else default
-
 
 # Lazy collaborator accessors extracted into agent/collaborator_resolvers.py,
 # re-exported here so call sites (and tests) continue to resolve
@@ -1128,8 +1124,7 @@ class AIAgent:
             marker in assistant_text for marker in workspace_markers
         )
         return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
-    
-    
+
     def _extract_reasoning(self, assistant_message) -> str | None:
         """Thin wrapper delegating to ``ReasoningProcessor.extract_reasoning``.
 
@@ -4681,7 +4676,6 @@ class AIAgent:
         result = self.run_conversation(message, stream_callback=stream_callback)
         return result["final_response"]
 
-
 def main(
     query: str = None,
     model: str = "anthropic/claude-opus-4.6",
@@ -4770,8 +4764,7 @@ def main(
         for name, info in scenario_toolsets:
             print(f"  • {name:20} - {info['description']}")
             print(f"    Total tools: {info['tool_count']}")
-        
-        
+
         # Show legacy toolset compatibility
         print("\n📦 Legacy Toolsets (for backward compatibility):")
         legacy_toolsets = get_available_toolsets()
@@ -4894,7 +4887,6 @@ def main(
             print(f"\n⚠️ Failed to save sample: {e}")
     
     print("\n👋 Agent execution completed!")
-
 
 if __name__ == "__main__":
     fire.Fire(main)

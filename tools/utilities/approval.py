@@ -13,7 +13,6 @@ import os
 import re
 import sys
 import threading
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

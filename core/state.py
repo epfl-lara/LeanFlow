@@ -21,7 +21,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.home import epflemma_home
 
@@ -92,7 +92,6 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
     INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
 END;
 """
-
 
 class SessionDB:
     """

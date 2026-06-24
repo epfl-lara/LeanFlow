@@ -7,7 +7,6 @@ fall back gracefully (zero / False) on models absent from the table.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Dict
 
 MODEL_PRICING = {
     "gpt-4o": {"input": 2.50, "output": 10.00},

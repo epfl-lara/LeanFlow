@@ -18,7 +18,6 @@ import os
 from datetime import datetime
 from datetime import timezone as _tz
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +32,6 @@ except ImportError:
 _cached_tz: ZoneInfo | None = None
 _cached_tz_name: str | None = None
 _cache_resolved: bool = False
-
 
 def _resolve_timezone_name() -> str:
     """Read the configured IANA timezone string (or empty string).
@@ -63,7 +61,6 @@ def _resolve_timezone_name() -> str:
 
     return ""
 
-
 def _get_zoneinfo(name: str) -> ZoneInfo | None:
     """Validate and return a ZoneInfo, or None if invalid."""
     if not name:
@@ -77,7 +74,6 @@ def _get_zoneinfo(name: str) -> ZoneInfo | None:
         )
         return None
 
-
 def get_timezone() -> ZoneInfo | None:
     """Return the user's configured ZoneInfo, or None (meaning server-local).
 
@@ -90,14 +86,12 @@ def get_timezone() -> ZoneInfo | None:
         _cache_resolved = True
     return _cached_tz
 
-
 def get_timezone_name() -> str:
     """Return the IANA name of the configured timezone, or empty string."""
     global _cached_tz_name, _cache_resolved
     if not _cache_resolved:
         get_timezone()  # populates cache
     return _cached_tz_name or ""
-
 
 def now() -> datetime:
     """
@@ -111,7 +105,6 @@ def now() -> datetime:
         return datetime.now(tz)
     # No timezone configured — use server-local (still tz-aware)
     return datetime.now().astimezone()
-
 
 def reset_cache() -> None:
     """Clear the cached timezone. Used by tests and after config changes."""

@@ -9,7 +9,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import requests
 import yaml
@@ -81,7 +81,6 @@ DEFAULT_CONTEXT_LENGTHS = {
     "MiniMax-M2.1": 204800,
 }
 
-
 def fetch_model_metadata(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
     """Fetch model metadata from OpenRouter (cached for 1 hour)."""
     global _model_metadata_cache, _model_metadata_cache_time
@@ -116,7 +115,6 @@ def fetch_model_metadata(force_refresh: bool = False) -> dict[str, dict[str, Any
         logging.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
         return _model_metadata_cache or {}
 
-
 def _normalize_model_name(model: str) -> str:
     """Canonical generic model-name normalization: trimmed + lowercased.
 
@@ -127,7 +125,6 @@ def _normalize_model_name(model: str) -> str:
     never imports the façade).
     """
     return str(model or "").strip().lower()
-
 
 def _extract_context_length_from_entry(entry: dict[str, Any] | None) -> int | None:
     if not isinstance(entry, dict):
@@ -156,7 +153,6 @@ def _extract_context_length_from_entry(entry: dict[str, Any] | None) -> int | No
                 return parsed
     return None
 
-
 def _lookup_metadata_context_length(
     metadata: dict[str, dict[str, Any]],
     model: str,
@@ -171,7 +167,6 @@ def _lookup_metadata_context_length(
             return True, _extract_context_length_from_entry(value)
     return False, None
 
-
 def _lookup_default_context_length(model: str) -> int | None:
     normalized_model = _normalize_model_name(model)
     for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
@@ -182,7 +177,6 @@ def _lookup_default_context_length(model: str) -> int | None:
         if normalized_default in normalized_model or normalized_model in normalized_default:
             return length
     return None
-
 
 def _lookup_configured_context_length(model: str) -> int | None:
     try:
@@ -206,11 +200,9 @@ def _lookup_configured_context_length(model: str) -> int | None:
     )
     return length if matched else None
 
-
 def _should_use_openrouter_metadata(base_url: str) -> bool:
     normalized = str(base_url or "").strip().lower()
     return not normalized or "openrouter.ai" in normalized
-
 
 def fetch_provider_model_metadata(
     base_url: str,
@@ -263,11 +255,9 @@ def fetch_provider_model_metadata(
         logger.debug("Failed to fetch provider model metadata from %s: %s", url, e)
         return cached or {}
 
-
 def _get_context_cache_path() -> Path:
     """Return path to the persistent context length cache file."""
     return epflemma_home() / "context_length_cache.yaml"
-
 
 def _load_context_cache() -> dict[str, int]:
     """Load the model+provider → context_length cache from disk."""
@@ -281,7 +271,6 @@ def _load_context_cache() -> dict[str, int]:
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
         return {}
-
 
 def save_context_length(model: str, base_url: str, length: int) -> None:
     """Persist a discovered context length for a model+provider combo.
@@ -303,13 +292,11 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     except Exception as e:
         logger.debug("Failed to save context length cache: %s", e)
 
-
 def get_cached_context_length(model: str, base_url: str) -> int | None:
     """Look up a previously discovered context length for model+provider."""
     key = f"{model}@{base_url}"
     cache = _load_context_cache()
     return cache.get(key)
-
 
 def get_next_probe_tier(current_length: int) -> int | None:
     """Return the next lower probe tier, or None if already at minimum."""
@@ -317,7 +304,6 @@ def get_next_probe_tier(current_length: int) -> int | None:
         if tier < current_length:
             return tier
     return None
-
 
 def parse_context_limit_from_error(error_msg: str) -> int | None:
     """Try to extract the actual context limit from an API error message.
@@ -345,7 +331,6 @@ def parse_context_limit_from_error(error_msg: str) -> int | None:
             if 1024 <= limit <= 10_000_000:
                 return limit
     return None
-
 
 def get_model_context_length(model: str, base_url: str = "", api_key: str = "") -> int:
     """Get the context length for a model.
@@ -393,13 +378,11 @@ def get_model_context_length(model: str, base_url: str = "", api_key: str = "") 
     # 6. Unknown model — be conservative rather than optimistic
     return UNKNOWN_CONTEXT_LENGTH_FALLBACK
 
-
 def estimate_tokens_rough(text: str) -> int:
     """Rough token estimate (~4 chars/token) for pre-flight checks."""
     if not text:
         return 0
     return len(text) // 4
-
 
 def estimate_messages_tokens_rough(messages: list[dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""

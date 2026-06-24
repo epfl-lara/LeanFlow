@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from epflemma_cli.config import get_epflemma_home
 from tools.environments.base import BaseEnvironment
@@ -21,7 +21,6 @@ from tools.utilities.interrupt import is_interrupted
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_STORE = get_epflemma_home() / "modal_snapshots.json"
-
 
 def _load_snapshots() -> dict[str, str]:
     """Load snapshot ID mapping from disk."""
@@ -32,12 +31,10 @@ def _load_snapshots() -> dict[str, str]:
             pass
     return {}
 
-
 def _save_snapshots(data: dict[str, str]) -> None:
     """Persist snapshot ID mapping to disk."""
     _SNAPSHOT_STORE.parent.mkdir(parents=True, exist_ok=True)
     _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
-
 
 class ModalEnvironment(BaseEnvironment):
     """Modal cloud execution via mini-swe-agent.
