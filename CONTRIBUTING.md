@@ -33,9 +33,11 @@ python -m epflemma_cli.main --help
 - `agent/` for prompt assembly, compression, display, and shared agent internals
 - `tools/` for the Lean-kernel tool surface
 - `run_agent.py` for the core conversation loop
-- `model_tools.py` and `toolsets.py` for tool discovery and Lean-kernel toolsets
+- `core/` for the shared kernel — session store, clock, constants, tool discovery (`model_tools`)
+  and toolsets. Top-level `model_tools` / `toolsets` / `utils` are re-export shims for `core.*`.
 
-Some lower-level support modules still keep `gauss_*` names internally. Treat those as compatibility residue, not as a supported Gauss product surface.
+The legacy `gauss_*` module names and `OPENGAUSS_`/`GAUSS_` env/home prefixes were dropped entirely
+in Phase II (see `ARCHITECTURE.md`). Do not reintroduce them.
 
 ## Skill vs Tool
 

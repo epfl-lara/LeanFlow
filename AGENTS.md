@@ -31,18 +31,23 @@ EPFLemma/
 ├── epflemma_skills/     # Curated Lean-first skills
 ├── agent/                # Prompt assembly, compression, display, auxiliary clients, AIAgent collaborators
 ├── tools/                # Lean-kernel tools
+├── core/                 # Lowest layer: home authority (home.py) + session store (state.py) +
+│                         #   clock/constants + model_tools/toolsets/utils kernel
 ├── run_agent.py          # Core conversation loop (AIAgent)
-├── model_tools.py        # Tool discovery and dispatch
-├── toolsets.py           # Lean-kernel toolset definitions
-├── gauss_state.py        # SQLite session store used by history/session search
 └── README.md             # Main product documentation
 ```
 
-Some lower-level support modules still keep `gauss_*` names internally. Treat those as compatibility residue, not as a supported Gauss product surface.
+The shared kernel (session store, clock, constants, tool registry API, toolsets, helpers) lives under
+`core/`. Top-level `model_tools` / `toolsets` / `utils` are thin re-export shims that keep
+`from model_tools import …` etc. working. The legacy `gauss_*` module names and `OPENGAUSS_`/`GAUSS_`
+env/home prefixes were dropped entirely in Phase II — do not reintroduce them.
 
-An in-progress decomposition (branch `refactor/epflemma-deep`) has split the historical monoliths
-into single-responsibility leaf modules. The entry points and public surface are unchanged — see
-`ARCHITECTURE.md` for the full module map. The key structures to know:
+A completed decomposition (now on `refactor/epflemma-cores-2`) split the historical monoliths into
+single-responsibility leaf modules and then grouped them into subpackages. The entry points and public
+surface are unchanged — see `ARCHITECTURE.md` for the full module map and the subpackage layout
+(`agent/{accounting,execution,prompting,providers,…}/`, `epflemma_cli/{lean,native,formalization,workflows,cli,runtime}/`,
+`tools/{implementations,utilities,mcp,environments}/`). The leaf-module names below now live inside
+those subpackages. The key structures to know:
 
 - `agent/` holds the `AIAgent` **collaborators** extracted from `run_agent.py`: `token_accounting`,
   `provider_client`, `tool_executor`, `conversation_manager`, `interrupt_controller`,
@@ -67,13 +72,13 @@ When adding behavior, prefer the smaller extracted module over growing the origi
 
 ## Current Architecture
 
-- `epflemma_cli/main.py` is the active `epflemma` CLI entrypoint (CLI handlers live in `cli_handlers.py`; slash-command routing in `commands.py`)
-- `epflemma_cli/native_runner.py` is the managed Lean workflow runtime (its leaf helpers now live in sibling `native_*` / `*_builder` modules)
-- `epflemma_cli/lean_services.py` is the Lean services hub (diagnostics/declarations/search/automation/sorry-stats split into sibling `lean_*` modules)
+- `epflemma_cli/main.py` is the active `epflemma` CLI entrypoint (CLI handlers in `cli/cli_handlers.py`; slash-command routing in `cli/commands.py`)
+- `epflemma_cli/native/native_runner.py` is the managed Lean workflow runtime (its leaf helpers live in sibling `epflemma_cli/native/` modules)
+- `epflemma_cli/lean/lean_services.py` is the Lean services hub (diagnostics/declarations/search/automation/sorry-stats split into sibling `epflemma_cli/lean/lean_*` modules)
 - `epflemma_cli/workflow.py` resolves workflow requests and toolset selection
-- `epflemma_cli/workflow_state.py` persists activity, checkpoints, logs, and status (status shaping in `activity_preview.py`)
-- `epflemma_cli/file_locks.py` handles cross-agent file reservations
-- `epflemma_cli/skill_core.py` resolves builtin, user, and project skill overlays
+- `epflemma_cli/workflows/workflow_state.py` persists activity, checkpoints, logs, and status (status shaping in `workflows/activity_preview.py`)
+- `epflemma_cli/runtime/file_locks.py` handles cross-agent file reservations
+- `epflemma_cli/runtime/skill_core.py` resolves builtin, user, and project skill overlays
 - `agent/prompt_builder.py` injects skill guidance into the agent prompt
 - `run_agent.py` hosts `AIAgent`; its responsibilities are delegated to the `agent/` collaborators listed above (the `run_conversation` loop itself is not yet extracted)
 

@@ -265,12 +265,11 @@ epflemma workflow autoformalize docs/paper-directory --prompt "focus on the main
 - `epflemma_cli/`: CLI, shell UX, workflow orchestration, providers, local runtimes, locks, workflow state
 - `epflemma_skills/`: curated Lean-first skills
 - `epflemma_specs/`: workflow and worker contracts
-- `agent/`: prompt assembly, compression, display, auxiliary clients
+- `core/`: shared kernel — home authority (`home.py`), SQLite session store (`state.py`), clock,
+  constants, tool registry (`model_tools.py`), toolsets, helpers
+- `agent/`: prompt assembly, compression, display, auxiliary clients, `AIAgent` collaborators
 - `tools/`: Lean-kernel tools and file/session tooling
 - `run_agent.py`: core conversation loop
-- `model_tools.py`: tool discovery and dispatch
-- `toolsets.py`: Lean toolset definitions
-- `gauss_state.py`: compatibility SQLite session store
 
 ## Documentation
 

@@ -13,27 +13,53 @@ Plan" and the per-phase plan). Update it as modules move.
 `native_runner.py` builds `run_agent.AIAgent` **in-process** (not via subprocess); the `epflemma`
 shell spawns `epflemma workflow …` subprocesses for managed runs.
 
-## Top-level layout
+## Top-level layout (post Phase II)
 
 ```
 EPFLemma/
-├── run_agent.py            # AIAgent conversation loop (collaborators extracted → agent/; loop deferred)
-├── epflemma_agent.py       # epflemma-agent entry shim
-├── model_tools.py          # tool registry API: get_tool_definitions / handle_function_call
-├── toolsets.py             # named toolset definitions
-├── utils.py                # atomic_json_write / atomic_yaml_write (+ shared helpers)
-├── gauss_state.py          # SQLite session store (schema-versioned + migrations)
-├── gauss_time.py           # timezone-aware timestamps
-├── gauss_constants.py      # API endpoint constants
-├── minisweagent_path.py    # mini-swe-agent submodule path discovery
-├── agent/                  # prompt assembly, providers, compression, display, metadata
-├── epflemma_cli/           # shell UX, workflow orchestration, providers, Lean services
-└── tools/                  # agent tools (terminal, file, lean, web, mcp, delegate, …)
+├── run_agent.py            # AIAgent conversation loop (collaborators live under agent/)
+├── epflemma_agent.py       # epflemma-agent entry shim (seeds EPFLEMMA_HOME + runs the legacy seed)
+├── core/                   # lowest layer (NO epflemma_cli deps): the home authority + shared kernel
+│   ├── home.py             #   epflemma_home() + migrate_legacy_home() — single source of truth
+│   ├── state.py time.py constants.py   # SQLite session store / clock / endpoint constants
+│   └── model_tools.py toolsets.py utils.py minisweagent_path.py
+├── agent/                  # AIAgent collaborators, grouped into cohesive subpackages:
+│                           #   providers/ prompting/ compression/ execution/ display/ accounting/ runtime/
+├── tools/                  # agent tools, grouped: implementations/ utilities/ mcp/ environments/
+│                           #   (registry.py + response.py kept at the top for self-registration)
+└── epflemma_cli/           # shell UX + workflow orchestration, grouped:
+                            #   lean/ native/ formalization/ workflows/ cli/ runtime/
+                            #   (main.py shell.py config.py workflow.py kept at the top — entrypoint + patch targets)
 ```
 
-> The flat top-level modules and the legacy `gauss_*` names are intentionally **kept in place**
-> for this refactor (conservative decision): no package move, no rename. The work is splitting the
-> monoliths and de-duplicating, not relayout.
+> **Phase II reversed the earlier "keep flat / keep `gauss_*`" stance.** The conservative first wave
+> split the monoliths in place; Phase II then (a) grouped every extracted leaf into the subpackages
+> above, (b) dropped the legacy `gauss_*` module names (`gauss_state`→`core.state`, etc.) and the
+> `OPENGAUSS_`/`GAUSS_` env-var + `~/.gauss`/`~/.opengauss` home prefixes entirely, and (c) completed
+> the managed-run contract. The detailed extraction history further down lists modules by their
+> original *flat* names — they now live under the subpackages here (e.g. the `agent/` collaborators
+> are under `agent/{accounting,execution,prompting,…}/`; the `native_runner.py`-era leaves under
+> `epflemma_cli/native/`; the `lean_*` leaves under `epflemma_cli/lean/`).
+
+### Phase II program (deep restructure → legacy drop → contract → quality → docs)
+
+Behavior-preserving throughout; each step gated by `ruff`+`mypy`+full pytest and committed separately.
+
+1. **Risky-now fixes** — locked concurrent workflow-state appends (`_locked_append`), closed two
+   shell-injection vectors in `tools/file_operations.py`, narrowed a broad except.
+2. **Golden/characterization net** — `tests/test_golden_cores.py` pins the appendix-per-turn,
+   callback-ordering, result-schema, and interrupt invariants before the DI work.
+3. **Deep restructure** — `core/` package introduced; `agent/`, `tools/`, `epflemma_cli/` each grouped
+   into the subpackages above via collision-safe import rewrites (4 commits).
+4. **Legacy drop** — `core.home` single home authority + one-time `~/.gauss`→`~/.epflemma` data seed;
+   all `OPENGAUSS_`/`GAUSS_` env fallbacks/dual-writes collapsed; the `GAUSS_`-only runtime/session
+   vars renamed to `EPFLEMMA_`; internal markers renamed. *Kept:* the `scripts/install.sh`→external
+   Morph-template var contract, and the `.gauss`/`.opengauss` project-dir discovery (a migration aid).
+5. **Managed-run contract** — `native_runner` now drives the post-tool-result appendix through
+   `AIAgent.{stage,set,clear}_tool_result_appendix` instead of reaching into the private attribute.
+   (The DI seams were already in place — 14+ injected collaborators; a `PostToolResultAppendixBroker`
+   was evaluated and rejected because the raw attr is load-bearing for incompatible test semantics.)
+6. **Quality** — safe ruff `B`/`SIM` autofixes + 67 `try/except: pass` → `contextlib.suppress`.
 
 ## Monoliths being decomposed
 
@@ -43,16 +69,16 @@ core called out under "Deferred".
 
 | File | Lines | Target |
 |---|---|---|
-| `epflemma_cli/native_runner.py` | 11,671 → 8,962 | Phase 2: leaves → `native_state` boundary → cluster modules → `proof_state_builder` / `verification_review` / `lean_module_paths` / `native_lean_files` / `queue_item_predicates`; managed-conversation/follow-up core deferred |
+| `epflemma_cli/native/native_runner.py` | 11,671 → 8,962 | Phase 2: leaves → `native_state` boundary → cluster modules → `proof_state_builder` / `verification_review` / `lean_module_paths` / `native_lean_files` / `queue_item_predicates`; managed-conversation/follow-up core deferred |
 | `run_agent.py` (`AIAgent`) | 7,123 → 4,878 | Phase 4: 12 collaborators + `collaborator_resolvers`; Phase 4 module-level leaves `workflow_events` + `runtime_helpers`; `run_conversation` loop deferred |
-| `epflemma_cli/lean_services.py` | 2,847 → 1,987 | Phase 5: lean_diagnostics / declarations / search_providers / automation / attempt_helpers / sorry_stats / proof_context_local + `lean_backend` wrapper + `lean_models` (result dataclasses) + `lean_worker_dispatch`; full backend abstraction deferred |
-| `tools/web_tools.py` | 1,670 → 1,309 | Phase 5: `web_research_providers` (arXiv/Semantic-Scholar/Crossref/Sourcegraph search + provider-ordering router + constants) split out |
-| `agent/auxiliary_client.py` | 1,626 → 1,286 | Phase 5: `auxiliary_adapters` (routing) + `model_capabilities` (metadata+pricing) + `auxiliary_rcp` (RCP predicates) + `auxiliary_nous` (Nous auth/endpoint) split out |
-| `tools/mcp_tool.py` | 1,638 → 1,029 | Phase 5: `mcp_transport` (stdio/HTTP) + `mcp_sampling` (server-initiated LLM) + `mcp_schema` (schema/utility-schema/config-filter) + `mcp_config` (`_load_mcp_config`) split out |
-| `epflemma_cli/workflow_state.py` | 1,325 → 1,068 | Phase 3: `activity_preview` (event/status shaping) + `workflow_state_paths` (path-root discovery) + `workflow_json_io` (read/write JSON) split out |
-| `epflemma_cli/formalization_documents.py` | 1,512 → 536 | Phase 5: `document_extraction` + `formalization_markdown` + `formalization_models` + `formalization_tex_discovery` split out |
+| `epflemma_cli/lean/lean_services.py` | 2,847 → 1,987 | Phase 5: lean_diagnostics / declarations / search_providers / automation / attempt_helpers / sorry_stats / proof_context_local + `lean_backend` wrapper + `lean_models` (result dataclasses) + `lean_worker_dispatch`; full backend abstraction deferred |
+| `tools/implementations/web_tools.py` | 1,670 → 1,309 | Phase 5: `web_research_providers` (arXiv/Semantic-Scholar/Crossref/Sourcegraph search + provider-ordering router + constants) split out |
+| `agent/providers/auxiliary_client.py` | 1,626 → 1,286 | Phase 5: `auxiliary_adapters` (routing) + `model_capabilities` (metadata+pricing) + `auxiliary_rcp` (RCP predicates) + `auxiliary_nous` (Nous auth/endpoint) split out |
+| `tools/mcp/mcp_tool.py` | 1,638 → 1,029 | Phase 5: `mcp_transport` (stdio/HTTP) + `mcp_sampling` (server-initiated LLM) + `mcp_schema` (schema/utility-schema/config-filter) + `mcp_config` (`_load_mcp_config`) split out |
+| `epflemma_cli/workflows/workflow_state.py` | 1,325 → 1,068 | Phase 3: `activity_preview` (event/status shaping) + `workflow_state_paths` (path-root discovery) + `workflow_json_io` (read/write JSON) split out |
+| `epflemma_cli/formalization/formalization_documents.py` | 1,512 → 536 | Phase 5: `document_extraction` + `formalization_markdown` + `formalization_models` + `formalization_tex_discovery` split out |
 | `epflemma_cli/main.py` | 1,331 → 426 | Phase 3: `cli_handlers` + `shell_ui` + `shell` (`InteractiveShell` REPL) split out; main.py is now a thin argparse dispatcher |
-| `tools/lean_tool.py` | 1,693 → 759 | Phase 5: `lean_experts` (advisor tools) + `lean_patch` (verified-patch apply) split out |
+| `tools/implementations/lean_tool.py` | 1,693 → 759 | Phase 5: `lean_experts` (advisor tools) + `lean_patch` (verified-patch apply) split out |
 
 ### Phase 6 hardening (code-cleaning / improvement; behavior-preserving)
 
@@ -92,7 +118,8 @@ core called out under "Deferred".
 
 ## Tooling gates (Phase 0)
 
-- **ruff** (`[tool.ruff.lint]`): `select = ["F", "I"]`, `ignore = ["F401", "F841"]`.
+- **ruff** (`[tool.ruff.lint]`): `select = ["F", "I", "UP"]` (UP added in Phase 6), `ignore`
+  retains `F401`/`F841` (re-export/patch-target safety) plus the unsafe `UP035`/`UP022`/`UP042`.
   - F401 (unused-import) and F841 (unused-variable) are **deferred to Phase 6**. F401 auto-removal
     is unsafe here because module-level imports are re-exported as patch/dynamic-access targets
     without `__all__`; blanket removal silently breaks runtime and tests. Phase 6 handles them
