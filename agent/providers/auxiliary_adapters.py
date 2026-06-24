@@ -108,10 +108,12 @@ class _CodexCompletionsAdapter:
             if role == "system":
                 instructions = content if isinstance(content, str) else str(content)
             else:
-                input_msgs.append({
-                    "role": role,
-                    "content": _convert_content_for_responses(content),
-                })
+                input_msgs.append(
+                    {
+                        "role": role,
+                        "content": _convert_content_for_responses(content),
+                    }
+                )
 
         resp_kwargs: dict[str, Any] = {
             "model": model,
@@ -132,12 +134,14 @@ class _CodexCompletionsAdapter:
                 name = fn.get("name")
                 if not name:
                     continue
-                converted.append({
-                    "type": "function",
-                    "name": name,
-                    "description": fn.get("description", ""),
-                    "parameters": fn.get("parameters", {}),
-                })
+                converted.append(
+                    {
+                        "type": "function",
+                        "name": name,
+                        "description": fn.get("description", ""),
+                        "parameters": fn.get("parameters", {}),
+                    }
+                )
             if converted:
                 resp_kwargs["tools"] = converted
 
@@ -161,14 +165,16 @@ class _CodexCompletionsAdapter:
                         if ptype in ("output_text", "text"):
                             text_parts.append(getattr(part, "text", ""))
                 elif item_type == "function_call":
-                    tool_calls_raw.append(SimpleNamespace(
-                        id=getattr(item, "call_id", ""),
-                        type="function",
-                        function=SimpleNamespace(
-                            name=getattr(item, "name", ""),
-                            arguments=getattr(item, "arguments", "{}"),
-                        ),
-                    ))
+                    tool_calls_raw.append(
+                        SimpleNamespace(
+                            id=getattr(item, "call_id", ""),
+                            type="function",
+                            function=SimpleNamespace(
+                                name=getattr(item, "name", ""),
+                                arguments=getattr(item, "arguments", "{}"),
+                            ),
+                        )
+                    )
 
             resp_usage = getattr(final, "usage", None)
             if resp_usage:
@@ -238,6 +244,7 @@ class _AsyncCodexCompletionsAdapter:
 
     async def create(self, **kwargs) -> Any:
         import asyncio
+
         return await asyncio.to_thread(self._sync.create, **kwargs)
 
 
@@ -306,7 +313,9 @@ class _AnthropicCompletionsAdapter:
         if hasattr(response, "usage") and response.usage:
             prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
             completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
-            total_tokens = getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+            total_tokens = getattr(response.usage, "total_tokens", 0) or (
+                prompt_tokens + completion_tokens
+            )
             usage = SimpleNamespace(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -352,6 +361,7 @@ class _AsyncAnthropicCompletionsAdapter:
 
     async def create(self, **kwargs) -> Any:
         import asyncio
+
         return await asyncio.to_thread(self._sync.create, **kwargs)
 
 

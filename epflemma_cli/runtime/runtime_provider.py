@@ -116,8 +116,16 @@ def list_runtime_provider_targets() -> list[dict[str, str]]:
     targets: list[dict[str, str]] = [
         {"name": "auto", "kind": "selector", "description": PROVIDER_DESCRIPTIONS["auto"]},
         {"name": "local", "kind": "managed-local", "description": PROVIDER_DESCRIPTIONS["local"]},
-        {"name": "custom", "kind": "openai-compatible", "description": PROVIDER_DESCRIPTIONS["custom"]},
-        {"name": "openrouter", "kind": "openai-compatible", "description": PROVIDER_DESCRIPTIONS["openrouter"]},
+        {
+            "name": "custom",
+            "kind": "openai-compatible",
+            "description": PROVIDER_DESCRIPTIONS["custom"],
+        },
+        {
+            "name": "openrouter",
+            "kind": "openai-compatible",
+            "description": PROVIDER_DESCRIPTIONS["openrouter"],
+        },
         {"name": "codex", "kind": "direct", "description": PROVIDER_DESCRIPTIONS["codex"]},
         {"name": "anthropic", "kind": "direct", "description": PROVIDER_DESCRIPTIONS["anthropic"]},
     ]
@@ -337,7 +345,9 @@ def _resolve_direct_provider(provider: str) -> dict[str, Any]:
         raise RuntimeProviderError(
             f"No credentials found for {provider}. Set one of: {', '.join(spec.api_key_env_vars)}."
         )
-    base_url = (os.getenv(spec.base_url_env_var, "").strip() if spec.base_url_env_var else "") or spec.base_url
+    base_url = (
+        os.getenv(spec.base_url_env_var, "").strip() if spec.base_url_env_var else ""
+    ) or spec.base_url
     return {
         "provider": provider,
         "api_mode": "chat_completions",
@@ -390,8 +400,12 @@ def resolve_runtime_provider(
         resolved = {
             "provider": "custom",
             "api_mode": "chat_completions",
-            "base_url": _validate_openai_compatible_base_url(explicit_base_url or custom_provider["base_url"]),
-            "api_key": explicit_api_key or custom_provider["api_key"] or _read_provider_env(
+            "base_url": _validate_openai_compatible_base_url(
+                explicit_base_url or custom_provider["base_url"]
+            ),
+            "api_key": explicit_api_key
+            or custom_provider["api_key"]
+            or _read_provider_env(
                 "EPFLEMMA_OPENAI_API_KEY",
                 "OPENAI_API_KEY",
             ),

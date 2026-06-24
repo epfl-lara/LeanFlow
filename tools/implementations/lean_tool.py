@@ -93,7 +93,9 @@ def lean_incremental_check_tool(
     )
 
 
-def lean_search_tool(query: str, cwd: str = "", mode: str = "auto", limit: int = 10, file_path: str = "") -> str:
+def lean_search_tool(
+    query: str, cwd: str = "", mode: str = "auto", limit: int = 10, file_path: str = ""
+) -> str:
     result = lean_search(query, cwd=cwd or None, mode=mode, limit=limit, file_path=file_path)
     payload = {
         "success": True,
@@ -101,7 +103,8 @@ def lean_search_tool(query: str, cwd: str = "", mode: str = "auto", limit: int =
     }
     if (
         not result.results
-        and "repeated empty search loop detected; stop searching and change tactic" in result.degraded_reasons
+        and "repeated empty search loop detected; stop searching and change tactic"
+        in result.degraded_reasons
     ):
         payload["success"] = False
         payload["action_required"] = (
@@ -115,7 +118,9 @@ def lean_search_tool(query: str, cwd: str = "", mode: str = "auto", limit: int =
 
 
 def lean_sorries_tool(scope: str = "project", target: str = "", cwd: str = "") -> str:
-    findings = [item.to_dict() for item in lean_sorries(scope=scope, target=target, cwd=cwd or None)]
+    findings = [
+        item.to_dict() for item in lean_sorries(scope=scope, target=target, cwd=cwd or None)
+    ]
     return json.dumps(
         {
             "success": True,
@@ -251,7 +256,10 @@ LEAN_INSPECT_SCHEMA = {
             "target": {"type": "string", "description": "Lean file path to inspect"},
             "cwd": {"type": "string", "description": "Optional working directory"},
             "line": {"type": "integer", "description": "Optional target line for goals lookup"},
-            "symbol": {"type": "string", "description": "Optional declaration name for goals lookup"},
+            "symbol": {
+                "type": "string",
+                "description": "Optional declaration name for goals lookup",
+            },
         },
         "required": ["target"],
     },
@@ -263,7 +271,10 @@ LEAN_VERIFY_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "target": {"type": "string", "description": "Optional file target for file/module verification"},
+            "target": {
+                "type": "string",
+                "description": "Optional file target for file/module verification",
+            },
             "cwd": {"type": "string", "description": "Optional working directory"},
             "mode": {
                 "type": "string",
@@ -306,7 +317,11 @@ LEAN_INCREMENTAL_CHECK_SCHEMA = {
                 "description": "Include tactic ranges, tactic text, goals, proof_state, and feedback_lean annotations. Leave false for speed on likely-success checks; set true when asking the model to repair a stuck proof. Failures auto-rerun with tactics when possible.",
                 "default": False,
             },
-            "timeout_s": {"type": "integer", "description": "LeanInteract request timeout", "default": 60},
+            "timeout_s": {
+                "type": "integer",
+                "description": "LeanInteract request timeout",
+                "default": 60,
+            },
         },
         "required": ["file_path"],
     },
@@ -333,7 +348,10 @@ LEAN_SEARCH_SCHEMA = {
                 "default": "auto",
             },
             "limit": {"type": "integer", "description": "Maximum number of results", "default": 10},
-            "file_path": {"type": "string", "description": "Optional active file path for provider-specific search"},
+            "file_path": {
+                "type": "string",
+                "description": "Optional active file path for provider-specific search",
+            },
         },
         "required": ["query"],
     },
@@ -400,7 +418,11 @@ LEAN_MULTI_ATTEMPT_SCHEMA = {
             "file_path": {"type": "string", "description": "Lean file path"},
             "line": {"type": "integer", "description": "Target line number"},
             "column": {"type": "integer", "description": "Optional target column"},
-            "attempts": {"type": "array", "items": {"type": "string"}, "description": "Concrete tactic candidates to test"},
+            "attempts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Concrete tactic candidates to test",
+            },
             "cwd": {"type": "string", "description": "Optional working directory"},
         },
         "required": ["file_path", "line", "attempts"],
@@ -439,14 +461,20 @@ APPLY_VERIFIED_PATCH_SCHEMA = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "The single .lean file to add or update"},
-            "patch": {"type": "string", "description": "A V4A patch with exactly one Add File or Update File operation for path"},
+            "patch": {
+                "type": "string",
+                "description": "A V4A patch with exactly one Add File or Update File operation for path",
+            },
             "cwd": {"type": "string", "description": "Optional project working directory"},
             "check_mode": {
                 "type": "string",
                 "description": "Verification tier: file_exact/lean-file/fast, module/medium, or project/strict",
                 "default": "file_exact",
             },
-            "theorem_id": {"type": "string", "description": "Optional active theorem/declaration id for workflow state"},
+            "theorem_id": {
+                "type": "string",
+                "description": "Optional active theorem/declaration id for workflow state",
+            },
         },
         "required": ["path", "patch"],
     },
@@ -489,14 +517,32 @@ LEAN_REASONING_HELP_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "theorem_id": {"type": "string", "description": "Assigned theorem/lemma/example identifier"},
+            "theorem_id": {
+                "type": "string",
+                "description": "Assigned theorem/lemma/example identifier",
+            },
             "file_path": {"type": "string", "description": "Lean file containing the theorem"},
-            "theorem_statement": {"type": "string", "description": "Exact current declaration statement, if available"},
-            "current_diagnostics": {"type": "string", "description": "Current Lean diagnostics or blocker text"},
+            "theorem_statement": {
+                "type": "string",
+                "description": "Exact current declaration statement, if available",
+            },
+            "current_diagnostics": {
+                "type": "string",
+                "description": "Current Lean diagnostics or blocker text",
+            },
             "current_goals": {"type": "string", "description": "Current Lean goals, if available"},
-            "current_attempt": {"type": "string", "description": "Most recent proof attempt or edit idea"},
-            "recent_failed_attempts": {"type": "string", "description": "Summary of prior failed attempts and errors"},
-            "question": {"type": "string", "description": "Specific advice request for the auxiliary model"},
+            "current_attempt": {
+                "type": "string",
+                "description": "Most recent proof attempt or edit idea",
+            },
+            "recent_failed_attempts": {
+                "type": "string",
+                "description": "Summary of prior failed attempts and errors",
+            },
+            "question": {
+                "type": "string",
+                "description": "Specific advice request for the auxiliary model",
+            },
             "cwd": {"type": "string", "description": "Optional project working directory"},
             "timeout_s": {
                 "type": "integer",
@@ -520,17 +566,32 @@ LEAN_DECOMPOSE_HELPERS_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "theorem_id": {"type": "string", "description": "Assigned theorem/lemma/example identifier"},
+            "theorem_id": {
+                "type": "string",
+                "description": "Assigned theorem/lemma/example identifier",
+            },
             "file_path": {"type": "string", "description": "Lean file containing the theorem"},
             "theorem_statement": {
                 "type": "string",
                 "description": "Exact current target declaration statement; used to validate helper skeletons with the target closed by `by sorry`",
             },
-            "current_diagnostics": {"type": "string", "description": "Current Lean diagnostics or blocker text"},
+            "current_diagnostics": {
+                "type": "string",
+                "description": "Current Lean diagnostics or blocker text",
+            },
             "current_goals": {"type": "string", "description": "Current Lean goals, if available"},
-            "current_attempt": {"type": "string", "description": "Most recent proof attempt or edit idea"},
-            "recent_failed_attempts": {"type": "string", "description": "Summary of prior failed attempts and errors"},
-            "question": {"type": "string", "description": "Specific decomposition request for the auxiliary model"},
+            "current_attempt": {
+                "type": "string",
+                "description": "Most recent proof attempt or edit idea",
+            },
+            "recent_failed_attempts": {
+                "type": "string",
+                "description": "Summary of prior failed attempts and errors",
+            },
+            "question": {
+                "type": "string",
+                "description": "Specific decomposition request for the auxiliary model",
+            },
             "cwd": {"type": "string", "description": "Optional project working directory"},
             "max_helper_count": {
                 "type": "integer",

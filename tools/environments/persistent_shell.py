@@ -33,9 +33,9 @@ class PersistentShellMixin:
     def _kill_shell_children(self): ...
 
     @abstractmethod
-    def _execute_oneshot(self, command: str, cwd: str, *,
-                         timeout: int | None = None,
-                         stdin_data: str | None = None) -> dict: ...
+    def _execute_oneshot(
+        self, command: str, cwd: str, *, timeout: int | None = None, stdin_data: str | None = None
+    ) -> dict: ...
 
     @abstractmethod
     def _cleanup_temp_files(self): ...
@@ -69,7 +69,8 @@ class PersistentShellMixin:
         self._shell_alive = True
 
         self._drain_thread = threading.Thread(
-            target=self._drain_shell_output, daemon=True,
+            target=self._drain_shell_output,
+            daemon=True,
         )
         self._drain_thread.start()
 
@@ -96,7 +97,8 @@ class PersistentShellMixin:
         if self._shell_pid:
             logger.info(
                 "Persistent shell started (session=%s, pid=%d)",
-                self._session_id, self._shell_pid,
+                self._session_id,
+                self._shell_pid,
             )
 
         reported_cwd = self._read_temp_files(self._pshell_cwd)[0].strip()
@@ -128,15 +130,26 @@ class PersistentShellMixin:
     # execute() / cleanup() — shared dispatcher, subclasses inherit
     # ------------------------------------------------------------------
 
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+    def execute(
+        self,
+        command: str,
+        cwd: str = "",
+        *,
+        timeout: int | None = None,
+        stdin_data: str | None = None,
+    ) -> dict:
         if self.persistent:
             return self._execute_persistent(
-                command, cwd, timeout=timeout, stdin_data=stdin_data,
+                command,
+                cwd,
+                timeout=timeout,
+                stdin_data=stdin_data,
             )
         return self._execute_oneshot(
-            command, cwd, timeout=timeout, stdin_data=stdin_data,
+            command,
+            cwd,
+            timeout=timeout,
+            stdin_data=stdin_data,
         )
 
     def cleanup(self):
@@ -166,8 +179,10 @@ class PersistentShellMixin:
 
     def _read_persistent_output(self) -> tuple[str, int, str]:
         stdout, stderr, status_raw, cwd = self._read_temp_files(
-            self._pshell_stdout, self._pshell_stderr,
-            self._pshell_status, self._pshell_cwd,
+            self._pshell_stdout,
+            self._pshell_stderr,
+            self._pshell_status,
+            self._pshell_cwd,
         )
         output = self._merge_output(stdout, stderr)
         status = status_raw.strip()
@@ -183,9 +198,9 @@ class PersistentShellMixin:
     # Execution
     # ------------------------------------------------------------------
 
-    def _execute_persistent(self, command: str, cwd: str, *,
-                            timeout: int | None = None,
-                            stdin_data: str | None = None) -> dict:
+    def _execute_persistent(
+        self, command: str, cwd: str, *, timeout: int | None = None, stdin_data: str | None = None
+    ) -> dict:
         if not self._shell_alive:
             logger.info("Persistent shell died, restarting...")
             self._init_persistent_shell()
@@ -194,22 +209,24 @@ class PersistentShellMixin:
         effective_timeout = timeout or self.timeout
         if stdin_data or sudo_stdin:
             return self._execute_oneshot(
-                command, cwd, timeout=timeout, stdin_data=stdin_data,
+                command,
+                cwd,
+                timeout=timeout,
+                stdin_data=stdin_data,
             )
 
         with self._shell_lock:
             return self._execute_persistent_locked(
-                exec_command, cwd, effective_timeout,
+                exec_command,
+                cwd,
+                effective_timeout,
             )
 
-    def _execute_persistent_locked(self, command: str, cwd: str,
-                                   timeout: int) -> dict:
+    def _execute_persistent_locked(self, command: str, cwd: str, timeout: int) -> dict:
         work_dir = cwd or self.cwd
         cmd_id = uuid.uuid4().hex[:8]
         truncate = (
-            f": > {self._pshell_stdout}\n"
-            f": > {self._pshell_stderr}\n"
-            f": > {self._pshell_status}\n"
+            f": > {self._pshell_stdout}\n: > {self._pshell_stderr}\n: > {self._pshell_status}\n"
         )
         self._send_to_shell(truncate)
         escaped = command.replace("'", "'\\''")

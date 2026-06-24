@@ -7,7 +7,9 @@ import pytest
 
 # Load the hyphenated script name dynamically
 repo_root = Path(__file__).parent.parent
-script_path = repo_root / "optional-skills" / "security" / "oss-forensics" / "scripts" / "evidence-store.py"
+script_path = (
+    repo_root / "optional-skills" / "security" / "oss-forensics" / "scripts" / "evidence-store.py"
+)
 
 spec = importlib.util.spec_from_file_location("evidence_store", str(script_path))
 evidence_store = importlib.util.module_from_spec(spec)
@@ -125,7 +127,9 @@ def test_evidence_store_query_searches_multiple_fields(tmp_path):
     store_file = tmp_path / "test_evidence.json"
     store = EvidenceStore(str(store_file))
 
-    store.add(source="git_fsck", content="dangling commit abc123", evidence_type="git", actor="attacker")
+    store.add(
+        source="git_fsck", content="dangling commit abc123", evidence_type="git", actor="attacker"
+    )
     store.add(source="manual", content="clean", evidence_type="manual")
 
     # Search by source

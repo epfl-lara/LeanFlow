@@ -58,8 +58,8 @@ def clean_session_content(content: str) -> str:
     if not content:
         return content
     content = convert_scratchpad_to_think(content)
-    content = re.sub(r'\n+(<think>)', r'\n\1', content)
-    content = re.sub(r'(</think>)\n+', r'\1\n', content)
+    content = re.sub(r"\n+(<think>)", r"\n\1", content)
+    content = re.sub(r"(</think>)\n+", r"\1\n", content)
     return content.strip()
 
 
@@ -113,7 +113,9 @@ class ConversationManager:
         agent._save_session_log(messages)
         agent._flush_messages_to_session_db(messages, conversation_history)
 
-    def flush_messages_to_session_db(self, messages: list[dict], conversation_history: list[dict] = None):
+    def flush_messages_to_session_db(
+        self, messages: list[dict], conversation_history: list[dict] = None
+    ):
         """Persist any un-flushed messages to the SQLite session store.
 
         Uses _last_flushed_db_idx to track which messages have already been
@@ -229,13 +231,15 @@ class ConversationManager:
                 "name": func["name"],
                 "description": func.get("description", ""),
                 "parameters": func.get("parameters", {}),
-                "required": None  # Match the format in the example
+                "required": None,  # Match the format in the example
             }
             formatted_tools.append(formatted_tool)
 
         return json.dumps(formatted_tools, ensure_ascii=False)
 
-    def convert_to_trajectory_format(self, messages: list[dict[str, Any]], user_query: str, completed: bool) -> list[dict[str, Any]]:
+    def convert_to_trajectory_format(
+        self, messages: list[dict[str, Any]], user_query: str, completed: bool
+    ) -> list[dict[str, Any]]:
         """
         Convert internal message format to trajectory format for saving.
 
@@ -264,16 +268,10 @@ class ConversationManager:
             "Example:\n<tool_call>\n{'name': <function-name>,'arguments': <args-dict>}\n</tool_call>"
         )
 
-        trajectory.append({
-            "from": "system",
-            "value": system_msg
-        })
+        trajectory.append({"from": "system", "value": system_msg})
 
         # Add the actual user prompt (from the dataset) as the first human message
-        trajectory.append({
-            "from": "human",
-            "value": user_query
-        })
+        trajectory.append({"from": "human", "value": user_query})
 
         # Skip the first message (the user query) since we already added it above.
         # Prefill messages are injected at API-call time only (not in the messages
@@ -304,16 +302,22 @@ class ConversationManager:
                         # Parse arguments - should always succeed since we validate during conversation
                         # but keep try-except as safety net
                         try:
-                            arguments = json.loads(tool_call["function"]["arguments"]) if isinstance(tool_call["function"]["arguments"], str) else tool_call["function"]["arguments"]
+                            arguments = (
+                                json.loads(tool_call["function"]["arguments"])
+                                if isinstance(tool_call["function"]["arguments"], str)
+                                else tool_call["function"]["arguments"]
+                            )
                         except json.JSONDecodeError:
                             # This shouldn't happen since we validate and retry during conversation,
                             # but if it does, log warning and use empty dict
-                            logging.warning(f"Unexpected invalid JSON in trajectory conversion: {tool_call['function']['arguments'][:100]}")
+                            logging.warning(
+                                f"Unexpected invalid JSON in trajectory conversion: {tool_call['function']['arguments'][:100]}"
+                            )
                             arguments = {}
 
                         tool_call_json = {
                             "name": tool_call["function"]["name"],
-                            "arguments": arguments
+                            "arguments": arguments,
                         }
                         content += f"<tool_call>\n{json.dumps(tool_call_json, ensure_ascii=False)}\n</tool_call>\n"
 
@@ -322,10 +326,7 @@ class ConversationManager:
                     if "<think>" not in content:
                         content = "<think>\n</think>\n" + content
 
-                    trajectory.append({
-                        "from": "gpt",
-                        "value": content.rstrip()
-                    })
+                    trajectory.append({"from": "gpt", "value": content.rstrip()})
 
                     # Collect all subsequent tool responses
                     tool_responses = []
@@ -349,21 +350,21 @@ class ConversationManager:
                             if tool_index < len(msg["tool_calls"])
                             else "unknown"
                         )
-                        tool_response += json.dumps({
-                            "tool_call_id": tool_msg.get("tool_call_id", ""),
-                            "name": tool_name,
-                            "content": tool_content
-                        }, ensure_ascii=False)
+                        tool_response += json.dumps(
+                            {
+                                "tool_call_id": tool_msg.get("tool_call_id", ""),
+                                "name": tool_name,
+                                "content": tool_content,
+                            },
+                            ensure_ascii=False,
+                        )
                         tool_response += "\n</tool_response>"
                         tool_responses.append(tool_response)
                         j += 1
 
                     # Add all tool responses as a single message
                     if tool_responses:
-                        trajectory.append({
-                            "from": "tool",
-                            "value": "\n".join(tool_responses)
-                        })
+                        trajectory.append({"from": "tool", "value": "\n".join(tool_responses)})
                         i = j - 1  # Skip the tool messages we just processed
 
                 else:
@@ -384,16 +385,10 @@ class ConversationManager:
                     if "<think>" not in content:
                         content = "<think>\n</think>\n" + content
 
-                    trajectory.append({
-                        "from": "gpt",
-                        "value": content.strip()
-                    })
+                    trajectory.append({"from": "gpt", "value": content.strip()})
 
             elif msg["role"] == "user":
-                trajectory.append({
-                    "from": "human",
-                    "value": msg["content"]
-                })
+                trajectory.append({"from": "human", "value": msg["content"]})
 
             i += 1
 

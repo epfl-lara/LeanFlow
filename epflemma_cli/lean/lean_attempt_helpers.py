@@ -82,6 +82,8 @@ def _multi_attempt_validation_reasons(attempts: list[str]) -> list[str]:
             or len(lines) > MULTI_ATTEMPT_MAX_LINES
             or declaration_pattern.match(str(snippet))
         ):
-            reasons.append("lean_multi_attempt expects short local tactic candidates, not full proof blocks")
+            reasons.append(
+                "lean_multi_attempt expects short local tactic candidates, not full proof blocks"
+            )
             break
     return list(dict.fromkeys(reasons))

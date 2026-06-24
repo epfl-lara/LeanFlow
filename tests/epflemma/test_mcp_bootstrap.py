@@ -137,7 +137,7 @@ def test_bootstrap_patches_lean_lsp_loogle_project_paths(tmp_path):
     loogle_py.write_text(
         "        paths = []\n"
         "        # Check packages directory\n"
-        "        lake_packages = self.project_path / \".lake\" / \"packages\"\n",
+        '        lake_packages = self.project_path / ".lake" / "packages"\n',
         encoding="utf-8",
     )
 

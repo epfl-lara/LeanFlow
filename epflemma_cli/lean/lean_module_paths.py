@@ -69,10 +69,25 @@ def _blueprint_import_plan_imports(text: str) -> list[str]:
     in_non_direct_subsection = False
     for line in section.splitlines():
         lowered = line.lower()
-        if re.match(r"^\s*#{1,6}\s+", line) or re.match(r"^\s*(?:direct|suggested|search|notes?)\s*:", lowered):
-            in_non_direct_subsection = any(token in lowered for token in ("suggest", "search", "candidate", "transitive", "note"))
+        if re.match(r"^\s*#{1,6}\s+", line) or re.match(
+            r"^\s*(?:direct|suggested|search|notes?)\s*:", lowered
+        ):
+            in_non_direct_subsection = any(
+                token in lowered
+                for token in ("suggest", "search", "candidate", "transitive", "note")
+            )
             continue
-        if any(token in lowered for token in ("suggested search", "search module", "candidate module", "transitive", "not required", "prover may")):
+        if any(
+            token in lowered
+            for token in (
+                "suggested search",
+                "search module",
+                "candidate module",
+                "transitive",
+                "not required",
+                "prover may",
+            )
+        ):
             continue
         if in_non_direct_subsection:
             continue

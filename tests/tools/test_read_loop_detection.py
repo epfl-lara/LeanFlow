@@ -31,6 +31,7 @@ from tools.implementations.file_tools import (
 
 class _FakeReadResult:
     """Minimal stand-in for FileOperations.read_file return value."""
+
     def __init__(self, content="line1\nline2\n", total_lines=2):
         self.content = content
         self._total_lines = total_lines
@@ -45,6 +46,7 @@ def _fake_read_file(path, offset=1, limit=500):
 
 class _FakeSearchResult:
     """Minimal stand-in for FileOperations.search return value."""
+
     def __init__(self):
         self.matches = []
 
@@ -78,9 +80,7 @@ class TestReadLoopDetection(unittest.TestCase):
     def test_second_consecutive_read_no_warning(self, _mock_ops):
         """2nd consecutive read should NOT warn (threshold is 3)."""
         read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
-        result = json.loads(
-            read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
-        )
+        result = json.loads(read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1"))
         self.assertNotIn("_warning", result)
         self.assertIn("content", result)
 
@@ -121,9 +121,7 @@ class TestReadLoopDetection(unittest.TestCase):
         read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
         read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
         # Now read a different region — this resets the consecutive counter
-        result = json.loads(
-            read_file_tool("/tmp/test.py", offset=501, limit=500, task_id="t1")
-        )
+        result = json.loads(read_file_tool("/tmp/test.py", offset=501, limit=500, task_id="t1"))
         self.assertNotIn("_warning", result)
 
     @patch("tools.implementations.file_tools._get_file_ops", return_value=_make_fake_file_ops())
@@ -138,9 +136,7 @@ class TestReadLoopDetection(unittest.TestCase):
     def test_different_tasks_isolated(self, _mock_ops):
         """Different task_ids have separate consecutive counters."""
         read_file_tool("/tmp/test.py", task_id="task_a")
-        result = json.loads(
-            read_file_tool("/tmp/test.py", task_id="task_b")
-        )
+        result = json.loads(read_file_tool("/tmp/test.py", task_id="task_b"))
         self.assertNotIn("_warning", result)
 
     @patch("tools.implementations.file_tools._get_file_ops", return_value=_make_fake_file_ops())
@@ -351,19 +347,24 @@ class TestCompressionFileHistory(unittest.TestCase):
 
         # Call the real _compress_context
         from run_agent import AIAgent
+
         result, _ = AIAgent._compress_context(
-            mock_agent, messages, "system prompt",
-            approx_tokens=1000, task_id="compress_test",
+            mock_agent,
+            messages,
+            "system prompt",
+            approx_tokens=1000,
+            task_id="compress_test",
         )
 
         # Find the injected file-read history message
         file_history_msgs = [
-            m for m in result
-            if isinstance(m.get("content"), str)
-            and "already read" in m.get("content", "").lower()
+            m
+            for m in result
+            if isinstance(m.get("content"), str) and "already read" in m.get("content", "").lower()
         ]
-        self.assertEqual(len(file_history_msgs), 1,
-                         "Should inject exactly one file-read history message")
+        self.assertEqual(
+            len(file_history_msgs), 1, "Should inject exactly one file-read history message"
+        )
 
         history_content = file_history_msgs[0]["content"]
         self.assertIn("/tmp/foo.py", history_content)
@@ -458,13 +459,16 @@ class TestTodoInjectionFiltering(unittest.TestCase):
 
     def test_filters_completed_and_cancelled(self):
         from tools.implementations.todo_tool import TodoStore
+
         store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Read codebase", "status": "completed"},
-            {"id": "2", "content": "Write fix", "status": "in_progress"},
-            {"id": "3", "content": "Run tests", "status": "pending"},
-            {"id": "4", "content": "Abandoned", "status": "cancelled"},
-        ])
+        store.write(
+            [
+                {"id": "1", "content": "Read codebase", "status": "completed"},
+                {"id": "2", "content": "Write fix", "status": "in_progress"},
+                {"id": "3", "content": "Run tests", "status": "pending"},
+                {"id": "4", "content": "Abandoned", "status": "cancelled"},
+            ]
+        )
         injection = store.format_for_injection()
         self.assertNotIn("Read codebase", injection)
         self.assertNotIn("Abandoned", injection)
@@ -473,25 +477,32 @@ class TestTodoInjectionFiltering(unittest.TestCase):
 
     def test_all_completed_returns_none(self):
         from tools.implementations.todo_tool import TodoStore
+
         store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Done", "status": "completed"},
-            {"id": "2", "content": "Also done", "status": "cancelled"},
-        ])
+        store.write(
+            [
+                {"id": "1", "content": "Done", "status": "completed"},
+                {"id": "2", "content": "Also done", "status": "cancelled"},
+            ]
+        )
         self.assertIsNone(store.format_for_injection())
 
     def test_empty_store_returns_none(self):
         from tools.implementations.todo_tool import TodoStore
+
         store = TodoStore()
         self.assertIsNone(store.format_for_injection())
 
     def test_all_active_included(self):
         from tools.implementations.todo_tool import TodoStore
+
         store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Task A", "status": "pending"},
-            {"id": "2", "content": "Task B", "status": "in_progress"},
-        ])
+        store.write(
+            [
+                {"id": "1", "content": "Task A", "status": "pending"},
+                {"id": "2", "content": "Task B", "status": "in_progress"},
+            ]
+        )
         injection = store.format_for_injection()
         self.assertIn("Task A", injection)
         self.assertIn("Task B", injection)

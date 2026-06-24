@@ -180,11 +180,13 @@ def _refresh_oauth_token(creds: dict[str, Any]) -> str | None:
     # Client ID used by Claude Code's OAuth flow
     CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
-    data = urllib.parse.urlencode({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": CLIENT_ID,
-    }).encode()
+    data = urllib.parse.urlencode(
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": CLIENT_ID,
+        }
+    ).encode()
 
     req = urllib.request.Request(
         "https://console.anthropic.com/v1/oauth/token",
@@ -202,6 +204,7 @@ def _refresh_oauth_token(creds: dict[str, Any]) -> str | None:
 
             if new_access:
                 import time
+
                 new_expires_ms = int(time.time() * 1000) + (expires_in * 1000)
                 # Write refreshed credentials back to ~/.claude/.credentials.json
                 _write_claude_code_credentials(new_access, new_refresh, new_expires_ms)
@@ -213,7 +216,9 @@ def _refresh_oauth_token(creds: dict[str, Any]) -> str | None:
     return None
 
 
-def _write_claude_code_credentials(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
+def _write_claude_code_credentials(
+    access_token: str, refresh_token: str, expires_at_ms: int
+) -> None:
     """Write refreshed credentials back to ~/.claude/.credentials.json."""
     cred_path = Path.home() / ".claude" / ".credentials.json"
     try:
@@ -251,7 +256,9 @@ def _resolve_claude_code_token_from_credentials(creds: dict[str, Any] | None = N
     return None
 
 
-def _prefer_refreshable_claude_code_token(env_token: str, creds: dict[str, Any] | None) -> str | None:
+def _prefer_refreshable_claude_code_token(
+    env_token: str, creds: dict[str, Any] | None
+) -> str | None:
     """Prefer Claude Code creds when a persisted env OAuth token would shadow refresh.
 
     Gauss historically persisted setup tokens into ANTHROPIC_TOKEN. That makes
@@ -400,7 +407,7 @@ def normalize_model_name(model: str) -> str:
     """
     lower = model.lower()
     if lower.startswith("anthropic/"):
-        model = model[len("anthropic/"):]
+        model = model[len("anthropic/") :]
     # OpenRouter uses dots for version separators (claude-opus-4.6),
     # Anthropic uses hyphens (claude-opus-4-6). Convert dots to hyphens.
     model = model.replace(".", "-")
@@ -414,6 +421,7 @@ def _sanitize_tool_id(tool_id: str) -> str:
     characters with underscores and ensure non-empty.
     """
     import re
+
     if not tool_id:
         return "tool_0"
     sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", tool_id)
@@ -489,11 +497,13 @@ def convert_tools_to_anthropic(tools: list[dict]) -> list[dict]:
     result = []
     for t in tools:
         fn = t.get("function", {})
-        result.append({
-            "name": fn.get("name", ""),
-            "description": fn.get("description", ""),
-            "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
-        })
+        result.append(
+            {
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+            }
+        )
     return result
 
 
@@ -507,7 +517,7 @@ def _image_source_from_openai_url(url: str) -> dict[str, str]:
         header, _, data = url.partition(",")
         media_type = "image/jpeg"
         if header.startswith("data:"):
-            mime_part = header[len("data:"):].split(";", 1)[0].strip()
+            mime_part = header[len("data:") :].split(";", 1)[0].strip()
             if mime_part.startswith("image/"):
                 media_type = mime_part
         return {
@@ -534,7 +544,9 @@ def _convert_content_part_to_anthropic(part: Any) -> dict[str, Any] | None:
         block: dict[str, Any] = {"type": "text", "text": part.get("text", "")}
     elif ptype in {"image_url", "input_image"}:
         image_value = part.get("image_url", {})
-        url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
+        url = (
+            image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
+        )
         block = {"type": "image", "source": _image_source_from_openai_url(url)}
     else:
         block = dict(part)
@@ -576,15 +588,11 @@ def convert_messages_to_anthropic(
         if role == "system":
             if isinstance(content, list):
                 # Preserve cache_control markers on content blocks
-                has_cache = any(
-                    p.get("cache_control") for p in content if isinstance(p, dict)
-                )
+                has_cache = any(p.get("cache_control") for p in content if isinstance(p, dict))
                 if has_cache:
                     system = [p for p in content if isinstance(p, dict)]
                 else:
-                    system = "\n".join(
-                        p["text"] for p in content if p.get("type") == "text"
-                    )
+                    system = "\n".join(p["text"] for p in content if p.get("type") == "text")
             else:
                 system = content
             continue
@@ -605,12 +613,14 @@ def convert_messages_to_anthropic(
                     parsed_args = json.loads(args) if isinstance(args, str) else args
                 except (json.JSONDecodeError, ValueError):
                     parsed_args = {}
-                blocks.append({
-                    "type": "tool_use",
-                    "id": _sanitize_tool_id(tc.get("id", "")),
-                    "name": fn.get("name", ""),
-                    "input": parsed_args,
-                })
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": _sanitize_tool_id(tc.get("id", "")),
+                        "name": fn.get("name", ""),
+                        "input": parsed_args,
+                    }
+                )
             # Anthropic rejects empty assistant content
             effective = blocks or content
             if not effective or effective == "":
@@ -646,10 +656,12 @@ def convert_messages_to_anthropic(
         # Regular user message
         if isinstance(content, list):
             converted_blocks = _convert_content_to_anthropic(content)
-            result.append({
-                "role": "user",
-                "content": converted_blocks or [{"type": "text", "text": ""}],
-            })
+            result.append(
+                {
+                    "role": "user",
+                    "content": converted_blocks or [{"type": "text", "text": ""}],
+                }
+            )
         else:
             result.append({"role": "user", "content": content})
 
@@ -754,9 +766,7 @@ def build_anthropic_kwargs(
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):
                 kwargs["thinking"] = {"type": "adaptive"}
-                kwargs["output_config"] = {
-                    "effort": ADAPTIVE_EFFORT_MAP.get(effort, "medium")
-                }
+                kwargs["output_config"] = {"effort": ADAPTIVE_EFFORT_MAP.get(effort, "medium")}
             else:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 # Anthropic requires temperature=1 when thinking is enabled on older models

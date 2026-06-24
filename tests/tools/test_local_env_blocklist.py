@@ -21,14 +21,18 @@ from tools.environments.local import (
 
 def _make_fake_popen(captured: dict):
     """Return a fake Popen constructor that records the env kwarg."""
+
     def fake_popen(cmd, **kwargs):
         captured["env"] = kwargs.get("env", {})
         proc = MagicMock()
         proc.poll.return_value = 0
         proc.returncode = 0
-        proc.stdout = MagicMock(__iter__=lambda s: iter([]), __next__=lambda s: (_ for _ in ()).throw(StopIteration))
+        proc.stdout = MagicMock(
+            __iter__=lambda s: iter([]), __next__=lambda s: (_ for _ in ()).throw(StopIteration)
+        )
         proc.stdin = MagicMock()
         return proc
+
     return fake_popen
 
 
@@ -47,10 +51,12 @@ def _run_with_env(extra_os_env=None, self_env=None):
 
     env = LocalEnvironment(cwd="/tmp", timeout=10, env=self_env)
 
-    with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
-         patch("subprocess.Popen", side_effect=_make_fake_popen(captured)), \
-         patch("tools.implementations.terminal_tool._interrupt_event", fake_interrupt), \
-         patch.dict(os.environ, test_environ, clear=True):
+    with (
+        patch("tools.environments.local._find_bash", return_value="/bin/bash"),
+        patch("subprocess.Popen", side_effect=_make_fake_popen(captured)),
+        patch("tools.implementations.terminal_tool._interrupt_event", fake_interrupt),
+        patch.dict(os.environ, test_environ, clear=True),
+    ):
         env.execute("echo hello")
 
     return captured.get("env", {})
@@ -145,10 +151,12 @@ class TestProviderEnvBlocklist:
 
     def test_self_env_blocked_vars_also_stripped(self):
         """Blocked vars in self.env are stripped; non-blocked vars pass through."""
-        result_env = _run_with_env(self_env={
-            "OPENAI_BASE_URL": "http://custom:9999/v1",
-            "MY_CUSTOM_VAR": "keep-this",
-        })
+        result_env = _run_with_env(
+            self_env={
+                "OPENAI_BASE_URL": "http://custom:9999/v1",
+                "MY_CUSTOM_VAR": "keep-this",
+            }
+        )
 
         assert "OPENAI_BASE_URL" not in result_env
         assert "MY_CUSTOM_VAR" in result_env
@@ -160,9 +168,11 @@ class TestForceEnvOptIn:
 
     def test_force_prefix_passes_blocked_var(self):
         """_EPFLEMMA_FORCE_OPENAI_API_KEY in self.env should inject OPENAI_API_KEY."""
-        result_env = _run_with_env(self_env={
-            f"{_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY": "sk-explicit",
-        })
+        result_env = _run_with_env(
+            self_env={
+                f"{_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY": "sk-explicit",
+            }
+        )
 
         assert "OPENAI_API_KEY" in result_env
         assert result_env["OPENAI_API_KEY"] == "sk-explicit"
@@ -173,7 +183,9 @@ class TestForceEnvOptIn:
         """Force-prefix in self.env wins even when os.environ has the blocked var."""
         result_env = _run_with_env(
             extra_os_env={"OPENAI_BASE_URL": "http://leaked/v1"},
-            self_env={f"{_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX}OPENAI_BASE_URL": "http://intended/v1"},
+            self_env={
+                f"{_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX}OPENAI_BASE_URL": "http://intended/v1"
+            },
         )
 
         assert result_env["OPENAI_BASE_URL"] == "http://intended/v1"

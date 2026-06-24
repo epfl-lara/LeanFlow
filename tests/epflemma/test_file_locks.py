@@ -31,7 +31,9 @@ def test_write_file_tool_respects_foreign_lock(monkeypatch, tmp_path):
     target = tmp_path / "Main.lean"
     acquire_file_lock(str(target), owner_id="agent-a", purpose="active edit")
 
-    result = json.loads(write_file_tool(str(target), "theorem demo : True := by trivial\n", owner_id="agent-b"))
+    result = json.loads(
+        write_file_tool(str(target), "theorem demo : True := by trivial\n", owner_id="agent-b")
+    )
 
     assert "locked" in result["error"]
 

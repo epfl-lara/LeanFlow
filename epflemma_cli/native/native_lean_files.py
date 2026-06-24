@@ -18,7 +18,15 @@ from epflemma_cli.lean.lean_parsing import _extract_target_symbol, _strip_lean_c
 from epflemma_cli.native.native_config import _project_root, _read_native_env
 from epflemma_cli.native.native_utils import _collect_message_text
 
-PROJECT_SCAN_SKIP_DIRS = {".artifacts", ".git", ".lake", ".epflemma", ".opengauss", ".gauss", "build"}
+PROJECT_SCAN_SKIP_DIRS = {
+    ".artifacts",
+    ".git",
+    ".lake",
+    ".epflemma",
+    ".opengauss",
+    ".gauss",
+    "build",
+}
 
 
 def _extract_active_files(text: str) -> list[str]:
@@ -46,7 +54,9 @@ def _extract_active_files(text: str) -> list[str]:
     return seen[:8]
 
 
-def _resolve_active_file(history: list[dict[str, Any]], checkpoint_state: Mapping[str, Any] | None = None) -> str:
+def _resolve_active_file(
+    history: list[dict[str, Any]], checkpoint_state: Mapping[str, Any] | None = None
+) -> str:
     configured_active_file = _read_native_env("ACTIVE_FILE")
     if configured_active_file:
         configured_path = Path(configured_active_file)
@@ -81,7 +91,9 @@ def _resolve_active_file(history: list[dict[str, Any]], checkpoint_state: Mappin
     return ""
 
 
-def _resolve_target_symbol(history: list[dict[str, Any]], checkpoint_state: Mapping[str, Any] | None = None) -> str:
+def _resolve_target_symbol(
+    history: list[dict[str, Any]], checkpoint_state: Mapping[str, Any] | None = None
+) -> str:
     current = (checkpoint_state or {}).get("current") or {}
     target = str(current.get("target_symbol", "") or "").strip()
     if target:
@@ -121,10 +133,7 @@ def _project_lean_files(project_root: str) -> list[Path]:
     paths: list[Path] = []
     try:
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [
-                name for name in dirnames
-                if name not in PROJECT_SCAN_SKIP_DIRS
-            ]
+            dirnames[:] = [name for name in dirnames if name not in PROJECT_SCAN_SKIP_DIRS]
             base = Path(dirpath)
             for filename in filenames:
                 if filename.endswith(".lean"):

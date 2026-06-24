@@ -99,6 +99,7 @@ def main() -> int:
                 except Exception as e:
                     print(f"ERROR in delegate: {e}")
                     import traceback
+
                     traceback.print_exc()
 
     print("Starting agent thread...")

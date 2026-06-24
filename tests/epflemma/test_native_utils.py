@@ -22,10 +22,10 @@ def test_extract_json_payload_from_fenced_and_noisy_text():
     # Clean JSON.
     assert nu._extract_json_payload('{"a": 1}') == {"a": 1}
     # JSON embedded in a fenced code block with chatter around it.
-    fenced = "Sure, here is the result:\n```json\n{\"ok\": true, \"files\": [\"A.lean\"]}\n```\nDone."
+    fenced = 'Sure, here is the result:\n```json\n{"ok": true, "files": ["A.lean"]}\n```\nDone.'
     assert nu._extract_json_payload(fenced) == {"ok": True, "files": ["A.lean"]}
     # Leading/trailing prose around a bare object.
-    assert nu._extract_json_payload("blah {\"x\": [1, 2]} trailing") == {"x": [1, 2]}
+    assert nu._extract_json_payload('blah {"x": [1, 2]} trailing') == {"x": [1, 2]}
     # A top-level list still parses via the [ ] scan.
     assert nu._extract_json_payload("noise [1, 2, 3] noise") == [1, 2, 3]
     # Nothing JSON-like -> None; empty -> None.
@@ -86,4 +86,7 @@ def test_normalize_blocker_summary_clears_resolved_markers():
     assert nu._normalize_blocker_summary("All blockers resolved") == ""
     assert nu._normalize_blocker_summary("No blocker declared") == ""
     assert nu._normalize_blocker_summary("  ") == ""
-    assert nu._normalize_blocker_summary("genuinely stuck on lemma foo") == "genuinely stuck on lemma foo"
+    assert (
+        nu._normalize_blocker_summary("genuinely stuck on lemma foo")
+        == "genuinely stuck on lemma foo"
+    )

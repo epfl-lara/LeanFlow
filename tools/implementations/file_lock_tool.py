@@ -24,9 +24,13 @@ def check_file_lock_requirements() -> bool:
     return True
 
 
-def acquire_file_lock(path: str, owner_id: str, purpose: str = "", ttl_seconds: int = 1800, force: bool = False) -> str:
+def acquire_file_lock(
+    path: str, owner_id: str, purpose: str = "", ttl_seconds: int = 1800, force: bool = False
+) -> str:
     return json.dumps(
-        _acquire_file_lock(path, owner_id=owner_id, purpose=purpose, ttl_seconds=ttl_seconds, force=force),
+        _acquire_file_lock(
+            path, owner_id=owner_id, purpose=purpose, ttl_seconds=ttl_seconds, force=force
+        ),
         ensure_ascii=False,
     )
 
@@ -50,9 +54,21 @@ FILE_LOCK_ACQUIRE_SCHEMA = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Lean or project file to reserve"},
-            "purpose": {"type": "string", "description": "Short reason for the reservation", "default": ""},
-            "ttl_seconds": {"type": "integer", "description": "How long the reservation should last", "default": 1800},
-            "force": {"type": "boolean", "description": "Override an existing reservation", "default": False},
+            "purpose": {
+                "type": "string",
+                "description": "Short reason for the reservation",
+                "default": "",
+            },
+            "ttl_seconds": {
+                "type": "integer",
+                "description": "How long the reservation should last",
+                "default": 1800,
+            },
+            "force": {
+                "type": "boolean",
+                "description": "Override an existing reservation",
+                "default": False,
+            },
         },
         "required": ["path"],
     },
@@ -66,7 +82,11 @@ FILE_LOCK_RELEASE_SCHEMA = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Reserved file to release"},
-            "force": {"type": "boolean", "description": "Release even if another owner is recorded", "default": False},
+            "force": {
+                "type": "boolean",
+                "description": "Release even if another owner is recorded",
+                "default": False,
+            },
         },
         "required": ["path"],
     },

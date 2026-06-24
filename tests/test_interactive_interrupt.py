@@ -19,8 +19,9 @@ import threading
 import time
 
 # Force stderr logging so redirect_stdout doesn't swallow it
-logging.basicConfig(level=logging.DEBUG, stream=sys.stderr,
-                    format="%(asctime)s [%(threadName)s] %(message)s")
+logging.basicConfig(
+    level=logging.DEBUG, stream=sys.stderr, format="%(asctime)s [%(threadName)s] %(message)s"
+)
 log = logging.getLogger("interrupt_test")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -33,6 +34,7 @@ from tools.utilities.interrupt import is_interrupted, set_interrupt
 
 def make_slow_response(delay=2.0):
     """API response that takes a while."""
+
     def create(**kwargs):
         log.info(f"   🌐 Mock API call starting (will take {delay}s)...")
         time.sleep(delay)
@@ -48,6 +50,7 @@ def make_slow_response(delay=2.0):
         resp.usage.total_tokens = 110
         resp.usage.prompt_tokens_details = None
         return resp
+
     return create
 
 

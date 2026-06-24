@@ -22,8 +22,6 @@ def _utc_now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
 
-
-
 def _epflemma_home() -> Path:
     # Single source of truth — legacy ~/.opengauss / ~/.gauss resolution lives in core.home only.
     return epflemma_home()
@@ -204,7 +202,11 @@ def release_file_lock(path: str, *, owner_id: str, force: bool = False) -> dict[
             return {"success": True, "released": False, "path": normalized}
         current_owner = str(current.get("owner_id", "") or "")
         if current_owner and current_owner != owner and not force:
-            return {"success": False, "error": f"File is locked by {current_owner}", "path": normalized}
+            return {
+                "success": False,
+                "error": f"File is locked by {current_owner}",
+                "path": normalized,
+            }
         locks.pop(normalized, None)
         _write_payload(payload)
     return {"success": True, "released": True, "path": normalized}
@@ -229,5 +231,9 @@ def release_all_file_locks(*, owner_id: str) -> dict[str, Any]:
 def ensure_file_lock(path: str, *, owner_id: str, purpose: str = "") -> dict[str, Any]:
     current = describe_lock(path)
     if current and str(current.get("owner_id", "") or "") not in {"", owner_id}:
-        return {"success": False, "error": f"File is locked by {current.get('owner_id', '')}", "lock": current}
+        return {
+            "success": False,
+            "error": f"File is locked by {current.get('owner_id', '')}",
+            "lock": current,
+        }
     return acquire_file_lock(path, owner_id=owner_id, purpose=purpose or "active edit")

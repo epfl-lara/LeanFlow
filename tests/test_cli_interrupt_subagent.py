@@ -72,7 +72,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
             child_started.set()
             # Find the child in parent._active_children
             child = parent._active_children[-1] if parent._active_children else None
-            
+
             # Simulate the agent loop: poll _interrupt_requested like run_conversation does
             for i in range(100):  # Up to 10 seconds (100 * 0.1s)
                 if child and child._interrupt_requested:
@@ -86,7 +86,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
                         "interrupt_message": child._interrupt_message,
                     }
                 time.sleep(0.1)
-            
+
             return {
                 "final_response": "Finished without interrupt",
                 "messages": [],
@@ -107,17 +107,20 @@ class TestCLISubagentInterrupt(unittest.TestCase):
 
         def run_delegate():
             try:
-                with patch('run_agent.AIAgent') as MockAgent:
+                with patch("run_agent.AIAgent") as MockAgent:
                     mock_instance = MagicMock()
                     mock_instance._interrupt_requested = False
                     mock_instance._interrupt_message = None
                     mock_instance._active_children = []
                     mock_instance.quiet_mode = True
                     mock_instance.run_conversation = mock_child_run_conversation
-                    mock_instance.interrupt = lambda msg=None: setattr(mock_instance, '_interrupt_requested', True) or setattr(mock_instance, '_interrupt_message', msg)
+                    mock_instance.interrupt = lambda msg=None: (
+                        setattr(mock_instance, "_interrupt_requested", True)
+                        or setattr(mock_instance, "_interrupt_message", msg)
+                    )
                     mock_instance.tools = []
                     MockAgent.return_value = mock_instance
-                    
+
                     result = _run_single_child(
                         task_index=0,
                         goal="Do something slow",
@@ -140,20 +143,22 @@ class TestCLISubagentInterrupt(unittest.TestCase):
 
         # Now simulate user interrupt (from main/process thread)
         time.sleep(0.2)  # Give child a moment to be in its loop
-        
+
         print(f"Parent has {len(parent._active_children)} active children")
-        assert len(parent._active_children) >= 1, f"Expected child in _active_children, got {len(parent._active_children)}"
+        assert len(parent._active_children) >= 1, (
+            f"Expected child in _active_children, got {len(parent._active_children)}"
+        )
 
         # This is what the CLI does:
         parent.interrupt("Hey stop that")
-        
+
         print(f"Parent._interrupt_requested: {parent._interrupt_requested}")
         for i, child in enumerate(parent._active_children):
             print(f"Child {i}._interrupt_requested: {child._interrupt_requested}")
 
         # Wait for child to detect interrupt
         detected = interrupt_detected.wait(timeout=3.0)
-        
+
         # Wait for delegate to finish
         agent_thread.join(timeout=5)
 
@@ -163,7 +168,9 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         assert detected, "Child never detected the interrupt!"
         result = delegate_result[0]
         assert result is not None, "Delegate returned no result"
-        assert result["status"] == "interrupted", f"Expected 'interrupted', got '{result['status']}'"
+        assert result["status"] == "interrupted", (
+            f"Expected 'interrupted', got '{result['status']}'"
+        )
         print(f"✓ Interrupt detected! Result: {result}")
 
 

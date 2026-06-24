@@ -41,9 +41,16 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
     ControlMaster one-shot reads).
     """
 
-    def __init__(self, host: str, user: str, cwd: str = "~",
-                 timeout: int = 60, port: int = 22, key_path: str = "",
-                 persistent: bool = False):
+    def __init__(
+        self,
+        host: str,
+        user: str,
+        cwd: str = "~",
+        timeout: int = 60,
+        port: int = 22,
+        key_path: str = "",
+        persistent: bool = False,
+    ):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host = host
         self.user = user
@@ -111,21 +118,25 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             cmd.append(f"cat {paths[0]} 2>/dev/null")
             try:
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=10,
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 return [result.stdout]
             except (subprocess.TimeoutExpired, OSError):
                 return [""]
 
         delim = f"__EPFLEMMA_SEP_{self._session_id}__"
-        script = "; ".join(
-            f"cat {p} 2>/dev/null; echo '{delim}'" for p in paths
-        )
+        script = "; ".join(f"cat {p} 2>/dev/null; echo '{delim}'" for p in paths)
         cmd = self._build_ssh_command()
         cmd.append(script)
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=10,
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             parts = result.stdout.split(delim + "\n")
             return [parts[i] if i < len(parts) else "" for i in range(len(paths))]
@@ -146,13 +157,18 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         with contextlib.suppress(subprocess.TimeoutExpired, OSError):
             subprocess.run(cmd, capture_output=True, timeout=5)
 
-    def _execute_oneshot(self, command: str, cwd: str = "", *,
-                         timeout: int | None = None,
-                         stdin_data: str | None = None) -> dict:
+    def _execute_oneshot(
+        self,
+        command: str,
+        cwd: str = "",
+        *,
+        timeout: int | None = None,
+        stdin_data: str | None = None,
+    ) -> dict:
         """Execute a single SSH command, streaming output via background reader thread and handling interruption/timeout. Returns dict with combined stdout/stderr and exit code; returns 130 if interrupted, or calls _timeout_result() if the effective timeout is exceeded."""
         work_dir = cwd or self.cwd
         exec_command, sudo_stdin = self._prepare_command(command)
-        wrapped = f'cd {work_dir} && {exec_command}'
+        wrapped = f"cd {work_dir} && {exec_command}"
         effective_timeout = timeout or self.timeout
 
         if sudo_stdin is not None and stdin_data is not None:
@@ -219,8 +235,14 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         super().cleanup()
         if self.control_socket.exists():
             try:
-                cmd = ["ssh", "-o", f"ControlPath={self.control_socket}",
-                       "-O", "exit", f"{self.user}@{self.host}"]
+                cmd = [
+                    "ssh",
+                    "-o",
+                    f"ControlPath={self.control_socket}",
+                    "-O",
+                    "exit",
+                    f"{self.user}@{self.host}",
+                ]
                 subprocess.run(cmd, capture_output=True, timeout=5)
             except (OSError, subprocess.SubprocessError):
                 pass

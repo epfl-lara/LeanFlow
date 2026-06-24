@@ -26,7 +26,7 @@ def toolbar_piece(value: str, max_len: int = 22) -> str:
     text = str(value or "-")
     if len(text) <= max_len:
         return text
-    return f"{text[:max_len - 3]}..."
+    return f"{text[: max_len - 3]}..."
 
 
 def prompt_focus_label(workflow_status: Mapping[str, Any], target_label: str) -> str:
@@ -74,6 +74,4 @@ def bottom_toolbar(
     theorem = toolbar_piece(target_label, 16)
     skill = toolbar_piece(active_skill_label, 18)
     latest = latest_activity
-    return (
-        f" @ {model} | {phase} | {build} | {file_short} | {theorem} | {skill} | {latest} "
-    )
+    return f" @ {model} | {phase} | {build} | {file_short} | {theorem} | {skill} | {latest} "

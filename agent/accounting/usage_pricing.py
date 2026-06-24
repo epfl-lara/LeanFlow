@@ -89,9 +89,7 @@ def get_pricing(model_name: str) -> dict[str, float]:
 
 def has_known_pricing(model_name: str) -> bool:
     pricing = get_pricing(model_name)
-    return pricing is not DEFAULT_PRICING and any(
-        float(value) > 0 for value in pricing.values()
-    )
+    return pricing is not DEFAULT_PRICING and any(float(value) > 0 for value in pricing.values())
 
 
 def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:

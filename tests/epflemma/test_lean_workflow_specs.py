@@ -127,9 +127,7 @@ def test_workflow_specs_reference_only_known_workers():
         if record.kind != "workflow":
             continue
         unknown = [w for w in record.workers if w not in worker_ids]
-        assert not unknown, (
-            f"workflow {record.spec_id} references unknown workers {unknown}"
-        )
+        assert not unknown, f"workflow {record.spec_id} references unknown workers {unknown}"
 
 
 def test_spec_content_does_not_leak_frontmatter_fence():

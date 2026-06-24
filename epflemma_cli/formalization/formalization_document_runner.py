@@ -74,7 +74,9 @@ __all__ = [
 ]
 
 
-def _document_formalization_waiting_for_independent_review(live_state: Mapping[str, Any] | None) -> bool:
+def _document_formalization_waiting_for_independent_review(
+    live_state: Mapping[str, Any] | None,
+) -> bool:
     if _workflow_kind() != "formalize" or not _document_formalization_requested():
         return False
     if _document_formalization_blueprint_waiting_for_review():
@@ -106,8 +108,7 @@ def _document_formalization_waiting_for_independent_review(live_state: Mapping[s
         "not parseable",
     )
     return not any(
-        any(marker in issue.lower() for marker in planner_fix_markers)
-        for issue in issues
+        any(marker in issue.lower() for marker in planner_fix_markers) for issue in issues
     )
 
 
@@ -130,7 +131,9 @@ def _document_formalization_ready_for_prover_handoff(live_state: Mapping[str, An
     if _document_formalization_blueprint_waiting_for_review():
         return False
     try:
-        generated_proof_sorry_count = int(current.get("document_formalization_proof_sorry_count", 0) or 0)
+        generated_proof_sorry_count = int(
+            current.get("document_formalization_proof_sorry_count", 0) or 0
+        )
     except Exception:
         generated_proof_sorry_count = 0
     if generated_proof_sorry_count > 0:
@@ -146,7 +149,9 @@ def _document_formalization_has_draft_sorries(live_state: Mapping[str, Any] | No
     if _workflow_kind() != "formalize" or not _document_formalization_requested():
         return False
     try:
-        generated_proof_sorry_count = int((live_state or {}).get("document_formalization_proof_sorry_count", 0) or 0)
+        generated_proof_sorry_count = int(
+            (live_state or {}).get("document_formalization_proof_sorry_count", 0) or 0
+        )
     except Exception:
         generated_proof_sorry_count = 0
     if generated_proof_sorry_count > 0:
@@ -169,7 +174,9 @@ def _document_formalization_planner_phase(agent: Any) -> bool:
 def _document_formalization_review_prompt(live_state: Mapping[str, Any]) -> str:
     source = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip()
     source_kind = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_KIND", "").strip() or "document"
-    target = str(live_state.get("active_file_label", "") or live_state.get("active_file", "") or "").strip()
+    target = str(
+        live_state.get("active_file_label", "") or live_state.get("active_file", "") or ""
+    ).strip()
     blueprint = _read_text_env("EPFLEMMA_FORMALIZATION_BLUEPRINT", "").strip()
     context = _read_text_env("EPFLEMMA_FORMALIZATION_CONTEXT", "").strip()
     handoff = dict(live_state.get("document_formalization_handoff", {}) or {})
@@ -231,9 +238,8 @@ def _autoformalizer_advisory_review_due(
 
 
 def _document_formalization_requested() -> bool:
-    return (
-        _workflow_kind() == "formalize"
-        and bool(_read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip())
+    return _workflow_kind() == "formalize" and bool(
+        _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip()
     )
 
 
@@ -263,12 +269,20 @@ def _document_formalization_needs_blueprint_plan() -> bool:
                 "Declaration mapping",
             ),
         )
-        review = _blueprint_bullet_block(entry, "Formal statement review") or _blueprint_bullet_value(
+        review = _blueprint_bullet_block(
+            entry, "Formal statement review"
+        ) or _blueprint_bullet_value(
             entry,
             "Formal statement review",
         )
-        notes = _blueprint_first_bullet_value(entry, ("Source proof / prover notes", "Proof strategy", "Prover notes"))
-        if _blueprint_value_missing(planned) or _blueprint_block_missing(review) or _blueprint_value_missing(notes):
+        notes = _blueprint_first_bullet_value(
+            entry, ("Source proof / prover notes", "Proof strategy", "Prover notes")
+        )
+        if (
+            _blueprint_value_missing(planned)
+            or _blueprint_block_missing(review)
+            or _blueprint_value_missing(notes)
+        ):
             return True
     return False
 
@@ -382,7 +396,7 @@ def _blueprint_bullet_block(entry: str, label: str) -> str:
     start = match.start()
     next_match = re.search(
         r"^-\s*[A-Za-z][A-Za-z0-9 /_-]{0,80}\s*:\s*",
-        text[match.end():],
+        text[match.end() :],
         flags=re.MULTILINE,
     )
     end = match.end() + next_match.start() if next_match else len(text)
@@ -482,7 +496,9 @@ def _document_formalization_blueprint_waiting_for_review() -> bool:
         )
         if _blueprint_value_missing(verification):
             return True
-        if not re.search(r"\b(approved|verified|reviewed|accepted)\b", verification, flags=re.IGNORECASE):
+        if not re.search(
+            r"\b(approved|verified|reviewed|accepted)\b", verification, flags=re.IGNORECASE
+        ):
             return True
     if saw_inventory_entry:
         return False

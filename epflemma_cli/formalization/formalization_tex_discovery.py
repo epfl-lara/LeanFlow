@@ -27,7 +27,18 @@ TEX_PROJECT_SKIPPED_DIRS = {
     "node_modules",
 }
 TEX_PROJECT_FIGURE_SUFFIXES = {".eps", ".jpg", ".jpeg", ".pdf", ".png", ".svg"}
-TEX_PROJECT_SUPPORT_SUFFIXES = {".bib", ".bbl", ".bst", ".bbx", ".cbx", ".cfg", ".cls", ".clo", ".def", ".sty"}
+TEX_PROJECT_SUPPORT_SUFFIXES = {
+    ".bib",
+    ".bbl",
+    ".bst",
+    ".bbx",
+    ".cbx",
+    ".cfg",
+    ".cls",
+    ".clo",
+    ".def",
+    ".sty",
+}
 
 
 def _strip_wrapping_quotes(value: str) -> str:
@@ -49,11 +60,13 @@ def _relative_to_project(path: Path, project_root: Path) -> str:
 def _candidate_paths(project_root: Path, cwd: Path, raw_path: str) -> list[Path]:
     raw = _strip_wrapping_quotes(raw_path)
     candidate = Path(raw).expanduser()
-    candidates: list[Path] = [candidate] if candidate.is_absolute() else [cwd / raw, project_root / raw]
+    candidates: list[Path] = (
+        [candidate] if candidate.is_absolute() else [cwd / raw, project_root / raw]
+    )
     project_name = project_root.name
     for prefix in (f"./{project_name}/", f"{project_name}/"):
         if raw.startswith(prefix):
-            trimmed = raw[len(prefix):]
+            trimmed = raw[len(prefix) :]
             candidates.extend([cwd / trimmed, project_root / trimmed])
             break
     deduped: list[Path] = []
@@ -151,7 +164,9 @@ def _extract_tex_inputs(text: str) -> list[str]:
     return values
 
 
-def _resolve_local_reference(base_file: Path, project_directory: Path, reference: str) -> Path | None:
+def _resolve_local_reference(
+    base_file: Path, project_directory: Path, reference: str
+) -> Path | None:
     raw = _normalize_tex_reference(reference, default_suffix="")
     if not raw:
         return None
@@ -168,7 +183,9 @@ def _resolve_local_reference(base_file: Path, project_directory: Path, reference
     return None
 
 
-def _included_tex_closure(entrypoint: Path, project_directory: Path) -> tuple[list[Path], list[str]]:
+def _included_tex_closure(
+    entrypoint: Path, project_directory: Path
+) -> tuple[list[Path], list[str]]:
     included: list[Path] = []
     missing: list[str] = []
     seen: set[Path] = {entrypoint.resolve()}
@@ -206,7 +223,9 @@ def _entrypoint_score(path: Path, directory: Path, included_by_other_tex: set[Pa
         score += 70
     if re.search(r"\\(?:title|centerline)\b", text):
         score += 25
-    if re.search(r"\\(?:begin\{(?:theorem|lemma|proposition|corollary|definition|defn)\}|profess\{)", text):
+    if re.search(
+        r"\\(?:begin\{(?:theorem|lemma|proposition|corollary|definition|defn)\}|profess\{)", text
+    ):
         score += 25
     if re.search(r"\\bibliography\{", text):
         score += 10
@@ -294,7 +313,9 @@ def _resolve_asset_reference(
     return resolved
 
 
-def _collect_tex_project_assets(entrypoint: Path, directory: Path, included_tex: list[Path]) -> tuple[list[Path], list[Path]]:
+def _collect_tex_project_assets(
+    entrypoint: Path, directory: Path, included_tex: list[Path]
+) -> tuple[list[Path], list[Path]]:
     bibliography_files: list[Path] = []
     local_assets: list[Path] = []
     tex_sources = [entrypoint, *included_tex]
@@ -309,7 +330,12 @@ def _collect_tex_project_assets(entrypoint: Path, directory: Path, included_tex:
                 if match not in bibliography_files:
                     bibliography_files.append(match)
         for reference in asset_refs:
-            for match in _resolve_asset_reference(source, directory, reference, (".bst", ".png", ".jpg", ".jpeg", ".pdf", ".eps", ".svg")):
+            for match in _resolve_asset_reference(
+                source,
+                directory,
+                reference,
+                (".bst", ".png", ".jpg", ".jpeg", ".pdf", ".eps", ".svg"),
+            ):
                 if match not in local_assets:
                     local_assets.append(match)
     for sidecar in sorted(directory.iterdir(), key=lambda item: item.name.lower()):
@@ -323,7 +349,9 @@ def _collect_tex_project_assets(entrypoint: Path, directory: Path, included_tex:
     return bibliography_files, local_assets
 
 
-def _discover_tex_project_entrypoint(project_root: Path, directory: Path) -> _FormalizationDocumentSelection:
+def _discover_tex_project_entrypoint(
+    project_root: Path, directory: Path
+) -> _FormalizationDocumentSelection:
     """Locate and score the primary TeX entrypoint in a directory, build its include closure, and return project metadata. Scans all .tex files, ranks them by heuristics (documentclass, begin{document}, common names like main.tex), and fails if multiple files tie for best score. Returns a FormalizationDocumentSelection with the entrypoint path, transitive TeX includes, bibliography files, figures, and support assets."""
     tex_files = _tex_files_under(directory)
     if not tex_files:
@@ -340,7 +368,10 @@ def _discover_tex_project_entrypoint(project_root: Path, directory: Path) -> _Fo
                 included_by_other_tex.add(resolved)
 
     scored = sorted(
-        ((tex_file, _entrypoint_score(tex_file, directory, included_by_other_tex)) for tex_file in tex_files),
+        (
+            (tex_file, _entrypoint_score(tex_file, directory, included_by_other_tex))
+            for tex_file in tex_files
+        ),
         key=lambda item: (-item[1], item[0].relative_to(directory).as_posix().lower()),
     )
     best_path, best_score = scored[0]
@@ -353,7 +384,9 @@ def _discover_tex_project_entrypoint(project_root: Path, directory: Path) -> _Fo
         )
 
     included_tex, missing_includes = _included_tex_closure(best_path, directory)
-    bibliography_files, local_assets = _collect_tex_project_assets(best_path, directory, included_tex)
+    bibliography_files, local_assets = _collect_tex_project_assets(
+        best_path, directory, included_tex
+    )
     pdf_files = _files_under_by_suffix(directory, {".pdf"})
     figure_files = _files_under_by_suffix(directory, TEX_PROJECT_FIGURE_SUFFIXES)
     support_files = _files_under_by_suffix(directory, TEX_PROJECT_SUPPORT_SUFFIXES)
@@ -372,7 +405,9 @@ def _discover_tex_project_entrypoint(project_root: Path, directory: Path) -> _Fo
         "tex_project_files": _relative_list(tex_files, project_root),
         "tex_project_files_relative_to_directory": _directory_relative_list(tex_files, directory),
         "tex_project_included_tex_files": _relative_list(included_tex, project_root),
-        "tex_project_included_tex_files_relative_to_directory": _directory_relative_list(included_tex, directory),
+        "tex_project_included_tex_files_relative_to_directory": _directory_relative_list(
+            included_tex, directory
+        ),
         "tex_project_missing_includes": missing_includes,
         "tex_project_bibliography_files": _relative_list(bibliography_files, project_root),
         "tex_project_local_asset_files": _relative_list(local_assets, project_root),

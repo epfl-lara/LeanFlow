@@ -27,6 +27,7 @@ from agent.providers.auxiliary_client import async_call_llm
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
 
+
 def _format_timestamp(ts: int | float | str | None) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
 
@@ -37,11 +38,13 @@ def _format_timestamp(ts: int | float | str | None) -> str:
     try:
         if isinstance(ts, (int, float)):
             from datetime import datetime
+
             dt = datetime.fromtimestamp(ts)
             return dt.strftime("%B %d, %Y at %I:%M %p")
         if isinstance(ts, str):
             if ts.replace(".", "").replace("-", "").isdigit():
                 from datetime import datetime
+
                 dt = datetime.fromtimestamp(float(ts))
                 return dt.strftime("%B %d, %Y at %I:%M %p")
             return ts
@@ -51,6 +54,7 @@ def _format_timestamp(ts: int | float | str | None) -> str:
     except Exception as e:
         logging.debug("Unexpected error formatting timestamp %s: %s", ts, e, exc_info=True)
     return str(ts)
+
 
 def _format_conversation(messages: list[dict[str, Any]]) -> str:
     """Format session messages into a readable transcript for summarization."""
@@ -85,9 +89,8 @@ def _format_conversation(messages: list[dict[str, Any]]) -> str:
 
     return "\n\n".join(parts)
 
-def _truncate_around_matches(
-    full_text: str, query: str, max_chars: int = MAX_SESSION_CHARS
-) -> str:
+
+def _truncate_around_matches(full_text: str, query: str, max_chars: int = MAX_SESSION_CHARS) -> str:
     """
     Truncate a conversation transcript to max_chars, centered around
     where the query terms appear. Keeps content near matches, trims the edges.
@@ -119,6 +122,7 @@ def _truncate_around_matches(
     prefix = "...[earlier conversation truncated]...\n\n" if start > 0 else ""
     suffix = "\n\n...[later conversation truncated]..." if end < len(full_text) else ""
     return prefix + truncated + suffix
+
 
 async def _summarize_session(
     conversation_text: str, query: str, session_meta: dict[str, Any]
@@ -175,6 +179,7 @@ async def _summarize_session(
                 )
                 return None
 
+
 def session_search(
     query: str,
     role_filter: str = None,
@@ -189,7 +194,9 @@ def session_search(
     The current session is excluded from results since the agent already has that context.
     """
     if db is None:
-        return json.dumps({"success": False, "error": "Session database not available."}, ensure_ascii=False)
+        return json.dumps(
+            {"success": False, "error": "Session database not available."}, ensure_ascii=False
+        )
 
     if not query or not query.strip():
         return json.dumps({"success": False, "error": "Query cannot be empty."}, ensure_ascii=False)
@@ -212,13 +219,16 @@ def session_search(
         )
 
         if not raw_results:
-            return json.dumps({
-                "success": True,
-                "query": query,
-                "results": [],
-                "count": 0,
-                "message": "No matching sessions found.",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "success": True,
+                    "query": query,
+                    "results": [],
+                    "count": 0,
+                    "message": "No matching sessions found.",
+                },
+                ensure_ascii=False,
+            )
 
         # Resolve child sessions to their parent — delegation stores detailed
         # content in child sessions, but the user's conversation is the parent.
@@ -286,10 +296,7 @@ def session_search(
         # Summarize all sessions in parallel
         async def _summarize_all() -> list[str | Exception]:
             """Summarize all sessions in parallel."""
-            coros = [
-                _summarize_session(text, query, meta)
-                for _, _, text, meta in tasks
-            ]
+            coros = [_summarize_session(text, query, meta) for _, _, text, meta in tasks]
             return await asyncio.gather(*coros, return_exceptions=True)
 
         try:
@@ -304,10 +311,13 @@ def session_search(
                 "Session summarization timed out after 60 seconds",
                 exc_info=True,
             )
-            return json.dumps({
-                "success": False,
-                "error": "Session summarization timed out. Try a more specific query or reduce the limit.",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "Session summarization timed out. Try a more specific query or reduce the limit.",
+                },
+                ensure_ascii=False,
+            )
 
         summaries = []
         for (session_id, match_info, _, _), result in zip(tasks, results):
@@ -320,33 +330,43 @@ def session_search(
                 )
                 continue
             if result:
-                summaries.append({
-                    "session_id": session_id,
-                    "when": _format_timestamp(match_info.get("session_started")),
-                    "source": match_info.get("source", "unknown"),
-                    "model": match_info.get("model"),
-                    "summary": result,
-                })
+                summaries.append(
+                    {
+                        "session_id": session_id,
+                        "when": _format_timestamp(match_info.get("session_started")),
+                        "source": match_info.get("source", "unknown"),
+                        "model": match_info.get("model"),
+                        "summary": result,
+                    }
+                )
 
-        return json.dumps({
-            "success": True,
-            "query": query,
-            "results": summaries,
-            "count": len(summaries),
-            "sessions_searched": len(seen_sessions),
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "success": True,
+                "query": query,
+                "results": summaries,
+                "count": len(summaries),
+                "sessions_searched": len(seen_sessions),
+            },
+            ensure_ascii=False,
+        )
 
     except Exception as e:
         logging.error("Session search failed: %s", e, exc_info=True)
-        return json.dumps({"success": False, "error": f"Search failed: {str(e)}"}, ensure_ascii=False)
+        return json.dumps(
+            {"success": False, "error": f"Search failed: {str(e)}"}, ensure_ascii=False
+        )
+
 
 def check_session_search_requirements() -> bool:
     """Requires SQLite state database and an auxiliary text model."""
     try:
         from core.state import DEFAULT_DB_PATH
+
         return DEFAULT_DB_PATH.parent.exists()
     except ImportError:
         return False
+
 
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
@@ -362,7 +382,7 @@ SESSION_SEARCH_SCHEMA = {
         "Don't hesitate to search when it is actually cross-session -- it's fast and cheap. "
         "Better to search and confirm than to guess or ask the user to repeat themselves.\n\n"
         "Search syntax: keywords joined with OR for broad recall (elevenlabs OR baseten OR funding), "
-        "phrases for exact match (\"docker networking\"), boolean (python NOT java), prefix (deploy*). "
+        'phrases for exact match ("docker networking"), boolean (python NOT java), prefix (deploy*). '
         "IMPORTANT: Use OR between keywords for best results — FTS5 defaults to AND which misses "
         "sessions that only mention some terms. If a broad OR query returns nothing, try individual "
         "keyword searches in parallel. Returns summaries of the top matching sessions."
@@ -400,7 +420,8 @@ registry.register(
         role_filter=args.get("role_filter"),
         limit=args.get("limit", 3),
         db=kw.get("db"),
-        current_session_id=kw.get("current_session_id")),
+        current_session_id=kw.get("current_session_id"),
+    ),
     check_fn=check_session_search_requirements,
     emoji="🔍",
 )

@@ -93,7 +93,16 @@ TOOLSETS: dict[str, dict[str, Any]] = {
     "autoformalize": {
         "description": "Lean workflow tool surface",
         "tools": [],
-        "includes": ["file", "web", "terminal", "skills", "session_search", "coordination", "document", "lean"],
+        "includes": [
+            "file",
+            "web",
+            "terminal",
+            "skills",
+            "session_search",
+            "coordination",
+            "document",
+            "lean",
+        ],
     },
     "epflemma-cli": {
         "description": "EPFLemma kernel CLI toolset",
@@ -160,7 +169,9 @@ def validate_toolset(name: str) -> bool:
     return name in TOOLSETS or name in {"all", "*"}
 
 
-def create_custom_toolset(name: str, description: str, tools: list[str], includes: list[str] = None):
+def create_custom_toolset(
+    name: str, description: str, tools: list[str], includes: list[str] = None
+):
     TOOLSETS[name] = {
         "description": description,
         "tools": list(tools),

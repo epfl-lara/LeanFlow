@@ -11,11 +11,11 @@ def test_native_runner_reexports_are_identical():
 
 def test_strip_lean_comments_and_strings_removes_comments_and_string_literals():
     src = (
-        'theorem keep : True := by\n'
-        '  -- sorry hidden in a line comment\n'
-        '  /- block comment with sorry -/\n'
+        "theorem keep : True := by\n"
+        "  -- sorry hidden in a line comment\n"
+        "  /- block comment with sorry -/\n"
         '  let s := "string with sorry inside"\n'
-        '  trivial\n'
+        "  trivial\n"
     )
     stripped = lean_parsing._strip_lean_comments_and_strings(src)
     # The real `sorry`-free declaration survives; the three decoy "sorry"s are gone.
@@ -29,12 +29,7 @@ def test_strip_lean_comments_and_strings_removes_comments_and_string_literals():
 
 def test_declaration_line_index_from_text_indexes_kind_name_and_sorry():
     src = (
-        "theorem alpha : True := by trivial\n"
-        "\n"
-        "lemma beta : True := by\n"
-        "  sorry\n"
-        "\n"
-        "def gamma := 1\n"
+        "theorem alpha : True := by trivial\n\nlemma beta : True := by\n  sorry\n\ndef gamma := 1\n"
     )
     entries = lean_parsing._declaration_line_index_from_text(src)
     by_name = {e["name"]: e for e in entries}
@@ -52,7 +47,7 @@ def test_declaration_line_index_from_text_indexes_kind_name_and_sorry():
 def test_find_assignment_marker_skips_comments_and_strings():
     # `:=` tokens inside a block comment and inside a string literal must be skipped; the
     # function returns the first *real* (top-level, uncommented, unquoted) `:=`.
-    text = 'theorem t /- := decoy -/ : True := by trivial -- := trailing'
+    text = "theorem t /- := decoy -/ : True := by trivial -- := trailing"
     idx = lean_parsing._find_assignment_marker_for_statement(text)
     assert idx != -1
     assert text[idx : idx + 2] == ":="

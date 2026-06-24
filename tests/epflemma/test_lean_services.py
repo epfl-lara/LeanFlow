@@ -80,7 +80,9 @@ def test_lean_search_marks_semantic_provider_fallback(monkeypatch, tmp_path):
     monkeypatch.setattr(
         lean_services,
         "_rg_search",
-        lambda root, query, *, limit=10: [{"file": "Demo/Main.lean", "line": 12, "preview": "theorem map_id"}],
+        lambda root, query, *, limit=10: [
+            {"file": "Demo/Main.lean", "line": 12, "preview": "theorem map_id"}
+        ],
     )
 
     result = lean_services.lean_search("map_id", cwd=project)
@@ -119,14 +121,16 @@ def test_lean_search_uses_leanexplore_summary_results(monkeypatch, tmp_path):
                 '{"id": 12345, "name": "Nat.Prime.dvd_mul", '
                 '"module": "Mathlib.Data.Nat.Prime.Basic", '
                 '"description": "Divisibility of a product by a prime"}'
-                "], \"count\": 1}"
+                '], "count": 1}'
             )
         }
 
     monkeypatch.setattr(lean_services, "_invoke_json_tool", _fake_invoke)
     monkeypatch.setattr(lean_services, "_rg_search", lambda root, query, *, limit=10: [])
 
-    result = lean_services.lean_search("prime number divisibility", cwd=project, mode="semantic", limit=3)
+    result = lean_services.lean_search(
+        "prime number divisibility", cwd=project, mode="semantic", limit=3
+    )
 
     assert calls == [
         (
@@ -153,7 +157,12 @@ def test_leanexplore_local_search_retries_without_reranker_on_meta_tensor(monkey
     monkeypatch.setattr(
         lean_services,
         "_leanexplore_local_status",
-        lambda: {"package_available": True, "data_ready": True, "cache_path": "/tmp/cache", "available": True},
+        lambda: {
+            "package_available": True,
+            "data_ready": True,
+            "cache_path": "/tmp/cache",
+            "available": True,
+        },
     )
     monkeypatch.setattr(lean_services, "_LEANEXPLORE_LOCAL_SERVICE", None)
     monkeypatch.setattr(lean_services, "_LEANEXPLORE_LOCAL_RERANK_DISABLED", False)
@@ -200,7 +209,12 @@ def test_leanexplore_local_search_reuses_service_and_suppresses_noise(monkeypatc
     monkeypatch.setattr(
         lean_services,
         "_leanexplore_local_status",
-        lambda: {"package_available": True, "data_ready": True, "cache_path": "/tmp/cache", "available": True},
+        lambda: {
+            "package_available": True,
+            "data_ready": True,
+            "cache_path": "/tmp/cache",
+            "available": True,
+        },
     )
     monkeypatch.setattr(lean_services, "_LEANEXPLORE_LOCAL_SERVICE", None)
     monkeypatch.setattr(lean_services, "_LEANEXPLORE_LOCAL_RERANK_DISABLED", False)
@@ -233,8 +247,12 @@ def test_leanexplore_local_search_reuses_service_and_suppresses_noise(monkeypatc
     monkeypatch.setitem(sys.modules, "lean_explore", fake_package)
     monkeypatch.setitem(sys.modules, "lean_explore.search", fake_search)
 
-    first_results, first_error = lean_services._leanexplore_local_search("Nat.mod_eq_of_lt", limit=1)
-    second_results, second_error = lean_services._leanexplore_local_search("Nat.mod_eq_of_lt", limit=1)
+    first_results, first_error = lean_services._leanexplore_local_search(
+        "Nat.mod_eq_of_lt", limit=1
+    )
+    second_results, second_error = lean_services._leanexplore_local_search(
+        "Nat.mod_eq_of_lt", limit=1
+    )
     captured = capsys.readouterr()
 
     assert first_error == ""
@@ -347,7 +365,9 @@ def test_probe_capabilities_reports_local_leanexplore_when_data_is_ready(monkeyp
     assert report.power_modes["leanexplore_local_cache_path"] == str(cache)
 
 
-def test_lean_search_uses_direct_leanexplore_api_before_mcp_semantic_provider(monkeypatch, tmp_path):
+def test_lean_search_uses_direct_leanexplore_api_before_mcp_semantic_provider(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     project.mkdir()
     monkeypatch.setattr(
@@ -388,11 +408,15 @@ def test_lean_search_uses_direct_leanexplore_api_before_mcp_semantic_provider(mo
     monkeypatch.setattr(
         lean_services,
         "_invoke_json_tool",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("MCP semantic provider should not be called")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("MCP semantic provider should not be called")
+        ),
     )
     monkeypatch.setattr(lean_services, "_rg_search", lambda root, query, *, limit=10: [])
 
-    result = lean_services.lean_search("prime number divisibility", cwd=project, mode="semantic", limit=3)
+    result = lean_services.lean_search(
+        "prime number divisibility", cwd=project, mode="semantic", limit=3
+    )
 
     assert result.attempted_providers == ["leanexplore-api"]
     assert result.results[0]["provider"] == "leanexplore-api"
@@ -415,7 +439,12 @@ def test_lean_search_prefers_local_leanexplore_before_api_and_mcp(monkeypatch, t
                 "leanfinder": "mcp_lean_lsp_leanfinder",
                 "leanexplore": "mcp_lean_explore_search_summary",
             },
-            search_providers=["leanexplore-local", "leanexplore-api", "mcp-leanexplore", "mcp-leanfinder"],
+            search_providers=[
+                "leanexplore-local",
+                "leanexplore-api",
+                "mcp-leanexplore",
+                "mcp-leanfinder",
+            ],
             helper_tools={"search_fallback": True},
             workers=[],
             degraded_reasons=[],
@@ -440,16 +469,22 @@ def test_lean_search_prefers_local_leanexplore_before_api_and_mcp(monkeypatch, t
     monkeypatch.setattr(
         lean_services,
         "_leanexplore_api_search",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("API fallback should not be called")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("API fallback should not be called")
+        ),
     )
     monkeypatch.setattr(
         lean_services,
         "_invoke_json_tool",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("MCP semantic provider should not be called")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("MCP semantic provider should not be called")
+        ),
     )
     monkeypatch.setattr(lean_services, "_rg_search", lambda root, query, *, limit=10: [])
 
-    result = lean_services.lean_search("prime number divisibility", cwd=project, mode="semantic", limit=3)
+    result = lean_services.lean_search(
+        "prime number divisibility", cwd=project, mode="semantic", limit=3
+    )
 
     assert result.attempted_providers == ["leanexplore-local"]
     assert result.results[0]["provider"] == "leanexplore-local"
@@ -491,7 +526,9 @@ def test_lean_search_local_mode_uses_local_leanexplore_cache(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(lean_services, "_rg_search", lambda *args, **kwargs: [])
 
-    result = lean_services.lean_search("isUnit_gcd_of_eq_mul_gcd", cwd=project, mode="local", limit=3)
+    result = lean_services.lean_search(
+        "isUnit_gcd_of_eq_mul_gcd", cwd=project, mode="local", limit=3
+    )
 
     assert result.attempted_providers == ["leanexplore-local"]
     assert result.results[0]["provider"] == "leanexplore-local"
@@ -607,7 +644,10 @@ def test_lean_search_marks_repeated_empty_search_loop(monkeypatch, tmp_path):
 
     result = lean_services.lean_search("hard theorem name", cwd=project)
 
-    assert "repeated empty search loop detected; stop searching and change tactic" in result.degraded_reasons
+    assert (
+        "repeated empty search loop detected; stop searching and change tactic"
+        in result.degraded_reasons
+    )
 
 
 def test_lean_inspect_queue_includes_diagnostic_declaration_range(monkeypatch, tmp_path):
@@ -650,7 +690,9 @@ def test_lean_inspect_queue_includes_diagnostic_declaration_range(monkeypatch, t
         ),
     )
     monkeypatch.setattr(lean_services, "_goals_text", lambda *args, **kwargs: "no goals")
-    monkeypatch.setattr(lean_services, "_project_sorry_stats", lambda project_root: (1, ["Main.lean"]))
+    monkeypatch.setattr(
+        lean_services, "_project_sorry_stats", lambda project_root: (1, ["Main.lean"])
+    )
     monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args, **kwargs: None)
 
     inspection = lean_services.lean_inspect(str(target), cwd=project)
@@ -660,7 +702,9 @@ def test_lean_inspect_queue_includes_diagnostic_declaration_range(monkeypatch, t
     assert inspection.queue_items[1]["label"] == "later"
 
 
-def test_lean_inspect_queue_ignores_info_and_leaves_style_warning_for_final_sweep(monkeypatch, tmp_path):
+def test_lean_inspect_queue_ignores_info_and_leaves_style_warning_for_final_sweep(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     project.mkdir()
     target = project / "Main.lean"
@@ -711,7 +755,9 @@ def test_lean_inspect_queue_ignores_info_and_leaves_style_warning_for_final_swee
     assert inspection.queue_items == []
 
 
-def test_route_workflow_step_marks_search_exhausted_from_recent_empty_search_streak(monkeypatch, tmp_path):
+def test_route_workflow_step_marks_search_exhausted_from_recent_empty_search_streak(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     project.mkdir()
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
@@ -731,7 +777,9 @@ def test_route_workflow_step_marks_search_exhausted_from_recent_empty_search_str
             degraded_reasons=[],
         ),
     )
-    monkeypatch.setattr(lean_services, "recent_empty_search_streak", lambda workflow_command, limit=6: 3)
+    monkeypatch.setattr(
+        lean_services, "recent_empty_search_streak", lambda workflow_command, limit=6: 3
+    )
 
     decision = lean_services.route_workflow_step(
         "prove",
@@ -886,7 +934,9 @@ def test_proof_context_and_auto_search_use_expected_backend_arguments(monkeypatc
     monkeypatch.setattr(lean_services, "_invoke_json_tool", _fake_invoke)
 
     lean_services.lean_proof_context("Demo/Main.lean", "demo", cwd=project)
-    lean_services.lean_auto_search("Demo/Main.lean", "demo", cwd=project, timeout_s=42, objective="balanced")
+    lean_services.lean_auto_search(
+        "Demo/Main.lean", "demo", cwd=project, timeout_s=42, objective="balanced"
+    )
 
     proof_context_args = calls[0][1]
     assert proof_context_args == {
@@ -949,9 +999,13 @@ def test_lean_auto_try_preflights_unsupported_project_option(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
     calls = []
-    monkeypatch.setattr(lean_services, "_invoke_json_tool", lambda *args, **kwargs: calls.append(args) or {})
+    monkeypatch.setattr(
+        lean_services, "_invoke_json_tool", lambda *args, **kwargs: calls.append(args) or {}
+    )
     outcomes = []
-    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: outcomes.append(args))
+    monkeypatch.setattr(
+        lean_services, "append_workflow_outcome", lambda *args: outcomes.append(args)
+    )
 
     payload = lean_services.lean_auto_try("Demo/Main.lean", "demo", "exact trivial", cwd=project)
 
@@ -1013,7 +1067,9 @@ def test_lean_auto_try_marks_harness_construction_failure_as_setup_blocker(monke
         },
     )
     outcomes = []
-    monkeypatch.setattr(lean_services, "append_workflow_outcome", lambda *args: outcomes.append(args))
+    monkeypatch.setattr(
+        lean_services, "append_workflow_outcome", lambda *args: outcomes.append(args)
+    )
 
     payload = lean_services.lean_auto_try("Demo/Main.lean", "demo", "exact trivial", cwd=project)
 
@@ -1073,7 +1129,11 @@ def test_lean_proof_context_prefers_range_scan_when_local_declaration_exists(mon
         degraded_reasons=[],
     )
     monkeypatch.setattr(lean_services, "probe_capabilities", lambda cwd=None: report)
-    monkeypatch.setattr(lean_services, "_discover_internal_managed_mcp_tool", lambda capability: "mcp_lean_proof_auto_scan_theorem")
+    monkeypatch.setattr(
+        lean_services,
+        "_discover_internal_managed_mcp_tool",
+        lambda capability: "mcp_lean_proof_auto_scan_theorem",
+    )
     calls: list[tuple[str, dict[str, object]]] = []
 
     def _fake_invoke(tool_name, arguments):
@@ -1085,11 +1145,22 @@ def test_lean_proof_context_prefers_range_scan_when_local_declaration_exists(mon
                     "theorem": {
                         "name": "abs_add_diff",
                         "kind": "lemma",
-                        "location": {"decl_start": 4, "decl_end": 5, "proof_start": 6, "proof_end": 6},
+                        "location": {
+                            "decl_start": 4,
+                            "decl_end": 5,
+                            "proof_start": 6,
+                            "proof_end": 6,
+                        },
                     },
                 }
             }
-        return {"result": {"status": "success", "theorem_statement": "lemma abs_add_diff ...", "original_proof": "rfl"}}
+        return {
+            "result": {
+                "status": "success",
+                "theorem_statement": "lemma abs_add_diff ...",
+                "original_proof": "rfl",
+            }
+        }
 
     monkeypatch.setattr(lean_services, "_invoke_json_tool", _fake_invoke)
 
@@ -1211,7 +1282,13 @@ def test_local_proof_context_uses_scan_location_to_avoid_next_doc_comment(monkey
                     "  trivial"
                 ),
             },
-            {"name": "next_demo", "kind": "theorem", "line": 5, "end_line": 6, "text": "theorem next_demo : True := by\n  trivial"},
+            {
+                "name": "next_demo",
+                "kind": "theorem",
+                "line": 5,
+                "end_line": 6,
+                "text": "theorem next_demo : True := by\n  trivial",
+            },
         ],
     )
 
@@ -1264,7 +1341,9 @@ def test_declaration_index_recognizes_noncomputable_def_boundaries(tmp_path):
     assert entries[1]["line"] == 7
 
 
-def test_lean_proof_context_falls_back_to_local_slice_without_disabling_proof_auto_backend(monkeypatch, tmp_path):
+def test_lean_proof_context_falls_back_to_local_slice_without_disabling_proof_auto_backend(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     project.mkdir()
     target = project / "Demo" / "Main.lean"
@@ -1320,7 +1399,11 @@ def test_lean_proof_context_falls_back_to_local_slice_without_disabling_proof_au
             }
         ],
     )
-    monkeypatch.setattr(lean_services, "_discover_internal_managed_mcp_tool", lambda capability: "mcp_lean_proof_auto_scan_theorem")
+    monkeypatch.setattr(
+        lean_services,
+        "_discover_internal_managed_mcp_tool",
+        lambda capability: "mcp_lean_proof_auto_scan_theorem",
+    )
 
     def _fake_invoke(tool_name, arguments):
         if tool_name == "mcp_lean_proof_auto_scan_theorem":
@@ -1330,7 +1413,12 @@ def test_lean_proof_context_falls_back_to_local_slice_without_disabling_proof_au
                     "theorem": {
                         "name": "abs_add_diff",
                         "kind": "lemma",
-                        "location": {"decl_start": 4, "decl_end": 5, "proof_start": 6, "proof_end": 6},
+                        "location": {
+                            "decl_start": 4,
+                            "decl_end": 5,
+                            "proof_start": 6,
+                            "proof_end": 6,
+                        },
                     },
                 }
             }
@@ -1356,9 +1444,16 @@ def test_lean_proof_context_falls_back_to_local_slice_without_disabling_proof_au
     assert payload["original_proof"] == "rfl"
     assert "first" in payload["in_scope"]
     assert "next_demo" in payload["in_scope"]
-    assert any("Theorem not found: abs_add_diff" in reason for reason in payload["degraded_reasons"])
-    assert any("without disabling proof-auto MCP" in reason for reason in payload["degraded_reasons"])
-    assert not any("proof-auto backend disabled for current run" in reason for reason in payload["degraded_reasons"])
+    assert any(
+        "Theorem not found: abs_add_diff" in reason for reason in payload["degraded_reasons"]
+    )
+    assert any(
+        "without disabling proof-auto MCP" in reason for reason in payload["degraded_reasons"]
+    )
+    assert not any(
+        "proof-auto backend disabled for current run" in reason
+        for reason in payload["degraded_reasons"]
+    )
     assert report.mcp_tools["proof_context"] == "mcp_lean_proof_auto_get_proof_context"
     assert report.mcp_tools["auto_search"] == "mcp_lean_proof_auto_search_automated_proof"
     assert "auto_probe" not in report.mcp_tools
@@ -1424,14 +1519,20 @@ def test_auto_probe_and_multi_attempt_use_expected_backend_arguments(monkeypatch
         column=4,
     )
 
-    probe_calls = [arguments for tool_name, arguments in calls if tool_name == "mcp_lean_proof_auto_probe"]
+    probe_calls = [
+        arguments for tool_name, arguments in calls if tool_name == "mcp_lean_proof_auto_probe"
+    ]
     assert [entry["mode"] for entry in probe_calls] == ["aesop", "grind"]
     assert all(entry["file"] == str(target.resolve()) for entry in probe_calls)
     assert all(entry["theorem_id"] == "demo" for entry in probe_calls)
     assert all(entry["budget_s"] == 30.0 for entry in probe_calls)
     assert probe_payload["recommended_mode"] == "aesop"
 
-    multi_attempt_args = [arguments for tool_name, arguments in calls if tool_name == "mcp_lean_lsp_lean_multi_attempt"][0]
+    multi_attempt_args = [
+        arguments
+        for tool_name, arguments in calls
+        if tool_name == "mcp_lean_lsp_lean_multi_attempt"
+    ][0]
     assert multi_attempt_args["file_path"] == str(target.resolve())
     assert multi_attempt_args["line"] == 12
     assert multi_attempt_args["column"] == 4
@@ -1439,7 +1540,9 @@ def test_auto_probe_and_multi_attempt_use_expected_backend_arguments(monkeypatch
     assert "attempts" not in multi_attempt_args
 
 
-def test_lean_multi_attempt_rejects_invalid_candidate_count_before_backend_call(monkeypatch, tmp_path):
+def test_lean_multi_attempt_rejects_invalid_candidate_count_before_backend_call(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     project.mkdir()
     target = project / "Demo" / "Main.lean"
@@ -1475,13 +1578,17 @@ def test_lean_multi_attempt_rejects_invalid_candidate_count_before_backend_call(
     monkeypatch.setattr(
         lean_services,
         "_invoke_json_tool",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("backend should not be called")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("backend should not be called")
+        ),
     )
 
     payload = lean_services.lean_multi_attempt("Demo/Main.lean", 12, ["ring"], cwd=project)
 
     assert payload["success"] is False
-    assert any("expects 2-6 concrete tactic candidates" in reason for reason in payload["degraded_reasons"])
+    assert any(
+        "expects 2-6 concrete tactic candidates" in reason for reason in payload["degraded_reasons"]
+    )
     assert "patch the file" in " ".join(payload["degraded_reasons"])
 
 
@@ -1521,7 +1628,9 @@ def test_lean_multi_attempt_rejects_full_proof_blocks_and_sorry(monkeypatch, tmp
     monkeypatch.setattr(
         lean_services,
         "_invoke_json_tool",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("backend should not be called")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("backend should not be called")
+        ),
     )
 
     payload = lean_services.lean_multi_attempt(
@@ -1536,7 +1645,9 @@ def test_lean_multi_attempt_rejects_full_proof_blocks_and_sorry(monkeypatch, tmp
 
     assert payload["success"] is False
     assert any("must not contain `sorry`" in reason for reason in payload["degraded_reasons"])
-    assert any("expects short local tactic candidates" in reason for reason in payload["degraded_reasons"])
+    assert any(
+        "expects short local tactic candidates" in reason for reason in payload["degraded_reasons"]
+    )
 
 
 def test_canonical_tool_file_path_prefers_active_file_for_basename_matches(monkeypatch, tmp_path):
@@ -1554,7 +1665,7 @@ def test_canonical_tool_file_path_prefers_active_file_for_basename_matches(monke
 def test_project_root_prefers_native_project_env_when_cwd_omitted(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()
-    (project / "lakefile.toml").write_text("[package]\nname = \"Demo\"\n", encoding="utf-8")
+    (project / "lakefile.toml").write_text('[package]\nname = "Demo"\n', encoding="utf-8")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
 
     root, error = lean_services._project_root()
@@ -1601,14 +1712,21 @@ def test_auto_probe_surfaces_attempt_diagnostic_summary(monkeypatch, tmp_path):
         "_invoke_json_tool",
         lambda *args, **kwargs: {
             "status": "error",
-            "diagnostics": [{"severity": "error", "message": "harness_error: Failed to extract declarations"}],
+            "diagnostics": [
+                {"severity": "error", "message": "harness_error: Failed to extract declarations"}
+            ],
         },
     )
 
-    payload = lean_services.lean_auto_probe("Demo/Main.lean", "demo", cwd=project, methods=["aesop"])
+    payload = lean_services.lean_auto_probe(
+        "Demo/Main.lean", "demo", cwd=project, methods=["aesop"]
+    )
 
     assert payload["file_path"] == str(target.resolve())
-    assert any("harness_error: Failed to extract declarations" in reason for reason in payload["degraded_reasons"])
+    assert any(
+        "harness_error: Failed to extract declarations" in reason
+        for reason in payload["degraded_reasons"]
+    )
 
 
 def test_auto_probe_prefers_incremental_probe_when_available(monkeypatch, tmp_path):
@@ -1660,10 +1778,14 @@ def test_auto_probe_prefers_incremental_probe_when_available(monkeypatch, tmp_pa
     monkeypatch.setattr(
         lean_services,
         "_invoke_json_tool",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("MCP probe should not be called")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("MCP probe should not be called")
+        ),
     )
 
-    payload = lean_services.lean_auto_probe("Demo/Main.lean", "demo", cwd=project, methods=["aesop"])
+    payload = lean_services.lean_auto_probe(
+        "Demo/Main.lean", "demo", cwd=project, methods=["aesop"]
+    )
 
     assert payload["backend_tool"] == "lean_incremental_check"
     assert payload["file_path"] == str(target.resolve())
@@ -1721,8 +1843,7 @@ def test_incremental_auto_probe_clamps_short_timeout(monkeypatch, tmp_path):
 
 def test_diagnostic_items_parses_standard_lines():
     out = lean_services.diagnostic_items(
-        "File.lean:12:7: error: unexpected token\n"
-        "C:/proj/File.lean:3:0: warning: unused variable x"
+        "File.lean:12:7: error: unexpected token\nC:/proj/File.lean:3:0: warning: unused variable x"
     )
     assert out == [
         {"severity": "error", "message": "unexpected token", "line": 12},

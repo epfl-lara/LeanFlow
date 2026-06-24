@@ -86,7 +86,15 @@ def test_resolved_toolsets_contain_no_duplicates():
 
 
 def test_validate_toolset_accepts_known_names_and_wildcards():
-    for name in ("epflemma-native", "epflemma-native-swarm", "autoformalize", "coordination", "document", "file", "terminal"):
+    for name in (
+        "epflemma-native",
+        "epflemma-native-swarm",
+        "autoformalize",
+        "coordination",
+        "document",
+        "file",
+        "terminal",
+    ):
         assert validate_toolset(name) is True, f"validate_toolset should accept {name!r}"
 
     assert validate_toolset("all") is True

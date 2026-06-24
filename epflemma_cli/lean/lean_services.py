@@ -259,10 +259,7 @@ def _workflow_run_key(cwd: str | os.PathLike[str] | None = None) -> str:
     run_id = str(os.getenv("EPFLEMMA_WORKFLOW_RUN_ID", "") or "").strip()
     if run_id:
         return run_id
-    workflow_command = str(
-        os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "")
-        or ""
-    ).strip()
+    workflow_command = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "") or "").strip()
     if workflow_command:
         return f"workflow:{workflow_command}"
     base = Path(cwd or os.getcwd()).expanduser().resolve()
@@ -323,10 +320,7 @@ def _canonical_tool_file_path(
     if root is None:
         project_root, _ = _project_root(cwd)
         root = Path(project_root).expanduser().resolve() if project_root else None
-    configured_active = str(
-        os.getenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "")
-        or ""
-    ).strip()
+    configured_active = str(os.getenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "") or "").strip()
 
     def _resolve_candidate(candidate: str) -> Path | None:
         raw = _strip_diff_path_prefix(candidate)
@@ -346,7 +340,12 @@ def _canonical_tool_file_path(
     active_candidate = _resolve_candidate(configured_active)
     if active_candidate and active_candidate.is_file():
         requested_name = Path(normalized).name
-        if not primary or not requested_name or requested_name == active_candidate.name or normalized == configured_active:
+        if (
+            not primary
+            or not requested_name
+            or requested_name == active_candidate.name
+            or normalized == configured_active
+        ):
             return str(active_candidate)
 
     return str(primary or normalized)
@@ -573,7 +572,9 @@ def _discover_lean_mcp_tools() -> dict[str, str]:
         lowered = tool_name.lower()
         if "lean" not in lowered:
             continue
-        if not discovered["diagnostics"] and any(token in lowered for token in ("diagnostic", "message")):
+        if not discovered["diagnostics"] and any(
+            token in lowered for token in ("diagnostic", "message")
+        ):
             discovered["diagnostics"] = tool_name
         if (
             not discovered["goals"]
@@ -607,8 +608,11 @@ def _discover_lean_mcp_tools() -> dict[str, str]:
             discovered["leansearch"] = tool_name
         if not discovered["loogle"] and "loogle" in lowered:
             discovered["loogle"] = tool_name
-        if not discovered["leanexplore"] and "lean" in lowered and "explore" in lowered and (
-            lowered.endswith("search_summary") or lowered.endswith("search")
+        if (
+            not discovered["leanexplore"]
+            and "lean" in lowered
+            and "explore" in lowered
+            and (lowered.endswith("search_summary") or lowered.endswith("search"))
         ):
             discovered["leanexplore"] = tool_name
         if "proof_auto" in lowered:
@@ -670,7 +674,9 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         if str(entry.get("name", "") or "").strip()
     }
     managed_mcp_servers = {
-        str(entry.get("name", "") or ""): bool(entry.get("healthy", False) or entry.get("connected", False))
+        str(entry.get("name", "") or ""): bool(
+            entry.get("healthy", False) or entry.get("connected", False)
+        )
         for entry in mcp_status
         if entry.get("managed") and str(entry.get("name", "") or "").strip()
     }
@@ -699,7 +705,9 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         remote_search_policy = "public-fallbacks-enabled"
     power_modes["leanexplore_backend"] = leanexplore_preference
     power_modes["leanexplore_local_available"] = bool(leanexplore_local["available"])
-    power_modes["leanexplore_local_package_available"] = bool(leanexplore_local["package_available"])
+    power_modes["leanexplore_local_package_available"] = bool(
+        leanexplore_local["package_available"]
+    )
     power_modes["leanexplore_local_data_ready"] = bool(leanexplore_local["data_ready"])
     power_modes["leanexplore_local_cache_path"] = str(leanexplore_local["cache_path"])
     power_modes["leanexplore_api_configured"] = bool(_leanexplore_api_key())
@@ -711,12 +719,26 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
                 "local Loogle disabled for this project because its managed Lean toolchain differs "
                 "from the project; public remote Loogle fallback remains enabled"
             )
-        elif power_modes.get("loogle_local_configured") and not power_modes.get("loogle_local_available"):
-            degraded.append("local Loogle configured but unsupported on this platform; public remote Loogle fallback remains enabled")
-        elif power_modes.get("loogle_local_configured") and not power_modes.get("loogle_local_ready"):
-            degraded.append("local Loogle configured but cache is not warmed yet; first local query may build it or fall back remotely")
-        if project_root and power_modes.get("repl_configured") and not power_modes.get("repl_available"):
-            degraded.append("Lean REPL acceleration configured but repl binary is unavailable; run `epflemma project init` to build it")
+        elif power_modes.get("loogle_local_configured") and not power_modes.get(
+            "loogle_local_available"
+        ):
+            degraded.append(
+                "local Loogle configured but unsupported on this platform; public remote Loogle fallback remains enabled"
+            )
+        elif power_modes.get("loogle_local_configured") and not power_modes.get(
+            "loogle_local_ready"
+        ):
+            degraded.append(
+                "local Loogle configured but cache is not warmed yet; first local query may build it or fall back remotely"
+            )
+        if (
+            project_root
+            and power_modes.get("repl_configured")
+            and not power_modes.get("repl_available")
+        ):
+            degraded.append(
+                "Lean REPL acceleration configured but repl binary is unavailable; run `epflemma project init` to build it"
+            )
     try:
         from epflemma_cli.lean.lean_incremental import lean_incremental_capabilities
 
@@ -739,7 +761,9 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         mcp_tools=mcp_tools,
         search_providers=search_providers,
         helper_tools=_helper_tools(),
-        workers=[record.spec_id for record in list_specs("worker")] if LEAN_WORKER_DISPATCH_ENABLED else [],
+        workers=[record.spec_id for record in list_specs("worker")]
+        if LEAN_WORKER_DISPATCH_ENABLED
+        else [],
         degraded_reasons=degraded,
         mcp_server_roles=mcp_server_roles,
         managed_mcp_servers=managed_mcp_servers,
@@ -773,14 +797,20 @@ def _scan_theorem_by_range(
     return {}
 
 
-def _diagnostics_text(file_path: Path, project_root: Path | None, mcp_tools: Mapping[str, str]) -> str:
+def _diagnostics_text(
+    file_path: Path, project_root: Path | None, mcp_tools: Mapping[str, str]
+) -> str:
     diagnostics_tool = str(mcp_tools.get("diagnostics", "") or "")
     if diagnostics_tool:
         payload = _BACKEND.invoke_tool(
             diagnostics_tool,
             {"file_path": str(file_path), "path": str(file_path)},
         )
-        fragments = [str(value).strip() for value in payload.values() if isinstance(value, str) and value.strip()]
+        fragments = [
+            str(value).strip()
+            for value in payload.values()
+            if isinstance(value, str) and value.strip()
+        ]
         if fragments:
             return "\n".join(fragments[:8])
     if project_root is None:
@@ -811,13 +841,19 @@ def _goals_text(
                 "line": line or _find_symbol_line(file_path, symbol) or 1,
             },
         )
-        fragments = [str(value).strip() for value in payload.values() if isinstance(value, str) and value.strip()]
+        fragments = [
+            str(value).strip()
+            for value in payload.values()
+            if isinstance(value, str) and value.strip()
+        ]
         if fragments:
             return "\n".join(fragments[:8])
     return "Lean goals unavailable."
 
 
-def lean_sorries(scope: str = "project", target: str = "", cwd: str | os.PathLike[str] | None = None) -> list[LeanSorryFinding]:
+def lean_sorries(
+    scope: str = "project", target: str = "", cwd: str | os.PathLike[str] | None = None
+) -> list[LeanSorryFinding]:
     """Enumerate all sorry occurrences in target file or project, excluding comments, with line numbers and declaration context."""
     project_root, _ = _project_root(cwd)
     if scope == "file" and target:
@@ -996,13 +1032,13 @@ def lean_search(
     mcp_order = []
     normalized_mode = str(mode or "auto").strip().lower()
     leanexplore_preference = _leanexplore_backend_preference()
-    leanexplore_local_available = SEARCH_PROVIDER_LABELS["leanexplore_local"] in report.search_providers
+    leanexplore_local_available = (
+        SEARCH_PROVIDER_LABELS["leanexplore_local"] in report.search_providers
+    )
     leanexplore_api_available = SEARCH_PROVIDER_LABELS["leanexplore_api"] in report.search_providers
     semantic_provider_keys = ("leanexplore", "leanfinder", "leansearch", "loogle")
     semantic_provider_labels = [
-        SEARCH_PROVIDER_LABELS[key]
-        for key in semantic_provider_keys
-        if report.mcp_tools.get(key)
+        SEARCH_PROVIDER_LABELS[key] for key in semantic_provider_keys if report.mcp_tools.get(key)
     ]
     if leanexplore_local_available:
         semantic_provider_labels.insert(0, SEARCH_PROVIDER_LABELS["leanexplore_local"])
@@ -1011,6 +1047,7 @@ def lean_search(
             0 if not leanexplore_local_available else 1,
             SEARCH_PROVIDER_LABELS["leanexplore_api"],
         )
+
     def _append_provider(provider_key: str, tool_name: str = "") -> None:
         if any(existing_key == provider_key for existing_key, _ in mcp_order):
             return
@@ -1032,9 +1069,13 @@ def lean_search(
         _append_leanexplore_semantic_fallbacks(allow_remote_api=False)
     if normalized_mode in {"auto", "semantic"} and _BACKEND.is_available(report, "leanfinder"):
         _append_provider("leanfinder", report.mcp_tools["leanfinder"])
-    if normalized_mode in {"auto", "natural-language", "natural"} and _BACKEND.is_available(report, "leansearch"):
+    if normalized_mode in {"auto", "natural-language", "natural"} and _BACKEND.is_available(
+        report, "leansearch"
+    ):
         _append_provider("leansearch", report.mcp_tools["leansearch"])
-    if normalized_mode in {"auto", "type-pattern", "type"} and _BACKEND.is_available(report, "loogle"):
+    if normalized_mode in {"auto", "type-pattern", "type"} and _BACKEND.is_available(
+        report, "loogle"
+    ):
         _append_provider("loogle", report.mcp_tools["loogle"])
     if normalized_mode in {"type-pattern", "type"}:
         _append_leanexplore_semantic_fallbacks(allow_remote_api=True)
@@ -1092,13 +1133,20 @@ def lean_search(
         for match in _rg_search(mathlib_root, query, limit=limit):
             results.append({"provider": SEARCH_PROVIDER_LABELS["mathlib_rg"], **match})
 
-    if any(provider in attempted for provider in (SEARCH_PROVIDER_LABELS["project_rg"], SEARCH_PROVIDER_LABELS["mathlib_rg"])):
+    if any(
+        provider in attempted
+        for provider in (SEARCH_PROVIDER_LABELS["project_rg"], SEARCH_PROVIDER_LABELS["mathlib_rg"])
+    ):
         if not semantic_provider_labels:
             degraded.append("semantic providers unavailable")
-        elif (
-            normalized_mode in {"auto", "semantic", "natural-language", "natural", "type-pattern", "type"}
-            and not any(provider in attempted for provider in semantic_provider_labels)
-        ):
+        elif normalized_mode in {
+            "auto",
+            "semantic",
+            "natural-language",
+            "natural",
+            "type-pattern",
+            "type",
+        } and not any(provider in attempted for provider in semantic_provider_labels):
             degraded.append("semantic providers skipped; falling back to rg")
     if not results:
         degraded.append("search returned no results")
@@ -1106,7 +1154,9 @@ def lean_search(
         if workflow_command:
             empty_streak = recent_empty_search_streak(workflow_command=workflow_command)
             if empty_streak >= 2:
-                degraded.append("repeated empty search loop detected; stop searching and change tactic")
+                degraded.append(
+                    "repeated empty search loop detected; stop searching and change tactic"
+                )
     result = LeanSearchResult(
         query=query,
         mode=normalized_mode,
@@ -1206,7 +1256,11 @@ def _normalize_native_backend_status(
     degraded_reasons = list(payload.get("degraded_reasons", []) or [])
     failure_message = _native_backend_failure_message(payload)
     lowered = failure_message.lower()
-    if outcome_kind == "lean-auto-try" and "unknown option" in lowered and "linter.style.longline" in lowered:
+    if (
+        outcome_kind == "lean-auto-try"
+        and "unknown option" in lowered
+        and "linter.style.longline" in lowered
+    ):
         _disable_mcp_tool_for_run(tool_name, cwd=cwd)
         payload["setup_blocker"] = {
             "kind": "unsupported_project_option",
@@ -1296,7 +1350,12 @@ def _local_incremental_auto_probe(
                     "mode": method,
                     "api_version": "epflemma-local-lean-interact",
                     "status": "error",
-                    "probe_result": {"mode": method, "outcome": "error", "classification": "error", "suggested_script": None},
+                    "probe_result": {
+                        "mode": method,
+                        "outcome": "error",
+                        "classification": "error",
+                        "suggested_script": None,
+                    },
                     "diagnostics": [
                         {
                             "severity": "error",
@@ -1305,7 +1364,10 @@ def _local_incremental_auto_probe(
                         }
                     ],
                     "timing": {"elapsed_ms": 0.0, "budget_s": float(effective_timeout_s)},
-                    "metadata": {"backend": "lean_incremental_check", "error_code": "replacement_construction_failed"},
+                    "metadata": {
+                        "backend": "lean_incremental_check",
+                        "error_code": "replacement_construction_failed",
+                    },
                 }
             )
             continue
@@ -1377,17 +1439,25 @@ def lean_proof_context(
     """Query the proof-context MCP for theorem statement, original proof, hypotheses, in-scope decls, and similar proofs, with fallback to local declaration extraction on backend failure."""
     report = probe_capabilities(cwd)
     canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
-    target_path = Path(canonical_file_path).expanduser().resolve() if canonical_file_path else Path("")
-    declaration_entry = _find_declaration_entry(target_path, theorem_id) if canonical_file_path else None
+    target_path = (
+        Path(canonical_file_path).expanduser().resolve() if canonical_file_path else Path("")
+    )
+    declaration_entry = (
+        _find_declaration_entry(target_path, theorem_id) if canonical_file_path else None
+    )
     scan_payload: dict[str, Any] = {}
     resolved_theorem_id = str(theorem_id or "").strip()
     if declaration_entry:
         scan_payload = _scan_theorem_by_range(
             target_path,
             start_line=int(declaration_entry.get("line", 0) or 0),
-            end_line=int(declaration_entry.get("end_line", 0) or declaration_entry.get("line", 0) or 0),
+            end_line=int(
+                declaration_entry.get("end_line", 0) or declaration_entry.get("line", 0) or 0
+            ),
         )
-        theorem_info = dict(scan_payload.get("theorem") or {}) if isinstance(scan_payload, Mapping) else {}
+        theorem_info = (
+            dict(scan_payload.get("theorem") or {}) if isinstance(scan_payload, Mapping) else {}
+        )
         theorem_name = str(theorem_info.get("name", "") or "").strip()
         if theorem_name:
             resolved_theorem_id = theorem_name
@@ -1455,7 +1525,11 @@ def lean_proof_context(
                 payload[key] = value
     backend_status = str(payload.get("status", "") or "").strip().lower()
     if backend_status and backend_status != "success":
-        fail_metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {}
+        fail_metadata = (
+            dict(payload.get("metadata") or {})
+            if isinstance(payload.get("metadata"), Mapping)
+            else {}
+        )
         fail_code = str(fail_metadata.get("fail_code", "") or "").strip().lower()
         fail_message = str(
             fail_metadata.get("fail_message", "")
@@ -1499,9 +1573,11 @@ def lean_proof_context(
     payload.setdefault("similar_proofs", [])
     payload.setdefault("metadata", {})
     payload.setdefault("timing", {})
-    if declaration_entry and not str(payload.get("theorem_statement", "") or "").strip() and not str(
-        payload.get("original_proof", "") or ""
-    ).strip():
+    if (
+        declaration_entry
+        and not str(payload.get("theorem_statement", "") or "").strip()
+        and not str(payload.get("original_proof", "") or "").strip()
+    ):
         local_payload = _local_proof_context_payload(
             target_path,
             theorem_id,
@@ -1563,7 +1639,12 @@ def lean_multi_attempt(
         report=report,
         unavailable_reason="lean multi-attempt MCP unavailable",
         outcome_kind="lean-multi-attempt",
-        extra={"file_path": canonical_file_path, "line": line, "column": column, "attempts": normalized_attempts},
+        extra={
+            "file_path": canonical_file_path,
+            "line": line,
+            "column": column,
+            "attempts": normalized_attempts,
+        },
     )
 
 
@@ -1717,7 +1798,11 @@ def lean_auto_try(
             proof_attempt=proof_attempt,
             reason=unsupported_option_reason,
         )
-    extra = {"file_path": canonical_file_path, "theorem_id": theorem_id, "proof_attempt": proof_attempt}
+    extra = {
+        "file_path": canonical_file_path,
+        "theorem_id": theorem_id,
+        "proof_attempt": proof_attempt,
+    }
     if not tool_name:
         payload = _wrapper_unavailable_result(
             report=report,
@@ -1908,21 +1993,29 @@ def route_workflow_step(
         if part
     )
     blocker_kind = classify_blocker_kind(blocker_text)
-    target_symbol = str(queue_item.get("label", "") or current.get("target_symbol", "") or "").strip()
+    target_symbol = str(
+        queue_item.get("label", "") or current.get("target_symbol", "") or ""
+    ).strip()
     active_file = str(current.get("active_file", "") or "").strip()
     attempts = [
         dict(item)
         for item in autonomy.get("failed_attempts", [])
         if isinstance(item, Mapping)
         and str(item.get("target_symbol", "") or "").strip() == target_symbol
-        and str(item.get("active_file", "") or "").strip() in {active_file, str(current.get("active_file_label", "") or "")}
+        and str(item.get("active_file", "") or "").strip()
+        in {active_file, str(current.get("active_file_label", "") or "")}
     ]
     attempt_count = len(attempts)
-    workflow_command = str(
-        os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "")
-    ).strip()
-    empty_search_streak = recent_empty_search_streak(workflow_command=workflow_command) if workflow_command else 0
-    search_exhausted = bool(current.get("search_exhausted")) or attempt_count >= 2 or not report.search_providers or empty_search_streak >= 3
+    workflow_command = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "")).strip()
+    empty_search_streak = (
+        recent_empty_search_streak(workflow_command=workflow_command) if workflow_command else 0
+    )
+    search_exhausted = (
+        bool(current.get("search_exhausted"))
+        or attempt_count >= 2
+        or not report.search_providers
+        or empty_search_streak >= 3
+    )
     normalized_workflow = str(workflow_kind or "").strip().lower()
     if normalized_workflow == "autoprove":
         normalized_workflow = "prove"
@@ -1959,7 +2052,10 @@ def route_workflow_step(
         route_action = "queue-worker"
         reason = "file-scoped queue item active"
     if LEAN_WORKER_DISPATCH_ENABLED:
-        if blocker_kind in {"unknown_ident", "synth_instance", "type_mismatch", "timeout"} and attempt_count >= 2:
+        if (
+            blocker_kind in {"unknown_ident", "synth_instance", "type_mismatch", "timeout"}
+            and attempt_count >= 2
+        ):
             recommended_worker = "proof-repair"
             route_action = "delegate-proof-repair"
             reason = f"compiler-style blocker {blocker_kind} repeated {attempt_count} times"
@@ -1967,7 +2063,10 @@ def route_workflow_step(
             recommended_worker = "axiom-eliminator"
             route_action = "delegate-axiom-eliminator"
             reason = "axiom-sensitive blocker detected"
-        elif queue_item and (attempt_count >= 3 or (search_exhausted and blocker_kind in {"sorry", "open_goals", "diagnostics"})):
+        elif queue_item and (
+            attempt_count >= 3
+            or (search_exhausted and blocker_kind in {"sorry", "open_goals", "diagnostics"})
+        ):
             recommended_worker = "sorry-filler-deep"
             route_action = "delegate-sorry-filler-deep"
             reason = "queue item remains blocked after repeated attempts/search exhaustion"

@@ -93,6 +93,7 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
 END;
 """
 
+
 class SessionDB:
     """
     SQLite-backed session storage with FTS5 search.
@@ -228,7 +229,10 @@ class SessionDB:
         self._conn.commit()
 
     def update_token_counts(
-        self, session_id: str, input_tokens: int = 0, output_tokens: int = 0,
+        self,
+        session_id: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
         model: str = None,
     ) -> None:
         """Increment token counters and backfill model if not already set."""
@@ -244,9 +248,7 @@ class SessionDB:
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Get a session by ID."""
-        cursor = self._conn.execute(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        )
+        cursor = self._conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
 
@@ -261,12 +263,7 @@ class SessionDB:
         if exact:
             return exact["id"]
 
-        escaped = (
-            session_id_or_prefix
-            .replace("\\", "\\\\")
-            .replace("%", "\\%")
-            .replace("_", "\\_")
-        )
+        escaped = session_id_or_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         cursor = self._conn.execute(
             "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' ORDER BY started_at DESC LIMIT 2",
             (f"{escaped}%",),
@@ -299,19 +296,20 @@ class SessionDB:
         # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
         # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
         # normalized to spaces by the whitespace collapsing step below
-        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', title)
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", title)
 
         # Remove problematic Unicode control characters:
         # - Zero-width chars (U+200B-U+200F, U+FEFF)
         # - Directional overrides (U+202A-U+202E, U+2066-U+2069)
         # - Object replacement (U+FFFC), interlinear annotation (U+FFF9-U+FFFB)
         cleaned = re.sub(
-            r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]',
-            '', cleaned,
+            r"[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]",
+            "",
+            cleaned,
         )
 
         # Collapse internal whitespace runs and strip
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
         if not cleaned:
             return None
@@ -340,9 +338,7 @@ class SessionDB:
             )
             conflict = cursor.fetchone()
             if conflict:
-                raise ValueError(
-                    f"Title '{title}' is already in use by session {conflict['id']}"
-                )
+                raise ValueError(f"Title '{title}' is already in use by session {conflict['id']}")
         cursor = self._conn.execute(
             "UPDATE sessions SET title = ? WHERE id = ?",
             (title, session_id),
@@ -352,17 +348,13 @@ class SessionDB:
 
     def get_session_title(self, session_id: str) -> str | None:
         """Get the title for a session, or None."""
-        cursor = self._conn.execute(
-            "SELECT title FROM sessions WHERE id = ?", (session_id,)
-        )
+        cursor = self._conn.execute("SELECT title FROM sessions WHERE id = ?", (session_id,))
         row = cursor.fetchone()
         return row["title"] if row else None
 
     def get_session_by_title(self, title: str) -> dict[str, Any] | None:
         """Look up a session by exact title. Returns session dict or None."""
-        cursor = self._conn.execute(
-            "SELECT * FROM sessions WHERE title = ?", (title,)
-        )
+        cursor = self._conn.execute("SELECT * FROM sessions WHERE title = ?", (title,))
         row = cursor.fetchone()
         return dict(row) if row else None
 
@@ -401,7 +393,7 @@ class SessionDB:
         the highest existing number and increments.
         """
         # Strip existing #N suffix to find the true base
-        match = re.match(r'^(.*?) #(\d+)$', base_title)
+        match = re.match(r"^(.*?) #(\d+)$", base_title)
         if match:
             base = match.group(1)
         else:
@@ -422,7 +414,7 @@ class SessionDB:
         # Find the highest number
         max_num = 1  # The unnumbered original counts as #1
         for t in existing:
-            m = re.match(r'^.* #(\d+)$', t)
+            m = re.match(r"^.* #(\d+)$", t)
             if m:
                 max_num = max(max_num, int(m.group(1)))
 
@@ -727,9 +719,7 @@ class SessionDB:
     def session_count(self, source: str = None) -> int:
         """Count sessions, optionally filtered by source."""
         if source:
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM sessions WHERE source = ?", (source,)
-            )
+            cursor = self._conn.execute("SELECT COUNT(*) FROM sessions WHERE source = ?", (source,))
         else:
             cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
         return cursor.fetchone()[0]
@@ -770,9 +760,7 @@ class SessionDB:
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
-        self._conn.execute(
-            "DELETE FROM messages WHERE session_id = ?", (session_id,)
-        )
+        self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         self._conn.execute(
             "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
             (session_id,),
@@ -781,9 +769,7 @@ class SessionDB:
 
     def delete_session(self, session_id: str) -> bool:
         """Delete a session and all its messages. Returns True if found."""
-        cursor = self._conn.execute(
-            "SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,)
-        )
+        cursor = self._conn.execute("SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,))
         if cursor.fetchone()[0] == 0:
             return False
         self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
@@ -797,6 +783,7 @@ class SessionDB:
         Only prunes ended sessions (not active ones).
         """
         import time as _time
+
         cutoff = _time.time() - (older_than_days * 86400)
 
         if source:

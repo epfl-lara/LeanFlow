@@ -136,7 +136,7 @@ def _normalize_requested_active_file(project_root: Path, cwd: Path, workflow_arg
     trimmed = raw
     for prefix in (f"./{project_name}/", f"{project_name}/"):
         if trimmed.startswith(prefix):
-            trimmed = trimmed[len(prefix):]
+            trimmed = trimmed[len(prefix) :]
             break
     if trimmed != raw:
         candidates.extend([cwd / trimmed, project_root / trimmed, Path(trimmed).expanduser()])
@@ -165,7 +165,9 @@ def _normalize_workflow_args(project_root: Path, cwd: Path, workflow_args: str) 
 
 def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
     """Build a human-readable summary dict of a launch plan for display, capturing workflow name, command, project, runtime provider, model, skill, agent count, and optional fields like formalization metadata, verifier providers, or explicit goals."""
-    runtime_model = str(plan.runtime.get("model") or plan.child_env.get("EPFLEMMA_NATIVE_MODEL", "") or "")
+    runtime_model = str(
+        plan.runtime.get("model") or plan.child_env.get("EPFLEMMA_NATIVE_MODEL", "") or ""
+    )
     runtime_name = str(plan.runtime.get("runtime", "") or "")
     provider = str(plan.runtime.get("provider", "") or "")
     provider_label = provider
@@ -195,8 +197,13 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
             )
             or plan.formalization_document.source_relative
         )
-        request_kind = str(plan.formalization_document.metadata.get("document_request_kind", "file") or "file")
-        if request_relative != plan.formalization_document.source_relative or request_kind != "file":
+        request_kind = str(
+            plan.formalization_document.metadata.get("document_request_kind", "file") or "file"
+        )
+        if (
+            request_relative != plan.formalization_document.source_relative
+            or request_kind != "file"
+        ):
             summary["input"] = f"{request_relative} ({request_kind})"
         summary["document"] = plan.formalization_document.source_relative
         summary["target_file"] = plan.formalization_document.target_lean_relative
@@ -212,11 +219,15 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
     if plan.workflow.blueprint_verifier_provider:
         summary["blueprint_verifier_provider"] = plan.workflow.blueprint_verifier_provider
     if plan.workflow.blueprint_verifier_command_template:
-        summary["blueprint_verifier_command_template"] = plan.workflow.blueprint_verifier_command_template
+        summary["blueprint_verifier_command_template"] = (
+            plan.workflow.blueprint_verifier_command_template
+        )
     if plan.workflow.autoformalizer_verifier_provider:
         summary["autoformalizer_verifier_provider"] = plan.workflow.autoformalizer_verifier_provider
     if plan.workflow.autoformalizer_verifier_command_template:
-        summary["autoformalizer_verifier_command_template"] = plan.workflow.autoformalizer_verifier_command_template
+        summary["autoformalizer_verifier_command_template"] = (
+            plan.workflow.autoformalizer_verifier_command_template
+        )
     return summary
 
 
@@ -272,7 +283,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         if token in {"--prompt", "--goal"}:
             if idx + 1 >= len(remaining):
                 raise ValueError(f"{token} requires a value")
-            explicit_goal = " ".join(remaining[idx + 1:]).strip()
+            explicit_goal = " ".join(remaining[idx + 1 :]).strip()
             idx = len(remaining)
             continue
         if token == "--provider":
@@ -299,7 +310,10 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             blueprint_verifier_provider = remaining[idx + 1].strip()
             idx += 2
             continue
-        if token in {"--blueprint-verifier-command-template", "--blueprint_verifier_command_template"}:
+        if token in {
+            "--blueprint-verifier-command-template",
+            "--blueprint_verifier_command_template",
+        }:
             if idx + 1 >= len(remaining):
                 raise ValueError(f"{token} requires a value")
             blueprint_verifier_command_template = remaining[idx + 1].strip()
@@ -311,7 +325,10 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             autoformalizer_verifier_provider = remaining[idx + 1].strip()
             idx += 2
             continue
-        if token in {"--autoformalizer-verifier-command-template", "--autoformalizer_verifier_command_template"}:
+        if token in {
+            "--autoformalizer-verifier-command-template",
+            "--autoformalizer_verifier_command_template",
+        }:
             if idx + 1 >= len(remaining):
                 raise ValueError(f"{token} requires a value")
             autoformalizer_verifier_command_template = remaining[idx + 1].strip()
@@ -333,7 +350,9 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         workflow_kind=workflow_kind,
         frontend_command=command_name,
         canonical_command=canonical_command,
-        backend_command=backend_command if not workflow_args else f"{backend_command} {workflow_args}",
+        backend_command=backend_command
+        if not workflow_args
+        else f"{backend_command} {workflow_args}",
         workflow_args=workflow_args.strip(),
         parallel_agents=parallel_agents,
         explicit_goal=explicit_goal,
@@ -375,7 +394,9 @@ def resolve_workflow_request(
     workflow = parse_workflow_command(command)
     cwd = Path(active_cwd or os.getcwd()).expanduser().resolve()
     project = discover_epflemma_project(cwd)
-    runtime = resolve_runtime_provider(requested=requested_provider or workflow.provider_override or None)
+    runtime = resolve_runtime_provider(
+        requested=requested_provider or workflow.provider_override or None
+    )
     formalization_document: FormalizationDocumentContext | None = None
     normalized_workflow_args = _normalize_workflow_args(project.root, cwd, workflow.workflow_args)
     if workflow.workflow_kind == "formalize":
@@ -398,10 +419,16 @@ def resolve_workflow_request(
             if not normalized_workflow_args
             else f"{WORKFLOW_ALIAS_MAP[workflow.frontend_command][2]} {normalized_workflow_args}",
         )
-    normalized_active_file = _normalize_requested_active_file(project.root, cwd, workflow.workflow_args)
+    normalized_active_file = _normalize_requested_active_file(
+        project.root, cwd, workflow.workflow_args
+    )
     if formalization_document is not None:
         normalized_active_file = formalization_document.target_lean_relative
-    if normalized_active_file and workflow.workflow_kind == "prove" and workflow.parallel_agents > 1:
+    if (
+        normalized_active_file
+        and workflow.workflow_kind == "prove"
+        and workflow.parallel_agents > 1
+    ):
         workflow = replace(workflow, parallel_agents=1)
     selected_skill = (active_skill or "").strip() or default_workflow_skill(workflow.workflow_kind)
     if workflow.parallel_agents > 1 and not active_skill:
@@ -449,13 +476,21 @@ def resolve_workflow_request(
     if workflow.expert_command_template:
         child_env["AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE"] = workflow.expert_command_template
     if workflow.blueprint_verifier_provider:
-        child_env["AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] = workflow.blueprint_verifier_provider
+        child_env["AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] = (
+            workflow.blueprint_verifier_provider
+        )
     if workflow.blueprint_verifier_command_template:
-        child_env["AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"] = workflow.blueprint_verifier_command_template
+        child_env["AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"] = (
+            workflow.blueprint_verifier_command_template
+        )
     if workflow.autoformalizer_verifier_provider:
-        child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] = workflow.autoformalizer_verifier_provider
+        child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] = (
+            workflow.autoformalizer_verifier_provider
+        )
     if workflow.autoformalizer_verifier_command_template:
-        child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"] = workflow.autoformalizer_verifier_command_template
+        child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"] = (
+            workflow.autoformalizer_verifier_command_template
+        )
     if formalization_document is not None:
         child_env.update(formalization_document.to_env())
     argv = [sys.executable, "-m", _native_runner_module()]

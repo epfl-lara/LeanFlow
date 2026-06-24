@@ -36,7 +36,9 @@ LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S = LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S
 LEAN_DECOMPOSE_HELPERS_MIN_TIMEOUT_S = LEAN_REASONING_HELP_MIN_TIMEOUT_S
 
 
-def _advisor_failure(status: str, message: str, *, theorem_id: str = "", file_path: str = "") -> str:
+def _advisor_failure(
+    status: str, message: str, *, theorem_id: str = "", file_path: str = ""
+) -> str:
     return json.dumps(
         {
             "success": False,
@@ -108,15 +110,14 @@ def lean_reasoning_help_tool(
             f"Current goals:\n{current_goals}" if current_goals else "",
             f"Current attempt:\n{current_attempt}" if current_attempt else "",
             f"Recent failed attempts:\n{recent_failed_attempts}" if recent_failed_attempts else "",
-            f"Question:\n{question}" if question else "Question:\nSuggest the next strongest proof strategy.",
+            f"Question:\n{question}"
+            if question
+            else "Question:\nSuggest the next strongest proof strategy.",
         ]
         if part
     )
     expert_provider = resolve_expert_provider("lean_reasoning")
-    command_prompt = (
-        f"System instructions:\n{system_prompt}\n\n"
-        f"Advisor request:\n{user_prompt}"
-    )
+    command_prompt = f"System instructions:\n{system_prompt}\n\nAdvisor request:\n{user_prompt}"
 
     if is_command_expert_provider(expert_provider):
         try:
@@ -128,7 +129,9 @@ def lean_reasoning_help_tool(
                 timeout_s=max(LEAN_REASONING_HELP_MIN_TIMEOUT_S, int(timeout_s or 0)),
             )
         except RuntimeError as exc:
-            return _advisor_failure("unavailable", str(exc), theorem_id=theorem_id, file_path=file_path)
+            return _advisor_failure(
+                "unavailable", str(exc), theorem_id=theorem_id, file_path=file_path
+            )
         except Exception as exc:
             return _advisor_failure(
                 "error",
@@ -265,7 +268,9 @@ def lean_reasoning_help_tool(
     )
 
 
-def _decompose_failure(status: str, message: str, *, theorem_id: str = "", file_path: str = "") -> str:
+def _decompose_failure(
+    status: str, message: str, *, theorem_id: str = "", file_path: str = ""
+) -> str:
     return json.dumps(
         {
             "success": False,
@@ -337,7 +342,9 @@ def _payload_error_count(payload: dict[str, Any]) -> int:
             return value
         if isinstance(value, str) and value.isdigit():
             return int(value)
-    return sum(1 for item in _diagnostic_items(payload) if str(item.get("severity", "")).lower() == "error")
+    return sum(
+        1 for item in _diagnostic_items(payload) if str(item.get("severity", "")).lower() == "error"
+    )
 
 
 def _validation_diagnostics(payload: dict[str, Any]) -> str:
@@ -367,7 +374,9 @@ def _validate_helper_skeletons(
         for helper in helpers:
             helper["check_status"] = "skipped"
             helper["ready_to_insert"] = False
-            helper["check_diagnostics"] = "missing theorem_statement; skeleton validation requires the unchanged target declaration closed with `by sorry`."
+            helper["check_diagnostics"] = (
+                "missing theorem_statement; skeleton validation requires the unchanged target declaration closed with `by sorry`."
+            )
         return helpers, {
             "status": "skipped",
             "reason": "missing_theorem_statement",
@@ -414,7 +423,9 @@ def _validate_helper_skeletons(
         else:
             helper["check_status"] = "failed"
             helper["ready_to_insert"] = False
-            helper["check_diagnostics"] = _validation_diagnostics(dict(check)) or "Lean skeleton check failed."
+            helper["check_diagnostics"] = (
+                _validation_diagnostics(dict(check)) or "Lean skeleton check failed."
+            )
         helper["validation_order"] = index + 1
 
     return helpers, {
@@ -444,18 +455,28 @@ def _normalize_decomposition_payload(
                 {
                     "name": str(item.get("name", "") or "").strip(),
                     "purpose": str(item.get("purpose", "") or item.get("why", "") or "").strip(),
-                    "lean_skeleton": str(item.get("lean_skeleton", "") or item.get("skeleton", "") or "").strip(),
-                    "dependencies": dependencies if isinstance(dependencies, list) else [str(dependencies)],
-                    "proof_hints": proof_hints if isinstance(proof_hints, list) else [str(proof_hints)],
+                    "lean_skeleton": str(
+                        item.get("lean_skeleton", "") or item.get("skeleton", "") or ""
+                    ).strip(),
+                    "dependencies": dependencies
+                    if isinstance(dependencies, list)
+                    else [str(dependencies)],
+                    "proof_hints": proof_hints
+                    if isinstance(proof_hints, list)
+                    else [str(proof_hints)],
                     "insertion_point": str(item.get("insertion_point", "") or "").strip(),
                 }
             )
 
     return {
         "obstacle_summary": str(payload.get("obstacle_summary", "") or "").strip(),
-        "recommended_split": str(payload.get("recommended_split", "") or payload.get("proof_split", "") or "").strip(),
+        "recommended_split": str(
+            payload.get("recommended_split", "") or payload.get("proof_split", "") or ""
+        ).strip(),
         "insertion_guidance": str(payload.get("insertion_guidance", "") or "").strip(),
-        "first_concrete_next_edit": str(payload.get("first_concrete_next_edit", "") or payload.get("next_edit", "") or "").strip(),
+        "first_concrete_next_edit": str(
+            payload.get("first_concrete_next_edit", "") or payload.get("next_edit", "") or ""
+        ).strip(),
         "helpers": helpers,
         "raw_helper_count": len(raw_helpers) if isinstance(raw_helpers, list) else 0,
     }
@@ -487,7 +508,9 @@ def lean_decompose_helpers_tool(
     except (TypeError, ValueError):
         max_helper_count = 6
     try:
-        max_tokens = max(1000, int(os.getenv("EPFLEMMA_LEAN_DECOMPOSE_HELPERS_MAX_TOKENS", "64000")))
+        max_tokens = max(
+            1000, int(os.getenv("EPFLEMMA_LEAN_DECOMPOSE_HELPERS_MAX_TOKENS", "64000"))
+        )
     except (TypeError, ValueError):
         max_tokens = 64000
 
@@ -524,15 +547,16 @@ def lean_decompose_helpers_tool(
             f"Current goals:\n{current_goals}" if current_goals else "",
             f"Current attempt:\n{current_attempt}" if current_attempt else "",
             f"Recent failed attempts:\n{recent_failed_attempts}" if recent_failed_attempts else "",
-            f"Question:\n{question}" if question else "Question:\nDecompose this hard proof into helper lemmas that the main agent can insert and prove one at a time.",
+            f"Question:\n{question}"
+            if question
+            else "Question:\nDecompose this hard proof into helper lemmas that the main agent can insert and prove one at a time.",
             f"Required JSON shape:\n{json_contract}",
         ]
         if part
     )
     expert_provider = resolve_expert_provider("lean_decompose_helpers")
     command_prompt = (
-        f"System instructions:\n{system_prompt}\n\n"
-        f"Decomposition request:\n{user_prompt}"
+        f"System instructions:\n{system_prompt}\n\nDecomposition request:\n{user_prompt}"
     )
 
     provider_payload: dict[str, Any]
@@ -547,11 +571,20 @@ def lean_decompose_helpers_tool(
                 timeout_s=max(LEAN_DECOMPOSE_HELPERS_MIN_TIMEOUT_S, int(timeout_s or 0)),
             )
         except RuntimeError as exc:
-            return _decompose_failure("unavailable", str(exc), theorem_id=theorem_id, file_path=file_path)
+            return _decompose_failure(
+                "unavailable", str(exc), theorem_id=theorem_id, file_path=file_path
+            )
         except Exception as exc:
-            return _decompose_failure("error", f"{type(exc).__name__}: {exc}", theorem_id=theorem_id, file_path=file_path)
+            return _decompose_failure(
+                "error", f"{type(exc).__name__}: {exc}", theorem_id=theorem_id, file_path=file_path
+            )
         if command_result.timed_out:
-            return _decompose_failure("timeout", f"{command_result.provider} expert command timed out.", theorem_id=theorem_id, file_path=file_path)
+            return _decompose_failure(
+                "timeout",
+                f"{command_result.provider} expert command timed out.",
+                theorem_id=theorem_id,
+                file_path=file_path,
+            )
         if command_result.exit_status != 0:
             return _decompose_failure(
                 "error",
@@ -593,9 +626,13 @@ def lean_decompose_helpers_tool(
                 timeout=max(LEAN_DECOMPOSE_HELPERS_MIN_TIMEOUT_S, int(timeout_s or 0)),
             )
         except RuntimeError as exc:
-            return _decompose_failure("unavailable", str(exc), theorem_id=theorem_id, file_path=file_path)
+            return _decompose_failure(
+                "unavailable", str(exc), theorem_id=theorem_id, file_path=file_path
+            )
         except Exception as exc:
-            return _decompose_failure("error", f"{type(exc).__name__}: {exc}", theorem_id=theorem_id, file_path=file_path)
+            return _decompose_failure(
+                "error", f"{type(exc).__name__}: {exc}", theorem_id=theorem_id, file_path=file_path
+            )
         try:
             response_text = str(response.choices[0].message.content or "").strip()
         except Exception:

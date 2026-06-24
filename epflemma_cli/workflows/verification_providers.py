@@ -71,7 +71,9 @@ def resolve_verification_provider(task: str, explicit: str | None = None) -> str
     from epflemma_cli.cli.expert_help import resolve_expert_provider
 
     task_name = str(task or "").strip()
-    provider = normalize_verification_provider(resolve_expert_provider(task_name, explicit=explicit))
+    provider = normalize_verification_provider(
+        resolve_expert_provider(task_name, explicit=explicit)
+    )
     if provider == "auto":
         return default_verification_provider(task_name)
     return provider or default_verification_provider(task_name)
@@ -119,7 +121,11 @@ def run_command_verification_review(
         cwd=cwd,
         timeout_s=timeout_s,
     )
-    status = "timeout" if command_result.timed_out else ("ok" if command_result.exit_status == 0 else "error")
+    status = (
+        "timeout"
+        if command_result.timed_out
+        else ("ok" if command_result.exit_status == 0 else "error")
+    )
     result = VerificationReviewResult(
         task=task,
         provider=command_result.provider,

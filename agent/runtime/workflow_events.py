@@ -18,9 +18,7 @@ logger = logging.getLogger("run_agent")
 
 
 def _emit_workflow_event(event_type: str, message: str, **details: Any) -> None:
-    if not (
-        os.getenv("EPFLEMMA_PROJECT_ROOT")
-    ):
+    if not (os.getenv("EPFLEMMA_PROJECT_ROOT")):
         return
     try:
         from epflemma_cli.workflows.workflow_state import append_workflow_activity

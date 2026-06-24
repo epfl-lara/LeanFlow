@@ -91,7 +91,9 @@ def test_web_search_uses_free_research_providers_and_no_firecrawl(monkeypatch):
     monkeypatch.setattr(web_tools.requests, "get", fake_get)
     monkeypatch.setattr(web_tools.requests, "post", fake_post)
 
-    result = json.loads(web_tools.web_search_tool("prime number theorem formalization Lean", limit=3))
+    result = json.loads(
+        web_tools.web_search_tool("prime number theorem formalization Lean", limit=3)
+    )
 
     assert result["success"] is True
     assert "Firecrawl" not in json.dumps(result)
@@ -116,7 +118,9 @@ def test_code_only_query_skips_paper_providers():
 
 
 def test_formal_proof_title_query_keeps_paper_providers():
-    assert web_tools._web_search_provider_order("A Formal Proof of the Irrationality of zeta(3) in Lean 4") == (
+    assert web_tools._web_search_provider_order(
+        "A Formal Proof of the Irrationality of zeta(3) in Lean 4"
+    ) == (
         web_tools._search_arxiv,
         web_tools._search_semantic_scholar,
         web_tools._search_crossref,

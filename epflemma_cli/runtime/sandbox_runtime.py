@@ -113,8 +113,14 @@ def settings_from_config(
         sandbox = {}
     root = default_sandbox_root()
     resolved_engine = str(engine or sandbox.get("engine") or "auto").strip() or "auto"
-    resolved_image = str(image or sandbox.get("image") or DEFAULT_SANDBOX_IMAGE).strip() or DEFAULT_SANDBOX_IMAGE
-    resolved_env = Path(env_file).expanduser() if env_file else _path_from_config(sandbox.get("env_file"), default_env_file())
+    resolved_image = (
+        str(image or sandbox.get("image") or DEFAULT_SANDBOX_IMAGE).strip() or DEFAULT_SANDBOX_IMAGE
+    )
+    resolved_env = (
+        Path(env_file).expanduser()
+        if env_file
+        else _path_from_config(sandbox.get("env_file"), default_env_file())
+    )
     cache_dir = _path_from_config(sandbox.get("cache_dir"), root / "cache")
     runs_dir = _path_from_config(sandbox.get("runs_dir"), root / "runs")
     cfg_network = sandbox.get("network", True)
@@ -137,7 +143,9 @@ def resolve_container_engine(requested: str = "auto") -> str:
         raise SandboxRuntimeError(f"Unsupported sandbox engine: {requested}")
     if requested != "auto":
         if not shutil.which(requested):
-            raise SandboxRuntimeError(f"Sandbox engine `{requested}` is not installed or not on PATH.")
+            raise SandboxRuntimeError(
+                f"Sandbox engine `{requested}` is not installed or not on PATH."
+            )
         return requested
     installed: list[str] = []
     if sys.platform.startswith("linux") and shutil.which("podman"):
@@ -226,7 +234,9 @@ def copy_project_tree(project_root: Path, destination: Path) -> None:
     )
 
 
-def _git(args: Sequence[str], cwd: Path, *, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess[str]:
+def _git(
+    args: Sequence[str], cwd: Path, *, check: bool = True, capture: bool = False
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
         cwd=str(cwd),
@@ -256,7 +266,9 @@ def prepare_sandbox_run(
 ) -> SandboxRun:
     settings = settings or settings_from_config()
     project = discover_epflemma_project(active_cwd)
-    resolved_run_id = run_id or _dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+    resolved_run_id = (
+        run_id or _dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+    )
     run_dir = (settings.runs_dir / resolved_run_id).expanduser().resolve()
     worktree = run_dir / "worktree"
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -366,7 +378,7 @@ def container_run_command(
     if settings.bootstrap_mcp:
         bootstrap = (
             'if [ ! -f "$EPFLEMMA_HOME/.sandbox-bootstrap-ok" ]; then '
-            "/opt/epflemma/.venv/bin/epflemma mcp bootstrap lean && touch \"$EPFLEMMA_HOME/.sandbox-bootstrap-ok\"; "
+            '/opt/epflemma/.venv/bin/epflemma mcp bootstrap lean && touch "$EPFLEMMA_HOME/.sandbox-bootstrap-ok"; '
             "fi; "
         )
     command.extend(
@@ -394,7 +406,9 @@ def export_sandbox_patch(sandbox_run: SandboxRun) -> bool:
 
 
 def _write_run_status(sandbox_run: SandboxRun, payload: Mapping[str, Any]) -> None:
-    sandbox_run.status_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    sandbox_run.status_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
 
 
 def run_sandbox(
@@ -445,7 +459,9 @@ def run_sandbox(
     print(f"Worktree   : {sandbox_run.worktree}")
     print(f"Engine     : {resolved_engine} ({settings.image})")
     if not settings.env_file.exists():
-        print(f"Env file   : missing ({settings.env_file}); provider keys must come from the process environment")
+        print(
+            f"Env file   : missing ({settings.env_file}); provider keys must come from the process environment"
+        )
     else:
         print(f"Env file   : {settings.env_file}")
     sys.stdout.flush()
@@ -495,7 +511,9 @@ def sandbox_status(
     runs_dir = settings.runs_dir.expanduser()
     runs: list[dict[str, Any]] = []
     if runs_dir.exists():
-        for status_path in sorted(runs_dir.glob("*/status.json"), key=lambda path: path.stat().st_mtime, reverse=True)[:8]:
+        for status_path in sorted(
+            runs_dir.glob("*/status.json"), key=lambda path: path.stat().st_mtime, reverse=True
+        )[:8]:
             try:
                 payload = json.loads(status_path.read_text(encoding="utf-8"))
             except Exception:
@@ -525,8 +543,12 @@ def format_sandbox_status(payload: Mapping[str, Any]) -> str:
     lines.append(f"- engine: {engine} ({'ready' if payload.get('engine_ready') else 'not ready'})")
     if payload.get("engine_error"):
         lines.append(f"  error: {payload.get('engine_error')}")
-    lines.append(f"- image: {payload.get('image')} ({'built' if payload.get('image_ready') else 'missing'})")
-    lines.append(f"- env file: {payload.get('env_file')} ({'present' if payload.get('env_file_exists') else 'missing'})")
+    lines.append(
+        f"- image: {payload.get('image')} ({'built' if payload.get('image_ready') else 'missing'})"
+    )
+    lines.append(
+        f"- env file: {payload.get('env_file')} ({'present' if payload.get('env_file_exists') else 'missing'})"
+    )
     lines.append(f"- cache: {payload.get('cache_dir')}")
     lines.append(f"- runs: {payload.get('runs_dir')}")
     recent = list(payload.get("recent_runs", []) or [])

@@ -72,11 +72,19 @@ def _diagnostic_line_from_mapping(item: Mapping[str, Any]) -> int | None:
 
 
 def _normalise_diagnostic_item(item: Mapping[str, Any]) -> dict[str, Any] | None:
-    has_diagnostic_shape = any(key in item for key in ("severity", "level", "kind", "message", "line", "range", "location"))
+    has_diagnostic_shape = any(
+        key in item for key in ("severity", "level", "kind", "message", "line", "range", "location")
+    )
     if not has_diagnostic_shape:
         return None
-    message = str(item.get("message", "") or item.get("text", "") or item.get("detail", "") or "").strip()
-    severity = str(item.get("severity", "") or item.get("level", "") or item.get("kind", "") or "").strip().lower()
+    message = str(
+        item.get("message", "") or item.get("text", "") or item.get("detail", "") or ""
+    ).strip()
+    severity = (
+        str(item.get("severity", "") or item.get("level", "") or item.get("kind", "") or "")
+        .strip()
+        .lower()
+    )
     lowered_message = message.lower()
     if not severity:
         if "error:" in lowered_message:
@@ -200,7 +208,11 @@ def diagnostics_indicate_actionable_failure(text: str) -> bool:
         "without errors",
     )
     if any(token in lowered for token in cleared_tokens):
-        lowered = lowered.replace("no errors found", "").replace("no errors", "").replace("without errors", "")
+        lowered = (
+            lowered.replace("no errors found", "")
+            .replace("no errors", "")
+            .replace("without errors", "")
+        )
     failure_patterns = (
         r"\berror\b",
         r"\berrors\b",

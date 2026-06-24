@@ -43,11 +43,13 @@ class TestFormatForInjection:
 
     def test_non_empty_has_markers(self):
         store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Do thing", "status": "completed"},
-            {"id": "2", "content": "Next", "status": "pending"},
-            {"id": "3", "content": "Working", "status": "in_progress"},
-        ])
+        store.write(
+            [
+                {"id": "1", "content": "Do thing", "status": "completed"},
+                {"id": "2", "content": "Next", "status": "pending"},
+                {"id": "3", "content": "Working", "status": "in_progress"},
+            ]
+        )
         text = store.format_for_injection()
         # Completed items are filtered out of injection
         assert "[x]" not in text
@@ -63,9 +65,11 @@ class TestFormatForInjection:
 class TestMergeMode:
     def test_update_existing_by_id(self):
         store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Original", "status": "pending"},
-        ])
+        store.write(
+            [
+                {"id": "1", "content": "Original", "status": "pending"},
+            ]
+        )
         store.write(
             [{"id": "1", "status": "completed"}],
             merge=True,
@@ -96,10 +100,12 @@ class TestTodoToolFunction:
 
     def test_write_mode(self):
         store = TodoStore()
-        result = json.loads(todo_tool(
-            todos=[{"id": "1", "content": "New", "status": "in_progress"}],
-            store=store,
-        ))
+        result = json.loads(
+            todo_tool(
+                todos=[{"id": "1", "content": "New", "status": "in_progress"}],
+                store=store,
+            )
+        )
         assert result["summary"]["in_progress"] == 1
 
     def test_no_store_returns_error(self):

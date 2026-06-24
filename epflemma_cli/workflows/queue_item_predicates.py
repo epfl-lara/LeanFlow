@@ -19,10 +19,15 @@ from epflemma_cli.workflows.queue_manager import TheoremQueueManager
 
 
 def _queue_item_has_sorry_reason(item: Mapping[str, Any]) -> bool:
-    return any(str(reason or "").strip().lower() == "contains sorry" for reason in item.get("reasons", []) or [])
+    return any(
+        str(reason or "").strip().lower() == "contains sorry"
+        for reason in item.get("reasons", []) or []
+    )
 
 
-def _queue_item_has_error_diagnostic(item: Mapping[str, Any], active_file: str, diagnostics: str) -> bool:
+def _queue_item_has_error_diagnostic(
+    item: Mapping[str, Any], active_file: str, diagnostics: str
+) -> bool:
     label = str(item.get("label", "") or "").strip()
     entry = _find_declaration_entry(active_file, label)
     if not entry:
@@ -35,7 +40,9 @@ def _queue_item_has_error_diagnostic(item: Mapping[str, Any], active_file: str, 
     return False
 
 
-def _inspection_queue_item_is_queue_blocker(item: Mapping[str, Any], active_file: str, diagnostics: str) -> bool:
+def _inspection_queue_item_is_queue_blocker(
+    item: Mapping[str, Any], active_file: str, diagnostics: str
+) -> bool:
     if _queue_item_has_sorry_reason(item):
         return True
     if _queue_item_has_error_diagnostic(item, active_file, diagnostics):
@@ -55,7 +62,9 @@ def _current_queue_item(queue: list[dict[str, Any]], active_file: str) -> dict[s
     mgr = TheoremQueueManager()
     mgr.set_active_file(active_file)
     mgr.replace_queue(queue)
-    selected = mgr.select_next(is_present_in_file=lambda label: bool(_find_declaration_entry(active_file, label)))
+    selected = mgr.select_next(
+        is_present_in_file=lambda label: bool(_find_declaration_entry(active_file, label))
+    )
     if selected is None:
         return None
     for item in queue:

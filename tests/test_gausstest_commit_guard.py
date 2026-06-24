@@ -8,7 +8,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 HOOKS_DIR = REPO_ROOT / ".githooks"
 
 
-def _run(cmd: list[str], cwd: Path, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str], cwd: Path, *, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
 
 
@@ -24,7 +26,9 @@ def _init_temp_repo(tmp_path: Path) -> Path:
 
 def test_pre_commit_blocks_gausstest_fixture_changes(tmp_path):
     repo = _init_temp_repo(tmp_path)
-    target = repo / "testdata" / "workflow_projects" / "GaussTest" / "GaussTest" / "RealTheorems.lean"
+    target = (
+        repo / "testdata" / "workflow_projects" / "GaussTest" / "GaussTest" / "RealTheorems.lean"
+    )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
 
@@ -60,7 +64,9 @@ def test_pre_commit_blocks_doc_formalization_demo_fixture_changes(tmp_path):
 
 def test_pre_commit_allows_explicit_override(tmp_path):
     repo = _init_temp_repo(tmp_path)
-    target = repo / "testdata" / "workflow_projects" / "GaussTest" / "GaussTest" / "RealTheorems.lean"
+    target = (
+        repo / "testdata" / "workflow_projects" / "GaussTest" / "GaussTest" / "RealTheorems.lean"
+    )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
 

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 _skill_commands: dict[str, dict[str, Any]] = {}
 _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
+
 def build_plan_path(
     user_instruction: str = "",
     *,
@@ -40,7 +41,10 @@ def build_plan_path(
     timestamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
     return Path(".gauss") / "plans" / f"{timestamp}-{slug}.md"
 
-def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
+
+def _load_skill_payload(
+    skill_identifier: str, task_id: str | None = None
+) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
     raw_identifier = (skill_identifier or "").strip()
     if not raw_identifier:
@@ -50,7 +54,9 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         payload = skills_tool_module._local_skill_payload(raw_identifier)
         if not payload:
             return None
-        skill_file = Path(str(payload.get("file") or "")).expanduser() if payload.get("file") else None
+        skill_file = (
+            Path(str(payload.get("file") or "")).expanduser() if payload.get("file") else None
+        )
         skill_dir = skill_file.parent if skill_file else None
         skill_name = str(payload.get("name") or raw_identifier)
         return payload, skill_dir, skill_name
@@ -70,9 +76,11 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
     return loaded_skill, skill_dir, skill_name
 
+
 def _local_skill_override_active() -> bool:
     default_skills_dir = skills_tool_module.EPFLEMMA_HOME_DIR / "skills"
     return default_skills_dir != skills_tool_module.SKILLS_DIR
+
 
 def _discover_local_skill_commands() -> dict[str, dict[str, Any]]:
     commands: dict[str, dict[str, Any]] = {}
@@ -88,6 +96,7 @@ def _discover_local_skill_commands() -> dict[str, dict[str, Any]]:
             "source": "local",
         }
     return commands
+
 
 def _build_skill_message(
     loaded_skill: dict[str, Any],
@@ -141,13 +150,16 @@ def _build_skill_message(
 
     if user_instruction:
         parts.append("")
-        parts.append(f"The user has provided the following instruction alongside the skill invocation: {user_instruction}")
+        parts.append(
+            f"The user has provided the following instruction alongside the skill invocation: {user_instruction}"
+        )
 
     if runtime_note:
         parts.append("")
         parts.append(f"[Runtime note: {runtime_note}]")
 
     return "\n".join(parts)
+
 
 def scan_skill_commands() -> dict[str, dict[str, Any]]:
     """Return the current EPFLemma skill command map."""
@@ -159,16 +171,20 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
     _skill_commands = dict(discover_skill_commands())
     try:
         for command, payload in list(_skill_commands.items()):
-            payload.setdefault("description", f"Invoke the {payload.get('name', command.lstrip('/'))} skill")
+            payload.setdefault(
+                "description", f"Invoke the {payload.get('name', command.lstrip('/'))} skill"
+            )
     except Exception:
         logger.debug("Failed to scan EPFLemma skill commands", exc_info=True)
     return _skill_commands
+
 
 def get_skill_commands() -> dict[str, dict[str, Any]]:
     """Return the current skill commands mapping (scan first if empty)."""
     if not _skill_commands:
         scan_skill_commands()
     return _skill_commands
+
 
 def build_skill_invocation_message(
     cmd_key: str,
@@ -206,6 +222,7 @@ def build_skill_invocation_message(
         user_instruction=user_instruction,
         runtime_note=runtime_note,
     )
+
 
 def build_preloaded_skills_prompt(
     skill_identifiers: list[str],

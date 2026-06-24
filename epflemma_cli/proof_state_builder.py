@@ -79,7 +79,10 @@ def _queue_horizon_summary(
     if not item:
         return "[none]"
     label = str(item.get("label", "") or "[unnamed]")
-    reasons = ", ".join(str(reason) for reason in item.get("reasons", []) or [] if str(reason).strip()) or "pending"
+    reasons = (
+        ", ".join(str(reason) for reason in item.get("reasons", []) or [] if str(reason).strip())
+        or "pending"
+    )
     hidden_count = max(0, int(declaration_queue_total or 0) - 1)
     lines = [
         f"- assigned declaration: {label} - {reasons}",
@@ -118,7 +121,12 @@ def _diagnostics_for_queue_horizon(
             "Diagnostics from future queue items are hidden until the manager assigns them."
         )
     lowered = text.lower()
-    if not text or "no errors found" in lowered or "no diagnostics" in lowered or "no errors" in lowered:
+    if (
+        not text
+        or "no errors found" in lowered
+        or "no diagnostics" in lowered
+        or "no errors" in lowered
+    ):
         return text or "No diagnostics in the assigned declaration."
     return (
         "Diagnostics could not be scoped reliably for the assigned declaration. "

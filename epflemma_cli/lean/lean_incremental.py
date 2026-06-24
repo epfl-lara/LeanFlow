@@ -32,7 +32,9 @@ def _import_lean_probe() -> tuple[Any, Any, Any, str]:
     return LeanProbe, LeanIncrementalSegment, segment_file, ""
 
 
-LeanProbe, LeanIncrementalSegment, _probe_segment_file, _LEAN_PROBE_IMPORT_ERROR = _import_lean_probe()
+LeanProbe, LeanIncrementalSegment, _probe_segment_file, _LEAN_PROBE_IMPORT_ERROR = (
+    _import_lean_probe()
+)
 
 
 def _segment_file(text: str) -> tuple[str, list[Any]]:
@@ -52,7 +54,9 @@ def _find_segment(segments: list[Any], theorem_id: str) -> Any | None:
     return None
 
 
-def _resolve_project_root(cwd: str | Path | None, file_path: str | Path | None = None) -> Path | None:
+def _resolve_project_root(
+    cwd: str | Path | None, file_path: str | Path | None = None
+) -> Path | None:
     candidates: list[Path] = []
     if cwd:
         candidates.append(Path(cwd).expanduser().resolve())

@@ -170,7 +170,9 @@ def _safe_slug(value: str, default: str = "formalization") -> str:
 
 
 def _blueprint_skill_name(target_lean_relative: str) -> str:
-    slug = _safe_slug(Path(target_lean_relative).with_suffix("").as_posix().replace("/", "-"), "formalization")
+    slug = _safe_slug(
+        Path(target_lean_relative).with_suffix("").as_posix().replace("/", "-"), "formalization"
+    )
     return f"formalization-blueprint-{slug[:72]}"
 
 
@@ -195,7 +197,9 @@ def ensure_formalization_blueprint_skill(
     if not target_lean_relative:
         return None
     target_path = (root / target_lean_relative).resolve()
-    resolved_blueprint = Path(blueprint_path).expanduser() if blueprint_path else target_path.parent / "Blueprint.md"
+    resolved_blueprint = (
+        Path(blueprint_path).expanduser() if blueprint_path else target_path.parent / "Blueprint.md"
+    )
     with contextlib.suppress(Exception):
         resolved_blueprint = resolved_blueprint.resolve()
     if not resolved_blueprint.is_file():
@@ -229,7 +233,9 @@ def ensure_formalization_blueprint_skill(
     return skill_path
 
 
-def _default_document_workspace_path(project_root: Path, project_label: str, source_path: Path) -> Path:
+def _default_document_workspace_path(
+    project_root: Path, project_label: str, source_path: Path
+) -> Path:
     module_name = _safe_name(project_label or project_root.name, "Formalization")
     source_name = _safe_name(source_path.stem, "Document")
     return project_root / module_name / source_name
@@ -263,7 +269,9 @@ def inspect_formalization_document(
             "document_request_kind": selection.request_kind,
             "document_request_path": str(selection.request_path),
             "document_request_relative": selection.request_relative,
-            "text_excerpt": _bounded(str(summary.get("extracted_text", "") or ""), MAX_CONTEXT_EXCERPT_CHARS),
+            "text_excerpt": _bounded(
+                str(summary.get("extracted_text", "") or ""), MAX_CONTEXT_EXCERPT_CHARS
+            ),
         }
     )
     return summary
@@ -277,10 +285,14 @@ def _json_default(value: Any) -> Any:
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default), encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, default=_json_default), encoding="utf-8"
+    )
 
 
-def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata: Mapping[str, Any]) -> str:
+def _initial_blueprint(
+    source_relative: str, target_lean_relative: str, metadata: Mapping[str, Any]
+) -> str:
     """Build a preflight blueprint Markdown template from source relative path and extracted metadata. Lists planner checklist, import plan, theorem inventory, and proof guidance placeholders; truncates to MAX_THEOREM_BLOCKS extracted LaTeX/PDF blocks."""
     blocks = list(metadata.get("theorem_blocks", []) or [])
     lines = [
@@ -330,7 +342,9 @@ def _initial_blueprint(source_relative: str, target_lean_relative: str, metadata
         "",
     ]
     if not blocks:
-        lines.append("- No theorem-like LaTeX blocks were detected by preflight; inspect the document manually.")
+        lines.append(
+            "- No theorem-like LaTeX blocks were detected by preflight; inspect the document manually."
+        )
     for block in blocks[:MAX_THEOREM_BLOCKS]:
         label = str(block.get("label", "") or f"line-{block.get('line', '?')}")
         lines.extend(
@@ -395,7 +409,9 @@ def _ensure_lean_import(path: Path, module: str) -> bool:
     return True
 
 
-def _ensure_formalization_import_chain(root: Path, target_lean_path: Path, target_lean_relative: str) -> dict[str, str]:
+def _ensure_formalization_import_chain(
+    root: Path, target_lean_path: Path, target_lean_relative: str
+) -> dict[str, str]:
     target_module = _lean_module_for_relative_path(target_lean_relative)
     if not target_module or "." not in target_module:
         return {}
@@ -426,7 +442,9 @@ def _ensure_formalization_import_chain(root: Path, target_lean_path: Path, targe
     return artifacts
 
 
-def _initial_target_lean(_source_relative: str, _blueprint_relative: str, _import_module: str) -> str:
+def _initial_target_lean(
+    _source_relative: str, _blueprint_relative: str, _import_module: str
+) -> str:
     return "import Mathlib\n"
 
 
@@ -444,26 +462,32 @@ def prepare_formalization_document_context(
     source_path = selection.source_path
     source_relative = selection.source_relative
     source_kind = selection.source_kind
-    metadata = _extract_latex_summary(source_path) if source_kind == "latex" else _extract_pdf_summary(source_path)
+    metadata = (
+        _extract_latex_summary(source_path)
+        if source_kind == "latex"
+        else _extract_pdf_summary(source_path)
+    )
     metadata.update(selection.discovery_metadata)
-    metadata["text_excerpt"] = _bounded(str(metadata.get("extracted_text", "") or ""), MAX_CONTEXT_EXCERPT_CHARS)
+    metadata["text_excerpt"] = _bounded(
+        str(metadata.get("extracted_text", "") or ""), MAX_CONTEXT_EXCERPT_CHARS
+    )
 
     slug = _safe_slug(Path(source_relative).with_suffix("").as_posix().replace("/", "-"))
     state_dir = root / ".epflemma" / "workflow-state" / "formalization" / slug
     target_lean_path = _default_target_lean_path(root, project_label, source_path)
     module_name = _safe_name(project_label or root.name, "Formalization")
     import_module = "Mathlib"
-    target_lean_relative = _relative_to_project(target_lean_path, root) if target_lean_path.exists() else str(target_lean_path.relative_to(root))
+    target_lean_relative = (
+        _relative_to_project(target_lean_path, root)
+        if target_lean_path.exists()
+        else str(target_lean_path.relative_to(root))
+    )
     context_path = state_dir / "context.md"
     manifest_path = state_dir / "manifest.json"
     extracted_text_path = state_dir / "extracted.txt"
     blueprint_path = target_lean_path.parent / "Blueprint.md"
     blueprint_skill_path = (
-        root
-        / ".epflemma"
-        / "skills"
-        / _blueprint_skill_name(target_lean_relative)
-        / "SKILL.md"
+        root / ".epflemma" / "skills" / _blueprint_skill_name(target_lean_relative) / "SKILL.md"
     )
 
     metadata.update(
@@ -492,7 +516,9 @@ def prepare_formalization_document_context(
     extracted_text_path.write_text(str(metadata.get("extracted_text", "") or ""), encoding="utf-8")
     _write_json(manifest_path, metadata)
     if not blueprint_path.exists():
-        blueprint_path.write_text(_initial_blueprint(source_relative, target_lean_relative, metadata), encoding="utf-8")
+        blueprint_path.write_text(
+            _initial_blueprint(source_relative, target_lean_relative, metadata), encoding="utf-8"
+        )
     generated_skill_path = ensure_formalization_blueprint_skill(
         project_root=root,
         target_lean_relative=target_lean_relative,

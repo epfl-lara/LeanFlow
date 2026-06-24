@@ -41,8 +41,10 @@ class TestDiskUsageGlob:
             "aaaaaaaa-1111-2222-3333-444444444444": MagicMock(),
         }
 
-        with patch.object(_tt_mod, "_active_environments", fake_envs), \
-             patch.object(_tt_mod, "_get_scratch_dir", return_value=fake_scratch):
+        with (
+            patch.object(_tt_mod, "_active_environments", fake_envs),
+            patch.object(_tt_mod, "_get_scratch_dir", return_value=fake_scratch),
+        ):
             info = get_active_environments_info()
 
         # Task A only: ~1.0 MB. With the bug (hardcoded gauss-*),
@@ -56,8 +58,10 @@ class TestDiskUsageGlob:
             "bbbbbbbb-5555-6666-7777-888888888888": MagicMock(),
         }
 
-        with patch.object(_tt_mod, "_active_environments", fake_envs), \
-             patch.object(_tt_mod, "_get_scratch_dir", return_value=fake_scratch):
+        with (
+            patch.object(_tt_mod, "_active_environments", fake_envs),
+            patch.object(_tt_mod, "_get_scratch_dir", return_value=fake_scratch),
+        ):
             info = get_active_environments_info()
 
         # Should be ~2.0 MB total (1 MB per task).

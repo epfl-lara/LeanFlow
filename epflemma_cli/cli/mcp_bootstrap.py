@@ -81,8 +81,6 @@ LEAN_REPL_TIMEOUT_SECONDS = "60"
 LEAN_REPL_MEM_MB = "8192"
 
 
-
-
 def managed_mcp_root(home: str | os.PathLike[str] | None = None) -> Path:
     base = Path(home).expanduser().resolve() if home else get_epflemma_home()
     return base / "mcp"
@@ -109,8 +107,6 @@ def managed_mcp_command_path(name: str, home: str | os.PathLike[str] | None = No
     spec = MANAGED_LEAN_MCP_SPECS[name]
     suffix = ".exe" if os.name == "nt" else ""
     return _venv_bin_dir(managed_mcp_venv_dir(name, home)) / f"{spec.console_script}{suffix}"
-
-
 
 
 def _secure_file(path: Path) -> None:
@@ -174,7 +170,14 @@ def _detect_repl_binary(project_root: str | os.PathLike[str] | None = None) -> s
     root = Path(project_root).expanduser().resolve()
     candidates = [
         root / ".lake" / "build" / "bin" / ("repl.exe" if os.name == "nt" else "repl"),
-        root / ".lake" / "packages" / "repl" / ".lake" / "build" / "bin" / ("repl.exe" if os.name == "nt" else "repl"),
+        root
+        / ".lake"
+        / "packages"
+        / "repl"
+        / ".lake"
+        / "build"
+        / "bin"
+        / ("repl.exe" if os.name == "nt" else "repl"),
     ]
     for candidate in candidates:
         if candidate.is_file():
@@ -207,7 +210,9 @@ def _write_bootstrap_document(path: Path, yaml: YAML, payload: CommentedMap) -> 
         invalidate_config_cache()
 
 
-def _ensure_managed_server_entry(entry: CommentedMap, *, spec: ManagedMCPServerSpec, home: Path) -> None:
+def _ensure_managed_server_entry(
+    entry: CommentedMap, *, spec: ManagedMCPServerSpec, home: Path
+) -> None:
     previous_args = list(entry.get("args") or []) if isinstance(entry.get("args"), list) else []
     previous_enabled = entry.get("enabled")
     entry["command"] = str(managed_mcp_command_path(spec.name, home))
@@ -251,7 +256,9 @@ def _ensure_managed_server_entry(entry: CommentedMap, *, spec: ManagedMCPServerS
 
 def write_managed_mcp_config(home: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     """Ensure the EPFLemma config file contains entries for all managed Lean MCP servers with correct command paths, roles, and power-mode environments (REPL timeout, Loogle cache dir, local-search instructions)."""
-    home_path = Path(home).expanduser().resolve() if home else ensure_epflemma_home(import_legacy=False)
+    home_path = (
+        Path(home).expanduser().resolve() if home else ensure_epflemma_home(import_legacy=False)
+    )
     home_path.mkdir(parents=True, exist_ok=True)
     _secure_dir(home_path)
     path = home_path / get_config_path().name
@@ -317,7 +324,12 @@ def _ensure_venv(
     existing_python = _venv_bin_dir(venv_dir) / ("python.exe" if os.name == "nt" else "python")
     if existing_python.exists():
         try:
-            subprocess.run([str(existing_python), "-V"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(
+                [str(existing_python), "-V"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
             if min_python is None:
                 return existing_python
             version = _python_version_tuple(existing_python)
@@ -371,9 +383,26 @@ def _install_into_managed_venv(
     extra_install_specs: tuple[str, ...] = (),
 ) -> None:
     python_path = _ensure_venv(venv_dir, python_bin=python_bin, min_python=min_python)
-    subprocess.run([str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", "pip", "setuptools<82", "wheel"], check=True)
+    subprocess.run(
+        [
+            str(python_path),
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--quiet",
+            "--upgrade",
+            "pip",
+            "setuptools<82",
+            "wheel",
+        ],
+        check=True,
+    )
     for spec in (install_spec, *extra_install_specs):
-        subprocess.run([str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", spec], check=True)
+        subprocess.run(
+            [str(python_path), "-m", "pip", "install", "--quiet", "--quiet", "--upgrade", spec],
+            check=True,
+        )
 
 
 def _patch_lean_lsp_loogle_project_paths(venv_dir: Path) -> bool:
@@ -389,24 +418,21 @@ def _patch_lean_lsp_loogle_project_paths(venv_dir: Path) -> bool:
     marker = "When any --path is passed to loogle"
     if marker in text:
         return True
-    needle = (
-        "        paths = []\n"
-        "        # Check packages directory\n"
-    )
+    needle = "        paths = []\n        # Check packages directory\n"
     replacement = (
         "        paths = []\n"
         "        # When any --path is passed to loogle, the explicit path list must also\n"
         "        # include Lean's stdlib and loogle's own build lib; otherwise imports\n"
         "        # such as Init and Loogle cannot be resolved.\n"
         "        try:\n"
-        "            lean_lib = self._run([\"lean\", \"--print-libdir\"], timeout=30)\n"
+        '            lean_lib = self._run(["lean", "--print-libdir"], timeout=30)\n'
         "            if lean_lib.returncode == 0:\n"
         "                lean_lib_path = Path(lean_lib.stdout.strip())\n"
         "                if lean_lib_path.exists():\n"
         "                    paths.append(lean_lib_path)\n"
         "        except Exception:\n"
         "            pass\n"
-        "        loogle_lib = self.repo_dir / \".lake\" / \"build\" / \"lib\" / \"lean\"\n"
+        '        loogle_lib = self.repo_dir / ".lake" / "build" / "lib" / "lean"\n'
         "        if loogle_lib.exists():\n"
         "            paths.append(loogle_lib)\n"
         "        # Check packages directory\n"
@@ -429,7 +455,9 @@ def managed_mcp_power_status(
     configured = doc.get("mcp_servers")
     configured = dict(configured) if isinstance(configured, Mapping) else {}
     lean_lsp_env = _server_env_from_config(configured, "lean-lsp")
-    repl_path = str(lean_lsp_env.get("LEAN_REPL_PATH", "") or "").strip() or _detect_repl_binary(project_root)
+    repl_path = str(lean_lsp_env.get("LEAN_REPL_PATH", "") or "").strip() or _detect_repl_binary(
+        project_root
+    )
     repl_configured = _truthy(lean_lsp_env.get("LEAN_REPL"))
     repl_available = bool(repl_path and Path(repl_path).is_file())
     loogle_cache_dir = Path(
@@ -476,11 +504,15 @@ def managed_mcp_power_status(
         "repl_configured": repl_configured,
         "repl_available": repl_available,
         "repl_path": repl_path,
-        "repl_status": "ready" if repl_available else ("configured" if repl_configured else "disabled"),
+        "repl_status": "ready"
+        if repl_available
+        else ("configured" if repl_configured else "disabled"),
     }
 
 
-def managed_mcp_server_status(home: str | os.PathLike[str] | None = None) -> dict[str, dict[str, Any]]:
+def managed_mcp_server_status(
+    home: str | os.PathLike[str] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Check installation and configuration health of each managed MCP server (lean-lsp, lean-proof-auto, lean-explore): verify venv and command exist, config matches expected paths, and enabled flag is set; attach lean-lsp power modes; flag if bootstrap is recommended."""
     home_path = Path(home).expanduser().resolve() if home else get_epflemma_home()
     config_path = home_path / get_config_path().name
@@ -508,15 +540,21 @@ def managed_mcp_server_status(home: str | os.PathLike[str] | None = None) -> dic
         }
         if spec.name == "lean-lsp":
             entry["power_modes"] = power_status
-        entry["healthy"] = bool(entry["installed"] and entry["configured"] and entry["command_matches"])
+        entry["healthy"] = bool(
+            entry["installed"] and entry["configured"] and entry["command_matches"]
+        )
         entry["bootstrap_recommended"] = not bool(entry["healthy"])
         status[spec.name] = entry
     return status
 
 
-def bootstrap_lean_mcp(*, home: str | os.PathLike[str] | None = None, python_bin: str | None = None) -> dict[str, Any]:
+def bootstrap_lean_mcp(
+    *, home: str | os.PathLike[str] | None = None, python_bin: str | None = None
+) -> dict[str, Any]:
     """Install all managed MCP servers into isolated virtualenvs, patch lean-lsp Loogle search paths, generate config entries with power-mode environment variables, and return detailed installation report including server venvs, command paths, and power-mode status."""
-    home_path = Path(home).expanduser().resolve() if home else ensure_epflemma_home(import_legacy=False)
+    home_path = (
+        Path(home).expanduser().resolve() if home else ensure_epflemma_home(import_legacy=False)
+    )
     managed_root = managed_mcp_root(home_path)
     (managed_root / "venvs").mkdir(parents=True, exist_ok=True)
     managed_loogle_cache_dir(home_path).mkdir(parents=True, exist_ok=True)

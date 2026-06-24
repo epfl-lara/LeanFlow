@@ -27,8 +27,7 @@ def test_lean_services_reexports_are_identical():
 
 def test_diagnostic_items_parses_standard_lines():
     out = ld.diagnostic_items(
-        "File.lean:12:7: error: unexpected token\n"
-        "C:/proj/File.lean:3:0: warning: unused variable x"
+        "File.lean:12:7: error: unexpected token\nC:/proj/File.lean:3:0: warning: unused variable x"
     )
     assert out == [
         {"severity": "error", "message": "unexpected token", "line": 12},

@@ -47,6 +47,7 @@ try:
         TextContent,
         ToolUseContent,
     )
+
     _MCP_SAMPLING_TYPES = True
 except ImportError:
     logger.debug("MCP sampling types not available -- sampling disabled")
@@ -55,16 +56,20 @@ except ImportError:
 # Home / audit-path helpers
 # ---------------------------------------------------------------------------
 
+
 def _epflemma_home() -> Path:
     # Single source of truth — legacy ~/.opengauss / ~/.gauss resolution lives in core.home only.
     return epflemma_home()
 
+
 def _default_sampling_audit_path() -> Path:
     return _epflemma_home() / "logs" / "mcp-sampling.jsonl"
+
 
 # ---------------------------------------------------------------------------
 # Sampling -- server-initiated LLM requests (MCP sampling/createMessage)
 # ---------------------------------------------------------------------------
+
 
 def _safe_numeric(value, default, coerce=int, minimum=1):
     """Coerce a config value to a numeric type, returning *default* on failure.
@@ -79,6 +84,7 @@ def _safe_numeric(value, default, coerce=int, minimum=1):
         return max(result, minimum)
     except (TypeError, ValueError, OverflowError):
         return default
+
 
 class SamplingHandler:
     """Handles sampling/createMessage requests for a single MCP server.
@@ -101,18 +107,26 @@ class SamplingHandler:
         self.timeout = _safe_numeric(config.get("timeout", 30), 30, float)
         self.max_tokens_cap = _safe_numeric(config.get("max_tokens_cap", 4096), 4096, int)
         self.max_tool_rounds = _safe_numeric(
-            config.get("max_tool_rounds", 5), 5, int, minimum=0,
+            config.get("max_tool_rounds", 5),
+            5,
+            int,
+            minimum=0,
         )
         self.model_override = config.get("model")
         self.allowed_models = config.get("allowed_models", [])
 
         _log_levels = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING}
         self.audit_level = _log_levels.get(
-            str(config.get("log_level", "info")).lower(), logging.INFO,
+            str(config.get("log_level", "info")).lower(),
+            logging.INFO,
         )
         self.audit_jsonl_enabled = bool(config.get("audit_jsonl", False))
         configured_path = str(config.get("audit_jsonl_path", "") or "").strip()
-        self.audit_jsonl_path = Path(configured_path).expanduser() if configured_path else _default_sampling_audit_path()
+        self.audit_jsonl_path = (
+            Path(configured_path).expanduser()
+            if configured_path
+            else _default_sampling_audit_path()
+        )
 
         # Per-instance state
         self._rate_timestamps: list[float] = []
@@ -134,7 +148,9 @@ class SamplingHandler:
                 handle.write(json.dumps(entry, sort_keys=True))
                 handle.write("\n")
         except Exception:
-            logger.debug("Failed to write MCP sampling audit log for %s", self.server_name, exc_info=True)
+            logger.debug(
+                "Failed to write MCP sampling audit log for %s", self.server_name, exc_info=True
+            )
 
     # -- Rate limiting -------------------------------------------------------
 
@@ -180,35 +196,51 @@ class SamplingHandler:
         """
         messages: list[dict] = []
         for msg in params.messages:
-            blocks = msg.content_as_list if hasattr(msg, "content_as_list") else (
-                msg.content if isinstance(msg.content, list) else [msg.content]
+            blocks = (
+                msg.content_as_list
+                if hasattr(msg, "content_as_list")
+                else (msg.content if isinstance(msg.content, list) else [msg.content])
             )
 
             # Separate blocks by kind
             tool_results = [b for b in blocks if hasattr(b, "toolUseId")]
-            tool_uses = [b for b in blocks if hasattr(b, "name") and hasattr(b, "input") and not hasattr(b, "toolUseId")]
-            content_blocks = [b for b in blocks if not hasattr(b, "toolUseId") and not (hasattr(b, "name") and hasattr(b, "input"))]
+            tool_uses = [
+                b
+                for b in blocks
+                if hasattr(b, "name") and hasattr(b, "input") and not hasattr(b, "toolUseId")
+            ]
+            content_blocks = [
+                b
+                for b in blocks
+                if not hasattr(b, "toolUseId") and not (hasattr(b, "name") and hasattr(b, "input"))
+            ]
 
             # Emit tool result messages (role: tool)
             for tr in tool_results:
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tr.toolUseId,
-                    "content": self._extract_tool_result_text(tr),
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tr.toolUseId,
+                        "content": self._extract_tool_result_text(tr),
+                    }
+                )
 
             # Emit assistant tool_calls message
             if tool_uses:
                 tc_list: list[dict] = []
                 for tu in tool_uses:
-                    tc_list.append({
-                        "id": getattr(tu, "id", f"call_{len(tc_list)}"),
-                        "type": "function",
-                        "function": {
-                            "name": tu.name,
-                            "arguments": json.dumps(tu.input) if isinstance(tu.input, dict) else str(tu.input),
-                        },
-                    })
+                    tc_list.append(
+                        {
+                            "id": getattr(tu, "id", f"call_{len(tc_list)}"),
+                            "type": "function",
+                            "function": {
+                                "name": tu.name,
+                                "arguments": json.dumps(tu.input)
+                                if isinstance(tu.input, dict)
+                                else str(tu.input),
+                            },
+                        }
+                    )
                 msg_dict: dict = {"role": msg.role, "tool_calls": tc_list}
                 # Include any accompanying text
                 text_parts = [b.text for b in content_blocks if hasattr(b, "text")]
@@ -225,10 +257,14 @@ class SamplingHandler:
                         if hasattr(block, "text"):
                             parts.append({"type": "text", "text": block.text})
                         elif hasattr(block, "data") and hasattr(block, "mimeType"):
-                            parts.append({
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{block.mimeType};base64,{block.data}"},
-                            })
+                            parts.append(
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{block.mimeType};base64,{block.data}"
+                                    },
+                                }
+                            )
                         else:
                             logger.warning(
                                 "Unsupported sampling content block type: %s (skipped)",
@@ -285,23 +321,27 @@ class SamplingHandler:
                     logger.warning(
                         "MCP server '%s': malformed tool_calls arguments "
                         "from LLM (wrapping as raw): %.100s",
-                        self.server_name, args,
+                        self.server_name,
+                        args,
                     )
                     parsed = {"_raw": args}
             else:
                 parsed = args if isinstance(args, dict) else {"_raw": str(args)}
 
-            content_blocks.append(ToolUseContent(
-                type="tool_use",
-                id=tc.id,
-                name=tc.function.name,
-                input=parsed,
-            ))
+            content_blocks.append(
+                ToolUseContent(
+                    type="tool_use",
+                    id=tc.id,
+                    name=tc.function.name,
+                    input=parsed,
+                )
+            )
 
         logger.log(
             self.audit_level,
             "MCP server '%s' sampling response: model=%s, tokens=%s, tool_calls=%d",
-            self.server_name, response.model,
+            self.server_name,
+            response.model,
             getattr(getattr(response, "usage", None), "total_tokens", "?"),
             len(content_blocks),
         )
@@ -328,7 +368,8 @@ class SamplingHandler:
         logger.log(
             self.audit_level,
             "MCP server '%s' sampling response: model=%s, tokens=%s",
-            self.server_name, response.model,
+            self.server_name,
+            response.model,
             getattr(getattr(response, "usage", None), "total_tokens", "?"),
         )
         self._append_audit_event(
@@ -370,7 +411,8 @@ class SamplingHandler:
         if not self._check_rate_limit():
             logger.warning(
                 "MCP server '%s' sampling rate limit exceeded (%d/min)",
-                self.server_name, self.max_rpm,
+                self.server_name,
+                self.max_rpm,
             )
             self.metrics["errors"] += 1
             self._append_audit_event("error", kind="rate-limit", max_rpm=self.max_rpm)
@@ -391,7 +433,8 @@ class SamplingHandler:
         if self.allowed_models and resolved_model and resolved_model not in self.allowed_models:
             logger.warning(
                 "MCP server '%s' requested model '%s' not in allowed_models",
-                self.server_name, resolved_model,
+                self.server_name,
+                resolved_model,
             )
             self.metrics["errors"] += 1
             self._append_audit_event(
@@ -434,7 +477,10 @@ class SamplingHandler:
         logger.log(
             self.audit_level,
             "MCP server '%s' sampling request: model=%s, max_tokens=%d, messages=%d",
-            self.server_name, resolved_model, max_tokens, len(messages),
+            self.server_name,
+            resolved_model,
+            max_tokens,
+            len(messages),
         )
         self._append_audit_event(
             "request",
@@ -458,29 +504,26 @@ class SamplingHandler:
 
         try:
             response = await asyncio.wait_for(
-                asyncio.to_thread(_sync_call), timeout=self.timeout,
+                asyncio.to_thread(_sync_call),
+                timeout=self.timeout,
             )
         except TimeoutError:
             self.metrics["errors"] += 1
             self._append_audit_event("error", kind="timeout", timeout=self.timeout)
             return self._error(
-                f"Sampling LLM call timed out after {self.timeout}s "
-                f"for server '{self.server_name}'"
+                f"Sampling LLM call timed out after {self.timeout}s for server '{self.server_name}'"
             )
         except Exception as exc:
             self.metrics["errors"] += 1
             self._append_audit_event("error", kind="exception", message=_sanitize_error(str(exc)))
-            return self._error(
-                f"Sampling LLM call failed: {_sanitize_error(str(exc))}"
-            )
+            return self._error(f"Sampling LLM call failed: {_sanitize_error(str(exc))}")
 
         # Guard against empty choices (content filtering, provider errors)
         if not getattr(response, "choices", None):
             self.metrics["errors"] += 1
             self._append_audit_event("error", kind="empty-response")
             return self._error(
-                f"LLM returned empty response (no choices) for server "
-                f"'{self.server_name}'"
+                f"LLM returned empty response (no choices) for server '{self.server_name}'"
             )
 
         # Track metrics

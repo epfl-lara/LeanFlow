@@ -472,4 +472,3 @@ class TestForkBombDetection:
     def test_colon_in_safe_command_not_flagged(self):
         dangerous, key, desc = detect_dangerous_command("echo hello:world")
         assert dangerous is False
-

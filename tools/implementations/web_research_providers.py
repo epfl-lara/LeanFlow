@@ -57,7 +57,9 @@ def _bounded_limit(limit: int, *, default: int = 5, maximum: int = 10) -> int:
     return max(1, min(maximum, parsed))
 
 
-def _append_unique_result(results: list[dict[str, Any]], seen_urls: set[str], result: dict[str, Any]) -> None:
+def _append_unique_result(
+    results: list[dict[str, Any]], seen_urls: set[str], result: dict[str, Any]
+) -> None:
     url = str(result.get("url") or "").strip()
     dedupe_key = url or f"{result.get('provider')}:{result.get('title')}:{result.get('snippet')}"
     if not dedupe_key or dedupe_key in seen_urls:
@@ -108,7 +110,9 @@ def _search_arxiv(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
             for author in entry.findall("atom:author", ns)
         ]
         authors = [author for author in authors if author]
-        published = _normalize_whitespace(entry.findtext("atom:published", default="", namespaces=ns))
+        published = _normalize_whitespace(
+            entry.findtext("atom:published", default="", namespaces=ns)
+        )
         arxiv_id = url.rstrip("/").rsplit("/", 1)[-1] if url else ""
         pdf_url = ""
         for link in entry.findall("atom:link", ns):
@@ -192,7 +196,9 @@ def _search_semantic_scholar(query: str, limit: int) -> tuple[list[dict[str, Any
 
 def _crossref_year(item: dict[str, Any]) -> str:
     for key in ("published-print", "published-online", "published", "created"):
-        date_parts = item.get(key, {}).get("date-parts") if isinstance(item.get(key), dict) else None
+        date_parts = (
+            item.get(key, {}).get("date-parts") if isinstance(item.get(key), dict) else None
+        )
         if date_parts and isinstance(date_parts, list) and date_parts[0]:
             return str(date_parts[0][0])
     return ""
@@ -233,9 +239,15 @@ def _search_crossref(query: str, limit: int) -> tuple[list[dict[str, Any]], str]
             continue
         title_values = item.get("title") if isinstance(item.get("title"), list) else []
         title = _normalize_whitespace(title_values[0] if title_values else "")
-        url = _normalize_whitespace(item.get("URL") or item.get("DOI") and f"https://doi.org/{item.get('DOI')}")
-        container_values = item.get("container-title") if isinstance(item.get("container-title"), list) else []
-        source = _normalize_whitespace(container_values[0] if container_values else item.get("publisher") or "Crossref")
+        url = _normalize_whitespace(
+            item.get("URL") or item.get("DOI") and f"https://doi.org/{item.get('DOI')}"
+        )
+        container_values = (
+            item.get("container-title") if isinstance(item.get("container-title"), list) else []
+        )
+        source = _normalize_whitespace(
+            container_values[0] if container_values else item.get("publisher") or "Crossref"
+        )
         abstract = re.sub(r"<[^>]+>", " ", str(item.get("abstract", "") or ""))
         snippet_parts = [
             part
@@ -266,7 +278,9 @@ def _search_crossref(query: str, limit: int) -> tuple[list[dict[str, Any]], str]
 def _web_search_provider_order(query: str) -> tuple:
     lowered = query.lower()
     has_code_signal = any(token in lowered for token in (".lean", " coq", " rocq", ".v", " code"))
-    has_identifier = bool(re.search(r"\b[A-Z][A-Za-z0-9]*\.[A-Za-z0-9_.]+|\b[a-zA-Z0-9]+_[a-zA-Z0-9_]+\b", query))
+    has_identifier = bool(
+        re.search(r"\b[A-Z][A-Za-z0-9]*\.[A-Za-z0-9_.]+|\b[a-zA-Z0-9]+_[a-zA-Z0-9_]+\b", query)
+    )
     has_paper_signal = any(
         token in lowered
         for token in (
@@ -310,10 +324,14 @@ def _sourcegraph_queries(query: str, limit: int) -> list[tuple[str, str, str]]:
         ]
     queries: list[tuple[str, str, str]] = []
     for language, source, file_filter in languages:
-        queries.append((language, source, f"context:global {cleaned_query} {file_filter} count:{count}"))
+        queries.append(
+            (language, source, f"context:global {cleaned_query} {file_filter} count:{count}")
+        )
         if " OR " not in cleaned_query and " " in cleaned_query:
             relaxed = " OR ".join(part for part in cleaned_query.split() if part)
-            queries.append((language, source, f"context:global ({relaxed}) {file_filter} count:{count}"))
+            queries.append(
+                (language, source, f"context:global ({relaxed}) {file_filter} count:{count}")
+            )
     return queries
 
 
@@ -323,9 +341,7 @@ def _sourcegraph_code_terms(query: str) -> str:
     if identifiers:
         return " ".join(identifiers[:3])
     terms = [
-        token
-        for token in tokens
-        if len(token) > 2 and token.lower() not in CODE_SEARCH_STOPWORDS
+        token for token in tokens if len(token) > 2 and token.lower() not in CODE_SEARCH_STOPWORDS
     ]
     return " ".join(terms[:6]) or _normalize_whitespace(query)
 
@@ -374,8 +390,12 @@ query EPFLemmaCodeSearch($query: String!) {
             file_info = match.get("file") if isinstance(match.get("file"), dict) else {}
             repo_name = _normalize_whitespace(repo.get("name"))
             path = _normalize_whitespace(file_info.get("path"))
-            file_url = urljoin("https://sourcegraph.com", _normalize_whitespace(file_info.get("url")))
-            line_matches = match.get("lineMatches") if isinstance(match.get("lineMatches"), list) else []
+            file_url = urljoin(
+                "https://sourcegraph.com", _normalize_whitespace(file_info.get("url"))
+            )
+            line_matches = (
+                match.get("lineMatches") if isinstance(match.get("lineMatches"), list) else []
+            )
             preview = ""
             line_number = None
             if line_matches:

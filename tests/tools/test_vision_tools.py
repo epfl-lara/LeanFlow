@@ -257,9 +257,7 @@ class TestErrorLoggingExcInfo:
                 caplog.at_level(logging.ERROR, logger="tools.implementations.vision_tools"),
                 pytest.raises(ConnectionError),
             ):
-                await _download_image(
-                    "https://example.com/img.jpg", dest, max_retries=1
-                )
+                await _download_image("https://example.com/img.jpg", dest, max_retries=1)
 
             # Should have logged with exc_info (traceback present)
             error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
@@ -317,7 +315,11 @@ class TestErrorLoggingExcInfo:
             mock_response.choices = [mock_choice]
 
             with (
-                patch("tools.implementations.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response),
+                patch(
+                    "tools.implementations.vision_tools.async_call_llm",
+                    new_callable=AsyncMock,
+                    return_value=mock_response,
+                ),
             ):
                 # Make unlink fail to trigger cleanup warning
                 original_unlink = Path.unlink
@@ -333,8 +335,7 @@ class TestErrorLoggingExcInfo:
             warning_records = [
                 r
                 for r in caplog.records
-                if r.levelno == logging.WARNING
-                and "temporary file" in r.getMessage().lower()
+                if r.levelno == logging.WARNING and "temporary file" in r.getMessage().lower()
             ]
             assert len(warning_records) >= 1
             assert warning_records[0].exc_info is not None

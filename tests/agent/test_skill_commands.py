@@ -14,9 +14,7 @@ from agent.execution.skill_commands import (
 )
 
 
-def _make_skill(
-    skills_dir, name, frontmatter_extra="", body="Do the thing.", category=None
-):
+def _make_skill(skills_dir, name, frontmatter_extra="", body="Do the thing.", category=None):
     """Helper to create a minimal skill directory with SKILL.md."""
     if category:
         skill_dir = skills_dir / category / name
@@ -91,9 +89,7 @@ class TestBuildPreloadedSkillsPrompt:
         with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "first-skill")
             _make_skill(tmp_path, "second-skill")
-            prompt, loaded, missing = build_preloaded_skills_prompt(
-                ["first-skill", "second-skill"]
-            )
+            prompt, loaded, missing = build_preloaded_skills_prompt(["first-skill", "second-skill"])
 
         assert missing == []
         assert loaded == ["first-skill", "second-skill"]
@@ -192,7 +188,6 @@ Generate some audio.
         assert len(calls) == 1
         assert calls[0][0] == "TENOR_API_KEY"
 
-
     def test_preserves_remaining_remote_setup_warning(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
@@ -249,7 +244,12 @@ class TestPlanSkillHelpers:
             now=datetime(2026, 3, 15, 9, 30, 45),
         )
 
-        assert path == Path(".gauss") / "plans" / "2026-03-15_093045-implement-oauth-login-refresh-tokens.md"
+        assert (
+            path
+            == Path(".gauss")
+            / "plans"
+            / "2026-03-15_093045-implement-oauth-login-refresh-tokens.md"
+        )
 
     def test_plan_skill_message_can_include_runtime_save_path_note(self, tmp_path):
         with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):

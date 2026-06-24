@@ -58,7 +58,7 @@ def _declaration_index(path: Path) -> list[dict[str, Any]]:
         start = entry["line"]
         end = entries[idx + 1]["line"] - 1 if idx + 1 < len(entries) else len(lines)
         entry["end_line"] = end
-        entry["text"] = "\n".join(lines[start - 1:end]).strip()
+        entry["text"] = "\n".join(lines[start - 1 : end]).strip()
     return entries
 
 
@@ -99,7 +99,8 @@ def _surrounding_declarations(path: Path, theorem_id: str, *, window: int = 3) -
         return [
             str(item.get("name", "") or "").strip()
             for item in entries[start:end]
-            if str(item.get("name", "") or "").strip() and str(item.get("name", "") or "").strip() != name
+            if str(item.get("name", "") or "").strip()
+            and str(item.get("name", "") or "").strip() != name
         ]
     return []
 

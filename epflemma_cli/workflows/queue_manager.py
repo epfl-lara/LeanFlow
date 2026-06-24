@@ -76,12 +76,14 @@ from epflemma_cli.workflows.queue_models import (  # noqa: E402
 # The class
 # ---------------------------------------------------------------------------
 
+
 class QueueInvariantError(AssertionError):
     """Raised by ``check_invariants`` when a spec invariant is violated.
 
     Callers can run with ``EPFLEMMA_QUEUE_INVARIANT_CHECKS=1`` to turn these
     on. Off by default so production never crashes on a paranoid check.
     """
+
 
 class TheoremQueueManager:
     """Owns all per-theorem queue state for one autonomous workflow run.
@@ -146,8 +148,7 @@ class TheoremQueueManager:
         ``detect_transition`` call and emit a boundary event).
         """
         self._queue = [
-            it if isinstance(it, QueueItem) else QueueItem.from_mapping(it)
-            for it in (items or [])
+            it if isinstance(it, QueueItem) else QueueItem.from_mapping(it) for it in (items or [])
         ]
 
     @property
@@ -664,7 +665,9 @@ class TheoremQueueManager:
                 raise QueueInvariantError(
                     f"hard-retry counters survived a transition: {stale_hard!r}"
                 )
-            stale_signatures = [retry_key for retry_key in self._retry_signatures if retry_key[0] != key]
+            stale_signatures = [
+                retry_key for retry_key in self._retry_signatures if retry_key[0] != key
+            ]
             if stale_signatures:
                 raise QueueInvariantError(
                     f"retry signatures survived a transition: {stale_signatures!r}"
@@ -747,7 +750,9 @@ class TheoremQueueManager:
                 if not key.is_valid() or not bucket:
                     continue
                 mgr._remember_display_file(key, file_part)
-                signatures = [str(value) for value in list(raw_signatures or []) if str(value).strip()]
+                signatures = [
+                    str(value) for value in list(raw_signatures or []) if str(value).strip()
+                ]
                 if signatures:
                     mgr._retry_signatures[(key, bucket)] = signatures[-20:]
 
@@ -775,7 +780,9 @@ class TheoremQueueManager:
         if isinstance(disabled_tools, Iterable) and not isinstance(disabled_tools, (str, bytes)):
             for raw in disabled_tools:
                 if isinstance(raw, Mapping):
-                    mgr.disable_tool(str(raw.get("name", "") or ""), str(raw.get("reason", "") or ""))
+                    mgr.disable_tool(
+                        str(raw.get("name", "") or ""), str(raw.get("reason", "") or "")
+                    )
                 else:
                     mgr.disable_tool(str(raw or ""))
 
@@ -833,9 +840,7 @@ class TheoremQueueManager:
             }
 
         if self._attempts:
-            out["failed_attempts"] = [
-                self._attempt_to_mapping(a) for a in self._attempts
-            ]
+            out["failed_attempts"] = [self._attempt_to_mapping(a) for a in self._attempts]
 
         if self._warning_retries or self._hard_retries:
             retries: dict[str, dict[str, int]] = {}
@@ -853,7 +858,9 @@ class TheoremQueueManager:
 
         if self._outcomes:
             out["theorem_outcomes"] = {
-                f"{self._display_file_for(key)}::{key.target_symbol}": self._outcome_to_mapping(outcome)
+                f"{self._display_file_for(key)}::{key.target_symbol}": self._outcome_to_mapping(
+                    outcome
+                )
                 for key, outcome in self._outcomes.items()
             }
 
@@ -872,11 +879,12 @@ class TheoremQueueManager:
 
         return out
 
+
 @dataclass(frozen=True)
 class Decision:
     """Result of :meth:`TheoremQueueManager.decide`."""
 
-    action: str            # "continue_same_theorem" | "advance_queue" | "restore_baseline"
+    action: str  # "continue_same_theorem" | "advance_queue" | "restore_baseline"
     classification: Classification
     reason: str
 

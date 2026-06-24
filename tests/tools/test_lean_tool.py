@@ -155,9 +155,7 @@ def test_lean_proof_context_tool_returns_normalized_payload(monkeypatch):
         },
     )
 
-    payload = json.loads(
-        lean_tool.lean_proof_context_tool("Demo/Main.lean", "demo")
-    )
+    payload = json.loads(lean_tool.lean_proof_context_tool("Demo/Main.lean", "demo"))
 
     assert payload["success"] is True
     assert payload["theorem_id"] == "demo"
@@ -199,7 +197,9 @@ def test_apply_verified_patch_tool_applies_patch_and_records_verified_status(tmp
 *** End Patch"""
 
     payload = json.loads(
-        lean_tool.apply_verified_patch_tool(str(target), patch, cwd=str(tmp_path), theorem_id="demo")
+        lean_tool.apply_verified_patch_tool(
+            str(target), patch, cwd=str(tmp_path), theorem_id="demo"
+        )
     )
 
     assert payload["success"] is True
@@ -437,14 +437,16 @@ def test_lean_reasoning_help_tool_clamps_short_timeout(monkeypatch):
         captured.update(kwargs)
         return SimpleNamespace(
             model="moonshotai/Kimi-K2.6-int4",
-            choices=[SimpleNamespace(message=SimpleNamespace(content="Use a coordinate normalization first."))],
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="Use a coordinate normalization first.")
+                )
+            ],
         )
 
     monkeypatch.setattr(lean_experts, "call_llm", _fake_call_llm)
 
-    payload = json.loads(
-        lean_tool.lean_reasoning_help_tool("demo", "Demo/Main.lean", timeout_s=45)
-    )
+    payload = json.loads(lean_tool.lean_reasoning_help_tool("demo", "Demo/Main.lean", timeout_s=45))
 
     assert payload["success"] is True
     assert captured["timeout"] == 1200

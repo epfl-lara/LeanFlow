@@ -15,12 +15,14 @@ def test_resolve_stdio_command_falls_back_to_gauss_node_bin(tmp_path):
     npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     npx_path.chmod(0o755)
 
-    with patch("tools.mcp.mcp_tool.shutil.which", return_value=None), \
-         patch.dict(
-             "os.environ",
-             {"GAUSS_HOME": str(tmp_path), "EPFLEMMA_HOME": str(tmp_path)},
-             clear=False,
-         ):
+    with (
+        patch("tools.mcp.mcp_tool.shutil.which", return_value=None),
+        patch.dict(
+            "os.environ",
+            {"GAUSS_HOME": str(tmp_path), "EPFLEMMA_HOME": str(tmp_path)},
+            clear=False,
+        ),
+    ):
         command, env = _resolve_stdio_command("npx", {"PATH": "/usr/bin"})
 
     assert command == str(npx_path)
@@ -73,22 +75,26 @@ def test_run_stdio_uses_resolved_command_and_prepended_path(tmp_path):
     mock_session_cm.__aexit__ = AsyncMock(return_value=False)
 
     async def _test():
-        with patch("tools.mcp.mcp_tool.shutil.which", return_value=None), \
-             patch.dict(
-                 "os.environ",
-                 {
-                     "GAUSS_HOME": str(tmp_path),
-                     "EPFLEMMA_HOME": str(tmp_path),
-                     "PATH": "/usr/bin",
-                     "HOME": str(tmp_path),
-                 },
-                 clear=False,
-             ), \
-             patch("tools.mcp.mcp_tool.StdioServerParameters") as mock_params, \
-             patch("tools.mcp.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
-             patch("tools.mcp.mcp_tool.ClientSession", return_value=mock_session_cm):
+        with (
+            patch("tools.mcp.mcp_tool.shutil.which", return_value=None),
+            patch.dict(
+                "os.environ",
+                {
+                    "GAUSS_HOME": str(tmp_path),
+                    "EPFLEMMA_HOME": str(tmp_path),
+                    "PATH": "/usr/bin",
+                    "HOME": str(tmp_path),
+                },
+                clear=False,
+            ),
+            patch("tools.mcp.mcp_tool.StdioServerParameters") as mock_params,
+            patch("tools.mcp.mcp_tool.stdio_client", return_value=mock_stdio_cm),
+            patch("tools.mcp.mcp_tool.ClientSession", return_value=mock_session_cm),
+        ):
             server = MCPServerTask("srv")
-            await server.start({"command": "npx", "args": ["-y", "pkg"], "env": {"PATH": "/usr/bin"}})
+            await server.start(
+                {"command": "npx", "args": ["-y", "pkg"], "env": {"PATH": "/usr/bin"}}
+            )
 
             call_kwargs = mock_params.call_args.kwargs
             assert call_kwargs["command"] == str(npx_path)

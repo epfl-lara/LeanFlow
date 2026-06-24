@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
 
+
 def _run_async(coro):
     """Run an async coroutine from a sync context.
 
@@ -54,14 +55,17 @@ def _run_async(coro):
 
     if loop and loop.is_running():
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
             return future.result(timeout=300)
     return asyncio.run(coro)
 
+
 # =============================================================================
 # Tool Discovery  (importing each module triggers its registry.register calls)
 # =============================================================================
+
 
 def _discover_tools():
     """Import all tool modules to trigger their registry.register() calls.
@@ -81,17 +85,20 @@ def _discover_tools():
         "tools.implementations.delegate_tool",
     ]
     import importlib
+
     for mod_name in _modules:
         try:
             importlib.import_module(mod_name)
         except Exception as e:
             logger.debug("Could not import %s: %s", mod_name, e)
 
+
 _discover_tools()
 
 # MCP tool discovery (external MCP servers from config)
 try:
     from tools.mcp.mcp_tool import discover_mcp_tools
+
     discover_mcp_tools()
 except Exception as e:
     logger.debug("MCP tool discovery failed: %s", e)
@@ -120,6 +127,7 @@ _LEGACY_TOOLSET_MAP = {
 # =============================================================================
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
+
 
 def get_tool_definitions(
     enabled_toolsets: list[str] = None,
@@ -166,6 +174,7 @@ def get_tool_definitions(
 
     elif disabled_toolsets:
         from toolsets import get_all_toolsets
+
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
@@ -174,7 +183,9 @@ def get_tool_definitions(
                 resolved = resolve_toolset(toolset_name)
                 tools_to_include.difference_update(resolved)
                 if not quiet_mode:
-                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+                    print(
+                        f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}"
+                    )
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.difference_update(legacy_tools)
@@ -185,6 +196,7 @@ def get_tool_definitions(
                     print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
         from toolsets import get_all_toolsets
+
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
@@ -203,6 +215,7 @@ def get_tool_definitions(
 
     return filtered_tools
 
+
 # =============================================================================
 # handle_function_call  (the main dispatcher)
 # =============================================================================
@@ -212,6 +225,7 @@ def get_tool_definitions(
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
 _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+
 
 def handle_function_call(
     function_name: str,
@@ -241,6 +255,7 @@ def handle_function_call(
     if function_name not in _READ_SEARCH_TOOLS:
         try:
             from tools.implementations.file_tools import notify_other_tool_call
+
             notify_other_tool_call(task_id or "default")
         except Exception:
             pass  # file_tools may not be loaded yet
@@ -266,25 +281,31 @@ def handle_function_call(
         logger.error(error_msg)
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
+
 # =============================================================================
 # Backward-compat wrapper functions
 # =============================================================================
+
 
 def get_all_tool_names() -> list[str]:
     """Return all registered tool names."""
     return registry.get_all_tool_names()
 
+
 def get_toolset_for_tool(tool_name: str) -> str | None:
     """Return the toolset a tool belongs to."""
     return registry.get_toolset_for_tool(tool_name)
+
 
 def get_available_toolsets() -> dict[str, dict]:
     """Return toolset availability info for UI display."""
     return registry.get_available_toolsets()
 
+
 def check_toolset_requirements() -> dict[str, bool]:
     """Return {toolset: available_bool} for every registered toolset."""
     return registry.check_toolset_requirements()
+
 
 def check_tool_availability(quiet: bool = False) -> tuple[list[str], list[dict]]:
     """Return (available_toolsets, unavailable_info)."""

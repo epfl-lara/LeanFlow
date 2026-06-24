@@ -44,8 +44,6 @@ class ProjectCommandError(EPFLemmaProjectError):
     """Raised when a project-management command cannot be completed."""
 
 
-
-
 @dataclass(frozen=True)
 class EPFLemmaProject:
     root: Path
@@ -190,7 +188,14 @@ def setup_project_power_modes(
     existing_repl = _detect_project_repl_binary(root)
     if existing_repl:
         note(f"[3/6] Existing REPL binary found: {existing_repl}")
-        report.update({"repl_configured": True, "repl_available": True, "repl_path": existing_repl, "status": "ready"})
+        report.update(
+            {
+                "repl_configured": True,
+                "repl_available": True,
+                "repl_path": existing_repl,
+                "status": "ready",
+            }
+        )
         return report
 
     note("[3/6] Checking Lake dependency for leanprover-community/repl")
@@ -200,7 +205,9 @@ def setup_project_power_modes(
             note("[4/6] Adding REPL dependency to lakefile.toml")
             dependency_present = _append_repl_to_lakefile_toml(root, version)
         else:
-            note("[4/6] lakefile.lean detected; automatic REPL edit is not safe, leaving manual setup instructions")
+            note(
+                "[4/6] lakefile.lean detected; automatic REPL edit is not safe, leaving manual setup instructions"
+            )
             report.update(
                 {
                     "status": "manual-setup-needed",
@@ -222,17 +229,25 @@ def setup_project_power_modes(
         return report
 
     note("[5/6] Running `lake update repl` (this may take a minute)")
-    update_code, update_output, update_elapsed = _run_power_setup_command(["lake", "update", "repl"], cwd=root)
+    update_code, update_output, update_elapsed = _run_power_setup_command(
+        ["lake", "update", "repl"], cwd=root
+    )
     if update_code != 0:
-        note(f"[5/6] `lake update repl` failed after {update_elapsed:.1f}s; continuing without REPL acceleration")
+        note(
+            f"[5/6] `lake update repl` failed after {update_elapsed:.1f}s; continuing without REPL acceleration"
+        )
         report.update({"status": "update-failed", "output": update_output[-2000:]})
         return report
     note(f"[5/6] `lake update repl` completed in {update_elapsed:.1f}s")
 
     note("[6/6] Building REPL binary with `lake build repl` (this can take several minutes)")
-    build_code, build_output, build_elapsed = _run_power_setup_command(["lake", "build", "repl"], cwd=root)
+    build_code, build_output, build_elapsed = _run_power_setup_command(
+        ["lake", "build", "repl"], cwd=root
+    )
     if build_code != 0:
-        note(f"[6/6] `lake build repl` failed after {build_elapsed:.1f}s; continuing without REPL acceleration")
+        note(
+            f"[6/6] `lake build repl` failed after {build_elapsed:.1f}s; continuing without REPL acceleration"
+        )
         report.update({"status": "build-failed", "output": build_output[-2000:]})
         return report
     repl_path = _detect_project_repl_binary(root)
@@ -309,7 +324,9 @@ def _project_manifest_path(root: Path) -> Path:
 
 def _transform_legacy_manifest(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
     paths_payload = payload.get("paths") if isinstance(payload.get("paths"), Mapping) else {}
-    blueprint_payload = payload.get("blueprint") if isinstance(payload.get("blueprint"), Mapping) else {}
+    blueprint_payload = (
+        payload.get("blueprint") if isinstance(payload.get("blueprint"), Mapping) else {}
+    )
     source_payload = payload.get("source") if isinstance(payload.get("source"), Mapping) else {}
 
     return {
@@ -319,9 +336,15 @@ def _transform_legacy_manifest(root: Path, payload: Mapping[str, Any]) -> dict[s
         "lean_root": str(payload.get("lean_root", ".")),
         "created_at": str(payload.get("created_at", "") or ""),
         "paths": {
-            "runtime": str(paths_payload.get("runtime", ".epflemma/runtime")).replace(".epflemma/", ".epflemma/").replace(".gauss/", ".epflemma/"),
-            "cache": str(paths_payload.get("cache", ".epflemma/cache")).replace(".epflemma/", ".epflemma/").replace(".gauss/", ".epflemma/"),
-            "workflows": str(paths_payload.get("workflows", ".epflemma/workflows")).replace(".epflemma/", ".epflemma/").replace(".gauss/", ".epflemma/"),
+            "runtime": str(paths_payload.get("runtime", ".epflemma/runtime"))
+            .replace(".epflemma/", ".epflemma/")
+            .replace(".gauss/", ".epflemma/"),
+            "cache": str(paths_payload.get("cache", ".epflemma/cache"))
+            .replace(".epflemma/", ".epflemma/")
+            .replace(".gauss/", ".epflemma/"),
+            "workflows": str(paths_payload.get("workflows", ".epflemma/workflows"))
+            .replace(".epflemma/", ".epflemma/")
+            .replace(".gauss/", ".epflemma/"),
         },
         "source": dict(source_payload),
         "blueprint": {
@@ -409,8 +432,12 @@ def load_epflemma_project(target: str | Path) -> EPFLemmaProject:
     if not isinstance(paths_payload, Mapping):
         raise ProjectManifestError(f"{manifest_path} has invalid `paths` metadata.")
 
-    runtime_dir = _resolve_relative_path(root, paths_payload.get("runtime", ".epflemma/runtime"), field_name="paths.runtime")
-    cache_dir = _resolve_relative_path(root, paths_payload.get("cache", ".epflemma/cache"), field_name="paths.cache")
+    runtime_dir = _resolve_relative_path(
+        root, paths_payload.get("runtime", ".epflemma/runtime"), field_name="paths.runtime"
+    )
+    cache_dir = _resolve_relative_path(
+        root, paths_payload.get("cache", ".epflemma/cache"), field_name="paths.cache"
+    )
     workflows_dir = _resolve_relative_path(
         root,
         paths_payload.get("workflows", ".epflemma/workflows"),
@@ -418,8 +445,14 @@ def load_epflemma_project(target: str | Path) -> EPFLemmaProject:
     )
 
     source_payload = payload.get("source") if isinstance(payload.get("source"), Mapping) else {}
-    blueprint_payload = payload.get("blueprint") if isinstance(payload.get("blueprint"), Mapping) else {}
-    markers = tuple(str(marker).strip() for marker in (blueprint_payload.get("markers") or []) if str(marker).strip())
+    blueprint_payload = (
+        payload.get("blueprint") if isinstance(payload.get("blueprint"), Mapping) else {}
+    )
+    markers = tuple(
+        str(marker).strip()
+        for marker in (blueprint_payload.get("markers") or [])
+        if str(marker).strip()
+    )
 
     for path in (epflemma_dir, runtime_dir, cache_dir, workflows_dir):
         path.mkdir(parents=True, exist_ok=True)
@@ -446,7 +479,9 @@ def load_epflemma_project(target: str | Path) -> EPFLemmaProject:
 def discover_epflemma_project(start: str | Path) -> EPFLemmaProject:
     resolved = Path(start).expanduser().resolve()
     for candidate in (resolved, *resolved.parents):
-        if (candidate / EPFLEMMA_PROJECT_DIRNAME).exists() or any((candidate / dirname).exists() for dirname in LEGACY_PROJECT_DIRNAMES):
+        if (candidate / EPFLEMMA_PROJECT_DIRNAME).exists() or any(
+            (candidate / dirname).exists() for dirname in LEGACY_PROJECT_DIRNAMES
+        ):
             return load_epflemma_project(candidate)
     raise ProjectNotFoundError(
         "No active EPFLemma project found. Use `epflemma project init` first."
@@ -460,7 +495,10 @@ def initialize_epflemma_project(root: str | Path, *, name: str | None = None) ->
         raise ProjectCommandError(f"Project root does not exist: {project_root}")
 
     manifest_path = project_root / EPFLEMMA_PROJECT_DIRNAME / EPFLEMMA_PROJECT_MANIFEST_FILENAME
-    legacy_manifest_paths = [project_root / dirname / EPFLEMMA_PROJECT_MANIFEST_FILENAME for dirname in LEGACY_PROJECT_DIRNAMES]
+    legacy_manifest_paths = [
+        project_root / dirname / EPFLEMMA_PROJECT_MANIFEST_FILENAME
+        for dirname in LEGACY_PROJECT_DIRNAMES
+    ]
     if manifest_path.is_file() or any(path.is_file() for path in legacy_manifest_paths):
         return load_epflemma_project(project_root)
 
@@ -502,7 +540,9 @@ def initialize_epflemma_project(root: str | Path, *, name: str | None = None) ->
     return load_epflemma_project(project_root)
 
 
-def clone_project_template(destination: str | Path, *, template_source: str, name: str | None = None) -> EPFLemmaProject:
+def clone_project_template(
+    destination: str | Path, *, template_source: str, name: str | None = None
+) -> EPFLemmaProject:
     destination_path = Path(destination).expanduser().resolve()
     if destination_path.exists():
         raise ProjectCommandError(f"Destination already exists: {destination_path}")

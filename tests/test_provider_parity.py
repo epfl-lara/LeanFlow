@@ -21,6 +21,7 @@ from run_agent import AIAgent
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+
 def _tool_defs(*names):
     return [
         {
@@ -39,12 +40,17 @@ class _FakeOpenAI:
     def __init__(self, **kw):
         self.api_key = kw.get("api_key", "test")
         self.base_url = kw.get("base_url", "http://test")
+
     def close(self):
         pass
 
 
-def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1"):
-    monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
+def _make_agent(
+    monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1"
+):
+    monkeypatch.setattr(
+        "run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal")
+    )
     monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
     monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
     return AIAgent(
@@ -60,6 +66,7 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
 
 
 # ── _build_api_kwargs tests ─────────────────────────────────────────────────
+
 
 class TestBuildApiKwargsOpenRouter:
     def test_uses_chat_completions_format(self, monkeypatch):
@@ -110,7 +117,7 @@ class TestBuildApiKwargsOpenRouter:
                         "call_id": "call_123",
                         "response_item_id": "fc_123",
                         "type": "function",
-                        "function": {"name": "terminal", "arguments": "{\"command\":\"pwd\"}"},
+                        "function": {"name": "terminal", "arguments": '{"command":"pwd"}'},
                         "extra_content": {"thought_signature": "opaque"},
                     }
                 ],
@@ -138,14 +145,18 @@ class TestBuildApiKwargsOpenRouter:
 
 class TestBuildApiKwargsNousPortal:
     def test_includes_nous_product_tags(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1")
+        agent = _make_agent(
+            monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1"
+        )
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         extra = kwargs.get("extra_body", {})
         assert extra.get("tags") == ["product=epflemma-agent"]
 
     def test_uses_chat_completions_format(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1")
+        agent = _make_agent(
+            monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1"
+        )
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "messages" in kwargs
@@ -189,7 +200,7 @@ class TestBuildApiKwargsCustomEndpoint:
                         "type": "function",
                         "function": {
                             "name": "terminal",
-                            "arguments": "{\"command\":\"pwd\"}",
+                            "arguments": '{"command":"pwd"}',
                         },
                     }
                 ],
@@ -216,8 +227,12 @@ class TestBuildApiKwargsCustomEndpoint:
 
 class TestBuildApiKwargsCodex:
     def test_uses_responses_api_format(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "input" in kwargs
@@ -226,23 +241,35 @@ class TestBuildApiKwargsCodex:
         assert kwargs["store"] is False
 
     def test_includes_reasoning_config(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "reasoning" in kwargs
         assert kwargs["reasoning"]["effort"] == "high"
 
     def test_includes_encrypted_content_in_include(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "reasoning.encrypted_content" in kwargs.get("include", [])
 
     def test_tools_converted_to_responses_format(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         tools = kwargs.get("tools", [])
@@ -254,19 +281,28 @@ class TestBuildApiKwargsCodex:
 
 # ── Message conversion tests ────────────────────────────────────────────────
 
+
 class TestChatMessagesToResponsesInput:
     """Verify _chat_messages_to_responses_input for Codex mode."""
 
     def test_user_message_passes_through(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         messages = [{"role": "user", "content": "hello"}]
         items = agent._chat_messages_to_responses_input(messages)
         assert items == [{"role": "user", "content": "hello"}]
 
     def test_system_messages_filtered(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         messages = [
             {"role": "system", "content": "be helpful"},
             {"role": "user", "content": "hello"},
@@ -276,17 +312,25 @@ class TestChatMessagesToResponsesInput:
         assert items[0]["role"] == "user"
 
     def test_assistant_tool_calls_become_function_call_items(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
-        messages = [{
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{
-                "id": "call_abc",
-                "call_id": "call_abc",
-                "function": {"name": "web_search", "arguments": '{"query": "test"}'},
-            }],
-        }]
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_abc",
+                        "call_id": "call_abc",
+                        "function": {"name": "web_search", "arguments": '{"query": "test"}'},
+                    }
+                ],
+            }
+        ]
         items = agent._chat_messages_to_responses_input(messages)
         fc_items = [i for i in items if i.get("type") == "function_call"]
         assert len(fc_items) == 1
@@ -294,8 +338,12 @@ class TestChatMessagesToResponsesInput:
         assert fc_items[0]["call_id"] == "call_abc"
 
     def test_tool_results_become_function_call_output(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         messages = [{"role": "tool", "tool_call_id": "call_abc", "content": "result here"}]
         items = agent._chat_messages_to_responses_input(messages)
         assert items[0]["type"] == "function_call_output"
@@ -304,8 +352,12 @@ class TestChatMessagesToResponsesInput:
 
     def test_encrypted_reasoning_replayed(self, monkeypatch):
         """Encrypted reasoning items from previous turns must be included in input."""
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         messages = [
             {"role": "user", "content": "think about this"},
             {
@@ -324,8 +376,12 @@ class TestChatMessagesToResponsesInput:
 
     def test_no_reasoning_items_for_non_codex_messages(self, monkeypatch):
         """Messages without codex_reasoning_items should not inject anything."""
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         messages = [
             {"role": "assistant", "content": "hi"},
             {"role": "user", "content": "hello"},
@@ -337,20 +393,28 @@ class TestChatMessagesToResponsesInput:
 
 # ── Response normalization tests ─────────────────────────────────────────────
 
+
 class TestNormalizeCodexResponse:
     """Verify _normalize_codex_response extracts all fields correctly."""
 
     def _make_codex_agent(self, monkeypatch):
-        return _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                           base_url="https://chatgpt.com/backend-api/codex")
+        return _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
 
     def test_text_response(self, monkeypatch):
         agent = self._make_codex_agent(monkeypatch)
         response = SimpleNamespace(
             output=[
-                SimpleNamespace(type="message", status="completed",
+                SimpleNamespace(
+                    type="message",
+                    status="completed",
                     content=[SimpleNamespace(type="output_text", text="Hello!")],
-                    phase="final_answer"),
+                    phase="final_answer",
+                ),
             ],
             status="completed",
         )
@@ -362,13 +426,19 @@ class TestNormalizeCodexResponse:
         agent = self._make_codex_agent(monkeypatch)
         response = SimpleNamespace(
             output=[
-                SimpleNamespace(type="reasoning",
+                SimpleNamespace(
+                    type="reasoning",
                     encrypted_content="gAAAA_blob",
                     summary=[SimpleNamespace(type="summary_text", text="Thinking about math")],
-                    id="rs_123", status=None),
-                SimpleNamespace(type="message", status="completed",
+                    id="rs_123",
+                    status=None,
+                ),
+                SimpleNamespace(
+                    type="message",
+                    status="completed",
                     content=[SimpleNamespace(type="output_text", text="42")],
-                    phase="final_answer"),
+                    phase="final_answer",
+                ),
             ],
             status="completed",
         )
@@ -381,13 +451,19 @@ class TestNormalizeCodexResponse:
         agent = self._make_codex_agent(monkeypatch)
         response = SimpleNamespace(
             output=[
-                SimpleNamespace(type="reasoning",
+                SimpleNamespace(
+                    type="reasoning",
                     encrypted_content="gAAAA_secret_blob_123",
                     summary=[SimpleNamespace(type="summary_text", text="Thinking")],
-                    id="rs_456", status=None),
-                SimpleNamespace(type="message", status="completed",
+                    id="rs_456",
+                    status=None,
+                ),
+                SimpleNamespace(
+                    type="message",
+                    status="completed",
                     content=[SimpleNamespace(type="output_text", text="done")],
-                    phase="final_answer"),
+                    phase="final_answer",
+                ),
             ],
             status="completed",
         )
@@ -401,9 +477,12 @@ class TestNormalizeCodexResponse:
         agent = self._make_codex_agent(monkeypatch)
         response = SimpleNamespace(
             output=[
-                SimpleNamespace(type="message", status="completed",
+                SimpleNamespace(
+                    type="message",
+                    status="completed",
                     content=[SimpleNamespace(type="output_text", text="no reasoning")],
-                    phase="final_answer"),
+                    phase="final_answer",
+                ),
             ],
             status="completed",
         )
@@ -414,9 +493,14 @@ class TestNormalizeCodexResponse:
         agent = self._make_codex_agent(monkeypatch)
         response = SimpleNamespace(
             output=[
-                SimpleNamespace(type="function_call", status="completed",
-                    call_id="call_xyz", name="web_search",
-                    arguments='{"query":"test"}', id="fc_xyz"),
+                SimpleNamespace(
+                    type="function_call",
+                    status="completed",
+                    call_id="call_xyz",
+                    name="web_search",
+                    arguments='{"query":"test"}',
+                    id="fc_xyz",
+                ),
             ],
             status="completed",
         )
@@ -427,6 +511,7 @@ class TestNormalizeCodexResponse:
 
 
 # ── Chat completions response handling (OpenRouter/Nous) ─────────────────────
+
 
 class TestBuildAssistantMessage:
     """Verify _build_assistant_message works for all provider response formats."""
@@ -472,8 +557,12 @@ class TestBuildAssistantMessage:
         assert stored["thinking"] == "deep thoughts here"
 
     def test_codex_preserves_encrypted_reasoning(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         msg = SimpleNamespace(
             content="result",
             tool_calls=None,
@@ -504,6 +593,7 @@ class TestBuildAssistantMessage:
 
 # ── Auxiliary client provider resolution ─────────────────────────────────────
 
+
 class TestAuxiliaryClientProviderPriority:
     """Verify auxiliary client resolution doesn't break for any provider."""
 
@@ -526,6 +616,7 @@ class TestAuxiliaryClientProviderPriority:
         self._clear_competing_provider_env(monkeypatch)
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         from agent.providers.auxiliary_client import get_text_auxiliary_client
+
         with patch("agent.providers.auxiliary_client.OpenAI") as mock:
             client, model = get_text_auxiliary_client()
         assert model == "google/gemini-3-flash-preview"
@@ -535,8 +626,14 @@ class TestAuxiliaryClientProviderPriority:
         self._clear_competing_provider_env(monkeypatch)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         from agent.providers.auxiliary_client import get_text_auxiliary_client
-        with patch("agent.providers.auxiliary_client._read_nous_auth", return_value={"access_token": "nous-tok"}), \
-             patch("agent.providers.auxiliary_client.OpenAI") as mock:
+
+        with (
+            patch(
+                "agent.providers.auxiliary_client._read_nous_auth",
+                return_value={"access_token": "nous-tok"},
+            ),
+            patch("agent.providers.auxiliary_client.OpenAI") as mock,
+        ):
             client, model = get_text_auxiliary_client()
         assert model == "gemini-3-flash"
 
@@ -546,8 +643,11 @@ class TestAuxiliaryClientProviderPriority:
         monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
         from agent.providers.auxiliary_client import get_text_auxiliary_client
-        with patch("agent.providers.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.providers.auxiliary_client.OpenAI") as mock:
+
+        with (
+            patch("agent.providers.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.providers.auxiliary_client.OpenAI") as mock,
+        ):
             client, model = get_text_auxiliary_client()
         assert mock.call_args.kwargs["base_url"] == "http://localhost:1234/v1"
 
@@ -557,15 +657,22 @@ class TestAuxiliaryClientProviderPriority:
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         from agent.providers.auxiliary_client import CodexAuxiliaryClient, get_text_auxiliary_client
-        with patch("agent.providers.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.providers.auxiliary_client._read_codex_access_token", return_value="codex-tok"), \
-             patch("agent.providers.auxiliary_client.OpenAI"):
+
+        with (
+            patch("agent.providers.auxiliary_client._read_nous_auth", return_value=None),
+            patch(
+                "agent.providers.auxiliary_client._read_codex_access_token",
+                return_value="codex-tok",
+            ),
+            patch("agent.providers.auxiliary_client.OpenAI"),
+        ):
             client, model = get_text_auxiliary_client()
         assert model == "gpt-5.2-codex"
         assert isinstance(client, CodexAuxiliaryClient)
 
 
 # ── Provider routing tests ───────────────────────────────────────────────────
+
 
 class TestProviderRouting:
     """Verify provider_routing config flows into extra_body.provider."""
@@ -609,9 +716,11 @@ class TestProviderRouting:
     def test_no_routing_when_unset(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
-        assert "provider" not in kwargs.get("extra_body", {}).get("provider", {}) or \
-               kwargs.get("extra_body", {}).get("provider") is None or \
-               "only" not in kwargs.get("extra_body", {}).get("provider", {})
+        assert (
+            "provider" not in kwargs.get("extra_body", {}).get("provider", {})
+            or kwargs.get("extra_body", {}).get("provider") is None
+            or "only" not in kwargs.get("extra_body", {}).get("provider", {})
+        )
 
     def test_combined_routing(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
@@ -626,8 +735,12 @@ class TestProviderRouting:
 
     def test_routing_not_injected_for_codex(self, monkeypatch):
         """Codex Responses API doesn't use extra_body.provider."""
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         agent.provider_sort = "throughput"
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert "extra_body" not in kwargs
@@ -636,16 +749,25 @@ class TestProviderRouting:
 
 # ── Codex reasoning items preflight tests ────────────────────────────────────
 
+
 class TestCodexReasoningPreflight:
     """Verify reasoning items pass through preflight normalization."""
 
     def test_reasoning_item_passes_through(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         raw_input = [
             {"role": "user", "content": "hello"},
-            {"type": "reasoning", "encrypted_content": "abc123encrypted", "id": "r_001",
-             "summary": [{"type": "summary_text", "text": "Thinking about it"}]},
+            {
+                "type": "reasoning",
+                "encrypted_content": "abc123encrypted",
+                "id": "r_001",
+                "summary": [{"type": "summary_text", "text": "Thinking about it"}],
+            },
             {"role": "assistant", "content": "hi there"},
         ]
         normalized = agent._preflight_codex_input_items(raw_input)
@@ -653,11 +775,17 @@ class TestCodexReasoningPreflight:
         assert len(reasoning_items) == 1
         assert reasoning_items[0]["encrypted_content"] == "abc123encrypted"
         assert reasoning_items[0]["id"] == "r_001"
-        assert reasoning_items[0]["summary"] == [{"type": "summary_text", "text": "Thinking about it"}]
+        assert reasoning_items[0]["summary"] == [
+            {"type": "summary_text", "text": "Thinking about it"}
+        ]
 
     def test_reasoning_item_without_id(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         raw_input = [
             {"type": "reasoning", "encrypted_content": "abc123"},
         ]
@@ -667,8 +795,12 @@ class TestCodexReasoningPreflight:
         assert normalized[0]["summary"] == []  # default empty summary
 
     def test_reasoning_item_empty_encrypted_skipped(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         raw_input = [
             {"type": "reasoning", "encrypted_content": ""},
             {"role": "user", "content": "hello"},
@@ -679,8 +811,12 @@ class TestCodexReasoningPreflight:
 
     def test_reasoning_items_replayed_from_history(self, monkeypatch):
         """Reasoning items stored in codex_reasoning_items get replayed."""
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         messages = [
             {"role": "user", "content": "hello"},
             {
@@ -700,6 +836,7 @@ class TestCodexReasoningPreflight:
 
 # ── Reasoning effort consistency tests ───────────────────────────────────────
 
+
 class TestReasoningEffortDefaults:
     """Verify reasoning effort defaults to high across all provider paths."""
 
@@ -710,22 +847,34 @@ class TestReasoningEffortDefaults:
         assert reasoning["effort"] == "high"
 
     def test_codex_default_high(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["reasoning"]["effort"] == "high"
 
     def test_codex_reasoning_disabled(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         agent.reasoning_config = {"enabled": False}
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert "reasoning" not in kwargs
         assert kwargs["include"] == []
 
     def test_codex_reasoning_low(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
-                            base_url="https://chatgpt.com/backend-api/codex")
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
         agent.reasoning_config = {"enabled": True, "effort": "low"}
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["reasoning"]["effort"] == "low"

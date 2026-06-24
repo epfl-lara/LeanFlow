@@ -78,7 +78,14 @@ def _print_project_power_setup(report: Mapping[str, Any]) -> None:
     status = str(report.get("status", "") or "unknown")
     if status == "ready":
         print(f"REPL acceleration ready: {report.get('repl_path', '')}")
-    elif status in {"lake-missing", "manual-setup-needed", "update-failed", "build-failed", "binary-missing", "toolchain-missing"}:
+    elif status in {
+        "lake-missing",
+        "manual-setup-needed",
+        "update-failed",
+        "build-failed",
+        "binary-missing",
+        "toolchain-missing",
+    }:
         print(f"REPL acceleration deferred: {status}")
     else:
         print(f"REPL acceleration status: {status}")
@@ -100,7 +107,9 @@ def _project_payload(project: Any) -> dict[str, str]:
         "workflows_dir": str(project.workflows_dir),
         "template_source": str(project.template_source or "[none]"),
         "source_mode": str(project.source_mode),
-        "blueprint_markers": ", ".join(project.blueprint_markers) if project.blueprint_markers else "[none]",
+        "blueprint_markers": ", ".join(project.blueprint_markers)
+        if project.blueprint_markers
+        else "[none]",
     }
 
 
@@ -112,7 +121,9 @@ def _handle_models(args: argparse.Namespace) -> int:
         _print_json(get_local_runtime_status(args.runtime))
         return 0
     if args.local_command == "start":
-        _print_json(start_local_runtime(args.runtime, model=args.model, host=args.host, port=args.port))
+        _print_json(
+            start_local_runtime(args.runtime, model=args.model, host=args.host, port=args.port)
+        )
         return 0
     if args.local_command == "stop":
         _print_json(stop_local_runtime(args.runtime))
@@ -171,7 +182,9 @@ def _print_mcp_status(payload: Mapping[str, Any]) -> None:
         print(line)
         power = dict(entry.get("power_modes", {}) or {})
         if power:
-            print(f"  power: local Loogle={power.get('loogle_local_status', 'unknown')}, REPL={power.get('repl_status', 'unknown')}")
+            print(
+                f"  power: local Loogle={power.get('loogle_local_status', 'unknown')}, REPL={power.get('repl_status', 'unknown')}"
+            )
             print(f"  search: {power.get('remote_search_policy', 'public-fallbacks-enabled')}")
 
 
@@ -190,7 +203,9 @@ def _print_mcp_bootstrap(payload: Mapping[str, Any]) -> None:
         )
         power = dict(entry.get("power_modes", {}) or {})
         if power:
-            print(f"  local Loogle: {power.get('loogle_local_status', 'unknown')} ({power.get('loogle_cache_dir', '')})")
+            print(
+                f"  local Loogle: {power.get('loogle_local_status', 'unknown')} ({power.get('loogle_cache_dir', '')})"
+            )
             print(f"  REPL: {power.get('repl_status', 'unknown')}")
 
 

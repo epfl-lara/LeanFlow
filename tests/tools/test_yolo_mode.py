@@ -41,8 +41,9 @@ class TestYoloMode:
 
         # In interactive mode without yolo, it would prompt (we can't test
         # the interactive prompt here, but we can verify detection works)
-        result = check_dangerous_command("rm -rf /tmp/stuff", "local",
-                                         approval_callback=lambda *a: "deny")
+        result = check_dangerous_command(
+            "rm -rf /tmp/stuff", "local", approval_callback=lambda *a: "deny"
+        )
         assert not result["approved"]
 
     def test_dangerous_command_approved_in_yolo_mode(self, monkeypatch):
@@ -83,7 +84,9 @@ class TestYoloMode:
             called["value"] = True
             return {"action": "block", "findings": [], "summary": "should never run"}
 
-        monkeypatch.setattr(tools.implementations.tirith_security, "check_command_security", fake_check)
+        monkeypatch.setattr(
+            tools.implementations.tirith_security, "check_command_security", fake_check
+        )
 
         result = check_all_command_guards("rm -rf /", "local")
         assert result["approved"]
@@ -104,6 +107,5 @@ class TestYoloMode:
 
         # Empty string is falsy in Python, so getenv("EPFLEMMA_YOLO_MODE") returns ""
         # which is falsy — bypass should NOT activate
-        result = check_dangerous_command("rm -rf /", "local",
-                                         approval_callback=lambda *a: "deny")
+        result = check_dangerous_command("rm -rf /", "local", approval_callback=lambda *a: "deny")
         assert not result["approved"]

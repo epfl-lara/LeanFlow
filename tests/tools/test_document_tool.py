@@ -41,7 +41,9 @@ def test_read_pdf_tool_returns_extracted_text(monkeypatch):
             "degraded_reasons": [],
         }
 
-    monkeypatch.setattr("tools.implementations.document_tool.inspect_formalization_document", fake_inspect)
+    monkeypatch.setattr(
+        "tools.implementations.document_tool.inspect_formalization_document", fake_inspect
+    )
 
     payload = json.loads(
         read_pdf_tool(
@@ -67,7 +69,9 @@ def test_read_pdf_tool_rejects_non_pdf(monkeypatch):
             "source_relative": path,
         }
 
-    monkeypatch.setattr("tools.implementations.document_tool.inspect_formalization_document", fake_inspect)
+    monkeypatch.setattr(
+        "tools.implementations.document_tool.inspect_formalization_document", fake_inspect
+    )
 
     payload = json.loads(read_pdf_tool("docs/paper.tex", cwd="/project", project_root="/project"))
 

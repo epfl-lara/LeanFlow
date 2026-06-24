@@ -31,7 +31,7 @@ def _read_gitdir(repo_root: Path) -> Path | None:
     if not raw.lower().startswith(prefix):
         return None
 
-    target = raw[len(prefix):].strip()
+    target = raw[len(prefix) :].strip()
     gitdir = Path(target)
     if not gitdir.is_absolute():
         gitdir = (repo_root / gitdir).resolve()

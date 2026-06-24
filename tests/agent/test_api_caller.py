@@ -34,9 +34,7 @@ def _make_tool_defs(*names):
 @pytest.fixture()
 def agent():
     with (
-        patch(
-            "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
-        ),
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
@@ -164,6 +162,7 @@ def test_interruptible_api_call_raises_on_interrupt(agent):
     agent._interrupt_requested = True
 
     blocker = MagicMock()
+
     # Make the worker block so the main loop observes the interrupt flag.
     def _never_returns(**_kwargs):
         import time as _t

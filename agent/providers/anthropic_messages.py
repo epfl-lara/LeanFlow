@@ -60,7 +60,7 @@ def materialize_data_url_for_vision(image_url: str) -> tuple[str, Path | None]:
     header, _, data = str(image_url or "").partition(",")
     mime = "image/jpeg"
     if header.startswith("data:"):
-        mime_part = header[len("data:"):].split(";", 1)[0].strip()
+        mime_part = header[len("data:") :].split(";", 1)[0].strip()
         if mime_part.startswith("image/"):
             mime = mime_part
     suffix = {
@@ -163,7 +163,11 @@ class AnthropicMessagePreparer:
 
             if ptype in {"image_url", "input_image"}:
                 image_data = part.get("image_url", {})
-                image_url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data or "")
+                image_url = (
+                    image_data.get("url", "")
+                    if isinstance(image_data, dict)
+                    else str(image_data or "")
+                )
                 if image_url:
                     image_notes.append(self.describe_image_for_anthropic_fallback(image_url, role))
                 else:

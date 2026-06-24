@@ -136,9 +136,7 @@ PY
         "baz=qux",
     ]
     env_values = dict(
-        line.split("=", 1)
-        for line in env_log.read_text(encoding="utf-8").splitlines()
-        if line
+        line.split("=", 1) for line in env_log.read_text(encoding="utf-8").splitlines() if line
     )
     assert env_values == {
         "GAUSS_HOME": "/tmp/custom-gauss-home",

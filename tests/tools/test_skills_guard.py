@@ -147,9 +147,7 @@ class TestShouldAllowInstall:
 
     def test_force_overrides_dangerous_for_trusted(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
-        allowed, reason = should_allow_install(
-            self._result("trusted", "dangerous", f), force=True
-        )
+        allowed, reason = should_allow_install(self._result("trusted", "dangerous", f), force=True)
         assert allowed is True
         assert "Force-installed" in reason
 
@@ -267,7 +265,6 @@ class TestScanSkill:
         assert result.verdict != "safe"
 
 
-
 # ---------------------------------------------------------------------------
 # _check_structure
 # ---------------------------------------------------------------------------
@@ -301,9 +298,7 @@ class TestCheckStructure:
         findings = _check_structure(tmp_path / "skill")
         assert any(fi.pattern_id == "symlink_escape" for fi in findings)
 
-    @pytest.mark.skipif(
-        not _can_symlink(), reason="Symlinks need elevated privileges"
-    )
+    @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
     def test_symlink_prefix_confusion_blocked(self, tmp_path):
         """A symlink resolving to a sibling dir with a shared prefix must be caught.
 
@@ -325,9 +320,7 @@ class TestCheckStructure:
         findings = _check_structure(skill_dir)
         assert any(fi.pattern_id == "symlink_escape" for fi in findings)
 
-    @pytest.mark.skipif(
-        not _can_symlink(), reason="Symlinks need elevated privileges"
-    )
+    @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
     def test_symlink_within_skill_dir_allowed(self, tmp_path):
         """A symlink that stays within the skill directory is fine."""
         skill_dir = tmp_path / "my-skill"

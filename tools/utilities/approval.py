@@ -21,38 +21,41 @@ logger = logging.getLogger(__name__)
 # =========================================================================
 
 DANGEROUS_PATTERNS = [
-    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
-    (r'\brm\s+-[^\s]*r', "recursive delete"),
-    (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
-    (r'\bchmod\s+(-[^\s]*\s+)*777\b', "world-writable permissions"),
-    (r'\bchmod\s+--recursive\b.*777', "recursive world-writable (long flag)"),
-    (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
-    (r'\bchown\s+--recursive\b.*root', "recursive chown to root (long flag)"),
-    (r'\bmkfs\b', "format filesystem"),
-    (r'\bdd\s+.*if=', "disk copy"),
-    (r'>\s*/dev/sd', "write to block device"),
-    (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
-    (r'\bDELETE\s+FROM\b(?!.*\bWHERE\b)', "SQL DELETE without WHERE"),
-    (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
-    (r'>\s*/etc/', "overwrite system config"),
-    (r'\bsystemctl\s+(stop|disable|mask)\b', "stop/disable system service"),
-    (r'\bkill\s+-9\s+-1\b', "kill all processes"),
-    (r'\bpkill\s+-9\b', "force kill processes"),
-    (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
-    (r'\b(bash|sh|zsh)\s+-c\s+', "shell command via -c flag"),
-    (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
-    (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
-    (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
-    (r'\btee\b.*(/etc/|/dev/sd|\.ssh/|\.gauss/\.env)', "overwrite system file via tee"),
-    (r'\bxargs\s+.*\brm\b', "xargs with rm"),
-    (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
-    (r'\bfind\b.*-delete\b', "find -delete"),
+    (r"\brm\s+(-[^\s]*\s+)*/", "delete in root path"),
+    (r"\brm\s+-[^\s]*r", "recursive delete"),
+    (r"\brm\s+--recursive\b", "recursive delete (long flag)"),
+    (r"\bchmod\s+(-[^\s]*\s+)*777\b", "world-writable permissions"),
+    (r"\bchmod\s+--recursive\b.*777", "recursive world-writable (long flag)"),
+    (r"\bchown\s+(-[^\s]*)?R\s+root", "recursive chown to root"),
+    (r"\bchown\s+--recursive\b.*root", "recursive chown to root (long flag)"),
+    (r"\bmkfs\b", "format filesystem"),
+    (r"\bdd\s+.*if=", "disk copy"),
+    (r">\s*/dev/sd", "write to block device"),
+    (r"\bDROP\s+(TABLE|DATABASE)\b", "SQL DROP"),
+    (r"\bDELETE\s+FROM\b(?!.*\bWHERE\b)", "SQL DELETE without WHERE"),
+    (r"\bTRUNCATE\s+(TABLE)?\s*\w", "SQL TRUNCATE"),
+    (r">\s*/etc/", "overwrite system config"),
+    (r"\bsystemctl\s+(stop|disable|mask)\b", "stop/disable system service"),
+    (r"\bkill\s+-9\s+-1\b", "kill all processes"),
+    (r"\bpkill\s+-9\b", "force kill processes"),
+    (r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", "fork bomb"),
+    (r"\b(bash|sh|zsh)\s+-c\s+", "shell command via -c flag"),
+    (r"\b(python[23]?|perl|ruby|node)\s+-[ec]\s+", "script execution via -e/-c flag"),
+    (r"\b(curl|wget)\b.*\|\s*(ba)?sh\b", "pipe remote content to shell"),
+    (
+        r"\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b",
+        "execute remote script via process substitution",
+    ),
+    (r"\btee\b.*(/etc/|/dev/sd|\.ssh/|\.gauss/\.env)", "overwrite system file via tee"),
+    (r"\bxargs\s+.*\brm\b", "xargs with rm"),
+    (r"\bfind\b.*-exec\s+(/\S*/)?rm\b", "find -exec rm"),
+    (r"\bfind\b.*-delete\b", "find -delete"),
 ]
 
 
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
-    return pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
+    return pattern.split(r"\b")[1] if r"\b" in pattern else pattern[:20]
 
 
 _PATTERN_KEY_ALIASES: dict[str, set[str]] = {}
@@ -76,6 +79,7 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # =========================================================================
 # Detection
 # =========================================================================
+
 
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
@@ -162,6 +166,7 @@ def clear_session(session_key: str):
 # Config persistence for permanent allowlist
 # =========================================================================
 
+
 def load_permanent_allowlist() -> set:
     """Load permanently allowed command patterns from config.
 
@@ -170,6 +175,7 @@ def load_permanent_allowlist() -> set:
     """
     try:
         from epflemma_cli.config import load_config
+
         config = load_config()
         patterns = set(config.get("command_allowlist", []) or [])
         if patterns:
@@ -183,6 +189,7 @@ def save_permanent_allowlist(patterns: set):
     """Save permanently allowed command patterns to config."""
     try:
         from epflemma_cli.config import load_config, save_config
+
         config = load_config()
         config["command_allowlist"] = list(patterns)
         save_config(config)
@@ -194,10 +201,14 @@ def save_permanent_allowlist(patterns: set):
 # Approval prompting + orchestration
 # =========================================================================
 
-def prompt_dangerous_approval(command: str, description: str,
-                              timeout_seconds: int = 60,
-                              allow_permanent: bool = True,
-                              approval_callback=None) -> str:
+
+def prompt_dangerous_approval(
+    command: str,
+    description: str,
+    timeout_seconds: int = 60,
+    allow_permanent: bool = True,
+    approval_callback=None,
+) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     Args:
@@ -212,8 +223,7 @@ def prompt_dangerous_approval(command: str, description: str,
     """
     if approval_callback is not None:
         try:
-            return approval_callback(command, description,
-                                     allow_permanent=allow_permanent)
+            return approval_callback(command, description, allow_permanent=allow_permanent)
         except Exception:
             return "deny"
 
@@ -237,7 +247,9 @@ def prompt_dangerous_approval(command: str, description: str,
 
             def get_input():
                 try:
-                    prompt = "      Choice [o/s/a/D]: " if allow_permanent else "      Choice [o/s/D]: "
+                    prompt = (
+                        "      Choice [o/s/a/D]: " if allow_permanent else "      Choice [o/s/D]: "
+                    )
                     result["choice"] = input(prompt).strip().lower()
                 except (EOFError, OSError):
                     result["choice"] = ""
@@ -251,19 +263,19 @@ def prompt_dangerous_approval(command: str, description: str,
                 return "deny"
 
             choice = result["choice"]
-            if choice in ('v', 'view') and is_truncated:
+            if choice in ("v", "view") and is_truncated:
                 print()
                 print("      Full command:")
                 print(f"      {command}")
                 is_truncated = False
                 continue
-            if choice in ('o', 'once'):
+            if choice in ("o", "once"):
                 print("      ✓ Allowed once")
                 return "once"
-            elif choice in ('s', 'session'):
+            elif choice in ("s", "session"):
                 print("      ✓ Allowed for this session")
                 return "session"
-            elif choice in ('a', 'always'):
+            elif choice in ("a", "always"):
                 if not allow_permanent:
                     print("      ✓ Allowed for this session")
                     return "session"
@@ -287,6 +299,7 @@ def _get_approval_mode() -> str:
     """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
     try:
         from epflemma_cli.config import load_config
+
         config = load_config()
         return config.get("approvals", {}).get("mode", "manual")
     except Exception:
@@ -348,8 +361,7 @@ Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
         return "escalate"
 
 
-def check_dangerous_command(command: str, env_type: str,
-                            approval_callback=None) -> dict:
+def check_dangerous_command(command: str, env_type: str, approval_callback=None) -> dict:
     """Check if a command is dangerous and handle approval.
 
     This is the main entry point called by terminal_tool before executing
@@ -385,11 +397,14 @@ def check_dangerous_command(command: str, env_type: str,
         return {"approved": True, "message": None}
 
     if is_gateway or os.getenv("EPFLEMMA_EXEC_ASK"):
-        submit_pending(session_key, {
-            "command": command,
-            "pattern_key": pattern_key,
-            "description": description,
-        })
+        submit_pending(
+            session_key,
+            {
+                "command": command,
+                "pattern_key": pattern_key,
+                "description": description,
+            },
+        )
         return {
             "approved": False,
             "pattern_key": pattern_key,
@@ -399,8 +414,7 @@ def check_dangerous_command(command: str, env_type: str,
             "message": f"⚠️ This command is potentially dangerous ({description}). Asking the user for approval...",
         }
 
-    choice = prompt_dangerous_approval(command, description,
-                                       approval_callback=approval_callback)
+    choice = prompt_dangerous_approval(command, description, approval_callback=approval_callback)
 
     if choice == "deny":
         return {
@@ -424,8 +438,8 @@ def check_dangerous_command(command: str, env_type: str,
 # Combined pre-exec guard (tirith + dangerous command detection)
 # =========================================================================
 
-def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+
+def check_all_command_guards(command: str, env_type: str, approval_callback=None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
@@ -458,6 +472,7 @@ def check_all_command_guards(command: str, env_type: str,
     tirith_result = {"action": "allow", "findings": [], "summary": ""}
     try:
         from tools.implementations.tirith_security import check_command_security
+
         tirith_result = check_command_security(command)
     except ImportError:
         pass  # tirith module not installed — allow
@@ -484,7 +499,9 @@ def check_all_command_guards(command: str, env_type: str,
         findings = tirith_result.get("findings") or []
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
         tirith_key = f"tirith:{rule_id}"
-        tirith_desc = f"Security scan: {tirith_result.get('summary') or 'security warning detected'}"
+        tirith_desc = (
+            f"Security scan: {tirith_result.get('summary') or 'security warning detected'}"
+        )
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, tirith_desc, True))
 
@@ -507,16 +524,16 @@ def check_all_command_guards(command: str, env_type: str,
             # Auto-approve and grant session-level approval for these patterns
             for key, _, _ in warnings:
                 approve_session(session_key, key)
-            logger.debug("Smart approval: auto-approved '%s' (%s)",
-                         command[:60], combined_desc_for_llm)
-            return {"approved": True, "message": None,
-                    "smart_approved": True}
+            logger.debug(
+                "Smart approval: auto-approved '%s' (%s)", command[:60], combined_desc_for_llm
+            )
+            return {"approved": True, "message": None, "smart_approved": True}
         elif verdict == "deny":
             combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
             return {
                 "approved": False,
                 "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
-                           "The command was assessed as genuinely dangerous. Do NOT retry.",
+                "The command was assessed as genuinely dangerous. Do NOT retry.",
                 "smart_denied": True,
             }
         # verdict == "escalate" → fall through to manual prompt
@@ -532,12 +549,15 @@ def check_all_command_guards(command: str, env_type: str,
     # Gateway/async: single approval_required with combined description
     # Store all pattern keys so gateway replay approves all of them
     if is_gateway or is_ask:
-        submit_pending(session_key, {
-            "command": command,
-            "pattern_key": primary_key,        # backward compat
-            "pattern_keys": all_keys,           # all keys for replay
-            "description": combined_desc,
-        })
+        submit_pending(
+            session_key,
+            {
+                "command": command,
+                "pattern_key": primary_key,  # backward compat
+                "pattern_keys": all_keys,  # all keys for replay
+                "description": combined_desc,
+            },
+        )
         return {
             "approved": False,
             "pattern_key": primary_key,
@@ -549,9 +569,9 @@ def check_all_command_guards(command: str, env_type: str,
 
     # CLI interactive: single combined prompt
     # Hide [a]lways when any tirith warning is present
-    choice = prompt_dangerous_approval(command, combined_desc,
-                                       allow_permanent=not has_tirith,
-                                       approval_callback=approval_callback)
+    choice = prompt_dangerous_approval(
+        command, combined_desc, allow_permanent=not has_tirith, approval_callback=approval_callback
+    )
 
     if choice == "deny":
         return {

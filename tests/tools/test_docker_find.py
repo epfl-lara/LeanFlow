@@ -28,14 +28,18 @@ class TestFindDocker:
         fake_docker.write_text("#!/bin/sh\n")
         fake_docker.chmod(0o755)
 
-        with patch("tools.environments.docker.shutil.which", return_value=None), \
-             patch("tools.environments.docker._DOCKER_SEARCH_PATHS", [str(fake_docker)]):
+        with (
+            patch("tools.environments.docker.shutil.which", return_value=None),
+            patch("tools.environments.docker._DOCKER_SEARCH_PATHS", [str(fake_docker)]),
+        ):
             result = docker_mod.find_docker()
         assert result == str(fake_docker)
 
     def test_returns_none_when_not_found(self):
-        with patch("tools.environments.docker.shutil.which", return_value=None), \
-             patch("tools.environments.docker._DOCKER_SEARCH_PATHS", ["/nonexistent/docker"]):
+        with (
+            patch("tools.environments.docker.shutil.which", return_value=None),
+            patch("tools.environments.docker._DOCKER_SEARCH_PATHS", ["/nonexistent/docker"]),
+        ):
             result = docker_mod.find_docker()
         assert result is None
 

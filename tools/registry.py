@@ -25,12 +25,20 @@ class ToolEntry:
     """Metadata for a single registered tool."""
 
     __slots__ = (
-        "name", "toolset", "schema", "handler", "check_fn",
-        "requires_env", "is_async", "description", "emoji",
+        "name",
+        "toolset",
+        "schema",
+        "handler",
+        "check_fn",
+        "requires_env",
+        "is_async",
+        "description",
+        "emoji",
     )
 
-    def __init__(self, name, toolset, schema, handler, check_fn,
-                 requires_env, is_async, description, emoji):
+    def __init__(
+        self, name, toolset, schema, handler, check_fn, requires_env, is_async, description, emoji
+    ):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -125,6 +133,7 @@ class ToolRegistry:
         try:
             if entry.is_async:
                 from model_tools import _run_async
+
                 return _run_async(entry.handler(args, **kwargs))
             return entry.handler(args, **kwargs)
         except Exception as e:
@@ -147,7 +156,7 @@ class ToolRegistry:
     def get_emoji(self, name: str, default: str = "⚡") -> str:
         """Return the emoji for a tool, or *default* if unset."""
         entry = self._tools.get(name)
-        return (entry.emoji if entry and entry.emoji else default)
+        return entry.emoji if entry and entry.emoji else default
 
     def get_tool_to_toolset_map(self) -> dict[str, str]:
         """Return ``{tool_name: toolset_name}`` for every registered tool."""
@@ -226,11 +235,13 @@ class ToolRegistry:
             if self.is_toolset_available(ts):
                 available.append(ts)
             else:
-                unavailable.append({
-                    "name": ts,
-                    "env_vars": entry.requires_env,
-                    "tools": [e.name for e in entries if e.toolset == ts],
-                })
+                unavailable.append(
+                    {
+                        "name": ts,
+                        "env_vars": entry.requires_env,
+                        "tools": [e.name for e in entries if e.toolset == ts],
+                    }
+                )
         return available, unavailable
 
 

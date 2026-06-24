@@ -90,9 +90,11 @@ _MCP_SAMPLING_TYPES = False
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
+
     _MCP_AVAILABLE = True
     try:
         from mcp.client.streamable_http import streamablehttp_client
+
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
         _MCP_HTTP_AVAILABLE = False
@@ -105,6 +107,7 @@ try:
             TextContent,
             ToolUseContent,
         )
+
         _MCP_SAMPLING_TYPES = True
     except ImportError:
         logger.debug("MCP sampling types not available -- sampling disabled")
@@ -141,7 +144,7 @@ from tools.mcp.mcp_transport import (  # noqa: E402
 # Constants
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TOOL_TIMEOUT = 120      # seconds for tool calls
+_DEFAULT_TOOL_TIMEOUT = 120  # seconds for tool calls
 _MAX_RECONNECT_RETRIES = 5
 _MAX_BACKOFF_SECONDS = 60
 
@@ -166,6 +169,7 @@ from tools.mcp.mcp_sampling import (  # noqa: E402
 # Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
 
+
 class MCPServerTask:
     """Manages a single MCP server connection in a dedicated asyncio Task.
 
@@ -177,9 +181,17 @@ class MCPServerTask:
     """
 
     __slots__ = (
-        "name", "session", "tool_timeout",
-        "_task", "_ready", "_shutdown_event", "_tools", "_error", "_config",
-        "_sampling", "_registered_tool_names",
+        "name",
+        "session",
+        "tool_timeout",
+        "_task",
+        "_ready",
+        "_shutdown_event",
+        "_tools",
+        "_error",
+        "_config",
+        "_sampling",
+        "_registered_tool_names",
     )
 
     def __init__(self, name: str):
@@ -206,9 +218,7 @@ class MCPServerTask:
         user_env = config.get("env")
 
         if not command:
-            raise ValueError(
-                f"MCP server '{self.name}' has no 'command' in config"
-            )
+            raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
 
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)
@@ -263,11 +273,7 @@ class MCPServerTask:
         if self.session is None:
             return
         tools_result = await self.session.list_tools()
-        self._tools = (
-            tools_result.tools
-            if hasattr(tools_result, "tools")
-            else []
-        )
+        self._tools = tools_result.tools if hasattr(tools_result, "tools") else []
 
     async def run(self, config: dict):
         """Long-lived coroutine: connect, discover tools, wait, disconnect.
@@ -317,24 +323,28 @@ class MCPServerTask:
                 if self._shutdown_event.is_set():
                     logger.debug(
                         "MCP server '%s' disconnected during shutdown: %s",
-                        self.name, exc,
+                        self.name,
+                        exc,
                     )
                     return
 
                 retries += 1
                 if retries > _MAX_RECONNECT_RETRIES:
                     logger.warning(
-                        "MCP server '%s' failed after %d reconnection attempts, "
-                        "giving up: %s",
-                        self.name, _MAX_RECONNECT_RETRIES, exc,
+                        "MCP server '%s' failed after %d reconnection attempts, giving up: %s",
+                        self.name,
+                        _MAX_RECONNECT_RETRIES,
+                        exc,
                     )
                     return
 
                 logger.warning(
-                    "MCP server '%s' connection lost (attempt %d/%d), "
-                    "reconnecting in %.0fs: %s",
-                    self.name, retries, _MAX_RECONNECT_RETRIES,
-                    backoff, exc,
+                    "MCP server '%s' connection lost (attempt %d/%d), reconnecting in %.0fs: %s",
+                    self.name,
+                    retries,
+                    _MAX_RECONNECT_RETRIES,
+                    backoff,
+                    exc,
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
@@ -368,6 +378,7 @@ class MCPServerTask:
                     await self._task
         self.session = None
 
+
 # ---------------------------------------------------------------------------
 # Module-level state
 # ---------------------------------------------------------------------------
@@ -380,6 +391,7 @@ _mcp_thread: threading.Thread | None = None
 
 # Protects _mcp_loop, _mcp_thread, and _servers from concurrent access.
 _lock = threading.Lock()
+
 
 def _ensure_mcp_loop():
     """Start the background event loop thread if not already running."""
@@ -395,6 +407,7 @@ def _ensure_mcp_loop():
         )
         _mcp_thread.start()
 
+
 def _run_on_mcp_loop(coro, timeout: float = 30):
     """Schedule a coroutine on the MCP event loop and block until done."""
     with _lock:
@@ -403,6 +416,7 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
         raise RuntimeError("MCP event loop is not running")
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     return future.result(timeout=timeout)
+
 
 # ---------------------------------------------------------------------------
 # Config loading -- _load_mcp_config lives in tools/mcp_config.py and is
@@ -416,6 +430,7 @@ from tools.mcp.mcp_config import _load_mcp_config  # noqa: E402,F401
 # ---------------------------------------------------------------------------
 # Server connection helper
 # ---------------------------------------------------------------------------
+
 
 async def _connect_server(name: str, config: dict) -> MCPServerTask:
     """Create an MCPServerTask, start it, and return when ready.
@@ -432,9 +447,11 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
     await server.start(config)
     return server
 
+
 # ---------------------------------------------------------------------------
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
+
 
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
@@ -447,27 +464,23 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            })
+            return json.dumps({"error": f"MCP server '{server_name}' is not connected"})
 
         async def _call():
             result = await server.session.call_tool(tool_name, arguments=args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""
-                for block in (result.content or []):
+                for block in result.content or []:
                     if hasattr(block, "text"):
                         error_text += block.text
-                return json.dumps({
-                    "error": _sanitize_error(
-                        error_text or "MCP tool returned an error"
-                    )
-                })
+                return json.dumps(
+                    {"error": _sanitize_error(error_text or "MCP tool returned an error")}
+                )
 
             # Collect text from content blocks
             parts: list[str] = []
-            for block in (result.content or []):
+            for block in result.content or []:
                 if hasattr(block, "text"):
                     parts.append(block.text)
             return json.dumps({"result": "\n".join(parts) if parts else ""})
@@ -477,15 +490,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         except Exception as exc:
             logger.error(
                 "MCP tool %s/%s call failed: %s",
-                server_name, tool_name, exc,
+                server_name,
+                tool_name,
+                exc,
             )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
-                )
-            })
+            return json.dumps(
+                {"error": _sanitize_error(f"MCP call failed: {type(exc).__name__}: {exc}")}
+            )
 
     return _handler
+
 
 def _make_list_resources_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists resources from an MCP server."""
@@ -494,14 +508,12 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            })
+            return json.dumps({"error": f"MCP server '{server_name}' is not connected"})
 
         async def _call():
             result = await server.session.list_resources()
             resources = []
-            for r in (result.resources if hasattr(result, "resources") else []):
+            for r in result.resources if hasattr(result, "resources") else []:
                 entry = {}
                 if hasattr(r, "uri"):
                     entry["uri"] = str(r.uri)
@@ -518,15 +530,16 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
         except Exception as exc:
             logger.error(
-                "MCP %s/list_resources failed: %s", server_name, exc,
+                "MCP %s/list_resources failed: %s",
+                server_name,
+                exc,
             )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
-                )
-            })
+            return json.dumps(
+                {"error": _sanitize_error(f"MCP call failed: {type(exc).__name__}: {exc}")}
+            )
 
     return _handler
+
 
 def _make_read_resource_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that reads a resource by URI from an MCP server."""
@@ -535,9 +548,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            })
+            return json.dumps({"error": f"MCP server '{server_name}' is not connected"})
 
         uri = args.get("uri")
         if not uri:
@@ -559,15 +570,16 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
         except Exception as exc:
             logger.error(
-                "MCP %s/read_resource failed: %s", server_name, exc,
+                "MCP %s/read_resource failed: %s",
+                server_name,
+                exc,
             )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
-                )
-            })
+            return json.dumps(
+                {"error": _sanitize_error(f"MCP call failed: {type(exc).__name__}: {exc}")}
+            )
 
     return _handler
+
 
 def _make_list_prompts_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists prompts from an MCP server."""
@@ -576,14 +588,12 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            })
+            return json.dumps({"error": f"MCP server '{server_name}' is not connected"})
 
         async def _call():
             result = await server.session.list_prompts()
             prompts = []
-            for p in (result.prompts if hasattr(result, "prompts") else []):
+            for p in result.prompts if hasattr(result, "prompts") else []:
                 entry = {}
                 if hasattr(p, "name"):
                     entry["name"] = p.name
@@ -593,7 +603,11 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
                     entry["arguments"] = [
                         {
                             "name": a.name,
-                            **({"description": a.description} if hasattr(a, "description") and a.description else {}),
+                            **(
+                                {"description": a.description}
+                                if hasattr(a, "description") and a.description
+                                else {}
+                            ),
                             **({"required": a.required} if hasattr(a, "required") else {}),
                         }
                         for a in p.arguments
@@ -605,15 +619,16 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
         except Exception as exc:
             logger.error(
-                "MCP %s/list_prompts failed: %s", server_name, exc,
+                "MCP %s/list_prompts failed: %s",
+                server_name,
+                exc,
             )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
-                )
-            })
+            return json.dumps(
+                {"error": _sanitize_error(f"MCP call failed: {type(exc).__name__}: {exc}")}
+            )
 
     return _handler
+
 
 def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that gets a prompt by name from an MCP server."""
@@ -622,9 +637,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            })
+            return json.dumps({"error": f"MCP server '{server_name}' is not connected"})
 
         name = args.get("name")
         if not name:
@@ -635,7 +648,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             result = await server.session.get_prompt(name, arguments=arguments)
             # GetPromptResult has .messages list
             messages = []
-            for msg in (result.messages if hasattr(result, "messages") else []):
+            for msg in result.messages if hasattr(result, "messages") else []:
                 entry = {}
                 if hasattr(msg, "role"):
                     entry["role"] = msg.role
@@ -657,15 +670,16 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
         except Exception as exc:
             logger.error(
-                "MCP %s/get_prompt failed: %s", server_name, exc,
+                "MCP %s/get_prompt failed: %s",
+                server_name,
+                exc,
             )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
-                )
-            })
+            return json.dumps(
+                {"error": _sanitize_error(f"MCP call failed: {type(exc).__name__}: {exc}")}
+            )
 
     return _handler
+
 
 def _make_check_fn(server_name: str):
     """Return a check function that verifies the MCP connection is alive."""
@@ -676,6 +690,7 @@ def _make_check_fn(server_name: str):
         return server is not None and server.session is not None
 
     return _check
+
 
 # ---------------------------------------------------------------------------
 # Discovery & registration
@@ -707,6 +722,7 @@ def _existing_tool_names() -> list[str]:
             names.append(schema["name"])
     return names
 
+
 async def _discover_and_register_server(name: str, config: dict) -> list[str]:
     """Connect to a single MCP server, discover tools, and register them.
 
@@ -736,8 +752,12 @@ async def _discover_and_register_server(name: str, config: dict) -> list[str]:
     #   include takes precedence over exclude
     #   Neither set → register all tools (backward-compatible default)
     tools_filter = config.get("tools") or {}
-    include_set = _normalize_name_filter(tools_filter.get("include"), f"mcp_servers.{name}.tools.include")
-    exclude_set = _normalize_name_filter(tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude")
+    include_set = _normalize_name_filter(
+        tools_filter.get("include"), f"mcp_servers.{name}.tools.include"
+    )
+    exclude_set = _normalize_name_filter(
+        tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude"
+    )
 
     def _should_register(tool_name: str) -> bool:
         if include_set:
@@ -748,7 +768,9 @@ async def _discover_and_register_server(name: str, config: dict) -> list[str]:
 
     for mcp_tool in server._tools:
         if not _should_register(mcp_tool.name):
-            logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, mcp_tool.name)
+            logger.debug(
+                "MCP server '%s': skipping tool '%s' (filtered by config)", name, mcp_tool.name
+            )
             continue
         schema = _convert_mcp_schema(name, mcp_tool)
         tool_name_prefixed = schema["name"]
@@ -802,14 +824,18 @@ async def _discover_and_register_server(name: str, config: dict) -> list[str]:
     transport_type = "HTTP" if "url" in config else "stdio"
     logger.info(
         "MCP server '%s' (%s): registered %d tool(s): %s",
-        name, transport_type, len(registered_names),
+        name,
+        transport_type,
+        len(registered_names),
         ", ".join(registered_names),
     )
     return registered_names
 
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def discover_mcp_tools() -> list[str]:
     """Entry point: load config, connect to MCP servers, register tools.
@@ -898,6 +924,7 @@ def discover_mcp_tools() -> list[str]:
     # Return ALL registered tools (existing + newly discovered)
     return _existing_tool_names()
 
+
 def get_mcp_status() -> list[dict]:
     """Return status of all configured MCP servers for banner display.
 
@@ -927,7 +954,9 @@ def get_mcp_status() -> list[dict]:
             entry = {
                 "name": name,
                 "transport": transport,
-                "tools": len(server._registered_tool_names) if hasattr(server, "_registered_tool_names") else len(server._tools),
+                "tools": len(server._registered_tool_names)
+                if hasattr(server, "_registered_tool_names")
+                else len(server._tools),
                 "connected": True,
             }
             if server._sampling:
@@ -958,6 +987,7 @@ def get_mcp_status() -> list[dict]:
 
     return result
 
+
 def shutdown_mcp_servers():
     """Close all MCP server connections and stop the background loop.
 
@@ -981,7 +1011,9 @@ def shutdown_mcp_servers():
         for server, result in zip(servers_snapshot, results):
             if isinstance(result, Exception):
                 logger.debug(
-                    "Error closing MCP server '%s': %s", server.name, result,
+                    "Error closing MCP server '%s': %s",
+                    server.name,
+                    result,
                 )
         with _lock:
             _servers.clear()
@@ -996,6 +1028,7 @@ def shutdown_mcp_servers():
             logger.debug("Error during MCP shutdown: %s", exc)
 
     _stop_mcp_loop()
+
 
 def _stop_mcp_loop():
     """Stop the background event loop and join its thread."""

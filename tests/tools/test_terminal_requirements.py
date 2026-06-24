@@ -40,8 +40,7 @@ def test_unknown_terminal_env_logs_error_and_returns_false(monkeypatch, caplog):
 
     assert ok is False
     assert any(
-        "Unknown TERMINAL_ENV 'unknown-backend'" in record.getMessage()
-        for record in caplog.records
+        "Unknown TERMINAL_ENV 'unknown-backend'" in record.getMessage() for record in caplog.records
     )
 
 
@@ -64,7 +63,9 @@ def test_modal_backend_without_token_or_config_logs_specific_error(monkeypatch, 
     monkeypatch.setenv("TERMINAL_ENV", "modal")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    monkeypatch.setattr(terminal_tool_module, "ensure_minisweagent_on_path", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        terminal_tool_module, "ensure_minisweagent_on_path", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
 
     with caplog.at_level(logging.ERROR):

@@ -65,14 +65,18 @@ def _verification_review_decision(payload: Mapping[str, Any] | None) -> str:
     return match.group(1).upper() if match else ""
 
 
-def _verification_review_findings(payload: Mapping[str, Any] | None, *, limit: int = 5) -> list[str]:
+def _verification_review_findings(
+    payload: Mapping[str, Any] | None, *, limit: int = 5
+) -> list[str]:
     response = str((payload or {}).get("response", "") or "").strip()
     if not response:
         return []
     parsed = _extract_json_payload(response)
     findings: list[str] = []
     if isinstance(parsed, Mapping):
-        raw_findings = parsed.get("findings") or parsed.get("issues") or parsed.get("blockers") or []
+        raw_findings = (
+            parsed.get("findings") or parsed.get("issues") or parsed.get("blockers") or []
+        )
         if isinstance(raw_findings, list):
             for item in raw_findings:
                 text = _single_line(item, 240)
@@ -91,7 +95,11 @@ def _verification_review_findings(payload: Mapping[str, Any] | None, *, limit: i
             finding = _single_line(bullet.group(1), 240)
             if finding:
                 findings.append(finding)
-        elif "block" in stripped.lower() or "missing" in stripped.lower() or "fix" in stripped.lower():
+        elif (
+            "block" in stripped.lower()
+            or "missing" in stripped.lower()
+            or "fix" in stripped.lower()
+        ):
             findings.append(_single_line(stripped, 240))
         if len(findings) >= limit:
             break
@@ -103,7 +111,9 @@ def _verification_review_findings(payload: Mapping[str, Any] | None, *, limit: i
 def _print_verification_review_summary(payload: Mapping[str, Any]) -> None:
     provider = str(payload.get("provider", "") or "verifier")
     task = str(payload.get("task", "") or "verification").replace("_", " ")
-    decision = _verification_review_decision(payload) or str(payload.get("status", "") or "reviewed")
+    decision = _verification_review_decision(payload) or str(
+        payload.get("status", "") or "reviewed"
+    )
     findings = _verification_review_findings(payload, limit=3)
     print(f"{task.title()} verifier feedback ({provider}): {decision}")
     for finding in findings:

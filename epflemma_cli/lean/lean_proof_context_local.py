@@ -36,7 +36,9 @@ def _local_proof_context_payload(
         return None
     theorem_name = str(entry.get("name", "") or theorem_id).strip()
     theorem = dict(scan_payload.get("theorem") or {}) if isinstance(scan_payload, Mapping) else {}
-    location = dict(theorem.get("location") or {}) if isinstance(theorem.get("location"), Mapping) else {}
+    location = (
+        dict(theorem.get("location") or {}) if isinstance(theorem.get("location"), Mapping) else {}
+    )
     local_text = _declaration_text_from_location(file_path, location) if location else ""
     if not local_text:
         local_text = str(entry.get("text", "") or "")
@@ -46,7 +48,9 @@ def _local_proof_context_payload(
         "declaration_kind": str(entry.get("kind", "") or theorem.get("kind", "")),
         "line": int(entry.get("line", 0) or 0),
         "end_line": int(entry.get("end_line", 0) or 0),
-        "scan_theorem": dict(scan_payload or {}) if isinstance(scan_payload, Mapping) and scan_payload else {},
+        "scan_theorem": dict(scan_payload or {})
+        if isinstance(scan_payload, Mapping) and scan_payload
+        else {},
     }
     if location:
         metadata["location"] = location
