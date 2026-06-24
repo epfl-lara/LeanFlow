@@ -5,10 +5,12 @@ that coupling is expressed implicitly via private-attribute injection on the age
 module makes the contract **explicit and typed** so the upcoming decomposition of both monoliths
 (native_runner in Phase 2, AIAgent in Phase 4) has a stable, documented surface to preserve.
 
-Nothing here changes behavior. It is a typed description plus the names of the concrete helpers
-``AIAgent`` now exposes. The legacy private attributes remain the backing store, so existing
-native_runner code keeps working; the explicit migration of native_runner onto these methods is
-deferred to a later phase.
+native_runner now drives the appendix exclusively through the explicit
+``stage_/set_/clear_tool_result_appendix`` methods below — it no longer reaches into the private
+``_post_tool_result_appendix`` attribute. That attribute remains AIAgent's internal backing store
+(it is load-bearing: ``_apply_*`` clears it to ``None`` while an explicit ``clear`` removes it, a
+one-shot distinction the tool loop and tests rely on), but it is now an implementation detail of
+AIAgent rather than a cross-module contract.
 
 Two distinct kinds of coupling exist — keep them separate:
 
@@ -18,9 +20,9 @@ Two distinct kinds of coupling exist — keep them separate:
    - The **post-tool-result appendix**: a one-shot string the runner stages so that extra
      guidance is appended to the next tool result the model sees. AIAgent consumes it in BOTH
      the sequential and concurrent tool-execution paths via
-     ``AIAgent._apply_post_tool_result_appendix`` and exposes
-     ``AIAgent.stage_tool_result_appendix(text)`` to stage it. Backed by the
-     ``_post_tool_result_appendix`` attribute for backwards compatibility.
+     ``AIAgent._apply_post_tool_result_appendix``. The runner manages it through three methods:
+     ``stage_tool_result_appendix(text)`` (accumulate), ``set_tool_result_appendix(text)``
+     (replace), and ``clear_tool_result_appendix()`` (discard).
 
 2. Runner-private scratch state (AIAgent NEVER reads these — native_runner just parks them on the
    agent object as a convenient per-run bag, read back inside its own callbacks):
@@ -68,4 +70,12 @@ class ManagedRunAgent(Protocol):
 
     def stage_tool_result_appendix(self, text: str) -> None:
         """Stage one-shot guidance appended to the next tool result (accumulates if repeated)."""
+        ...
+
+    def set_tool_result_appendix(self, text: str) -> None:
+        """Replace any staged appendix with ``text`` (empty text clears it)."""
+        ...
+
+    def clear_tool_result_appendix(self) -> None:
+        """Discard any staged appendix so the next tool result is unmodified."""
         ...

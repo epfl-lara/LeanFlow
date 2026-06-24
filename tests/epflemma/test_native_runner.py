@@ -41,7 +41,35 @@ class _FakeCheckpointManager:
         return {"success": True, "restored_to": commit_hash[:8], "reason": "milestone"}
 
 
-class _FakeAgent:
+class _ManagedRunAgentStub:
+    """Minimal managed-run contract surface (see agent/runtime/managed_run.py) for runner tests.
+
+    native_runner stages guidance through the agent's stage/set/clear_tool_result_appendix methods.
+    These mirror AIAgent's semantics (accumulate / replace / discard) over the same backing
+    ``_post_tool_result_appendix`` attribute the tests inspect, so a stub honestly satisfies the
+    contract rather than exposing only a raw attribute.
+    """
+
+    def stage_tool_result_appendix(self, text: str) -> None:
+        text = str(text or "").strip()
+        if not text:
+            return
+        previous = str(getattr(self, "_post_tool_result_appendix", "") or "").strip()
+        self._post_tool_result_appendix = f"{previous}\n\n{text}".strip() if previous else text
+
+    def set_tool_result_appendix(self, text: str) -> None:
+        text = str(text or "").strip()
+        if text:
+            self._post_tool_result_appendix = text
+        else:
+            self.clear_tool_result_appendix()
+
+    def clear_tool_result_appendix(self) -> None:
+        if hasattr(self, "_post_tool_result_appendix"):
+            delattr(self, "_post_tool_result_appendix")
+
+
+class _FakeAgent(_ManagedRunAgentStub):
     compression_enabled = True
 
     def __init__(self):
@@ -80,7 +108,7 @@ def test_interactive_prompt_loop_allowed_when_stdin_is_tty(monkeypatch):
 
 
 def test_run_managed_conversation_passes_through_result():
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def run_conversation(self, **kwargs):
             return {"messages": [], "interrupted": False, "kwargs": kwargs}
 
@@ -91,7 +119,7 @@ def test_run_managed_conversation_passes_through_result():
 
 
 def test_run_managed_conversation_uses_managed_tool_task_id():
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_tool_task_id = "managed-task"
 
         def run_conversation(self, **kwargs):
@@ -103,7 +131,7 @@ def test_run_managed_conversation_uses_managed_tool_task_id():
 
 
 def test_run_managed_conversation_preserves_explicit_task_id():
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_tool_task_id = "managed-task"
 
         def run_conversation(self, **kwargs):
@@ -115,7 +143,7 @@ def test_run_managed_conversation_preserves_explicit_task_id():
 
 
 def test_run_managed_conversation_returns_failed_payload_on_provider_error(capsys):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _session_messages = [{"role": "assistant", "content": "partial"}]
 
         def run_conversation(self, **kwargs):
@@ -137,7 +165,7 @@ def test_run_managed_conversation_returns_failed_payload_on_provider_error(capsy
 
 
 def test_run_managed_conversation_interrupts_on_ctrl_c(monkeypatch, capsys):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self.interrupt_calls = 0
 
@@ -181,7 +209,7 @@ def test_run_managed_conversation_interrupts_on_ctrl_c(monkeypatch, capsys):
 
 
 def test_run_managed_conversation_returns_interrupted_result_when_no_payload_arrives_after_interrupt(monkeypatch, capsys):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self.interrupt_calls = 0
             self._session_messages = [{"role": "assistant", "content": "partial"}]
@@ -227,7 +255,7 @@ def test_run_managed_conversation_returns_interrupted_result_when_no_payload_arr
 
 
 def test_run_managed_conversation_converts_worker_interrupted_error(monkeypatch, capsys):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
 
@@ -248,7 +276,7 @@ def test_run_managed_conversation_converts_worker_interrupted_error(monkeypatch,
 
 
 def test_run_managed_conversation_calls_interrupt_callback(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self.interrupt_calls = 0
 
@@ -325,7 +353,7 @@ def test_interactive_mode_header_keeps_prover_label(monkeypatch, capsys):
 
 
 def test_handle_managed_tool_result_records_failed_attempt_after_verification_feedback(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -377,7 +405,7 @@ def test_handle_managed_tool_result_records_failed_attempt_after_verification_fe
 
 
 def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -438,7 +466,7 @@ def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypat
 
 
 def test_handle_managed_incremental_feedback_records_current_output(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -492,7 +520,7 @@ def test_handle_managed_tool_result_nudges_repeated_successful_search(monkeypatc
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = []
             self._managed_autonomy_state = {
@@ -544,7 +572,7 @@ def test_generate_checkpoint_summary_falls_back_on_keyboard_interrupt(monkeypatc
 
 
 def test_handle_managed_tool_result_ignores_failed_patch_result(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -577,7 +605,7 @@ def test_handle_managed_tool_result_ignores_failed_patch_result(monkeypatch):
 
 
 def test_apply_verified_patch_counts_as_edit_and_verification_feedback(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -628,7 +656,7 @@ def test_apply_verified_patch_counts_as_edit_and_verification_feedback(monkeypat
 
 
 def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(monkeypatch, capsys):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -721,7 +749,7 @@ def test_handle_managed_tool_result_advances_when_target_check_clean_despite_ins
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -818,7 +846,7 @@ def test_handle_managed_tool_result_prints_cleanup_feedback_when_warning_in_targ
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -916,7 +944,7 @@ def test_handle_managed_tool_result_fires_cleanup_from_incremental_check_structu
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -1092,7 +1120,7 @@ def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -1179,7 +1207,7 @@ def test_handle_managed_tool_result_yields_after_warning_cleanup_retry(monkeypat
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         quiet_mode = False
 
         def __init__(self):
@@ -1250,7 +1278,7 @@ def test_handle_managed_tool_result_yields_after_hard_retry_limit(monkeypatch, t
     active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
     events = []
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         quiet_mode = False
 
         def __init__(self):
@@ -1405,7 +1433,7 @@ def test_handle_managed_tool_result_yields_for_unrelated_warning_cleanup(monkeyp
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         quiet_mode = False
 
         def __init__(self):
@@ -1461,7 +1489,7 @@ def test_handle_managed_tool_result_yields_for_unrelated_warning_cleanup(monkeyp
 
 
 def test_handle_managed_tool_result_supports_interrupted_property(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -1507,7 +1535,7 @@ def test_handle_managed_tool_result_supports_interrupted_property(monkeypatch):
 
 
 def test_handle_managed_tool_result_logs_target_verification_and_stores_record(monkeypatch, capsys):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         quiet_mode = False
 
         def __init__(self):
@@ -1574,7 +1602,7 @@ def test_handle_managed_tool_result_logs_target_verification_and_stores_record(m
 
 
 def test_handle_managed_tool_result_disables_auto_try_schema_for_run(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self.tools = [
                 {"type": "function", "function": {"name": "lean_auto_try"}},
@@ -1610,7 +1638,7 @@ def test_handle_managed_tool_result_disables_auto_try_schema_for_run(monkeypatch
 
 
 def test_handle_managed_tool_result_does_not_treat_inspect_as_verification_feedback(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -2108,7 +2136,7 @@ def test_managed_pre_tool_call_blocks_terminal_edits_in_queue(monkeypatch, tmp_p
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "demo",
@@ -2250,7 +2278,7 @@ def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch,
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "demo",
@@ -2298,7 +2326,7 @@ def test_out_of_scope_queue_edit_guard_allows_new_helper_declarations(monkeypatc
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "demo",
@@ -2342,7 +2370,7 @@ def test_out_of_scope_queue_edit_guard_allows_iterating_on_added_helpers(monkeyp
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "demo",
@@ -2392,7 +2420,7 @@ def test_queue_statement_guard_restores_initial_assigned_statement_change(monkey
     original = "theorem demo : True := by\n  sorry\n"
     active.write_text(original, encoding="utf-8")
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "demo",
@@ -2420,7 +2448,7 @@ def test_queue_statement_guard_allows_model_created_helper_statement_change(monk
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "demo",
@@ -2499,7 +2527,7 @@ def test_formalization_queue_statement_guard_protects_source_declaration(monkeyp
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "t",
@@ -2527,7 +2555,7 @@ def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
     project.mkdir()
     registered = []
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "abc123"
 
         def __init__(self, **kwargs):
@@ -2554,7 +2582,7 @@ def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
 
 
 def test_handle_managed_tool_result_interrupts_even_if_live_refresh_fails(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -2594,7 +2622,7 @@ def test_handle_managed_tool_result_interrupts_even_if_live_refresh_fails(monkey
 
 
 def test_handle_managed_lean_verify_uses_current_assignment_without_pending(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         quiet_mode = True
 
         def __init__(self):
@@ -2642,7 +2670,7 @@ def test_handle_managed_lean_verify_uses_current_assignment_without_pending(monk
 
 
 def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
         _parent_session_id = ""
         _delegate_depth = 0
@@ -2699,7 +2727,7 @@ def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeyp
 
 
 def test_background_control_loop_exits_after_verified_completion(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
         _parent_session_id = ""
         _delegate_depth = 0
@@ -2753,7 +2781,7 @@ def test_background_control_loop_exits_after_verified_completion(monkeypatch):
 
 
 def test_terminate_descendant_agents_records_shutdown_activity(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
         _parent_session_id = ""
         _delegate_depth = 0
@@ -2780,7 +2808,7 @@ def test_terminate_descendant_agents_records_shutdown_activity(monkeypatch):
 
 
 def test_terminate_other_agents_records_shutdown_activity(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
         _parent_session_id = ""
         _delegate_depth = 0
@@ -2807,7 +2835,7 @@ def test_terminate_other_agents_records_shutdown_activity(monkeypatch):
 
 
 def test_background_runner_exits_immediately_after_verified_completion(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
         _parent_session_id = ""
         _delegate_depth = 0
@@ -2848,7 +2876,7 @@ def test_background_runner_exits_immediately_after_verified_completion(monkeypat
 
 
 def test_background_control_loop_handles_keyboard_interrupt_cleanly(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
         _parent_session_id = ""
         _delegate_depth = 0
@@ -3120,7 +3148,7 @@ def test_history_status_lines_summarize_message_counts(monkeypatch):
 def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
     captured = {}
 
-    class DummyAgent:
+    class DummyAgent(_ManagedRunAgentStub):
         def __init__(self, **kwargs):
             captured.update(kwargs)
             self.reasoning_config = kwargs.get("reasoning_config")
@@ -3164,7 +3192,7 @@ def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
 def test_build_agent_uses_runtime_reasoning_effort_when_config_auto(monkeypatch):
     captured = {}
 
-    class DummyAgent:
+    class DummyAgent(_ManagedRunAgentStub):
         def __init__(self, **kwargs):
             captured.update(kwargs)
             self.reasoning_config = kwargs.get("reasoning_config")
@@ -3197,7 +3225,7 @@ def test_build_agent_uses_runtime_reasoning_effort_when_config_auto(monkeypatch)
 def test_build_agent_uses_swarm_toolset_when_user_enabled_swarm(monkeypatch):
     captured = {}
 
-    class DummyAgent:
+    class DummyAgent(_ManagedRunAgentStub):
         def __init__(self, **kwargs):
             captured.update(kwargs)
             self.session_id = "runner-session"
@@ -3332,7 +3360,7 @@ def test_resolve_managed_reasoning_config_auto_uses_high_for_final_file_sweep(mo
 
 
 def test_apply_managed_reasoning_policy_keeps_high_on_theorem_transition():
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._managed_base_reasoning_config = {"mode": "auto"}
             self.reasoning_config = None
@@ -3422,7 +3450,7 @@ def test_compact_history_creates_snapshot_and_reduces_history(monkeypatch):
 def test_auto_compact_history_prunes_old_tool_output(monkeypatch):
     monkeypatch.setattr(runner, "estimate_messages_tokens_rough", lambda messages: 123)
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         compression_enabled = False
         context_compressor = _FakeCompressor()
 
@@ -5198,7 +5226,7 @@ def test_configured_autoformalizer_block_prevents_proof_handoff(monkeypatch, tmp
 
 
 def test_formalization_verifier_block_is_appended_to_next_tool_turn(monkeypatch):
-    class Agent:
+    class Agent(_ManagedRunAgentStub):
         quiet_mode = True
 
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
@@ -5261,7 +5289,7 @@ def test_document_formalization_raw_lean_edit_runs_immediate_file_check(monkeypa
         lambda path: calls.append(path) or {"ok": False, "command": f"lake env lean {path}", "output": "type mismatch"},
     )
 
-    class Agent:
+    class Agent(_ManagedRunAgentStub):
         quiet_mode = True
         _session_messages = []
         _managed_autonomy_state = {}
@@ -5309,7 +5337,7 @@ def test_document_formalization_blocks_drafting_model_blueprint_self_approval(mo
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
 
-    class Agent:
+    class Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {}
 
     blocked = runner._document_formalization_pre_tool_guard(
@@ -5342,7 +5370,7 @@ def test_document_formalization_lean_edit_gate_does_not_apply_to_prove(monkeypat
     calls = []
     monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda path: calls.append(path) or {"ok": True})
 
-    class Agent:
+    class Agent(_ManagedRunAgentStub):
         quiet_mode = True
         _session_messages = []
         _managed_autonomy_state = {}
@@ -7690,7 +7718,7 @@ def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(mo
     }
     events = []
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         max_iterations = 180
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)

@@ -2718,6 +2718,28 @@ class AIAgent:
         previous = str(getattr(self, "_post_tool_result_appendix", "") or "").strip()
         self._post_tool_result_appendix = f"{previous}\n\n{text}".strip() if previous else text
 
+    def set_tool_result_appendix(self, text: str) -> None:
+        """Managed-run contract: REPLACE any staged appendix with ``text`` (empty text clears it).
+
+        Unlike ``stage_tool_result_appendix`` (which accumulates), this overwrites — used by the
+        managed runner when it has computed a fresh, complete guidance block that supersedes
+        anything still pending for the next tool result.
+        """
+        text = str(text or "").strip()
+        if text:
+            self._post_tool_result_appendix = text
+        else:
+            self.clear_tool_result_appendix()
+
+    def clear_tool_result_appendix(self) -> None:
+        """Managed-run contract: discard any staged appendix so the next tool result is unmodified.
+
+        Idempotent — afterwards the backing attribute is absent (not merely empty), matching the
+        managed runner's prior ``delattr`` once a queued theorem step has been fully consumed.
+        """
+        if hasattr(self, "_post_tool_result_appendix"):
+            delattr(self, "_post_tool_result_appendix")
+
     def _apply_post_tool_result_appendix(self, tool_msg: dict) -> None:
         """Consume any staged post-tool-result appendix, appending it to ``tool_msg`` once.
 

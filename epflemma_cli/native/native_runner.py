@@ -1968,12 +1968,8 @@ def _normalized_search_query(value: Any) -> str:
 
 
 def _append_post_tool_result_message(agent: Any, message: str) -> None:
-    text = str(message or "").strip()
-    if not text:
-        return
-    previous = str(getattr(agent, "_post_tool_result_appendix", "") or "").strip()
     try:
-        setattr(agent, "_post_tool_result_appendix", f"{previous}\n\n{text}".strip() if previous else text)
+        agent.stage_tool_result_appendix(message)
     except Exception:
         pass
 
@@ -2989,7 +2985,7 @@ def _finish_queue_step_boundary(
                     verification_tool=verification_tool,
                 )
             try:
-                setattr(agent, "_post_tool_result_appendix", "\n".join(feedback_lines))
+                agent.set_tool_result_appendix("\n".join(feedback_lines))
             except Exception:
                 logger.debug(
                     "Could not set _post_tool_result_appendix for manager-verification escalation feedback",
@@ -3055,7 +3051,7 @@ def _finish_queue_step_boundary(
                 _print_queue_step_separator(pending_target)
         agent._managed_pending_theorem_feedback = None
         try:
-            delattr(agent, "_post_tool_result_appendix")
+            agent.clear_tool_result_appendix()
         except Exception:
             pass
         try:
@@ -7271,12 +7267,7 @@ def _build_agent() -> AIAgent:
         guard_feedback = _restore_out_of_scope_queue_edit(agent, function_name)
         _handle_managed_tool_result(agent, function_name, _args, _result)
         if guard_feedback:
-            previous_appendix = str(getattr(agent, "_post_tool_result_appendix", "") or "").strip()
-            setattr(
-                agent,
-                "_post_tool_result_appendix",
-                f"{previous_appendix}\n\n{guard_feedback}".strip() if previous_appendix else guard_feedback,
-            )
+            agent.stage_tool_result_appendix(guard_feedback)
 
     agent.pre_tool_call_callback = _pre_tool_call_callback
     agent.post_tool_result_callback = _post_tool_result_callback
