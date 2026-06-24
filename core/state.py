@@ -634,7 +634,7 @@ class SessionDB:
             return []
 
         if source_filter is None:
-            source_filter = ["cli", "telegram", "discord", "whatsapp", "slack"]
+            source_filter = ["cli"]
 
         # Build WHERE clauses dynamically
         where_clauses = ["messages_fts MATCH ?"]
