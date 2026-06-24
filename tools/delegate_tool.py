@@ -244,8 +244,12 @@ def _run_single_child(
         child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
         child._parent_session_id = str(getattr(parent_agent, "session_id", "") or "")
 
-        # Register child for interrupt propagation
-        if hasattr(parent_agent, '_active_children'):
+        # Register child for interrupt propagation. Prefer the thread-safe
+        # register_child() (children are spawned concurrently, so registration
+        # races); fall back to direct list mutation for objects without it.
+        if hasattr(parent_agent, 'register_child'):
+            parent_agent.register_child(child)
+        elif hasattr(parent_agent, '_active_children'):
             parent_agent._active_children.append(child)
 
         # Run with stdout/stderr suppressed to prevent interleaved output
@@ -357,12 +361,17 @@ def _run_single_child(
         }
 
     finally:
-        # Unregister child from interrupt propagation
-        if hasattr(parent_agent, '_active_children'):
-            try:
+        # Unregister child from interrupt propagation. Prefer the thread-safe
+        # unregister_child() (mirrors register_child above); fall back to direct
+        # list mutation. The UnboundLocalError guard covers the case where child
+        # creation raised before ``child`` was bound.
+        try:
+            if hasattr(parent_agent, 'unregister_child'):
+                parent_agent.unregister_child(child)
+            elif hasattr(parent_agent, '_active_children'):
                 parent_agent._active_children.remove(child)
-            except (ValueError, UnboundLocalError) as e:
-                logger.debug("Could not remove child from active_children: %s", e)
+        except (ValueError, UnboundLocalError) as e:
+            logger.debug("Could not remove child from active_children: %s", e)
         try:
             from epflemma_cli.file_locks import release_all_file_locks
 
