@@ -1,17 +1,18 @@
 """Tests for get_active_environments_info disk usage calculation."""
 
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
-
 # tools/__init__.py re-exports a *function* called ``terminal_tool`` which
 # shadows the module of the same name.  Use sys.modules to get the real module
 # so patch.object works correctly.
 import sys
-import tools.terminal_tool  # noqa: F401 -- ensure module is loaded
-_tt_mod = sys.modules["tools.terminal_tool"]
-from tools.terminal_tool import get_active_environments_info
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+import tools.implementations.terminal_tool  # noqa: F401 -- ensure module is loaded
+
+_tt_mod = sys.modules["tools.implementations.terminal_tool"]
+from tools.implementations.terminal_tool import get_active_environments_info
 
 # 1 MiB of data so the rounded MB value is clearly distinguishable
 _1MB = b"x" * (1024 * 1024)
@@ -40,8 +41,10 @@ class TestDiskUsageGlob:
             "aaaaaaaa-1111-2222-3333-444444444444": MagicMock(),
         }
 
-        with patch.object(_tt_mod, "_active_environments", fake_envs), \
-             patch.object(_tt_mod, "_get_scratch_dir", return_value=fake_scratch):
+        with (
+            patch.object(_tt_mod, "_active_environments", fake_envs),
+            patch.object(_tt_mod, "_get_scratch_dir", return_value=fake_scratch),
+        ):
             info = get_active_environments_info()
 
         # Task A only: ~1.0 MB. With the bug (hardcoded gauss-*),
@@ -55,8 +58,10 @@ class TestDiskUsageGlob:
             "bbbbbbbb-5555-6666-7777-888888888888": MagicMock(),
         }
 
-        with patch.object(_tt_mod, "_active_environments", fake_envs), \
-             patch.object(_tt_mod, "_get_scratch_dir", return_value=fake_scratch):
+        with (
+            patch.object(_tt_mod, "_active_environments", fake_envs),
+            patch.object(_tt_mod, "_get_scratch_dir", return_value=fake_scratch),
+        ):
             info = get_active_environments_info()
 
         # Should be ~2.0 MB total (1 MB per task).

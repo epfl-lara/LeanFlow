@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import re
 import stat
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
 
+from core import home as _core_home
+from core.home import DEFAULT_HOME, HOME_ENV, epflemma_home, migrate_legacy_home
 
-EPFLEMMA_HOME_ENV = "EPFLEMMA_HOME"
-LEGACY_BRANDED_HOME_ENV = "OPENGAUSS_HOME"
-LEGACY_HOME_ENV = "GAUSS_HOME"
-LEGACY_BRANDED_HOME_DEFAULT = Path.home() / ".opengauss"
-LEGACY_HOME_DEFAULT = Path.home() / ".gauss"
-EPFLEMMA_HOME_DEFAULT = Path.home() / ".epflemma"
+logger = logging.getLogger(__name__)
+
+# Home resolution lives in core.home (the low layer); these aliases preserve the public names.
+EPFLEMMA_HOME_ENV = HOME_ENV
+EPFLEMMA_HOME_DEFAULT = DEFAULT_HOME
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Legacy config carried a large registry of optional env vars for removed
@@ -287,42 +291,12 @@ the current Lean task cleanly.
 
 
 def get_epflemma_home() -> Path:
-    explicit = os.getenv(EPFLEMMA_HOME_ENV, "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    branded_legacy = os.getenv(LEGACY_BRANDED_HOME_ENV, "").strip()
-    if branded_legacy:
-        return Path(branded_legacy).expanduser()
-    legacy = os.getenv(LEGACY_HOME_ENV, "").strip()
-    if legacy and Path(legacy).expanduser().name == ".epflemma":
-        return Path(legacy).expanduser()
-    return EPFLEMMA_HOME_DEFAULT
+    return epflemma_home()
 
 
 def get_legacy_homes() -> list[Path]:
-    homes: list[Path] = []
-    explicit_envs = (
-        (LEGACY_HOME_ENV, None),
-        (LEGACY_BRANDED_HOME_ENV, None),
-    )
-    fallback_defaults = (
-        LEGACY_BRANDED_HOME_DEFAULT,
-        LEGACY_HOME_DEFAULT,
-    )
-
-    for env_name, _ in explicit_envs:
-        value = os.getenv(env_name, "").strip()
-        if not value:
-            continue
-        candidate = Path(value).expanduser()
-        if candidate not in homes:
-            homes.append(candidate)
-
-    for default in fallback_defaults:
-        candidate = Path(default).expanduser()
-        if candidate not in homes:
-            homes.append(candidate)
-    return homes
+    """Retired homes consulted *only* to seed a fresh install (config/.env one-time import)."""
+    return list(_core_home.legacy_homes())
 
 
 def get_config_path() -> Path:
@@ -333,15 +307,9 @@ def get_env_path() -> Path:
     return get_epflemma_home() / ".env"
 
 
-def get_install_root_path() -> Path:
-    return get_epflemma_home() / "install-root"
-
-
 def _secure_dir(path: Path) -> None:
-    try:
+    with contextlib.suppress(OSError):
         path.chmod(0o700)
-    except OSError:
-        pass
 
 
 def _secure_file(path: Path) -> None:
@@ -408,7 +376,12 @@ def _merge_env_template(existing: str) -> str:
         return DEFAULT_ENV_TEMPLATE.rstrip() + "\n"
     if not additions:
         return existing if existing.endswith("\n") else existing + "\n"
-    return (existing.rstrip() + "\n\n# Added by EPFLemma for provider/model setup.\n" + "\n".join(additions) + "\n")
+    return (
+        existing.rstrip()
+        + "\n\n# Added by EPFLemma for provider/model setup.\n"
+        + "\n".join(additions)
+        + "\n"
+    )
 
 
 def _ensure_default_env_file(home: Path) -> None:
@@ -442,20 +415,32 @@ def _transform_legacy_config(payload: Mapping[str, Any]) -> dict[str, Any]:
         legacy_root = payload.get("gauss")
     if isinstance(legacy_root, Mapping):
         merged["epflemma"]["project"]["template_source"] = str(
-            ((legacy_root.get("project") or {}) if isinstance(legacy_root.get("project"), Mapping) else {}).get(
-                "template_source", ""
-            )
+            (
+                (legacy_root.get("project") or {})
+                if isinstance(legacy_root.get("project"), Mapping)
+                else {}
+            ).get("template_source", "")
             or ""
         ).strip()
         workflow_state_dir = str(
-            ((legacy_root.get("autoformalize") or {}) if isinstance(legacy_root.get("autoformalize"), Mapping) else {}).get(
-                "managed_state_dir", ""
-            )
+            (
+                (legacy_root.get("autoformalize") or {})
+                if isinstance(legacy_root.get("autoformalize"), Mapping)
+                else {}
+            ).get("managed_state_dir", "")
             or ""
         ).strip()
         merged["epflemma"]["workflow"]["managed_state_dir"] = workflow_state_dir
 
-    for key in ("model", "toolsets", "agent", "logging", "compression", "custom_providers", "local_models"):
+    for key in (
+        "model",
+        "toolsets",
+        "agent",
+        "logging",
+        "compression",
+        "custom_providers",
+        "local_models",
+    ):
         value = payload.get(key)
         if isinstance(value, Mapping) and isinstance(merged.get(key), dict):
             merged[key] = _deep_merge(merged[key], value)
@@ -492,10 +477,16 @@ def _import_legacy_home(home: Path) -> None:
         if legacy_config.exists() and not get_config_path().exists():
             try:
                 payload = yaml.safe_load(legacy_config.read_text(encoding="utf-8")) or {}
-                transformed = _transform_legacy_config(payload if isinstance(payload, Mapping) else {})
+                transformed = _transform_legacy_config(
+                    payload if isinstance(payload, Mapping) else {}
+                )
                 save_config(transformed)
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to migrate legacy config %s to new format; skipping import",
+                    legacy_config,
+                    exc_info=True,
+                )
 
         legacy_env = legacy_home / ".env"
         if legacy_env.exists() and not get_env_path().exists():
@@ -510,6 +501,7 @@ def ensure_epflemma_home(import_legacy: bool = True) -> Path:
     home = get_epflemma_home()
     if import_legacy:
         _import_legacy_home(home)
+        migrate_legacy_home(home)
     home.mkdir(parents=True, exist_ok=True)
     _secure_dir(home)
     _ensure_default_soul_md(home)
@@ -522,25 +514,56 @@ def ensure_epflemma_home(import_legacy: bool = True) -> Path:
     return home
 
 
+# Process-lifetime cache of the parsed config. load_config() is called from hot per-item loops
+# (e.g. workflow activity summarization at exit), and each uncached call does expensive work:
+# ensure_epflemma_home() (mkdir + chmod on several dirs, default-file checks) plus a YAML parse.
+# On a large history that turned exit cleanup into a multi-minute ~100% CPU spin. We memoize the
+# merged result and hand callers a deepcopy (they may freely mutate it); save_config() and
+# invalidate_config_cache() drop the cache so writers still observe their own changes.
+_CONFIG_CACHE: dict[str, Any] | None = None
+_CONFIG_CACHE_KEY: str | None = None  # the config path the cache was built for
+
+
+def invalidate_config_cache() -> None:
+    """Drop the in-process load_config() cache (call after writing the config file)."""
+    global _CONFIG_CACHE, _CONFIG_CACHE_KEY
+    _CONFIG_CACHE = None
+    _CONFIG_CACHE_KEY = None
+
+
 def load_config() -> dict[str, Any]:
+    """Return the merged EPFLemma configuration with process-lifetime caching. Reads config.yaml from EPFLEMMA_HOME, merges it with defaults, and caches the result keyed by config path to detect per-test home changes; callers receive a deepcopy and may freely mutate it. Handles legacy gauss/opengauss format and transient read errors (which bypass caching). Does not cache on malformed payloads."""
+    global _CONFIG_CACHE, _CONFIG_CACHE_KEY
+    # Key the cache on the resolved config path so a changed EPFLEMMA_HOME (notably per-test
+    # isolation, but also any in-process home switch) is a cache miss and re-reads from disk.
+    path = get_config_path()
+    cache_key = str(path)
+    if _CONFIG_CACHE is not None and cache_key == _CONFIG_CACHE_KEY:
+        return deepcopy(_CONFIG_CACHE)
+
     ensure_epflemma_home()
     path = get_config_path()
     if not path.exists():
         ensure_epflemma_home(import_legacy=False)
         path.write_text(default_config_yaml(DEFAULT_CONFIG), encoding="utf-8")
         _secure_file(path)
-        return deepcopy(DEFAULT_CONFIG)
+        _CONFIG_CACHE = deepcopy(DEFAULT_CONFIG)
+        _CONFIG_CACHE_KEY = cache_key
+        return deepcopy(_CONFIG_CACHE)
 
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception:
-        return deepcopy(DEFAULT_CONFIG)
+        return deepcopy(DEFAULT_CONFIG)  # transient read/parse error: do not cache
     if not isinstance(payload, Mapping):
-        return deepcopy(DEFAULT_CONFIG)
+        return deepcopy(DEFAULT_CONFIG)  # malformed config: do not cache
     if any(key in payload for key in ("gauss", "opengauss")) and "epflemma" not in payload:
         payload = _transform_legacy_config(payload)
-        save_config(payload)
-    return _deep_merge(DEFAULT_CONFIG, payload)
+        save_config(payload)  # invalidates the cache; re-cached just below
+    merged = _deep_merge(DEFAULT_CONFIG, payload)
+    _CONFIG_CACHE = merged
+    _CONFIG_CACHE_KEY = cache_key
+    return deepcopy(merged)
 
 
 def save_config(config: Mapping[str, Any]) -> None:
@@ -548,9 +571,12 @@ def save_config(config: Mapping[str, Any]) -> None:
     path = get_config_path()
     path.write_text(yaml.safe_dump(dict(config), sort_keys=False), encoding="utf-8")
     _secure_file(path)
+    invalidate_config_cache()
 
 
-def _descend_config(config: dict[str, Any], key_path: str, create: bool = False) -> tuple[dict[str, Any], str]:
+def _descend_config(
+    config: dict[str, Any], key_path: str, create: bool = False
+) -> tuple[dict[str, Any], str]:
     parts = [part for part in key_path.split(".") if part]
     if not parts:
         raise KeyError("config key path must not be empty")

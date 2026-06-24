@@ -2,11 +2,35 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from epflemma_cli.banner import render_help, render_workflow_status_panel
+from epflemma_cli import main as main_module
+from epflemma_cli.cli import cli_handlers
+from epflemma_cli.cli.banner import render_help, render_workflow_status_panel
 from epflemma_cli.main import InteractiveShell, main
-from epflemma_cli.workflow_state import append_workflow_activity, append_workflow_run_log, load_workflow_live_status, reset_workflow_run_log, save_workflow_live_status
-from epflemma_cli.runtime_provider import list_runtime_provider_targets
-from epflemma_cli.workflow import NativeLaunchPlan, NativeWorkflowSpec, describe_launch_plan, resolve_workflow_request
+from epflemma_cli.runtime.runtime_provider import list_runtime_provider_targets
+from epflemma_cli.workflow import (
+    NativeLaunchPlan,
+    NativeWorkflowSpec,
+    describe_launch_plan,
+    resolve_workflow_request,
+)
+from epflemma_cli.workflows.workflow_state import (
+    append_workflow_activity,
+    append_workflow_run_log,
+    load_workflow_live_status,
+    reset_workflow_run_log,
+    save_workflow_live_status,
+)
+
+
+def test_cli_handlers_reexport_identity():
+    # Phase 3 extraction: the moved handler/formatter functions must stay importable from
+    # epflemma_cli.main (re-export shim) and be the exact same objects defined in
+    # epflemma_cli.cli.cli_handlers, so existing main.<name> references and tests keep working.
+    for name in cli_handlers.__all__:
+        assert hasattr(main_module, name), f"main lost re-export of {name}"
+        assert getattr(main_module, name) is getattr(cli_handlers, name), (
+            f"{name} is not the same object on main and cli_handlers"
+        )
 
 
 def test_render_help_mentions_forgiving_workflow_commands():
@@ -141,13 +165,13 @@ def test_main_mcp_status_json(monkeypatch, capsys):
 
     assert main(["mcp", "status", "--json"]) == 0
     output = capsys.readouterr().out
-    assert "\"name\": \"lean-lsp\"" in output
+    assert '"name": "lean-lsp"' in output
 
 
 def test_interactive_mcp_status_prints_sampling_metrics(monkeypatch, capsys):
     shell = InteractiveShell()
     monkeypatch.setattr(
-        "epflemma_cli.main.get_mcp_status",
+        "epflemma_cli.shell.get_mcp_status",
         lambda: [
             {
                 "name": "lean-lsp",
@@ -172,26 +196,34 @@ def test_main_mcp_bootstrap_json(monkeypatch, capsys):
             "success": True,
             "home": "/tmp/home",
             "config_path": "/tmp/home/config.yaml",
-            "servers": [{"name": "lean-lsp", "role": "primary-state-search", "command": "/tmp/lean-lsp-mcp"}],
+            "servers": [
+                {"name": "lean-lsp", "role": "primary-state-search", "command": "/tmp/lean-lsp-mcp"}
+            ],
         },
     )
 
     assert main(["mcp", "bootstrap", "lean", "--json"]) == 0
     output = capsys.readouterr().out
-    assert "\"success\": true" in output.lower()
-    assert "\"name\": \"lean-lsp\"" in output
+    assert '"success": true' in output.lower()
+    assert '"name": "lean-lsp"' in output
 
 
 def test_interactive_mcp_bootstrap_prints_summary(monkeypatch, capsys):
     shell = InteractiveShell()
     monkeypatch.setattr(
-        "epflemma_cli.main.bootstrap_lean_mcp",
+        "epflemma_cli.shell.bootstrap_lean_mcp",
         lambda: {
             "success": True,
             "home": "/tmp/home",
             "config_path": "/tmp/home/config.yaml",
             "remote_search_policy": "public-fallbacks-enabled",
-            "servers": [{"name": "lean-proof-auto", "role": "secondary-automation-context", "command": "/tmp/lean-proof-auto-mcp"}],
+            "servers": [
+                {
+                    "name": "lean-proof-auto",
+                    "role": "secondary-automation-context",
+                    "command": "/tmp/lean-proof-auto-mcp",
+                }
+            ],
         },
     )
 
@@ -211,7 +243,9 @@ def test_project_init_prints_repl_setup_progress(monkeypatch, tmp_path, capsys):
     def _fake_setup(_lean_root, *, progress=None):
         if progress:
             progress("[1/6] Inspecting Lean project for REPL acceleration")
-            progress("[6/6] Building REPL binary with `lake build repl` (this can take several minutes)")
+            progress(
+                "[6/6] Building REPL binary with `lake build repl` (this can take several minutes)"
+            )
         return {"status": "ready", "repl_path": str(root / ".lake" / "build" / "bin" / "repl")}
 
     monkeypatch.setattr("epflemma_cli.main.setup_project_power_modes", _fake_setup)
@@ -241,7 +275,7 @@ def test_describe_launch_plan_formats_provider_and_model(tmp_path):
             "base_url": "http://127.0.0.1:8000/v1",
         },
         child_env={"EPFLEMMA_NATIVE_ACTIVE_SKILL": "lean-proof-loop"},
-        argv=["python", "-m", "epflemma_cli.native_runner"],
+        argv=["python", "-m", "epflemma_cli.native.native_runner"],
         active_skill="lean-proof-loop",
         toolset_name="epflemma-native",
     )
@@ -268,7 +302,9 @@ def test_resolve_workflow_request_normalizes_requested_active_file(tmp_path):
     (root / "lakefile.toml").write_text("name = 'GaussTest'\n", encoding="utf-8")
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
     (root / "GaussTest").mkdir()
-    (root / "GaussTest" / "RealTheorems-homework.lean").write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    (root / "GaussTest" / "RealTheorems-homework.lean").write_text(
+        "theorem t : True := by\n  trivial\n", encoding="utf-8"
+    )
 
     plan = resolve_workflow_request(
         "/prove ./GaussTest/GaussTest/RealTheorems-homework.lean",
@@ -276,7 +312,10 @@ def test_resolve_workflow_request_normalizes_requested_active_file(tmp_path):
     )
 
     assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "GaussTest/RealTheorems-homework.lean"
-    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/prove GaussTest/RealTheorems-homework.lean"
+    assert (
+        plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"]
+        == "/prove GaussTest/RealTheorems-homework.lean"
+    )
     assert plan.workflow.workflow_args == "GaussTest/RealTheorems-homework.lean"
 
 
@@ -293,7 +332,9 @@ def test_resolve_workflow_request_recovers_similar_requested_active_file(tmp_pat
     (root / "lakefile.toml").write_text("name = 'GaussTest'\n", encoding="utf-8")
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
     (root / "GaussTest").mkdir()
-    (root / "GaussTest" / "RealTheorems-homework.lean").write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
+    (root / "GaussTest" / "RealTheorems-homework.lean").write_text(
+        "theorem t : True := by\n  trivial\n", encoding="utf-8"
+    )
 
     plan = resolve_workflow_request(
         "/prove ./wrong/subdir/RealTheorems-homework.lean",
@@ -301,7 +342,10 @@ def test_resolve_workflow_request_recovers_similar_requested_active_file(tmp_pat
     )
 
     assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "GaussTest/RealTheorems-homework.lean"
-    assert plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"] == "/prove GaussTest/RealTheorems-homework.lean"
+    assert (
+        plan.child_env["EPFLEMMA_NATIVE_WORKFLOW_COMMAND"]
+        == "/prove GaussTest/RealTheorems-homework.lean"
+    )
     assert plan.workflow.workflow_args == "GaussTest/RealTheorems-homework.lean"
 
 
@@ -319,22 +363,45 @@ def test_interactive_workflow_launch_spawns_background_runner(monkeypatch, tmp_p
             backend_command="/prove Main.lean",
             workflow_args="Main.lean",
         ),
-        runtime={"provider": "custom", "model": "zai-org/GLM-5.1", "base_url": "https://inference.rcp.epfl.ch/v1"},
+        runtime={
+            "provider": "custom",
+            "model": "zai-org/GLM-5.1",
+            "base_url": "https://inference.rcp.epfl.ch/v1",
+        },
         child_env={},
-        argv=["python", "-m", "epflemma_cli.native_runner"],
+        argv=["python", "-m", "epflemma_cli.native.native_runner"],
         active_skill="lean-proof-loop",
         toolset_name="epflemma-native",
     )
 
-    monkeypatch.setattr("epflemma_cli.main.resolve_workflow_request", lambda *args, **kwargs: fake_plan)
-    monkeypatch.setattr("epflemma_cli.main.describe_launch_plan", lambda plan: {"workflow": "prove", "command": "/prove Main.lean", "project": "Demo", "project_root": str(tmp_path), "provider": "custom", "base_url": "https://inference.rcp.epfl.ch/v1", "model": "zai-org/GLM-5.1", "skill": "lean-proof-loop", "agents": "1"})
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "epflemma_cli.shell.resolve_workflow_request", lambda *args, **kwargs: fake_plan
+    )
+    monkeypatch.setattr(
+        "epflemma_cli.shell.describe_launch_plan",
+        lambda plan: {
+            "workflow": "prove",
+            "command": "/prove Main.lean",
+            "project": "Demo",
+            "project_root": str(tmp_path),
+            "provider": "custom",
+            "base_url": "https://inference.rcp.epfl.ch/v1",
+            "model": "zai-org/GLM-5.1",
+            "skill": "lean-proof-loop",
+            "agents": "1",
+        },
+    )
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: True
+    )
 
     class _FakeProcess:
         pid = 43210
 
-    monkeypatch.setattr("epflemma_cli.main.spawn_workflow", lambda *args, **kwargs: (fake_plan, _FakeProcess()))
-    monkeypatch.setattr("epflemma_cli.main.load_workflow_live_status", lambda: {})
+    monkeypatch.setattr(
+        "epflemma_cli.shell.spawn_workflow", lambda *args, **kwargs: (fake_plan, _FakeProcess())
+    )
+    monkeypatch.setattr("epflemma_cli.shell.load_workflow_live_status", lambda: {})
 
     assert shell._run_workflow_command("/prove Main.lean") == 0
     output = capsys.readouterr().out
@@ -360,14 +427,20 @@ def test_interactive_workflow_launch_reuses_existing_matching_runner(monkeypatch
             backend_command="/prove Main.lean",
             workflow_args="Main.lean",
         ),
-        runtime={"provider": "custom", "model": "zai-org/GLM-5.1", "base_url": "https://inference.rcp.epfl.ch/v1"},
+        runtime={
+            "provider": "custom",
+            "model": "zai-org/GLM-5.1",
+            "base_url": "https://inference.rcp.epfl.ch/v1",
+        },
         child_env={},
-        argv=["python", "-m", "epflemma_cli.native_runner"],
+        argv=["python", "-m", "epflemma_cli.native.native_runner"],
         active_skill="lean-proof-loop",
         toolset_name="epflemma-native",
     )
 
-    monkeypatch.setattr("epflemma_cli.main.resolve_workflow_request", lambda *args, **kwargs: fake_plan)
+    monkeypatch.setattr(
+        "epflemma_cli.shell.resolve_workflow_request", lambda *args, **kwargs: fake_plan
+    )
     monkeypatch.setattr(
         shell,
         "_workflow_agents",
@@ -382,7 +455,12 @@ def test_interactive_workflow_launch_reuses_existing_matching_runner(monkeypatch
             }
         ],
     )
-    monkeypatch.setattr("epflemma_cli.main.spawn_workflow", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not spawn duplicate workflow")))
+    monkeypatch.setattr(
+        "epflemma_cli.shell.spawn_workflow",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("should not spawn duplicate workflow")
+        ),
+    )
 
     assert shell._run_workflow_command("/prove Main.lean") == 0
     output = capsys.readouterr().out
@@ -410,7 +488,7 @@ def test_workflow_cli_provider_override_passes_through(monkeypatch, tmp_path):
             "reasoning_effort": "xhigh",
         },
         child_env={},
-        argv=["python", "-m", "epflemma_cli.native_runner"],
+        argv=["python", "-m", "epflemma_cli.native.native_runner"],
         active_skill="lean-proof-loop",
         toolset_name="epflemma-native",
     )
@@ -439,7 +517,9 @@ def test_interactive_project_init_reports_already_initialized(monkeypatch, tmp_p
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     root = tmp_path / "Demo"
     root.mkdir()
-    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lakefile.lean").write_text(
+        "import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8"
+    )
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
 
     shell = InteractiveShell()
@@ -496,7 +576,7 @@ def test_top_level_kill_command_interrupts_agent(monkeypatch, tmp_path, capsys):
     shell = InteractiveShell()
 
     monkeypatch.setattr(
-        "epflemma_cli.main.terminate_workflow_agent",
+        "epflemma_cli.shell.terminate_workflow_agent",
         lambda agent_id: {"success": True, "agent_id": "12345", "process_id": 24680},
     )
 
@@ -510,7 +590,9 @@ def test_shell_exit_interrupts_current_project_workflows(monkeypatch, tmp_path, 
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     root = tmp_path / "Demo"
     root.mkdir()
-    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lakefile.lean").write_text(
+        "import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8"
+    )
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
     (root / ".epflemma").mkdir()
     (root / ".epflemma" / "project.yaml").write_text(
@@ -525,7 +607,7 @@ def test_shell_exit_interrupts_current_project_workflows(monkeypatch, tmp_path, 
     shell.cwd = root
 
     monkeypatch.setattr(
-        "epflemma_cli.main.terminate_project_workflow_agents",
+        "epflemma_cli.shell.terminate_project_workflow_agents",
         lambda project_root: {"success": True, "count": 1, "terminated": ["12345"], "failed": []},
     )
 
@@ -539,7 +621,9 @@ def test_shell_exit_requests_clean_runner_exit_before_escalating(monkeypatch, tm
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     root = tmp_path / "Demo"
     root.mkdir()
-    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lakefile.lean").write_text(
+        "import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8"
+    )
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
     (root / ".epflemma").mkdir()
     (root / ".epflemma" / "project.yaml").write_text(
@@ -555,16 +639,23 @@ def test_shell_exit_requests_clean_runner_exit_before_escalating(monkeypatch, tm
     seen: list[str] = []
 
     monkeypatch.setattr(
-        "epflemma_cli.main.request_project_workflow_runner_exit",
+        "epflemma_cli.shell.request_project_workflow_runner_exit",
         lambda project_root: {"success": True, "count": 1, "queued": ["12345"], "failed": []},
     )
     monkeypatch.setattr(
-        "epflemma_cli.main.workflow_agent_detail",
-        lambda agent_id, activity_limit=1: {"agent_id": agent_id, "status": "exited", "process_id": 0},
+        "epflemma_cli.shell.workflow_agent_detail",
+        lambda agent_id, activity_limit=1: {
+            "agent_id": agent_id,
+            "status": "exited",
+            "process_id": 0,
+        },
     )
     monkeypatch.setattr(
-        "epflemma_cli.main.terminate_project_workflow_agents",
-        lambda project_root: seen.append(project_root) or {"success": True, "count": 1, "terminated": ["12345"], "failed": []},
+        "epflemma_cli.shell.terminate_project_workflow_agents",
+        lambda project_root: (
+            seen.append(project_root)
+            or {"success": True, "count": 1, "terminated": ["12345"], "failed": []}
+        ),
     )
 
     assert shell._handle_command("/exit") is False
@@ -577,7 +668,9 @@ def test_shell_exit_interrupts_live_runner_when_no_registered_agents(monkeypatch
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     root = tmp_path / "Demo"
     root.mkdir()
-    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lakefile.lean").write_text(
+        "import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8"
+    )
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
     (root / ".epflemma").mkdir()
     (root / ".epflemma" / "project.yaml").write_text(
@@ -593,7 +686,7 @@ def test_shell_exit_interrupts_live_runner_when_no_registered_agents(monkeypatch
     signalled: list[tuple[str, int, int]] = []
 
     monkeypatch.setattr(
-        "epflemma_cli.main.terminate_project_workflow_agents",
+        "epflemma_cli.shell.terminate_project_workflow_agents",
         lambda project_root: {"success": True, "count": 0, "terminated": [], "failed": []},
     )
     monkeypatch.setattr(
@@ -602,7 +695,7 @@ def test_shell_exit_interrupts_live_runner_when_no_registered_agents(monkeypatch
         lambda: {"project_root": str(root), "phase": "paused", "process_id": 24680},
     )
     monkeypatch.setattr(
-        "epflemma_cli.main.os.killpg",
+        "epflemma_cli.shell.os.killpg",
         lambda process_id, sig: signalled.append(("killpg", process_id, int(sig))),
     )
 
@@ -675,18 +768,31 @@ def test_swarm_agent_view_can_queue_follow_up_prompt(monkeypatch, tmp_path, caps
         "parent_agent_id": "",
     }
     transcript = [
-        {"timestamp": "2026-04-20T10:00:00+00:00", "type": "assistant-response", "role": "assistant", "content": "Initial pass done."},
+        {
+            "timestamp": "2026-04-20T10:00:00+00:00",
+            "type": "assistant-response",
+            "role": "assistant",
+            "content": "Initial pass done.",
+        },
     ]
     queued = {}
     prompts = iter(["Try the continuity lemma next.", "/exit"])
 
-    monkeypatch.setattr("epflemma_cli.main.resolve_workflow_agent_id", lambda ref: "12345")
-    monkeypatch.setattr("epflemma_cli.main.workflow_agent_detail", lambda *args, **kwargs: dict(agent))
-    monkeypatch.setattr("epflemma_cli.main.workflow_agent_transcript", lambda *args, **kwargs: list(transcript))
-    monkeypatch.setattr("epflemma_cli.main.workflow_agent_transcript_all", lambda *args, **kwargs: list(transcript))
+    monkeypatch.setattr("epflemma_cli.shell.resolve_workflow_agent_id", lambda ref: "12345")
     monkeypatch.setattr(
-        "epflemma_cli.main.enqueue_workflow_agent_message",
-        lambda agent_id, text: queued.setdefault("payload", {"success": True, "agent_id": agent_id, "text": text}),
+        "epflemma_cli.shell.workflow_agent_detail", lambda *args, **kwargs: dict(agent)
+    )
+    monkeypatch.setattr(
+        "epflemma_cli.shell.workflow_agent_transcript", lambda *args, **kwargs: list(transcript)
+    )
+    monkeypatch.setattr(
+        "epflemma_cli.shell.workflow_agent_transcript_all", lambda *args, **kwargs: list(transcript)
+    )
+    monkeypatch.setattr(
+        "epflemma_cli.shell.enqueue_workflow_agent_message",
+        lambda agent_id, text: queued.setdefault(
+            "payload", {"success": True, "agent_id": agent_id, "text": text}
+        ),
     )
     monkeypatch.setattr(shell.session, "prompt", lambda *args, **kwargs: next(prompts))
 
@@ -728,7 +834,9 @@ def test_prompt_message_includes_project_and_phase(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     root = tmp_path / "Demo"
     root.mkdir()
-    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lakefile.lean").write_text(
+        "import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8"
+    )
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
     (root / ".epflemma").mkdir()
     (root / ".epflemma" / "project.yaml").write_text(
@@ -753,7 +861,9 @@ def test_prompt_message_hides_unknown_theorem_placeholder(monkeypatch, tmp_path)
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     root = tmp_path / "Demo"
     root.mkdir()
-    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lakefile.lean").write_text(
+        "import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8"
+    )
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
     (root / ".epflemma").mkdir()
     (root / ".epflemma" / "project.yaml").write_text(
@@ -785,7 +895,9 @@ def test_project_command_without_args_shows_current_project(monkeypatch, tmp_pat
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     root = tmp_path / "Demo"
     root.mkdir()
-    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lakefile.lean").write_text(
+        "import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8"
+    )
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
     (root / ".epflemma").mkdir()
     (root / ".epflemma" / "project.yaml").write_text(

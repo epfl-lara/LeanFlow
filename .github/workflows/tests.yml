@@ -31,6 +31,22 @@ jobs:
           source .venv/bin/activate
           uv pip install -e ".[all,dev]"
 
+      # --- Fast gate: format + lint + types run before the (slower) test suite ---
+      - name: Ruff format check
+        run: |
+          source .venv/bin/activate
+          ruff format --check .
+
+      - name: Ruff lint
+        run: |
+          source .venv/bin/activate
+          ruff check .
+
+      - name: Mypy (gated module set)
+        run: |
+          source .venv/bin/activate
+          mypy
+
       - name: Run tests
         run: |
           source .venv/bin/activate

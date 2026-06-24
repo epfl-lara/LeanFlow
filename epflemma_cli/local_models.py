@@ -15,7 +15,6 @@ import httpx
 
 from epflemma_cli.config import load_config, save_config
 
-
 SUPPORTED_LOCAL_RUNTIMES = ("vllm", "ollama", "llama_cpp")
 
 
@@ -64,8 +63,24 @@ def _pid_is_running(pid: int) -> bool:
 def _runtime_config(runtime: str) -> dict[str, Any]:
     config = load_config()
     return (
-        (((config.get("local_models") or {}) if isinstance(config.get("local_models"), dict) else {}).get("runtimes") or {})
-        if isinstance((((config.get("local_models") or {}) if isinstance(config.get("local_models"), dict) else {}).get("runtimes")), dict)
+        (
+            (
+                (config.get("local_models") or {})
+                if isinstance(config.get("local_models"), dict)
+                else {}
+            ).get("runtimes")
+            or {}
+        )
+        if isinstance(
+            (
+                (
+                    (config.get("local_models") or {})
+                    if isinstance(config.get("local_models"), dict)
+                    else {}
+                ).get("runtimes")
+            ),
+            dict,
+        )
         else {}
     ).get(runtime, {})
 
@@ -91,7 +106,9 @@ def _health_check(base_url: str, timeout: float = 2.0) -> bool:
     return False
 
 
-def _build_command(runtime: str, model: str, host: str, port: int, extra_args: list[str]) -> list[str]:
+def _build_command(
+    runtime: str, model: str, host: str, port: int, extra_args: list[str]
+) -> list[str]:
     if runtime == "vllm":
         return [
             sys.executable,
@@ -143,7 +160,10 @@ def get_local_runtime_status(runtime: str) -> dict[str, Any]:
     }
 
 
-def start_local_runtime(runtime: str, *, model: str, host: str | None = None, port: int | None = None) -> dict[str, Any]:
+def start_local_runtime(
+    runtime: str, *, model: str, host: str | None = None, port: int | None = None
+) -> dict[str, Any]:
+    """Start a local model server (vllm/ollama/llama_cpp) as a subprocess, returning its status; returns existing runtime status if already running. Resolves host/port from arguments or config, builds the runtime-specific command with extra args, spawns it in a new session with log appending, and persists pid/model/command to state."""
     if runtime not in SUPPORTED_LOCAL_RUNTIMES:
         raise ValueError(f"Unsupported runtime: {runtime}")
 
@@ -226,7 +246,9 @@ def resolve_active_local_runtime() -> dict[str, Any] | None:
     config = load_config()
     local_cfg = config.get("local_models") if isinstance(config.get("local_models"), dict) else {}
     runtime = str(local_cfg.get("active_runtime", "") or "").strip()
-    model = str(local_cfg.get("active_model", "") or config.get("model", {}).get("default", "")).strip()
+    model = str(
+        local_cfg.get("active_model", "") or config.get("model", {}).get("default", "")
+    ).strip()
     if not runtime:
         runtime = str(local_cfg.get("default_runtime", "vllm") or "vllm").strip()
     if runtime not in SUPPORTED_LOCAL_RUNTIMES:
@@ -238,8 +260,11 @@ def resolve_active_local_runtime() -> dict[str, Any] | None:
         return status
     return {
         "runtime": runtime,
-        "base_url": _runtime_base_url(runtime, status["host"] or "127.0.0.1", status["port"] or (11434 if runtime == "ollama" else 8000)),
+        "base_url": _runtime_base_url(
+            runtime,
+            status["host"] or "127.0.0.1",
+            status["port"] or (11434 if runtime == "ollama" else 8000),
+        ),
         "api_key": "local",
         "model": model,
     }
-

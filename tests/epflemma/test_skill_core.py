@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from epflemma_cli.skill_core import (
+from epflemma_cli.runtime.skill_core import (
     CURATED_BUILTIN_SKILLS,
     build_skill_prompt,
     default_workflow_skill,
@@ -125,7 +125,9 @@ def test_load_skill_accepts_direct_skill_path(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     skill = tmp_path / "external" / "SKILL.md"
     skill.parent.mkdir(parents=True)
-    skill.write_text("---\nname: external-skill\ndescription: External\n---\n# External\n", encoding="utf-8")
+    skill.write_text(
+        "---\nname: external-skill\ndescription: External\n---\n# External\n", encoding="utf-8"
+    )
 
     payload = load_skill(str(skill), tmp_path)
 

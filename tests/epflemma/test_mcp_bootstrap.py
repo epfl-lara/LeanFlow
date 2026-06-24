@@ -3,11 +3,11 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from epflemma_cli import mcp_bootstrap
-from epflemma_cli.mcp_bootstrap import (
+from epflemma_cli.cli import mcp_bootstrap
+from epflemma_cli.cli.mcp_bootstrap import (
     bootstrap_lean_mcp,
-    managed_mcp_power_status,
     managed_mcp_command_path,
+    managed_mcp_power_status,
     managed_mcp_server_status,
     write_managed_mcp_config,
 )
@@ -137,7 +137,7 @@ def test_bootstrap_patches_lean_lsp_loogle_project_paths(tmp_path):
     loogle_py.write_text(
         "        paths = []\n"
         "        # Check packages directory\n"
-        "        lake_packages = self.project_path / \".lake\" / \"packages\"\n",
+        '        lake_packages = self.project_path / ".lake" / "packages"\n',
         encoding="utf-8",
     )
 
@@ -195,7 +195,7 @@ def test_bootstrap_lean_mcp_repairs_missing_managed_command(monkeypatch, tmp_pat
         target.chmod(0o755)
 
     monkeypatch.setattr(
-        "epflemma_cli.mcp_bootstrap._install_into_managed_venv",
+        "epflemma_cli.cli.mcp_bootstrap._install_into_managed_venv",
         _fake_install,
     )
 

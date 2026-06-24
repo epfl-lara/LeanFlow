@@ -3,17 +3,18 @@
 import json
 import os
 import time
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from tools.environments.local import _GAUSS_PROVIDER_ENV_FORCE_PREFIX
-from tools.process_registry import (
+import pytest
+
+from tools.environments.local import _EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX
+from tools.utilities.process_registry import (
+    FINISHED_TTL_SECONDS,
+    MAX_OUTPUT_CHARS,
+    MAX_PROCESSES,
     ProcessRegistry,
     ProcessSession,
-    MAX_OUTPUT_CHARS,
-    FINISHED_TTL_SECONDS,
-    MAX_PROCESSES,
 )
 
 
@@ -48,6 +49,7 @@ def _make_session(
 # =========================================================================
 # Get / Poll
 # =========================================================================
+
 
 class TestGetAndPoll:
     def test_get_not_found(self, registry):
@@ -87,6 +89,7 @@ class TestGetAndPoll:
 # Read log
 # =========================================================================
 
+
 class TestReadLog:
     def test_not_found(self, registry):
         result = registry.read_log("nonexistent")
@@ -118,6 +121,7 @@ class TestReadLog:
 # =========================================================================
 # List sessions
 # =========================================================================
+
 
 class TestListSessions:
     def test_empty(self, registry):
@@ -155,19 +159,13 @@ class TestListSessions:
 # Active process queries
 # =========================================================================
 
+
 class TestActiveQueries:
     def test_has_active_processes(self, registry):
         s = _make_session(task_id="t1")
         registry._running[s.id] = s
         assert registry.has_active_processes("t1") is True
         assert registry.has_active_processes("t2") is False
-
-    def test_has_active_for_session(self, registry):
-        s = _make_session()
-        s.session_key = "gw_session_1"
-        registry._running[s.id] = s
-        assert registry.has_active_for_session("gw_session_1") is True
-        assert registry.has_active_for_session("other") is False
 
     def test_exited_not_active(self, registry):
         s = _make_session(task_id="t1", exited=True, exit_code=0)
@@ -178,6 +176,7 @@ class TestActiveQueries:
 # =========================================================================
 # Pruning
 # =========================================================================
+
 
 class TestPruning:
     def test_prune_expired_finished(self, registry):
@@ -219,6 +218,7 @@ class TestPruning:
 # Spawn env sanitization
 # =========================================================================
 
+
 class TestSpawnEnvSanitization:
     def test_spawn_local_strips_blocked_vars_from_background_env(self, registry):
         captured = {}
@@ -234,24 +234,30 @@ class TestSpawnEnvSanitization:
 
         fake_thread = MagicMock()
 
-        with patch.dict(os.environ, {
-            "PATH": "/usr/bin:/bin",
-            "HOME": "/home/user",
-            "USER": "tester",
-            "TELEGRAM_BOT_TOKEN": "bot-secret",
-            "FIRECRAWL_API_KEY": "fc-secret",
-        }, clear=True), \
-            patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
-            patch("subprocess.Popen", side_effect=fake_popen), \
-            patch("threading.Thread", return_value=fake_thread), \
-            patch.object(registry, "_write_checkpoint"):
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PATH": "/usr/bin:/bin",
+                    "HOME": "/home/user",
+                    "USER": "tester",
+                    "TELEGRAM_BOT_TOKEN": "bot-secret",
+                    "FIRECRAWL_API_KEY": "fc-secret",
+                },
+                clear=True,
+            ),
+            patch("tools.utilities.process_registry._find_shell", return_value="/bin/bash"),
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=fake_thread),
+            patch.object(registry, "_write_checkpoint"),
+        ):
             registry.spawn_local(
                 "echo hello",
                 cwd="/tmp",
                 env_vars={
                     "MY_CUSTOM_VAR": "keep-me",
                     "TELEGRAM_BOT_TOKEN": "drop-me",
-                    f"{_GAUSS_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN": "forced-bot-token",
+                    f"{_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN": "forced-bot-token",
                 },
             )
 
@@ -259,7 +265,7 @@ class TestSpawnEnvSanitization:
         assert env["MY_CUSTOM_VAR"] == "keep-me"
         assert env["TELEGRAM_BOT_TOKEN"] == "forced-bot-token"
         assert "FIRECRAWL_API_KEY" not in env
-        assert f"{_GAUSS_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN" not in env
+        assert f"{_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN" not in env
         assert env["PYTHONUNBUFFERED"] == "1"
 
 
@@ -267,9 +273,10 @@ class TestSpawnEnvSanitization:
 # Checkpoint
 # =========================================================================
 
+
 class TestCheckpoint:
     def test_write_checkpoint(self, registry, tmp_path):
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
+        with patch("tools.utilities.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
             s = _make_session()
             registry._running[s.id] = s
             registry._write_checkpoint()
@@ -279,18 +286,24 @@ class TestCheckpoint:
             assert data[0]["session_id"] == s.id
 
     def test_recover_no_file(self, registry, tmp_path):
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "missing.json"):
+        with patch("tools.utilities.process_registry.CHECKPOINT_PATH", tmp_path / "missing.json"):
             assert registry.recover_from_checkpoint() == 0
 
     def test_recover_dead_pid(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_dead",
-            "command": "sleep 999",
-            "pid": 999999999,  # almost certainly not running
-            "task_id": "t1",
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+        checkpoint.write_text(
+            json.dumps(
+                [
+                    {
+                        "session_id": "proc_dead",
+                        "command": "sleep 999",
+                        "pid": 999999999,  # almost certainly not running
+                        "task_id": "t1",
+                    }
+                ]
+            )
+        )
+        with patch("tools.utilities.process_registry.CHECKPOINT_PATH", checkpoint):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 0
 
@@ -298,6 +311,7 @@ class TestCheckpoint:
 # =========================================================================
 # Kill process
 # =========================================================================
+
 
 class TestKillProcess:
     def test_kill_not_found(self, registry):
@@ -315,18 +329,22 @@ class TestKillProcess:
 # Tool handler
 # =========================================================================
 
+
 class TestProcessToolHandler:
     def test_list_action(self):
-        from tools.process_registry import _handle_process
+        from tools.utilities.process_registry import _handle_process
+
         result = json.loads(_handle_process({"action": "list"}))
         assert "processes" in result
 
     def test_poll_missing_session_id(self):
-        from tools.process_registry import _handle_process
+        from tools.utilities.process_registry import _handle_process
+
         result = json.loads(_handle_process({"action": "poll"}))
         assert "error" in result
 
     def test_unknown_action(self):
-        from tools.process_registry import _handle_process
+        from tools.utilities.process_registry import _handle_process
+
         result = json.loads(_handle_process({"action": "unknown_action"}))
         assert "error" in result

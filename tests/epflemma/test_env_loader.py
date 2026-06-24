@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from epflemma_cli.env_loader import load_epflemma_dotenv
+from epflemma_cli.runtime.env_loader import load_epflemma_dotenv
 
 
 def _clean_env(monkeypatch, *names: str) -> None:
@@ -88,13 +88,13 @@ def test_load_epflemma_dotenv_falls_back_to_latin1_on_decode_error(monkeypatch, 
     assert "LATIN_KEY" in os.environ
 
 
-def test_load_epflemma_dotenv_accepts_legacy_gauss_home_kwarg(monkeypatch, tmp_path):
-    legacy_home = tmp_path / "legacy"
-    legacy_home.mkdir()
-    (legacy_home / ".env").write_text("LEGACY_ONLY_KEY=yes\n", encoding="utf-8")
-    _clean_env(monkeypatch, "LEGACY_ONLY_KEY")
+def test_load_epflemma_dotenv_accepts_explicit_home_kwarg(monkeypatch, tmp_path):
+    explicit_home = tmp_path / "explicit"
+    explicit_home.mkdir()
+    (explicit_home / ".env").write_text("EXPLICIT_ONLY_KEY=yes\n", encoding="utf-8")
+    _clean_env(monkeypatch, "EXPLICIT_ONLY_KEY")
 
-    loaded = load_epflemma_dotenv(gauss_home=legacy_home)
+    loaded = load_epflemma_dotenv(epflemma_home=explicit_home)
 
-    assert loaded == [legacy_home / ".env"]
-    assert os.environ["LEGACY_ONLY_KEY"] == "yes"
+    assert loaded == [explicit_home / ".env"]
+    assert os.environ["EXPLICIT_ONLY_KEY"] == "yes"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from epflemma_cli.queue_manager import (
+from epflemma_cli.workflows.queue_manager import (
     Classification,
     ManagerCheck,
     PrepareState,
@@ -31,9 +31,15 @@ def test_select_next_item_uses_only_diagnostic_or_sorry_items() -> None:
 
 def test_classify_check_uses_one_explicit_priority_order() -> None:
     assert classify_check(ManagerCheck(has_assigned_sorry=True)) is Classification.HARD_BLOCKER
-    assert classify_check(ManagerCheck(has_assigned_error=True, has_assigned_warning=True)) is Classification.HARD_BLOCKER
+    assert (
+        classify_check(ManagerCheck(has_assigned_error=True, has_assigned_warning=True))
+        is Classification.HARD_BLOCKER
+    )
     assert classify_check(ManagerCheck(has_assigned_warning=True)) is Classification.WARNING_ONCE
-    assert classify_check(ManagerCheck(verification_failed=True, has_future_evidence=True)) is Classification.FUTURE_ONLY
+    assert (
+        classify_check(ManagerCheck(verification_failed=True, has_future_evidence=True))
+        is Classification.FUTURE_ONLY
+    )
     assert classify_check(ManagerCheck(verification_failed=True)) is Classification.HARD_BLOCKER
     assert classify_check(ManagerCheck()) is Classification.ACCEPT
 

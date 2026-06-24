@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from epflemma_cli import lean_incremental as li
+from epflemma_cli.lean import lean_incremental as li
 
 
 @pytest.fixture(autouse=True)
@@ -129,7 +129,10 @@ def test_segment_file_keeps_mutual_block_as_single_context_chunk():
         )
     )
 
-    assert [(segment.kind, segment.name) for segment in segments] == [("mutual", ""), ("theorem", "after")]
+    assert [(segment.kind, segment.name) for segment in segments] == [
+        ("mutual", ""),
+        ("theorem", "after"),
+    ]
     assert "def evenish" in segments[0].text
     assert "def oddish" in segments[0].text
 
@@ -168,7 +171,9 @@ def test_check_target_delegates_to_leanprobe_and_preserves_epflemma_action(monke
 
     fake = _FakeProbe()
     monkeypatch.setattr(li, "_probe", lambda: fake)
-    monkeypatch.setattr(li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl")
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
     monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
 
     payload = li.lean_incremental_check(
@@ -228,7 +233,9 @@ def test_prepare_and_feedback_delegate_to_matching_leanprobe_methods(monkeypatch
 
     fake = _FakeProbe()
     monkeypatch.setattr(li, "_probe", lambda: fake)
-    monkeypatch.setattr(li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl")
+    monkeypatch.setattr(
+        li, "_local_repl_dir", lambda project_root: project_root / ".lake" / "packages" / "repl"
+    )
     monkeypatch.setattr(li, "_LEAN_PROBE_IMPORT_ERROR", "")
 
     prepare = li.lean_incremental_check(
@@ -294,5 +301,7 @@ def test_capabilities_keep_epflemma_strict_local_repl_semantics(monkeypatch, tmp
 
     assert payload["available"] is False
     assert payload["project_root"] == str(project.resolve())
-    assert payload["active_sessions"] == [{"project_root": str(project.resolve()), "file": "Demo/Main.lean"}]
+    assert payload["active_sessions"] == [
+        {"project_root": str(project.resolve()), "file": "Demo/Main.lean"}
+    ]
     assert "local_repl_missing" in payload["degraded_codes"]

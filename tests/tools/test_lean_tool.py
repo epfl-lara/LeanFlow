@@ -5,12 +5,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import model_tools
-import tools.lean_tool as lean_tool
-from epflemma_cli.workflow_state import load_verified_patch_status
-from epflemma_cli.lean_services import (
+import tools.implementations.lean_experts as lean_experts
+import tools.implementations.lean_patch as lean_patch
+import tools.implementations.lean_tool as lean_tool
+from epflemma_cli.lean.lean_services import (
     LeanCapabilityReport,
     LeanSearchResult,
 )
+from epflemma_cli.workflows.workflow_state import load_verified_patch_status
 
 
 def test_lean_capabilities_tool_returns_structured_json(monkeypatch):
@@ -153,9 +155,7 @@ def test_lean_proof_context_tool_returns_normalized_payload(monkeypatch):
         },
     )
 
-    payload = json.loads(
-        lean_tool.lean_proof_context_tool("Demo/Main.lean", "demo")
-    )
+    payload = json.loads(lean_tool.lean_proof_context_tool("Demo/Main.lean", "demo"))
 
     assert payload["success"] is True
     assert payload["theorem_id"] == "demo"
@@ -175,7 +175,7 @@ def test_apply_verified_patch_tool_applies_patch_and_records_verified_status(tmp
     target.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        lean_tool,
+        lean_patch,
         "lean_verify",
         lambda **kwargs: SimpleNamespace(
             to_dict=lambda: {
@@ -197,7 +197,9 @@ def test_apply_verified_patch_tool_applies_patch_and_records_verified_status(tmp
 *** End Patch"""
 
     payload = json.loads(
-        lean_tool.apply_verified_patch_tool(str(target), patch, cwd=str(tmp_path), theorem_id="demo")
+        lean_tool.apply_verified_patch_tool(
+            str(target), patch, cwd=str(tmp_path), theorem_id="demo"
+        )
     )
 
     assert payload["success"] is True
@@ -215,7 +217,7 @@ def test_apply_verified_patch_tool_persists_check_failed_status(tmp_path, monkey
     target.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        lean_tool,
+        lean_patch,
         "lean_verify",
         lambda **kwargs: SimpleNamespace(
             to_dict=lambda: {
@@ -256,7 +258,7 @@ def test_apply_verified_patch_tool_reports_no_changes_without_verifying(tmp_path
         verify_called["value"] = True
         return SimpleNamespace(to_dict=lambda: {"ok": True})
 
-    monkeypatch.setattr(lean_tool, "lean_verify", _fake_verify)
+    monkeypatch.setattr(lean_patch, "lean_verify", _fake_verify)
 
     patch = f"""\
 *** Begin Patch
@@ -290,7 +292,7 @@ def test_apply_verified_patch_tool_blocks_statement_changes_before_verify(tmp_pa
         verify_called["value"] = True
         return SimpleNamespace(to_dict=lambda: {"ok": True})
 
-    monkeypatch.setattr(lean_tool, "lean_verify", _fake_verify)
+    monkeypatch.setattr(lean_patch, "lean_verify", _fake_verify)
     patch = f"""\
 *** Begin Patch
 *** Update File: {target}
@@ -326,7 +328,7 @@ def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
         )
 
     monkeypatch.setattr(
-        lean_tool,
+        lean_experts,
         "call_llm",
         _fake_call_llm,
     )
@@ -374,7 +376,7 @@ def test_lean_reasoning_help_tool_uses_command_provider(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("AUXILIARY_LEAN_REASONING_PROVIDER", "codex")
     monkeypatch.setenv("AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE", "codex-helper --read-only")
-    monkeypatch.setattr("epflemma_cli.expert_help.subprocess.run", _fake_run)
+    monkeypatch.setattr("epflemma_cli.cli.expert_help.subprocess.run", _fake_run)
 
     payload = json.loads(
         lean_tool.lean_reasoning_help_tool(
@@ -411,7 +413,7 @@ def test_lean_reasoning_help_codex_default_reads_last_message_file(monkeypatch, 
 
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("AUXILIARY_LEAN_REASONING_PROVIDER", "codex")
-    monkeypatch.setattr("epflemma_cli.expert_help.subprocess.run", _fake_run)
+    monkeypatch.setattr("epflemma_cli.cli.expert_help.subprocess.run", _fake_run)
 
     payload = json.loads(
         lean_tool.lean_reasoning_help_tool(
@@ -435,14 +437,16 @@ def test_lean_reasoning_help_tool_clamps_short_timeout(monkeypatch):
         captured.update(kwargs)
         return SimpleNamespace(
             model="moonshotai/Kimi-K2.6-int4",
-            choices=[SimpleNamespace(message=SimpleNamespace(content="Use a coordinate normalization first."))],
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="Use a coordinate normalization first.")
+                )
+            ],
         )
 
-    monkeypatch.setattr(lean_tool, "call_llm", _fake_call_llm)
+    monkeypatch.setattr(lean_experts, "call_llm", _fake_call_llm)
 
-    payload = json.loads(
-        lean_tool.lean_reasoning_help_tool("demo", "Demo/Main.lean", timeout_s=45)
-    )
+    payload = json.loads(lean_tool.lean_reasoning_help_tool("demo", "Demo/Main.lean", timeout_s=45))
 
     assert payload["success"] is True
     assert captured["timeout"] == 1200
@@ -450,7 +454,7 @@ def test_lean_reasoning_help_tool_clamps_short_timeout(monkeypatch):
 
 def test_lean_reasoning_help_tool_reports_no_answer(monkeypatch):
     monkeypatch.setattr(
-        lean_tool,
+        lean_experts,
         "call_llm",
         lambda **kwargs: SimpleNamespace(
             model="moonshotai/Kimi-K2.6-int4",
@@ -470,7 +474,7 @@ def test_lean_reasoning_help_tool_reports_unavailable(monkeypatch):
     def _raise_unavailable(**kwargs):
         raise RuntimeError("No LLM provider configured")
 
-    monkeypatch.setattr(lean_tool, "call_llm", _raise_unavailable)
+    monkeypatch.setattr(lean_experts, "call_llm", _raise_unavailable)
 
     payload = json.loads(lean_tool.lean_reasoning_help_tool("demo", "Demo/Main.lean"))
 
@@ -543,8 +547,8 @@ def test_lean_decompose_helpers_returns_checked_structured_plan(monkeypatch, tmp
             "output": "warning: declaration uses `sorry`",
         }
 
-    monkeypatch.setattr(lean_tool, "call_llm", _fake_call_llm)
-    monkeypatch.setattr(lean_tool, "lean_incremental_check", _fake_incremental_check)
+    monkeypatch.setattr(lean_experts, "call_llm", _fake_call_llm)
+    monkeypatch.setattr(lean_experts, "lean_incremental_check", _fake_incremental_check)
 
     payload = json.loads(
         lean_tool.lean_decompose_helpers_tool(
@@ -612,9 +616,9 @@ def test_lean_decompose_helpers_uses_fallback_command_provider(monkeypatch, tmp_
 
     monkeypatch.setenv("AUXILIARY_LEAN_REASONING_PROVIDER", "codex")
     monkeypatch.setenv("AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE", "codex-helper")
-    monkeypatch.setattr(lean_tool, "run_command_expert_help", _fake_run_command_expert_help)
+    monkeypatch.setattr(lean_experts, "run_command_expert_help", _fake_run_command_expert_help)
     monkeypatch.setattr(
-        lean_tool,
+        lean_experts,
         "lean_incremental_check",
         lambda **kwargs: {"success": True, "ok": False, "errors": 0, "warnings": 1},
     )
@@ -637,7 +641,7 @@ def test_lean_decompose_helpers_uses_fallback_command_provider(monkeypatch, tmp_
 
 def test_lean_decompose_helpers_reports_malformed_json(monkeypatch):
     monkeypatch.setattr(
-        lean_tool,
+        lean_experts,
         "call_llm",
         lambda **kwargs: SimpleNamespace(
             model="moonshotai/Kimi-K2.6-int4",

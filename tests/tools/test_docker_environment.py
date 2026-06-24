@@ -11,7 +11,9 @@ from tools.environments import docker as docker_env
 def _install_fake_minisweagent(monkeypatch, captured_run_args):
     class MockInnerDocker:
         container_id = "fake-container"
-        config = type("Config", (), {"executable": "/usr/bin/docker", "forward_env": [], "env": {}})()
+        config = type(
+            "Config", (), {"executable": "/usr/bin/docker", "forward_env": [], "env": {}}
+        )()
 
         def __init__(self, **kwargs):
             captured_run_args.extend(kwargs.get("run_args", []))
@@ -51,17 +53,17 @@ def test_ensure_docker_available_logs_and_raises_when_not_found(monkeypatch, cap
     monkeypatch.setattr(
         docker_env.subprocess,
         "run",
-        lambda *args, **kwargs: pytest.fail("subprocess.run should not be called when docker is missing"),
+        lambda *args, **kwargs: pytest.fail(
+            "subprocess.run should not be called when docker is missing"
+        ),
     )
 
-    with caplog.at_level(logging.ERROR):
-        with pytest.raises(RuntimeError) as excinfo:
-            _make_dummy_env()
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError) as excinfo:
+        _make_dummy_env()
 
     assert "Docker executable not found in PATH or known install locations" in str(excinfo.value)
     assert any(
-        "no docker executable was found in PATH or known install locations"
-        in record.getMessage()
+        "no docker executable was found in PATH or known install locations" in record.getMessage()
         for record in caplog.records
     )
 
@@ -75,14 +77,12 @@ def test_ensure_docker_available_logs_and_raises_on_timeout(monkeypatch, caplog)
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/custom/docker")
     monkeypatch.setattr(docker_env.subprocess, "run", _raise_timeout)
 
-    with caplog.at_level(logging.ERROR):
-        with pytest.raises(RuntimeError) as excinfo:
-            _make_dummy_env()
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError) as excinfo:
+        _make_dummy_env()
 
     assert "Docker daemon is not responding" in str(excinfo.value)
     assert any(
-        "/custom/docker version' timed out" in record.getMessage()
-        for record in caplog.records
+        "/custom/docker version' timed out" in record.getMessage() for record in caplog.records
     )
 
 
@@ -101,11 +101,14 @@ def test_ensure_docker_available_uses_resolved_executable(monkeypatch):
     docker_env._ensure_docker_available()
 
     assert calls == [
-        (["/opt/homebrew/bin/docker", "version"], {
-            "capture_output": True,
-            "text": True,
-            "timeout": 5,
-        })
+        (
+            ["/opt/homebrew/bin/docker", "version"],
+            {
+                "capture_output": True,
+                "text": True,
+                "timeout": 5,
+            },
+        )
     ]
 
 
@@ -210,4 +213,3 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     run_args_str = " ".join(captured_run_args)
     assert f"{project_dir}:/workspace" in run_args_str
     assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
-

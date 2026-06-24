@@ -3,12 +3,12 @@
 import json
 import time
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.prompt_caching import apply_anthropic_cache_control
-from agent.anthropic_adapter import (
+from agent.prompting.prompt_caching import apply_anthropic_cache_control
+from agent.providers.anthropic_adapter import (
     _is_oauth_token,
     _refresh_oauth_token,
     _write_claude_code_credentials,
@@ -24,7 +24,6 @@ from agent.anthropic_adapter import (
     resolve_anthropic_token,
     run_oauth_setup_token,
 )
-
 
 # ---------------------------------------------------------------------------
 # Auth helpers
@@ -52,7 +51,7 @@ class TestIsOAuthToken:
 
 class TestBuildAnthropicClient:
     def test_setup_token_uses_auth_token(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+        with patch("agent.providers.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client("sk-ant-oat01-" + "x" * 60)
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert "auth_token" in kwargs
@@ -64,7 +63,7 @@ class TestBuildAnthropicClient:
             assert "api_key" not in kwargs
 
     def test_api_key_uses_api_key(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+        with patch("agent.providers.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client("sk-ant-api03-something")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["api_key"] == "sk-ant-api03-something"
@@ -76,7 +75,7 @@ class TestBuildAnthropicClient:
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
     def test_custom_base_url(self):
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+        with patch("agent.providers.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
@@ -86,14 +85,18 @@ class TestReadClaudeCodeCredentials:
     def test_reads_valid_credentials(self, tmp_path, monkeypatch):
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "sk-ant-oat01-token",
-                "refreshToken": "sk-ant-oat01-refresh",
-                "expiresAt": int(time.time() * 1000) + 3600_000,
-            }
-        }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        cred_file.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "sk-ant-oat01-token",
+                        "refreshToken": "sk-ant-oat01-refresh",
+                        "expiresAt": int(time.time() * 1000) + 3600_000,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
         creds = read_claude_code_credentials()
         assert creds is not None
         assert creds["accessToken"] == "sk-ant-oat01-token"
@@ -103,29 +106,29 @@ class TestReadClaudeCodeCredentials:
     def test_ignores_primary_api_key_for_native_anthropic_resolution(self, tmp_path, monkeypatch):
         claude_json = tmp_path / ".claude.json"
         claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
 
         creds = read_claude_code_credentials()
         assert creds is None
 
     def test_returns_none_for_missing_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
         assert read_claude_code_credentials() is None
 
     def test_returns_none_for_missing_oauth_key(self, tmp_path, monkeypatch):
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({"someOtherKey": {}}))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
         assert read_claude_code_credentials() is None
 
     def test_returns_none_for_empty_access_token(self, tmp_path, monkeypatch):
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {"accessToken": "", "refreshToken": "x"}
-        }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        cred_file.write_text(
+            json.dumps({"claudeAiOauth": {"accessToken": "", "refreshToken": "x"}})
+        )
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
         assert read_claude_code_credentials() is None
 
 
@@ -153,17 +156,23 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        (tmp_path / ".claude.json").write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        (tmp_path / ".claude.json").write_text(
+            json.dumps({"primaryApiKey": "sk-ant-api03-primary"})
+        )
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
 
         assert get_anthropic_token_source("sk-ant-api03-primary") == "claude_json_primary_api_key"
 
-    def test_does_not_resolve_primary_api_key_as_native_anthropic_token(self, monkeypatch, tmp_path):
+    def test_does_not_resolve_primary_api_key_as_native_anthropic_token(
+        self, monkeypatch, tmp_path
+    ):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        (tmp_path / ".claude.json").write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        (tmp_path / ".claude.json").write_text(
+            json.dumps({"primaryApiKey": "sk-ant-api03-primary"})
+        )
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
 
         assert resolve_anthropic_token() is None
 
@@ -171,7 +180,7 @@ class TestResolveAnthropicToken:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-mykey")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "sk-ant-api03-mykey"
 
     def test_falls_back_to_token(self, monkeypatch):
@@ -183,14 +192,14 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() is None
 
     def test_falls_back_to_claude_code_oauth_token(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test-token")
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "sk-ant-oat01-test-token"
 
     def test_falls_back_to_claude_code_credentials(self, monkeypatch, tmp_path):
@@ -199,40 +208,52 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "cc-auto-token",
-                "refreshToken": "refresh",
-                "expiresAt": int(time.time() * 1000) + 3600_000,
-            }
-        }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        cred_file.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "cc-auto-token",
+                        "refreshToken": "refresh",
+                        "expiresAt": int(time.time() * 1000) + 3600_000,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "cc-auto-token"
 
-    def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
+    def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(
+        self, monkeypatch, tmp_path
+    ):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "cc-auto-token",
-                "refreshToken": "refresh-token",
-                "expiresAt": int(time.time() * 1000) + 3600_000,
-            }
-        }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        cred_file.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "cc-auto-token",
+                        "refreshToken": "refresh-token",
+                        "expiresAt": int(time.time() * 1000) + 3600_000,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
 
         assert resolve_anthropic_token() == "cc-auto-token"
 
-    def test_keeps_static_anthropic_token_when_only_non_refreshable_claude_key_exists(self, monkeypatch, tmp_path):
+    def test_keeps_static_anthropic_token_when_only_non_refreshable_claude_key_exists(
+        self, monkeypatch, tmp_path
+    ):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         claude_json = tmp_path / ".claude.json"
         claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-managed-key"}))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
 
         assert resolve_anthropic_token() == "sk-ant-oat01-static-token"
 
@@ -243,7 +264,7 @@ class TestRefreshOauthToken:
         assert _refresh_oauth_token(creds) is None
 
     def test_successful_refresh(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
 
         creds = {
             "accessToken": "old-token",
@@ -251,17 +272,19 @@ class TestRefreshOauthToken:
             "expiresAt": int(time.time() * 1000) - 3600_000,
         }
 
-        mock_response = json.dumps({
-            "access_token": "new-token-abc",
-            "refresh_token": "new-refresh-456",
-            "expires_in": 7200,
-        }).encode()
+        mock_response = json.dumps(
+            {
+                "access_token": "new-token-abc",
+                "refresh_token": "new-refresh-456",
+                "expires_in": 7200,
+            }
+        ).encode()
 
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_ctx = MagicMock()
-            mock_ctx.__enter__ = MagicMock(return_value=MagicMock(
-                read=MagicMock(return_value=mock_response)
-            ))
+            mock_ctx.__enter__ = MagicMock(
+                return_value=MagicMock(read=MagicMock(return_value=mock_response))
+            )
             mock_ctx.__exit__ = MagicMock(return_value=False)
             mock_urlopen.return_value = mock_ctx
 
@@ -288,7 +311,7 @@ class TestRefreshOauthToken:
 
 class TestWriteClaudeCodeCredentials:
     def test_writes_new_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
         _write_claude_code_credentials("tok", "ref", 12345)
         cred_file = tmp_path / ".claude" / ".credentials.json"
         assert cred_file.exists()
@@ -298,7 +321,7 @@ class TestWriteClaudeCodeCredentials:
         assert data["claudeAiOauth"]["expiresAt"] == 12345
 
     def test_preserves_existing_fields(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
         cred_dir = tmp_path / ".claude"
         cred_dir.mkdir()
         cred_file = cred_dir / ".credentials.json"
@@ -319,38 +342,52 @@ class TestResolveWithRefresh:
         # Set up expired creds with a refresh token
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "expired-tok",
-                "refreshToken": "valid-refresh",
-                "expiresAt": int(time.time() * 1000) - 3600_000,
-            }
-        }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        cred_file.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "expired-tok",
+                        "refreshToken": "valid-refresh",
+                        "expiresAt": int(time.time() * 1000) - 3600_000,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
 
         # Mock refresh to succeed
-        with patch("agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
+        with patch(
+            "agent.providers.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"
+        ):
             result = resolve_anthropic_token()
 
         assert result == "refreshed-token"
 
-    def test_static_env_oauth_token_does_not_block_refreshable_claude_creds(self, monkeypatch, tmp_path):
+    def test_static_env_oauth_token_does_not_block_refreshable_claude_creds(
+        self, monkeypatch, tmp_path
+    ):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-expired-env-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "expired-claude-creds-token",
-                "refreshToken": "valid-refresh",
-                "expiresAt": int(time.time() * 1000) - 3600_000,
-            }
-        }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        cred_file.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "expired-claude-creds-token",
+                        "refreshToken": "valid-refresh",
+                        "expiresAt": int(time.time() * 1000) - 3600_000,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
 
-        with patch("agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
+        with patch(
+            "agent.providers.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"
+        ):
             result = resolve_anthropic_token()
 
         assert result == "refreshed-token"
@@ -371,14 +408,18 @@ class TestRunOauthSetupToken:
         # Pre-create credential files that will be found after subprocess
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
-        cred_file.write_text(json.dumps({
-            "claudeAiOauth": {
-                "accessToken": "from-cred-file",
-                "refreshToken": "refresh",
-                "expiresAt": int(time.time() * 1000) + 3600_000,
-            }
-        }))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        cred_file.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "from-cred-file",
+                        "refreshToken": "refresh",
+                        "expiresAt": int(time.time() * 1000) + 3600_000,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
@@ -392,7 +433,7 @@ class TestRunOauthSetupToken:
         monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "from-env-var")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
@@ -405,7 +446,7 @@ class TestRunOauthSetupToken:
         monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.providers.anthropic_adapter.Path.home", lambda: tmp_path)
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
@@ -430,7 +471,9 @@ class TestRunOauthSetupToken:
 
 class TestNormalizeModelName:
     def test_strips_anthropic_prefix(self):
-        assert normalize_model_name("anthropic/claude-sonnet-4-20250514") == "claude-sonnet-4-20250514"
+        assert (
+            normalize_model_name("anthropic/claude-sonnet-4-20250514") == "claude-sonnet-4-20250514"
+        )
 
     def test_leaves_bare_name(self):
         assert normalize_model_name("claude-sonnet-4-20250514") == "claude-sonnet-4-20250514"
@@ -513,7 +556,10 @@ class TestConvertMessages:
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "Can you see this?"},
-                    {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.png"}},
+                    {
+                        "type": "image",
+                        "source": {"type": "url", "url": "https://example.com/cat.png"},
+                    },
                 ],
             }
         ]
@@ -595,9 +641,7 @@ class TestConvertMessages:
             {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [
-                    {"id": "tc_orphan", "function": {"name": "x", "arguments": "{}"}}
-                ],
+                "tool_calls": [{"id": "tc_orphan", "function": {"name": "x", "arguments": "{}"}}],
             },
             {"role": "user", "content": "never mind"},
         ]
@@ -611,7 +655,11 @@ class TestConvertMessages:
             {
                 "role": "system",
                 "content": [
-                    {"type": "text", "text": "System prompt", "cache_control": {"type": "ephemeral"}},
+                    {
+                        "type": "text",
+                        "text": "System prompt",
+                        "cache_control": {"type": "ephemeral"},
+                    },
                 ],
             },
             {"role": "user", "content": "Hi"},
@@ -622,10 +670,12 @@ class TestConvertMessages:
         assert system[0]["cache_control"] == {"type": "ephemeral"}
 
     def test_assistant_cache_control_blocks_are_preserved(self):
-        messages = apply_anthropic_cache_control([
-            {"role": "system", "content": "System prompt"},
-            {"role": "assistant", "content": "Hello from assistant"},
-        ])
+        messages = apply_anthropic_cache_control(
+            [
+                {"role": "system", "content": "System prompt"},
+                {"role": "assistant", "content": "Hello from assistant"},
+            ]
+        )
 
         _, result = convert_messages_to_anthropic(messages)
         assistant_blocks = result[0]["content"]
@@ -635,10 +685,12 @@ class TestConvertMessages:
         assert assistant_blocks[0]["cache_control"] == {"type": "ephemeral"}
 
     def test_tool_cache_control_is_preserved_on_tool_result_block(self):
-        messages = apply_anthropic_cache_control([
-            {"role": "system", "content": "System prompt"},
-            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
-        ])
+        messages = apply_anthropic_cache_control(
+            [
+                {"role": "system", "content": "System prompt"},
+                {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+            ]
+        )
 
         _, result = convert_messages_to_anthropic(messages)
         tool_block = result[0]["content"][0]
@@ -699,18 +751,20 @@ class TestConvertMessages:
         }
 
     def test_empty_cached_assistant_tool_turn_converts_without_empty_text_block(self):
-        messages = apply_anthropic_cache_control([
-            {"role": "system", "content": "System prompt"},
-            {"role": "user", "content": "Find the skill"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "tc_1", "function": {"name": "skill_view", "arguments": "{}"}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
-        ])
+        messages = apply_anthropic_cache_control(
+            [
+                {"role": "system", "content": "System prompt"},
+                {"role": "user", "content": "Find the skill"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "skill_view", "arguments": "{}"}},
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+            ]
+        )
 
         _, result = convert_messages_to_anthropic(messages)
 
@@ -844,9 +898,7 @@ class TestNormalizeResponse:
                 input={"query": "test"},
             ),
         ]
-        msg, reason = normalize_anthropic_response(
-            self._make_response(blocks, "tool_use")
-        )
+        msg, reason = normalize_anthropic_response(self._make_response(blocks, "tool_use"))
         assert msg.content == "Searching..."
         assert reason == "tool_calls"
         assert len(msg.tool_calls) == 1
@@ -864,26 +916,16 @@ class TestNormalizeResponse:
 
     def test_stop_reason_mapping(self):
         block = SimpleNamespace(type="text", text="x")
-        _, r1 = normalize_anthropic_response(
-            self._make_response([block], "end_turn")
-        )
-        _, r2 = normalize_anthropic_response(
-            self._make_response([block], "tool_use")
-        )
-        _, r3 = normalize_anthropic_response(
-            self._make_response([block], "max_tokens")
-        )
+        _, r1 = normalize_anthropic_response(self._make_response([block], "end_turn"))
+        _, r2 = normalize_anthropic_response(self._make_response([block], "tool_use"))
+        _, r3 = normalize_anthropic_response(self._make_response([block], "max_tokens"))
         assert r1 == "stop"
         assert r2 == "tool_calls"
         assert r3 == "length"
 
     def test_no_text_content(self):
-        block = SimpleNamespace(
-            type="tool_use", id="tc_1", name="search", input={"q": "hi"}
-        )
-        msg, reason = normalize_anthropic_response(
-            self._make_response([block], "tool_use")
-        )
+        block = SimpleNamespace(type="tool_use", id="tc_1", name="search", input={"q": "hi"})
+        msg, reason = normalize_anthropic_response(self._make_response([block], "tool_use"))
         assert msg.content is None
         assert len(msg.tool_calls) == 1
 

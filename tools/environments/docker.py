@@ -12,10 +12,9 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Optional
 
 from tools.environments.base import BaseEnvironment
-from tools.interrupt import is_interrupted
+from tools.utilities.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +28,10 @@ _DOCKER_SEARCH_PATHS = [
     "/Applications/Docker.app/Contents/Resources/bin/docker",
 ]
 
-_docker_executable: Optional[str] = None  # resolved once, cached
+_docker_executable: str | None = None  # resolved once, cached
 
 
-def find_docker() -> Optional[str]:
+def find_docker() -> str | None:
     """Locate the docker CLI binary.
 
     Checks ``shutil.which`` first (respects PATH), then probes well-known
@@ -67,19 +66,28 @@ def find_docker() -> Optional[str]:
 # Block privilege escalation and limit PIDs.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
 _SECURITY_ARGS = [
-    "--cap-drop", "ALL",
-    "--cap-add", "DAC_OVERRIDE",
-    "--cap-add", "CHOWN",
-    "--cap-add", "FOWNER",
-    "--security-opt", "no-new-privileges",
-    "--pids-limit", "256",
-    "--tmpfs", "/tmp:rw,nosuid,size=512m",
-    "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
-    "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
+    "--cap-drop",
+    "ALL",
+    "--cap-add",
+    "DAC_OVERRIDE",
+    "--cap-add",
+    "CHOWN",
+    "--cap-add",
+    "FOWNER",
+    "--security-opt",
+    "no-new-privileges",
+    "--pids-limit",
+    "256",
+    "--tmpfs",
+    "/tmp:rw,nosuid,size=512m",
+    "--tmpfs",
+    "/var/tmp:rw,noexec,nosuid,size=256m",
+    "--tmpfs",
+    "/run:rw,noexec,nosuid,size=64m",
 ]
 
 
-_storage_opt_ok: Optional[bool] = None  # cached result across instances
+_storage_opt_ok: bool | None = None  # cached result across instances
 
 
 def _ensure_docker_available() -> None:
@@ -107,7 +115,7 @@ def _ensure_docker_available() -> None:
             text=True,
             timeout=5,
         )
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
         logger.error(
             "Docker backend selected but the resolved docker executable '%s' could "
             "not be executed.",
@@ -116,8 +124,8 @@ def _ensure_docker_available() -> None:
         )
         raise RuntimeError(
             "Docker executable could not be executed. Check your Docker installation."
-        )
-    except subprocess.TimeoutExpired:
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
         logger.error(
             "Docker backend selected but '%s version' timed out. "
             "The Docker daemon may not be running.",
@@ -126,7 +134,7 @@ def _ensure_docker_available() -> None:
         )
         raise RuntimeError(
             "Docker daemon is not responding. Ensure Docker is running and try again."
-        )
+        ) from exc
     except Exception:
         logger.error(
             "Unexpected error while checking Docker availability.",
@@ -136,8 +144,7 @@ def _ensure_docker_available() -> None:
     else:
         if result.returncode != 0:
             logger.error(
-                "Docker backend selected but '%s version' failed "
-                "(exit code %d, stderr=%s)",
+                "Docker backend selected but '%s version' failed (exit code %d, stderr=%s)",
                 docker_exe,
                 result.returncode,
                 result.stderr.strip(),
@@ -175,13 +182,14 @@ class DockerEnvironment(BaseEnvironment):
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
     ):
+        """Initialize a hardened Docker container with configurable resource limits, security constraints, and optional persistent mounts. Validates Docker availability, builds security args (capabilities, tmpfs, PID limits), and sets up writable workspace via tmpfs (ephemeral) or bind mounts (persistent)."""
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
         self._base_image = image
         self._persistent = persistent_filesystem
         self._task_id = task_id
-        self._container_id: Optional[str] = None
+        self._container_id: str | None = None
         logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
@@ -219,7 +227,7 @@ class DockerEnvironment(BaseEnvironment):
         # User-configured volume mounts (from config.yaml docker_volumes)
         volume_args = []
         workspace_explicitly_mounted = False
-        for vol in (volumes or []):
+        for vol in volumes or []:
             if not isinstance(vol, str):
                 logger.warning(f"Docker volume entry is not a string: {vol!r}")
                 continue
@@ -241,33 +249,48 @@ class DockerEnvironment(BaseEnvironment):
             and not workspace_explicitly_mounted
         )
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
-            logger.debug(f"Skipping docker cwd mount: host_cwd is not a valid directory: {host_cwd}")
+            logger.debug(
+                f"Skipping docker cwd mount: host_cwd is not a valid directory: {host_cwd}"
+            )
 
-        self._workspace_dir: Optional[str] = None
-        self._home_dir: Optional[str] = None
+        self._workspace_dir: str | None = None
+        self._home_dir: str | None = None
         writable_args = []
         if self._persistent:
             sandbox = get_sandbox_dir() / "docker" / task_id
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
-            writable_args.extend([
-                "-v", f"{self._home_dir}:/root",
-            ])
+            writable_args.extend(
+                [
+                    "-v",
+                    f"{self._home_dir}:/root",
+                ]
+            )
             if not bind_host_cwd and not workspace_explicitly_mounted:
                 self._workspace_dir = str(sandbox / "workspace")
                 os.makedirs(self._workspace_dir, exist_ok=True)
-                writable_args.extend([
-                    "-v", f"{self._workspace_dir}:/workspace",
-                ])
+                writable_args.extend(
+                    [
+                        "-v",
+                        f"{self._workspace_dir}:/workspace",
+                    ]
+                )
         else:
             if not bind_host_cwd and not workspace_explicitly_mounted:
-                writable_args.extend([
-                    "--tmpfs", "/workspace:rw,exec,size=10g",
-                ])
-            writable_args.extend([
-                "--tmpfs", "/home:rw,exec,size=1g",
-                "--tmpfs", "/root:rw,exec,size=1g",
-            ])
+                writable_args.extend(
+                    [
+                        "--tmpfs",
+                        "/workspace:rw,exec,size=10g",
+                    ]
+                )
+            writable_args.extend(
+                [
+                    "--tmpfs",
+                    "/home:rw,exec,size=1g",
+                    "--tmpfs",
+                    "/root:rw,exec,size=1g",
+                ]
+            )
 
         if bind_host_cwd:
             logger.info(f"Mounting configured host cwd to /workspace: {host_cwd_abs}")
@@ -284,7 +307,9 @@ class DockerEnvironment(BaseEnvironment):
         docker_exe = find_docker() or "docker"
 
         self._inner = _Docker(
-            image=image, cwd=cwd, timeout=timeout,
+            image=image,
+            cwd=cwd,
+            timeout=timeout,
             run_args=all_run_args,
             executable=docker_exe,
         )
@@ -293,7 +318,7 @@ class DockerEnvironment(BaseEnvironment):
     @staticmethod
     def _storage_opt_supported() -> bool:
         """Check if Docker's storage driver supports --storage-opt size=.
-        
+
         Only overlay2 on XFS with pquota supports per-container disk quotas.
         Ubuntu (and most distros) default to ext4, where this flag errors out.
         """
@@ -304,7 +329,9 @@ class DockerEnvironment(BaseEnvironment):
             docker = find_docker() or "docker"
             result = subprocess.run(
                 [docker, "info", "--format", "{{.Driver}}"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             driver = result.stdout.strip().lower()
             if driver != "overlay2":
@@ -314,14 +341,15 @@ class DockerEnvironment(BaseEnvironment):
             # Probe by attempting a dry-ish run — the fastest reliable check.
             probe = subprocess.run(
                 [docker, "create", "--storage-opt", "size=1m", "hello-world"],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             if probe.returncode == 0:
                 # Clean up the created container
                 container_id = probe.stdout.strip()
                 if container_id:
-                    subprocess.run([docker, "rm", container_id],
-                                   capture_output=True, timeout=5)
+                    subprocess.run([docker, "rm", container_id], capture_output=True, timeout=5)
                 _storage_opt_ok = True
             else:
                 _storage_opt_ok = False
@@ -330,9 +358,15 @@ class DockerEnvironment(BaseEnvironment):
         logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
         return _storage_opt_ok
 
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+    def execute(
+        self,
+        command: str,
+        cwd: str = "",
+        *,
+        timeout: int | None = None,
+        stdin_data: str | None = None,
+    ) -> dict:
+        """Execute a bash command in the container via docker exec with output streaming. Handles working-directory expansion (~), merges stdin with optional sudo password, enforces timeout via polling, and returns {output, returncode}. Supports interruption via is_interrupted()."""
         exec_command, sudo_stdin = self._prepare_command(command)
         work_dir = cwd or self.cwd
         effective_timeout = timeout or self.timeout
@@ -366,7 +400,8 @@ class DockerEnvironment(BaseEnvironment):
             _output_chunks = []
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 stdin=subprocess.PIPE if effective_stdin else subprocess.DEVNULL,
                 text=True,
             )
@@ -417,6 +452,7 @@ class DockerEnvironment(BaseEnvironment):
 
         if not self._persistent:
             import shutil
+
             for d in (self._workspace_dir, self._home_dir):
                 if d:
                     shutil.rmtree(d, ignore_errors=True)

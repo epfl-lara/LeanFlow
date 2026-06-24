@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from epflemma_cli import workflow as workflow_mod
+from epflemma_cli.config import save_config
+from epflemma_cli.formalization.formalization_documents import FormalizationDocumentError
 from epflemma_cli.workflow import (
     WORKFLOW_ALIAS_MAP,
     describe_launch_plan,
@@ -12,8 +14,6 @@ from epflemma_cli.workflow import (
     resolve_workflow_request,
     rewrite_forgiving_workflow_command,
 )
-from epflemma_cli.config import save_config
-from epflemma_cli.formalization_documents import FormalizationDocumentError
 
 
 def _write_formalization_source(project: Path, relative: str = "docs/paper.tex") -> Path:
@@ -88,13 +88,15 @@ def test_parse_workflow_command_extracts_additional_skills():
 
 
 def test_parse_workflow_command_defaults_to_single_agent():
-    spec = parse_workflow_command("autoformalize \"formalize theorem\"")
+    spec = parse_workflow_command('autoformalize "formalize theorem"')
 
     assert spec.parallel_agents == 1
     assert spec.explicit_goal == ""
 
 
-def test_resolve_workflow_request_uses_swarm_toolset_only_when_user_requests_agents(monkeypatch, tmp_path):
+def test_resolve_workflow_request_uses_swarm_toolset_only_when_user_requests_agents(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(
         workflow_mod,
         "discover_epflemma_project",
@@ -271,7 +273,9 @@ def test_resolve_workflow_request_exports_verifier_provider_env(monkeypatch, tmp
     assert plan.child_env["AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] == "claude-code"
     assert plan.child_env["AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"] == "claude --print"
     assert plan.child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] == "codex"
-    assert plan.child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"] == "codex exec -"
+    assert (
+        plan.child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"] == "codex exec -"
+    )
     summary = describe_launch_plan(plan)
     assert summary["blueprint_verifier_provider"] == "claude-code"
     assert summary["autoformalizer_verifier_provider"] == "codex"
@@ -309,6 +313,7 @@ def test_resolve_workflow_request_forces_single_agent_for_file_scoped_prove(monk
 
 # --- workflow kind mapping ---
 
+
 @pytest.mark.parametrize(
     "command,expected_kind",
     [
@@ -316,10 +321,10 @@ def test_resolve_workflow_request_forces_single_agent_for_file_scoped_prove(monk
         ("/autoprove Main.lean", "prove"),
         ("autoprove Main.lean", "prove"),
         ("prove Main.lean", "prove"),
-        ("/formalize \"theorem\"", "formalize"),
-        ("/autoformalize \"theorem\"", "formalize"),
-        ("autoformalize \"theorem\"", "formalize"),
-        ("formalize \"theorem\"", "formalize"),
+        ('/formalize "theorem"', "formalize"),
+        ('/autoformalize "theorem"', "formalize"),
+        ('autoformalize "theorem"', "formalize"),
+        ('formalize "theorem"', "formalize"),
         ("/draft Main.lean", "draft"),
         ("draft Main.lean", "draft"),
         ("/review Main.lean", "review"),
@@ -334,7 +339,9 @@ def test_resolve_workflow_request_forces_single_agent_for_file_scoped_prove(monk
 )
 def test_parse_workflow_command_maps_all_aliases_to_correct_kind(command, expected_kind):
     spec = parse_workflow_command(command)
-    assert spec.workflow_kind == expected_kind, f"{command!r} → {spec.workflow_kind!r}, expected {expected_kind!r}"
+    assert spec.workflow_kind == expected_kind, (
+        f"{command!r} → {spec.workflow_kind!r}, expected {expected_kind!r}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -358,13 +365,14 @@ def test_parse_workflow_command_sets_correct_backend_command(command, expected_b
 
 # --- forgiving alias rewriting ---
 
+
 @pytest.mark.parametrize(
     "raw,expected_start",
     [
         ("autoprove Main.lean", "/prove Main.lean"),
         ("prove Main.lean", "/prove Main.lean"),
-        ("autoformalize \"x\"", "/formalize \"x\""),
-        ("formalize \"x\"", "/formalize \"x\""),
+        ('autoformalize "x"', '/formalize "x"'),
+        ('formalize "x"', '/formalize "x"'),
         ("draft Main.lean", "/draft Main.lean"),
         ("review Main.lean", "/review Main.lean"),
         ("checkpoint Main.lean", "/checkpoint Main.lean"),
@@ -388,6 +396,7 @@ def test_rewrite_forgiving_workflow_command_passthrough_for_unknown():
 
 
 # --- agents flag parsing ---
+
 
 def test_parse_workflow_command_agents_clamped_to_minimum_1():
     spec = parse_workflow_command("/prove Main.lean --agents 0")
@@ -416,13 +425,16 @@ def test_parse_workflow_command_agents_requires_value():
 
 # --- goal flag parsing ---
 
+
 def test_parse_workflow_command_goal_is_empty_by_default():
     spec = parse_workflow_command("/prove Main.lean")
     assert spec.explicit_goal == ""
 
 
 def test_parse_workflow_command_goal_captures_remaining_text():
-    spec = parse_workflow_command("/prove Main.lean --goal prove absLipschitz theorem using abs_abs_sub")
+    spec = parse_workflow_command(
+        "/prove Main.lean --goal prove absLipschitz theorem using abs_abs_sub"
+    )
     assert spec.explicit_goal == "prove absLipschitz theorem using abs_abs_sub"
 
 
@@ -433,6 +445,7 @@ def test_parse_workflow_command_goal_and_agents_together():
 
 
 # --- rejected inputs ---
+
 
 def test_parse_workflow_command_raises_for_unknown_command():
     with pytest.raises(ValueError, match="unsupported"):
@@ -445,6 +458,7 @@ def test_parse_workflow_command_raises_for_empty_command():
 
 
 # --- workflow args extraction ---
+
 
 def test_parse_workflow_command_preserves_file_arg():
     spec = parse_workflow_command("/prove GaussTest/RealTheorems-homework.lean")
@@ -459,7 +473,10 @@ def test_parse_workflow_command_no_workflow_args_when_only_command():
 
 # --- skill selection ---
 
-def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(monkeypatch, tmp_path):
+
+def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(
+    monkeypatch, tmp_path
+):
     _write_formalization_source(tmp_path)
     monkeypatch.setattr(
         workflow_mod,
@@ -487,7 +504,9 @@ def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(mo
     assert plan.child_env["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/Paper/Main.lean"
     assert plan.formalization_document.blueprint_skill_path.is_file()
     assert str(plan.formalization_document.blueprint_skill_path) in plan.additional_skills
-    assert plan.child_env["EPFLEMMA_NATIVE_ADDITIONAL_SKILLS"] == str(plan.formalization_document.blueprint_skill_path)
+    assert plan.child_env["EPFLEMMA_NATIVE_ADDITIONAL_SKILLS"] == str(
+        plan.formalization_document.blueprint_skill_path
+    )
 
 
 def test_resolve_workflow_request_auto_adds_blueprint_skill_for_prove(monkeypatch, tmp_path):
@@ -544,10 +563,12 @@ def test_resolve_workflow_request_requires_document_for_formalize(monkeypatch, t
     )
 
     with pytest.raises(FormalizationDocumentError, match="requires a project-local"):
-        resolve_workflow_request("/formalize \"state Lipschitz theorem\"", active_cwd=tmp_path)
+        resolve_workflow_request('/formalize "state Lipschitz theorem"', active_cwd=tmp_path)
 
 
-def test_resolve_workflow_request_preserves_explicit_swarm_for_document_formalize(monkeypatch, tmp_path):
+def test_resolve_workflow_request_preserves_explicit_swarm_for_document_formalize(
+    monkeypatch, tmp_path
+):
     _write_formalization_source(tmp_path)
     monkeypatch.setattr(
         workflow_mod,

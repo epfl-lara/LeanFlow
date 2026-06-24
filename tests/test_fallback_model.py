@@ -57,6 +57,7 @@ def _mock_resolve(base_url="https://openrouter.ai/api/v1", api_key="test-key"):
 # _try_activate_fallback()
 # =============================================================================
 
+
 class TestTryActivateFallback:
     def test_returns_false_when_not_configured(self):
         agent = _make_agent(fallback_model=None)
@@ -84,7 +85,7 @@ class TestTryActivateFallback:
             base_url="https://openrouter.ai/api/v1",
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "anthropic/claude-sonnet-4"),
         ):
             result = agent._try_activate_fallback()
@@ -104,7 +105,7 @@ class TestTryActivateFallback:
             base_url="https://open.z.ai/api/v1",
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "glm-5"),
         ):
             result = agent._try_activate_fallback()
@@ -122,7 +123,7 @@ class TestTryActivateFallback:
             base_url="https://api.moonshot.ai/v1",
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "kimi-k2.5"),
         ):
             assert agent._try_activate_fallback() is True
@@ -138,7 +139,7 @@ class TestTryActivateFallback:
             base_url="https://api.minimax.io/v1",
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "MiniMax-M2.5"),
         ):
             assert agent._try_activate_fallback() is True
@@ -155,7 +156,7 @@ class TestTryActivateFallback:
             base_url="https://openrouter.ai/api/v1",
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "anthropic/claude-sonnet-4"),
         ):
             assert agent._try_activate_fallback() is True
@@ -168,7 +169,7 @@ class TestTryActivateFallback:
             fallback_model={"provider": "minimax", "model": "MiniMax-M2.5"},
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(None, None),
         ):
             assert agent._try_activate_fallback() is False
@@ -189,7 +190,7 @@ class TestTryActivateFallback:
             base_url="http://localhost:8080/v1",
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "my-model"),
         ):
             assert agent._try_activate_fallback() is True
@@ -205,7 +206,7 @@ class TestTryActivateFallback:
             base_url="https://openrouter.ai/api/v1",
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "anthropic/claude-sonnet-4"),
         ):
             agent._try_activate_fallback()
@@ -220,7 +221,7 @@ class TestTryActivateFallback:
             base_url="https://openrouter.ai/api/v1",
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "google/gemini-2.5-flash"),
         ):
             agent._try_activate_fallback()
@@ -235,7 +236,7 @@ class TestTryActivateFallback:
             base_url="https://open.z.ai/api/v1",
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "glm-5"),
         ):
             agent._try_activate_fallback()
@@ -251,7 +252,7 @@ class TestTryActivateFallback:
             base_url="https://open.z.ai/api/v1",
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "glm-5"),
         ):
             assert agent._try_activate_fallback() is True
@@ -267,7 +268,7 @@ class TestTryActivateFallback:
             base_url="https://chatgpt.com/backend-api/codex",
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "gpt-5.3-codex"),
         ):
             result = agent._try_activate_fallback()
@@ -283,7 +284,7 @@ class TestTryActivateFallback:
             fallback_model={"provider": "openai-codex", "model": "gpt-5.3-codex"},
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(None, None),
         ):
             assert agent._try_activate_fallback() is False
@@ -299,7 +300,7 @@ class TestTryActivateFallback:
             base_url="https://inference-api.nousresearch.com/v1",
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "nous-gauss-3"),
         ):
             result = agent._try_activate_fallback()
@@ -315,7 +316,7 @@ class TestTryActivateFallback:
             fallback_model={"provider": "nous", "model": "nous-gauss-3"},
         )
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(None, None),
         ):
             assert agent._try_activate_fallback() is False
@@ -325,6 +326,7 @@ class TestTryActivateFallback:
 # =============================================================================
 # Fallback config init
 # =============================================================================
+
 
 class TestFallbackInit:
     def test_fallback_stored_when_configured(self):
@@ -349,16 +351,20 @@ class TestFallbackInit:
 # Provider credential resolution
 # =============================================================================
 
+
 class TestProviderCredentials:
     """Verify that each supported provider resolves via the centralized router."""
 
-    @pytest.mark.parametrize("provider,env_var,base_url_fragment", [
-        ("openrouter", "OPENROUTER_API_KEY", "openrouter"),
-        ("zai", "ZAI_API_KEY", "z.ai"),
-        ("kimi-coding", "KIMI_API_KEY", "moonshot.ai"),
-        ("minimax", "MINIMAX_API_KEY", "minimax.io"),
-        ("minimax-cn", "MINIMAX_CN_API_KEY", "minimaxi.com"),
-    ])
+    @pytest.mark.parametrize(
+        "provider,env_var,base_url_fragment",
+        [
+            ("openrouter", "OPENROUTER_API_KEY", "openrouter"),
+            ("zai", "ZAI_API_KEY", "z.ai"),
+            ("kimi-coding", "KIMI_API_KEY", "moonshot.ai"),
+            ("minimax", "MINIMAX_API_KEY", "minimax.io"),
+            ("minimax-cn", "MINIMAX_CN_API_KEY", "minimaxi.com"),
+        ],
+    )
     def test_provider_resolves(self, provider, env_var, base_url_fragment):
         agent = _make_agent(
             fallback_model={"provider": provider, "model": "test-model"},
@@ -367,7 +373,7 @@ class TestProviderCredentials:
         mock_client.api_key = "test-api-key"
         mock_client.base_url = f"https://{base_url_fragment}/v1"
         with patch(
-            "agent.auxiliary_client.resolve_provider_client",
+            "agent.providers.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "test-model"),
         ):
             result = agent._try_activate_fallback()

@@ -1,7 +1,8 @@
 """Tests for agent/display.py — build_tool_preview()."""
 
 import pytest
-from agent.display import build_tool_preview
+
+from agent.display.display import build_tool_preview
 
 
 class TestBuildToolPreview:
@@ -64,12 +65,16 @@ class TestBuildToolPreview:
         assert "reading" in result
 
     def test_todo_tool_with_todos(self):
-        result = build_tool_preview("todo", {"todos": [{"id": "1", "content": "test", "status": "pending"}]})
+        result = build_tool_preview(
+            "todo", {"todos": [{"id": "1", "content": "test", "status": "pending"}]}
+        )
         assert result is not None
         assert "1 task" in result
 
     def test_memory_tool_add(self):
-        result = build_tool_preview("memory", {"action": "add", "target": "user", "content": "test note"})
+        result = build_tool_preview(
+            "memory", {"action": "add", "target": "user", "content": "test note"}
+        )
         assert result is not None
         assert "user" in result
 

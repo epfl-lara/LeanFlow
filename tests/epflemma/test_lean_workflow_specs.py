@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from epflemma_cli.lean_workflow_specs import (
+from epflemma_cli.lean.lean_workflow_specs import (
     get_lean_spec,
     list_specs,
     load_lean_specs,
     specs_for_skill,
     validate_lean_specs,
 )
-
 
 SHIPPED_WORKFLOW_SPECS = {
     "prove",
@@ -85,9 +84,9 @@ def test_every_shipped_worker_spec_resolves_with_correct_kind(spec_id):
 def test_list_specs_without_filter_returns_all_shipped_entries():
     ids = {record.spec_id for record in list_specs()}
 
-    assert SHIPPED_WORKFLOW_SPECS <= ids
-    assert SHIPPED_WORKER_SPECS <= ids
-    assert SHIPPED_HELPER_SPECS <= ids
+    assert ids >= SHIPPED_WORKFLOW_SPECS
+    assert ids >= SHIPPED_WORKER_SPECS
+    assert ids >= SHIPPED_HELPER_SPECS
 
 
 def test_list_specs_filters_workflows_and_workers_disjointly():
@@ -95,9 +94,9 @@ def test_list_specs_filters_workflows_and_workers_disjointly():
     workers = {record.spec_id for record in list_specs("worker")}
     helpers = {record.spec_id for record in list_specs("helper")}
 
-    assert SHIPPED_WORKFLOW_SPECS <= workflows
-    assert SHIPPED_WORKER_SPECS <= workers
-    assert SHIPPED_HELPER_SPECS <= helpers
+    assert workflows >= SHIPPED_WORKFLOW_SPECS
+    assert workers >= SHIPPED_WORKER_SPECS
+    assert helpers >= SHIPPED_HELPER_SPECS
     assert workflows.isdisjoint(workers)
     assert workflows.isdisjoint(helpers)
     assert workers.isdisjoint(helpers)
@@ -128,9 +127,7 @@ def test_workflow_specs_reference_only_known_workers():
         if record.kind != "workflow":
             continue
         unknown = [w for w in record.workers if w not in worker_ids]
-        assert not unknown, (
-            f"workflow {record.spec_id} references unknown workers {unknown}"
-        )
+        assert not unknown, f"workflow {record.spec_id} references unknown workers {unknown}"
 
 
 def test_spec_content_does_not_leak_frontmatter_fence():

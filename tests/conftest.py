@@ -32,15 +32,48 @@ def _isolate_gauss_home(tmp_path, monkeypatch):
     (fake_epflemma_home / "memories").mkdir()
     (fake_epflemma_home / "workflow-state").mkdir()
     (fake_epflemma_home / "local-models").mkdir()
-    monkeypatch.setenv("GAUSS_HOME", str(fake_home))
     monkeypatch.setenv("EPFLEMMA_HOME", str(fake_epflemma_home))
+    # The one-time legacy seed reads the retired ~/.gauss / ~/.opengauss homes directly via
+    # core.home.legacy_homes(); point it at the throwaway fake home so tests never read or copy
+    # the developer's real retired state. Tests exercising migration populate fake_home themselves.
+    monkeypatch.setattr("core.home.legacy_homes", lambda: (fake_home,))
     monkeypatch.setenv("EPFLEMMA_QUEUE_INVARIANT_CHECKS", "1")
     # Tests should not inherit the agent's current gateway/messaging surface.
     # Individual tests that need gateway behavior set these explicitly.
-    monkeypatch.delenv("GAUSS_SESSION_PLATFORM", raising=False)
-    monkeypatch.delenv("GAUSS_SESSION_CHAT_ID", raising=False)
-    monkeypatch.delenv("GAUSS_SESSION_CHAT_NAME", raising=False)
-    monkeypatch.delenv("GAUSS_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("EPFLEMMA_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("EPFLEMMA_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("EPFLEMMA_SESSION_CHAT_NAME", raising=False)
+    monkeypatch.delenv("EPFLEMMA_GATEWAY_SESSION", raising=False)
+
+    # Importing run_agent (and a few CLI entrypoints) runs load_epflemma_dotenv() at
+    # module-import time, which is *before* this fixture runs on the first test that
+    # imports them. With EPFLEMMA_HOME still unset at that point it resolves to the
+    # real ~/.epflemma and loads the developer's real .env into os.environ with
+    # override=True. Those provider-resolution vars then leak into every later test in
+    # the same process (notably tests/agent/test_auxiliary_client.py, whose own
+    # _clean_env only strips the unprefixed OPENAI_* names). Strip the .env-injected
+    # provider vars here so provider resolution starts from a clean slate regardless of
+    # test order. monkeypatch.delenv restores the originals at teardown.
+    for _prefix in ("EPFLEMMA_", "OPENGAUSS_", "GAUSS_", ""):
+        for _suffix in (
+            "OPENAI_BASE_URL",
+            "OPENAI_API_KEY",
+            "OPENROUTER_BASE_URL",
+            "OPENROUTER_API_KEY",
+        ):
+            monkeypatch.delenv(_prefix + _suffix, raising=False)
+    for _key in list(os.environ):
+        # Provider/auxiliary routing vars that a real ~/.epflemma/.env can inject.
+        if (
+            _key.startswith("AUXILIARY_")
+            or _key.startswith("CONTEXT_")
+            or _key.startswith("EPFLEMMA_CODEX_")
+            or _key.startswith("EPFLEMMA_EXPERT_")
+            or _key == "EPFLEMMA_INFERENCE_PROVIDER"
+            or _key.endswith("_API_KEY")
+            or _key.endswith("_BASE_URL")
+        ):
+            monkeypatch.delenv(_key, raising=False)
 
 
 @pytest.fixture()
@@ -72,8 +105,10 @@ def mock_config():
 # Prevents hanging tests (subprocess spawns, blocking I/O) from stalling the
 # entire test suite.
 
+
 def _timeout_handler(signum, frame):
     raise TimeoutError("Test exceeded 30 second timeout")
+
 
 @pytest.fixture(autouse=True)
 def _ensure_current_event_loop(request):

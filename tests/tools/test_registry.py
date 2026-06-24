@@ -48,12 +48,8 @@ class TestRegisterAndDispatch:
 class TestGetDefinitions:
     def test_returns_openai_format(self):
         reg = ToolRegistry()
-        reg.register(
-            name="t1", toolset="s1", schema=_make_schema("t1"), handler=_dummy_handler
-        )
-        reg.register(
-            name="t2", toolset="s1", schema=_make_schema("t2"), handler=_dummy_handler
-        )
+        reg.register(name="t1", toolset="s1", schema=_make_schema("t1"), handler=_dummy_handler)
+        reg.register(name="t2", toolset="s1", schema=_make_schema("t2"), handler=_dummy_handler)
 
         defs = reg.get_definitions({"t1", "t2"})
         assert len(defs) == 2
@@ -93,9 +89,7 @@ class TestUnknownToolDispatch:
 class TestToolsetAvailability:
     def test_no_check_fn_is_available(self):
         reg = ToolRegistry()
-        reg.register(
-            name="t", toolset="free", schema=_make_schema(), handler=_dummy_handler
-        )
+        reg.register(name="t", toolset="free", schema=_make_schema(), handler=_dummy_handler)
         assert reg.is_toolset_available("free") is True
 
     def test_check_fn_controls_availability(self):
@@ -132,12 +126,8 @@ class TestToolsetAvailability:
 
     def test_get_all_tool_names(self):
         reg = ToolRegistry()
-        reg.register(
-            name="z_tool", toolset="s", schema=_make_schema(), handler=_dummy_handler
-        )
-        reg.register(
-            name="a_tool", toolset="s", schema=_make_schema(), handler=_dummy_handler
-        )
+        reg.register(name="z_tool", toolset="s", schema=_make_schema(), handler=_dummy_handler)
+        reg.register(name="a_tool", toolset="s", schema=_make_schema(), handler=_dummy_handler)
         assert reg.get_all_tool_names() == ["a_tool", "z_tool"]
 
     def test_handler_exception_returns_error(self):
@@ -146,9 +136,7 @@ class TestToolsetAvailability:
         def bad_handler(args, **kw):
             raise RuntimeError("boom")
 
-        reg.register(
-            name="bad", toolset="s", schema=_make_schema(), handler=bad_handler
-        )
+        reg.register(name="bad", toolset="s", schema=_make_schema(), handler=bad_handler)
         result = json.loads(reg.dispatch("bad", {}))
         assert "error" in result
         assert "RuntimeError" in result["error"]
@@ -269,23 +257,31 @@ class TestEmojiMetadata:
     def test_emoji_stored_on_entry(self):
         reg = ToolRegistry()
         reg.register(
-            name="t", toolset="s", schema=_make_schema(),
-            handler=_dummy_handler, emoji="🔥",
+            name="t",
+            toolset="s",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            emoji="🔥",
         )
         assert reg._tools["t"].emoji == "🔥"
 
     def test_get_emoji_returns_registered(self):
         reg = ToolRegistry()
         reg.register(
-            name="t", toolset="s", schema=_make_schema(),
-            handler=_dummy_handler, emoji="🎯",
+            name="t",
+            toolset="s",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            emoji="🎯",
         )
         assert reg.get_emoji("t") == "🎯"
 
     def test_get_emoji_returns_default_when_unset(self):
         reg = ToolRegistry()
         reg.register(
-            name="t", toolset="s", schema=_make_schema(),
+            name="t",
+            toolset="s",
+            schema=_make_schema(),
             handler=_dummy_handler,
         )
         assert reg.get_emoji("t") == "⚡"
@@ -299,8 +295,11 @@ class TestEmojiMetadata:
     def test_emoji_empty_string_treated_as_unset(self):
         reg = ToolRegistry()
         reg.register(
-            name="t", toolset="s", schema=_make_schema(),
-            handler=_dummy_handler, emoji="",
+            name="t",
+            toolset="s",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            emoji="",
         )
         assert reg.get_emoji("t") == "⚡"
 

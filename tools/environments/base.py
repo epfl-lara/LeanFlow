@@ -1,8 +1,9 @@
 """Base class for all EPFLemma execution environment backends."""
 
-from abc import ABC, abstractmethod
+import contextlib
 import os
 import subprocess
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 from epflemma_cli.config import get_epflemma_home
@@ -36,9 +37,14 @@ class BaseEnvironment(ABC):
         self.env = env or {}
 
     @abstractmethod
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+    def execute(
+        self,
+        command: str,
+        cwd: str = "",
+        *,
+        timeout: int | None = None,
+        stdin_data: str | None = None,
+    ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}."""
         ...
 
@@ -52,10 +58,8 @@ class BaseEnvironment(ABC):
         self.cleanup()
 
     def __del__(self):
-        try:
+        with contextlib.suppress(Exception):
             self.cleanup()
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Shared helpers (eliminate duplication across backends)
@@ -71,11 +75,11 @@ class BaseEnvironment(ABC):
             pass to Popen.  Callers that embed stdin via heredoc (modal,
             daytona) handle sudo_stdin in their own execute() method.
         """
-        from tools.terminal_tool import _transform_sudo_command
+        from tools.implementations.terminal_tool import _transform_sudo_command
+
         return _transform_sudo_command(command)
 
-    def _build_run_kwargs(self, timeout: int | None,
-                          stdin_data: str | None = None) -> dict:
+    def _build_run_kwargs(self, timeout: int | None, stdin_data: str | None = None) -> dict:
         """Build common subprocess.run kwargs for non-interactive execution."""
         kw = {
             "text": True,

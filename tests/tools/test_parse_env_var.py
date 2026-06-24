@@ -1,14 +1,15 @@
 """Tests for _parse_env_var and _get_env_config env-var validation."""
 
 import json
+import sys
 from unittest.mock import patch
 
 import pytest
 
-import sys
-import tools.terminal_tool  # noqa: F401 -- ensure module is loaded
-_tt_mod = sys.modules["tools.terminal_tool"]
-from tools.terminal_tool import _parse_env_var
+import tools.implementations.terminal_tool  # noqa: F401 -- ensure module is loaded
+
+_tt_mod = sys.modules["tools.implementations.terminal_tool"]
+from tools.implementations.terminal_tool import _parse_env_var
 
 
 class TestParseEnvVar:
@@ -34,6 +35,7 @@ class TestParseEnvVar:
         with patch.dict("os.environ", {}, clear=False):
             # Remove the var if it exists, rely on default
             import os
+
             env = os.environ.copy()
             env.pop("TERMINAL_TIMEOUT", None)
             with patch.dict("os.environ", env, clear=True):

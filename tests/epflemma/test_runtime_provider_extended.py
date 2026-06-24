@@ -2,18 +2,16 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import yaml
 
-import pytest
-
-from epflemma_cli.runtime_provider import (
+from epflemma_cli.runtime.runtime_provider import (
     PROVIDER_SPECS,
     RuntimeProviderError,
     list_runtime_provider_targets,
     resolve_requested_provider,
     resolve_runtime_provider,
 )
-
 
 PROVIDER_ENV_VARS = (
     "GLM_API_KEY",

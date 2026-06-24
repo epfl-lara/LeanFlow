@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from minisweagent_path import discover_minisweagent_src
+from core.minisweagent_path import discover_minisweagent_src
 
 
 def test_discover_minisweagent_src_in_current_checkout(tmp_path):
@@ -21,7 +21,9 @@ def test_discover_minisweagent_src_falls_back_from_worktree_to_main_checkout(tmp
 
     worktree = tmp_path / "worktree"
     worktree.mkdir()
-    (worktree / ".git").write_text(f"gitdir: {main_repo / '.git' / 'worktrees' / 'wt1'}\n", encoding="utf-8")
+    (worktree / ".git").write_text(
+        f"gitdir: {main_repo / '.git' / 'worktrees' / 'wt1'}\n", encoding="utf-8"
+    )
     (worktree / "mini-swe-agent").mkdir()  # empty placeholder, no src/
 
     assert discover_minisweagent_src(worktree) == main_src.resolve()

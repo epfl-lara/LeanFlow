@@ -8,7 +8,6 @@ from urllib.error import HTTPError
 
 import pytest
 
-
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "publish_shared_template.py"
 
 
@@ -116,7 +115,9 @@ def test_publish_template_reuses_alias_snapshot_and_tags(tmp_path, monkeypatch):
         return FakeResponse({})
 
     def alias_missing(_request):
-        raise HTTPError("https://devbox.example.test/api/aliases/demo", 404, "not found", hdrs=None, fp=None)
+        raise HTTPError(
+            "https://devbox.example.test/api/aliases/demo", 404, "not found", hdrs=None, fp=None
+        )
 
     def share_template(request):
         body = json.loads(request.data.decode("utf-8"))
@@ -125,10 +126,22 @@ def test_publish_template_reuses_alias_snapshot_and_tags(tmp_path, monkeypatch):
         return FakeResponse({"published": True})
 
     def alias_after(_request):
-        return FakeResponse({"alias": "demo", "template_id": "tpl_new", "tags": ["template", "gauss"]})
+        return FakeResponse(
+            {"alias": "demo", "template_id": "tpl_new", "tags": ["template", "gauss"]}
+        )
 
     opener = FakeOpener(
-        [alias_before, create_template, cache_template, fetch_template, fetch_template, delete_template, alias_missing, share_template, alias_after]
+        [
+            alias_before,
+            create_template,
+            cache_template,
+            fetch_template,
+            fetch_template,
+            delete_template,
+            alias_missing,
+            share_template,
+            alias_after,
+        ]
     )
     client = module.MorphClient("https://devbox.example.test", "token", opener=opener)
 
@@ -143,7 +156,17 @@ def test_publish_template_reuses_alias_snapshot_and_tags(tmp_path, monkeypatch):
     assert result["template_id"] == "tpl_new"
     assert result["alias"] == "demo"
     assert result["tags"] == ["template", "gauss"]
-    assert [method for method, *_ in opener.requests] == ["GET", "POST", "POST", "GET", "GET", "DELETE", "GET", "POST", "GET"]
+    assert [method for method, *_ in opener.requests] == [
+        "GET",
+        "POST",
+        "POST",
+        "GET",
+        "GET",
+        "DELETE",
+        "GET",
+        "POST",
+        "GET",
+    ]
 
 
 def test_publish_template_requires_base_snapshot_for_new_alias(tmp_path):
@@ -151,18 +174,21 @@ def test_publish_template_requires_base_snapshot_for_new_alias(tmp_path):
 
     template = tmp_path / "template.yaml"
     template.write_text(
-        "name: Test Template\n"
-        "description: Ready session without extra setup questions.\n",
+        "name: Test Template\ndescription: Ready session without extra setup questions.\n",
         encoding="utf-8",
     )
 
     def alias_missing(request):
         raise HTTPError(request.full_url, 404, "not found", hdrs=None, fp=None)
 
-    client = module.MorphClient("https://devbox.example.test", "token", opener=FakeOpener([alias_missing]))
+    client = module.MorphClient(
+        "https://devbox.example.test", "token", opener=FakeOpener([alias_missing])
+    )
 
     with pytest.raises(module.PublishError, match="TEMPLATE_BASE_SNAPSHOT_ID"):
-        module.publish_template(client, alias="missing", template_path=template, timeout_seconds=1, poll_seconds=0)
+        module.publish_template(
+            client, alias="missing", template_path=template, timeout_seconds=1, poll_seconds=0
+        )
 
 
 def test_publish_template_creates_and_shares_when_alias_is_missing(tmp_path, monkeypatch):
@@ -210,9 +236,21 @@ def test_publish_template_creates_and_shares_when_alias_is_missing(tmp_path, mon
         return FakeResponse({"published": True})
 
     def alias_after(_request):
-        return FakeResponse({"alias": "demo", "template_id": "tpl_new", "tags": ["template", "gauss"]})
+        return FakeResponse(
+            {"alias": "demo", "template_id": "tpl_new", "tags": ["template", "gauss"]}
+        )
 
-    opener = FakeOpener([alias_missing, create_template, cache_template, fetch_template, fetch_template, share_template, alias_after])
+    opener = FakeOpener(
+        [
+            alias_missing,
+            create_template,
+            cache_template,
+            fetch_template,
+            fetch_template,
+            share_template,
+            alias_after,
+        ]
+    )
     client = module.MorphClient("https://devbox.example.test", "token", opener=opener)
 
     result = module.publish_template(

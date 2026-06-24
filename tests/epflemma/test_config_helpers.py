@@ -196,12 +196,14 @@ def test_get_epflemma_home_prefers_explicit_env(monkeypatch, tmp_path):
     assert get_epflemma_home() == Path(str(tmp_path / "explicit"))
 
 
-def test_get_epflemma_home_uses_branded_legacy_when_explicit_unset(monkeypatch, tmp_path):
+def test_get_epflemma_home_ignores_dropped_legacy_env(monkeypatch, tmp_path):
+    # Legacy OPENGAUSS_HOME / GAUSS_HOME are fully dropped: with EPFLEMMA_HOME unset, the home
+    # resolves to the ~/.epflemma default regardless of any legacy env var still in the shell.
     monkeypatch.delenv("EPFLEMMA_HOME", raising=False)
     monkeypatch.setenv("OPENGAUSS_HOME", str(tmp_path / "branded"))
     monkeypatch.setenv("GAUSS_HOME", str(tmp_path / "legacy"))
 
-    assert get_epflemma_home() == Path(str(tmp_path / "branded"))
+    assert get_epflemma_home() == Path.home() / ".epflemma"
 
 
 def test_get_epflemma_home_ignores_legacy_gauss_unless_dotepflemma(monkeypatch, tmp_path):
@@ -300,14 +302,17 @@ def test_load_config_rewrites_legacy_payload_and_persists_transform(monkeypatch,
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     ensure_epflemma_home()
     get_config_path().write_text(
-        yaml.safe_dump({
-            "gauss": {
-                "project": {"template_source": "legacy-tmpl"},
-                "autoformalize": {"managed_state_dir": ".gauss/workflow-state"},
+        yaml.safe_dump(
+            {
+                "gauss": {
+                    "project": {"template_source": "legacy-tmpl"},
+                    "autoformalize": {"managed_state_dir": ".gauss/workflow-state"},
+                },
+                "model": {"default": "legacy-model", "provider": "zai"},
+                "toolsets": ["gauss-native"],
             },
-            "model": {"default": "legacy-model", "provider": "zai"},
-            "toolsets": ["gauss-native"],
-        }, sort_keys=False),
+            sort_keys=False,
+        ),
         encoding="utf-8",
     )
 
@@ -320,3 +325,31 @@ def test_load_config_rewrites_legacy_payload_and_persists_transform(monkeypatch,
     persisted = yaml.safe_load(get_config_path().read_text(encoding="utf-8"))
     assert "epflemma" in persisted
     assert "gauss" not in persisted
+
+
+def test_load_config_is_cached_and_isolated(monkeypatch, tmp_path):
+    # load_config() is hammered in per-item loops (workflow exit cleanup); it must be cheap and
+    # must not let callers corrupt the shared cache. Regression for a multi-minute exit hang.
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    from epflemma_cli import config
+
+    config.invalidate_config_cache()
+    first = config.load_config()
+    # Mutating a returned config must not leak into the cache (deepcopy isolation).
+    first["__scratch__"] = 123
+    assert "__scratch__" not in config.load_config()
+
+    # A write invalidates the cache so the new value is observed.
+    config.set_config_value("logging.activity_preview_chars", 4242)
+    assert config.load_config().get("logging", {}).get("activity_preview_chars") == 4242
+
+
+def test_load_config_cache_keys_on_home(monkeypatch, tmp_path):
+    from epflemma_cli import config
+
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "a"))
+    config.invalidate_config_cache()
+    config.set_config_value("logging.activity_preview_chars", 111)
+    # Switching home must re-read from the new location, not serve the stale cache.
+    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "b"))
+    assert config.load_config().get("logging", {}).get("activity_preview_chars") != 111

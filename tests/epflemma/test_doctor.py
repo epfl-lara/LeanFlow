@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from epflemma_cli.doctor import DOCTOR_MODES, run_doctor
+from epflemma_cli.cli.doctor import DOCTOR_MODES, run_doctor
 
 
 def test_run_doctor_json_is_structured_in_degraded_mode(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
-        "epflemma_cli.doctor.resolve_runtime_provider",
+        "epflemma_cli.cli.doctor.resolve_runtime_provider",
         lambda: {
             "provider": "custom",
             "base_url": "https://example.test/v1",
@@ -16,7 +16,7 @@ def test_run_doctor_json_is_structured_in_degraded_mode(monkeypatch, tmp_path):
             "model": "demo-model",
         },
     )
-    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+    monkeypatch.setattr("epflemma_cli.cli.doctor.get_mcp_status", lambda: [])
 
     issues, payload = run_doctor(tmp_path, json_output=True)
 
@@ -31,7 +31,7 @@ def test_run_doctor_json_is_structured_in_degraded_mode(monkeypatch, tmp_path):
 def test_run_doctor_supports_mcp_mode(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
-        "epflemma_cli.doctor.resolve_runtime_provider",
+        "epflemma_cli.cli.doctor.resolve_runtime_provider",
         lambda: {
             "provider": "custom",
             "base_url": "https://example.test/v1",
@@ -40,7 +40,7 @@ def test_run_doctor_supports_mcp_mode(monkeypatch, tmp_path):
         },
     )
     monkeypatch.setattr(
-        "epflemma_cli.doctor.get_mcp_status",
+        "epflemma_cli.cli.doctor.get_mcp_status",
         lambda: [{"name": "lean-lsp", "transport": "stdio", "tools": 3, "connected": True}],
     )
 
@@ -53,7 +53,7 @@ def test_run_doctor_supports_mcp_mode(monkeypatch, tmp_path):
 def test_run_doctor_mcp_mode_surfaces_bootstrap_recommendation(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
-        "epflemma_cli.doctor.resolve_runtime_provider",
+        "epflemma_cli.cli.doctor.resolve_runtime_provider",
         lambda: {
             "provider": "custom",
             "base_url": "https://example.test/v1",
@@ -62,7 +62,7 @@ def test_run_doctor_mcp_mode_surfaces_bootstrap_recommendation(monkeypatch, tmp_
         },
     )
     monkeypatch.setattr(
-        "epflemma_cli.doctor.get_mcp_status",
+        "epflemma_cli.cli.doctor.get_mcp_status",
         lambda: [
             {
                 "name": "lean-proof-auto",
@@ -86,16 +86,21 @@ def test_run_doctor_mcp_mode_surfaces_bootstrap_recommendation(monkeypatch, tmp_
 
 def test_run_doctor_supported_modes_cover_readme_surface():
     # README advertises these modes; keeping the set in sync prevents silent drift.
-    assert DOCTOR_MODES == {"all", "env", "mcp", "search", "web-search", "migrate", "cleanup"}
+    assert {"all", "env", "mcp", "search", "web-search", "migrate", "cleanup"} == DOCTOR_MODES
 
 
 def test_run_doctor_unknown_mode_normalizes_to_all(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
-        "epflemma_cli.doctor.resolve_runtime_provider",
-        lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
+        "epflemma_cli.cli.doctor.resolve_runtime_provider",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://x/v1",
+            "api_mode": "chat",
+            "model": "m",
+        },
     )
-    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+    monkeypatch.setattr("epflemma_cli.cli.doctor.get_mcp_status", lambda: [])
 
     _issues, payload = run_doctor(tmp_path, mode="totally-bogus", json_output=True)
 
@@ -108,7 +113,7 @@ def test_run_doctor_unknown_mode_normalizes_to_all(monkeypatch, tmp_path):
 def test_run_doctor_text_output_renders_structured_report(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
-        "epflemma_cli.doctor.resolve_runtime_provider",
+        "epflemma_cli.cli.doctor.resolve_runtime_provider",
         lambda: {
             "provider": "custom",
             "base_url": "https://rcp.example/v1",
@@ -116,7 +121,7 @@ def test_run_doctor_text_output_renders_structured_report(monkeypatch, tmp_path)
             "model": "demo-model",
         },
     )
-    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+    monkeypatch.setattr("epflemma_cli.cli.doctor.get_mcp_status", lambda: [])
 
     _issues, text = run_doctor(tmp_path, json_output=False)
 
@@ -133,8 +138,8 @@ def test_run_doctor_reports_provider_error_without_raising(monkeypatch, tmp_path
     def _blow_up():
         raise RuntimeError("no credentials configured")
 
-    monkeypatch.setattr("epflemma_cli.doctor.resolve_runtime_provider", _blow_up)
-    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+    monkeypatch.setattr("epflemma_cli.cli.doctor.resolve_runtime_provider", _blow_up)
+    monkeypatch.setattr("epflemma_cli.cli.doctor.get_mcp_status", lambda: [])
 
     issues, payload = run_doctor(tmp_path, json_output=True)
 
@@ -147,10 +152,15 @@ def test_run_doctor_cleanup_mode_lists_legacy_candidates(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     (tmp_path / ".gauss").mkdir()
     monkeypatch.setattr(
-        "epflemma_cli.doctor.resolve_runtime_provider",
-        lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
+        "epflemma_cli.cli.doctor.resolve_runtime_provider",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://x/v1",
+            "api_mode": "chat",
+            "model": "m",
+        },
     )
-    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+    monkeypatch.setattr("epflemma_cli.cli.doctor.get_mcp_status", lambda: [])
 
     _issues, payload = run_doctor(tmp_path, mode="cleanup", json_output=True)
 
@@ -163,10 +173,15 @@ def test_run_doctor_cleanup_mode_lists_legacy_candidates(monkeypatch, tmp_path):
 def test_run_doctor_migrate_mode_reports_legacy_home_presence(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
-        "epflemma_cli.doctor.resolve_runtime_provider",
-        lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
+        "epflemma_cli.cli.doctor.resolve_runtime_provider",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://x/v1",
+            "api_mode": "chat",
+            "model": "m",
+        },
     )
-    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+    monkeypatch.setattr("epflemma_cli.cli.doctor.get_mcp_status", lambda: [])
 
     _issues, payload = run_doctor(tmp_path, mode="migrate", json_output=True)
 
@@ -180,7 +195,7 @@ def test_run_doctor_migrate_mode_reports_legacy_home_presence(monkeypatch, tmp_p
 def test_run_doctor_web_search_mode_uses_real_tool_surface(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
-        "epflemma_cli.doctor._web_search_payload",
+        "epflemma_cli.cli.doctor._web_search_payload",
         lambda: (
             {
                 "available": True,
@@ -216,16 +231,23 @@ def test_run_doctor_web_search_mode_uses_real_tool_surface(monkeypatch, tmp_path
     assert "sourcegraph" in text
 
 
-@pytest.mark.parametrize("mode", sorted({"all", "env", "mcp", "search", "web-search", "migrate", "cleanup"}))
+@pytest.mark.parametrize(
+    "mode", sorted({"all", "env", "mcp", "search", "web-search", "migrate", "cleanup"})
+)
 def test_run_doctor_never_throws_for_each_supported_mode(monkeypatch, tmp_path, mode):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
-        "epflemma_cli.doctor.resolve_runtime_provider",
-        lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
+        "epflemma_cli.cli.doctor.resolve_runtime_provider",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://x/v1",
+            "api_mode": "chat",
+            "model": "m",
+        },
     )
-    monkeypatch.setattr("epflemma_cli.doctor.get_mcp_status", lambda: [])
+    monkeypatch.setattr("epflemma_cli.cli.doctor.get_mcp_status", lambda: [])
     monkeypatch.setattr(
-        "epflemma_cli.doctor._web_search_payload",
+        "epflemma_cli.cli.doctor._web_search_payload",
         lambda: ({"available": True, "issues": []}, []),
     )
 

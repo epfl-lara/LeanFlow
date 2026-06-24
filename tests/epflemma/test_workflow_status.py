@@ -2,32 +2,32 @@ from __future__ import annotations
 
 import json
 
-from epflemma_cli import native_runner as runner
 from epflemma_cli.config import save_config
-from epflemma_cli.workflow_state import (
-    append_workflow_run_log,
-    append_workflow_activity,
-    enqueue_workflow_agent_message,
+from epflemma_cli.native import native_runner as runner
+from epflemma_cli.workflows.workflow_state import (
     _agent_event_preview,
+    append_workflow_activity,
+    append_workflow_run_log,
+    enqueue_workflow_agent_message,
     load_workflow_live_status,
-    save_workflow_live_status,
     read_workflow_activity,
     read_workflow_agent_inbox,
     read_workflow_run_log,
-    resolve_workflow_agent_id,
     reset_workflow_run_log,
+    resolve_workflow_agent_id,
+    save_workflow_live_status,
     summarize_workflow_agents,
+    terminate_all_workflow_agents,
+    terminate_project_workflow_agents,
+    terminate_workflow_agent,
+    terminate_workflow_agent_descendants,
     workflow_agent_activity_path,
+    workflow_agent_detail,
+    workflow_agent_transcript,
     workflow_latest_run_activity_path,
     workflow_run_activity_path,
     workflow_run_metadata_path,
-    terminate_project_workflow_agents,
-    terminate_all_workflow_agents,
-    terminate_workflow_agent,
-    terminate_workflow_agent_descendants,
-    workflow_agent_transcript,
     workflow_runs_root,
-    workflow_agent_detail,
 )
 
 
@@ -78,7 +78,10 @@ def test_persist_live_status_writes_shell_visible_payload(monkeypatch, tmp_path)
                 "warning_summary": "",
                 "diagnostics": "warning cleanup verified; no warnings remain",
             },
-            "document_formalization_handoff": {"ok": False, "issues": ["statement/source verification pending"]},
+            "document_formalization_handoff": {
+                "ok": False,
+                "issues": ["statement/source verification pending"],
+            },
             "document_formalization_proof_sorry_count": 2,
             "document_formalization_construction_sorry_count": 1,
         },
@@ -98,7 +101,9 @@ def test_persist_live_status_writes_shell_visible_payload(monkeypatch, tmp_path)
     assert payload["warning_cleanup_verified"] is True
     assert payload["warning_cleanup"]["status"] == "verified"
     assert payload["document_formalization_handoff"]["ok"] is False
-    assert payload["document_formalization_handoff"]["issues"] == ["statement/source verification pending"]
+    assert payload["document_formalization_handoff"]["issues"] == [
+        "statement/source verification pending"
+    ]
     assert payload["document_formalization_proof_sorry_count"] == 2
     assert payload["document_formalization_construction_sorry_count"] == 1
 
@@ -351,7 +356,11 @@ def test_workflow_latest_run_activity_path_prefers_top_level_run(monkeypatch, tm
         agent_session_id="12345",
         process_id=24680,
     )
-    background_run_id = json.loads(workflow_latest_run_activity_path(prefer_top_level=False).read_text(encoding="utf-8").splitlines()[0])["run_id"]
+    background_run_id = json.loads(
+        workflow_latest_run_activity_path(prefer_top_level=False)
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )["run_id"]
 
     monkeypatch.setenv("EPFLEMMA_WORKFLOW_RUN_ID", "prove-top-level-test")
     append_workflow_activity("runner-start", "Managed workflow runner started")
@@ -446,7 +455,7 @@ def test_workflow_agent_resolution_and_termination(monkeypatch, tmp_path):
     def _fake_killpg(pid: int, sig: int) -> None:
         captured["killpg"] = (pid, sig)
 
-    monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
+    monkeypatch.setattr("epflemma_cli.workflows.workflow_state.os.killpg", _fake_killpg)
 
     result = terminate_workflow_agent("123")
 
@@ -457,16 +466,30 @@ def test_workflow_agent_resolution_and_termination(monkeypatch, tmp_path):
 
 def test_workflow_agent_descendant_termination(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    append_workflow_activity("conversation-start", "start", agent_session_id="11111", process_id=101)
-    append_workflow_activity("conversation-start", "start", agent_session_id="22222", parent_agent_session_id="11111", process_id=202)
-    append_workflow_activity("conversation-start", "start", agent_session_id="33333", parent_agent_session_id="22222", process_id=303)
+    append_workflow_activity(
+        "conversation-start", "start", agent_session_id="11111", process_id=101
+    )
+    append_workflow_activity(
+        "conversation-start",
+        "start",
+        agent_session_id="22222",
+        parent_agent_session_id="11111",
+        process_id=202,
+    )
+    append_workflow_activity(
+        "conversation-start",
+        "start",
+        agent_session_id="33333",
+        parent_agent_session_id="22222",
+        process_id=303,
+    )
 
     killed: list[int] = []
 
     def _fake_killpg(pid: int, sig: int) -> None:
         killed.append(pid)
 
-    monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
+    monkeypatch.setattr("epflemma_cli.workflows.workflow_state.os.killpg", _fake_killpg)
 
     result = terminate_workflow_agent_descendants("11111")
 
@@ -478,17 +501,25 @@ def test_workflow_agent_descendant_termination(monkeypatch, tmp_path):
 
 def test_terminate_all_workflow_agents_excludes_current(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    append_workflow_activity("conversation-start", "start", agent_session_id="11111", process_id=101)
-    append_workflow_activity("conversation-start", "start", agent_session_id="22222", process_id=202)
-    append_workflow_activity("conversation-start", "start", agent_session_id="33333", process_id=303)
+    append_workflow_activity(
+        "conversation-start", "start", agent_session_id="11111", process_id=101
+    )
+    append_workflow_activity(
+        "conversation-start", "start", agent_session_id="22222", process_id=202
+    )
+    append_workflow_activity(
+        "conversation-start", "start", agent_session_id="33333", process_id=303
+    )
 
     killed: list[int] = []
 
     def _fake_killpg(pid: int, sig: int) -> None:
         killed.append(pid)
 
-    monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
+    monkeypatch.setattr("epflemma_cli.workflows.workflow_state.os.killpg", _fake_killpg)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: True
+    )
 
     result = terminate_all_workflow_agents(exclude_agent_id="22222", exclude_process_id=303)
 
@@ -500,8 +531,12 @@ def test_terminate_all_workflow_agents_excludes_current(monkeypatch, tmp_path):
 
 def test_terminate_all_workflow_agents_skips_dead_and_completed(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-    append_workflow_activity("conversation-start", "start", agent_session_id="11111", process_id=101)
-    append_workflow_activity("conversation-start", "start", agent_session_id="22222", process_id=202)
+    append_workflow_activity(
+        "conversation-start", "start", agent_session_id="11111", process_id=101
+    )
+    append_workflow_activity(
+        "conversation-start", "start", agent_session_id="22222", process_id=202
+    )
     append_workflow_activity(
         "conversation-end",
         "done",
@@ -509,15 +544,19 @@ def test_terminate_all_workflow_agents_skips_dead_and_completed(monkeypatch, tmp
         process_id=202,
         completed=True,
     )
-    append_workflow_activity("conversation-start", "start", agent_session_id="33333", process_id=303)
+    append_workflow_activity(
+        "conversation-start", "start", agent_session_id="33333", process_id=303
+    )
 
     killed: list[int] = []
 
     def _fake_killpg(pid: int, sig: int) -> None:
         killed.append(pid)
 
-    monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: pid == 101)
+    monkeypatch.setattr("epflemma_cli.workflows.workflow_state.os.killpg", _fake_killpg)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: pid == 101
+    )
 
     result = terminate_all_workflow_agents()
 
@@ -531,16 +570,30 @@ def test_terminate_project_workflow_agents_filters_by_project_root(monkeypatch, 
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     project_a = str(tmp_path / "A")
     project_b = str(tmp_path / "B")
-    append_workflow_activity("conversation-start", "start", agent_session_id="11111", process_id=101, project_root=project_a)
-    append_workflow_activity("conversation-start", "start", agent_session_id="22222", process_id=202, project_root=project_b)
+    append_workflow_activity(
+        "conversation-start",
+        "start",
+        agent_session_id="11111",
+        process_id=101,
+        project_root=project_a,
+    )
+    append_workflow_activity(
+        "conversation-start",
+        "start",
+        agent_session_id="22222",
+        process_id=202,
+        project_root=project_b,
+    )
 
     killed: list[int] = []
 
     def _fake_killpg(pid: int, sig: int) -> None:
         killed.append(pid)
 
-    monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
+    monkeypatch.setattr("epflemma_cli.workflows.workflow_state.os.killpg", _fake_killpg)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: True
+    )
 
     result = terminate_project_workflow_agents(project_a)
 
@@ -554,17 +607,27 @@ def test_terminate_project_workflow_agents_skips_missing_project_root(monkeypatc
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     project_a = str(tmp_path / "A")
     monkeypatch.setenv("EPFLEMMA_WORKFLOW_RUN_ID", "prove-run-a")
-    append_workflow_activity("conversation-start", "start", agent_session_id="11111", process_id=101)
+    append_workflow_activity(
+        "conversation-start", "start", agent_session_id="11111", process_id=101
+    )
     monkeypatch.setenv("EPFLEMMA_WORKFLOW_RUN_ID", "prove-run-b")
-    append_workflow_activity("conversation-start", "start", agent_session_id="22222", process_id=202, project_root=project_a)
+    append_workflow_activity(
+        "conversation-start",
+        "start",
+        agent_session_id="22222",
+        process_id=202,
+        project_root=project_a,
+    )
 
     killed: list[int] = []
 
     def _fake_killpg(pid: int, sig: int) -> None:
         killed.append(pid)
 
-    monkeypatch.setattr("epflemma_cli.workflow_state.os.killpg", _fake_killpg)
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
+    monkeypatch.setattr("epflemma_cli.workflows.workflow_state.os.killpg", _fake_killpg)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: True
+    )
 
     result = terminate_project_workflow_agents(project_a)
 
@@ -630,7 +693,10 @@ def test_workflow_agent_transcript_uses_specific_tool_previews(monkeypatch, tmp_
     transcript = workflow_agent_transcript("55555", limit=4)
 
     assert transcript[0]["role"] == "assistant"
-    assert "Edit ./GaussTest/GaussTest/RealTheorems-homework.lean (replace)" in transcript[0]["content"]
+    assert (
+        "Edit ./GaussTest/GaussTest/RealTheorems-homework.lean (replace)"
+        in transcript[0]["content"]
+    )
     assert transcript[1]["role"] == "tool-result"
     assert "updated ./GaussTest/GaussTest/RealTheorems-homework.lean" in transcript[1]["content"]
     assert "1 hunk(s)" in transcript[1]["content"]
@@ -652,7 +718,9 @@ def test_workflow_agent_queue_and_waiting_state(monkeypatch, tmp_path):
         process_id=24680,
         status="verified",
     )
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: True
+    )
 
     result = enqueue_workflow_agent_message("12345", "Try a different proof strategy.")
 
@@ -676,7 +744,9 @@ def test_enqueue_workflow_agent_message_rejects_dead_agent(monkeypatch, tmp_path
         agent_session_id="12345",
         process_id=24680,
     )
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: False)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: False
+    )
 
     result = enqueue_workflow_agent_message("12345", "Try again")
 
@@ -684,7 +754,9 @@ def test_enqueue_workflow_agent_message_rejects_dead_agent(monkeypatch, tmp_path
     assert result["error"] == "Agent process is no longer running."
 
 
-def test_workflow_agent_summary_prefers_live_busy_phase_over_conversation_end(monkeypatch, tmp_path):
+def test_workflow_agent_summary_prefers_live_busy_phase_over_conversation_end(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
 
     append_workflow_activity(
@@ -714,7 +786,9 @@ def test_workflow_agent_summary_prefers_live_busy_phase_over_conversation_end(mo
             "process_id": 24680,
         }
     )
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: True
+    )
 
     summaries = summarize_workflow_agents(activity_limit=2)
 
@@ -743,7 +817,9 @@ def test_workflow_agent_summary_maps_live_stalled_phase_to_blocked(monkeypatch, 
             "process_id": 24680,
         }
     )
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: True
+    )
 
     summaries = summarize_workflow_agents(activity_limit=2)
 
@@ -773,7 +849,9 @@ def test_background_workflow_conversation_end_is_not_terminal(monkeypatch, tmp_p
         completed=True,
     )
 
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: True
+    )
     summaries = summarize_workflow_agents(activity_limit=2)
 
     assert summaries[0]["status"] == "active"
@@ -801,7 +879,9 @@ def test_workflow_agent_summary_marks_dead_processes_dead(monkeypatch, tmp_path)
         status="paused",
     )
 
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: False)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: False
+    )
     summaries = summarize_workflow_agents(activity_limit=2)
 
     assert summaries[0]["agent_id"] == "agent-main"
@@ -809,7 +889,9 @@ def test_workflow_agent_summary_marks_dead_processes_dead(monkeypatch, tmp_path)
     assert summaries[0]["finished_at"] != ""
 
 
-def test_workflow_agent_summary_does_not_override_dead_process_with_live_phase(monkeypatch, tmp_path):
+def test_workflow_agent_summary_does_not_override_dead_process_with_live_phase(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
 
     append_workflow_activity(
@@ -830,7 +912,9 @@ def test_workflow_agent_summary_does_not_override_dead_process_with_live_phase(m
         }
     )
 
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: False)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: False
+    )
     summaries = summarize_workflow_agents(activity_limit=2)
 
     assert summaries[0]["status"] == "dead"
@@ -848,7 +932,9 @@ def test_load_workflow_live_status_marks_dead_runner_snapshot_stale(monkeypatch,
             "current_queue_item": {"label": "demo"},
         }
     )
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: False)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: False
+    )
 
     payload = load_workflow_live_status()
 
@@ -870,7 +956,9 @@ def test_load_workflow_live_status_preserves_terminal_phase_for_dead_runner(monk
             "held_locks": 1,
         }
     )
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: False)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: False
+    )
 
     payload = load_workflow_live_status()
 
@@ -913,7 +1001,9 @@ def test_load_workflow_live_status_preserves_failed_phase_for_dead_runner(monkey
             "process_id": 24680,
         }
     )
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: False)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: False
+    )
 
     payload = load_workflow_live_status()
 
@@ -945,7 +1035,9 @@ def test_workflow_agent_summary_includes_multiple_run_streams(monkeypatch, tmp_p
         workflow_command="/prove Other.lean",
         project_root=str(tmp_path / "B"),
     )
-    monkeypatch.setattr("epflemma_cli.workflow_state._process_seems_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.workflow_state._process_seems_alive", lambda pid: True
+    )
 
     summaries = summarize_workflow_agents(activity_limit=1)
 

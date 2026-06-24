@@ -3,14 +3,15 @@ from __future__ import annotations
 import yaml
 
 from epflemma_cli.config import get_config_path, load_config
-from epflemma_cli.project import discover_epflemma_project, initialize_epflemma_project
-from epflemma_cli.runtime_provider import RuntimeProviderError, resolve_runtime_provider
+from epflemma_cli.runtime.runtime_provider import RuntimeProviderError, resolve_runtime_provider
+from epflemma_cli.workflows.project import discover_epflemma_project, initialize_epflemma_project
 
 
 def test_load_config_imports_legacy_gauss_payload(monkeypatch, tmp_path):
     legacy_home = tmp_path / "legacy-gauss"
     legacy_home.mkdir()
-    monkeypatch.setenv("GAUSS_HOME", str(legacy_home))
+    # The legacy import source is core.home.legacy_homes() now (the GAUSS_HOME env is dropped).
+    monkeypatch.setattr("core.home.legacy_homes", lambda: (legacy_home,))
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "open-home"))
 
     (legacy_home / "config.yaml").write_text(
@@ -41,7 +42,9 @@ def test_initialize_project_uses_epflemma_manifest(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     root = tmp_path / "Demo"
     root.mkdir()
-    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lakefile.lean").write_text(
+        "import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8"
+    )
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
 
     project = initialize_epflemma_project(root)
@@ -56,7 +59,9 @@ def test_initialize_project_is_idempotent(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     root = tmp_path / "Demo"
     root.mkdir()
-    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lakefile.lean").write_text(
+        "import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8"
+    )
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
 
     project = initialize_epflemma_project(root)
@@ -73,7 +78,9 @@ def test_discover_project_imports_legacy_manifest(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     root = tmp_path / "LegacyProject"
     (root / ".gauss").mkdir(parents=True)
-    (root / "lakefile.lean").write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (root / "lakefile.lean").write_text(
+        "import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8"
+    )
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
     (root / ".gauss" / "project.yaml").write_text(
         yaml.safe_dump(

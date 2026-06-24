@@ -7,19 +7,19 @@ from pathlib import Path
 
 import pytest
 
-from model_tools import (
-    handle_function_call,
-    get_all_tool_names,
-    get_toolset_for_tool,
+from core.model_tools import (
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
+    get_all_tool_names,
+    get_toolset_for_tool,
+    handle_function_call,
 )
-
 
 # =========================================================================
 # handle_function_call
 # =========================================================================
+
 
 class TestHandleFunctionCall:
     def test_agent_loop_tool_returns_error(self):
@@ -47,6 +47,7 @@ class TestHandleFunctionCall:
 # Agent loop tools
 # =========================================================================
 
+
 class TestAgentLoopTools:
     def test_expected_tools_in_set(self):
         assert "todo" in _AGENT_LOOP_TOOLS
@@ -63,10 +64,12 @@ class TestAgentLoopTools:
 # Legacy toolset map
 # =========================================================================
 
+
 class TestLegacyToolsetMap:
     def test_expected_legacy_names(self):
         expected = [
-            "web_tools", "file_tools",
+            "web_tools",
+            "file_tools",
         ]
         for name in expected:
             assert name in _LEGACY_TOOLSET_MAP, f"Missing legacy toolset: {name}"
@@ -84,6 +87,7 @@ class TestLegacyToolsetMap:
 # =========================================================================
 # Backward-compat wrappers
 # =========================================================================
+
 
 class TestBackwardCompat:
     def test_get_all_tool_names_returns_list(self):
@@ -114,7 +118,7 @@ def test_model_tools_discovery_stays_on_minimal_gauss_surface():
 import json
 import sys
 sys.path.insert(0, {str(repo_root)!r})
-import model_tools
+import core.model_tools as model_tools
 from tools.registry import registry
 print(json.dumps(sorted(set(entry.toolset for entry in registry._tools.values()))))
 """

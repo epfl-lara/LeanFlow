@@ -7,8 +7,9 @@ Path.is_relative_to() which handles directory boundaries correctly.
 """
 
 import os
-import pytest
 from pathlib import Path
+
+import pytest
 
 
 def _old_check_escapes(resolved: Path, skill_dir_resolved: Path) -> bool:
@@ -16,10 +17,7 @@ def _old_check_escapes(resolved: Path, skill_dir_resolved: Path) -> bool:
 
     Returns True when the path is OUTSIDE the skill directory.
     """
-    return (
-        not str(resolved).startswith(str(skill_dir_resolved))
-        and resolved != skill_dir_resolved
-    )
+    return not str(resolved).startswith(str(skill_dir_resolved)) and resolved != skill_dir_resolved
 
 
 def _new_check_escapes(resolved: Path, skill_dir_resolved: Path) -> bool:
@@ -105,6 +103,7 @@ class TestPrefixConfusionRegression:
 def _can_symlink():
     """Check if we can create symlinks (needs admin/dev-mode on Windows)."""
     import tempfile
+
     try:
         with tempfile.TemporaryDirectory() as d:
             src = Path(d) / "src"

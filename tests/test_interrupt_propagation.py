@@ -8,9 +8,9 @@ import json
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
-from tools.interrupt import set_interrupt, is_interrupted, _interrupt_event
+from tools.utilities.interrupt import _interrupt_event, is_interrupted, set_interrupt
 
 
 class TestInterruptPropagationToChild(unittest.TestCase):
@@ -49,7 +49,7 @@ class TestInterruptPropagationToChild(unittest.TestCase):
 
     def test_child_clear_interrupt_at_start_clears_global(self):
         """child.clear_interrupt() at start of run_conversation clears the GLOBAL event.
-        
+
         This is the intended behavior at startup, but verify it doesn't
         accidentally clear an interrupt intended for a running child.
         """
@@ -85,9 +85,11 @@ class TestInterruptPropagationToChild(unittest.TestCase):
 
         # Mock a slow API call
         mock_client = MagicMock()
+
         def slow_api_call(**kwargs):
             time.sleep(5)  # Would take 5s normally
             return MagicMock()
+
         mock_client.chat.completions.create = slow_api_call
         mock_client.close = MagicMock()
         child.client = mock_client
@@ -96,6 +98,7 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         def set_interrupt_later():
             time.sleep(0.2)
             child.interrupt("stop!")
+
         t = threading.Thread(target=set_interrupt_later, daemon=True)
         t.start()
 
@@ -132,6 +135,7 @@ class TestInterruptPropagationToChild(unittest.TestCase):
 
         # Simulate child running (checking flag in a loop)
         child_detected = threading.Event()
+
         def simulate_child_loop():
             while not child._interrupt_requested:
                 time.sleep(0.05)

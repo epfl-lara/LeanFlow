@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 
 def main() -> None:
-    home = Path(
-        os.getenv("EPFLEMMA_HOME") or os.getenv("OPENGAUSS_HOME") or (Path.home() / ".epflemma")
-    ).expanduser()
+    from core.home import epflemma_home, migrate_legacy_home
+
+    home = epflemma_home()
     os.environ.setdefault("EPFLEMMA_HOME", str(home))
-    os.environ.setdefault("OPENGAUSS_HOME", str(home))
-    os.environ.setdefault("GAUSS_HOME", str(home))
+    migrate_legacy_home(home)
 
     from run_agent import main as run_agent_main
 

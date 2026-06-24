@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0"]
+dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0", "ruff>=0.6", "mypy>=1.11"]
 mcp = ["mcp>=1.2.0"]
 pty = [
   "ptyprocess>=0.7.0; sys_platform != 'win32'",
@@ -51,19 +51,15 @@ epflemma-agent = "epflemma_agent:main"
 
 [tool.setuptools]
 py-modules = [
-  "gauss_constants",
-  "gauss_state",
-  "gauss_time",
-  "minisweagent_path",
-  "model_tools",
   "epflemma_agent",
   "run_agent",
+  "model_tools",
   "toolsets",
   "utils",
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "epflemma_cli", "tools", "tools.*"]
+include = ["agent", "agent.*", "core", "core.*", "epflemma_cli", "epflemma_cli.*", "tools", "tools.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -71,3 +67,114 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
 ]
 addopts = "-m 'not integration' -n auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# Vendored / third-party trees we never lint or format (Lean toolchain caches, mathlib test
+# fixtures, opt-in security skill scripts, both project venvs).
+extend-exclude = [
+    "testdata",
+    "optional-skills",
+    "**/.lake/**",
+    ".venv",
+    ".epflemma-venv",
+]
+
+# Black-compatible auto-formatter (bundled with ruff — no separate `black` dependency needed).
+# Run `ruff format .` before committing; CI runs `ruff format --check .`.
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+[tool.ruff.lint]
+# select = the enforced rule families: pyflakes (F — undefined names, redefinitions, f-string
+# misuse), import-sorting (I), and pyupgrade (UP — PEP585/604 modernization). Run `ruff check .`.
+select = ["F", "I", "UP"]
+# F401 (unused-import) stays ignored because module-level imports are deliberately re-exported as
+#   patch targets / dynamic-access points without __all__ (e.g. run_agent.OpenAI,
+#   tools...terminal_tool._interrupt_event), so blanket removal silently breaks runtime + tests.
+#   The genuinely-dead typing/stdlib imports were removed per-file; what remains is intentional.
+# F841 (unused-variable): a handful of occurrences, not safely auto-fixable (may hide bugs).
+# UP035/UP022/UP042: behavior-sensitive manual modernizations (StrEnum, subprocess capture_output).
+ignore = ["F401", "F841", "UP035", "UP022", "UP042"]
+
+[tool.mypy]
+python_version = "3.11"
+follow_imports = "silent"
+ignore_missing_imports = true
+# Incremental gate: ONLY these files are type-checked. The list grows each phase as
+# modules are extracted/cleaned. mypy needs explicit targets — overrides alone do not select.
+files = [
+  "core/constants.py",
+  "core/utils.py",
+  "agent/display/log_formatting.py",
+  "agent/runtime/workflow_events.py",
+  "agent/runtime/runtime_helpers.py",
+  "agent/providers/auxiliary_adapters.py",
+  "agent/providers/auxiliary_rcp.py",
+  "agent/providers/auxiliary_nous.py",
+  "agent/providers/model_capabilities.py",
+  "agent/execution/command_safety.py",
+  "agent/accounting/token_accounting.py",
+  "agent/execution/interrupt_controller.py",
+  "agent/display/output_manager.py",
+  "agent/prompting/prompt_manager.py",
+  "agent/providers/provider_client.py",
+  "agent/prompting/reasoning_processor.py",
+  "agent/prompting/response_normalizer.py",
+  "agent/providers/anthropic_messages.py",
+  "agent/execution/collaborator_resolvers.py",
+  "tools/response.py",
+  "tools/implementations/lean_experts.py",
+  "tools/implementations/lean_patch.py",
+  "agent/runtime/managed_run.py",
+  "epflemma_cli/native/native_config.py",
+  "epflemma_cli/native/native_lean_files.py",
+  "epflemma_cli/lean/lean_diagnostics.py",
+  "epflemma_cli/lean/lean_attempt_helpers.py",
+  "epflemma_cli/lean/lean_declarations.py",
+  "epflemma_cli/lean/lean_proof_context_local.py",
+  "epflemma_cli/lean/lean_backend.py",
+  "epflemma_cli/lean/lean_models.py",
+  "epflemma_cli/lean/lean_worker_dispatch.py",
+  "epflemma_cli/lean/lean_diagnostic_feedback.py",
+  "epflemma_cli/lean/lean_search_providers.py",
+  "epflemma_cli/lean/lean_automation.py",
+  "epflemma_cli/lean/lean_sorry_stats.py",
+  "epflemma_cli/lean/lean_parsing.py",
+  "epflemma_cli/lean/lean_module_paths.py",
+  "epflemma_cli/native/native_checkpoints.py",
+  "epflemma_cli/native/native_state.py",
+  "epflemma_cli/workflows/queue_edit_guard.py",
+  "epflemma_cli/workflows/queue_models.py",
+  "epflemma_cli/workflows/queue_item_predicates.py",
+  "epflemma_cli/formalization/formalization_document_runner.py",
+  "epflemma_cli/formalization/formalization_generated_lean.py",
+  "epflemma_cli/formalization/document_extraction.py",
+  "epflemma_cli/formalization/formalization_markdown.py",
+  "epflemma_cli/formalization/formalization_models.py",
+  "epflemma_cli/formalization/formalization_tex_discovery.py",
+  "epflemma_cli/workflows/manager_verification.py",
+  "epflemma_cli/native/native_utils.py",
+  "epflemma_cli/workflows/activity_preview.py",
+  "epflemma_cli/proof_state_builder.py",
+  "epflemma_cli/workflows/project_prove_manager.py",
+  "epflemma_cli/workflows/verification_review.py",
+  "epflemma_cli/cli/cli_handlers.py",
+  "epflemma_cli/cli/shell_ui.py",
+  "tools/mcp/mcp_transport.py",
+  "tools/mcp/mcp_sampling.py",
+  "tools/mcp/mcp_config.py",
+  "agent/prompting/prompt_caching.py",
+  "agent/accounting/usage_pricing.py",
+  "agent/accounting/redact.py",
+  "epflemma_cli/runtime/branding.py",
+  "epflemma_cli/runtime/env_loader.py",
+  "epflemma_cli/lean/lean_workflow_specs.py",
+  "tools/utilities/interrupt.py",
+  "tools/utilities/debug_helpers.py",
+  "epflemma_cli/workflows/workflow_state_paths.py",
+  "epflemma_cli/workflows/workflow_json_io.py",
+]

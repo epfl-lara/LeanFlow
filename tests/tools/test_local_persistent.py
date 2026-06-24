@@ -11,17 +11,20 @@ from tools.environments.persistent_shell import PersistentShellMixin
 class TestLocalConfig:
     def test_local_persistent_default_false(self, monkeypatch):
         monkeypatch.delenv("TERMINAL_LOCAL_PERSISTENT", raising=False)
-        from tools.terminal_tool import _get_env_config
+        from tools.implementations.terminal_tool import _get_env_config
+
         assert _get_env_config()["local_persistent"] is False
 
     def test_local_persistent_true(self, monkeypatch):
         monkeypatch.setenv("TERMINAL_LOCAL_PERSISTENT", "true")
-        from tools.terminal_tool import _get_env_config
+        from tools.implementations.terminal_tool import _get_env_config
+
         assert _get_env_config()["local_persistent"] is True
 
     def test_local_persistent_yes(self, monkeypatch):
         monkeypatch.setenv("TERMINAL_LOCAL_PERSISTENT", "yes")
-        from tools.terminal_tool import _get_env_config
+        from tools.implementations.terminal_tool import _get_env_config
+
         assert _get_env_config()["local_persistent"] is True
 
 

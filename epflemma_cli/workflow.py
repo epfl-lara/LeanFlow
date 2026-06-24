@@ -6,49 +6,37 @@ import os
 import shlex
 import subprocess
 import sys
-from difflib import SequenceMatcher
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
-from epflemma_cli.project import (
-    EPFLemmaProject,
-    ProjectNotFoundError,
-    discover_epflemma_project,
+from epflemma_cli.cli.commands import (
+    build_forgiving_workflow_alias_map,
+    build_workflow_alias_map,
 )
-from epflemma_cli.formalization_documents import (
+from epflemma_cli.formalization.formalization_documents import (
     FormalizationDocumentContext,
     ensure_formalization_blueprint_skill,
     prepare_formalization_document_context,
 )
-from epflemma_cli.skill_core import default_workflow_skill
-from epflemma_cli.runtime_provider import resolve_runtime_provider
+from epflemma_cli.runtime.runtime_provider import resolve_runtime_provider
+from epflemma_cli.runtime.skill_core import default_workflow_skill
+from epflemma_cli.workflows.project import (
+    EPFLemmaProject,
+    ProjectNotFoundError,
+    discover_epflemma_project,
+)
+
+# Routing tables derived from the single COMMAND_REGISTRY in epflemma_cli.cli.commands.
+# WORKFLOW_ALIAS_MAP: frontend command (incl. long-form aliases) -> (workflow_kind,
+# canonical_command, backend_command). FORGIVING_WORKFLOW_ALIAS_MAP: slash-less name ->
+# canonical slash command.
+WORKFLOW_ALIAS_MAP = build_workflow_alias_map()
 
 
-WORKFLOW_ALIAS_MAP = {
-    "/draft": ("draft", "/draft", "/draft"),
-    "/review": ("review", "/review", "/review"),
-    "/checkpoint": ("checkpoint", "/checkpoint", "/checkpoint"),
-    "/refactor": ("refactor", "/refactor", "/refactor"),
-    "/golf": ("golf", "/golf", "/golf"),
-    "/prove": ("prove", "/prove", "/prove"),
-    "/formalize": ("formalize", "/formalize", "/formalize"),
-    "/autoprove": ("prove", "/prove", "/prove"),
-    "/autoformalize": ("formalize", "/formalize", "/formalize"),
-}
-
-
-FORGIVING_WORKFLOW_ALIAS_MAP = {
-    "draft": "/draft",
-    "review": "/review",
-    "checkpoint": "/checkpoint",
-    "refactor": "/refactor",
-    "golf": "/golf",
-    "prove": "/prove",
-    "autoprove": "/prove",
-    "formalize": "/formalize",
-    "autoformalize": "/formalize",
-}
+FORGIVING_WORKFLOW_ALIAS_MAP = build_forgiving_workflow_alias_map()
 
 
 @dataclass(frozen=True)
@@ -148,7 +136,7 @@ def _normalize_requested_active_file(project_root: Path, cwd: Path, workflow_arg
     trimmed = raw
     for prefix in (f"./{project_name}/", f"{project_name}/"):
         if trimmed.startswith(prefix):
-            trimmed = trimmed[len(prefix):]
+            trimmed = trimmed[len(prefix) :]
             break
     if trimmed != raw:
         candidates.extend([cwd / trimmed, project_root / trimmed, Path(trimmed).expanduser()])
@@ -176,7 +164,10 @@ def _normalize_workflow_args(project_root: Path, cwd: Path, workflow_args: str) 
 
 
 def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
-    runtime_model = str(plan.runtime.get("model") or plan.child_env.get("EPFLEMMA_NATIVE_MODEL", "") or "")
+    """Build a human-readable summary dict of a launch plan for display, capturing workflow name, command, project, runtime provider, model, skill, agent count, and optional fields like formalization metadata, verifier providers, or explicit goals."""
+    runtime_model = str(
+        plan.runtime.get("model") or plan.child_env.get("EPFLEMMA_NATIVE_MODEL", "") or ""
+    )
     runtime_name = str(plan.runtime.get("runtime", "") or "")
     provider = str(plan.runtime.get("provider", "") or "")
     provider_label = provider
@@ -206,8 +197,13 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
             )
             or plan.formalization_document.source_relative
         )
-        request_kind = str(plan.formalization_document.metadata.get("document_request_kind", "file") or "file")
-        if request_relative != plan.formalization_document.source_relative or request_kind != "file":
+        request_kind = str(
+            plan.formalization_document.metadata.get("document_request_kind", "file") or "file"
+        )
+        if (
+            request_relative != plan.formalization_document.source_relative
+            or request_kind != "file"
+        ):
             summary["input"] = f"{request_relative} ({request_kind})"
         summary["document"] = plan.formalization_document.source_relative
         summary["target_file"] = plan.formalization_document.target_lean_relative
@@ -223,11 +219,15 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
     if plan.workflow.blueprint_verifier_provider:
         summary["blueprint_verifier_provider"] = plan.workflow.blueprint_verifier_provider
     if plan.workflow.blueprint_verifier_command_template:
-        summary["blueprint_verifier_command_template"] = plan.workflow.blueprint_verifier_command_template
+        summary["blueprint_verifier_command_template"] = (
+            plan.workflow.blueprint_verifier_command_template
+        )
     if plan.workflow.autoformalizer_verifier_provider:
         summary["autoformalizer_verifier_provider"] = plan.workflow.autoformalizer_verifier_provider
     if plan.workflow.autoformalizer_verifier_command_template:
-        summary["autoformalizer_verifier_command_template"] = plan.workflow.autoformalizer_verifier_command_template
+        summary["autoformalizer_verifier_command_template"] = (
+            plan.workflow.autoformalizer_verifier_command_template
+        )
     return summary
 
 
@@ -243,6 +243,7 @@ def rewrite_forgiving_workflow_command(raw: str) -> str:
 
 
 def parse_workflow_command(command: str) -> NativeWorkflowSpec:
+    """Parse a workflow command string (e.g., "/lean4:prove file.lean --agents 2 --provider openai") into a NativeWorkflowSpec, extracting workflow kind, canonical/backend commands, parallelism, expert/verifier providers, and additional skills."""
     normalized = rewrite_forgiving_workflow_command(command)
     if not normalized:
         raise ValueError("workflow command must not be empty")
@@ -282,7 +283,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         if token in {"--prompt", "--goal"}:
             if idx + 1 >= len(remaining):
                 raise ValueError(f"{token} requires a value")
-            explicit_goal = " ".join(remaining[idx + 1:]).strip()
+            explicit_goal = " ".join(remaining[idx + 1 :]).strip()
             idx = len(remaining)
             continue
         if token == "--provider":
@@ -309,7 +310,10 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             blueprint_verifier_provider = remaining[idx + 1].strip()
             idx += 2
             continue
-        if token in {"--blueprint-verifier-command-template", "--blueprint_verifier_command_template"}:
+        if token in {
+            "--blueprint-verifier-command-template",
+            "--blueprint_verifier_command_template",
+        }:
             if idx + 1 >= len(remaining):
                 raise ValueError(f"{token} requires a value")
             blueprint_verifier_command_template = remaining[idx + 1].strip()
@@ -321,7 +325,10 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             autoformalizer_verifier_provider = remaining[idx + 1].strip()
             idx += 2
             continue
-        if token in {"--autoformalizer-verifier-command-template", "--autoformalizer_verifier_command_template"}:
+        if token in {
+            "--autoformalizer-verifier-command-template",
+            "--autoformalizer_verifier_command_template",
+        }:
             if idx + 1 >= len(remaining):
                 raise ValueError(f"{token} requires a value")
             autoformalizer_verifier_command_template = remaining[idx + 1].strip()
@@ -343,7 +350,9 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         workflow_kind=workflow_kind,
         frontend_command=command_name,
         canonical_command=canonical_command,
-        backend_command=backend_command if not workflow_args else f"{backend_command} {workflow_args}",
+        backend_command=backend_command
+        if not workflow_args
+        else f"{backend_command} {workflow_args}",
         workflow_args=workflow_args.strip(),
         parallel_agents=parallel_agents,
         explicit_goal=explicit_goal,
@@ -359,7 +368,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
 
 
 def _native_runner_module() -> str:
-    return "epflemma_cli.native_runner"
+    return "epflemma_cli.native.native_runner"
 
 
 def _dedupe_skills(values: list[str]) -> tuple[str, ...]:
@@ -381,10 +390,13 @@ def resolve_workflow_request(
     requested_provider: str | None = None,
     active_skill: str | None = None,
 ) -> NativeLaunchPlan:
+    """Resolve a raw workflow command into a complete NativeLaunchPlan by discovering the project, resolving runtime, normalizing file paths, preparing formalization context if needed, selecting skills, and populating the environment for the native runner subprocess."""
     workflow = parse_workflow_command(command)
     cwd = Path(active_cwd or os.getcwd()).expanduser().resolve()
     project = discover_epflemma_project(cwd)
-    runtime = resolve_runtime_provider(requested=requested_provider or workflow.provider_override or None)
+    runtime = resolve_runtime_provider(
+        requested=requested_provider or workflow.provider_override or None
+    )
     formalization_document: FormalizationDocumentContext | None = None
     normalized_workflow_args = _normalize_workflow_args(project.root, cwd, workflow.workflow_args)
     if workflow.workflow_kind == "formalize":
@@ -407,10 +419,16 @@ def resolve_workflow_request(
             if not normalized_workflow_args
             else f"{WORKFLOW_ALIAS_MAP[workflow.frontend_command][2]} {normalized_workflow_args}",
         )
-    normalized_active_file = _normalize_requested_active_file(project.root, cwd, workflow.workflow_args)
+    normalized_active_file = _normalize_requested_active_file(
+        project.root, cwd, workflow.workflow_args
+    )
     if formalization_document is not None:
         normalized_active_file = formalization_document.target_lean_relative
-    if normalized_active_file and workflow.workflow_kind == "prove" and workflow.parallel_agents > 1:
+    if (
+        normalized_active_file
+        and workflow.workflow_kind == "prove"
+        and workflow.parallel_agents > 1
+    ):
         workflow = replace(workflow, parallel_agents=1)
     selected_skill = (active_skill or "").strip() or default_workflow_skill(workflow.workflow_kind)
     if workflow.parallel_agents > 1 and not active_skill:
@@ -434,41 +452,23 @@ def resolve_workflow_request(
     child_env.update(
         {
             "EPFLEMMA_PROJECT_ROOT": str(project.root),
-            "OPENGAUSS_PROJECT_ROOT": str(project.root),
             "EPFLEMMA_NATIVE_PROVIDER": str(runtime["provider"]),
-            "OPENGAUSS_NATIVE_PROVIDER": str(runtime["provider"]),
             "EPFLEMMA_NATIVE_API_MODE": str(runtime["api_mode"]),
-            "OPENGAUSS_NATIVE_API_MODE": str(runtime["api_mode"]),
             "EPFLEMMA_NATIVE_BASE_URL": str(runtime["base_url"]),
-            "OPENGAUSS_NATIVE_BASE_URL": str(runtime["base_url"]),
             "EPFLEMMA_NATIVE_API_KEY": str(runtime.get("api_key", "")),
-            "OPENGAUSS_NATIVE_API_KEY": str(runtime.get("api_key", "")),
             "EPFLEMMA_NATIVE_MODEL": str(runtime.get("model") or load_default_model()),
-            "OPENGAUSS_NATIVE_MODEL": str(runtime.get("model") or load_default_model()),
             "EPFLEMMA_NATIVE_REASONING_EFFORT": str(runtime.get("reasoning_effort", "") or ""),
-            "OPENGAUSS_NATIVE_REASONING_EFFORT": str(runtime.get("reasoning_effort", "") or ""),
             "EPFLEMMA_NATIVE_WORKFLOW_KIND": workflow.workflow_kind,
-            "OPENGAUSS_NATIVE_WORKFLOW_KIND": workflow.workflow_kind,
             "EPFLEMMA_NATIVE_WORKFLOW_COMMAND": workflow.backend_command,
-            "OPENGAUSS_NATIVE_WORKFLOW_COMMAND": workflow.backend_command,
             "EPFLEMMA_NATIVE_ACTIVE_SKILL": selected_skill,
-            "OPENGAUSS_NATIVE_ACTIVE_SKILL": selected_skill,
             "EPFLEMMA_NATIVE_ADDITIONAL_SKILLS": os.pathsep.join(additional_skills_tuple),
-            "OPENGAUSS_NATIVE_ADDITIONAL_SKILLS": os.pathsep.join(additional_skills_tuple),
             "EPFLEMMA_NATIVE_PARALLEL_AGENTS": str(workflow.parallel_agents),
-            "OPENGAUSS_NATIVE_PARALLEL_AGENTS": str(workflow.parallel_agents),
             "EPFLEMMA_NATIVE_USER_APPROVED_SWARM": "1" if workflow.parallel_agents > 1 else "0",
-            "OPENGAUSS_NATIVE_USER_APPROVED_SWARM": "1" if workflow.parallel_agents > 1 else "0",
             "EPFLEMMA_NATIVE_EXPLICIT_GOAL": workflow.explicit_goal,
-            "OPENGAUSS_NATIVE_EXPLICIT_GOAL": workflow.explicit_goal,
             "EPFLEMMA_NATIVE_USER_PROMPT": workflow.explicit_goal,
-            "OPENGAUSS_NATIVE_USER_PROMPT": workflow.explicit_goal,
             "EPFLEMMA_NATIVE_EFFECTIVE_PROMPT": workflow.explicit_goal,
-            "OPENGAUSS_NATIVE_EFFECTIVE_PROMPT": workflow.explicit_goal,
             "EPFLEMMA_NATIVE_TOOLSET": toolset_name,
-            "OPENGAUSS_NATIVE_TOOLSET": toolset_name,
             "EPFLEMMA_NATIVE_ACTIVE_FILE": normalized_active_file,
-            "OPENGAUSS_NATIVE_ACTIVE_FILE": normalized_active_file,
         }
     )
     if workflow.expert_provider:
@@ -476,13 +476,21 @@ def resolve_workflow_request(
     if workflow.expert_command_template:
         child_env["AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE"] = workflow.expert_command_template
     if workflow.blueprint_verifier_provider:
-        child_env["AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] = workflow.blueprint_verifier_provider
+        child_env["AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER"] = (
+            workflow.blueprint_verifier_provider
+        )
     if workflow.blueprint_verifier_command_template:
-        child_env["AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"] = workflow.blueprint_verifier_command_template
+        child_env["AUXILIARY_BLUEPRINT_VERIFICATION_COMMAND_TEMPLATE"] = (
+            workflow.blueprint_verifier_command_template
+        )
     if workflow.autoformalizer_verifier_provider:
-        child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] = workflow.autoformalizer_verifier_provider
+        child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER"] = (
+            workflow.autoformalizer_verifier_provider
+        )
     if workflow.autoformalizer_verifier_command_template:
-        child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"] = workflow.autoformalizer_verifier_command_template
+        child_env["AUXILIARY_AUTOFORMALIZER_VERIFICATION_COMMAND_TEMPLATE"] = (
+            workflow.autoformalizer_verifier_command_template
+        )
     if formalization_document is not None:
         child_env.update(formalization_document.to_env())
     argv = [sys.executable, "-m", _native_runner_module()]
@@ -541,7 +549,6 @@ def spawn_workflow(
     )
     child_env = dict(plan.child_env)
     child_env["EPFLEMMA_NATIVE_INTERACTIVE"] = "1" if interactive else "0"
-    child_env["OPENGAUSS_NATIVE_INTERACTIVE"] = "1" if interactive else "0"
     process = subprocess.Popen(
         plan.argv,
         cwd=str(plan.project.root),
@@ -561,6 +568,7 @@ def run_workflow(
     requested_provider: str | None = None,
     active_skill: str | None = None,
 ) -> int:
+    """Execute a workflow command synchronously as a subprocess in the project root, waiting for completion and handling KeyboardInterrupt gracefully with escalating termination (terminate → kill), returning the process exit code."""
     plan, process = spawn_workflow(
         command,
         active_cwd=active_cwd,

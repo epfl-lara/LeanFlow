@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from epflemma_cli.formalization_documents import (
+from epflemma_cli.formalization.formalization_documents import (
     FormalizationDocumentError,
     inspect_formalization_document,
     prepare_formalization_document_context,
@@ -63,13 +63,18 @@ def test_prepare_formalization_document_context_creates_planner_artifacts(tmp_pa
 
     target_text = context.target_lean_path.read_text(encoding="utf-8")
     assert target_text == "import Mathlib\n"
-    assert (project / "Demo" / "Paper.lean").read_text(encoding="utf-8") == "import Demo.Paper.Main\n"
+    assert (project / "Demo" / "Paper.lean").read_text(
+        encoding="utf-8"
+    ) == "import Demo.Paper.Main\n"
     assert (project / "Demo.lean").read_text(encoding="utf-8") == "import Demo.Paper\n"
 
     startup_context = context.context_path.read_text(encoding="utf-8")
     assert "document formalization run" in startup_context
     assert "`thm:zero_good`" in startup_context
-    assert "keep source pointers, ambiguity notes, dependencies, complete source proof text, and proof notes" in startup_context
+    assert (
+        "keep source pointers, ambiguity notes, dependencies, complete source proof text, and proof notes"
+        in startup_context
+    )
     assert "reread it easily" in startup_context
     assert "must begin with all `import` commands" in startup_context
     assert "document formalization handoff verifier" in startup_context
@@ -105,7 +110,9 @@ def test_prepare_formalization_document_context_creates_planner_artifacts(tmp_pa
 def test_prepare_formalization_document_context_extends_existing_root_imports(tmp_path):
     project = tmp_path / "Demo"
     (project / "Demo").mkdir(parents=True)
-    (project / "Demo.lean").write_text("import Demo.Existing\n\n/-! Existing root module. -/\n", encoding="utf-8")
+    (project / "Demo.lean").write_text(
+        "import Demo.Existing\n\n/-! Existing root module. -/\n", encoding="utf-8"
+    )
     source = project / "docs" / "paper.tex"
     _write_sample_tex(source)
 
@@ -116,9 +123,13 @@ def test_prepare_formalization_document_context_extends_existing_root_imports(tm
         project_label="Demo",
     )
 
-    assert (project / "Demo" / "Paper.lean").read_text(encoding="utf-8") == "import Demo.Paper.Main\n"
+    assert (project / "Demo" / "Paper.lean").read_text(
+        encoding="utf-8"
+    ) == "import Demo.Paper.Main\n"
     root_text = (project / "Demo.lean").read_text(encoding="utf-8")
-    assert root_text.startswith("import Demo.Existing\nimport Demo.Paper\n\n/-! Existing root module. -/")
+    assert root_text.startswith(
+        "import Demo.Existing\nimport Demo.Paper\n\n/-! Existing root module. -/"
+    )
 
 
 def test_inspect_formalization_document_extracts_latex_inventory(tmp_path):
@@ -287,7 +298,9 @@ def test_directory_formalization_selects_main_tex_and_records_project_inventory(
     source_dir = project / "docs" / "paper"
     source_dir.mkdir(parents=True)
     (source_dir / "macros.tex").write_text("\\def\\good{good}\n", encoding="utf-8")
-    (source_dir / "refs.bbl").write_text("\\begin{thebibliography}{1}\\end{thebibliography}\n", encoding="utf-8")
+    (source_dir / "refs.bbl").write_text(
+        "\\begin{thebibliography}{1}\\end{thebibliography}\n", encoding="utf-8"
+    )
     (source_dir / "style.bst").write_text("ENTRY {}{}{}\n", encoding="utf-8")
     (source_dir / "main.tex").write_text(
         r"""
@@ -325,7 +338,10 @@ def test_directory_formalization_selects_main_tex_and_records_project_inventory(
     assert context.metadata["tex_project_local_asset_files"] == ["docs/paper/style.bst"]
     assert context.metadata["tex_project_pdf_files"] == []
     assert context.metadata["tex_project_figure_files"] == []
-    assert context.metadata["tex_project_support_files"] == ["docs/paper/refs.bbl", "docs/paper/style.bst"]
+    assert context.metadata["tex_project_support_files"] == [
+        "docs/paper/refs.bbl",
+        "docs/paper/style.bst",
+    ]
     env = context.to_env()
     assert env["EPFLEMMA_FORMALIZATION_REQUEST_KIND"] == "directory"
     assert env["EPFLEMMA_FORMALIZATION_REQUEST_RELATIVE"] == "docs/paper"

@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from tools.patch_parser import (
+from tools.utilities.patch_parser import (
     OperationType,
     apply_v4a_operations,
     parse_v4a_patch,
@@ -162,10 +162,10 @@ class TestApplyUpdate:
             def read_file(self, path, offset=1, limit=500):
                 return SimpleNamespace(
                     content=(
-                        'def run():\n'
+                        "def run():\n"
                         '    cmd = "echo a | sed s/a/b/"\n'
-                        '    result = 1\n'
-                        '    return result'
+                        "    result = 1\n"
+                        "    return result"
                     ),
                     error=None,
                 )
@@ -180,8 +180,5 @@ class TestApplyUpdate:
 
         assert result.success is True
         assert file_ops.written == (
-            'def run():\n'
-            '    cmd = "echo a | sed s/a/b/"\n'
-            '    result = 1\n'
-            '    return result + 1'
+            'def run():\n    cmd = "echo a | sed s/a/b/"\n    result = 1\n    return result + 1'
         )

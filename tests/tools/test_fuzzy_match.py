@@ -1,6 +1,6 @@
 """Tests for the fuzzy matching module."""
 
-from tools.fuzzy_match import fuzzy_find_and_replace
+from tools.utilities.fuzzy_match import fuzzy_find_and_replace
 
 
 class TestExactMatch:
@@ -47,7 +47,9 @@ class TestWhitespaceDifference:
 class TestIndentDifference:
     def test_different_indentation(self):
         content = "    def foo():\n        pass"
-        new, count, err = fuzzy_find_and_replace(content, "def foo():\n    pass", "def bar():\n    return 1")
+        new, count, err = fuzzy_find_and_replace(
+            content, "def foo():\n    pass", "def bar():\n    return 1"
+        )
         assert count == 1
         assert "bar" in new
 

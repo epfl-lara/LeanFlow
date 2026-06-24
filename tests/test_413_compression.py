@@ -7,8 +7,8 @@ Verifies that:
 """
 
 import pytest
-pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
 
+pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
 
 
 import uuid
@@ -17,13 +17,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import SUMMARY_PREFIX
+from agent.compression.context_compressor import SUMMARY_PREFIX
 from run_agent import AIAgent
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_tool_defs(*names: str) -> list:
     return [
@@ -85,6 +85,7 @@ def agent():
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestHTTP413Compression:
     """413 errors should trigger compression, not abort as generic 4xx."""
@@ -213,9 +214,7 @@ class TestHTTP413Compression:
 
     def test_400_reduce_length_triggers_compression(self, agent):
         """A 400 with 'reduce the length' should trigger compression."""
-        err_400 = Exception(
-            "Error code: 400 - Please reduce the length of the messages"
-        )
+        err_400 = Exception("Error code: 400 - Please reduce the length of the messages")
         err_400.status_code = 400
         ok_resp = _mock_response(content="OK", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
@@ -245,7 +244,7 @@ class TestHTTP413Compression:
         err_400 = Exception(
             "Error code: 400 - {'error': {'message': "
             "\"This endpoint's maximum context length is 128000 tokens. "
-            "Please reduce the length of the messages.\"}}"
+            'Please reduce the length of the messages."}}'
         )
         err_400.status_code = 400
         ok_resp = _mock_response(content="Recovered after real compression", finish_reason="stop")
@@ -326,8 +325,12 @@ class TestPreflightCompression:
         # (each message ~20 chars = ~5 tokens, 20 messages = ~100 tokens > 85 threshold)
         big_history = []
         for i in range(20):
-            big_history.append({"role": "user", "content": f"Message number {i} with some extra text padding"})
-            big_history.append({"role": "assistant", "content": f"Response number {i} with extra padding here"})
+            big_history.append(
+                {"role": "user", "content": f"Message number {i} with some extra text padding"}
+            )
+            big_history.append(
+                {"role": "assistant", "content": f"Response number {i} with extra padding here"}
+            )
 
         ok_resp = _mock_response(content="After preflight", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [ok_resp]
@@ -416,15 +419,19 @@ class TestToolResultPreflightCompression:
         agent.context_compressor.last_completion_tokens = 5_000
 
         tc = SimpleNamespace(
-            id="tc1", type="function",
+            id="tc1",
+            type="function",
             function=SimpleNamespace(name="web_search", arguments='{"query":"test"}'),
         )
         tool_resp = _mock_response(
-            content=None, finish_reason="stop", tool_calls=[tc],
+            content=None,
+            finish_reason="stop",
+            tool_calls=[tc],
             usage={"prompt_tokens": 130_000, "completion_tokens": 5_000, "total_tokens": 135_000},
         )
         ok_resp = _mock_response(
-            content="Done after compression", finish_reason="stop",
+            content="Done after compression",
+            finish_reason="stop",
             usage={"prompt_tokens": 50_000, "completion_tokens": 100, "total_tokens": 50_100},
         )
         agent.client.chat.completions.create.side_effect = [tool_resp, ok_resp]
@@ -438,7 +445,8 @@ class TestToolResultPreflightCompression:
             patch.object(agent, "_cleanup_task_resources"),
         ):
             mock_compress.return_value = (
-                [{"role": "user", "content": "hello"}], "compressed prompt",
+                [{"role": "user", "content": "hello"}],
+                "compressed prompt",
             )
             result = agent.run_conversation("hello")
 
@@ -466,7 +474,8 @@ class TestToolResultPreflightCompression:
             patch.object(agent, "_cleanup_task_resources"),
         ):
             mock_compress.return_value = (
-                [{"role": "user", "content": "hello"}], "compressed",
+                [{"role": "user", "content": "hello"}],
+                "compressed",
             )
             result = agent.run_conversation("hello", conversation_history=prefill)
 

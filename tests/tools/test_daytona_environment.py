@@ -2,14 +2,14 @@
 
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers to build mock Daytona SDK objects
 # ---------------------------------------------------------------------------
+
 
 def _make_exec_response(result="", exit_code=0):
     return SimpleNamespace(result=result, exit_code=exit_code)
@@ -25,9 +25,8 @@ def _make_sandbox(sandbox_id="sb-123", state="started"):
 
 def _patch_daytona_imports(monkeypatch):
     """Patch the daytona SDK so DaytonaEnvironment can be imported without it."""
-    import types as _types
-
     import enum
+    import types as _types
 
     class _SandboxState(str, enum.Enum):
         STARTED = "started"
@@ -50,6 +49,7 @@ def _patch_daytona_imports(monkeypatch):
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def daytona_sdk(monkeypatch):
     """Provide a mock daytona SDK module and return it for assertions."""
@@ -60,7 +60,7 @@ def daytona_sdk(monkeypatch):
 def make_env(daytona_sdk, monkeypatch):
     """Factory that creates a DaytonaEnvironment with a mocked SDK."""
     # Prevent is_interrupted from interfering
-    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    monkeypatch.setattr("tools.utilities.interrupt.is_interrupted", lambda: False)
 
     def _factory(
         sandbox=None,
@@ -102,6 +102,7 @@ def make_env(daytona_sdk, monkeypatch):
 # Constructor / cwd resolution
 # ---------------------------------------------------------------------------
 
+
 class TestCwdResolution:
     def test_default_cwd_resolves_home(self, make_env):
         env = make_env(home_dir="/home/testuser")
@@ -130,6 +131,7 @@ class TestCwdResolution:
 # Sandbox persistence / resume
 # ---------------------------------------------------------------------------
 
+
 class TestPersistence:
     def test_persistent_resumes_existing_sandbox(self, make_env):
         existing = _make_sandbox(sandbox_id="sb-existing")
@@ -155,6 +157,7 @@ class TestPersistence:
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
+
 
 class TestCleanup:
     def test_persistent_cleanup_stops_sandbox(self, make_env):
@@ -185,12 +188,13 @@ class TestCleanup:
 # Execute
 # ---------------------------------------------------------------------------
 
+
 class TestExecute:
     def test_basic_command(self, make_env):
         sb = _make_sandbox()
         # First call: $HOME detection; subsequent calls: actual commands
         sb.process.exec.side_effect = [
-            _make_exec_response(result="/root"),       # $HOME
+            _make_exec_response(result="/root"),  # $HOME
             _make_exec_response(result="hello", exit_code=0),  # actual cmd
         ]
         sb.state = "started"
@@ -256,7 +260,7 @@ class TestExecute:
         # (single quotes get shell-escaped by shlex.quote, so check components)
         call_args = sb.process.exec.call_args_list[-1]
         cmd = call_args[0][0]
-        assert "GAUSS_EOF_" in cmd
+        assert "EPFLEMMA_EOF_" in cmd
         assert "print" in cmd
         assert "hi" in cmd
 
@@ -292,6 +296,7 @@ class TestExecute:
 # Resource conversion
 # ---------------------------------------------------------------------------
 
+
 class TestResourceConversion:
     def _get_resources_kwargs(self, daytona_sdk):
         return daytona_sdk.Resources.call_args.kwargs
@@ -315,6 +320,7 @@ class TestResourceConversion:
 # Ensure sandbox ready
 # ---------------------------------------------------------------------------
 
+
 class TestInterrupt:
     def test_interrupt_stops_sandbox_and_returns_130(self, make_env, monkeypatch):
         sb = _make_sandbox()
@@ -332,9 +338,7 @@ class TestInterrupt:
         sb.process.exec.side_effect = exec_side_effect
         env = make_env(sandbox=sb)
 
-        monkeypatch.setattr(
-            "tools.environments.daytona.is_interrupted", lambda: True
-        )
+        monkeypatch.setattr("tools.environments.daytona.is_interrupted", lambda: True)
         try:
             result = env.execute("sleep 10")
             assert result["returncode"] == 130
@@ -347,14 +351,15 @@ class TestInterrupt:
 # Retry exhaustion
 # ---------------------------------------------------------------------------
 
+
 class TestRetryExhausted:
     def test_both_attempts_fail(self, make_env, daytona_sdk):
         sb = _make_sandbox()
         sb.state = "started"
         sb.process.exec.side_effect = [
-            _make_exec_response(result="/root"),       # $HOME
-            daytona_sdk.DaytonaError("fail1"),         # first attempt
-            daytona_sdk.DaytonaError("fail2"),         # retry
+            _make_exec_response(result="/root"),  # $HOME
+            daytona_sdk.DaytonaError("fail1"),  # first attempt
+            daytona_sdk.DaytonaError("fail2"),  # retry
         ]
         env = make_env(sandbox=sb)
 
@@ -366,6 +371,7 @@ class TestRetryExhausted:
 # ---------------------------------------------------------------------------
 # Ensure sandbox ready
 # ---------------------------------------------------------------------------
+
 
 class TestEnsureSandboxReady:
     def test_restarts_stopped_sandbox(self, make_env):

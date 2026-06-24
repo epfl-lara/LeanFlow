@@ -1,0 +1,514 @@
+"""Document-formalization generated-Lean inspection helpers.
+
+Pure helpers extracted verbatim from ``native_runner`` (refactor Phase 2) that
+discover, read, and inspect the Lean files a ``/formalize`` run generates for a
+source document, plus the blueprint-inventory fidelity checks that compare those
+generated declarations against the blueprint manifest.
+
+Every helper here resolves the generated-file set from the project root / the
+formalization manifest, then reads the on-disk Lean text and parses declarations.
+Their only non-stdlib callees are already-extracted leaf helpers
+(``formalization_document_runner``, ``lean_module_paths``, ``lean_parsing``,
+``native_config``, ``native_utils``, ``project_prove_manager``); none reach
+native_runner-only mutable state, a queue/lean-services backend, or the agent
+loop. This module deliberately does NOT import ``native_runner`` so the
+re-export shim there introduces no import cycle.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+from epflemma_cli.formalization.formalization_document_runner import (
+    _blueprint_block_missing,
+    _blueprint_bullet_block,
+    _blueprint_bullet_value,
+    _blueprint_fidelity_field,
+    _blueprint_fidelity_field_unresolved,
+    _blueprint_first_bullet_value,
+    _blueprint_source_inventory_entries,
+    _blueprint_value_missing,
+    _document_formalization_manifest_blocks,
+    _document_formalization_requested,
+)
+from epflemma_cli.lean.lean_module_paths import (
+    _lean_decl_names_from_planned_value,
+    _lean_imports_from_text,
+)
+from epflemma_cli.lean.lean_parsing import (
+    LEAN_DECLARATION_PREAMBLE_RE,
+    _declaration_entries_by_name_from_text,
+    _declaration_line_index_from_text,
+)
+from epflemma_cli.native.native_config import (
+    _project_root,
+    _read_text_env,
+    _workflow_kind,
+)
+from epflemma_cli.native.native_utils import (
+    _relative_file_label,
+    _relative_project_file_label,
+)
+from epflemma_cli.workflows.project_prove_manager import (
+    _module_name_for_project_path,
+    _project_prove_dependency_graph,
+)
+
+PROOF_DECLARATION_KINDS = {"theorem", "lemma", "example"}
+CONSTRUCTION_DECLARATION_KINDS = {"def", "instance", "class", "structure"}
+
+
+def _formalization_manifest_payload() -> dict[str, Any]:
+    manifest = _read_text_env("EPFLEMMA_FORMALIZATION_MANIFEST", "").strip()
+    if not manifest:
+        return {}
+    try:
+        payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _formalization_generated_lean_paths(active_file: str = "") -> list[Path]:
+    root = Path(_project_root()).expanduser().resolve()
+    paths: list[Path] = []
+
+    def _add(candidate: str | os.PathLike[str] | None) -> None:
+        raw = str(candidate or "").strip()
+        if not raw:
+            return
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root)
+        except Exception:
+            return
+        if resolved.suffix == ".lean" and resolved.is_file() and resolved not in paths:
+            paths.append(resolved)
+
+    _add(active_file)
+    payload = _formalization_manifest_payload()
+    _add(payload.get("target_lean_relative"))
+    _add(payload.get("target_lean_path"))
+
+    directory_seeds = [path.parent for path in paths if path.name == "Main.lean"]
+    for seed in list(directory_seeds):
+        if not seed.is_dir():
+            continue
+        for path in sorted(
+            seed.rglob("*.lean"), key=lambda item: str(item.relative_to(seed)).lower()
+        ):
+            _add(path)
+        parent_module_file = seed.with_suffix(".lean")
+        _add(parent_module_file)
+
+    return paths
+
+
+def _topologically_order_project_paths(paths: Sequence[Path], root: Path) -> list[Path]:
+    unique_paths: list[Path] = []
+    for path in paths:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            continue
+        if resolved not in unique_paths:
+            unique_paths.append(resolved)
+    if len(unique_paths) <= 1:
+        return unique_paths
+    module_to_path = {
+        module: path
+        for path in unique_paths
+        for module in [_module_name_for_project_path(path, root)]
+        if module
+    }
+    imports_by_path, _imported_by_path, _modules = _project_prove_dependency_graph(
+        unique_paths, module_to_path
+    )
+    path_set = {path.resolve() for path in unique_paths}
+    ordered: list[Path] = []
+    visiting: set[Path] = set()
+    visited: set[Path] = set()
+
+    def _visit(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved in visited:
+            return
+        if resolved in visiting:
+            return
+        visiting.add(resolved)
+        for dependency in sorted(
+            imports_by_path.get(resolved, set()) & path_set, key=lambda item: str(item)
+        ):
+            _visit(dependency)
+        visiting.discard(resolved)
+        visited.add(resolved)
+        ordered.append(resolved)
+
+    for path in sorted(unique_paths, key=lambda item: str(item)):
+        _visit(path)
+    return ordered
+
+
+def _formalization_generated_prove_scope(active_file: str = "") -> list[str]:
+    root = Path(_project_root()).expanduser().resolve()
+    paths = _topologically_order_project_paths(
+        _formalization_generated_lean_paths(active_file), root
+    )
+    labels: list[str] = []
+    for path in paths:
+        label = _relative_project_file_label(path, root)
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _document_formalization_needs_planner_draft(active_file: str) -> bool:
+    if not _document_formalization_requested() or not active_file:
+        return False
+    generated_paths = _formalization_generated_lean_paths(active_file)
+    if generated_paths:
+        for path in generated_paths:
+            try:
+                generated_text = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if re.search(LEAN_DECLARATION_PREAMBLE_RE, generated_text, flags=re.MULTILINE):
+                return False
+    try:
+        text = Path(active_file).read_text(encoding="utf-8")
+    except Exception:
+        return False
+    has_declaration = bool(re.search(LEAN_DECLARATION_PREAMBLE_RE, text, flags=re.MULTILINE))
+    if has_declaration:
+        return False
+    non_import_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("--")
+        and not line.lstrip().startswith("import ")
+    ]
+    if not non_import_lines:
+        return True
+    return (
+        "EPFLemma formalization target scaffold" in text
+        or "EPFLemma created this file as the active formalization target" in text
+    )
+
+
+def _formalization_generated_lean_text(
+    active_file: str,
+    *,
+    active_text: str = "",
+) -> str:
+    chunks: list[str] = []
+    active_path = Path(active_file).expanduser() if active_file else None
+    try:
+        active_resolved = active_path.resolve() if active_path is not None else None
+    except Exception:
+        active_resolved = active_path
+    for path in _formalization_generated_lean_paths(active_file):
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        try:
+            text = (
+                str(active_text or "")
+                if active_resolved is not None and resolved == active_resolved and active_text
+                else path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            continue
+        label = _relative_file_label(str(path)) or str(path)
+        chunks.append(f"/- EPFLemma generated file: {label} -/\n{text}")
+    if chunks:
+        return "\n\n".join(chunks)
+    return str(active_text or "")
+
+
+def _formalization_generated_imports(active_file: str, *, active_text: str = "") -> list[str]:
+    imports: list[str] = []
+    active_path = Path(active_file).expanduser() if active_file else None
+    try:
+        active_resolved = active_path.resolve() if active_path is not None else None
+    except Exception:
+        active_resolved = active_path
+    for path in _formalization_generated_lean_paths(active_file):
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        try:
+            text = (
+                str(active_text or "")
+                if active_resolved is not None and resolved == active_resolved and active_text
+                else path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            continue
+        for module in _lean_imports_from_text(text):
+            if module not in imports:
+                imports.append(module)
+    if not imports and active_text:
+        imports = _lean_imports_from_text(active_text)
+    return imports
+
+
+def _formalization_generated_module_names(active_file: str) -> set[str]:
+    root = Path(_project_root()).expanduser().resolve()
+    modules: set[str] = set()
+    for path in _formalization_generated_lean_paths(active_file):
+        module = _module_name_for_project_path(path, root)
+        if module:
+            modules.add(module)
+    return modules
+
+
+def _document_formalization_construction_sorry_issues(
+    active_file: str, target_text: str = ""
+) -> list[str]:
+    issues: list[str] = []
+    scanned_paths = _formalization_generated_lean_paths(active_file)
+    if not scanned_paths and active_file:
+        scanned_paths = [Path(active_file)]
+    for path in scanned_paths:
+        try:
+            text = (
+                str(target_text or "")
+                if active_file
+                and path.resolve() == Path(active_file).expanduser().resolve()
+                and target_text
+                else path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            continue
+        for entry in _declaration_line_index_from_text(text):
+            kind = str(entry.get("kind", "") or "").strip().lower()
+            if kind not in CONSTRUCTION_DECLARATION_KINDS or not entry.get("has_sorry"):
+                continue
+            name = (
+                str(entry.get("name", "") or "").strip()
+                or f"[{kind} at line {entry.get('line', '?')}]"
+            )
+            line = int(entry.get("line", 0) or 0)
+            label = _relative_file_label(str(path))
+            location = f"{label}:{line}" if line > 0 else label
+            issues.append(
+                f"construction gap before proof handoff: `{name}` is a {kind} declaration with `sorry` at {location}; "
+                "finish the construction or rewrite it as an explicit theorem/lemma proof obligation before `/prove`"
+            )
+    return issues
+
+
+def _document_formalization_generated_proof_sorry_count(active_file: str = "") -> int:
+    total = 0
+    for path in _formalization_generated_lean_paths(active_file):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        for entry in _declaration_line_index_from_text(text):
+            if str(
+                entry.get("kind", "") or ""
+            ).strip().lower() in PROOF_DECLARATION_KINDS and entry.get("has_sorry"):
+                total += 1
+    return total
+
+
+def _filter_document_formalization_proof_queue(
+    queue: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    if not (_workflow_kind() == "formalize" and _document_formalization_requested()):
+        return [dict(item) for item in queue if isinstance(item, Mapping)]
+    filtered: list[dict[str, Any]] = []
+    for item in queue:
+        if not isinstance(item, Mapping):
+            continue
+        kind = str(item.get("kind", "") or "").strip().lower()
+        if kind in PROOF_DECLARATION_KINDS:
+            filtered.append(dict(item))
+    return filtered
+
+
+def _lean_declaration_preceding_comment_window(
+    target_text: str,
+    entry: Mapping[str, Any],
+    *,
+    max_lines: int = 16,
+) -> str:
+    try:
+        line = int(entry.get("line", 0) or 0)
+    except Exception:
+        line = 0
+    if line <= 1:
+        return ""
+    lines = str(target_text or "").splitlines()
+    start = max(0, line - max_lines - 1)
+    end = max(0, min(line - 1, len(lines)))
+    return "\n".join(lines[start:end]).strip()
+
+
+def _lean_comment_has_source_proof_notes(comment: str) -> bool:
+    lowered = str(comment or "").lower()
+    required_markers = (
+        "source proof",
+        "proof sketch",
+        "proof strategy",
+        "prover notes",
+        "paper proof",
+    )
+    return any(marker in lowered for marker in required_markers)
+
+
+def _document_formalization_blueprint_inventory_issues(
+    blueprint_text: str,
+    target_text: str,
+) -> list[str]:
+    """Validate blueprint entries against generated Lean declarations and required fidelity metadata. Checks that each source inventory entry in the blueprint has a concrete source locator, planned declarations that exist in generated files, statement verification approval, proof notes, and resolved qualifiers/coverage/scope-change fields; returns a list of diagnostic issues blocking formalization."""
+    issues: list[str] = []
+    entries = _blueprint_source_inventory_entries(blueprint_text)
+    target_entries = _declaration_entries_by_name_from_text(target_text)
+    target_decl_names = set(target_entries)
+    for block in _document_formalization_manifest_blocks():
+        label = block["label"]
+        kind = block["kind"]
+        requires_proof_notes = bool(block.get("has_proof")) or kind in {
+            "theorem",
+            "lemma",
+            "proposition",
+            "corollary",
+        }
+        entry = entries.get(label, "")
+        if not entry:
+            issues.append(f"blueprint is missing source inventory entry `{label}`")
+            continue
+        locator = _blueprint_first_bullet_value(
+            entry,
+            (
+                "Source locator",
+                "Source location",
+                "Source line/page",
+                "Source lines",
+                "Source page",
+            ),
+        )
+        if _blueprint_value_missing(locator):
+            issues.append(f"blueprint entry `{label}` is missing a concrete source locator")
+        elif _document_formalization_requested():
+            source_relative = _read_text_env("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "").strip()
+            if source_relative and source_relative not in locator:
+                issues.append(
+                    f"blueprint entry `{label}` source locator should include `{source_relative}` so the prover can reopen the source"
+                )
+        planned = _blueprint_first_bullet_value(
+            entry,
+            (
+                "Planned Lean declarations",
+                "Planned Lean declaration",
+                "Formal names",
+                "Formal name",
+                "Lean declarations",
+                "Lean declaration",
+            ),
+        )
+        planned_block = (
+            _blueprint_bullet_block(entry, "Planned Lean declarations")
+            or _blueprint_bullet_block(entry, "Planned Lean declaration")
+            or _blueprint_bullet_block(entry, "Lean declarations")
+            or _blueprint_bullet_block(entry, "Lean declaration")
+        )
+        if _blueprint_value_missing(planned):
+            planned = planned_block
+        elif planned_block and planned_block not in planned:
+            planned = f"{planned}\n{planned_block}"
+        if _blueprint_value_missing(planned):
+            issues.append(f"blueprint entry `{label}` has no concrete planned Lean declarations")
+            planned_names: list[str] = []
+        else:
+            planned_names = _lean_decl_names_from_planned_value(planned)
+            if not planned_names:
+                issues.append(f"blueprint entry `{label}` planned declarations are not parseable")
+            else:
+                missing = [name for name in planned_names if name not in target_decl_names]
+                if missing:
+                    issues.append(
+                        f"blueprint entry `{label}` names declarations missing from generated Lean files: "
+                        + ", ".join(f"`{name}`" for name in missing)
+                    )
+
+        review = _blueprint_bullet_block(
+            entry, "Formal statement review"
+        ) or _blueprint_bullet_value(entry, "Formal statement review")
+        if _blueprint_block_missing(review):
+            issues.append(f"blueprint entry `{label}` is missing a statement-fidelity review")
+        source_qualifiers = _blueprint_fidelity_field(
+            entry, ("Source qualifiers", "Source qualifier", "Fidelity axes")
+        )
+        if _blueprint_fidelity_field_unresolved(source_qualifiers):
+            issues.append(
+                f"blueprint entry `{label}` is missing resolved source qualifiers / fidelity axes"
+            )
+        lean_coverage = _blueprint_fidelity_field(
+            entry, ("Lean coverage", "Formal coverage", "Lean statement coverage")
+        )
+        if _blueprint_fidelity_field_unresolved(lean_coverage):
+            issues.append(
+                f"blueprint entry `{label}` is missing resolved Lean coverage for the source qualifiers"
+            )
+        scope_changes = _blueprint_fidelity_field(
+            entry, ("Scope changes", "Intentional scope changes", "Scope change")
+        )
+        if _blueprint_fidelity_field_unresolved(scope_changes):
+            issues.append(
+                f"blueprint entry `{label}` must explicitly record scope changes, or `none`"
+            )
+
+        verification = _blueprint_first_bullet_value(
+            entry,
+            (
+                "Statement verification status",
+                "Statement/source verification",
+                "Source verification status",
+                "Verification status",
+            ),
+        )
+        if _blueprint_value_missing(verification):
+            issues.append(
+                f"blueprint entry `{label}` is missing statement/source verification approval; "
+                "run the review workflow to check and correct the planned Lean statements before proving"
+            )
+        elif not re.search(
+            r"\b(approved|verified|reviewed|accepted)\b", verification, flags=re.IGNORECASE
+        ):
+            issues.append(
+                f"blueprint entry `{label}` statement/source verification is not approved"
+            )
+
+        notes = _blueprint_first_bullet_value(
+            entry, ("Source proof / prover notes", "Proof strategy", "Prover notes")
+        )
+        if _blueprint_value_missing(notes):
+            issues.append(f"blueprint entry `{label}` is missing source proof/prover notes")
+        if requires_proof_notes and notes.lower() in {"none", "none needed", "n/a"}:
+            issues.append(f"blueprint entry `{label}` needs prover notes for its {kind}")
+        if requires_proof_notes:
+            for name in planned_names:
+                target_entry = target_entries.get(name, {})
+                decl_kind = str(target_entry.get("kind", "") or "").strip().lower()
+                if decl_kind not in {"theorem", "lemma", "example"}:
+                    continue
+                comment = _lean_declaration_preceding_comment_window(target_text, target_entry)
+                if not _lean_comment_has_source_proof_notes(comment):
+                    issues.append(
+                        f"Lean doc comment above `{name}` is missing source proof/prover notes"
+                    )
+    return issues

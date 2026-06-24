@@ -1,10 +1,11 @@
 """Tests for gauss_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
 import time
-import pytest
 from pathlib import Path
 
-from gauss_state import SessionDB
+import pytest
+
+from core.state import SessionDB
 
 
 @pytest.fixture()
@@ -19,6 +20,7 @@ def db(tmp_path):
 # =========================================================================
 # Session lifecycle
 # =========================================================================
+
 
 class TestSessionLifecycle:
     def test_create_and_get_session(self, db):
@@ -87,6 +89,7 @@ class TestSessionLifecycle:
 # =========================================================================
 # Message storage
 # =========================================================================
+
 
 class TestMessageStorage:
     def test_append_and_get_messages(self, db):
@@ -182,6 +185,7 @@ class TestMessageStorage:
 # FTS5 search
 # =========================================================================
 
+
 class TestFTS5Search:
     def test_search_finds_content(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -237,14 +241,14 @@ class TestFTS5Search:
 
         # Each of these previously caused sqlite3.OperationalError
         dangerous_queries = [
-            'C++',              # + is FTS5 column filter
-            '"unterminated',    # unbalanced double-quote
-            '(problem',         # unbalanced parenthesis
-            'hello AND',        # dangling boolean operator
-            '***',              # repeated wildcard
-            '{test}',           # curly braces (column reference)
-            'OR hello',         # leading boolean operator
-            'a AND OR b',       # adjacent operators
+            "C++",  # + is FTS5 column filter
+            '"unterminated',  # unbalanced double-quote
+            "(problem",  # unbalanced parenthesis
+            "hello AND",  # dangling boolean operator
+            "***",  # repeated wildcard
+            "{test}",  # curly braces (column reference)
+            "OR hello",  # leading boolean operator
+            "a AND OR b",  # adjacent operators
         ]
         for query in dangerous_queries:
             # Must not raise — should return list (possibly empty)
@@ -263,25 +267,27 @@ class TestFTS5Search:
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
-        from gauss_state import SessionDB
+        from core.state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
-        assert s('hello world') == 'hello world'
-        assert '+' not in s('C++')
+        assert s("hello world") == "hello world"
+        assert "+" not in s("C++")
         assert '"' not in s('"unterminated')
-        assert '(' not in s('(problem')
-        assert '{' not in s('{test}')
+        assert "(" not in s("(problem")
+        assert "{" not in s("{test}")
         # Dangling operators removed
-        assert s('hello AND') == 'hello'
-        assert s('OR world') == 'world'
+        assert s("hello AND") == "hello"
+        assert s("OR world") == "world"
         # Leading bare * removed
-        assert s('***') == ''
+        assert s("***") == ""
         # Valid prefix kept
-        assert s('deploy*') == 'deploy*'
+        assert s("deploy*") == "deploy*"
 
 
 # =========================================================================
 # Session search and listing
 # =========================================================================
+
 
 class TestSearchSessions:
     def test_list_all_sessions(self, db):
@@ -313,6 +319,7 @@ class TestSearchSessions:
 # =========================================================================
 # Counts
 # =========================================================================
+
 
 class TestCounts:
     def test_session_count(self, db):
@@ -348,6 +355,7 @@ class TestCounts:
 # =========================================================================
 # Delete and export
 # =========================================================================
+
 
 class TestDeleteAndExport:
     def test_delete_session(self, db):
@@ -413,6 +421,7 @@ class TestDeleteAndExport:
 # Prune
 # =========================================================================
 
+
 class TestPruneSessions:
     def test_prune_old_ended_sessions(self, db):
         # Create and end an "old" session
@@ -471,6 +480,7 @@ class TestPruneSessions:
 # =========================================================================
 # Session title
 # =========================================================================
+
 
 class TestSessionTitle:
     def test_set_and_get_title(self, db):
@@ -646,9 +656,7 @@ class TestSchemaInit:
         assert cursor.fetchone()[0] == 1
 
     def test_tables_exist(self, db):
-        cursor = db._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
+        cursor = db._conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tables = {row[0] for row in cursor.fetchall()}
         assert "sessions" in tables
         assert "messages" in tables
@@ -790,6 +798,7 @@ class TestTitleLineage:
     def test_resolve_returns_latest_numbered(self, db):
         """When numbered variants exist, return the most recent one."""
         import time
+
         db.create_session("s1", "cli")
         db.set_session_title("s1", "my project")
         time.sleep(0.01)
@@ -902,6 +911,7 @@ class TestListSessionsRich:
 
     def test_last_active_from_latest_message(self, db):
         import time
+
         db.create_session("s1", "cli")
         db.append_message("s1", "user", "Hello")
         time.sleep(0.01)

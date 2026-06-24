@@ -5,8 +5,9 @@ and that each module uses a platform guard before invoking POSIX-only functions.
 """
 
 import ast
-import pytest
 from pathlib import Path
+
+import pytest
 
 # Files that must have Windows-safe process management
 GUARDED_FILES = [
@@ -55,9 +56,7 @@ class TestIsWindowsConstant:
         if not filepath.exists():
             pytest.skip(f"{relpath} not found")
         source = filepath.read_text(encoding="utf-8")
-        assert "_IS_WINDOWS" in source, (
-            f"{relpath} missing _IS_WINDOWS platform guard"
-        )
+        assert "_IS_WINDOWS" in source, f"{relpath} missing _IS_WINDOWS platform guard"
 
 
 class TestKillpgGuarded:
@@ -74,7 +73,7 @@ class TestKillpgGuarded:
             stripped = line.strip()
             if "os.killpg" in stripped or "os.getpgid" in stripped:
                 # Check that there's an _IS_WINDOWS guard in the surrounding context
-                context = "\n".join(lines[max(0, i - 15):i + 1])
+                context = "\n".join(lines[max(0, i - 15) : i + 1])
                 assert "_IS_WINDOWS" in context or "else:" in context, (
                     f"{relpath}:{i + 1} has unguarded os.killpg/os.getpgid call"
                 )

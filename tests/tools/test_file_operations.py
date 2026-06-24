@@ -2,31 +2,32 @@
 
 import os
 import subprocess
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from tools.file_operations import (
-    _is_write_denied,
-    WRITE_DENIED_PATHS,
-    WRITE_DENIED_PREFIXES,
-    ReadResult,
-    WriteResult,
-    PatchResult,
-    SearchResult,
-    SearchMatch,
-    LintResult,
-    ShellFileOperations,
+import pytest
+
+from epflemma_cli.lean.lean_statement_guard import ALLOW_STATEMENT_EDITS_ENV
+from tools.implementations.file_operations import (
     BINARY_EXTENSIONS,
     IMAGE_EXTENSIONS,
     MAX_LINE_LENGTH,
+    WRITE_DENIED_PATHS,
+    WRITE_DENIED_PREFIXES,
+    LintResult,
+    PatchResult,
+    ReadResult,
+    SearchMatch,
+    SearchResult,
+    ShellFileOperations,
+    WriteResult,
+    _is_write_denied,
 )
-from epflemma_cli.lean_statement_guard import ALLOW_STATEMENT_EDITS_ENV
-
 
 # =========================================================================
 # Write deny list
 # =========================================================================
+
 
 class TestIsWriteDenied:
     def test_ssh_authorized_keys_denied(self):
@@ -60,16 +61,16 @@ class TestIsWriteDenied:
         assert _is_write_denied("~/.ssh/authorized_keys") is True
 
 
-
 # =========================================================================
 # Result dataclasses
 # =========================================================================
+
 
 class TestReadResult:
     def test_to_dict_omits_defaults(self):
         r = ReadResult()
         d = r.to_dict()
-        assert "error" not in d    # None omitted
+        assert "error" not in d  # None omitted
         assert "similar_files" not in d  # empty list omitted
 
     def test_to_dict_preserves_empty_content(self):
@@ -179,6 +180,7 @@ class TestLintResult:
 # ShellFileOperations helpers
 # =========================================================================
 
+
 @pytest.fixture()
 def mock_env():
     """Create a mock terminal environment."""
@@ -285,12 +287,14 @@ class TestSearchPathValidation:
 
     def test_search_nonexistent_path_returns_error(self, mock_env):
         """search() should return an error when the path doesn't exist."""
+
         def side_effect(command, **kwargs):
             if "test -e" in command:
                 return {"output": "not_found", "returncode": 1}
             if "command -v" in command:
                 return {"output": "yes", "returncode": 0}
             return {"output": "", "returncode": 0}
+
         mock_env.execute.side_effect = side_effect
         ops = ShellFileOperations(mock_env)
         result = ops.search("pattern", path="/nonexistent/path")
@@ -299,12 +303,14 @@ class TestSearchPathValidation:
 
     def test_search_nonexistent_path_files_mode(self, mock_env):
         """search(target='files') should also return error for bad paths."""
+
         def side_effect(command, **kwargs):
             if "test -e" in command:
                 return {"output": "not_found", "returncode": 1}
             if "command -v" in command:
                 return {"output": "yes", "returncode": 0}
             return {"output": "", "returncode": 0}
+
         mock_env.execute.side_effect = side_effect
         ops = ShellFileOperations(mock_env)
         result = ops.search("*.py", path="/nonexistent/path", target="files")
@@ -313,6 +319,7 @@ class TestSearchPathValidation:
 
     def test_search_existing_path_proceeds(self, mock_env):
         """search() should proceed normally when the path exists."""
+
         def side_effect(command, **kwargs):
             if "test -e" in command:
                 return {"output": "exists", "returncode": 0}
@@ -320,6 +327,7 @@ class TestSearchPathValidation:
                 return {"output": "yes", "returncode": 0}
             # rg returns exit 1 (no matches) with empty output
             return {"output": "", "returncode": 1}
+
         mock_env.execute.side_effect = side_effect
         ops = ShellFileOperations(mock_env)
         result = ops.search("pattern", path="/existing/path")
@@ -329,6 +337,7 @@ class TestSearchPathValidation:
     def test_search_rg_error_exit_code(self, mock_env):
         """search() should report error when rg returns exit code 2."""
         call_count = {"n": 0}
+
         def side_effect(command, **kwargs):
             call_count["n"] += 1
             if "test -e" in command:
@@ -337,6 +346,7 @@ class TestSearchPathValidation:
                 return {"output": "yes", "returncode": 0}
             # rg returns exit 2 (error) with empty output
             return {"output": "", "returncode": 2}
+
         mock_env.execute.side_effect = side_effect
         ops = ShellFileOperations(mock_env)
         result = ops.search("pattern", path="/some/path")

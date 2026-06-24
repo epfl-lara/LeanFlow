@@ -13,22 +13,26 @@ import threading
 from unittest.mock import MagicMock, patch
 
 from tools.environments.local import (
+    _EPFLEMMA_PROVIDER_ENV_BLOCKLIST,
+    _EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX,
     LocalEnvironment,
-    _GAUSS_PROVIDER_ENV_BLOCKLIST,
-    _GAUSS_PROVIDER_ENV_FORCE_PREFIX,
 )
 
 
 def _make_fake_popen(captured: dict):
     """Return a fake Popen constructor that records the env kwarg."""
+
     def fake_popen(cmd, **kwargs):
         captured["env"] = kwargs.get("env", {})
         proc = MagicMock()
         proc.poll.return_value = 0
         proc.returncode = 0
-        proc.stdout = MagicMock(__iter__=lambda s: iter([]), __next__=lambda s: (_ for _ in ()).throw(StopIteration))
+        proc.stdout = MagicMock(
+            __iter__=lambda s: iter([]), __next__=lambda s: (_ for _ in ()).throw(StopIteration)
+        )
         proc.stdin = MagicMock()
         return proc
+
     return fake_popen
 
 
@@ -47,10 +51,12 @@ def _run_with_env(extra_os_env=None, self_env=None):
 
     env = LocalEnvironment(cwd="/tmp", timeout=10, env=self_env)
 
-    with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
-         patch("subprocess.Popen", side_effect=_make_fake_popen(captured)), \
-         patch("tools.terminal_tool._interrupt_event", fake_interrupt), \
-         patch.dict(os.environ, test_environ, clear=True):
+    with (
+        patch("tools.environments.local._find_bash", return_value="/bin/bash"),
+        patch("subprocess.Popen", side_effect=_make_fake_popen(captured)),
+        patch("tools.implementations.terminal_tool._interrupt_event", fake_interrupt),
+        patch.dict(os.environ, test_environ, clear=True),
+    ):
         env.execute("echo hello")
 
     return captured.get("env", {})
@@ -145,10 +151,12 @@ class TestProviderEnvBlocklist:
 
     def test_self_env_blocked_vars_also_stripped(self):
         """Blocked vars in self.env are stripped; non-blocked vars pass through."""
-        result_env = _run_with_env(self_env={
-            "OPENAI_BASE_URL": "http://custom:9999/v1",
-            "MY_CUSTOM_VAR": "keep-this",
-        })
+        result_env = _run_with_env(
+            self_env={
+                "OPENAI_BASE_URL": "http://custom:9999/v1",
+                "MY_CUSTOM_VAR": "keep-this",
+            }
+        )
 
         assert "OPENAI_BASE_URL" not in result_env
         assert "MY_CUSTOM_VAR" in result_env
@@ -156,24 +164,28 @@ class TestProviderEnvBlocklist:
 
 
 class TestForceEnvOptIn:
-    """Callers can opt in to passing a blocked var via _GAUSS_FORCE_ prefix."""
+    """Callers can opt in to passing a blocked var via _EPFLEMMA_FORCE_ prefix."""
 
     def test_force_prefix_passes_blocked_var(self):
-        """_GAUSS_FORCE_OPENAI_API_KEY in self.env should inject OPENAI_API_KEY."""
-        result_env = _run_with_env(self_env={
-            f"{_GAUSS_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY": "sk-explicit",
-        })
+        """_EPFLEMMA_FORCE_OPENAI_API_KEY in self.env should inject OPENAI_API_KEY."""
+        result_env = _run_with_env(
+            self_env={
+                f"{_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY": "sk-explicit",
+            }
+        )
 
         assert "OPENAI_API_KEY" in result_env
         assert result_env["OPENAI_API_KEY"] == "sk-explicit"
         # The force-prefixed key itself must not appear
-        assert f"{_GAUSS_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY" not in result_env
+        assert f"{_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY" not in result_env
 
     def test_force_prefix_overrides_os_environ_block(self):
         """Force-prefix in self.env wins even when os.environ has the blocked var."""
         result_env = _run_with_env(
             extra_os_env={"OPENAI_BASE_URL": "http://leaked/v1"},
-            self_env={f"{_GAUSS_PROVIDER_ENV_FORCE_PREFIX}OPENAI_BASE_URL": "http://intended/v1"},
+            self_env={
+                f"{_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX}OPENAI_BASE_URL": "http://intended/v1"
+            },
         )
 
         assert result_env["OPENAI_BASE_URL"] == "http://intended/v1"
@@ -191,20 +203,20 @@ class TestBlocklistCoverage:
             "ANTHROPIC_API_KEY",
             "LLM_MODEL",
         }
-        assert must_block.issubset(_GAUSS_PROVIDER_ENV_BLOCKLIST)
+        assert must_block.issubset(_EPFLEMMA_PROVIDER_ENV_BLOCKLIST)
 
     def test_registry_vars_are_in_blocklist(self):
         """Every api_key_env_var and base_url_env_var from PROVIDER_REGISTRY
         must appear in the blocklist — ensures no drift."""
-        from epflemma_cli.auth import PROVIDER_REGISTRY
+        from epflemma_cli.runtime.auth import PROVIDER_REGISTRY
 
         for pconfig in PROVIDER_REGISTRY.values():
             for var in pconfig.api_key_env_vars:
-                assert var in _GAUSS_PROVIDER_ENV_BLOCKLIST, (
+                assert var in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST, (
                     f"Registry var {var} (provider={pconfig.id}) missing from blocklist"
                 )
             if pconfig.base_url_env_var:
-                assert pconfig.base_url_env_var in _GAUSS_PROVIDER_ENV_BLOCKLIST, (
+                assert pconfig.base_url_env_var in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST, (
                     f"Registry base_url_env_var {pconfig.base_url_env_var} "
                     f"(provider={pconfig.id}) missing from blocklist"
                 )
@@ -213,7 +225,7 @@ class TestBlocklistCoverage:
         """Non-registry auth vars (ANTHROPIC_TOKEN, CLAUDE_CODE_OAUTH_TOKEN)
         must also be in the blocklist."""
         extras = {"ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
-        assert extras.issubset(_GAUSS_PROVIDER_ENV_BLOCKLIST)
+        assert extras.issubset(_EPFLEMMA_PROVIDER_ENV_BLOCKLIST)
 
     def test_non_registry_provider_vars_are_in_blocklist(self):
         extras = {
@@ -228,7 +240,7 @@ class TestBlocklistCoverage:
             "XAI_API_KEY",
             "HELICONE_API_KEY",
         }
-        assert extras.issubset(_GAUSS_PROVIDER_ENV_BLOCKLIST)
+        assert extras.issubset(_EPFLEMMA_PROVIDER_ENV_BLOCKLIST)
 
     def test_optional_tool_and_messaging_vars_are_in_blocklist(self):
         """Tool/messaging vars from OPTIONAL_ENV_VARS should stay covered."""
@@ -237,11 +249,11 @@ class TestBlocklistCoverage:
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
             if category in {"tool", "messaging"}:
-                assert name in _GAUSS_PROVIDER_ENV_BLOCKLIST, (
+                assert name in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST, (
                     f"Optional env var {name} (category={category}) missing from blocklist"
                 )
             elif category == "setting" and metadata.get("password"):
-                assert name in _GAUSS_PROVIDER_ENV_BLOCKLIST, (
+                assert name in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST, (
                     f"Secret setting env var {name} missing from blocklist"
                 )
 
@@ -281,4 +293,4 @@ class TestBlocklistCoverage:
             "GITHUB_APP_PRIVATE_KEY_PATH",
             "GITHUB_APP_INSTALLATION_ID",
         }
-        assert extras.issubset(_GAUSS_PROVIDER_ENV_BLOCKLIST)
+        assert extras.issubset(_EPFLEMMA_PROVIDER_ENV_BLOCKLIST)

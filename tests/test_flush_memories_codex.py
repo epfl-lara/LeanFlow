@@ -9,7 +9,7 @@ import os
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -32,23 +32,27 @@ class _FakeOpenAI:
 
 def _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter"):
     """Build an AIAgent with mocked internals, ready for flush_memories testing."""
-    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda **kw: [
-        {
-            "type": "function",
-            "function": {
-                "name": "memory",
-                "description": "Manage memories.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string"},
-                        "target": {"type": "string"},
-                        "content": {"type": "string"},
+    monkeypatch.setattr(
+        run_agent,
+        "get_tool_definitions",
+        lambda **kw: [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory",
+                    "description": "Manage memories.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string"},
+                            "target": {"type": "string"},
+                            "content": {"type": "string"},
+                        },
                     },
                 },
             },
-        },
-    ])
+        ],
+    )
     monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
     monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
 
@@ -72,21 +76,27 @@ def _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
 def _chat_response_with_memory_call():
     """Simulated chat completions response with a memory tool call."""
     return SimpleNamespace(
-        choices=[SimpleNamespace(
-            message=SimpleNamespace(
-                content=None,
-                tool_calls=[SimpleNamespace(
-                    function=SimpleNamespace(
-                        name="memory",
-                        arguments=json.dumps({
-                            "action": "add",
-                            "target": "notes",
-                            "content": "User prefers dark mode.",
-                        }),
-                    ),
-                )],
-            ),
-        )],
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    tool_calls=[
+                        SimpleNamespace(
+                            function=SimpleNamespace(
+                                name="memory",
+                                arguments=json.dumps(
+                                    {
+                                        "action": "add",
+                                        "target": "notes",
+                                        "content": "User prefers dark mode.",
+                                    }
+                                ),
+                            ),
+                        )
+                    ],
+                ),
+            )
+        ],
         usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20, total_tokens=120),
     )
 
@@ -100,13 +110,17 @@ class TestFlushMemoriesUsesAuxiliaryClient:
 
         mock_response = _chat_response_with_memory_call()
 
-        with patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_call:
+        with patch(
+            "agent.providers.auxiliary_client.call_llm", return_value=mock_response
+        ) as mock_call:
             messages = [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi there"},
                 {"role": "user", "content": "Remember this"},
             ]
-            with patch("tools.memory_tool.memory_tool", return_value="Saved.") as mock_memory:
+            with patch(
+                "tools.implementations.memory_tool.memory_tool", return_value="Saved."
+            ) as mock_memory:
                 agent.flush_memories(messages)
 
         mock_call.assert_called_once()
@@ -119,13 +133,15 @@ class TestFlushMemoriesUsesAuxiliaryClient:
         agent.client = MagicMock()
         agent.client.chat.completions.create.return_value = _chat_response_with_memory_call()
 
-        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")):
+        with patch(
+            "agent.providers.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")
+        ):
             messages = [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi there"},
                 {"role": "user", "content": "Save this"},
             ]
-            with patch("tools.memory_tool.memory_tool", return_value="Saved."):
+            with patch("tools.implementations.memory_tool.memory_tool", return_value="Saved."):
                 agent.flush_memories(messages)
 
         agent.client.chat.completions.create.assert_called_once()
@@ -136,13 +152,15 @@ class TestFlushMemoriesUsesAuxiliaryClient:
 
         mock_response = _chat_response_with_memory_call()
 
-        with patch("agent.auxiliary_client.call_llm", return_value=mock_response):
+        with patch("agent.providers.auxiliary_client.call_llm", return_value=mock_response):
             messages = [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi"},
                 {"role": "user", "content": "Note this"},
             ]
-            with patch("tools.memory_tool.memory_tool", return_value="Saved.") as mock_memory:
+            with patch(
+                "tools.implementations.memory_tool.memory_tool", return_value="Saved."
+            ) as mock_memory:
                 agent.flush_memories(messages)
 
         mock_memory.assert_called_once()
@@ -157,14 +175,14 @@ class TestFlushMemoriesUsesAuxiliaryClient:
 
         mock_response = _chat_response_with_memory_call()
 
-        with patch("agent.auxiliary_client.call_llm", return_value=mock_response):
+        with patch("agent.providers.auxiliary_client.call_llm", return_value=mock_response):
             messages = [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi"},
                 {"role": "user", "content": "Remember X"},
             ]
             original_len = len(messages)
-            with patch("tools.memory_tool.memory_tool", return_value="Saved."):
+            with patch("tools.implementations.memory_tool.memory_tool", return_value="Saved."):
                 agent.flush_memories(messages)
 
         # Messages should not grow from the flush
@@ -187,11 +205,13 @@ class TestFlushMemoriesCodexFallback:
                     type="function_call",
                     call_id="call_1",
                     name="memory",
-                    arguments=json.dumps({
-                        "action": "add",
-                        "target": "notes",
-                        "content": "Codex flush test",
-                    }),
+                    arguments=json.dumps(
+                        {
+                            "action": "add",
+                            "target": "notes",
+                            "content": "Codex flush test",
+                        }
+                    ),
                 ),
             ],
             usage=SimpleNamespace(input_tokens=50, output_tokens=10, total_tokens=60),
@@ -199,10 +219,16 @@ class TestFlushMemoriesCodexFallback:
             model="gpt-5-codex",
         )
 
-        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")), \
-             patch.object(agent, "_run_codex_stream", return_value=codex_response) as mock_stream, \
-             patch.object(agent, "_build_api_kwargs") as mock_build, \
-             patch("tools.memory_tool.memory_tool", return_value="Saved.") as mock_memory:
+        with (
+            patch(
+                "agent.providers.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")
+            ),
+            patch.object(agent, "_run_codex_stream", return_value=codex_response) as mock_stream,
+            patch.object(agent, "_build_api_kwargs") as mock_build,
+            patch(
+                "tools.implementations.memory_tool.memory_tool", return_value="Saved."
+            ) as mock_memory,
+        ):
             mock_build.return_value = {
                 "model": "gpt-5-codex",
                 "instructions": "test",

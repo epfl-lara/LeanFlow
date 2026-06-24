@@ -9,8 +9,8 @@ asserts zero contamination from shell noise via _assert_clean().
 """
 
 import pytest
-pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
 
+pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
 
 
 import json
@@ -23,14 +23,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.environments.local import (
+    _OUTPUT_FENCE,
+    _SHELL_NOISE_SUBSTRINGS,
     LocalEnvironment,
     _clean_shell_noise,
     _extract_fenced_output,
-    _OUTPUT_FENCE,
-    _SHELL_NOISE_SUBSTRINGS,
 )
-from tools.file_operations import ShellFileOperations
-
+from tools.implementations.file_operations import ShellFileOperations
 
 # ── Shared noise detection ───────────────────────────────────────────────
 # Every known shell noise pattern. If ANY of these appear in output that
@@ -49,8 +48,7 @@ def _assert_clean(text: str, context: str = "output"):
         return
     for noise in _ALL_NOISE_PATTERNS:
         assert noise not in text, (
-            f"Shell noise leaked into {context}: found {noise!r} in:\n"
-            f"{text[:500]}"
+            f"Shell noise leaked into {context}: found {noise!r} in:\n{text[:500]}"
         )
 
 
@@ -90,6 +88,7 @@ def populated_dir(tmp_path):
 
 # ── _clean_shell_noise unit tests ────────────────────────────────────────
 
+
 class TestCleanShellNoise:
     def test_single_noise_line(self):
         output = "bash: no job control in this shell\nhello world\n"
@@ -107,10 +106,7 @@ class TestCleanShellNoise:
         _assert_clean(result)
 
     def test_tcsetattr_noise(self):
-        output = (
-            "bash: [12345: 2 (255)] tcsetattr: Inappropriate ioctl for device\n"
-            "real content\n"
-        )
+        output = "bash: [12345: 2 (255)] tcsetattr: Inappropriate ioctl for device\nreal content\n"
         result = _clean_shell_noise(output)
         assert result == "real content\n"
         _assert_clean(result)
@@ -177,6 +173,7 @@ class TestCleanShellNoise:
 
 # ── _extract_fenced_output unit tests ────────────────────────────────────
 
+
 class TestExtractFencedOutput:
     def test_normal_fenced_output(self):
         raw = f"noise\n{_OUTPUT_FENCE}hello world\n{_OUTPUT_FENCE}more noise\n"
@@ -217,6 +214,7 @@ class TestExtractFencedOutput:
 
 
 # ── LocalEnvironment.execute() ───────────────────────────────────────────
+
 
 class TestLocalEnvironmentExecute:
     def test_echo_exact_output(self, env):
@@ -278,6 +276,7 @@ class TestLocalEnvironmentExecute:
 
 # ── _has_command ─────────────────────────────────────────────────────────
 
+
 class TestHasCommand:
     def test_finds_echo(self, ops):
         assert ops._has_command("echo") is True
@@ -298,11 +297,13 @@ class TestHasCommand:
         assert ops._has_command("nonexistent_tool_xyz_abc_999") is False
 
     def test_rg_or_grep_available(self, ops):
-        assert ops._has_command("rg") or ops._has_command("grep"), \
+        assert ops._has_command("rg") or ops._has_command("grep"), (
             "Neither rg nor grep found -- search_files will break"
+        )
 
 
 # ── read_file ────────────────────────────────────────────────────────────
+
 
 class TestReadFile:
     def test_exact_content(self, ops, tmp_path):
@@ -362,6 +363,7 @@ class TestReadFile:
 
 # ── write_file ───────────────────────────────────────────────────────────
 
+
 class TestWriteFile:
     def test_write_and_verify(self, ops, tmp_path):
         path = str(tmp_path / "written.txt")
@@ -410,6 +412,7 @@ class TestWriteFile:
 
 # ── patch_replace ────────────────────────────────────────────────────────
 
+
 class TestPatchReplace:
     def test_exact_replacement(self, ops, tmp_path):
         path = str(tmp_path / "patch.txt")
@@ -434,6 +437,7 @@ class TestPatchReplace:
 
 
 # ── search ───────────────────────────────────────────────────────────────
+
 
 class TestSearch:
     def test_content_search_finds_exact_match(self, ops, populated_dir):
@@ -492,6 +496,7 @@ class TestSearch:
 
 # ── _expand_path ─────────────────────────────────────────────────────────
 
+
 class TestExpandPath:
     def test_tilde_exact(self, ops):
         result = ops._expand_path("~/test.txt")
@@ -518,7 +523,6 @@ class TestExpandPath:
         # The path should be returned as-is (no expansion).
         assert result == malicious
         # Verify the injected command did NOT execute
-        import os
         assert not os.path.exists("/tmp/_gauss_injection_test")
 
     def test_tilde_username_with_subpath(self, ops):
@@ -531,6 +535,7 @@ class TestExpandPath:
 
 
 # ── Terminal output cleanliness ──────────────────────────────────────────
+
 
 class TestTerminalOutputCleanliness:
     """Every command the agent might run must produce noise-free output."""

@@ -1,13 +1,13 @@
 """Tests for agent/prompt_caching.py — Anthropic cache control injection."""
 
 import copy
+
 import pytest
 
-from agent.prompt_caching import (
+from agent.prompting.prompt_caching import (
     _apply_cache_marker,
     apply_anthropic_cache_control,
 )
-
 
 MARKER = {"type": "ephemeral"}
 
@@ -119,8 +119,7 @@ class TestApplyAnthropicCacheControl:
         msgs = [
             {"role": "system", "content": "System"},
         ] + [
-            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg{i}"}
-            for i in range(10)
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg{i}"} for i in range(10)
         ]
         result = apply_anthropic_cache_control(msgs)
         # Count how many messages have cache_control

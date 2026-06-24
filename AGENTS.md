@@ -23,32 +23,139 @@ Always activate the repo venv before Python commands:
 source .venv/bin/activate
 ```
 
+## Quality gate — run before every commit
+
+Every change must pass all four. CI (`.github/workflows/tests.yml`) enforces them on push/PR.
+
+```bash
+source .venv/bin/activate
+ruff format .          # black-compatible auto-format (CI runs `ruff format --check .`)
+ruff check .           # lint: pyflakes (F), import-sort (I), pyupgrade (UP)
+mypy                   # type-check the gated module set (pyproject [tool.mypy] files=[...])
+python -m pytest -q    # full suite
+```
+
+- Config lives in `pyproject.toml` (`[tool.ruff]`, `[tool.ruff.format]`, `[tool.ruff.lint]`, `[tool.mypy]`).
+- `ruff format` is the formatter the project standardized on — it is black-compatible, so there is **no
+  separate `black` dependency**. Do not hand-format; let the tool do it.
+- As you clean/extract a module, **add it to the mypy `files` list** so its types stay checked.
+- The suite is green except **one known xdist flake**
+  (`tests/tools/test_mcp_tool.py::...::test_existing_tool_names_reflect_registered_subset`): it passes in
+  isolation (`-n0`) and only fails under full-parallel runs. Ignore *only* that one; investigate any other failure.
+
+## Coding standards
+
+**Write modular code.** One module = one responsibility. The layering is strict and one-directional:
+`core/` (depends on nothing above it) → `agent/` and `tools/` → `epflemma_cli/`. Never import "up" the
+stack (e.g. `core/` must not import `epflemma_cli`). When a file grows past a few hundred lines or starts
+mixing concerns, **extract a cohesive leaf module** (a sibling in the same subpackage) instead of growing
+it. `run_agent.py` and `epflemma_cli/native/native_runner.py` are legacy monoliths — put new logic in a
+focused module and call it; do not pile onto them. Group new modules into the existing subpackages
+(`agent/{accounting,execution,prompting,providers,compression,display,runtime}/`,
+`tools/{implementations,utilities,mcp,environments}/`,
+`epflemma_cli/{lean,native,formalization,workflows,cli,runtime}/`) and update `ARCHITECTURE.md` when you move/add modules.
+
+**Document as you go.** Every module opens with a docstring stating its responsibility. Every non-trivial
+function gets a concise docstring: a one-line imperative summary (`Return …`, `Build …`, `Drive …`) plus key
+behavior, side effects, or the non-obvious "why". Match the terse, technical house style — no param-by-param
+`:param:` walls, no filler ("Helper function."), no restating the name. Add inline comments for *why*, not
+*what*, and only where the logic is non-obvious. Type-hint signatures.
+
+**Write tests.** New behavior ships with tests. **Before refactoring coupled code, write characterization
+tests that pin the current behavior first** (see `tests/test_golden_cores.py`, `tests/agent/test_managed_run.py`).
+Keep the full suite green.
+
+### Anti-patterns we already paid for — do NOT repeat
+
+- **Never blanket-remove "unused" imports.** Many module-level imports are deliberate re-exports /
+  monkeypatch targets reached dynamically — `run_agent.OpenAI`, `…terminal_tool._interrupt_event` — or via
+  `run_agent`'s ~46 lazy-import surface (`run_agent._get_tool_emoji` is referenced through module-attribute
+  access ruff cannot see). `ruff` flags them as F401 but removing them breaks runtime and tests *silently*.
+  F401 is intentionally ignored. Remove a dead import only with per-file evidence (no static, dynamic, test,
+  or registry reference); never run a blanket `ruff --select F --fix`.
+- **`native_runner.py` is coupled to its tests by design.** `tests/epflemma/test_native_runner.py`
+  monkeypatches internals via `setattr(runner, NAME, …)`. A function moved into a sibling module that calls
+  those helpers by bare name binds to *its own* import and silently bypasses the patch. Do not extract from
+  `native_runner` until those tests move off `setattr`-monkeypatching.
+- **One home authority.** All home/state paths resolve through `core.home.epflemma_home()`
+  (`$EPFLEMMA_HOME` or `~/.epflemma`). Don't add per-module home resolvers or read `~/.gauss` / `GAUSS_HOME`.
+- **The native-workflow env contract is `EPFLEMMA_`-only.** `epflemma_cli/workflow.py` sets
+  `EPFLEMMA_NATIVE_*` / `EPFLEMMA_PROJECT_ROOT`; `native_config` reads them. No `OPENGAUSS_`/`GAUSS_` arms.
+- **Don't reintroduce legacy naming** (`gauss_*` modules, `GAUSS_`/`OPENGAUSS_` env or home prefixes) — see
+  "What Not To Reintroduce".
+
+## Documentation map
+
+When you want to understand or change something, this is where it is written down — keep these in sync:
+
+- **`README.md`** — product overview: what EPFLemma is, install, the core workflows.
+- **`AGENTS.md`** (this file) — how to work in the repo: standards, the quality gate, layout, anti-patterns.
+- **`ARCHITECTURE.md`** — the authoritative module map, the subpackage layout, the refactoring history, and
+  the load-bearing invariants (public imports, the run_conversation result schema, the tool self-registration
+  contract). **Update it whenever modules move or the public surface changes.**
+- **`CONTRIBUTING.md`** — contribution basics and the skill-vs-tool decision.
+- **In-code docstrings** — the per-module / per-function reference (the primary source of truth for behavior).
+- **`docs/`** — deeper operational references (`product-reference.md`, `native-lean-workflow-surface.md`,
+  `sandbox-runtime.md`).
+
 ## Main Active Codepaths
 
 ```text
 EPFLemma/
-├── epflemma_cli/        # Shell UX, workflow orchestration, providers, local runtimes, locks, workflow state
+├── epflemma_cli/        # Shell UX, workflow orchestration, providers, local runtimes, locks, workflow state, Lean services
 ├── epflemma_skills/     # Curated Lean-first skills
-├── agent/                # Prompt assembly, compression, display, auxiliary clients
+├── agent/                # Prompt assembly, compression, display, auxiliary clients, AIAgent collaborators
 ├── tools/                # Lean-kernel tools
-├── run_agent.py          # Core conversation loop
-├── model_tools.py        # Tool discovery and dispatch
-├── toolsets.py           # Lean-kernel toolset definitions
-├── gauss_state.py        # SQLite session store used by history/session search
+├── core/                 # Lowest layer: home authority (home.py) + session store (state.py) +
+│                         #   clock/constants + model_tools/toolsets/utils kernel
+├── run_agent.py          # Core conversation loop (AIAgent)
 └── README.md             # Main product documentation
 ```
 
-Some lower-level support modules still keep `gauss_*` names internally. Treat those as compatibility residue, not as a supported Gauss product surface.
+The shared kernel (session store, clock, constants, tool registry API, toolsets, helpers) lives under
+`core/`. Top-level `model_tools` / `toolsets` / `utils` are thin re-export shims that keep
+`from model_tools import …` etc. working. The legacy `gauss_*` module names and `OPENGAUSS_`/`GAUSS_`
+env/home prefixes were dropped entirely in Phase II — do not reintroduce them.
+
+A completed decomposition (now on `refactor/epflemma-cores-2`) split the historical monoliths into
+single-responsibility leaf modules and then grouped them into subpackages. The entry points and public
+surface are unchanged — see `ARCHITECTURE.md` for the full module map and the subpackage layout
+(`agent/{accounting,execution,prompting,providers,…}/`, `epflemma_cli/{lean,native,formalization,workflows,cli,runtime}/`,
+`tools/{implementations,utilities,mcp,environments}/`). The leaf-module names below now live inside
+those subpackages. The key structures to know:
+
+- `agent/` holds the `AIAgent` **collaborators** extracted from `run_agent.py`: `token_accounting`,
+  `provider_client`, `tool_executor`, `conversation_manager`, `interrupt_controller`,
+  `response_normalizer`, `reasoning_processor`, `prompt_manager`, `api_caller`,
+  `compression_policy`, and `anthropic_messages`. `AIAgent` delegates to these via thin wrappers,
+  `@property` shims, and lazy `_resolve_*` accessors (now collected in
+  `agent/collaborator_resolvers.py`), so existing imports and monkeypatch targets still resolve.
+  Provider routing for the auxiliary client lives in `agent/auxiliary_adapters.py`, and model
+  metadata + pricing are unified behind `agent/model_capabilities.py`.
+- `epflemma_cli/` holds leaf modules carved out of `native_runner.py` (e.g. `native_config`,
+  `lean_parsing`, `native_state`, `native_utils`, `native_checkpoints`, `proof_state_builder`,
+  `manager_verification`, `project_prove_manager`, `lean_module_paths`), out of `lean_services.py`
+  (`lean_diagnostics`, `lean_declarations`, `lean_search_providers`, `lean_automation`,
+  `lean_attempt_helpers`, `lean_sorry_stats`, plus the `lean_backend` `LeanBackend` wrapper), out of
+  `main.py` (`cli_handlers`, `shell_ui`; slash-command routing unified in `commands.py` behind
+  `COMMAND_REGISTRY`), out of `formalization_documents.py` (`document_extraction`), and out of
+  `workflow_state.py` (`activity_preview`).
+- `tools/` gained `lean_experts` + `lean_patch` (from `lean_tool.py`) and `mcp_transport` +
+  `mcp_sampling` (from `mcp_tool.py`).
+
+When adding behavior, prefer the smaller extracted module over growing the original monolith again.
 
 ## Current Architecture
 
-- `epflemma_cli/main.py` is the active `epflemma` CLI entrypoint
-- `epflemma_cli/native_runner.py` is the managed Lean workflow runtime
+- `epflemma_cli/main.py` is the active `epflemma` CLI entrypoint (CLI handlers in `cli/cli_handlers.py`; slash-command routing in `cli/commands.py`)
+- `epflemma_cli/native/native_runner.py` is the managed Lean workflow runtime (its leaf helpers live in sibling `epflemma_cli/native/` modules)
+- `epflemma_cli/lean/lean_services.py` is the Lean services hub (diagnostics/declarations/search/automation/sorry-stats split into sibling `epflemma_cli/lean/lean_*` modules)
 - `epflemma_cli/workflow.py` resolves workflow requests and toolset selection
-- `epflemma_cli/workflow_state.py` persists activity, checkpoints, logs, and status
-- `epflemma_cli/file_locks.py` handles cross-agent file reservations
-- `epflemma_cli/skill_core.py` resolves builtin, user, and project skill overlays
+- `epflemma_cli/workflows/workflow_state.py` persists activity, checkpoints, logs, and status (status shaping in `workflows/activity_preview.py`)
+- `epflemma_cli/runtime/file_locks.py` handles cross-agent file reservations
+- `epflemma_cli/runtime/skill_core.py` resolves builtin, user, and project skill overlays
 - `agent/prompt_builder.py` injects skill guidance into the agent prompt
+- `run_agent.py` hosts `AIAgent`; its responsibilities are delegated to the `agent/` collaborators listed above (the `run_conversation` loop itself is not yet extracted)
 
 ## Contribution Priorities
 

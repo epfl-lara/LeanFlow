@@ -6,8 +6,8 @@ from itertools import chain, repeat
 
 import pytest
 
-from epflemma_cli import native_runner as runner
-from epflemma_cli.workflow_state import read_workflow_activity
+from epflemma_cli.native import native_runner as runner
+from epflemma_cli.workflows.workflow_state import read_workflow_activity
 
 
 class _FakeCompressor:
@@ -41,7 +41,35 @@ class _FakeCheckpointManager:
         return {"success": True, "restored_to": commit_hash[:8], "reason": "milestone"}
 
 
-class _FakeAgent:
+class _ManagedRunAgentStub:
+    """Minimal managed-run contract surface (see agent/runtime/managed_run.py) for runner tests.
+
+    native_runner stages guidance through the agent's stage/set/clear_tool_result_appendix methods.
+    These mirror AIAgent's semantics (accumulate / replace / discard) over the same backing
+    ``_post_tool_result_appendix`` attribute the tests inspect, so a stub honestly satisfies the
+    contract rather than exposing only a raw attribute.
+    """
+
+    def stage_tool_result_appendix(self, text: str) -> None:
+        text = str(text or "").strip()
+        if not text:
+            return
+        previous = str(getattr(self, "_post_tool_result_appendix", "") or "").strip()
+        self._post_tool_result_appendix = f"{previous}\n\n{text}".strip() if previous else text
+
+    def set_tool_result_appendix(self, text: str) -> None:
+        text = str(text or "").strip()
+        if text:
+            self._post_tool_result_appendix = text
+        else:
+            self.clear_tool_result_appendix()
+
+    def clear_tool_result_appendix(self) -> None:
+        if hasattr(self, "_post_tool_result_appendix"):
+            delattr(self, "_post_tool_result_appendix")
+
+
+class _FakeAgent(_ManagedRunAgentStub):
     compression_enabled = True
 
     def __init__(self):
@@ -60,19 +88,40 @@ def test_verified_workflow_exits_without_prompt_when_stdin_is_not_interactive(mo
     assert runner._verified_workflow_should_exit_without_prompt({"phase": "verified"}) is True
 
 
+def test_interactive_prompt_loop_disallowed_when_stdin_not_tty(monkeypatch):
+    # Headless run: main() must not enter the blocking input() loop, or it hangs forever.
+    class _Stdin:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr(runner.sys, "stdin", _Stdin())
+    assert runner._interactive_prompt_loop_allowed() is False
+
+
+def test_interactive_prompt_loop_allowed_when_stdin_is_tty(monkeypatch):
+    class _Stdin:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(runner.sys, "stdin", _Stdin())
+    assert runner._interactive_prompt_loop_allowed() is True
+
+
 def test_run_managed_conversation_passes_through_result():
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def run_conversation(self, **kwargs):
             return {"messages": [], "interrupted": False, "kwargs": kwargs}
 
-    result = runner._run_managed_conversation(_Agent(), user_message="hello", persist_user_message="hello")
+    result = runner._run_managed_conversation(
+        _Agent(), user_message="hello", persist_user_message="hello"
+    )
 
     assert result["interrupted"] is False
     assert result["kwargs"]["user_message"] == "hello"
 
 
 def test_run_managed_conversation_uses_managed_tool_task_id():
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_tool_task_id = "managed-task"
 
         def run_conversation(self, **kwargs):
@@ -84,19 +133,21 @@ def test_run_managed_conversation_uses_managed_tool_task_id():
 
 
 def test_run_managed_conversation_preserves_explicit_task_id():
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_tool_task_id = "managed-task"
 
         def run_conversation(self, **kwargs):
             return {"messages": [], "interrupted": False, "kwargs": kwargs}
 
-    result = runner._run_managed_conversation(_Agent(), user_message="hello", task_id="explicit-task")
+    result = runner._run_managed_conversation(
+        _Agent(), user_message="hello", task_id="explicit-task"
+    )
 
     assert result["kwargs"]["task_id"] == "explicit-task"
 
 
 def test_run_managed_conversation_returns_failed_payload_on_provider_error(capsys):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _session_messages = [{"role": "assistant", "content": "partial"}]
 
         def run_conversation(self, **kwargs):
@@ -118,7 +169,7 @@ def test_run_managed_conversation_returns_failed_payload_on_provider_error(capsy
 
 
 def test_run_managed_conversation_interrupts_on_ctrl_c(monkeypatch, capsys):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self.interrupt_calls = 0
 
@@ -161,8 +212,10 @@ def test_run_managed_conversation_interrupts_on_ctrl_c(monkeypatch, capsys):
     assert "Returned to prover-agent mode after interrupt." in output
 
 
-def test_run_managed_conversation_returns_interrupted_result_when_no_payload_arrives_after_interrupt(monkeypatch, capsys):
-    class _Agent:
+def test_run_managed_conversation_returns_interrupted_result_when_no_payload_arrives_after_interrupt(
+    monkeypatch, capsys
+):
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self.interrupt_calls = 0
             self._session_messages = [{"role": "assistant", "content": "partial"}]
@@ -208,7 +261,7 @@ def test_run_managed_conversation_returns_interrupted_result_when_no_payload_arr
 
 
 def test_run_managed_conversation_converts_worker_interrupted_error(monkeypatch, capsys):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
 
@@ -229,7 +282,7 @@ def test_run_managed_conversation_converts_worker_interrupted_error(monkeypatch,
 
 
 def test_run_managed_conversation_calls_interrupt_callback(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self.interrupt_calls = 0
 
@@ -306,7 +359,7 @@ def test_interactive_mode_header_keeps_prover_label(monkeypatch, capsys):
 
 
 def test_handle_managed_tool_result_records_failed_attempt_after_verification_feedback(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -338,8 +391,14 @@ def test_handle_managed_tool_result_records_failed_attempt_after_verification_fe
     }
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state))
-    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda active_file: {"ok": False, "command": "lake env lean Demo/Main.lean"})
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state)
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {"ok": False, "command": "lake env lean Demo/Main.lean"},
+    )
 
     agent = _Agent()
     runner._handle_managed_tool_result(agent, "patch", {}, "")
@@ -358,7 +417,7 @@ def test_handle_managed_tool_result_records_failed_attempt_after_verification_fe
 
 
 def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -402,9 +461,17 @@ def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypat
     events = []
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state))
-    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda active_file: {"ok": False, "command": "lake env lean Demo/Main.lean"})
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state)
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {"ok": False, "command": "lake env lean Demo/Main.lean"},
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
 
     agent = _Agent()
     runner._handle_managed_tool_result(agent, "patch", {}, "")
@@ -419,7 +486,7 @@ def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypat
 
 
 def test_handle_managed_incremental_feedback_records_current_output(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -458,10 +525,14 @@ def test_handle_managed_incremental_feedback_records_current_output(monkeypatch)
     }
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state))
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state)
+    )
 
     agent = _Agent()
-    runner._handle_managed_tool_result(agent, "lean_incremental_check", {"action": "feedback"}, json.dumps(payload))
+    runner._handle_managed_tool_result(
+        agent, "lean_incremental_check", {"action": "feedback"}, json.dumps(payload)
+    )
 
     attempts = agent._managed_autonomy_state["failed_attempts"]
     assert len(attempts) == 1
@@ -473,7 +544,7 @@ def test_handle_managed_tool_result_nudges_repeated_successful_search(monkeypatc
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = []
             self._managed_autonomy_state = {
@@ -499,7 +570,9 @@ def test_handle_managed_tool_result_nudges_repeated_successful_search(monkeypatc
     )
 
     for _ in range(3):
-        runner._handle_managed_tool_result(agent, "lean_search", {"query": "padicValNat.pow_sub_pow"}, result)
+        runner._handle_managed_tool_result(
+            agent, "lean_search", {"query": "padicValNat.pow_sub_pow"}, result
+        )
 
     appendix = agent._post_tool_result_appendix
     assert "SEARCH PROGRESS NUDGE" in appendix
@@ -510,7 +583,9 @@ def test_handle_managed_tool_result_nudges_repeated_successful_search(monkeypatc
 
 
 def test_generate_checkpoint_summary_falls_back_on_keyboard_interrupt(monkeypatch):
-    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(
+        runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
 
     summary = runner._generate_checkpoint_summary(
         _FakeCompressor(),
@@ -525,7 +600,7 @@ def test_generate_checkpoint_summary_falls_back_on_keyboard_interrupt(monkeypatc
 
 
 def test_handle_managed_tool_result_ignores_failed_patch_result(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -546,10 +621,14 @@ def test_handle_managed_tool_result_ignores_failed_patch_result(monkeypatch):
 
     verify_calls = []
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda active_file: verify_calls.append(active_file))
+    monkeypatch.setattr(
+        runner, "_manager_verify_queue_file", lambda active_file: verify_calls.append(active_file)
+    )
 
     agent = _Agent()
-    runner._handle_managed_tool_result(agent, "patch", {}, json.dumps({"success": False, "error": "no match"}))
+    runner._handle_managed_tool_result(
+        agent, "patch", {}, json.dumps({"success": False, "error": "no match"})
+    )
 
     assert verify_calls == []
     assert "failed_attempts" not in agent._managed_autonomy_state
@@ -558,7 +637,7 @@ def test_handle_managed_tool_result_ignores_failed_patch_result(monkeypatch):
 
 
 def test_apply_verified_patch_counts_as_edit_and_verification_feedback(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -590,7 +669,9 @@ def test_apply_verified_patch_counts_as_edit_and_verification_feedback(monkeypat
     }
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state))
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state)
+    )
 
     agent = _Agent()
     runner._handle_managed_tool_result(
@@ -609,7 +690,7 @@ def test_apply_verified_patch_counts_as_edit_and_verification_feedback(monkeypat
 
 
 def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(monkeypatch, capsys):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -633,20 +714,24 @@ def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(m
     monkeypatch.setattr(
         runner,
         "_manager_incremental_check_queue_item",
-        lambda active_file, target_symbol: incremental_calls.append((active_file, target_symbol))
-        or {
-            "ok": True,
-            "mode": "incremental_target",
-            "backend": "lean_interact",
-            "command": "lean_interact check_target",
-            "target": target_symbol,
-            "incremental": {"success": True, "ok": True},
-        },
+        lambda active_file, target_symbol: (
+            incremental_calls.append((active_file, target_symbol))
+            or {
+                "ok": True,
+                "mode": "incremental_target",
+                "backend": "lean_interact",
+                "command": "lean_interact check_target",
+                "target": target_symbol,
+                "incremental": {"success": True, "ok": True},
+            }
+        ),
     )
     monkeypatch.setattr(
         runner,
         "_manager_verify_queue_file",
-        lambda active_file: pytest.fail("successful incremental queue checks should not fall back to Lake"),
+        lambda active_file: pytest.fail(
+            "successful incremental queue checks should not fall back to Lake"
+        ),
     )
     monkeypatch.setattr(
         runner,
@@ -702,7 +787,7 @@ def test_handle_managed_tool_result_advances_when_target_check_clean_despite_ins
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -738,7 +823,9 @@ def test_handle_managed_tool_result_advances_when_target_check_clean_despite_ins
     monkeypatch.setattr(
         runner,
         "_manager_verify_queue_file",
-        lambda active_file: pytest.fail("successful incremental queue checks should not fall back to Lake"),
+        lambda active_file: pytest.fail(
+            "successful incremental queue checks should not fall back to Lake"
+        ),
     )
     monkeypatch.setattr(
         runner,
@@ -799,7 +886,7 @@ def test_handle_managed_tool_result_prints_cleanup_feedback_when_warning_in_targ
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -837,7 +924,9 @@ def test_handle_managed_tool_result_prints_cleanup_feedback_when_warning_in_targ
     monkeypatch.setattr(
         runner,
         "_manager_verify_queue_file",
-        lambda active_file: pytest.fail("successful incremental queue checks should not fall back to Lake"),
+        lambda active_file: pytest.fail(
+            "successful incremental queue checks should not fall back to Lake"
+        ),
     )
     monkeypatch.setattr(
         runner,
@@ -897,7 +986,7 @@ def test_handle_managed_tool_result_fires_cleanup_from_incremental_check_structu
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -947,7 +1036,9 @@ def test_handle_managed_tool_result_fires_cleanup_from_incremental_check_structu
     monkeypatch.setattr(
         runner,
         "_manager_verify_queue_file",
-        lambda active_file: pytest.fail("successful incremental queue checks should not fall back to Lake"),
+        lambda active_file: pytest.fail(
+            "successful incremental queue checks should not fall back to Lake"
+        ),
     )
     monkeypatch.setattr(
         runner,
@@ -1058,7 +1149,9 @@ def test_declaration_diagnostic_feedback_reason_accepts_lean_interact_file_start
     assert "never executed" in structured
 
 
-def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup(monkeypatch, tmp_path):
+def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup(
+    monkeypatch, tmp_path
+):
     active = tmp_path / "Main.lean"
     active.write_text(
         "\n".join(
@@ -1073,7 +1166,7 @@ def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -1135,17 +1228,22 @@ def test_handle_managed_tool_result_keeps_same_theorem_for_local_warning_cleanup
     assert "all_goals" in agent._post_tool_result_appendix.lower()
     assert "bail clause" in agent._post_tool_result_appendix.lower()
     assert "inspected the declaration first" in agent._post_tool_result_appendix.lower()
-    assert runner._manager_feedback_retry_count(
-        agent._managed_autonomy_state,
-        target_symbol="demo",
-        active_file=str(active),
-        kind="warning",
-    ) == 1
+    assert (
+        runner._manager_feedback_retry_count(
+            agent._managed_autonomy_state,
+            target_symbol="demo",
+            active_file=str(active),
+            kind="warning",
+        )
+        == 1
+    )
     assert agent.interrupt_messages == []
     assert agent._managed_pending_theorem_feedback is None
 
 
-def test_handle_managed_tool_result_yields_after_warning_cleanup_retry(monkeypatch, tmp_path, capsys):
+def test_handle_managed_tool_result_yields_after_warning_cleanup_retry(
+    monkeypatch, tmp_path, capsys
+):
     active = tmp_path / "Main.lean"
     active.write_text(
         "\n".join(
@@ -1160,7 +1258,7 @@ def test_handle_managed_tool_result_yields_after_warning_cleanup_retry(monkeypat
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         quiet_mode = False
 
         def __init__(self):
@@ -1231,7 +1329,7 @@ def test_handle_managed_tool_result_yields_after_hard_retry_limit(monkeypatch, t
     active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
     events = []
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         quiet_mode = False
 
         def __init__(self):
@@ -1286,7 +1384,9 @@ def test_handle_managed_tool_result_yields_after_hard_retry_limit(monkeypatch, t
             "blocker_summary": "error: unsolved goals",
         },
     )
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
 
     agent = _Agent()
     runner._handle_managed_tool_result(agent, "patch", {}, "")
@@ -1336,7 +1436,10 @@ def test_manager_feedback_kind_adapter_golden_cases(tmp_path):
     assigned_error = runner._manager_check_for_feedback_kind(
         str(active),
         "demo",
-        {"ok": False, "output": '{"items":[{"severity":"error","message":"type mismatch","line":2}]}'},
+        {
+            "ok": False,
+            "output": '{"items":[{"severity":"error","message":"type mismatch","line":2}]}',
+        },
     )
     assigned_warning = runner._manager_check_for_feedback_kind(
         str(active),
@@ -1346,7 +1449,10 @@ def test_manager_feedback_kind_adapter_golden_cases(tmp_path):
     future_only = runner._manager_check_for_feedback_kind(
         str(active),
         "demo",
-        {"ok": False, "output": '{"items":[{"severity":"error","message":"future failed","line":5}]}'},
+        {
+            "ok": False,
+            "output": '{"items":[{"severity":"error","message":"future failed","line":5}]}',
+        },
     )
     no_decl_evidence = runner._manager_check_for_feedback_kind(
         str(active),
@@ -1356,10 +1462,30 @@ def test_manager_feedback_kind_adapter_golden_cases(tmp_path):
     clean = runner._manager_check_for_feedback_kind(str(active), "demo", {"ok": True, "output": ""})
 
     assert runner.classify_check(assigned_error) is runner.Classification.HARD_BLOCKER
-    assert runner._manager_feedback_kind(str(active), "demo", {"ok": False, "output": '{"items":[{"severity":"error","message":"type mismatch","line":2}]}'}) == "error"
+    assert (
+        runner._manager_feedback_kind(
+            str(active),
+            "demo",
+            {
+                "ok": False,
+                "output": '{"items":[{"severity":"error","message":"type mismatch","line":2}]}',
+            },
+        )
+        == "error"
+    )
     assert runner.classify_check(assigned_warning) is runner.Classification.WARNING_ONCE
     assert runner.classify_check(future_only) is runner.Classification.FUTURE_ONLY
-    assert runner._manager_feedback_kind(str(active), "demo", {"ok": False, "output": '{"items":[{"severity":"error","message":"future failed","line":5}]}'}) == ""
+    assert (
+        runner._manager_feedback_kind(
+            str(active),
+            "demo",
+            {
+                "ok": False,
+                "output": '{"items":[{"severity":"error","message":"future failed","line":5}]}',
+            },
+        )
+        == ""
+    )
     assert runner.classify_check(no_decl_evidence) is runner.Classification.HARD_BLOCKER
     assert runner.classify_check(clean) is runner.Classification.ACCEPT
 
@@ -1371,7 +1497,9 @@ def test_manager_feedback_kind_adapter_detects_assigned_sorry(tmp_path):
     assert runner._manager_feedback_kind(str(active), "demo", {"ok": True, "output": ""}) == "sorry"
 
 
-def test_handle_managed_tool_result_yields_for_unrelated_warning_cleanup(monkeypatch, tmp_path, capsys):
+def test_handle_managed_tool_result_yields_for_unrelated_warning_cleanup(
+    monkeypatch, tmp_path, capsys
+):
     active = tmp_path / "Main.lean"
     active.write_text(
         "\n".join(
@@ -1386,7 +1514,7 @@ def test_handle_managed_tool_result_yields_for_unrelated_warning_cleanup(monkeyp
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         quiet_mode = False
 
         def __init__(self):
@@ -1442,7 +1570,7 @@ def test_handle_managed_tool_result_yields_for_unrelated_warning_cleanup(monkeyp
 
 
 def test_handle_managed_tool_result_supports_interrupted_property(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -1463,7 +1591,11 @@ def test_handle_managed_tool_result_supports_interrupted_property(monkeypatch):
             self.interrupt_messages.append(message)
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda active_file: {"ok": True, "command": "lake env lean Demo/Main.lean"})
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {"ok": True, "command": "lake env lean Demo/Main.lean"},
+    )
     monkeypatch.setattr(
         runner,
         "_build_live_proof_state",
@@ -1488,7 +1620,7 @@ def test_handle_managed_tool_result_supports_interrupted_property(monkeypatch):
 
 
 def test_handle_managed_tool_result_logs_target_verification_and_stores_record(monkeypatch, capsys):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         quiet_mode = False
 
         def __init__(self):
@@ -1555,7 +1687,7 @@ def test_handle_managed_tool_result_logs_target_verification_and_stores_record(m
 
 
 def test_handle_managed_tool_result_disables_auto_try_schema_for_run(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self.tools = [
                 {"type": "function", "function": {"name": "lean_auto_try"}},
@@ -1591,7 +1723,7 @@ def test_handle_managed_tool_result_disables_auto_try_schema_for_run(monkeypatch
 
 
 def test_handle_managed_tool_result_does_not_treat_inspect_as_verification_feedback(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -1621,7 +1753,9 @@ def test_handle_managed_tool_result_does_not_treat_inspect_as_verification_feedb
     assert "failed_attempts" not in agent._managed_autonomy_state
 
 
-def test_review_agent_final_report_accepts_claim_only_after_manager_check(monkeypatch, tmp_path, capsys):
+def test_review_agent_final_report_accepts_claim_only_after_manager_check(
+    monkeypatch, tmp_path, capsys
+):
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
     events = []
@@ -1637,8 +1771,12 @@ def test_review_agent_final_report_accepts_claim_only_after_manager_check(monkey
             "output": "lake env lean Main.lean succeeded",
         },
     )
-    monkeypatch.setattr(runner, "_query_live_diagnostics", lambda active_file, target_symbol="": "no errors found")
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(
+        runner, "_query_live_diagnostics", lambda active_file, target_symbol="": "no errors found"
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
 
     result = runner._review_agent_final_report(
         {
@@ -1658,7 +1796,9 @@ def test_review_agent_final_report_accepts_claim_only_after_manager_check(monkey
     assert events
 
 
-def test_review_agent_final_report_accepts_incremental_queue_success_with_future_file_errors(monkeypatch, tmp_path):
+def test_review_agent_final_report_accepts_incremental_queue_success_with_future_file_errors(
+    monkeypatch, tmp_path
+):
     active = tmp_path / "Main.lean"
     active.write_text(
         "\n".join(
@@ -1696,12 +1836,16 @@ def test_review_agent_final_report_accepts_incremental_queue_success_with_future
     monkeypatch.setattr(
         runner,
         "_manager_verify_queue_file",
-        lambda active_file: pytest.fail("clean assigned declarations must not be rejected by future file errors"),
+        lambda active_file: pytest.fail(
+            "clean assigned declarations must not be rejected by future file errors"
+        ),
     )
     monkeypatch.setattr(
         runner,
         "_query_live_diagnostics",
-        lambda active_file, target_symbol="": pytest.fail("clean target check should not query file-wide diagnostics"),
+        lambda active_file, target_symbol="": pytest.fail(
+            "clean target check should not query file-wide diagnostics"
+        ),
     )
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
 
@@ -1720,7 +1864,9 @@ def test_review_agent_final_report_accepts_incremental_queue_success_with_future
     assert len(result["messages"]) == 1
 
 
-def test_review_agent_final_report_does_not_classify_future_errors_as_current_feedback(monkeypatch, tmp_path):
+def test_review_agent_final_report_does_not_classify_future_errors_as_current_feedback(
+    monkeypatch, tmp_path
+):
     active = tmp_path / "Main.lean"
     active.write_text(
         "\n".join(
@@ -1759,7 +1905,9 @@ def test_review_agent_final_report_does_not_classify_future_errors_as_current_fe
     monkeypatch.setattr(
         runner,
         "_query_live_diagnostics",
-        lambda active_file, target_symbol="": pytest.fail("clean target check should not query file-wide diagnostics"),
+        lambda active_file, target_symbol="": pytest.fail(
+            "clean target check should not query file-wide diagnostics"
+        ),
     )
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
 
@@ -1798,7 +1946,9 @@ def test_review_agent_final_report_rejects_same_declaration_warning(monkeypatch,
     monkeypatch.setattr(
         runner,
         "_query_live_diagnostics",
-        lambda active_file, target_symbol="": pytest.fail("final-report cleanup should use manager check output"),
+        lambda active_file, target_symbol="": pytest.fail(
+            "final-report cleanup should use manager check output"
+        ),
     )
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
 
@@ -1840,7 +1990,9 @@ def test_review_agent_final_report_ignores_same_declaration_info_diagnostics(mon
     monkeypatch.setattr(
         runner,
         "_query_live_diagnostics",
-        lambda active_file, target_symbol="": pytest.fail("final-report cleanup should use manager check output"),
+        lambda active_file, target_symbol="": pytest.fail(
+            "final-report cleanup should use manager check output"
+        ),
     )
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
 
@@ -1858,7 +2010,9 @@ def test_review_agent_final_report_ignores_same_declaration_info_diagnostics(mon
     assert "local_cleanup_reason" not in result["manager_final_report_review"]
 
 
-def test_review_agent_final_report_accepts_warning_only_after_one_retry(monkeypatch, tmp_path, capsys):
+def test_review_agent_final_report_accepts_warning_only_after_one_retry(
+    monkeypatch, tmp_path, capsys
+):
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
 
@@ -1876,10 +2030,14 @@ def test_review_agent_final_report_accepts_warning_only_after_one_retry(monkeypa
     monkeypatch.setattr(
         runner,
         "_query_live_diagnostics",
-        lambda active_file, target_symbol="": pytest.fail("final-report cleanup should use manager check output"),
+        lambda active_file, target_symbol="": pytest.fail(
+            "final-report cleanup should use manager check output"
+        ),
     )
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
-    autonomy_state = {"current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}}
+    autonomy_state = {
+        "current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}
+    }
 
     first = runner._review_agent_final_report(
         {
@@ -1911,8 +2069,7 @@ def test_review_agent_final_report_accepts_warning_only_after_one_retry(monkeypa
 def test_review_agent_final_report_restores_sorry_after_hard_retry_limit(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text(
-        "theorem demo : True := by\n"
-        "  exact False.elim ?bad\n",
+        "theorem demo : True := by\n  exact False.elim ?bad\n",
         encoding="utf-8",
     )
     autonomy_state = {
@@ -1968,7 +2125,9 @@ def test_review_agent_final_report_restores_sorry_after_hard_retry_limit(monkeyp
     assert "theorem demo : True := by\n  sorry" in text
 
 
-def test_review_agent_final_report_rejects_claim_with_manager_feedback(monkeypatch, tmp_path, capsys):
+def test_review_agent_final_report_rejects_claim_with_manager_feedback(
+    monkeypatch, tmp_path, capsys
+):
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
@@ -2037,9 +2196,7 @@ def test_declaration_queue_ignores_names_referenced_only_in_future_error_context
 def test_declaration_cleanup_ignores_info_diagnostics(tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text(
-        "theorem demo : True := by\n"
-        "  trivial\n"
-        "#check True\n",
+        "theorem demo : True := by\n  trivial\n#check True\n",
         encoding="utf-8",
     )
 
@@ -2089,7 +2246,7 @@ def test_managed_pre_tool_call_blocks_terminal_edits_in_queue(monkeypatch, tmp_p
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "demo",
@@ -2130,16 +2287,18 @@ def test_prepare_queue_assignment_state_warms_incremental_once(monkeypatch, tmp_
     monkeypatch.setattr(
         runner,
         "_manager_prepare_incremental_queue_item",
-        lambda active_file, target_symbol: calls.append((active_file, target_symbol))
-        or {
-            "success": True,
-            "ok": True,
-            "backend": "lean_interact",
-            "action": "prepare_file",
-            "target": target_symbol,
-            "elapsed_s": 0.1,
-            "cache": {"cache_hit": False},
-        },
+        lambda active_file, target_symbol: (
+            calls.append((active_file, target_symbol))
+            or {
+                "success": True,
+                "ok": True,
+                "backend": "lean_interact",
+                "action": "prepare_file",
+                "target": target_symbol,
+                "elapsed_s": 0.1,
+                "cache": {"cache_hit": False},
+            }
+        ),
     )
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
 
@@ -2223,15 +2382,11 @@ def test_manager_incremental_check_uses_configurable_timeout(monkeypatch, tmp_pa
 def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text(
-        "theorem demo : True := by\n"
-        "  sorry\n"
-        "\n"
-        "theorem later : True := by\n"
-        "  sorry\n",
+        "theorem demo : True := by\n  sorry\n\ntheorem later : True := by\n  sorry\n",
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "demo",
@@ -2247,11 +2402,7 @@ def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch,
 
     assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
     active.write_text(
-        "theorem demo : True := by\n"
-        "  trivial\n"
-        "\n"
-        "theorem later : True := by\n"
-        "  trivial\n",
+        "theorem demo : True := by\n  trivial\n\ntheorem later : True := by\n  trivial\n",
         encoding="utf-8",
     )
 
@@ -2260,26 +2411,18 @@ def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch,
     assert "restored those protected declarations" in feedback
     assert "later" in feedback
     assert active.read_text(encoding="utf-8") == (
-        "theorem demo : True := by\n"
-        "  trivial\n"
-        "\n"
-        "theorem later : True := by\n"
-        "  sorry\n"
+        "theorem demo : True := by\n  trivial\n\ntheorem later : True := by\n  sorry\n"
     )
 
 
 def test_out_of_scope_queue_edit_guard_allows_new_helper_declarations(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text(
-        "theorem demo : True := by\n"
-        "  sorry\n"
-        "\n"
-        "theorem later : True := by\n"
-        "  sorry\n",
+        "theorem demo : True := by\n  sorry\n\ntheorem later : True := by\n  sorry\n",
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "demo",
@@ -2315,15 +2458,11 @@ def test_out_of_scope_queue_edit_guard_allows_new_helper_declarations(monkeypatc
 def test_out_of_scope_queue_edit_guard_allows_iterating_on_added_helpers(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text(
-        "theorem demo : True := by\n"
-        "  sorry\n"
-        "\n"
-        "theorem later : True := by\n"
-        "  sorry\n",
+        "theorem demo : True := by\n  sorry\n\ntheorem later : True := by\n  sorry\n",
         encoding="utf-8",
     )
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "demo",
@@ -2373,7 +2512,7 @@ def test_queue_statement_guard_restores_initial_assigned_statement_change(monkey
     original = "theorem demo : True := by\n  sorry\n"
     active.write_text(original, encoding="utf-8")
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "demo",
@@ -2401,7 +2540,7 @@ def test_queue_statement_guard_allows_model_created_helper_statement_change(monk
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "demo",
@@ -2468,10 +2607,14 @@ def test_formalization_queue_statement_guard_protects_source_declaration(monkeyp
         "- Source proof / prover notes: prove by `trivial`\n",
         encoding="utf-8",
     )
-    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest = (
+        project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    )
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
-        json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem", "proof": "trivial"}]}),
+        json.dumps(
+            {"theorem_blocks": [{"label": "thm:demo", "kind": "theorem", "proof": "trivial"}]}
+        ),
         encoding="utf-8",
     )
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
@@ -2480,7 +2623,7 @@ def test_formalization_queue_statement_guard_protects_source_declaration(monkeyp
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {
             "current_queue_assignment": {
                 "target_symbol": "t",
@@ -2508,7 +2651,7 @@ def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
     project.mkdir()
     registered = []
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "abc123"
 
         def __init__(self, **kwargs):
@@ -2522,7 +2665,7 @@ def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
     monkeypatch.delenv("EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS", raising=False)
     monkeypatch.setattr(runner, "AIAgent", _Agent)
     monkeypatch.setattr(
-        "tools.terminal_tool.register_task_env_overrides",
+        "tools.implementations.terminal_tool.register_task_env_overrides",
         lambda task_id, overrides: registered.append((task_id, overrides)),
     )
 
@@ -2535,7 +2678,7 @@ def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
 
 
 def test_handle_managed_tool_result_interrupts_even_if_live_refresh_fails(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
             self._managed_autonomy_state = {
@@ -2558,11 +2701,21 @@ def test_handle_managed_tool_result_interrupts_even_if_live_refresh_fails(monkey
     monkeypatch.setattr(
         runner,
         "_build_live_proof_state",
-        lambda history, checkpoint_state=None: (_ for _ in ()).throw(RuntimeError("lsp unavailable")),
+        lambda history, checkpoint_state=None: (_ for _ in ()).throw(
+            RuntimeError("lsp unavailable")
+        ),
     )
-    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda active_file: {"ok": False, "command": "lake env lean Demo/Main.lean"})
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {"ok": False, "command": "lake env lean Demo/Main.lean"},
+    )
     recorded = []
-    monkeypatch.setattr(runner, "_record_activity", lambda kind, message, **details: recorded.append((kind, details)))
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda kind, message, **details: recorded.append((kind, details)),
+    )
 
     agent = _Agent()
     runner._handle_managed_tool_result(agent, "patch", {}, "")
@@ -2575,7 +2728,7 @@ def test_handle_managed_tool_result_interrupts_even_if_live_refresh_fails(monkey
 
 
 def test_handle_managed_lean_verify_uses_current_assignment_without_pending(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         quiet_mode = True
 
         def __init__(self):
@@ -2623,7 +2776,7 @@ def test_handle_managed_lean_verify_uses_current_assignment_without_pending(monk
 
 
 def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
         _parent_session_id = ""
         _delegate_depth = 0
@@ -2634,7 +2787,10 @@ def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeyp
     queue_reads = iter(
         [
             [{"seq": 1, "kind": "message", "text": "Try another proof."}],
-            [{"seq": 1, "kind": "message", "text": "Try another proof."}, {"seq": 2, "kind": "exit", "text": "exit"}],
+            [
+                {"seq": 1, "kind": "message", "text": "Try another proof."},
+                {"seq": 2, "kind": "exit", "text": "exit"},
+            ],
         ]
     )
 
@@ -2643,23 +2799,53 @@ def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeyp
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
 
-    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")))
-    monkeypatch.setattr(runner, "_record_activity", lambda event_type, message, **details: recorded.append((event_type, message, details)))
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
     monkeypatch.setattr(runner, "read_workflow_agent_inbox", lambda agent_id: next(queue_reads))
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state: {"message": "ok"})
-    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: dict(live_state, verified=False))
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state: {"message": "ok"}
+    )
+    monkeypatch.setattr(
+        runner,
+        "_promote_live_state_to_verified",
+        lambda live_state: dict(live_state, verified=False),
+    )
     monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: False)
     monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent, force=False: (history, {"compacted": False}))
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent, force=False: (history, {"compacted": False}),
+    )
     monkeypatch.setattr(
         runner,
         "_run_managed_conversation",
-        lambda *args, **kwargs: {"messages": [{"role": "assistant", "content": "done"}], "interrupted": False},
+        lambda *args, **kwargs: {
+            "messages": [{"role": "assistant", "content": "done"}],
+            "interrupted": False,
+        },
     )
     monkeypatch.setattr(runner, "_record_turn_activity", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_journal_status", lambda: {"count": 0, "current": {}})
-    monkeypatch.setattr(runner, "_drive_autonomous_followups", lambda *args, **kwargs: (args[2], {"compacted": False}, {"count": 0, "current": {}}, {"verified": False}))
+    monkeypatch.setattr(
+        runner,
+        "_drive_autonomous_followups",
+        lambda *args, **kwargs: (
+            args[2],
+            {"compacted": False},
+            {"count": 0, "current": {}},
+            {"verified": False},
+        ),
+    )
     monkeypatch.setattr(runner.time, "sleep", lambda *_args, **_kwargs: None)
 
     result = runner._run_background_control_loop(
@@ -2673,14 +2859,17 @@ def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeyp
     )
 
     assert result == 0
-    assert any(event_type == "agent-resume" and details.get("text") == "Try another proof." for event_type, _, details in recorded)
+    assert any(
+        event_type == "agent-resume" and details.get("text") == "Try another proof."
+        for event_type, _, details in recorded
+    )
     assert any(event_type == "runner-exit" for event_type, _, _ in recorded)
     assert "busy" in persisted
     assert "exited" in persisted
 
 
 def test_background_control_loop_exits_after_verified_completion(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
         _parent_session_id = ""
         _delegate_depth = 0
@@ -2694,18 +2883,45 @@ def test_background_control_loop_exits_after_verified_completion(monkeypatch):
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
 
-    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")))
-    monkeypatch.setattr(runner, "_record_activity", lambda event_type, message, **details: recorded.append((event_type, message, details)))
-    monkeypatch.setattr(runner, "read_workflow_agent_inbox", lambda agent_id: [{"seq": 1, "kind": "message", "text": "Finish the proof."}])
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state: {"message": "ok"})
-    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: dict(live_state, verified=bool(live_state.get("verified"))))
-    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: bool(live_state.get("verified")))
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "read_workflow_agent_inbox",
+        lambda agent_id: [{"seq": 1, "kind": "message", "text": "Finish the proof."}],
+    )
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state: {"message": "ok"}
+    )
+    monkeypatch.setattr(
+        runner,
+        "_promote_live_state_to_verified",
+        lambda live_state: dict(live_state, verified=bool(live_state.get("verified"))),
+    )
+    monkeypatch.setattr(
+        runner, "_live_state_is_verified", lambda live_state: bool(live_state.get("verified"))
+    )
     monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent, force=False: (history, {"compacted": False}))
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent, force=False: (history, {"compacted": False}),
+    )
     monkeypatch.setattr(
         runner,
         "_run_managed_conversation",
-        lambda *args, **kwargs: {"messages": [{"role": "assistant", "content": "done"}], "interrupted": False},
+        lambda *args, **kwargs: {
+            "messages": [{"role": "assistant", "content": "done"}],
+            "interrupted": False,
+        },
     )
     monkeypatch.setattr(runner, "_record_turn_activity", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
@@ -2713,7 +2929,12 @@ def test_background_control_loop_exits_after_verified_completion(monkeypatch):
     monkeypatch.setattr(
         runner,
         "_drive_autonomous_followups",
-        lambda *args, **kwargs: (args[2], {"compacted": False}, {"count": 0, "current": {}}, {"verified": True}),
+        lambda *args, **kwargs: (
+            args[2],
+            {"compacted": False},
+            {"count": 0, "current": {}},
+            {"verified": True},
+        ),
     )
 
     result = runner._run_background_control_loop(
@@ -2727,14 +2948,20 @@ def test_background_control_loop_exits_after_verified_completion(monkeypatch):
     )
 
     assert result == 0
-    assert any(event_type == "agent-resume" and details.get("text") == "Finish the proof." for event_type, _, details in recorded)
-    assert any(event_type == "runner-exit" and "verified completion" in message for event_type, message, _ in recorded)
+    assert any(
+        event_type == "agent-resume" and details.get("text") == "Finish the proof."
+        for event_type, _, details in recorded
+    )
+    assert any(
+        event_type == "runner-exit" and "verified completion" in message
+        for event_type, message, _ in recorded
+    )
     assert "busy" in persisted
     assert "exited" in persisted
 
 
 def test_terminate_descendant_agents_records_shutdown_activity(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
         _parent_session_id = ""
         _delegate_depth = 0
@@ -2752,7 +2979,12 @@ def test_terminate_descendant_agents_records_shutdown_activity(monkeypatch):
     monkeypatch.setattr(
         runner,
         "terminate_workflow_agent_descendants",
-        lambda agent_id: {"success": True, "count": 2, "terminated": ["22222", "33333"], "failed": []},
+        lambda agent_id: {
+            "success": True,
+            "count": 2,
+            "terminated": ["22222", "33333"],
+            "failed": [],
+        },
     )
 
     runner._terminate_descendant_agents(_Agent())
@@ -2761,7 +2993,7 @@ def test_terminate_descendant_agents_records_shutdown_activity(monkeypatch):
 
 
 def test_terminate_other_agents_records_shutdown_activity(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
         _parent_session_id = ""
         _delegate_depth = 0
@@ -2779,7 +3011,12 @@ def test_terminate_other_agents_records_shutdown_activity(monkeypatch):
     monkeypatch.setattr(
         runner,
         "terminate_project_workflow_agents",
-        lambda project_root, **kwargs: {"success": True, "count": 2, "terminated": ["22222", "33333"], "failed": []},
+        lambda project_root, **kwargs: {
+            "success": True,
+            "count": 2,
+            "terminated": ["22222", "33333"],
+            "failed": [],
+        },
     )
 
     runner._terminate_other_agents(_Agent())
@@ -2788,7 +3025,7 @@ def test_terminate_other_agents_records_shutdown_activity(monkeypatch):
 
 
 def test_background_runner_exits_immediately_after_verified_completion(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
         _parent_session_id = ""
         _delegate_depth = 0
@@ -2804,32 +3041,86 @@ def test_background_runner_exits_immediately_after_verified_completion(monkeypat
     monkeypatch.setattr(runner, "_print_header", lambda: None)
     monkeypatch.setattr(runner, "_startup_user_message", lambda resumed, **kwargs: "start")
     monkeypatch.setattr(runner, "_attach_live_proof_state", lambda text, live_state: text)
-    monkeypatch.setattr(runner, "_run_managed_conversation", lambda *args, **kwargs: {"messages": [{"role": "assistant", "content": "done"}], "interrupted": False})
+    monkeypatch.setattr(
+        runner,
+        "_run_managed_conversation",
+        lambda *args, **kwargs: {
+            "messages": [{"role": "assistant", "content": "done"}],
+            "interrupted": False,
+        },
+    )
     monkeypatch.setattr(runner, "_record_turn_activity", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         runner,
         "_drive_autonomous_followups",
-        lambda *args, **kwargs: (args[2], {"compacted": False}, {}, {"active_file": "/tmp/project/Main.lean", "diagnostics": "no errors found", "goals": "no goals", "sorry_count": 0, "project_sorry_count": 0, "verification_ok": True}),
+        lambda *args, **kwargs: (
+            args[2],
+            {"compacted": False},
+            {},
+            {
+                "active_file": "/tmp/project/Main.lean",
+                "diagnostics": "no errors found",
+                "goals": "no goals",
+                "sorry_count": 0,
+                "project_sorry_count": 0,
+                "verification_ok": True,
+            },
+        ),
     )
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state: {"active_file": "/tmp/project/Main.lean", "diagnostics": "no errors found", "goals": "no goals", "sorry_count": 0, "project_sorry_count": 0})
-    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: dict(live_state, verification_ok=True))
-    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: bool(live_state.get("verification_ok")))
-    monkeypatch.setattr(runner, "_terminate_descendant_agents", lambda agent: recorded.append(("terminate", "descendants", {})))
-    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")))
-    monkeypatch.setattr(runner, "_record_activity", lambda event_type, message, **details: recorded.append((event_type, message, details)))
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state: {
+            "active_file": "/tmp/project/Main.lean",
+            "diagnostics": "no errors found",
+            "goals": "no goals",
+            "sorry_count": 0,
+            "project_sorry_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_promote_live_state_to_verified",
+        lambda live_state: dict(live_state, verification_ok=True),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_live_state_is_verified",
+        lambda live_state: bool(live_state.get("verification_ok")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_terminate_descendant_agents",
+        lambda agent: recorded.append(("terminate", "descendants", {})),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
 
     assert runner.main() == 0
     assert "exited" in persisted
     assert any(event_type == "terminate" for event_type, _, _ in recorded)
-    assert any(event_type == "runner-exit" and "verified completion" in message for event_type, message, _ in recorded)
     assert any(
-        event_type == "runner-start" and details.get("agent_session_id") == "12345" and details.get("process_id")
+        event_type == "runner-exit" and "verified completion" in message
+        for event_type, message, _ in recorded
+    )
+    assert any(
+        event_type == "runner-start"
+        and details.get("agent_session_id") == "12345"
+        and details.get("process_id")
         for event_type, _, details in recorded
     )
 
 
 def test_background_control_loop_handles_keyboard_interrupt_cleanly(monkeypatch):
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
         _parent_session_id = ""
         _delegate_depth = 0
@@ -2841,10 +3132,20 @@ def test_background_control_loop_handles_keyboard_interrupt_cleanly(monkeypatch)
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_API_MODE", "chat")
-    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")))
-    monkeypatch.setattr(runner, "_record_activity", lambda event_type, message, **details: recorded.append((event_type, message, details)))
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
     monkeypatch.setattr(runner, "read_workflow_agent_inbox", lambda agent_id: [])
-    monkeypatch.setattr(runner.time, "sleep", lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(
+        runner.time, "sleep", lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
 
     result = runner._run_background_control_loop(
         _Agent(),
@@ -2857,7 +3158,10 @@ def test_background_control_loop_handles_keyboard_interrupt_cleanly(monkeypatch)
     )
 
     assert result == 0
-    assert any(event_type == "runner-exit" and "interrupted by signal" in message for event_type, message, _ in recorded)
+    assert any(
+        event_type == "runner-exit" and "interrupted by signal" in message
+        for event_type, message, _ in recorded
+    )
     assert "exited" in persisted
 
 
@@ -3035,7 +3339,11 @@ def test_autonomous_continuation_prompt_snapshot_with_runner_lean_prompt(monkeyp
         lambda live_state, autonomy_state=None: "Assigned queue item:\n- declaration: foo",
     )
     monkeypatch.setattr(runner, "_queue_needs_final_file_sweep", lambda live_state: False)
-    monkeypatch.setattr(runner, "_recent_failed_attempts_summary", lambda *args, **kwargs: "Recent failed attempts:\n- same blocker twice")
+    monkeypatch.setattr(
+        runner,
+        "_recent_failed_attempts_summary",
+        lambda *args, **kwargs: "Recent failed attempts:\n- same blocker twice",
+    )
 
     text = runner._autonomous_continuation_prompt(
         {
@@ -3101,7 +3409,7 @@ def test_history_status_lines_summarize_message_counts(monkeypatch):
 def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
     captured = {}
 
-    class DummyAgent:
+    class DummyAgent(_ManagedRunAgentStub):
         def __init__(self, **kwargs):
             captured.update(kwargs)
             self.reasoning_config = kwargs.get("reasoning_config")
@@ -3145,7 +3453,7 @@ def test_build_agent_uses_epflemma_native_toolset(monkeypatch):
 def test_build_agent_uses_runtime_reasoning_effort_when_config_auto(monkeypatch):
     captured = {}
 
-    class DummyAgent:
+    class DummyAgent(_ManagedRunAgentStub):
         def __init__(self, **kwargs):
             captured.update(kwargs)
             self.reasoning_config = kwargs.get("reasoning_config")
@@ -3178,7 +3486,7 @@ def test_build_agent_uses_runtime_reasoning_effort_when_config_auto(monkeypatch)
 def test_build_agent_uses_swarm_toolset_when_user_enabled_swarm(monkeypatch):
     captured = {}
 
-    class DummyAgent:
+    class DummyAgent(_ManagedRunAgentStub):
         def __init__(self, **kwargs):
             captured.update(kwargs)
             self.session_id = "runner-session"
@@ -3313,7 +3621,7 @@ def test_resolve_managed_reasoning_config_auto_uses_high_for_final_file_sweep(mo
 
 
 def test_apply_managed_reasoning_policy_keeps_high_on_theorem_transition():
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._managed_base_reasoning_config = {"mode": "auto"}
             self.reasoning_config = None
@@ -3403,7 +3711,7 @@ def test_compact_history_creates_snapshot_and_reduces_history(monkeypatch):
 def test_auto_compact_history_prunes_old_tool_output(monkeypatch):
     monkeypatch.setattr(runner, "estimate_messages_tokens_rough", lambda messages: 123)
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         compression_enabled = False
         context_compressor = _FakeCompressor()
 
@@ -3418,7 +3726,9 @@ def test_auto_compact_history_prunes_old_tool_output(monkeypatch):
 
     assert status["reason"] == "disabled"
     assert status["compacted"] is False
-    assert history[0]["content"].endswith("[epflemma-native pruned older tool output to preserve context budget]")
+    assert history[0]["content"].endswith(
+        "[epflemma-native pruned older tool output to preserve context budget]"
+    )
 
 
 def test_count_project_sorries_ignores_dependencies_and_build_dirs(tmp_path):
@@ -3427,9 +3737,15 @@ def test_count_project_sorries_ignores_dependencies_and_build_dirs(tmp_path):
     (project / "build" / "ir").mkdir(parents=True)
     (project / ".epflemma" / "runtime").mkdir(parents=True)
     (project / "Demo").mkdir(parents=True)
-    (project / "Demo" / "Main.lean").write_text("theorem t : True := by\n  sorry\n", encoding="utf-8")
-    (project / ".lake" / "packages" / "mathlib" / "Ignored.lean").write_text("theorem x : True := by\n  sorry\n", encoding="utf-8")
-    (project / "build" / "ir" / "Ignored.lean").write_text("theorem y : True := by\n  sorry\n", encoding="utf-8")
+    (project / "Demo" / "Main.lean").write_text(
+        "theorem t : True := by\n  sorry\n", encoding="utf-8"
+    )
+    (project / ".lake" / "packages" / "mathlib" / "Ignored.lean").write_text(
+        "theorem x : True := by\n  sorry\n", encoding="utf-8"
+    )
+    (project / "build" / "ir" / "Ignored.lean").write_text(
+        "theorem y : True := by\n  sorry\n", encoding="utf-8"
+    )
 
     count, files = runner._count_project_sorries(str(project))
 
@@ -3519,7 +3835,9 @@ def test_project_prove_manager_uses_llm_file_order(monkeypatch, tmp_path):
     monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
     monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
     events: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
 
     class _Message:
         content = '{"files": ["Demo/B.lean", "Demo/A.lean"], "reason": "B is shorter"}'
@@ -3548,7 +3866,9 @@ def test_project_prove_manager_uses_llm_file_order(monkeypatch, tmp_path):
     assert planned["total_candidates"] == 2
 
 
-def test_project_prove_manager_llm_prompt_includes_context_and_dependency_data(monkeypatch, tmp_path):
+def test_project_prove_manager_llm_prompt_includes_context_and_dependency_data(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
     module_dir.mkdir(parents=True)
@@ -3562,9 +3882,7 @@ def test_project_prove_manager_llm_prompt_includes_context_and_dependency_data(m
         encoding="utf-8",
     )
     later.write_text(
-        "import Demo.Base\n\n"
-        "theorem later : True := by\n"
-        "  sorry\n",
+        "import Demo.Base\n\ntheorem later : True := by\n  sorry\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
@@ -3576,7 +3894,9 @@ def test_project_prove_manager_llm_prompt_includes_context_and_dependency_data(m
     prompts: list[str] = []
 
     class _Message:
-        content = '{"files": ["Demo/Base.lean", "Demo/Later.lean"], "reason": "Base unblocks Later"}'
+        content = (
+            '{"files": ["Demo/Base.lean", "Demo/Later.lean"], "reason": "Base unblocks Later"}'
+        )
 
     class _Choice:
         message = _Message()
@@ -3608,14 +3928,18 @@ def test_project_prove_manager_fallback_prefers_upstream_files(monkeypatch, tmp_
     upstream = module_dir / "Base.lean"
     downstream = module_dir / "Later.lean"
     upstream.write_text("theorem base : True := by\n  sorry\n", encoding="utf-8")
-    downstream.write_text("import Demo.Base\n\ntheorem later : True := by\n  sorry\n", encoding="utf-8")
+    downstream.write_text(
+        "import Demo.Base\n\ntheorem later : True := by\n  sorry\n", encoding="utf-8"
+    )
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove")
     monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
     monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no aux")))
+    monkeypatch.setattr(
+        runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no aux"))
+    )
 
     state: dict[str, object] = {}
     assert runner._ensure_project_prove_manager_started(state, phase="startup") is True
@@ -3625,7 +3949,9 @@ def test_project_prove_manager_fallback_prefers_upstream_files(monkeypatch, tmp_
     assert state["project_prove_plan_source"] == "fallback"
 
 
-def test_project_prove_manager_fallback_uses_transitive_candidate_dependencies(monkeypatch, tmp_path):
+def test_project_prove_manager_fallback_uses_transitive_candidate_dependencies(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
     module_dir.mkdir(parents=True)
@@ -3633,7 +3959,9 @@ def test_project_prove_manager_fallback_uses_transitive_candidate_dependencies(m
     middle = module_dir / "Middle.lean"
     leaf = module_dir / "Leaf.lean"
     base.write_text("theorem base : True := by\n  sorry\n", encoding="utf-8")
-    middle.write_text("import Demo.Base\n\ntheorem middle : True := by\n  sorry\n", encoding="utf-8")
+    middle.write_text(
+        "import Demo.Base\n\ntheorem middle : True := by\n  sorry\n", encoding="utf-8"
+    )
     leaf.write_text("import Demo.Middle\n\ntheorem leaf : True := by\n  sorry\n", encoding="utf-8")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
 
@@ -3666,9 +3994,7 @@ def test_project_prove_manager_fallback_prefers_hinted_easy_file(monkeypatch, tm
         encoding="utf-8",
     )
     competition.write_text(
-        "import Mathlib\n\n"
-        "theorem putnam_2020_a1 : True := by\n"
-        "  sorry\n",
+        "import Mathlib\n\ntheorem putnam_2020_a1 : True := by\n  sorry\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
@@ -3677,7 +4003,9 @@ def test_project_prove_manager_fallback_prefers_hinted_easy_file(monkeypatch, tm
     monkeypatch.delenv("EPFLEMMA_NATIVE_ACTIVE_FILE", raising=False)
     monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no aux")))
+    monkeypatch.setattr(
+        runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no aux"))
+    )
 
     state: dict[str, object] = {}
     assert runner._ensure_project_prove_manager_started(state, phase="startup") is True
@@ -3702,9 +4030,7 @@ def test_project_prove_manager_guards_llm_order_by_difficulty(monkeypatch, tmp_p
         encoding="utf-8",
     )
     competition.write_text(
-        "import Mathlib\n\n"
-        "theorem putnam_2020_a1 : True := by\n"
-        "  sorry\n",
+        "import Mathlib\n\ntheorem putnam_2020_a1 : True := by\n  sorry\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
@@ -3765,8 +4091,14 @@ def test_project_prove_manager_advances_to_next_file_after_verified_file(monkeyp
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/A.lean")
     monkeypatch.delenv("OPENGAUSS_NATIVE_ACTIVE_FILE", raising=False)
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no aux")))
-    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: bool(live_state.get("verification_ok")))
+    monkeypatch.setattr(
+        runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no aux"))
+    )
+    monkeypatch.setattr(
+        runner,
+        "_live_state_is_verified",
+        lambda live_state: bool(live_state.get("verification_ok")),
+    )
 
     state: dict[str, object] = {
         "project_prove_manager_enabled": True,
@@ -3779,7 +4111,10 @@ def test_project_prove_manager_advances_to_next_file_after_verified_file(monkeyp
         "project_sorry_count": 1,
     }
 
-    assert runner._advance_project_prove_manager_if_needed(state, live_state, phase="autonomous") is True
+    assert (
+        runner._advance_project_prove_manager_if_needed(state, live_state, phase="autonomous")
+        is True
+    )
     assert os.environ["EPFLEMMA_NATIVE_ACTIVE_FILE"] == "Demo/B.lean"
     assert state["project_prove_completed_files"] == ["Demo/A.lean"]
 
@@ -3820,9 +4155,17 @@ def test_build_live_proof_state_assigns_current_queue_head_as_target(monkeypatch
     )
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
-    monkeypatch.setattr(runner, "_resolve_target_symbol", lambda history, checkpoint_state=None: "outcome")
-    monkeypatch.setattr(runner, "_query_live_diagnostics", lambda path, symbol="": "lean-lsp diagnostics tool unavailable.")
-    monkeypatch.setattr(runner, "_query_live_goals", lambda path, symbol: "lean-lsp goals tool unavailable.")
+    monkeypatch.setattr(
+        runner, "_resolve_target_symbol", lambda history, checkpoint_state=None: "outcome"
+    )
+    monkeypatch.setattr(
+        runner,
+        "_query_live_diagnostics",
+        lambda path, symbol="": "lean-lsp diagnostics tool unavailable.",
+    )
+    monkeypatch.setattr(
+        runner, "_query_live_goals", lambda path, symbol: "lean-lsp goals tool unavailable."
+    )
     monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
     monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
 
@@ -3852,7 +4195,9 @@ def test_declaration_prefix_text_keeps_last_200_lines(tmp_path):
     assert "theorem demo : True := by" in text
 
 
-def test_declaration_work_queue_prefers_named_sorry_over_anonymous_diagnostic_noise(monkeypatch, tmp_path):
+def test_declaration_work_queue_prefers_named_sorry_over_anonymous_diagnostic_noise(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
     module_dir.mkdir(parents=True)
@@ -3976,7 +4321,10 @@ def test_declaration_work_queue_keeps_named_theorem_with_build_error_without_sor
 
     assert queue
     assert queue[0]["label"] == "second"
-    assert "diagnostic near line 4" in queue[0]["reasons"] or "referenced in diagnostics" in queue[0]["reasons"]
+    assert (
+        "diagnostic near line 4" in queue[0]["reasons"]
+        or "referenced in diagnostics" in queue[0]["reasons"]
+    )
 
 
 def test_declaration_work_queue_maps_body_diagnostic_to_declaration(tmp_path):
@@ -4276,7 +4624,9 @@ def test_live_state_is_verified_for_file_scope_even_if_project_has_other_sorries
     assert runner._live_state_is_verified(live_state) is True
 
 
-def test_document_formalization_scaffold_is_not_verified_before_planner_drafts(monkeypatch, tmp_path):
+def test_document_formalization_scaffold_is_not_verified_before_planner_drafts(
+    monkeypatch, tmp_path
+):
     active = tmp_path / "Formalization" / "Paper.lean"
     active.parent.mkdir(parents=True)
     active.write_text("import Demo\n", encoding="utf-8")
@@ -4376,9 +4726,7 @@ def test_diagnostics_indicate_hard_failure_ignores_warning_only_diagnostics():
         is False
     )
     assert (
-        runner._diagnostics_indicate_hard_failure(
-            "Demo/Main.lean:2:3: error: unsolved goals"
-        )
+        runner._diagnostics_indicate_hard_failure("Demo/Main.lean:2:3: error: unsolved goals")
         is True
     )
 
@@ -4446,7 +4794,9 @@ def test_document_formalization_placeholder_blueprint_blocks_verified(monkeypatc
     active = tmp_path / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
     active.write_text("theorem t : True := by\n  trivial\n", encoding="utf-8")
-    blueprint = tmp_path / ".epflemma" / "workflow-state" / "formalization" / "paper" / "blueprint.md"
+    blueprint = (
+        tmp_path / ".epflemma" / "workflow-state" / "formalization" / "paper" / "blueprint.md"
+    )
     blueprint.parent.mkdir(parents=True)
     blueprint.write_text(
         "# Formalization Blueprint\n\n"
@@ -4591,7 +4941,9 @@ def test_document_formalization_pending_blueprint_blocks_final_sweep(monkeypatch
     project = tmp_path / "Demo"
     active = project / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
-    active.write_text("/-- Source proof: pending. -/\ntheorem demo : True := by\n  sorry\n", encoding="utf-8")
+    active.write_text(
+        "/-- Source proof: pending. -/\ntheorem demo : True := by\n  sorry\n", encoding="utf-8"
+    )
     blueprint = project / "Demo" / "Paper" / "Blueprint.md"
     blueprint.write_text(
         "\n".join(
@@ -4661,7 +5013,9 @@ def test_document_formalization_review_due_for_approval_only_gate(monkeypatch, t
 
     assert runner._document_formalization_review_due(live_state, {}) is True
     autonomy_state = {
-        "document_formalization_review_signature": runner._document_formalization_review_signature(live_state)
+        "document_formalization_review_signature": runner._document_formalization_review_signature(
+            live_state
+        )
     }
     assert runner._document_formalization_review_due(live_state, autonomy_state) is False
     blueprint.write_text("# Blueprint\n\nupdated\n", encoding="utf-8")
@@ -4712,13 +5066,24 @@ def test_configured_command_blueprint_verifier_runs_without_review_agent(monkeyp
     monkeypatch.setattr(
         runner,
         "_run_document_formalization_review_agent",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("review agent should not run")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("review agent should not run")
+        ),
     )
-    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: events.append((args, kwargs)))
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(
+        runner, "_record_agent_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
 
     autonomy_state = {}
-    assert runner._maybe_run_document_formalization_review_agent(_FakeAgent(), "system", live_state, autonomy_state) is True
+    assert (
+        runner._maybe_run_document_formalization_review_agent(
+            _FakeAgent(), "system", live_state, autonomy_state
+        )
+        is True
+    )
 
     assert len(calls) == 1
     assert calls[0]["task"] == "blueprint_verification"
@@ -4769,18 +5134,29 @@ def test_configured_blueprint_verifier_block_queues_drafting_feedback(monkeypatc
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
 
     autonomy_state = {}
-    assert runner._maybe_run_document_formalization_review_agent(_FakeAgent(), "system", live_state, autonomy_state) is True
+    assert (
+        runner._maybe_run_document_formalization_review_agent(
+            _FakeAgent(), "system", live_state, autonomy_state
+        )
+        is True
+    )
 
     assert autonomy_state["document_formalization_review_feedback_pending"] is True
-    assert "[EPFLEMMA FORMALIZATION STATEMENT REVIEW BLOCK]" in autonomy_state[
-        "document_formalization_review_feedback_message"
-    ]
-    assert "companion representation bridge theorem" in autonomy_state["document_formalization_review_feedback_message"]
+    assert (
+        "[EPFLEMMA FORMALIZATION STATEMENT REVIEW BLOCK]"
+        in autonomy_state["document_formalization_review_feedback_message"]
+    )
+    assert (
+        "companion representation bridge theorem"
+        in autonomy_state["document_formalization_review_feedback_message"]
+    )
     assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "continue"
     assert "document_formalization_review_feedback_pending" not in autonomy_state
 
 
-def test_drive_autonomous_followups_runs_independent_document_review_before_block(monkeypatch, tmp_path):
+def test_drive_autonomous_followups_runs_independent_document_review_before_block(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     active = project / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
@@ -4803,17 +5179,33 @@ def test_drive_autonomous_followups_runs_independent_document_review_before_bloc
     persisted = []
 
     monkeypatch.setattr(runner, "_journal_status", lambda: {})
-    monkeypatch.setattr(runner, "_build_live_proof_state_compat", lambda *args, **kwargs: dict(live_state))
-    monkeypatch.setattr(runner, "_promote_live_state_to_verified_compat", lambda state, autonomy_state=None: state)
-    monkeypatch.setattr(runner, "_advance_project_prove_manager_if_needed", lambda *args, **kwargs: False)
-    monkeypatch.setattr(runner, "_rebuild_history_for_theorem_transition", lambda *args, **kwargs: (None, None))
-    monkeypatch.setattr(runner, "_maybe_announce_final_file_sweep_state", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")))
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state_compat", lambda *args, **kwargs: dict(live_state)
+    )
+    monkeypatch.setattr(
+        runner, "_promote_live_state_to_verified_compat", lambda state, autonomy_state=None: state
+    )
+    monkeypatch.setattr(
+        runner, "_advance_project_prove_manager_if_needed", lambda *args, **kwargs: False
+    )
+    monkeypatch.setattr(
+        runner, "_rebuild_history_for_theorem_transition", lambda *args, **kwargs: (None, None)
+    )
+    monkeypatch.setattr(
+        runner, "_maybe_announce_final_file_sweep_state", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")),
+    )
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
 
     def fake_review(agent, system_prompt, current_live_state, autonomy_state):
         review_calls.append(dict(current_live_state))
-        autonomy_state["document_formalization_review_signature"] = runner._document_formalization_review_signature(current_live_state)
+        autonomy_state["document_formalization_review_signature"] = (
+            runner._document_formalization_review_signature(current_live_state)
+        )
         return {"messages": [], "interrupted": False}
 
     monkeypatch.setattr(runner, "_run_document_formalization_review_agent", fake_review)
@@ -4841,7 +5233,9 @@ def test_document_formalization_reviewed_draft_stops_ready_for_prove(monkeypatch
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
     events = []
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
 
     live_state = {
         "active_file": str(active),
@@ -4868,9 +5262,14 @@ def test_document_formalization_reviewed_draft_stops_ready_for_prove(monkeypatch
     assert "FINAL ORGANIZATION PASS" in prompt
     assert "Run `lean_verify(mode=project)` once" in prompt
 
-    assert runner._autonomous_stop_reason([], live_state, autonomy_state) == "formalization-prover-handoff-ready"
+    assert (
+        runner._autonomous_stop_reason([], live_state, autonomy_state)
+        == "formalization-prover-handoff-ready"
+    )
     runner._prepare_queue_assignment_state(autonomy_state, live_state)
-    rebuilt, transition = runner._rebuild_history_for_theorem_transition([], {}, autonomy_state, live_state)
+    rebuilt, transition = runner._rebuild_history_for_theorem_transition(
+        [], {}, autonomy_state, live_state
+    )
 
     assert events[0][0][0] == "final-file-sweep-deferred-for-prover-handoff"
     assert events[1][0][0] == "formalization-organization-pass-started"
@@ -4886,20 +5285,31 @@ def test_formalization_handoff_requires_manual_scoped_prove_workflow(monkeypatch
     project = tmp_path / "Demo"
     active = project / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
-    active.write_text("import Mathlib\n\n/-- Source proof: trivial. -/\ntheorem t : True := by\n  sorry\n", encoding="utf-8")
-    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    active.write_text(
+        "import Mathlib\n\n/-- Source proof: trivial. -/\ntheorem t : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    manifest = (
+        project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    )
     manifest.parent.mkdir(parents=True)
-    manifest.write_text(json.dumps({"target_lean_relative": "Demo/Paper/Main.lean"}), encoding="utf-8")
+    manifest.write_text(
+        json.dumps({"target_lean_relative": "Demo/Paper/Main.lean"}), encoding="utf-8"
+    )
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", str(active))
 
     events = []
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
     monkeypatch.setattr(
         runner.subprocess,
         "Popen",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("prove workflow must not auto-start")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("prove workflow must not auto-start")
+        ),
     )
 
     runner._record_formalization_manual_prove_handoff(
@@ -4911,7 +5321,10 @@ def test_formalization_handoff_requires_manual_scoped_prove_workflow(monkeypatch
         {},
     )
 
-    assert [event[0][0] for event in events[:2]] == ["formalizer-ended", "prove-workflow-manual-start-required"]
+    assert [event[0][0] for event in events[:2]] == [
+        "formalizer-ended",
+        "prove-workflow-manual-start-required",
+    ]
     assert events[1][1]["suggested_command"] == "epflemma workflow prove Demo/Paper/Main.lean"
     output = capsys.readouterr().out
     assert "Prove workflow not started automatically" in output
@@ -4928,14 +5341,18 @@ def test_project_prove_scope_limits_candidates_in_given_order(monkeypatch, tmp_p
     second.write_text("theorem main : True := by\n  sorry\n", encoding="utf-8")
     unrelated.write_text("theorem other : True := by\n  sorry\n", encoding="utf-8")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
-    monkeypatch.setenv("EPFLEMMA_PROVE_FILE_SCOPE", os.pathsep.join(["Demo/Basic.lean", "Demo/Theorems.lean"]))
+    monkeypatch.setenv(
+        "EPFLEMMA_PROVE_FILE_SCOPE", os.pathsep.join(["Demo/Basic.lean", "Demo/Theorems.lean"])
+    )
 
     candidates = runner._collect_project_prove_file_candidates(project)
 
     assert [item["label"] for item in candidates] == ["Demo/Basic.lean", "Demo/Theorems.lean"]
 
 
-def test_document_formalization_handoff_blocks_construction_sorry_and_filters_queue(monkeypatch, tmp_path):
+def test_document_formalization_handoff_blocks_construction_sorry_and_filters_queue(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     root = project / "Demo.lean"
     active = project / "Demo" / "Paper" / "Main.lean"
@@ -5004,7 +5421,9 @@ def test_document_formalization_gate_clears_stale_queue_assignment(monkeypatch, 
     runner._prepare_queue_assignment_state(autonomy_state, live_state)
 
     assert "current_queue_assignment" not in autonomy_state
-    rebuilt, transition = runner._rebuild_history_for_theorem_transition([], {}, autonomy_state, live_state)
+    rebuilt, transition = runner._rebuild_history_for_theorem_transition(
+        [], {}, autonomy_state, live_state
+    )
     assert rebuilt is None
     assert transition is None
 
@@ -5069,18 +5488,21 @@ def test_document_formalization_handoff_detects_stale_import_plan(monkeypatch, t
     assert "Mathlib.Data.Nat.Coprime.Basic" in handoff["summary"]
     assert "Mathlib`" in handoff["summary"]
     assert "active formalization" in handoff["summary"]
-    assert runner._live_state_is_verified(
-        {
-            "active_file": str(active),
-            "declaration_scope": "file",
-            "diagnostics": "no errors found",
-            "goals": "no goals",
-            "build_status": "lake build succeeded",
-            "verification_ok": True,
-            "sorry_count": 0,
-            "project_sorry_count": 0,
-        }
-    ) is False
+    assert (
+        runner._live_state_is_verified(
+            {
+                "active_file": str(active),
+                "declaration_scope": "file",
+                "diagnostics": "no errors found",
+                "goals": "no goals",
+                "build_status": "lake build succeeded",
+                "verification_ok": True,
+                "sorry_count": 0,
+                "project_sorry_count": 0,
+            }
+        )
+        is False
+    )
 
 
 def test_document_formalization_handoff_ignores_suggested_search_modules(monkeypatch, tmp_path):
@@ -5089,7 +5511,10 @@ def test_document_formalization_handoff_ignores_suggested_search_modules(monkeyp
     active = project / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
     root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
-    active.write_text("import Mathlib\n\n/-- Source proof: prove by `trivial`. -/\ntheorem t : True := by\n  sorry\n", encoding="utf-8")
+    active.write_text(
+        "import Mathlib\n\n/-- Source proof: prove by `trivial`. -/\ntheorem t : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
     blueprint = project / "Demo" / "Paper" / "Blueprint.md"
     blueprint.write_text(
         "# Formalization Blueprint\n\n"
@@ -5126,7 +5551,10 @@ def test_configured_autoformalizer_block_prevents_proof_handoff(monkeypatch, tmp
     active = project / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
     root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
-    active.write_text("import Mathlib\n\n/-- Source proof: prove by `trivial`. -/\ntheorem t : True := by\n  sorry\n", encoding="utf-8")
+    active.write_text(
+        "import Mathlib\n\n/-- Source proof: prove by `trivial`. -/\ntheorem t : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
     blueprint = project / "Demo" / "Paper" / "Blueprint.md"
     blueprint.write_text(
         "# Formalization Blueprint\n\n"
@@ -5179,7 +5607,7 @@ def test_configured_autoformalizer_block_prevents_proof_handoff(monkeypatch, tmp
 
 
 def test_formalization_verifier_block_is_appended_to_next_tool_turn(monkeypatch):
-    class Agent:
+    class Agent(_ManagedRunAgentStub):
         quiet_mode = True
 
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "formalize")
@@ -5233,16 +5661,21 @@ def test_document_formalization_raw_lean_edit_runs_immediate_file_check(monkeypa
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_maybe_append_formalization_handoff_feedback", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner, "_maybe_append_formalization_handoff_feedback", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
     calls = []
     monkeypatch.setattr(
         runner,
         "_manager_verify_queue_file",
-        lambda path: calls.append(path) or {"ok": False, "command": f"lake env lean {path}", "output": "type mismatch"},
+        lambda path: (
+            calls.append(path)
+            or {"ok": False, "command": f"lake env lean {path}", "output": "type mismatch"}
+        ),
     )
 
-    class Agent:
+    class Agent(_ManagedRunAgentStub):
         quiet_mode = True
         _session_messages = []
         _managed_autonomy_state = {}
@@ -5259,19 +5692,27 @@ def test_document_formalization_raw_lean_edit_runs_immediate_file_check(monkeypa
     assert calls == [str(active.resolve())]
     assert "[EPFLEMMA FORMALIZATION LEAN CHECK FAILED]" in agent._post_tool_result_appendix
     assert "type mismatch" in agent._post_tool_result_appendix
-    assert runner._document_formalization_pre_tool_guard(
-        agent,
-        "patch",
-        {"path": str(active), "mode": "replace", "new_string": "import Mathlib\n\n"},
-    ) is None
-    assert runner._document_formalization_pre_tool_guard(
-        agent,
-        "apply_verified_patch",
-        {"path": str(active), "patch": "theorem t : True := by\n  sorry\n"},
-    ) is None
+    assert (
+        runner._document_formalization_pre_tool_guard(
+            agent,
+            "patch",
+            {"path": str(active), "mode": "replace", "new_string": "import Mathlib\n\n"},
+        )
+        is None
+    )
+    assert (
+        runner._document_formalization_pre_tool_guard(
+            agent,
+            "apply_verified_patch",
+            {"path": str(active), "patch": "theorem t : True := by\n  sorry\n"},
+        )
+        is None
+    )
 
 
-def test_document_formalization_blocks_drafting_model_blueprint_self_approval(monkeypatch, tmp_path):
+def test_document_formalization_blocks_drafting_model_blueprint_self_approval(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     active = project / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
@@ -5290,7 +5731,7 @@ def test_document_formalization_blocks_drafting_model_blueprint_self_approval(mo
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
 
-    class Agent:
+    class Agent(_ManagedRunAgentStub):
         _managed_autonomy_state = {}
 
     blocked = runner._document_formalization_pre_tool_guard(
@@ -5321,18 +5762,23 @@ def test_document_formalization_lean_edit_gate_does_not_apply_to_prove(monkeypat
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
     calls = []
-    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda path: calls.append(path) or {"ok": True})
+    monkeypatch.setattr(
+        runner, "_manager_verify_queue_file", lambda path: calls.append(path) or {"ok": True}
+    )
 
-    class Agent:
+    class Agent(_ManagedRunAgentStub):
         quiet_mode = True
         _session_messages = []
         _managed_autonomy_state = {}
 
-    assert runner._document_formalization_pre_tool_guard(
-        Agent(),
-        "patch",
-        {"path": str(active), "mode": "replace", "new_string": "import Mathlib\n\n"},
-    ) is None
+    assert (
+        runner._document_formalization_pre_tool_guard(
+            Agent(),
+            "patch",
+            {"path": str(active), "mode": "replace", "new_string": "import Mathlib\n\n"},
+        )
+        is None
+    )
     runner._handle_managed_tool_result(
         Agent(),
         "patch",
@@ -5360,17 +5806,28 @@ def test_configured_blueprint_verifier_pass_stamps_readonly_approval(monkeypatch
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
     monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
 
-    assert runner._stamp_blueprint_statement_review_approved(provider="codex", active_file="Demo/Paper/Main.lean")
+    assert runner._stamp_blueprint_statement_review_approved(
+        provider="codex", active_file="Demo/Paper/Main.lean"
+    )
 
     text = blueprint.read_text(encoding="utf-8")
-    assert "- Status: statement/source review approved; ready for user-started prove workflow" in text
+    assert (
+        "- Status: statement/source review approved; ready for user-started prove workflow" in text
+    )
     assert "- [x] Verify drafted Lean statements match the source document." in text
-    assert "- [x] Run independent statement/source verification review and apply corrections." in text
-    assert "- [x] Mark stable theorem/lemma/example `sorry` declarations ready for a user-started prove workflow." in text
+    assert (
+        "- [x] Run independent statement/source verification review and apply corrections." in text
+    )
+    assert (
+        "- [x] Mark stable theorem/lemma/example `sorry` declarations ready for a user-started prove workflow."
+        in text
+    )
     assert text.count("Statement verification status: approved by codex verifier") == 2
 
 
-def test_document_formalization_handoff_checks_blueprint_inventory_against_target(monkeypatch, tmp_path):
+def test_document_formalization_handoff_checks_blueprint_inventory_against_target(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     root = project / "Demo.lean"
     active = project / "Demo" / "Paper" / "Main.lean"
@@ -5392,7 +5849,9 @@ def test_document_formalization_handoff_checks_blueprint_inventory_against_targe
         "- Source proof / prover notes: _pending_\n",
         encoding="utf-8",
     )
-    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest = (
+        project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    )
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem"}]}),
@@ -5417,7 +5876,9 @@ def test_document_formalization_handoff_checks_blueprint_inventory_against_targe
     assert any("source proof/prover notes" in issue for issue in handoff["issues"])
 
 
-def test_document_formalization_handoff_blocks_approved_without_fidelity_axes(monkeypatch, tmp_path):
+def test_document_formalization_handoff_blocks_approved_without_fidelity_axes(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     root = project / "Demo.lean"
     active = project / "Demo" / "Paper" / "Main.lean"
@@ -5472,7 +5933,9 @@ def test_document_formalization_handoff_blocks_approved_without_fidelity_axes(mo
         "- Source proof / prover notes: use positivity and the four-square theorem.\n",
         encoding="utf-8",
     )
-    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest = (
+        project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    )
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         json.dumps(
@@ -5510,17 +5973,16 @@ def test_document_formalization_handoff_blocks_approved_without_fidelity_axes(mo
     assert any("scope changes" in issue.lower() for issue in handoff["issues"])
 
 
-def test_document_formalization_handoff_accepts_resolved_generic_fidelity_axes(monkeypatch, tmp_path):
+def test_document_formalization_handoff_accepts_resolved_generic_fidelity_axes(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     root = project / "Demo.lean"
     active = project / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
     root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
     active.write_text(
-        "import Mathlib\n\n"
-        "/-- Source proof: fixture proof. -/\n"
-        "theorem t : True := by\n"
-        "  sorry\n",
+        "import Mathlib\n\n/-- Source proof: fixture proof. -/\ntheorem t : True := by\n  sorry\n",
         encoding="utf-8",
     )
     blueprint = project / "Demo" / "Paper" / "Blueprint.md"
@@ -5547,10 +6009,23 @@ def test_document_formalization_handoff_accepts_resolved_generic_fidelity_axes(m
         "- Source proof / prover notes: prove by `trivial`\n",
         encoding="utf-8",
     )
-    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest = (
+        project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    )
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
-        json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem", "statement": "True", "proof": "trivial"}]}),
+        json.dumps(
+            {
+                "theorem_blocks": [
+                    {
+                        "label": "thm:demo",
+                        "kind": "theorem",
+                        "statement": "True",
+                        "proof": "trivial",
+                    }
+                ]
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
@@ -5598,7 +6073,9 @@ def test_document_formalization_handoff_blocks_hard_draft_diagnostics(monkeypatc
         "- Source proof / prover notes: prove by `trivial`\n",
         encoding="utf-8",
     )
-    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest = (
+        project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    )
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem"}]}),
@@ -5628,7 +6105,10 @@ def test_document_formalization_handoff_requires_proof_notes_in_lean_comment(mon
     active = project / "Demo" / "Paper" / "Main.lean"
     active.parent.mkdir(parents=True)
     root.write_text("import Demo.Paper.Main\n", encoding="utf-8")
-    active.write_text("import Mathlib\n\n/-- The source theorem says `True`. -/\ntheorem t : True := by\n  sorry\n", encoding="utf-8")
+    active.write_text(
+        "import Mathlib\n\n/-- The source theorem says `True`. -/\ntheorem t : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
     blueprint = project / "Demo" / "Paper" / "Blueprint.md"
     blueprint.write_text(
         "# Formalization Blueprint\n\n"
@@ -5645,7 +6125,9 @@ def test_document_formalization_handoff_requires_proof_notes_in_lean_comment(mon
         "- Source proof / prover notes: prove by `trivial`\n",
         encoding="utf-8",
     )
-    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest = (
+        project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    )
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem"}]}),
@@ -5664,7 +6146,9 @@ def test_document_formalization_handoff_requires_proof_notes_in_lean_comment(mon
     assert "Lean doc comment above `t` is missing source proof/prover notes" in handoff["summary"]
 
 
-def test_document_formalization_handoff_accepts_synced_blueprint_and_root_import(monkeypatch, tmp_path):
+def test_document_formalization_handoff_accepts_synced_blueprint_and_root_import(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     root = project / "Demo.lean"
     parent = project / "Demo" / "Paper.lean"
@@ -5706,7 +6190,9 @@ def test_document_formalization_handoff_accepts_synced_blueprint_and_root_import
         "- Source proof / prover notes: prove by `trivial`\n",
         encoding="utf-8",
     )
-    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest = (
+        project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    )
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         json.dumps({"theorem_blocks": [{"label": "thm:demo", "kind": "theorem"}]}),
@@ -5784,7 +6270,9 @@ def test_document_formalization_handoff_accepts_split_aggregator_layout(monkeypa
         "- Source proof / prover notes: unfold `Helper`, then prove by `trivial`\n",
         encoding="utf-8",
     )
-    manifest = project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    manifest = (
+        project / ".epflemma" / "workflow-state" / "formalization" / "paper" / "manifest.json"
+    )
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         json.dumps(
@@ -5801,7 +6289,9 @@ def test_document_formalization_handoff_accepts_split_aggregator_layout(monkeypa
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_TARGET_FILE", "Demo/Paper/Main.lean")
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_BLUEPRINT", str(blueprint))
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_MANIFEST", str(manifest))
-    monkeypatch.setattr(runner, "resolve_verification_provider", lambda task, explicit=None: "local")
+    monkeypatch.setattr(
+        runner, "resolve_verification_provider", lambda task, explicit=None: "local"
+    )
 
     handoff = runner._document_formalization_handoff_verification(
         str(main),
@@ -6069,7 +6559,9 @@ def test_promote_live_state_grants_one_final_sweep_warning_cleanup(monkeypatch, 
         autonomy_state,
     )
 
-    assert promoted["verification_ok"] is False, "warnings present must hold the workflow open for cleanup"
+    assert promoted["verification_ok"] is False, (
+        "warnings present must hold the workflow open for cleanup"
+    )
     assert promoted["final_sweep_warning_cleanup_pending"] is True
     assert promoted["final_sweep_warning_count"] == 1
     assert "this tactic is never executed" in promoted["final_sweep_warning_summary"]
@@ -6262,7 +6754,9 @@ def test_promote_live_state_skips_final_sweep_cleanup_when_no_warnings(monkeypat
     assert "no warnings" in promoted["warning_cleanup_diagnostics"]
 
 
-def test_promote_live_state_restores_baseline_when_cleanup_attempt_regresses(monkeypatch, tmp_path, capsys):
+def test_promote_live_state_restores_baseline_when_cleanup_attempt_regresses(
+    monkeypatch, tmp_path, capsys
+):
     """If the cleanup-cycle edit breaks the file (lake newly fails), the
     runner must restore the captured baseline and accept the original
     warning-only state. We promised warning-tolerant — never ship worse."""
@@ -6311,9 +6805,13 @@ def test_promote_live_state_restores_baseline_when_cleanup_attempt_regresses(mon
         autonomy_state,
     )
 
-    assert promoted["verification_ok"] is True, "post-restore lake build should succeed against baseline"
+    assert promoted["verification_ok"] is True, (
+        "post-restore lake build should succeed against baseline"
+    )
     assert active.read_text(encoding="utf-8") == baseline_content
-    assert "final_sweep_baseline" not in autonomy_state, "baseline payload should be released after one shot"
+    assert "final_sweep_baseline" not in autonomy_state, (
+        "baseline payload should be released after one shot"
+    )
     assert "final_sweep_cleanup_turn_started" not in autonomy_state
     assert promoted["warning_cleanup_status"] == "blocked"
     assert promoted["warning_cleanup_blocked"] is True
@@ -6431,7 +6929,9 @@ def test_final_file_sweep_block_renders_warning_cleanup_wording(tmp_path):
     assert "current blocker" not in block.lower()
 
 
-def test_promote_live_state_does_not_mark_non_module_file_verified_from_project_build(monkeypatch, tmp_path):
+def test_promote_live_state_does_not_mark_non_module_file_verified_from_project_build(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
     module_dir.mkdir(parents=True)
@@ -6479,13 +6979,25 @@ def test_manager_verification_log_cache_is_bounded(monkeypatch, tmp_path, capsys
             build_status=f"lake env lean Main.lean succeeded {index}",
         )
 
-    assert len(runner._MANAGER_VERIFICATION_LOG_CACHE) == runner._MANAGER_VERIFICATION_LOG_CACHE_LIMIT
-    assert len(runner._MANAGER_VERIFICATION_LOG_CACHE_ORDER) == runner._MANAGER_VERIFICATION_LOG_CACHE_LIMIT
-    assert ("file", "Main.lean", True, "lake env lean Main.lean succeeded 0") not in runner._MANAGER_VERIFICATION_LOG_CACHE
+    assert (
+        len(runner._MANAGER_VERIFICATION_LOG_CACHE) == runner._MANAGER_VERIFICATION_LOG_CACHE_LIMIT
+    )
+    assert (
+        len(runner._MANAGER_VERIFICATION_LOG_CACHE_ORDER)
+        == runner._MANAGER_VERIFICATION_LOG_CACHE_LIMIT
+    )
+    assert (
+        "file",
+        "Main.lean",
+        True,
+        "lake env lean Main.lean succeeded 0",
+    ) not in runner._MANAGER_VERIFICATION_LOG_CACHE
     capsys.readouterr()
 
 
-def test_promote_live_state_file_scope_does_not_block_on_other_project_sorries(monkeypatch, tmp_path):
+def test_promote_live_state_file_scope_does_not_block_on_other_project_sorries(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
     module_dir.mkdir(parents=True)
@@ -6571,7 +7083,9 @@ def test_promote_live_state_logs_internal_manager_verification(monkeypatch, tmp_
 
 def test_normalize_blocker_summary_clears_resolved_text():
     assert runner._normalize_blocker_summary("None. All blockers resolved.") == ""
-    assert runner._normalize_blocker_summary("type mismatch in `simpa`") == "type mismatch in `simpa`"
+    assert (
+        runner._normalize_blocker_summary("type mismatch in `simpa`") == "type mismatch in `simpa`"
+    )
 
 
 def test_extract_blocker_summary_does_not_fall_back_to_unrelated_trailing_line():
@@ -6587,7 +7101,9 @@ def test_extract_blocker_summary_does_not_fall_back_to_unrelated_trailing_line()
     assert runner._extract_blocker_summary(text) == ""
 
 
-def test_recommended_verification_command_prefers_module_build_outside_single_item_turn(tmp_path, monkeypatch):
+def test_recommended_verification_command_prefers_module_build_outside_single_item_turn(
+    tmp_path, monkeypatch
+):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
     module_dir.mkdir(parents=True)
@@ -6599,10 +7115,15 @@ def test_recommended_verification_command_prefers_module_build_outside_single_it
 
     command = runner._recommended_verification_command(str(active))
 
-    assert command == "`lean_inspect` first, then `lean_verify(mode=module)` when the file is close to clean"
+    assert (
+        command
+        == "`lean_inspect` first, then `lean_verify(mode=module)` when the file is close to clean"
+    )
 
 
-def test_recommended_verification_command_requires_canonical_file_check_for_single_item_turn(tmp_path, monkeypatch):
+def test_recommended_verification_command_requires_canonical_file_check_for_single_item_turn(
+    tmp_path, monkeypatch
+):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
     module_dir.mkdir(parents=True)
@@ -6620,7 +7141,9 @@ def test_recommended_verification_command_requires_canonical_file_check_for_sing
     )
 
 
-def test_recommended_verification_command_falls_back_to_lake_env_lean_for_non_module_file(tmp_path, monkeypatch):
+def test_recommended_verification_command_falls_back_to_lake_env_lean_for_non_module_file(
+    tmp_path, monkeypatch
+):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
     module_dir.mkdir(parents=True)
@@ -6643,9 +7166,7 @@ def test_extract_active_files_normalizes_project_relative_paths(monkeypatch, tmp
     target.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
 
-    files = runner._extract_active_files(
-        f"a//{target}\n{target}\nDemo/Main.lean\nMain.lean\n"
-    )
+    files = runner._extract_active_files(f"a//{target}\n{target}\nDemo/Main.lean\nMain.lean\n")
 
     assert files == ["Demo/Main.lean", "Main.lean"]
 
@@ -6675,12 +7196,14 @@ def test_resolve_active_file_prefers_configured_active_file(monkeypatch, tmp_pat
 
 
 def test_resolve_target_symbol_does_not_drift_from_history(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove ./GaussTest/RealTheorems-homework.lean")
+    monkeypatch.setenv(
+        "EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove ./GaussTest/RealTheorems-homework.lean"
+    )
 
     symbol = runner._resolve_target_symbol(
         [
             {"role": "assistant", "content": "reading Basic.lean"},
-            {"role": "tool", "content": "def hello := \"world\""},
+            {"role": "tool", "content": 'def hello := "world"'},
         ]
     )
 
@@ -6700,17 +7223,18 @@ def test_explicit_verification_build_uses_lake_env_lean_for_non_module_file(monk
     monkeypatch.setattr(
         runner,
         "lean_verify",
-        lambda target="", cwd="", mode="project": captured.update(
-            {"target": target, "cwd": cwd, "mode": mode}
-        ) or type(
-            "_Result",
-            (),
-            {
-                "ok": True,
-                "command": "lake build Demo.RealTheorems-homework",
-                "output": "",
-            },
-        )(),
+        lambda target="", cwd="", mode="project": (
+            captured.update({"target": target, "cwd": cwd, "mode": mode})
+            or type(
+                "_Result",
+                (),
+                {
+                    "ok": True,
+                    "command": "lake build Demo.RealTheorems-homework",
+                    "output": "",
+                },
+            )()
+        ),
     )
 
     ok, status = runner._run_explicit_verification_build(str(active), full_project=False)
@@ -6728,8 +7252,12 @@ def test_write_workflow_checkpoint_persists_index_and_current(monkeypatch, tmp_p
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
     monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "zai-org/GLM-5.1")
-    monkeypatch.setattr(runner, "_generate_checkpoint_summary", lambda *args, **kwargs: "## Goal\nResume proof")
-    monkeypatch.setattr(runner, "_latest_filesystem_checkpoint_hash", lambda *args, **kwargs: "abc123def456")
+    monkeypatch.setattr(
+        runner, "_generate_checkpoint_summary", lambda *args, **kwargs: "## Goal\nResume proof"
+    )
+    monkeypatch.setattr(
+        runner, "_latest_filesystem_checkpoint_hash", lambda *args, **kwargs: "abc123def456"
+    )
 
     entry = runner._write_workflow_checkpoint(
         [{"role": "assistant", "content": "No errors found in Main.lean"}],
@@ -6845,7 +7373,13 @@ def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeyp
             super().__init__()
             self.calls = []
 
-        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+        def run_conversation(
+            self,
+            user_message,
+            system_message=None,
+            conversation_history=None,
+            persist_user_message=None,
+        ):
             self.calls.append(
                 {
                     "user_message": user_message,
@@ -6900,10 +7434,16 @@ def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeyp
     )
 
     monkeypatch.setattr(runner, "_journal_status", lambda: {})
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states)
+    )
     monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
     monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "", "reason": "no-op"}))
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent: (history, {"snapshot_text": "", "reason": "no-op"}),
+    )
     monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
 
     agent = _LoopAgent()
@@ -6932,7 +7472,13 @@ def test_drive_autonomous_followups_does_not_pause_at_followup_limit(monkeypatch
             super().__init__()
             self.calls = 0
 
-        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+        def run_conversation(
+            self,
+            user_message,
+            system_message=None,
+            conversation_history=None,
+            persist_user_message=None,
+        ):
             self.calls += 1
             return {
                 "messages": list(conversation_history or [])
@@ -6944,7 +7490,9 @@ def test_drive_autonomous_followups_does_not_pause_at_followup_limit(monkeypatch
             "active_file": "/tmp/project/Main.lean",
             "active_file_label": "Main.lean",
             "target_symbol": "demo",
-            "diagnostics": "no errors found" if verified else f"warning: declaration uses sorry {idx}",
+            "diagnostics": "no errors found"
+            if verified
+            else f"warning: declaration uses sorry {idx}",
             "goals": "no goals",
             "build_status": "lake env lean Main.lean exits 0" if verified else "unknown",
             "verification_ok": verified,
@@ -6959,10 +7507,16 @@ def test_drive_autonomous_followups_does_not_pause_at_followup_limit(monkeypatch
     )
 
     monkeypatch.setattr(runner, "_journal_status", lambda: {})
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states)
+    )
     monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
     monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "", "reason": "no-op"}))
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent: (history, {"snapshot_text": "", "reason": "no-op"}),
+    )
     monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
 
     agent = _LoopAgent()
@@ -7070,21 +7624,26 @@ def test_theorem_transition_handoff_includes_exact_tool_path():
 def test_handoff_pending_count_parses_summary_when_queue_items_are_absent():
     mgr = runner.TheoremQueueManager()
 
-    assert runner._handoff_pending_count(
-        mgr,
-        {
-            "declaration_queue_summary": (
-                "- current_demo [Demo/Main.lean] — contains sorry\n"
-                "- future_demo [Demo/Main.lean] — contains sorry\n"
-                "- another_future [Demo/Main.lean] — diagnostic near line 10"
-            ),
-            "declaration_queue_total": 99,
-        },
-        "current_demo",
-    ) == 2
+    assert (
+        runner._handoff_pending_count(
+            mgr,
+            {
+                "declaration_queue_summary": (
+                    "- current_demo [Demo/Main.lean] — contains sorry\n"
+                    "- future_demo [Demo/Main.lean] — contains sorry\n"
+                    "- another_future [Demo/Main.lean] — diagnostic near line 10"
+                ),
+                "declaration_queue_total": 99,
+            },
+            "current_demo",
+        )
+        == 2
+    )
 
 
-def test_queue_handoff_sequence_matches_realtheorems_order_and_hides_future_items(monkeypatch, tmp_path):
+def test_queue_handoff_sequence_matches_realtheorems_order_and_hides_future_items(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "GaussTest"
     module_dir = project / "GaussTest"
     module_dir.mkdir(parents=True)
@@ -7104,7 +7663,9 @@ def test_queue_handoff_sequence_matches_realtheorems_order_and_hides_future_item
         active.write_text("\n".join(lines), encoding="utf-8")
 
     def live_state_for_queue() -> dict[str, object]:
-        queue = runner._declaration_work_queue(str(active), "", project_root=str(project), scope="file")
+        queue = runner._declaration_work_queue(
+            str(active), "", project_root=str(project), scope="file"
+        )
         current = runner._current_queue_item(queue, str(active))
         current_label = str((current or {}).get("label", "") or "")
         return {
@@ -7122,12 +7683,16 @@ def test_queue_handoff_sequence_matches_realtheorems_order_and_hides_future_item
 
     for solved_count, previous in enumerate(labels):
         write_state(solved_count)
-        queue = runner._declaration_work_queue(str(active), "", project_root=str(project), scope="file")
+        queue = runner._declaration_work_queue(
+            str(active), "", project_root=str(project), scope="file"
+        )
         assert [item["label"] for item in queue] == labels[solved_count:]
         assert runner._current_queue_item(queue, str(active))["label"] == previous
 
         write_state(solved_count + 1)
-        next_queue = runner._declaration_work_queue(str(active), "", project_root=str(project), scope="file")
+        next_queue = runner._declaration_work_queue(
+            str(active), "", project_root=str(project), scope="file"
+        )
         assert [item["label"] for item in next_queue] == labels[solved_count + 1 :]
 
         if solved_count == len(labels) - 1:
@@ -7153,7 +7718,10 @@ def test_queue_handoff_sequence_matches_realtheorems_order_and_hides_future_item
         expected_pending = len(labels[solved_count + 2 :])
         assert f"- pending count: {expected_pending} pending" in handoff
         if expected_pending:
-            assert f"- future queue items: hidden until the manager assigns them ({expected_pending} pending)" in handoff
+            assert (
+                f"- future queue items: hidden until the manager assigns them ({expected_pending} pending)"
+                in handoff
+            )
         else:
             assert "- future queue items: no further queue items pending (0 pending)" in handoff
         for hidden_label in labels[solved_count + 2 :]:
@@ -7255,7 +7823,9 @@ def test_remember_failed_attempt_prefers_current_manager_reason():
     assert attempt["reason"] == "latest rewrite failure"
 
 
-def test_remember_failed_attempt_prefers_restored_assignment_over_live_queue_item(tmp_path, monkeypatch):
+def test_remember_failed_attempt_prefers_restored_assignment_over_live_queue_item(
+    tmp_path, monkeypatch
+):
     active = tmp_path / "Main.lean"
     active.write_text(
         "\n".join(
@@ -7320,7 +7890,9 @@ def test_recent_failed_attempts_summary_does_not_leak_other_theorem_attempts():
     assert summary == ""
 
 
-def test_recent_failed_attempts_summary_excludes_latest_in_file_attempt_and_honors_limit(monkeypatch):
+def test_recent_failed_attempts_summary_excludes_latest_in_file_attempt_and_honors_limit(
+    monkeypatch,
+):
     monkeypatch.setenv("EPFLEMMA_NATIVE_FAILED_ATTEMPT_HISTORY", "2")
 
     summary = runner._recent_failed_attempts_summary(
@@ -7405,11 +7977,14 @@ def test_failed_attempt_count_uses_latest_attempt_number_even_after_pruning(monk
         ]
     }
 
-    assert runner._failed_attempt_count_for_theorem(
-        autonomy_state,
-        target_symbol="demo",
-        active_file="Demo/Main.lean",
-    ) == 9
+    assert (
+        runner._failed_attempt_count_for_theorem(
+            autonomy_state,
+            target_symbol="demo",
+            active_file="Demo/Main.lean",
+        )
+        == 9
+    )
 
 
 def test_summarize_theorem_transition_outcome_marks_reverted_to_sorry():
@@ -7423,7 +7998,10 @@ def test_summarize_theorem_transition_outcome_marks_reverted_to_sorry():
         },
         {
             "active_file_label": "GaussTest/MiniF2F.lean",
-            "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+            "current_queue_item": {
+                "label": "algebra_amgm_sumasqdivbgeqsuma",
+                "reasons": ["contains sorry"],
+            },
             "declaration_queue_summary": (
                 "- amc12a_2021_p19 [GaussTest/MiniF2F.lean] — contains sorry\n"
                 "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry"
@@ -7431,7 +8009,12 @@ def test_summarize_theorem_transition_outcome_marks_reverted_to_sorry():
             "current_blocker": "amc12a_2021_p19 remains pending after being reverted to `sorry`.",
             "build_status": "lake env lean GaussTest/MiniF2F.lean exits 0",
         },
-        [{"role": "assistant", "content": "amc12a_2021_p19 was reverted to `sorry` to unblock file compilation."}],
+        [
+            {
+                "role": "assistant",
+                "content": "amc12a_2021_p19 was reverted to `sorry` to unblock file compilation.",
+            }
+        ],
     )
 
     assert outcome["status"] == "reverted-to-sorry"
@@ -7457,7 +8040,10 @@ def test_rebuild_history_for_theorem_transition_uses_compact_handoff(monkeypatch
         },
         {
             "active_file_label": "GaussTest/MiniF2F.lean",
-            "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+            "current_queue_item": {
+                "label": "algebra_amgm_sumasqdivbgeqsuma",
+                "reasons": ["contains sorry"],
+            },
             "declaration_queue_summary": "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry",
             "build_status": "lake env lean GaussTest/MiniF2F.lean exits 0",
             "current_blocker": "",
@@ -7570,39 +8156,45 @@ def test_summarize_theorem_transition_outcome_prefers_previous_theorem_failed_at
 
 
 def test_same_queue_assignment_still_blocked_requires_same_theorem_and_real_blocker():
-    assert runner._same_queue_assignment_still_blocked(
-        {
-            "current_queue_assignment": {
-                "target_symbol": "demo",
-                "active_file": "Demo/Main.lean",
-                "slice": "theorem demo : True := by\n  sorry",
-            }
-        },
-        {
-            "active_file_label": "Demo/Main.lean",
-            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
-            "diagnostics": "error: unsolved goals",
-            "goals": "x : Nat\n⊢ False",
-            "build_status": "unknown",
-        },
-    ) is True
+    assert (
+        runner._same_queue_assignment_still_blocked(
+            {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            },
+            {
+                "active_file_label": "Demo/Main.lean",
+                "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+                "diagnostics": "error: unsolved goals",
+                "goals": "x : Nat\n⊢ False",
+                "build_status": "unknown",
+            },
+        )
+        is True
+    )
 
-    assert runner._same_queue_assignment_still_blocked(
-        {
-            "current_queue_assignment": {
-                "target_symbol": "demo",
-                "active_file": "Demo/Main.lean",
-                "slice": "theorem demo : True := by\n  sorry",
-            }
-        },
-        {
-            "active_file_label": "Demo/Main.lean",
-            "current_queue_item": {"label": "next", "reasons": ["contains sorry"]},
-            "diagnostics": "warning: declaration uses sorry",
-            "goals": "no goals",
-            "build_status": "unknown",
-        },
-    ) is False
+    assert (
+        runner._same_queue_assignment_still_blocked(
+            {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            },
+            {
+                "active_file_label": "Demo/Main.lean",
+                "current_queue_item": {"label": "next", "reasons": ["contains sorry"]},
+                "diagnostics": "warning: declaration uses sorry",
+                "goals": "no goals",
+                "build_status": "unknown",
+            },
+        )
+        is False
+    )
 
 
 def test_restore_queue_assignment_to_baseline_sorry_replaces_only_assigned_declaration(tmp_path):
@@ -7632,11 +8224,12 @@ def test_restore_queue_assignment_to_baseline_sorry_replaces_only_assigned_decla
     assert "theorem next_demo : True := by\n  sorry" in text
 
 
-def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(monkeypatch, tmp_path):
+def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(
+    monkeypatch, tmp_path
+):
     active = tmp_path / "Demo.lean"
     active.write_text(
-        "theorem demo : True := by\n"
-        "  exact False.elim ?bad\n",
+        "theorem demo : True := by\n  exact False.elim ?bad\n",
         encoding="utf-8",
     )
     autonomy_state = {
@@ -7652,9 +8245,7 @@ def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(mo
         "target_symbol": "demo",
         "current_queue_item": {"label": "demo", "reasons": ["diagnostic near line 2"]},
         "current_queue_item_slice": (
-            "Assigned declaration slice (1-2):\n"
-            "theorem demo : True := by\n"
-            "  exact False.elim ?bad"
+            "Assigned declaration slice (1-2):\ntheorem demo : True := by\n  exact False.elim ?bad"
         ),
         "diagnostics": "error: unsolved goals",
         "goals": "⊢ True",
@@ -7671,15 +8262,23 @@ def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(mo
     }
     events = []
 
-    class _Agent:
+    class _Agent(_ManagedRunAgentStub):
         max_iterations = 180
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
-    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda path: {"ok": True, "command": f"lake env lean {path}"})
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda path: {"ok": True, "command": f"lake env lean {path}"},
+    )
     monkeypatch.setattr(runner, "_journal_status", lambda: {})
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: post_live_state)
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state=None: post_live_state
+    )
     monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda state: state)
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
 
     history, updated_live_state, attempt_recorded = runner._handle_api_step_budget_exhaustion(
         _Agent(),
@@ -7827,8 +8426,12 @@ def test_build_live_proof_state_surfaces_search_exhaustion(monkeypatch, tmp_path
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
-    monkeypatch.setattr(runner, "_resolve_active_file", lambda history, checkpoint_state=None: str(active))
-    monkeypatch.setattr(runner, "_resolve_target_symbol", lambda history, checkpoint_state=None: "demo")
+    monkeypatch.setattr(
+        runner, "_resolve_active_file", lambda history, checkpoint_state=None: str(active)
+    )
+    monkeypatch.setattr(
+        runner, "_resolve_target_symbol", lambda history, checkpoint_state=None: "demo"
+    )
     monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
     monkeypatch.setattr(runner, "_collect_message_text", lambda history: "")
     monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (1, ["Demo/Main.lean (1)"]))
@@ -7884,7 +8487,9 @@ def test_build_live_proof_state_surfaces_search_exhaustion(monkeypatch, tmp_path
     assert "search exhausted for this theorem" in live_state["message"]
 
 
-def test_build_live_proof_state_keeps_warning_only_items_out_of_primary_queue(monkeypatch, tmp_path):
+def test_build_live_proof_state_keeps_warning_only_items_out_of_primary_queue(
+    monkeypatch, tmp_path
+):
     project = tmp_path / "Demo"
     module_dir = project / "Demo"
     module_dir.mkdir(parents=True)
@@ -7907,7 +8512,9 @@ def test_build_live_proof_state_keeps_warning_only_items_out_of_primary_queue(mo
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
     monkeypatch.setattr(runner, "_project_root", lambda: str(project))
-    monkeypatch.setattr(runner, "_resolve_active_file", lambda history, checkpoint_state=None: str(active))
+    monkeypatch.setattr(
+        runner, "_resolve_active_file", lambda history, checkpoint_state=None: str(active)
+    )
     monkeypatch.setattr(runner, "_resolve_target_symbol", lambda history, checkpoint_state=None: "")
     monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
     monkeypatch.setattr(runner, "_collect_message_text", lambda history: "")
@@ -7995,7 +8602,9 @@ def test_build_live_proof_state_hides_future_sorries_from_model_message(monkeypa
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
     monkeypatch.setattr(runner, "_project_root", lambda: str(project))
-    monkeypatch.setattr(runner, "_resolve_active_file", lambda history, checkpoint_state=None: str(active))
+    monkeypatch.setattr(
+        runner, "_resolve_active_file", lambda history, checkpoint_state=None: str(active)
+    )
     monkeypatch.setattr(runner, "_resolve_target_symbol", lambda history, checkpoint_state=None: "")
     monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
     monkeypatch.setattr(runner, "_collect_message_text", lambda history: "")
@@ -8081,7 +8690,13 @@ def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkey
             super().__init__()
             self.calls = []
 
-        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+        def run_conversation(
+            self,
+            user_message,
+            system_message=None,
+            conversation_history=None,
+            persist_user_message=None,
+        ):
             self.calls.append(
                 {
                     "user_message": user_message,
@@ -8100,7 +8715,10 @@ def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkey
                 "active_file": "/tmp/project/GaussTest/MiniF2F.lean",
                 "active_file_label": "GaussTest/MiniF2F.lean",
                 "target_symbol": "algebra_amgm_sumasqdivbgeqsuma",
-                "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+                "current_queue_item": {
+                    "label": "algebra_amgm_sumasqdivbgeqsuma",
+                    "reasons": ["contains sorry"],
+                },
                 "declaration_queue_summary": "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry",
                 "diagnostics": "warning: declaration uses sorry",
                 "goals": "no goals",
@@ -8113,7 +8731,10 @@ def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkey
                 "active_file": "/tmp/project/GaussTest/MiniF2F.lean",
                 "active_file_label": "GaussTest/MiniF2F.lean",
                 "target_symbol": "algebra_amgm_sumasqdivbgeqsuma",
-                "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+                "current_queue_item": {
+                    "label": "algebra_amgm_sumasqdivbgeqsuma",
+                    "reasons": ["contains sorry"],
+                },
                 "declaration_queue_summary": "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry",
                 "diagnostics": "no errors found",
                 "goals": "no goals",
@@ -8129,7 +8750,10 @@ def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkey
                 "active_file": "/tmp/project/GaussTest/MiniF2F.lean",
                 "active_file_label": "GaussTest/MiniF2F.lean",
                 "target_symbol": "algebra_amgm_sumasqdivbgeqsuma",
-                "current_queue_item": {"label": "algebra_amgm_sumasqdivbgeqsuma", "reasons": ["contains sorry"]},
+                "current_queue_item": {
+                    "label": "algebra_amgm_sumasqdivbgeqsuma",
+                    "reasons": ["contains sorry"],
+                },
                 "declaration_queue_summary": "- algebra_amgm_sumasqdivbgeqsuma [GaussTest/MiniF2F.lean] — contains sorry",
                 "diagnostics": "no errors found",
                 "goals": "no goals",
@@ -8143,10 +8767,19 @@ def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkey
     )
 
     monkeypatch.setattr(runner, "_journal_status", lambda: {})
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states)
+    )
     monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
     monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"}))
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent: (
+            history,
+            {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"},
+        ),
+    )
     monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
 
     agent = _LoopAgent()
@@ -8190,7 +8823,9 @@ def test_maybe_announce_final_file_sweep_skips_when_file_already_clean(monkeypat
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "/tmp/project/Demo/Main.lean")
     events = []
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
 
     autonomy_state = {"continuation_blocked_runs": 2, "continuation_stable_cycles": 2}
     live_state = {
@@ -8212,11 +8847,15 @@ def test_maybe_announce_final_file_sweep_skips_when_file_already_clean(monkeypat
     assert events[0][0][0] == "final-file-sweep-skipped"
 
 
-def test_maybe_announce_final_file_sweep_starts_when_queue_empty_but_file_blocked(monkeypatch, capsys):
+def test_maybe_announce_final_file_sweep_starts_when_queue_empty_but_file_blocked(
+    monkeypatch, capsys
+):
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "/tmp/project/Demo/Main.lean")
     events = []
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
 
     autonomy_state = {"continuation_blocked_runs": 2, "continuation_stable_cycles": 2}
     live_state = {
@@ -8246,7 +8885,9 @@ def test_maybe_announce_final_file_sweep_defers_for_document_review_gate(monkeyp
     monkeypatch.setenv("EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE", "docs/paper.tex")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "/tmp/project/Demo/Main.lean")
     events = []
-    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
 
     autonomy_state = {"continuation_blocked_runs": 2, "continuation_stable_cycles": 2}
     live_state = {
@@ -8286,7 +8927,13 @@ def test_drive_autonomous_followups_keeps_history_when_theorem_does_not_change(m
             super().__init__()
             self.calls = []
 
-        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+        def run_conversation(
+            self,
+            user_message,
+            system_message=None,
+            conversation_history=None,
+            persist_user_message=None,
+        ):
             self.calls.append(list(conversation_history or []))
             return {
                 "messages": list(conversation_history or [])
@@ -8317,10 +8964,19 @@ def test_drive_autonomous_followups_keeps_history_when_theorem_does_not_change(m
     live_states = chain([stable_live_state, verified_live_state], repeat(verified_live_state))
 
     monkeypatch.setattr(runner, "_journal_status", lambda: {})
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states)
+    )
     monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
     monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"}))
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent: (
+            history,
+            {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"},
+        ),
+    )
     monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
 
     original_history = [
@@ -8358,7 +9014,13 @@ def test_drive_autonomous_followups_applies_auto_reasoning_to_current_theorem(mo
             self.reasoning_config = None
             self.calls = []
 
-        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+        def run_conversation(
+            self,
+            user_message,
+            system_message=None,
+            conversation_history=None,
+            persist_user_message=None,
+        ):
             self.calls.append(dict(self.reasoning_config or {}))
             return {
                 "messages": list(conversation_history or [])
@@ -8389,10 +9051,19 @@ def test_drive_autonomous_followups_applies_auto_reasoning_to_current_theorem(mo
     live_states = chain([stable_live_state, verified_live_state], repeat(verified_live_state))
 
     monkeypatch.setattr(runner, "_journal_status", lambda: {})
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states)
+    )
     monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
     monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"}))
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent: (
+            history,
+            {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"},
+        ),
+    )
     monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
 
     agent = _LoopAgent()
@@ -8431,7 +9102,13 @@ def test_drive_autonomous_followups_records_transition_events(monkeypatch, tmp_p
     monkeypatch.setenv("EPFLEMMA_NATIVE_AUTONOMOUS_FOLLOWUPS", "2")
 
     class _LoopAgent(_FakeAgent):
-        def run_conversation(self, user_message, system_message=None, conversation_history=None, persist_user_message=None):
+        def run_conversation(
+            self,
+            user_message,
+            system_message=None,
+            conversation_history=None,
+            persist_user_message=None,
+        ):
             return {
                 "messages": list(conversation_history or [])
                 + [{"role": "assistant", "content": "transitioned"}]
@@ -8486,10 +9163,19 @@ def test_drive_autonomous_followups_records_transition_events(monkeypatch, tmp_p
     )
 
     monkeypatch.setattr(runner, "_journal_status", lambda: {})
-    monkeypatch.setattr(runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states))
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state", lambda history, checkpoint_state=None: next(live_states)
+    )
     monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
     monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
-    monkeypatch.setattr(runner, "_auto_compact_history", lambda history, agent: (history, {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"}))
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent: (
+            history,
+            {"snapshot_text": "Compact workflow snapshot", "reason": "no-op"},
+        ),
+    )
     monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
 
     runner._drive_autonomous_followups(
@@ -8512,3 +9198,31 @@ def test_drive_autonomous_followups_records_transition_events(monkeypatch, tmp_p
     assert "theorem-transition" in event_types
     assert "theorem-context-cleared" in event_types
     assert "theorem-handoff-rebuilt" in event_types
+
+
+def test_autonomous_stop_reason_stalls_despite_volatile_elapsed(monkeypatch):
+    # Regression for the post-verification livelock: build_status carries a per-cycle
+    # "elapsed: <wall-clock>s" token. If that volatile token enters the stall signature, a
+    # genuinely no-progress autonomous loop never trips the "stalled" safety net and spins
+    # forever. The signature must ignore the elapsed token.
+    monkeypatch.setattr(
+        runner, "_document_formalization_ready_for_prover_handoff", lambda ls: False
+    )
+    monkeypatch.setattr(
+        runner, "_document_formalization_waiting_for_independent_review", lambda ls: False
+    )
+    autonomy_state: dict = {}
+    reasons = []
+    for i in range(8):
+        live_state = {
+            "active_file": "",  # -> _live_state_is_verified() is False, so we reach the stall logic
+            "active_file_label": "F.lean",
+            "target_symbol": "thm",
+            "diagnostics": "",
+            "goals": "",
+            # Only the elapsed token changes each cycle; everything else is identical.
+            "build_status": f"lake build succeeded | elapsed: {i}.123s",
+            "sorry_count": 0,
+        }
+        reasons.append(runner._autonomous_stop_reason([], live_state, autonomy_state))
+    assert "stalled" in reasons, f"stall net never tripped despite a stable state: {reasons}"

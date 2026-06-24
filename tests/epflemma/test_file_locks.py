@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
-from epflemma_cli.file_locks import (
+from epflemma_cli.runtime.file_locks import (
     acquire_file_lock,
     describe_lock,
     ensure_file_lock,
@@ -11,7 +11,7 @@ from epflemma_cli.file_locks import (
     release_all_file_locks,
     release_file_lock,
 )
-from tools.file_tools import write_file_tool
+from tools.implementations.file_tools import write_file_tool
 
 
 def test_acquire_file_lock_blocks_other_owner(monkeypatch, tmp_path):
@@ -31,7 +31,9 @@ def test_write_file_tool_respects_foreign_lock(monkeypatch, tmp_path):
     target = tmp_path / "Main.lean"
     acquire_file_lock(str(target), owner_id="agent-a", purpose="active edit")
 
-    result = json.loads(write_file_tool(str(target), "theorem demo : True := by trivial\n", owner_id="agent-b"))
+    result = json.loads(
+        write_file_tool(str(target), "theorem demo : True := by trivial\n", owner_id="agent-b")
+    )
 
     assert "locked" in result["error"]
 
@@ -151,7 +153,7 @@ def test_expired_lock_is_cleaned_up_on_next_acquire(monkeypatch, tmp_path):
     payload = json.loads(lock_file.read_text(encoding="utf-8"))
     normalized = str(target.resolve())
     payload["locks"][normalized]["expires_at"] = (
-        datetime.now(timezone.utc) - timedelta(seconds=1)
+        datetime.now(UTC) - timedelta(seconds=1)
     ).isoformat()
     lock_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 

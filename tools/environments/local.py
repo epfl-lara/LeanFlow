@@ -11,13 +11,15 @@ import time
 
 _IS_WINDOWS = platform.system() == "Windows"
 
+import contextlib
+
 from tools.environments.base import BaseEnvironment
 from tools.environments.persistent_shell import PersistentShellMixin
-from tools.interrupt import is_interrupted
+from tools.utilities.interrupt import is_interrupted
 
 # Unique marker to isolate real command output from shell init/exit noise.
 # printf (no trailing newline) keeps the boundaries clean for splitting.
-_OUTPUT_FENCE = "__GAUSS_FENCE_a9f7b3__"
+_OUTPUT_FENCE = "__EPFLEMMA_FENCE_a9f7b3__"
 
 # EPFLemma-internal env vars that should NOT leak into terminal subprocesses.
 # These are loaded from ~/.epflemma/.env for EPFLemma's own LLM/provider calls
@@ -26,7 +28,7 @@ _OUTPUT_FENCE = "__GAUSS_FENCE_a9f7b3__"
 #
 # Built dynamically from the provider registry so new providers are
 # automatically covered without manual blocklist maintenance.
-_GAUSS_PROVIDER_ENV_FORCE_PREFIX = "_GAUSS_FORCE_"
+_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX = "_EPFLEMMA_FORCE_"
 
 
 def _build_provider_env_blocklist() -> frozenset:
@@ -40,7 +42,8 @@ def _build_provider_env_blocklist() -> frozenset:
     blocked: set[str] = set()
 
     try:
-        from epflemma_cli.auth import PROVIDER_REGISTRY
+        from epflemma_cli.runtime.auth import PROVIDER_REGISTRY
+
         for pconfig in PROVIDER_REGISTRY.values():
             blocked.update(pconfig.api_key_env_vars)
             if pconfig.base_url_env_var:
@@ -50,106 +53,111 @@ def _build_provider_env_blocklist() -> frozenset:
 
     try:
         from epflemma_cli.config import OPTIONAL_ENV_VARS
+
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
-            if category in {"tool", "messaging"}:
-                blocked.add(name)
-            elif category == "setting" and metadata.get("password"):
+            if (
+                category in {"tool", "messaging"}
+                or category == "setting"
+                and metadata.get("password")
+            ):
                 blocked.add(name)
     except ImportError:
         pass
 
     # Vars not covered above but still Gauss-internal / conflict-prone.
-    blocked.update({
-        "TELEGRAM_BOT_TOKEN",
-        "OPENAI_BASE_URL",
-        "OPENAI_API_KEY",
-        "OPENAI_API_BASE",         # legacy alias
-        "OPENAI_ORG_ID",
-        "OPENAI_ORGANIZATION",
-        "OPENROUTER_API_KEY",
-        "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_TOKEN",         # OAuth token (not in registry as env var)
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "LLM_MODEL",
-        # Expanded isolation for other major providers (Issue #1002)
-        "GOOGLE_API_KEY",          # Gemini / Google AI Studio
-        "DEEPSEEK_API_KEY",        # DeepSeek
-        "MISTRAL_API_KEY",         # Mistral AI
-        "GROQ_API_KEY",            # Groq
-        "TOGETHER_API_KEY",        # Together AI
-        "PERPLEXITY_API_KEY",      # Perplexity
-        "COHERE_API_KEY",          # Cohere
-        "FIREWORKS_API_KEY",       # Fireworks AI
-        "XAI_API_KEY",             # xAI (Grok)
-        "HELICONE_API_KEY",        # LLM Observability proxy
-        # Gateway/runtime config not represented in OPTIONAL_ENV_VARS.
-        "TELEGRAM_HOME_CHANNEL",
-        "TELEGRAM_HOME_CHANNEL_NAME",
-        "DISCORD_HOME_CHANNEL",
-        "DISCORD_HOME_CHANNEL_NAME",
-        "DISCORD_REQUIRE_MENTION",
-        "DISCORD_FREE_RESPONSE_CHANNELS",
-        "DISCORD_AUTO_THREAD",
-        "SLACK_HOME_CHANNEL",
-        "SLACK_HOME_CHANNEL_NAME",
-        "SLACK_ALLOWED_USERS",
-        "WHATSAPP_ENABLED",
-        "WHATSAPP_MODE",
-        "WHATSAPP_ALLOWED_USERS",
-        "SLACK_APP_TOKEN",
-        "SIGNAL_HTTP_URL",
-        "SIGNAL_ACCOUNT",
-        "SIGNAL_ALLOWED_USERS",
-        "SIGNAL_GROUP_ALLOWED_USERS",
-        "SIGNAL_HOME_CHANNEL",
-        "SIGNAL_HOME_CHANNEL_NAME",
-        "SIGNAL_IGNORE_STORIES",
-        "HASS_TOKEN",
-        "HASS_URL",
-        "EMAIL_ADDRESS",
-        "EMAIL_PASSWORD",
-        "EMAIL_IMAP_HOST",
-        "EMAIL_SMTP_HOST",
-        "EMAIL_HOME_ADDRESS",
-        "EMAIL_HOME_ADDRESS_NAME",
-        "FIRECRAWL_API_KEY",
-        "BROWSERBASE_PROJECT_ID",
-        "ELEVENLABS_API_KEY",
-        "GITHUB_TOKEN",
-        "GATEWAY_ALLOWED_USERS",
-        "GATEWAY_ALLOW_ALL_USERS",
-        # Skills Hub / GitHub app auth paths and aliases.
-        "GH_TOKEN",
-        "GITHUB_APP_ID",
-        "GITHUB_APP_PRIVATE_KEY_PATH",
-        "GITHUB_APP_INSTALLATION_ID",
-    })
+    blocked.update(
+        {
+            "TELEGRAM_BOT_TOKEN",
+            "OPENAI_BASE_URL",
+            "OPENAI_API_KEY",
+            "OPENAI_API_BASE",  # legacy alias
+            "OPENAI_ORG_ID",
+            "OPENAI_ORGANIZATION",
+            "OPENROUTER_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_TOKEN",  # OAuth token (not in registry as env var)
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "LLM_MODEL",
+            # Expanded isolation for other major providers (Issue #1002)
+            "GOOGLE_API_KEY",  # Gemini / Google AI Studio
+            "DEEPSEEK_API_KEY",  # DeepSeek
+            "MISTRAL_API_KEY",  # Mistral AI
+            "GROQ_API_KEY",  # Groq
+            "TOGETHER_API_KEY",  # Together AI
+            "PERPLEXITY_API_KEY",  # Perplexity
+            "COHERE_API_KEY",  # Cohere
+            "FIREWORKS_API_KEY",  # Fireworks AI
+            "XAI_API_KEY",  # xAI (Grok)
+            "HELICONE_API_KEY",  # LLM Observability proxy
+            # Gateway/runtime config not represented in OPTIONAL_ENV_VARS.
+            "TELEGRAM_HOME_CHANNEL",
+            "TELEGRAM_HOME_CHANNEL_NAME",
+            "DISCORD_HOME_CHANNEL",
+            "DISCORD_HOME_CHANNEL_NAME",
+            "DISCORD_REQUIRE_MENTION",
+            "DISCORD_FREE_RESPONSE_CHANNELS",
+            "DISCORD_AUTO_THREAD",
+            "SLACK_HOME_CHANNEL",
+            "SLACK_HOME_CHANNEL_NAME",
+            "SLACK_ALLOWED_USERS",
+            "WHATSAPP_ENABLED",
+            "WHATSAPP_MODE",
+            "WHATSAPP_ALLOWED_USERS",
+            "SLACK_APP_TOKEN",
+            "SIGNAL_HTTP_URL",
+            "SIGNAL_ACCOUNT",
+            "SIGNAL_ALLOWED_USERS",
+            "SIGNAL_GROUP_ALLOWED_USERS",
+            "SIGNAL_HOME_CHANNEL",
+            "SIGNAL_HOME_CHANNEL_NAME",
+            "SIGNAL_IGNORE_STORIES",
+            "HASS_TOKEN",
+            "HASS_URL",
+            "EMAIL_ADDRESS",
+            "EMAIL_PASSWORD",
+            "EMAIL_IMAP_HOST",
+            "EMAIL_SMTP_HOST",
+            "EMAIL_HOME_ADDRESS",
+            "EMAIL_HOME_ADDRESS_NAME",
+            "FIRECRAWL_API_KEY",
+            "BROWSERBASE_PROJECT_ID",
+            "ELEVENLABS_API_KEY",
+            "GITHUB_TOKEN",
+            "GATEWAY_ALLOWED_USERS",
+            "GATEWAY_ALLOW_ALL_USERS",
+            # Skills Hub / GitHub app auth paths and aliases.
+            "GH_TOKEN",
+            "GITHUB_APP_ID",
+            "GITHUB_APP_PRIVATE_KEY_PATH",
+            "GITHUB_APP_INSTALLATION_ID",
+        }
+    )
     return frozenset(blocked)
 
 
-_GAUSS_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+_EPFLEMMA_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Gauss-managed secrets from a subprocess environment.
 
-    `_GAUSS_FORCE_<VAR>` entries in ``extra_env`` opt a blocked variable back in
+    `_EPFLEMMA_FORCE_<VAR>` entries in ``extra_env`` opt a blocked variable back in
     intentionally for callers that truly need it.
     """
     sanitized: dict[str, str] = {}
 
     for key, value in (base_env or {}).items():
-        if key.startswith(_GAUSS_PROVIDER_ENV_FORCE_PREFIX):
+        if key.startswith(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX):
             continue
-        if key not in _GAUSS_PROVIDER_ENV_BLOCKLIST:
+        if key not in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST:
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
-        if key.startswith(_GAUSS_PROVIDER_ENV_FORCE_PREFIX):
-            real_key = key[len(_GAUSS_PROVIDER_ENV_FORCE_PREFIX):]
+        if key.startswith(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX):
+            real_key = key[len(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX) :]
             sanitized[real_key] = value
-        elif key not in _GAUSS_PROVIDER_ENV_BLOCKLIST:
+        elif key not in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST:
             sanitized[key] = value
 
     return sanitized
@@ -173,7 +181,7 @@ def _find_bash() -> str:
 
     # Windows: look for Git Bash (installed with Git for Windows).
     # Allow override via env var (same pattern as Claude Code).
-    custom = os.environ.get("GAUSS_GIT_BASH_PATH")
+    custom = os.environ.get("EPFLEMMA_GIT_BASH_PATH")
     if custom and os.path.isfile(custom):
         return custom
 
@@ -185,16 +193,18 @@ def _find_bash() -> str:
     # Check common Git for Windows install locations
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+        os.path.join(
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"
+        ),
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
 
     raise RuntimeError(
-        "Git Bash not found. Gauss Agent requires Git for Windows on Windows.\n"
+        "Git Bash not found. EPFLemma requires Git for Windows on Windows.\n"
         "Install it from: https://git-scm.com/download/win\n"
-        "Or set GAUSS_GIT_BASH_PATH to your bash.exe location."
+        "Or set EPFLEMMA_GIT_BASH_PATH to your bash.exe location."
     )
 
 
@@ -262,10 +272,10 @@ def _make_run_env(env: dict) -> dict:
     merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
-        if k.startswith(_GAUSS_PROVIDER_ENV_FORCE_PREFIX):
-            real_key = k[len(_GAUSS_PROVIDER_ENV_FORCE_PREFIX):]
+        if k.startswith(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX):
+            real_key = k[len(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX) :]
             run_env[real_key] = v
-        elif k not in _GAUSS_PROVIDER_ENV_BLOCKLIST:
+        elif k not in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST:
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
     if "/usr/bin" not in existing_path.split(":"):
@@ -309,8 +319,9 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
     - Optional persistent shell mode (cwd/env vars survive across calls)
     """
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None,
-                 persistent: bool = False):
+    def __init__(
+        self, cwd: str = "", timeout: int = 60, env: dict = None, persistent: bool = False
+    ):
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.persistent = persistent
         if self.persistent:
@@ -346,22 +357,27 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
     def _kill_shell_children(self):
         if self._shell_pid is None:
             return
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired, FileNotFoundError):
             subprocess.run(
                 ["pkill", "-P", str(self._shell_pid)],
-                capture_output=True, timeout=5,
+                capture_output=True,
+                timeout=5,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
 
     def _cleanup_temp_files(self):
         for f in glob.glob(f"{self._temp_prefix}-*"):
             if os.path.exists(f):
                 os.remove(f)
 
-    def _execute_oneshot(self, command: str, cwd: str = "", *,
-                         timeout: int | None = None,
-                         stdin_data: str | None = None) -> dict:
+    def _execute_oneshot(
+        self,
+        command: str,
+        cwd: str = "",
+        *,
+        timeout: int | None = None,
+        stdin_data: str | None = None,
+    ) -> dict:
+        """Execute a command as a oneshot subprocess with interrupt/timeout support and noise-free output extraction. Spawns daemon threads to write stdin and drain stdout in parallel, preventing I/O deadlocks on large inputs; uses fence markers to isolate real output from shell initialization noise; polls for user interrupts or timeout, killing the process group appropriately on either condition."""
         work_dir = cwd or self.cwd or os.getcwd()
         effective_timeout = timeout or self.timeout
         exec_command, sudo_stdin = self._prepare_command(command)
@@ -397,12 +413,14 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         )
 
         if effective_stdin is not None:
+
             def _write_stdin():
                 try:
                     proc.stdin.write(effective_stdin)
                     proc.stdin.close()
                 except (BrokenPipeError, OSError):
                     pass
+
             threading.Thread(target=_write_stdin, daemon=True).start()
 
         _output_chunks: list[str] = []
@@ -414,10 +432,8 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             except ValueError:
                 pass
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     proc.stdout.close()
-                except Exception:
-                    pass
 
         reader = threading.Thread(target=_drain_stdout, daemon=True)
         reader.start()
@@ -439,7 +455,8 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
                     proc.kill()
                 reader.join(timeout=2)
                 return {
-                    "output": "".join(_output_chunks) + "\n[Command interrupted — user sent a new message]",
+                    "output": "".join(_output_chunks)
+                    + "\n[Command interrupted — user sent a new message]",
                     "returncode": 130,
                 }
             if time.monotonic() > deadline:

@@ -4,9 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from epflemma_cli.project import (
+from epflemma_cli.workflows.project import (
     EPFLEMMA_PROJECT_TEMPLATE_ENV,
-    LEGACY_PROJECT_TEMPLATE_ENVS,
     ProjectNotFoundError,
     detect_blueprint_markers,
     discover_epflemma_project,
@@ -20,7 +19,9 @@ from epflemma_cli.project import (
 
 def _make_lean_root(path: Path, lakefile_name: str = "lakefile.lean") -> Path:
     path.mkdir(parents=True, exist_ok=True)
-    (path / lakefile_name).write_text("import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8")
+    (path / lakefile_name).write_text(
+        "import Lake\nopen Lake DSL\npackage demo\n", encoding="utf-8"
+    )
     (path / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
     return path
 
@@ -34,7 +35,7 @@ def test_is_lean_project_root_recognizes_lakefile_lean(tmp_path):
 def test_is_lean_project_root_recognizes_lakefile_toml(tmp_path):
     root = tmp_path / "proj-toml"
     root.mkdir()
-    (root / "lakefile.toml").write_text("name = \"demo\"\n", encoding="utf-8")
+    (root / "lakefile.toml").write_text('name = "demo"\n', encoding="utf-8")
 
     assert is_lean_project_root(root) is True
 
@@ -92,11 +93,12 @@ def test_resolve_template_source_prefers_explicit_env_over_config():
     assert resolve_template_source(config, env) == "https://env.example/template.git"
 
 
-@pytest.mark.parametrize("legacy_env", LEGACY_PROJECT_TEMPLATE_ENVS)
-def test_resolve_template_source_falls_back_to_legacy_env_names(legacy_env):
-    env = {legacy_env: "https://legacy.example/template.git"}
-
-    assert resolve_template_source(None, env) == "https://legacy.example/template.git"
+@pytest.mark.parametrize(
+    "legacy_env", ("OPENGAUSS_BLUEPRINT_TEMPLATE_SOURCE", "GAUSS_BLUEPRINT_TEMPLATE_SOURCE")
+)
+def test_resolve_template_source_ignores_dropped_legacy_env_names(legacy_env):
+    # Legacy OPENGAUSS_/GAUSS_ template-source env names are dropped: they no longer resolve.
+    assert resolve_template_source(None, {legacy_env: "https://legacy.example/template.git"}) == ""
 
 
 def test_resolve_template_source_uses_config_when_env_empty():
@@ -149,8 +151,11 @@ def test_setup_project_power_modes_adds_repl_to_lakefile_toml(monkeypatch, tmp_p
             repl.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
         return 0, "", 0.1
 
-    monkeypatch.setattr("epflemma_cli.project.shutil.which", lambda name: "/usr/bin/lake" if name == "lake" else None)
-    monkeypatch.setattr("epflemma_cli.project._run_power_setup_command", _fake_run)
+    monkeypatch.setattr(
+        "epflemma_cli.workflows.project.shutil.which",
+        lambda name: "/usr/bin/lake" if name == "lake" else None,
+    )
+    monkeypatch.setattr("epflemma_cli.workflows.project._run_power_setup_command", _fake_run)
     progress: list[str] = []
 
     report = setup_project_power_modes(root, progress=progress.append)
@@ -171,7 +176,7 @@ def test_setup_project_power_modes_does_not_duplicate_existing_repl(monkeypatch,
         encoding="utf-8",
     )
     (root / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n", encoding="utf-8")
-    monkeypatch.setattr("epflemma_cli.project.shutil.which", lambda name: None)
+    monkeypatch.setattr("epflemma_cli.workflows.project.shutil.which", lambda name: None)
 
     report = setup_project_power_modes(root)
 
@@ -183,7 +188,7 @@ def test_setup_project_power_modes_does_not_duplicate_existing_repl(monkeypatch,
 def test_setup_project_power_modes_leaves_lakefile_lean_manual(monkeypatch, tmp_path):
     root = _make_lean_root(tmp_path / "proj")
     original = (root / "lakefile.lean").read_text(encoding="utf-8")
-    monkeypatch.setattr("epflemma_cli.project.shutil.which", lambda name: "/usr/bin/lake")
+    monkeypatch.setattr("epflemma_cli.workflows.project.shutil.which", lambda name: "/usr/bin/lake")
 
     report = setup_project_power_modes(root)
 
