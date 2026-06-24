@@ -56,8 +56,10 @@ def _isolate_gauss_home(tmp_path, monkeypatch):
     # test order. monkeypatch.delenv restores the originals at teardown.
     for _prefix in ("EPFLEMMA_", "OPENGAUSS_", "GAUSS_", ""):
         for _suffix in (
-            "OPENAI_BASE_URL", "OPENAI_API_KEY",
-            "OPENROUTER_BASE_URL", "OPENROUTER_API_KEY",
+            "OPENAI_BASE_URL",
+            "OPENAI_API_KEY",
+            "OPENROUTER_BASE_URL",
+            "OPENROUTER_API_KEY",
         ):
             monkeypatch.delenv(_prefix + _suffix, raising=False)
     for _key in list(os.environ):
@@ -103,8 +105,10 @@ def mock_config():
 # Prevents hanging tests (subprocess spawns, blocking I/O) from stalling the
 # entire test suite.
 
+
 def _timeout_handler(signum, frame):
     raise TimeoutError("Test exceeded 30 second timeout")
+
 
 @pytest.fixture(autouse=True)
 def _ensure_current_event_loop(request):

@@ -28,6 +28,7 @@ def _generate_short_session_id() -> str:
     # Extremely unlikely fallback.
     return f"{int(time.time() * 1000) % 100000:05d}"
 
+
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError from broken pipes.
 

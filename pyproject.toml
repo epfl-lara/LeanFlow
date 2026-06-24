@@ -71,19 +71,33 @@ addopts = "-m 'not integration' -n auto"
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+# Vendored / third-party trees we never lint or format (Lean toolchain caches, mathlib test
+# fixtures, opt-in security skill scripts, both project venvs).
+extend-exclude = [
+    "testdata",
+    "optional-skills",
+    "**/.lake/**",
+    ".venv",
+    ".epflemma-venv",
+]
+
+# Black-compatible auto-formatter (bundled with ruff — no separate `black` dependency needed).
+# Run `ruff format .` before committing; CI runs `ruff format --check .`.
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
 
 [tool.ruff.lint]
-# Lenient initial ruleset for the refactor. Enforces import-sorting and high-signal
-# pyflakes checks (undefined names, redefinitions, f-string misuse) — the safe, mechanical
-# wins. The unused-import / unused-variable sweeps are DEFERRED to Phase 6:
-#   F401 (unused-import): this codebase re-exports module-level imports as patch targets /
-#         dynamic-access points without __all__ (e.g. tools.terminal_tool._interrupt_event),
-#         so blanket auto-removal silently breaks runtime + tests. Must be done per-file with
-#         __all__ / `# noqa: F401` annotations.
-#   F841 (unused-variable): ~40 occurrences, not safely auto-fixable (may hide bugs).
+# select = the enforced rule families: pyflakes (F — undefined names, redefinitions, f-string
+# misuse), import-sorting (I), and pyupgrade (UP — PEP585/604 modernization). Run `ruff check .`.
 select = ["F", "I", "UP"]
-# UP035 (deprecated typing imports) left to F401-style cleanup; UP022/UP042 are manual,
-# behavior-sensitive (subprocess capture_output / StrEnum) — deferred.
+# F401 (unused-import) stays ignored because module-level imports are deliberately re-exported as
+#   patch targets / dynamic-access points without __all__ (e.g. run_agent.OpenAI,
+#   tools...terminal_tool._interrupt_event), so blanket removal silently breaks runtime + tests.
+#   The genuinely-dead typing/stdlib imports were removed per-file; what remains is intentional.
+# F841 (unused-variable): a handful of occurrences, not safely auto-fixable (may hide bugs).
+# UP035/UP022/UP042: behavior-sensitive manual modernizations (StrEnum, subprocess capture_output).
 ignore = ["F401", "F841", "UP035", "UP022", "UP042"]
 
 [tool.mypy]

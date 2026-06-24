@@ -67,11 +67,14 @@ def clarify_tool(
             ensure_ascii=False,
         )
 
-    return json.dumps({
-        "question": question,
-        "choices_offered": choices,
-        "user_response": str(user_response).strip(),
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "question": question,
+            "choices_offered": choices,
+            "user_response": str(user_response).strip(),
+        },
+        ensure_ascii=False,
+    )
 
 
 def check_clarify_requirements() -> bool:
@@ -132,9 +135,8 @@ registry.register(
     toolset="clarify",
     schema=CLARIFY_SCHEMA,
     handler=lambda args, **kw: clarify_tool(
-        question=args.get("question", ""),
-        choices=args.get("choices"),
-        callback=kw.get("callback")),
+        question=args.get("question", ""), choices=args.get("choices"), callback=kw.get("callback")
+    ),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

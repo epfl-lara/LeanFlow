@@ -307,8 +307,6 @@ def get_env_path() -> Path:
     return get_epflemma_home() / ".env"
 
 
-
-
 def _secure_dir(path: Path) -> None:
     with contextlib.suppress(OSError):
         path.chmod(0o700)
@@ -378,7 +376,12 @@ def _merge_env_template(existing: str) -> str:
         return DEFAULT_ENV_TEMPLATE.rstrip() + "\n"
     if not additions:
         return existing if existing.endswith("\n") else existing + "\n"
-    return (existing.rstrip() + "\n\n# Added by EPFLemma for provider/model setup.\n" + "\n".join(additions) + "\n")
+    return (
+        existing.rstrip()
+        + "\n\n# Added by EPFLemma for provider/model setup.\n"
+        + "\n".join(additions)
+        + "\n"
+    )
 
 
 def _ensure_default_env_file(home: Path) -> None:
@@ -412,20 +415,32 @@ def _transform_legacy_config(payload: Mapping[str, Any]) -> dict[str, Any]:
         legacy_root = payload.get("gauss")
     if isinstance(legacy_root, Mapping):
         merged["epflemma"]["project"]["template_source"] = str(
-            ((legacy_root.get("project") or {}) if isinstance(legacy_root.get("project"), Mapping) else {}).get(
-                "template_source", ""
-            )
+            (
+                (legacy_root.get("project") or {})
+                if isinstance(legacy_root.get("project"), Mapping)
+                else {}
+            ).get("template_source", "")
             or ""
         ).strip()
         workflow_state_dir = str(
-            ((legacy_root.get("autoformalize") or {}) if isinstance(legacy_root.get("autoformalize"), Mapping) else {}).get(
-                "managed_state_dir", ""
-            )
+            (
+                (legacy_root.get("autoformalize") or {})
+                if isinstance(legacy_root.get("autoformalize"), Mapping)
+                else {}
+            ).get("managed_state_dir", "")
             or ""
         ).strip()
         merged["epflemma"]["workflow"]["managed_state_dir"] = workflow_state_dir
 
-    for key in ("model", "toolsets", "agent", "logging", "compression", "custom_providers", "local_models"):
+    for key in (
+        "model",
+        "toolsets",
+        "agent",
+        "logging",
+        "compression",
+        "custom_providers",
+        "local_models",
+    ):
         value = payload.get(key)
         if isinstance(value, Mapping) and isinstance(merged.get(key), dict):
             merged[key] = _deep_merge(merged[key], value)
@@ -462,7 +477,9 @@ def _import_legacy_home(home: Path) -> None:
         if legacy_config.exists() and not get_config_path().exists():
             try:
                 payload = yaml.safe_load(legacy_config.read_text(encoding="utf-8")) or {}
-                transformed = _transform_legacy_config(payload if isinstance(payload, Mapping) else {})
+                transformed = _transform_legacy_config(
+                    payload if isinstance(payload, Mapping) else {}
+                )
                 save_config(transformed)
             except Exception:
                 logger.warning(
@@ -557,7 +574,9 @@ def save_config(config: Mapping[str, Any]) -> None:
     invalidate_config_cache()
 
 
-def _descend_config(config: dict[str, Any], key_path: str, create: bool = False) -> tuple[dict[str, Any], str]:
+def _descend_config(
+    config: dict[str, Any], key_path: str, create: bool = False
+) -> tuple[dict[str, Any], str]:
     parts = [part for part in key_path.split(".") if part]
     if not parts:
         raise KeyError("config key path must not be empty")

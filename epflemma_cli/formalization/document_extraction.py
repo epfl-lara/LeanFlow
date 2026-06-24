@@ -223,7 +223,9 @@ def _following_latex_proof(raw: str, end_offset: int, theorem_env_pattern: str) 
     proof_start_line, proof_end_line = _line_span(raw, proof_start, proof_end)
     return {
         "proof": _bounded(
-            _clean_tex_statement(proof_match.group("braced_body") or proof_match.group("plain_body") or ""),
+            _clean_tex_statement(
+                proof_match.group("braced_body") or proof_match.group("plain_body") or ""
+            ),
             MAX_STATEMENT_CHARS,
         ),
         "proof_line": proof_start_line,
@@ -235,7 +237,9 @@ def _extract_latex_summary(path: Path) -> dict[str, Any]:
     """Extract a structured summary from a LaTeX file for formalization preflight: theorem blocks, \profess statements, sections, citations, labels, and raw text, all bounded by size limits. Returns document title, parsed blocks with extracted Lean hints and proofs, bibliography references, and full text for context."""
     raw = path.read_text(encoding="utf-8", errors="replace")
     theorem_env_kinds = _latex_theorem_environment_kinds(raw)
-    env_pattern = "|".join(re.escape(env) for env in sorted(theorem_env_kinds, key=len, reverse=True))
+    env_pattern = "|".join(
+        re.escape(env) for env in sorted(theorem_env_kinds, key=len, reverse=True)
+    )
     theorem_pattern = re.compile(
         rf"\\begin\{{(?P<env>{env_pattern})\}}"
         r"(?P<option>\[[^\]]*\])?"
@@ -282,7 +286,7 @@ def _extract_latex_summary(path: Path) -> dict[str, Any]:
             kind = re.sub(r"[^A-Za-z]+", " ", raw_kind).strip().lower() or "statement"
             if kind.endswith("."):
                 kind = kind[:-1].strip()
-            following = raw[match.end(): match.end() + 12_000]
+            following = raw[match.end() : match.end() + 12_000]
             proof = ""
             proof_match = re.search(
                 r"^\s*\\proof\s*(?P<body>.*?)\\endproof",
@@ -290,7 +294,9 @@ def _extract_latex_summary(path: Path) -> dict[str, Any]:
                 flags=re.IGNORECASE | re.DOTALL,
             )
             if proof_match:
-                proof = _bounded(_clean_tex_statement(proof_match.group("body") or ""), MAX_STATEMENT_CHARS)
+                proof = _bounded(
+                    _clean_tex_statement(proof_match.group("body") or ""), MAX_STATEMENT_CHARS
+                )
                 proof_start_line, proof_end_line = _line_span(
                     raw,
                     match.end() + proof_match.start(),
@@ -313,14 +319,18 @@ def _extract_latex_summary(path: Path) -> dict[str, Any]:
                     "title": raw_kind,
                     "lean": _extract_braced_commands(match.group("body") or "", "lean"),
                     "uses": _extract_braced_commands(match.group("body") or "", "uses"),
-                    "statement": _bounded(_clean_tex_statement(match.group("body") or ""), MAX_STATEMENT_CHARS),
+                    "statement": _bounded(
+                        _clean_tex_statement(match.group("body") or ""), MAX_STATEMENT_CHARS
+                    ),
                     "proof": proof,
                 }
             )
             if len(blocks) >= MAX_THEOREM_BLOCKS:
                 break
 
-    section_pattern = re.compile(r"\\(?P<level>chapter|section|subsection|subsubsection)\*?\{(?P<title>[^{}\n]+)\}")
+    section_pattern = re.compile(
+        r"\\(?P<level>chapter|section|subsection|subsubsection)\*?\{(?P<title>[^{}\n]+)\}"
+    )
     sections = [
         {
             "level": match.group("level"),
@@ -335,7 +345,9 @@ def _extract_latex_summary(path: Path) -> dict[str, Any]:
         title_lines = re.findall(r"\\centerline\{\\titlefont\s+([^{}\n]+)\}", raw)
         if title_lines:
             title = " ".join(item.strip() for item in title_lines if item.strip())
-    bibliography_files = _extract_braced_commands(raw, "bibliography") + _extract_braced_commands(raw, "addbibresource")
+    bibliography_files = _extract_braced_commands(raw, "bibliography") + _extract_braced_commands(
+        raw, "addbibresource"
+    )
     citations = _extract_braced_commands(raw, "cite")[:MAX_REFERENCES]
     labels = _extract_braced_commands(raw, "label")[:MAX_REFERENCES]
     refs = _extract_braced_commands(raw, "ref")[:MAX_REFERENCES]
@@ -404,10 +416,14 @@ def _extract_pdf_summary(path: Path) -> dict[str, Any]:
         if not ok:
             metadata["degraded_reasons"].append(f"pdfimages failed: {image_list}")
     if not tools["pdftotext"]:
-        metadata["degraded_reasons"].append("pdftotext is not installed; PDF text extraction was not available")
+        metadata["degraded_reasons"].append(
+            "pdftotext is not installed; PDF text extraction was not available"
+        )
         return metadata
 
-    ok, extracted = _run_document_tool(["pdftotext", "-layout", "-enc", "UTF-8", str(path), "-"], timeout_s=60)
+    ok, extracted = _run_document_tool(
+        ["pdftotext", "-layout", "-enc", "UTF-8", str(path), "-"], timeout_s=60
+    )
     if not ok:
         metadata["extraction_status"] = "pdftotext-failed"
         metadata["degraded_reasons"].append(f"pdftotext failed: {extracted}")
@@ -420,7 +436,9 @@ def _extract_pdf_summary(path: Path) -> dict[str, Any]:
 
 def _extract_plaintext_sections(text: str) -> list[dict[str, Any]]:
     sections: list[dict[str, Any]] = []
-    pattern = re.compile(r"^\s*((?:\d+(?:\.\d+)*)\s+[A-Z][^\n]{2,120}|[A-Z][A-Z0-9 ,;:()'/-]{6,120})\s*$")
+    pattern = re.compile(
+        r"^\s*((?:\d+(?:\.\d+)*)\s+[A-Z][^\n]{2,120}|[A-Z][A-Z0-9 ,;:()'/-]{6,120})\s*$"
+    )
     for line_number, line in enumerate((text or "").splitlines(), start=1):
         stripped = line.strip()
         if not stripped:

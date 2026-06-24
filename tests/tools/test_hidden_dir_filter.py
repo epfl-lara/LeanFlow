@@ -16,7 +16,7 @@ def _old_filter_matches(path_str: str) -> bool:
 
     Returns True when the path SHOULD be filtered out.
     """
-    return '/.git/' in path_str or '/.github/' in path_str or '/.hub/' in path_str
+    return "/.git/" in path_str or "/.github/" in path_str or "/.hub/" in path_str
 
 
 def _new_filter_matches(path: Path) -> bool:
@@ -24,7 +24,7 @@ def _new_filter_matches(path: Path) -> bool:
 
     Returns True when the path SHOULD be filtered out.
     """
-    return any(part in ('.git', '.github', '.hub') for part in path.parts)
+    return any(part in (".git", ".github", ".hub") for part in path.parts)
 
 
 class TestOldFilterBrokenOnWindows:

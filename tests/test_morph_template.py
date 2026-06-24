@@ -27,7 +27,7 @@ def test_morph_template_restores_optional_provider_secret_staging():
         assert step["type"] == "exportSecret"
         assert step["name"] == secret_name
         assert step["optional"] is True
-        assert f'{secret_name}=' in step["run"]
+        assert f"{secret_name}=" in step["run"]
 
     finalize = by_id["finalize-provider-selection"]
     assert finalize["type"] == "command"

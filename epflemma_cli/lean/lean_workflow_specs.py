@@ -144,11 +144,7 @@ def specs_for_skill(skill_name: str) -> list[LeanSpecRecord]:
     wanted = str(skill_name or "").strip()
     if not wanted:
         return []
-    return [
-        record
-        for record in load_lean_specs().values()
-        if wanted in record.skills
-    ]
+    return [record for record in load_lean_specs().values() if wanted in record.skills]
 
 
 def list_specs(kind: str | None = None) -> list[LeanSpecRecord]:

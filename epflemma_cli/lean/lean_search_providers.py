@@ -60,11 +60,15 @@ def _leanexplore_api_key() -> str:
 
 
 def _leanexplore_backend_preference() -> str:
-    value = str(
-        os.getenv("EPFLEMMA_LEANEXPLORE_BACKEND", "")
-        or os.getenv("LEANEXPLORE_BACKEND", "")
-        or "auto"
-    ).strip().lower()
+    value = (
+        str(
+            os.getenv("EPFLEMMA_LEANEXPLORE_BACKEND", "")
+            or os.getenv("LEANEXPLORE_BACKEND", "")
+            or "auto"
+        )
+        .strip()
+        .lower()
+    )
     return value if value in {"auto", "local", "api", "off", "disabled"} else "auto"
 
 
@@ -127,7 +131,9 @@ def _is_leanexplore_reranker_load_error(exc: Exception) -> bool:
 
 
 def _leanexplore_local_verbose() -> bool:
-    value = str(os.getenv("EPFLEMMA_LEANEXPLORE_VERBOSE", "") or os.getenv("LEANEXPLORE_VERBOSE", "") or "")
+    value = str(
+        os.getenv("EPFLEMMA_LEANEXPLORE_VERBOSE", "") or os.getenv("LEANEXPLORE_VERBOSE", "") or ""
+    )
     return value.strip().lower() in {"1", "true", "yes", "on", "debug"}
 
 

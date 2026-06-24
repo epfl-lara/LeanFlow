@@ -67,7 +67,9 @@ def _queue_edit_initial_declaration_keys(
     state = dict(getattr(agent, "_managed_initial_declaration_keys_by_file", {}) or {})
     stored = state.get(file_key)
     if isinstance(stored, list):
-        return {tuple(item) for item in stored if isinstance(item, (list, tuple)) and len(item) == 2}
+        return {
+            tuple(item) for item in stored if isinstance(item, (list, tuple)) and len(item) == 2
+        }
     keys = {
         key
         for entry in _declaration_line_index_from_text(before_text)
@@ -128,12 +130,17 @@ def _queue_edit_changed_protected_declarations(
         if current is None:
             changed.append({"reason": "missing", "protected": dict(protected)})
             continue
-        if str(current.get("text", "") or "").strip() != str(protected.get("text", "") or "").strip():
+        if (
+            str(current.get("text", "") or "").strip()
+            != str(protected.get("text", "") or "").strip()
+        ):
             changed.append({"reason": "changed", "protected": dict(protected), "current": current})
     return changed
 
 
-def _restore_changed_protected_declarations(current_text: str, changed: Sequence[Mapping[str, Any]]) -> str | None:
+def _restore_changed_protected_declarations(
+    current_text: str, changed: Sequence[Mapping[str, Any]]
+) -> str | None:
     if not changed:
         return current_text
     if any(str(item.get("reason", "") or "") == "missing" for item in changed):

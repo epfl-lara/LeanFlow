@@ -32,9 +32,7 @@ def _make_tool_defs(*names):
 @pytest.fixture()
 def agent():
     with (
-        patch(
-            "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
-        ),
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
@@ -84,10 +82,12 @@ def test_wrappers_delegate_to_collaborator(agent):
     with patch.object(
         agent._compression_policy_obj, "compress_context", return_value=sentinel
     ) as m:
-        out = agent._compress_context([{"role": "user", "content": "x"}], "sys",
-                                      approx_tokens=10, task_id="t")
-    m.assert_called_once_with([{"role": "user", "content": "x"}], "sys",
-                              approx_tokens=10, task_id="t")
+        out = agent._compress_context(
+            [{"role": "user", "content": "x"}], "sys", approx_tokens=10, task_id="t"
+        )
+    m.assert_called_once_with(
+        [{"role": "user", "content": "x"}], "sys", approx_tokens=10, task_id="t"
+    )
     assert out is sentinel
 
     with patch.object(
@@ -116,8 +116,12 @@ def test_pre_send_skips_when_compression_disabled(agent):
     api_messages = [{"role": "user", "content": "hi"}]
     with patch.object(agent, "_compress_context") as mock_compress:
         out = agent._maybe_compress_before_api_send(
-            [{"role": "user", "content": "hi"}], "sys", "sys",
-            api_messages=api_messages, approx_tokens=999_999, task_id="t",
+            [{"role": "user", "content": "hi"}],
+            "sys",
+            "sys",
+            api_messages=api_messages,
+            approx_tokens=999_999,
+            task_id="t",
         )
     mock_compress.assert_not_called()
     assert out[0] == [{"role": "user", "content": "hi"}]
@@ -130,8 +134,12 @@ def test_pre_send_skips_below_threshold(agent):
     api_messages = [{"role": "user", "content": "hi"}]
     with patch.object(agent, "_compress_context") as mock_compress:
         out = agent._maybe_compress_before_api_send(
-            [{"role": "user", "content": "hi"}], "sys", "sys",
-            api_messages=api_messages, approx_tokens=10, task_id="t",
+            [{"role": "user", "content": "hi"}],
+            "sys",
+            "sys",
+            api_messages=api_messages,
+            approx_tokens=10,
+            task_id="t",
         )
     mock_compress.assert_not_called()
     assert out[3] == 10
@@ -144,17 +152,23 @@ def test_pre_send_compresses_and_routes_through_agent_wrapper(agent):
     api_messages = [{"role": "user", "content": "x" * 8_000}]
     with (
         patch.object(
-            agent, "_compress_context",
+            agent,
+            "_compress_context",
             return_value=([{"role": "user", "content": "compact"}], "compressed sys"),
         ) as mock_compress,
         patch.object(
-            agent, "_build_api_messages_for_turn",
+            agent,
+            "_build_api_messages_for_turn",
             return_value=[{"role": "user", "content": "compact"}],
         ),
     ):
         new_messages, new_system, _, new_tokens, _ = agent._maybe_compress_before_api_send(
-            [{"role": "user", "content": "x" * 8_000}], "sys", "sys",
-            api_messages=api_messages, approx_tokens=5_000, task_id="t",
+            [{"role": "user", "content": "x" * 8_000}],
+            "sys",
+            "sys",
+            api_messages=api_messages,
+            approx_tokens=5_000,
+            task_id="t",
         )
     mock_compress.assert_called()
     assert mock_compress.call_args.kwargs["approx_tokens"] == 5_000
@@ -172,7 +186,10 @@ def test_pre_advisor_noop_without_reserve(agent):
     messages = [{"role": "user", "content": "hi"}]
     with patch.object(agent, "_compress_context") as mock_compress:
         out_messages, out_system = agent._maybe_precompress_before_advisor_tool(
-            messages, "sys", "active sys", effective_task_id="t",
+            messages,
+            "sys",
+            "active sys",
+            effective_task_id="t",
         )
     mock_compress.assert_not_called()
     assert out_messages is messages
@@ -189,12 +206,16 @@ def test_preserving_suffix_keeps_tail_verbatim(agent):
         {"role": "user", "content": "advisor-turn"},
     ]
     with patch.object(
-        agent, "_compress_context",
+        agent,
+        "_compress_context",
         return_value=([{"role": "user", "content": "[SUMMARY]"}], "compressed sys"),
     ) as mock_compress:
         out_messages, out_system = agent._compress_context_preserving_suffix(
-            messages, suffix_start=2, system_message="sys",
-            approx_tokens=5_000, task_id="t",
+            messages,
+            suffix_start=2,
+            system_message="sys",
+            approx_tokens=5_000,
+            task_id="t",
         )
     # Only the prefix was compressed; the suffix tail is preserved verbatim.
     assert mock_compress.call_args.args[0] == messages[:2]
@@ -209,12 +230,16 @@ def test_preserving_suffix_degenerate_compresses_whole(agent):
     """suffix_start out of range falls back to compressing everything."""
     messages = [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]
     with patch.object(
-        agent, "_compress_context",
+        agent,
+        "_compress_context",
         return_value=([{"role": "user", "content": "[SUMMARY]"}], "compressed sys"),
     ) as mock_compress:
         out_messages, _ = agent._compress_context_preserving_suffix(
-            messages, suffix_start=0, system_message="sys",
-            approx_tokens=5_000, task_id="t",
+            messages,
+            suffix_start=0,
+            system_message="sys",
+            approx_tokens=5_000,
+            task_id="t",
         )
     mock_compress.assert_called_once()
     assert out_messages == [{"role": "user", "content": "[SUMMARY]"}]

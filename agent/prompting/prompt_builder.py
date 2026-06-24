@@ -17,21 +17,32 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CONTEXT_THREAT_PATTERNS = [
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
-    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
+    (r"ignore\s+(previous|all|above|prior)\s+instructions", "prompt_injection"),
+    (r"do\s+not\s+tell\s+the\s+user", "deception_hide"),
+    (r"system\s+prompt\s+override", "sys_prompt_override"),
+    (r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)", "disregard_rules"),
+    (
+        r"act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)",
+        "bypass_restrictions",
+    ),
+    (r"<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->", "html_comment_injection"),
     (r'<\s*div\s+style\s*=\s*["\'].*display\s*:\s*none', "hidden_div"),
-    (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+    (r"translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)", "translate_execute"),
+    (r"curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_curl"),
+    (r"cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)", "read_secrets"),
 ]
 
 _CONTEXT_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+    "\u200b",
+    "\u200c",
+    "\u200d",
+    "\u2060",
+    "\ufeff",
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
 }
 
 
@@ -54,6 +65,7 @@ def _scan_context_content(content: str, filename: str) -> str:
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
 
     return content
+
 
 # =========================================================================
 # Constants
@@ -120,6 +132,7 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 # Skills index
 # =========================================================================
 
+
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
@@ -152,6 +165,7 @@ def _read_skill_conditions(skill_file: Path) -> dict:
     """Extract conditional activation fields from SKILL.md frontmatter."""
     try:
         from tools.implementations.skills_tool import _parse_frontmatter
+
         raw = skill_file.read_text(encoding="utf-8")[:2000]
         frontmatter, _ = _parse_frontmatter(raw)
         gauss = frontmatter.get("metadata", {}).get("gauss", {})
@@ -252,9 +266,7 @@ def build_skills_system_prompt(
         "Prefer Lean workflow skills and any project-local override over the builtin default. "
         "When a skill exposes native workflow specs, treat those specs as the operational contract.\n"
         "\n"
-        "<available_skills>\n"
-        + "\n".join(index_lines)
-        + "\n</available_skills>\n"
+        "<available_skills>\n" + "\n".join(index_lines) + "\n</available_skills>\n"
         "\n"
         "If none match, continue normally without loading a skill."
     )
@@ -263,6 +275,7 @@ def build_skills_system_prompt(
 # =========================================================================
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
+
 
 def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
     """Head/tail truncation with a marker in the middle."""
@@ -299,7 +312,12 @@ def build_context_files_prompt(cwd: str | None = None) -> str:
     if top_level_agents:
         agents_files = []
         for root, dirs, files in os.walk(cwd_path):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', '.venv')]
+            dirs[:] = [
+                d
+                for d in dirs
+                if not d.startswith(".")
+                and d not in ("node_modules", "__pycache__", "venv", ".venv")
+            ]
             for f in files:
                 if f.lower() == "agents.md":
                     agents_files.append(Path(root) / f)
@@ -351,6 +369,7 @@ def build_context_files_prompt(cwd: str | None = None) -> str:
     # SOUL.md from EPFLEMMA_HOME only
     try:
         from epflemma_cli.config import ensure_epflemma_home
+
         ensure_epflemma_home()
     except Exception as e:
         logger.debug("Could not ensure EPFLEMMA_HOME before loading SOUL.md: %s", e)
@@ -368,4 +387,7 @@ def build_context_files_prompt(cwd: str | None = None) -> str:
 
     if not sections:
         return ""
-    return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+    return (
+        "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n"
+        + "\n".join(sections)
+    )

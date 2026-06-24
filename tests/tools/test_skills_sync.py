@@ -160,8 +160,11 @@ class TestSyncSkills:
     def _patches(self, bundled, skills_dir, manifest_file):
         """Return context manager stack for patching sync globals."""
         from contextlib import ExitStack
+
         stack = ExitStack()
-        stack.enter_context(patch("tools.utilities.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(
+            patch("tools.utilities.skills_sync._get_bundled_dir", return_value=bundled)
+        )
         stack.enter_context(patch("tools.utilities.skills_sync.SKILLS_DIR", skills_dir))
         stack.enter_context(patch("tools.utilities.skills_sync.MANIFEST_FILE", manifest_file))
         return stack
@@ -372,8 +375,12 @@ class TestSyncSkills:
         with patch("tools.utilities.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
             result = sync_skills(quiet=True)
         assert result == {
-            "copied": [], "updated": [], "skipped": 0,
-            "user_modified": [], "cleaned": [], "total_bundled": 0,
+            "copied": [],
+            "updated": [],
+            "skipped": 0,
+            "user_modified": [],
+            "cleaned": [],
+            "total_bundled": 0,
         }
 
     def test_failed_copy_does_not_poison_manifest(self, tmp_path):

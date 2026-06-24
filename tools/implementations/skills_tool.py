@@ -174,9 +174,7 @@ def _normalize_setup_metadata(frontmatter: dict[str, Any]) -> dict[str, Any]:
 
     help_text = setup.get("help")
     normalized_help = (
-        str(help_text).strip()
-        if isinstance(help_text, str) and help_text.strip()
-        else None
+        str(help_text).strip() if isinstance(help_text, str) and help_text.strip() else None
     )
 
     collect_secrets_raw = setup.get("collect_secrets")
@@ -240,10 +238,7 @@ def _get_required_environment_variables(
         }
 
         help_text = (
-            entry.get("help")
-            or entry.get("provider_url")
-            or entry.get("url")
-            or setup.get("help")
+            entry.get("help") or entry.get("provider_url") or entry.get("url") or setup.get("help")
         )
         if isinstance(help_text, str) and help_text.strip():
             normalized["help"] = help_text.strip()
@@ -316,9 +311,7 @@ def _capture_required_environment_variables(
                 metadata,
             )
         except Exception:
-            logger.warning(
-                f"Secret capture callback failed for {entry['name']}", exc_info=True
-            )
+            logger.warning(f"Secret capture callback failed for {entry['name']}", exc_info=True)
             callback_result = {
                 "success": False,
                 "stored_as": entry["name"],
@@ -326,12 +319,8 @@ def _capture_required_environment_variables(
                 "skipped": True,
             }
 
-        success = isinstance(callback_result, dict) and bool(
-            callback_result.get("success")
-        )
-        skipped = isinstance(callback_result, dict) and bool(
-            callback_result.get("skipped")
-        )
+        success = isinstance(callback_result, dict) and bool(callback_result.get("success"))
+        skipped = isinstance(callback_result, dict) and bool(callback_result.get("skipped"))
         if success and not skipped:
             continue
 
@@ -345,15 +334,11 @@ def _capture_required_environment_variables(
     }
 
 
-
-
 def _get_terminal_backend_name() -> str:
     return str(os.getenv("TERMINAL_ENV", "local")).strip().lower() or "local"
 
 
-def _is_env_var_persisted(
-    var_name: str, env_snapshot: dict[str, str] | None = None
-) -> bool:
+def _is_env_var_persisted(var_name: str, env_snapshot: dict[str, str] | None = None) -> bool:
     if env_snapshot is None:
         env_snapshot = load_env()
     if var_name in env_snapshot:
@@ -382,8 +367,6 @@ def _remaining_required_environment_names(
         if name in missing_names or not _is_env_var_persisted(name, env_snapshot):
             remaining.append(name)
     return remaining
-
-
 
 
 def _build_setup_note(
@@ -531,7 +514,6 @@ def _parse_tags(tags_value) -> list[str]:
     return [t.strip().strip("\"'") for t in tags_value.split(",") if t.strip()]
 
 
-
 def _get_disabled_skill_names() -> set[str]:
     """Load disabled skill names from config (once per call).
 
@@ -539,6 +521,7 @@ def _get_disabled_skill_names() -> set[str]:
     the global disabled list.
     """
     import os
+
     try:
         config = load_config()
         skills_cfg = config.get("skills", {})
@@ -555,6 +538,7 @@ def _get_disabled_skill_names() -> set[str]:
 def _is_skill_disabled(name: str, platform: str = None) -> bool:
     """Check if a skill is disabled in config."""
     import os
+
     try:
         config = load_config()
         skills_cfg = config.get("skills", {})
@@ -587,7 +571,6 @@ def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-
     for skill_md in SKILLS_DIR.rglob("SKILL.md"):
         if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
             continue
@@ -614,23 +597,23 @@ def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
                         break
 
             if len(description) > MAX_DESCRIPTION_LENGTH:
-                description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
+                description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
 
             category = _get_category_from_path(skill_md)
 
-            skills.append({
-                "name": name,
-                "description": description,
-                "category": category,
-            })
+            skills.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "category": category,
+                }
+            )
 
         except (UnicodeDecodeError, PermissionError) as e:
             logger.debug("Failed to read skill file %s: %s", skill_md, e)
             continue
         except Exception as e:
-            logger.debug(
-                "Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True
-            )
+            logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
             continue
 
     return skills
@@ -685,13 +668,19 @@ def _resolve_local_skill(name: str) -> tuple[Path, dict[str, Any], str] | None:
         try:
             raw = candidate.read_text(encoding="utf-8")
         except (UnicodeDecodeError, PermissionError) as exc:
-            candidate_name = candidate.parent.name if candidate.name == "SKILL.md" else candidate.stem
+            candidate_name = (
+                candidate.parent.name if candidate.name == "SKILL.md" else candidate.stem
+            )
             if candidate_name == wanted:
                 raise ValueError(f"Failed to read skill '{wanted}': {exc}") from exc
             continue
         frontmatter, _body = _parse_frontmatter(raw)
         skill_name, rel_name = _local_skill_identity(candidate, frontmatter)
-        if wanted in {skill_name, rel_name, candidate.parent.name if candidate.name == "SKILL.md" else candidate.stem}:
+        if wanted in {
+            skill_name,
+            rel_name,
+            candidate.parent.name if candidate.name == "SKILL.md" else candidate.stem,
+        }:
             return candidate, frontmatter, skill_name
     return None
 
@@ -704,9 +693,7 @@ def _linked_files_for_local_skill(path: Path) -> dict[str, list[str]]:
         if not base.is_dir():
             continue
         linked[subdir] = [
-            str(file.relative_to(root))
-            for file in sorted(base.rglob("*"))
-            if file.is_file()
+            str(file.relative_to(root)) for file in sorted(base.rglob("*")) if file.is_file()
         ]
     return linked
 
@@ -758,7 +745,8 @@ def _local_skill_payload(name: str, file_path: str | None = None) -> dict[str, A
     required_env_vars = _get_required_environment_variables(frontmatter)
     env_snapshot = load_env()
     missing_entries = [
-        entry for entry in required_env_vars
+        entry
+        for entry in required_env_vars
         if not _is_env_var_persisted(entry["name"], env_snapshot)
     ]
     capture_result = _capture_required_environment_variables(skill_name, missing_entries)
@@ -771,9 +759,7 @@ def _local_skill_payload(name: str, file_path: str | None = None) -> dict[str, A
         backend=backend,
     )
     readiness_status = (
-        SkillReadinessStatus.SETUP_NEEDED
-        if remaining
-        else SkillReadinessStatus.AVAILABLE
+        SkillReadinessStatus.SETUP_NEEDED if remaining else SkillReadinessStatus.AVAILABLE
     )
     setup_help = _backend_setup_help(backend)
     payload: dict[str, Any] = {
@@ -831,9 +817,7 @@ def _load_category_description(category_dir: Path) -> str | None:
         logger.debug("Failed to read category description %s: %s", desc_file, e)
         return None
     except Exception as e:
-        logger.warning(
-            "Error parsing category description %s: %s", desc_file, e, exc_info=True
-        )
+        logger.warning("Error parsing category description %s: %s", desc_file, e, exc_info=True)
         return None
 
 
@@ -870,9 +854,7 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
                 continue
 
             try:
-                frontmatter, _ = _parse_frontmatter(
-                    skill_md.read_text(encoding="utf-8")[:4000]
-                )
+                frontmatter, _ = _parse_frontmatter(skill_md.read_text(encoding="utf-8")[:4000])
             except Exception:
                 frontmatter = {}
 
@@ -931,12 +913,16 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 {
                     **skill,
                     "source": "local",
-                    "workflow_specs": [_spec_summary(record) for record in specs_for_skill(skill["name"])],
+                    "workflow_specs": [
+                        _spec_summary(record) for record in specs_for_skill(skill["name"])
+                    ],
                 }
                 for skill in local_skills
                 if not category or skill.get("category") == category
             ]
-            categories = sorted({skill.get("category") for skill in all_skills if skill.get("category")})
+            categories = sorted(
+                {skill.get("category") for skill in all_skills if skill.get("category")}
+            )
         else:
             all_skills = [
                 {
@@ -944,7 +930,9 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                     "description": skill.description,
                     "category": "epflemma",
                     "source": skill.source,
-                    "workflow_specs": [_spec_summary(record) for record in specs_for_skill(skill.name)],
+                    "workflow_specs": [
+                        _spec_summary(record) for record in specs_for_skill(skill.name)
+                    ],
                 }
                 for skill in _og_discover_skills()
             ]
@@ -984,7 +972,9 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         if payload is None:
             payload = _og_load_skill_file(name, file_path) if file_path else _og_load_skill(name)
         if not payload:
-            available = [skill["name"] for skill in _find_all_skills()] or [skill.name for skill in _og_discover_skills()[:20]]
+            available = [skill["name"] for skill in _find_all_skills()] or [
+                skill.name for skill in _og_discover_skills()[:20]
+            ]
             return json.dumps(
                 {
                     "success": False,
@@ -994,12 +984,16 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 },
                 ensure_ascii=False,
             )
-        workflow_specs = [_spec_detail(record) for record in specs_for_skill(str(payload.get("name", "") or name))]
+        workflow_specs = [
+            _spec_detail(record) for record in specs_for_skill(str(payload.get("name", "") or name))
+        ]
         if workflow_specs:
             linked = dict(payload.get("linked_files") or {})
             linked.setdefault("workflow_specs", [record["path"] for record in workflow_specs])
             payload["linked_files"] = linked
-        return json.dumps({"success": True, **payload, "workflow_specs": workflow_specs}, ensure_ascii=False)
+        return json.dumps(
+            {"success": True, **payload, "workflow_specs": workflow_specs}, ensure_ascii=False
+        )
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
@@ -1028,9 +1022,7 @@ if __name__ == "__main__":
     print("\n📋 Listing all skills:")
     result = json.loads(skills_list())
     if result["success"]:
-        print(
-            f"Found {result['count']} skills in {len(result.get('categories', []))} categories"
-        )
+        print(f"Found {result['count']} skills in {len(result.get('categories', []))} categories")
         print(f"Categories: {result.get('categories', [])}")
         print("\nFirst 10 skills:")
         for skill in result["skills"][:10]:

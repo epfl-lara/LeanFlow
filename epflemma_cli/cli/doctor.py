@@ -63,10 +63,7 @@ def _legacy_reference_payload() -> dict[str, Any]:
     return {
         "plugin_reference_path": str(plugin_root),
         "plugin_reference_present": plugin_root.is_dir(),
-        "legacy_homes": [
-            {"path": str(path), "present": path.exists()}
-            for path in legacy_roots
-        ],
+        "legacy_homes": [{"path": str(path), "present": path.exists()} for path in legacy_roots],
     }
 
 
@@ -105,8 +102,7 @@ def _web_search_payload() -> tuple[dict[str, Any], list[str]]:
 
         definitions = registry.get_definitions({"web_search"}, quiet=True)
         payload["tool_exposed"] = any(
-            item.get("function", {}).get("name") == "web_search"
-            for item in definitions
+            item.get("function", {}).get("name") == "web_search" for item in definitions
         )
         description = ""
         for item in definitions:
@@ -126,19 +122,25 @@ def _web_search_payload() -> tuple[dict[str, Any], list[str]]:
         parsed = json.loads(raw_result)
         payload["success"] = bool(parsed.get("success"))
         payload["degraded_reasons"] = [
-            str(reason)
-            for reason in parsed.get("degraded_reasons", [])
-            if str(reason).strip()
+            str(reason) for reason in parsed.get("degraded_reasons", []) if str(reason).strip()
         ]
         payload["firecrawl_error"] = "Firecrawl" in raw_result or "FIRECRAWL" in raw_result
         results = parsed.get("data", {}).get("web", [])
         if isinstance(results, list):
             payload["result_count"] = len(results)
             payload["providers"] = sorted(
-                {str(item.get("provider", "") or "") for item in results if isinstance(item, dict) and item.get("provider")}
+                {
+                    str(item.get("provider", "") or "")
+                    for item in results
+                    if isinstance(item, dict) and item.get("provider")
+                }
             )
             payload["kinds"] = sorted(
-                {str(item.get("kind", "") or "") for item in results if isinstance(item, dict) and item.get("kind")}
+                {
+                    str(item.get("kind", "") or "")
+                    for item in results
+                    if isinstance(item, dict) and item.get("kind")
+                }
             )
             payload["first_results"] = [
                 {
@@ -169,7 +171,9 @@ def _web_search_payload() -> tuple[dict[str, Any], list[str]]:
     return payload, issues
 
 
-def _doctor_payload(active_cwd: str | Path | None = None, *, mode: str = "all") -> tuple[dict[str, Any], list[str]]:
+def _doctor_payload(
+    active_cwd: str | Path | None = None, *, mode: str = "all"
+) -> tuple[dict[str, Any], list[str]]:
     """Build a mode-filtered diagnostic payload aggregating Lean project health, runtime provider, MCP, search providers, and optional migration/cleanup guidance. Returns the complete payload dict and accumulated issues list."""
     ensure_epflemma_home()
     cwd = Path(active_cwd or Path.cwd()).expanduser().resolve()
@@ -194,7 +198,9 @@ def _doctor_payload(active_cwd: str | Path | None = None, *, mode: str = "all") 
     capability = probe_capabilities(cwd).to_dict()
 
     issues: list[str] = []
-    issues.extend(str(reason) for reason in capability.get("degraded_reasons", []) if str(reason).strip())
+    issues.extend(
+        str(reason) for reason in capability.get("degraded_reasons", []) if str(reason).strip()
+    )
     if not capability.get("project_valid"):
         project_error = str(capability.get("project_error", "") or "").strip()
         if project_error:
@@ -216,7 +222,9 @@ def _doctor_payload(active_cwd: str | Path | None = None, *, mode: str = "all") 
                         f"MCP bootstrap recommended for {entry.get('name', '[unknown]')}."
                     )
 
-    search_providers = [str(item) for item in capability.get("search_providers", []) if str(item).strip()]
+    search_providers = [
+        str(item) for item in capability.get("search_providers", []) if str(item).strip()
+    ]
     if normalized_mode in {"all", "search"} and not search_providers:
         issues.append("No Lean search providers available.")
 

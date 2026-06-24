@@ -143,9 +143,7 @@ class ProviderClientFactory:
         """
         from agent.providers.auxiliary_client import resolve_provider_client
 
-        routed_client, _ = resolve_provider_client(
-            provider or "auto", model=model, raw_codex=True
-        )
+        routed_client, _ = resolve_provider_client(provider or "auto", model=model, raw_codex=True)
         if routed_client is not None:
             client_kwargs: dict = {
                 "api_key": routed_client.api_key,
@@ -192,9 +190,7 @@ class ProviderClientFactory:
         try:
             from epflemma_cli.runtime.auth import resolve_codex_runtime_credentials
 
-            creds = resolve_codex_runtime_credentials(
-                force_refresh=force, allow_legacy_store=True
-            )
+            creds = resolve_codex_runtime_credentials(force_refresh=force, allow_legacy_store=True)
         except Exception as exc:
             logger.debug("Codex credential refresh failed: %s", exc)
             return None

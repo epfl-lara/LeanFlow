@@ -108,7 +108,9 @@ class ApiCaller:
     def run_codex_create_stream_fallback(self, api_kwargs: dict, client: Any = None):
         """Fallback path for stream completion edge cases on Codex-style Responses backends."""
         agent = self._agent
-        active_client = client or agent._ensure_primary_openai_client(reason="codex_create_stream_fallback")
+        active_client = client or agent._ensure_primary_openai_client(
+            reason="codex_create_stream_fallback"
+        )
         fallback_kwargs = dict(api_kwargs)
         fallback_kwargs["stream"] = True
         fallback_kwargs = agent._preflight_codex_api_kwargs(fallback_kwargs, allow_stream=True)
@@ -126,12 +128,18 @@ class ApiCaller:
             for event in stream_or_response:
                 agent._collect_responses_stream_output_item(event, collected_items)
                 event_type = agent._responses_stream_event_type(event)
-                if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
+                if event_type not in {
+                    "response.completed",
+                    "response.incomplete",
+                    "response.failed",
+                }:
                     continue
 
                 terminal_response = agent._responses_stream_event_field(event, "response")
                 if terminal_response is not None:
-                    return agent._repair_empty_responses_stream_output(terminal_response, collected_items)
+                    return agent._repair_empty_responses_stream_output(
+                        terminal_response, collected_items
+                    )
         finally:
             close_fn = getattr(stream_or_response, "close", None)
             if callable(close_fn):
@@ -140,7 +148,9 @@ class ApiCaller:
 
         if terminal_response is not None:
             return terminal_response
-        raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
+        raise RuntimeError(
+            "Responses create(stream=True) fallback did not emit a terminal response."
+        )
 
     # ── Per-request timeout ─────────────────────────────────────────────────
 
@@ -170,7 +180,9 @@ class ApiCaller:
         def _call():
             try:
                 if agent.api_mode == "codex_responses":
-                    request_client_holder["client"] = agent._create_request_openai_client(reason="codex_stream_request")
+                    request_client_holder["client"] = agent._create_request_openai_client(
+                        reason="codex_stream_request"
+                    )
                     result["response"] = self.run_codex_stream(
                         api_kwargs,
                         client=request_client_holder["client"],
@@ -178,8 +190,12 @@ class ApiCaller:
                 elif agent.api_mode == "anthropic_messages":
                     result["response"] = agent._anthropic_messages_create(api_kwargs)
                 else:
-                    request_client_holder["client"] = agent._create_request_openai_client(reason="chat_completion_request")
-                    result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
+                    request_client_holder["client"] = agent._create_request_openai_client(
+                        reason="chat_completion_request"
+                    )
+                    result["response"] = request_client_holder["client"].chat.completions.create(
+                        **api_kwargs
+                    )
             except Exception as e:
                 result["error"] = e
             finally:
@@ -283,7 +299,11 @@ class ApiCaller:
                     if delta and delta.tool_calls:
                         for tc_delta in delta.tool_calls:
                             idx = tc_delta.index if tc_delta.index is not None else 0
-                            if idx in tool_calls_acc and tc_delta.id and tc_delta.id != tool_calls_acc[idx]["id"]:
+                            if (
+                                idx in tool_calls_acc
+                                and tc_delta.id
+                                and tc_delta.id != tool_calls_acc[idx]["id"]
+                            ):
                                 matched = False
                                 for eidx, eentry in tool_calls_acc.items():
                                     if eentry["id"] == tc_delta.id:
@@ -291,7 +311,11 @@ class ApiCaller:
                                         matched = True
                                         break
                                 if not matched:
-                                    idx = (max(k for k in tool_calls_acc if isinstance(k, int)) + 1) if tool_calls_acc else 0
+                                    idx = (
+                                        (max(k for k in tool_calls_acc if isinstance(k, int)) + 1)
+                                        if tool_calls_acc
+                                        else 0
+                                    )
                             if idx not in tool_calls_acc:
                                 tool_calls_acc[idx] = {
                                     "id": tc_delta.id or "",
@@ -316,14 +340,16 @@ class ApiCaller:
                     mock_tool_calls = []
                     for idx in sorted(tool_calls_acc):
                         tc = tool_calls_acc[idx]
-                        mock_tool_calls.append(SimpleNamespace(
-                            id=tc["id"],
-                            type=tc["type"],
-                            function=SimpleNamespace(
-                                name=tc["function"]["name"],
-                                arguments=tc["function"]["arguments"],
-                            ),
-                        ))
+                        mock_tool_calls.append(
+                            SimpleNamespace(
+                                id=tc["id"],
+                                type=tc["type"],
+                                function=SimpleNamespace(
+                                    name=tc["function"]["name"],
+                                    arguments=tc["function"]["arguments"],
+                                ),
+                            )
+                        )
 
                 mock_message = SimpleNamespace(
                     role=role,
@@ -349,7 +375,9 @@ class ApiCaller:
             finally:
                 request_client = request_client_holder.get("client")
                 if request_client is not None:
-                    agent._close_request_openai_client(request_client, reason="stream_request_complete")
+                    agent._close_request_openai_client(
+                        request_client, reason="stream_request_complete"
+                    )
 
         t = ra.threading.Thread(target=_call, daemon=True)
         t.start()
@@ -400,6 +428,7 @@ class ApiCaller:
         ra = _ra()
         if agent.api_mode == "anthropic_messages":
             from agent.providers.anthropic_adapter import build_anthropic_kwargs
+
             anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
             return build_anthropic_kwargs(
                 model=agent.model,
@@ -538,10 +567,7 @@ class ApiCaller:
                 else:
                     extra_body["reasoning"] = rc
             else:
-                extra_body["reasoning"] = {
-                    "enabled": True,
-                    "effort": "high"
-                }
+                extra_body["reasoning"] = {"enabled": True, "effort": "high"}
         elif agent._is_rcp_route():
             # EPFL AIaaS forwards extra_body to LiteLLM/vLLM. Qwen hybrid
             # reasoning models use chat_template kwargs while OpenAI-style
@@ -550,9 +576,7 @@ class ApiCaller:
             template_kwargs["enable_thinking"] = reasoning_enabled
             extra_body["chat_template_kwargs"] = template_kwargs
             if reasoning_enabled:
-                extra_body["reasoning_effort"] = agent._map_rcp_reasoning_effort(
-                    reasoning_effort
-                )
+                extra_body["reasoning_effort"] = agent._map_rcp_reasoning_effort(reasoning_effort)
             if isinstance(agent.top_k, int) and not isinstance(agent.top_k, bool):
                 extra_body["top_k"] = agent.top_k
             if isinstance(agent.min_p, (int, float)):

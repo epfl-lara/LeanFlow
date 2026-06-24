@@ -129,13 +129,16 @@ from tools.mcp.mcp_tool import get_mcp_status
 
 WORKFLOW_COMMANDS = build_workflow_command_set()
 
+
 def _seed_environment() -> None:
     home = get_epflemma_home()
     os.environ.setdefault("EPFLEMMA_HOME", str(home))
 
+
 def _load_runtime_env(*, cwd: Path | None = None) -> None:
     project_env = (cwd or Path.cwd()).resolve() / ".env"
     load_epflemma_dotenv(epflemma_home=get_epflemma_home(), project_env=project_env)
+
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the argument parser with all CLI subcommands and options. Constructs a hierarchical parser for version, status, config, doctor, mcp, project, workflow, sandbox, provider, and models commands, each with their own nested subparsers and flags."""
@@ -175,17 +178,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
     project_parser = subparsers.add_parser("project", help="Manage EPFLemma projects")
     project_sub = project_parser.add_subparsers(dest="project_command")
-    project_init = project_sub.add_parser("init", help="Initialize a Lean repo as an EPFLemma project")
+    project_init = project_sub.add_parser(
+        "init", help="Initialize a Lean repo as an EPFLemma project"
+    )
     project_init.add_argument("path", nargs="?", default=".")
     project_init.add_argument("--name", default="")
-    project_create = project_sub.add_parser("create", help="Clone a project template and register it")
+    project_create = project_sub.add_parser(
+        "create", help="Clone a project template and register it"
+    )
     project_create.add_argument("path")
     project_create.add_argument("--template-source", default="")
     project_create.add_argument("--name", default="")
     project_show = project_sub.add_parser("show", help="Show current project")
     project_show.add_argument("path", nargs="?", default=".")
 
-    workflow_parser = subparsers.add_parser("workflow", help="Run a Lean workflow in the native runtime")
+    workflow_parser = subparsers.add_parser(
+        "workflow", help="Run a Lean workflow in the native runtime"
+    )
     workflow_parser.add_argument(
         "--provider",
         default=None,
@@ -194,25 +203,37 @@ def _build_parser() -> argparse.ArgumentParser:
     workflow_parser.add_argument("workflow")
     workflow_parser.add_argument("args", nargs=argparse.REMAINDER)
 
-    sandbox_parser = subparsers.add_parser("sandbox", help="Run EPFLemma inside an isolated container worktree")
+    sandbox_parser = subparsers.add_parser(
+        "sandbox", help="Run EPFLemma inside an isolated container worktree"
+    )
     sandbox_sub = sandbox_parser.add_subparsers(dest="sandbox_command")
-    sandbox_status_parser = sandbox_sub.add_parser("status", help="Show sandbox engine, image, cache, and recent runs")
+    sandbox_status_parser = sandbox_sub.add_parser(
+        "status", help="Show sandbox engine, image, cache, and recent runs"
+    )
     sandbox_status_parser.add_argument("--json", action="store_true", dest="json_output")
-    sandbox_status_parser.add_argument("--engine", default=None, choices=["auto", "docker", "podman"])
+    sandbox_status_parser.add_argument(
+        "--engine", default=None, choices=["auto", "docker", "podman"]
+    )
     sandbox_status_parser.add_argument("--image", default=None)
     sandbox_status_parser.add_argument("--env-file", default=None)
-    sandbox_doctor = sandbox_sub.add_parser("doctor", help="Check whether the sandbox runtime is ready")
+    sandbox_doctor = sandbox_sub.add_parser(
+        "doctor", help="Check whether the sandbox runtime is ready"
+    )
     sandbox_doctor.add_argument("--json", action="store_true", dest="json_output")
     sandbox_doctor.add_argument("--engine", default=None, choices=["auto", "docker", "podman"])
     sandbox_doctor.add_argument("--image", default=None)
     sandbox_doctor.add_argument("--env-file", default=None)
-    sandbox_build = sandbox_sub.add_parser("build", help="Build or update the local EPFLemma sandbox image")
+    sandbox_build = sandbox_sub.add_parser(
+        "build", help="Build or update the local EPFLemma sandbox image"
+    )
     sandbox_build.add_argument("--engine", default=None, choices=["auto", "docker", "podman"])
     sandbox_build.add_argument("--image", default=None)
     sandbox_build.add_argument("--pull", action="store_true")
     sandbox_build.add_argument("--no-cache", action="store_true")
     sandbox_build.add_argument("--with-local-lean-explore", action="store_true")
-    sandbox_run = sandbox_sub.add_parser("run", help="Run an EPFLemma command in a copied project sandbox")
+    sandbox_run = sandbox_sub.add_parser(
+        "run", help="Run an EPFLemma command in a copied project sandbox"
+    )
     sandbox_run.add_argument("--engine", default=None, choices=["auto", "docker", "podman"])
     sandbox_run.add_argument("--image", default=None)
     sandbox_run.add_argument("--env-file", default=None)
@@ -245,10 +266,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     return parser
 
+
 def _handle_project(args: argparse.Namespace) -> int:
     if args.project_command == "init":
         project = initialize_epflemma_project(args.path, name=args.name or None)
-        setup_report = setup_project_power_modes(project.lean_root, progress=lambda message: print(message))
+        setup_report = setup_project_power_modes(
+            project.lean_root, progress=lambda message: print(message)
+        )
         print(f"Initialized project: {project.label}")
         print(project.root)
         _print_project_power_setup(setup_report)
@@ -256,9 +280,14 @@ def _handle_project(args: argparse.Namespace) -> int:
     if args.project_command == "create":
         template_source = args.template_source or resolve_template_source(load_config(), os.environ)
         if not template_source:
-            print("No template source configured. Use --template-source or set epflemma.project.template_source.", file=sys.stderr)
+            print(
+                "No template source configured. Use --template-source or set epflemma.project.template_source.",
+                file=sys.stderr,
+            )
             return 1
-        project = clone_project_template(args.path, template_source=template_source, name=args.name or None)
+        project = clone_project_template(
+            args.path, template_source=template_source, name=args.name or None
+        )
         print(f"Created project: {project.label}")
         print(project.root)
         return 0
@@ -271,6 +300,7 @@ def _handle_project(args: argparse.Namespace) -> int:
         _print_json(_project_payload(project))
         return 0
     raise SystemExit("Unknown project command")
+
 
 def _handle_status(args: argparse.Namespace) -> int:
     workflow = load_workflow_live_status()
@@ -290,12 +320,14 @@ def _handle_status(args: argparse.Namespace) -> int:
     print(format_sandbox_status(sandbox))
     return 0
 
+
 def _mcp_status_payload() -> dict[str, Any]:
     servers = list(get_mcp_status())
     return {
         "servers": servers,
         "count": len(servers),
     }
+
 
 def _handle_mcp(args: argparse.Namespace) -> int:
     command = getattr(args, "mcp_command", None) or "status"
@@ -317,6 +349,7 @@ def _handle_mcp(args: argparse.Namespace) -> int:
             _print_mcp_bootstrap(payload)
         return 0
     raise SystemExit("Unknown MCP command")
+
 
 from epflemma_cli.shell import InteractiveShell  # noqa: F401
 
@@ -356,14 +389,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.workflow in {"status", "history", "activity", "log"}:
             payload = load_workflow_live_status()
             if args.workflow == "history":
-                render_workflow_status_panel(Console(), status=payload or {"phase": "idle", "workflow_kind": "[none]"}, activities=[
-                    {
-                        "timestamp": str(entry.get("created_at", "") or ""),
-                        "type": str(entry.get("success_state", "") or "in-progress"),
-                        "message": str(entry.get("label", "") or "[none]"),
-                    }
-                    for entry in reversed(load_workflow_checkpoints())[:12]
-                ])
+                render_workflow_status_panel(
+                    Console(),
+                    status=payload or {"phase": "idle", "workflow_kind": "[none]"},
+                    activities=[
+                        {
+                            "timestamp": str(entry.get("created_at", "") or ""),
+                            "type": str(entry.get("success_state", "") or "in-progress"),
+                            "message": str(entry.get("label", "") or "[none]"),
+                        }
+                        for entry in reversed(load_workflow_checkpoints())[:12]
+                    ],
+                )
                 return 0
             if args.workflow == "log":
                 tail = 120
@@ -379,17 +416,24 @@ def main(argv: list[str] | None = None) -> int:
             render_workflow_status_panel(
                 Console(),
                 status=payload or {"phase": "idle", "workflow_kind": "[none]"},
-                activities=read_workflow_activity(limit=20) if args.workflow != "status" else read_workflow_activity(limit=8),
+                activities=read_workflow_activity(limit=20)
+                if args.workflow != "status"
+                else read_workflow_activity(limit=8),
             )
             return 0 if payload else 1
         text = f"/{args.workflow}" if not str(args.workflow).startswith("/") else str(args.workflow)
         if args.args:
             text = f"{text} {' '.join(args.args)}"
         try:
-            plan = resolve_workflow_request(text, active_cwd=Path.cwd(), requested_provider=args.provider)
+            plan = resolve_workflow_request(
+                text, active_cwd=Path.cwd(), requested_provider=args.provider
+            )
         except ProjectNotFoundError as exc:
             print(str(exc), file=sys.stderr)
-            print("Use `epflemma project init` inside a Lean repo or `epflemma project create <path>` to clone one.", file=sys.stderr)
+            print(
+                "Use `epflemma project init` inside a Lean repo or `epflemma project create <path>` to clone one.",
+                file=sys.stderr,
+            )
             return 1
         except Exception as exc:
             print(format_runtime_provider_error(exc), file=sys.stderr)
@@ -415,6 +459,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

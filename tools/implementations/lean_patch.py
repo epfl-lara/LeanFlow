@@ -168,7 +168,9 @@ def apply_verified_patch_tool(
     raw_patch = str(patch or "")
     normalized_check = _normalize_verified_patch_check_mode(check_mode)
     if not raw_path:
-        return _verified_patch_failure("invalid_request", "path required.", check_mode=normalized_check)
+        return _verified_patch_failure(
+            "invalid_request", "path required.", check_mode=normalized_check
+        )
     if not raw_patch.strip():
         return _verified_patch_failure(
             "invalid_request",
@@ -214,7 +216,11 @@ def apply_verified_patch_tool(
             check_mode=normalized_check,
         )
 
-    base_cwd = Path(str(cwd or "")).expanduser().resolve() if str(cwd or "").strip() else Path.cwd().resolve()
+    base_cwd = (
+        Path(str(cwd or "")).expanduser().resolve()
+        if str(cwd or "").strip()
+        else Path.cwd().resolve()
+    )
     before_content = ""
     before_exists = resolved_path.exists()
     if resolved_path.exists():
@@ -234,7 +240,9 @@ def apply_verified_patch_tool(
     if not lock_owner:
         temporary_lock_owner = f"apply_verified_patch:{os.getpid()}"
         lock_owner = temporary_lock_owner
-    lock_result = ensure_file_lock(str(resolved_path), owner_id=lock_owner, purpose="apply_verified_patch")
+    lock_result = ensure_file_lock(
+        str(resolved_path), owner_id=lock_owner, purpose="apply_verified_patch"
+    )
     if not lock_result.get("success"):
         return _verified_patch_failure(
             "lock_conflict",
@@ -243,7 +251,9 @@ def apply_verified_patch_tool(
             cwd=str(base_cwd),
             check_mode=normalized_check,
             checkpoint=checkpoint,
-            lock=lock_result.get("lock") if isinstance(lock_result.get("lock"), dict) else lock_result,
+            lock=lock_result.get("lock")
+            if isinstance(lock_result.get("lock"), dict)
+            else lock_result,
         )
 
     try:
@@ -258,7 +268,11 @@ def apply_verified_patch_tool(
         patch_error = str(patch_result.error or "patch did not apply")
         after_exists = resolved_path.exists()
         after_content = resolved_path.read_text(encoding="utf-8") if after_exists else ""
-        if _patch_error_is_no_change(patch_error) and before_exists == after_exists and before_content == after_content:
+        if (
+            _patch_error_is_no_change(patch_error)
+            and before_exists == after_exists
+            and before_content == after_content
+        ):
             return _verified_patch_failure(
                 "no_changes",
                 "Patch did not change the file; the file content is unchanged. Submit a patch that makes a real edit before verification.",
@@ -297,7 +311,9 @@ def apply_verified_patch_tool(
             verification=None,
         )
 
-    verification = lean_verify(target=str(resolved_path), cwd=str(base_cwd), mode=normalized_check).to_dict()
+    verification = lean_verify(
+        target=str(resolved_path), cwd=str(base_cwd), mode=normalized_check
+    ).to_dict()
     verified = bool(verification.get("ok"))
     status = "verified" if verified else "check_failed"
     payload = {

@@ -37,9 +37,14 @@ class BaseEnvironment(ABC):
         self.env = env or {}
 
     @abstractmethod
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+    def execute(
+        self,
+        command: str,
+        cwd: str = "",
+        *,
+        timeout: int | None = None,
+        stdin_data: str | None = None,
+    ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}."""
         ...
 
@@ -71,10 +76,10 @@ class BaseEnvironment(ABC):
             daytona) handle sudo_stdin in their own execute() method.
         """
         from tools.implementations.terminal_tool import _transform_sudo_command
+
         return _transform_sudo_command(command)
 
-    def _build_run_kwargs(self, timeout: int | None,
-                          stdin_data: str | None = None) -> dict:
+    def _build_run_kwargs(self, timeout: int | None, stdin_data: str | None = None) -> dict:
         """Build common subprocess.run kwargs for non-interactive execution."""
         kw = {
             "text": True,

@@ -72,7 +72,11 @@ def _summarize_requested_tools(tool_calls: list[dict[str, Any]]) -> str:
             else:
                 previews.append(preview)
     if not previews:
-        names = [str(call.get("name", "") or "") for call in tool_calls[:3] if str(call.get("name", "") or "")]
+        names = [
+            str(call.get("name", "") or "")
+            for call in tool_calls[:3]
+            if str(call.get("name", "") or "")
+        ]
         return f"Requested tools: {', '.join(names)}" if names else ""
     if len(tool_calls) == 1:
         return previews[0]
@@ -89,11 +93,7 @@ def _agent_event_preview(event: Mapping[str, Any]) -> str:
         content = str(details.get("content", "") or "")
         if content.strip():
             return _shorten_text(content, limit=activity_limit)
-        reasoning = str(
-            details.get("reasoning_content", "")
-            or details.get("reasoning", "")
-            or ""
-        )
+        reasoning = str(details.get("reasoning_content", "") or details.get("reasoning", "") or "")
         if reasoning.strip():
             return "Reasoning: " + _shorten_text(reasoning, limit=max(activity_limit - 20, 40))
         tool_calls = details.get("tool_calls")
@@ -137,9 +137,15 @@ def _agent_event_preview(event: Mapping[str, Any]) -> str:
         status = str(details.get("status", "") or "paused")
         return f"Waiting for input ({status})"
     if event_type == "agent-resume":
-        return _shorten_text(details.get("text", ""), limit=max(activity_limit - 20, 40)) or "Processing queued prompt"
+        return (
+            _shorten_text(details.get("text", ""), limit=max(activity_limit - 20, 40))
+            or "Processing queued prompt"
+        )
     if event_type == "runner-exit":
-        return _shorten_text(event.get("message", ""), limit=max(activity_limit - 20, 40)) or "Runner exited"
+        return (
+            _shorten_text(event.get("message", ""), limit=max(activity_limit - 20, 40))
+            or "Runner exited"
+        )
     return _shorten_text(event.get("message", ""), limit=max(activity_limit - 20, 40))
 
 

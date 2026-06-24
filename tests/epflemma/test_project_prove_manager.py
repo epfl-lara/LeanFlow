@@ -49,7 +49,10 @@ def test_declaration_difficulty_weights_hard_and_easy_tokens():
     easy = ppm._project_prove_declaration_difficulty({"name": "mathd_basic", "text": ""})
     assert easy < base
     # Score never goes negative.
-    assert ppm._project_prove_declaration_difficulty({"name": "mathd mathd linear abs", "text": ""}) >= 0
+    assert (
+        ppm._project_prove_declaration_difficulty({"name": "mathd mathd linear abs", "text": ""})
+        >= 0
+    )
 
 
 def test_fallback_order_prefers_downstream_then_difficulty():

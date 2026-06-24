@@ -39,12 +39,15 @@ logger = logging.getLogger(__name__)
 _REPO = "sheeki03/tirith"
 
 # Cosign provenance verification — pinned to the specific release workflow
-_COSIGN_IDENTITY_REGEXP = f"^https://github.com/{_REPO}/\\.github/workflows/release\\.yml@refs/tags/v"
+_COSIGN_IDENTITY_REGEXP = (
+    f"^https://github.com/{_REPO}/\\.github/workflows/release\\.yml@refs/tags/v"
+)
 _COSIGN_ISSUER = "https://token.actions.githubusercontent.com"
 
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
+
 
 def _env_bool(key: str, default: bool) -> bool:
     val = os.getenv(key)
@@ -73,15 +76,22 @@ def _load_security_config() -> dict:
     }
     try:
         from epflemma_cli.config import load_config
+
         cfg = load_config().get("security", {}) or {}
     except Exception:
         cfg = {}
 
     return {
-        "tirith_enabled": _env_bool("TIRITH_ENABLED", cfg.get("tirith_enabled", defaults["tirith_enabled"])),
+        "tirith_enabled": _env_bool(
+            "TIRITH_ENABLED", cfg.get("tirith_enabled", defaults["tirith_enabled"])
+        ),
         "tirith_path": os.getenv("TIRITH_BIN", cfg.get("tirith_path", defaults["tirith_path"])),
-        "tirith_timeout": _env_int("TIRITH_TIMEOUT", cfg.get("tirith_timeout", defaults["tirith_timeout"])),
-        "tirith_fail_open": _env_bool("TIRITH_FAIL_OPEN", cfg.get("tirith_fail_open", defaults["tirith_fail_open"])),
+        "tirith_timeout": _env_int(
+            "TIRITH_TIMEOUT", cfg.get("tirith_timeout", defaults["tirith_timeout"])
+        ),
+        "tirith_fail_open": _env_bool(
+            "TIRITH_FAIL_OPEN", cfg.get("tirith_fail_open", defaults["tirith_fail_open"])
+        ),
     }
 
 
@@ -231,12 +241,19 @@ def _verify_cosign(checksums_path: str, sig_path: str, cert_path: str) -> bool |
 
     try:
         result = subprocess.run(
-            [cosign, "verify-blob",
-             "--certificate", cert_path,
-             "--signature", sig_path,
-             "--certificate-identity-regexp", _COSIGN_IDENTITY_REGEXP,
-             "--certificate-oidc-issuer", _COSIGN_ISSUER,
-             checksums_path],
+            [
+                cosign,
+                "verify-blob",
+                "--certificate",
+                cert_path,
+                "--signature",
+                sig_path,
+                "--certificate-identity-regexp",
+                _COSIGN_IDENTITY_REGEXP,
+                "--certificate-oidc-issuer",
+                _COSIGN_ISSUER,
+                checksums_path,
+            ],
             capture_output=True,
             text=True,
             timeout=15,
@@ -245,8 +262,9 @@ def _verify_cosign(checksums_path: str, sig_path: str, cert_path: str) -> bool |
             logger.info("cosign provenance verification passed")
             return True
         else:
-            logger.warning("cosign verification failed (exit %d): %s",
-                          result.returncode, result.stderr.strip())
+            logger.warning(
+                "cosign verification failed (exit %d): %s", result.returncode, result.stderr.strip()
+            )
             return False
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("cosign execution failed: %s", exc)
@@ -290,8 +308,9 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
 
     target = _detect_target()
     if not target:
-        logger.info("tirith auto-install: unsupported platform %s/%s",
-                     platform.system(), platform.machine())
+        logger.info(
+            "tirith auto-install: unsupported platform %s/%s", platform.system(), platform.machine()
+        )
         return None, "unsupported_platform"
 
     archive_name = f"tirith-{target}.tar.gz"
@@ -321,15 +340,20 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
             _download_file(f"{base_url}/checksums.txt.sig", sig_path)
             _download_file(f"{base_url}/checksums.txt.pem", cert_path)
         except Exception as exc:
-            log("tirith install skipped: cosign artifacts unavailable (%s). "
-                "Install tirith manually or install cosign for auto-install.", exc)
+            log(
+                "tirith install skipped: cosign artifacts unavailable (%s). "
+                "Install tirith manually or install cosign for auto-install.",
+                exc,
+            )
             return None, "cosign_artifacts_unavailable"
 
         # Check cosign availability before attempting verification so we can
         # distinguish "not installed" (retryable) from "installed but broken."
         if not shutil.which("cosign"):
-            log("tirith install skipped: cosign not found on PATH. "
-                "Install cosign for auto-install, or install tirith manually.")
+            log(
+                "tirith install skipped: cosign not found on PATH. "
+                "Install cosign for auto-install, or install tirith manually."
+            )
             return None, "cosign_missing"
 
         cosign_result = _verify_cosign(checksums_path, sig_path, cert_path)
@@ -617,8 +641,16 @@ def check_command_security(command: str) -> dict:
 
     try:
         result = subprocess.run(
-            [tirith_path, "check", "--json", "--non-interactive",
-             "--shell", "posix", "--", command],
+            [
+                tirith_path,
+                "check",
+                "--json",
+                "--non-interactive",
+                "--shell",
+                "posix",
+                "--",
+                command,
+            ],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -628,7 +660,11 @@ def check_command_security(command: str) -> dict:
         logger.warning("tirith spawn failed: %s", exc)
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith unavailable: {exc}"}
-        return {"action": "block", "findings": [], "summary": f"tirith spawn failed (fail-closed): {exc}"}
+        return {
+            "action": "block",
+            "findings": [],
+            "summary": f"tirith spawn failed (fail-closed): {exc}",
+        }
     except subprocess.TimeoutExpired:
         logger.warning("tirith timed out after %ds", timeout)
         if fail_open:
@@ -647,8 +683,16 @@ def check_command_security(command: str) -> dict:
         # Unknown exit code — respect fail_open
         logger.warning("tirith returned unexpected exit code %d", exit_code)
         if fail_open:
-            return {"action": "allow", "findings": [], "summary": f"tirith exit code {exit_code} (fail-open)"}
-        return {"action": "block", "findings": [], "summary": f"tirith exit code {exit_code} (fail-closed)"}
+            return {
+                "action": "allow",
+                "findings": [],
+                "summary": f"tirith exit code {exit_code} (fail-open)",
+            }
+        return {
+            "action": "block",
+            "findings": [],
+            "summary": f"tirith exit code {exit_code} (fail-closed)",
+        }
 
     # Parse JSON for enrichment (never overrides the exit code verdict)
     findings = []

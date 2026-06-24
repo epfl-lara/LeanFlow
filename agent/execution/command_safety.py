@@ -34,7 +34,7 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 
 
 # Output redirects that overwrite files (> but not >>)
-_REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
+_REDIRECT_OVERWRITE = re.compile(r"[^>]>[^>]|^>[^>]")
 
 
 def _is_destructive_command(cmd: str) -> bool:

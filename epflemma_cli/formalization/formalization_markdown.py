@@ -48,7 +48,9 @@ def _render_blocks_for_markdown(blocks: list[Mapping[str, Any]]) -> str:
             lines.append(f"   Existing dependency labels: `{uses}`")
     remaining = len(blocks) - min(len(blocks), 20)
     if remaining > 0:
-        lines.append(f"- ... plus {remaining} more detected block(s); inspect the source document before planning.")
+        lines.append(
+            f"- ... plus {remaining} more detected block(s); inspect the source document before planning."
+        )
     return "\n".join(lines)
 
 
@@ -79,7 +81,9 @@ def _render_context_markdown(
     discovery_summary = str(metadata.get("tex_project_discovery_summary", "") or "").strip()
     request_relative = str(metadata.get("document_request_relative", "") or "").strip()
     request_kind = str(metadata.get("document_request_kind", "") or "").strip()
-    excerpt = str(metadata.get("text_excerpt", "") or metadata.get("extracted_text", "") or "").strip()
+    excerpt = str(
+        metadata.get("text_excerpt", "") or metadata.get("extracted_text", "") or ""
+    ).strip()
     lines = [
         "# EPFLemma Document Formalization Context",
         "",
@@ -181,7 +185,13 @@ def _render_context_markdown(
             ]
         )
         if missing_includes:
-            lines.extend(["", "Missing or external TeX inputs:", *[f"- `{item}`" for item in missing_includes]])
+            lines.extend(
+                [
+                    "",
+                    "Missing or external TeX inputs:",
+                    *[f"- `{item}`" for item in missing_includes],
+                ]
+            )
     if degraded:
         lines.extend(["", "## Preflight Degraded Reasons", "", *[f"- {item}" for item in degraded]])
     if excerpt:

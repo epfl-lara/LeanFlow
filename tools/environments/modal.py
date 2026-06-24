@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 _SNAPSHOT_STORE = get_epflemma_home() / "modal_snapshots.json"
 
+
 def _load_snapshots() -> dict[str, str]:
     """Load snapshot ID mapping from disk."""
     if _SNAPSHOT_STORE.exists():
@@ -31,10 +32,12 @@ def _load_snapshots() -> dict[str, str]:
             pass
     return {}
 
+
 def _save_snapshots(data: dict[str, str]) -> None:
     """Persist snapshot ID mapping to disk."""
     _SNAPSHOT_STORE.parent.mkdir(parents=True, exist_ok=True)
     _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
+
 
 class ModalEnvironment(BaseEnvironment):
     """Modal cloud execution via mini-swe-agent.
@@ -60,6 +63,7 @@ class ModalEnvironment(BaseEnvironment):
         if not ModalEnvironment._patches_applied:
             try:
                 from environments.patches import apply_patches
+
                 apply_patches()
             except ImportError:
                 pass
@@ -78,6 +82,7 @@ class ModalEnvironment(BaseEnvironment):
             if snapshot_id:
                 try:
                     import modal
+
                     restored_image = modal.Image.from_id(snapshot_id)
                     logger.info("Modal: restoring from snapshot %s", snapshot_id[:20])
                 except Exception as e:
@@ -87,6 +92,7 @@ class ModalEnvironment(BaseEnvironment):
         effective_image = restored_image if restored_image else image
 
         from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
+
         self._inner = SwerexModalEnvironment(
             image=effective_image,
             cwd=cwd,
@@ -97,9 +103,14 @@ class ModalEnvironment(BaseEnvironment):
             install_pipx=True,  # Required: installs pipx + swe-rex runtime (swerex-remote)
         )
 
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+    def execute(
+        self,
+        command: str,
+        cwd: str = "",
+        *,
+        timeout: int | None = None,
+        stdin_data: str | None = None,
+    ) -> dict:
         """Execute a command via Modal with interrupt polling and sudo password masking. Injects stdin via heredoc if provided, and pipes sudo passwords through printf -S to avoid exposing them on the local machine. Returns {"output": str, "returncode": int}; on interrupt, terminates the sandbox and returns code 130."""
         if stdin_data is not None:
             marker = f"EPFLEMMA_EOF_{uuid.uuid4().hex[:8]}"
@@ -118,9 +129,8 @@ class ModalEnvironment(BaseEnvironment):
         # machine — which is the primary threat being mitigated.
         if sudo_stdin is not None:
             import shlex
-            exec_command = (
-                f"printf '%s\\n' {shlex.quote(sudo_stdin.rstrip())} | {exec_command}"
-            )
+
+            exec_command = f"printf '%s\\n' {shlex.quote(sudo_stdin.rstrip())} | {exec_command}"
 
         # Run in a background thread so we can poll for interrupts
         result_holder = {"value": None, "error": None}
@@ -150,34 +160,38 @@ class ModalEnvironment(BaseEnvironment):
     def cleanup(self):
         """Snapshot the filesystem (if persistent) then stop the sandbox."""
         # Check if _inner was ever set (init may have failed)
-        if not hasattr(self, '_inner') or self._inner is None:
+        if not hasattr(self, "_inner") or self._inner is None:
             return
 
         if self._persistent:
             try:
-                sandbox = getattr(self._inner, 'deployment', None)
-                sandbox = getattr(sandbox, '_sandbox', None) if sandbox else None
+                sandbox = getattr(self._inner, "deployment", None)
+                sandbox = getattr(sandbox, "_sandbox", None) if sandbox else None
                 if sandbox:
                     import asyncio
+
                     async def _snapshot():
                         img = await sandbox.snapshot_filesystem.aio()
                         return img.object_id
+
                     try:
                         snapshot_id = asyncio.run(_snapshot())
                     except RuntimeError:
                         import concurrent.futures
+
                         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                            snapshot_id = pool.submit(
-                                asyncio.run, _snapshot()
-                            ).result(timeout=60)
+                            snapshot_id = pool.submit(asyncio.run, _snapshot()).result(timeout=60)
 
                     snapshots = _load_snapshots()
                     snapshots[self._task_id] = snapshot_id
                     _save_snapshots(snapshots)
-                    logger.info("Modal: saved filesystem snapshot %s for task %s",
-                                snapshot_id[:20], self._task_id)
+                    logger.info(
+                        "Modal: saved filesystem snapshot %s for task %s",
+                        snapshot_id[:20],
+                        self._task_id,
+                    )
             except Exception as e:
                 logger.warning("Modal: filesystem snapshot failed: %s", e)
 
-        if hasattr(self._inner, 'stop'):
+        if hasattr(self._inner, "stop"):
             self._inner.stop()

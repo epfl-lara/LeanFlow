@@ -117,7 +117,9 @@ def resolve_expert_command_template(provider: str, task: str = "lean_reasoning")
         return task_template
 
     provider_env = f"EPFLEMMA_EXPERT_{_provider_env_name(provider)}_COMMAND_TEMPLATE"
-    provider_template = str(os.getenv(provider_env, "") or get_env_value(provider_env, "") or "").strip()
+    provider_template = str(
+        os.getenv(provider_env, "") or get_env_value(provider_env, "") or ""
+    ).strip()
     if provider_template:
         return provider_template
 
@@ -135,7 +137,9 @@ def resolve_expert_command_template(provider: str, task: str = "lean_reasoning")
             return fallback_task_template
         fallback_config = _task_config(fallback_task)
         fallback_generic_template = str(fallback_config.get("command_template", "") or "").strip()
-        fallback_specific_template = str(fallback_config.get(provider_template_key, "") or "").strip()
+        fallback_specific_template = str(
+            fallback_config.get(provider_template_key, "") or ""
+        ).strip()
         if fallback_specific_template or fallback_generic_template:
             return fallback_specific_template or fallback_generic_template
 
@@ -143,7 +147,11 @@ def resolve_expert_command_template(provider: str, task: str = "lean_reasoning")
 
 
 def _max_response_chars() -> int:
-    raw = str(os.getenv("EPFLEMMA_EXPERT_MAX_RESPONSE_CHARS", "") or get_env_value("EPFLEMMA_EXPERT_MAX_RESPONSE_CHARS", "") or "").strip()
+    raw = str(
+        os.getenv("EPFLEMMA_EXPERT_MAX_RESPONSE_CHARS", "")
+        or get_env_value("EPFLEMMA_EXPERT_MAX_RESPONSE_CHARS", "")
+        or ""
+    ).strip()
     if raw:
         try:
             return max(1000, int(raw))
@@ -190,10 +198,14 @@ def run_command_expert_help(
     prompt_file_path = ""
     output_file_path = ""
     try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="epflemma-expert-", suffix=".md", delete=False) as handle:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", prefix="epflemma-expert-", suffix=".md", delete=False
+        ) as handle:
             handle.write(prompt)
             prompt_file_path = handle.name
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="epflemma-expert-output-", suffix=".txt", delete=False) as handle:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", prefix="epflemma-expert-output-", suffix=".txt", delete=False
+        ) as handle:
             output_file_path = handle.name
         values = {
             "cwd": workdir,

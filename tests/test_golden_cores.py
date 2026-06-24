@@ -57,7 +57,12 @@ def agent():
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
-        a = AIAgent(api_key="test-key-1234567890", quiet_mode=True, skip_context_files=True, skip_memory=True)
+        a = AIAgent(
+            api_key="test-key-1234567890",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
         a.client = MagicMock()
         a._cached_system_prompt = "You are helpful."
         a._use_prompt_caching = False
@@ -121,9 +126,20 @@ def test_pre_tool_call_callback_fires_before_post(agent):
 
 def test_run_conversation_result_schema(agent):
     """Pin the result-dict surface every downstream caller (and native_runner) reads."""
-    agent.client.chat.completions.create.return_value = _mock_response(content="answer", finish_reason="stop")
+    agent.client.chat.completions.create.return_value = _mock_response(
+        content="answer", finish_reason="stop"
+    )
     result = _run(agent, "hi")
-    for key in ("final_response", "messages", "api_calls", "completed", "usage", "interrupted", "partial", "exit_reason"):
+    for key in (
+        "final_response",
+        "messages",
+        "api_calls",
+        "completed",
+        "usage",
+        "interrupted",
+        "partial",
+        "exit_reason",
+    ):
         assert key in result, f"missing result key: {key}"
     assert result["final_response"] == "answer"
     assert result["completed"] is True

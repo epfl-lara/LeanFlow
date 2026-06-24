@@ -35,9 +35,12 @@ class FormalizationDocumentContext:
         return {
             "EPFLEMMA_FORMALIZATION_DOCUMENT": str(self.source_path),
             "EPFLEMMA_FORMALIZATION_DOCUMENT_RELATIVE": self.source_relative,
-            "EPFLEMMA_FORMALIZATION_REQUEST_KIND": str(self.metadata.get("document_request_kind", "file") or "file"),
+            "EPFLEMMA_FORMALIZATION_REQUEST_KIND": str(
+                self.metadata.get("document_request_kind", "file") or "file"
+            ),
             "EPFLEMMA_FORMALIZATION_REQUEST_RELATIVE": str(
-                self.metadata.get("document_request_relative", self.source_relative) or self.source_relative
+                self.metadata.get("document_request_relative", self.source_relative)
+                or self.source_relative
             ),
             "EPFLEMMA_FORMALIZATION_SELECTED_SOURCE": self.source_relative,
             "EPFLEMMA_FORMALIZATION_DOCUMENT_KIND": self.source_kind,

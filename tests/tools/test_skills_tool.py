@@ -71,9 +71,7 @@ class TestParseFrontmatter:
         assert fm == {}
 
     def test_nested_yaml(self):
-        content = (
-            "---\nname: test\nmetadata:\n  gauss:\n    tags: [a, b]\n---\n\nBody.\n"
-        )
+        content = "---\nname: test\nmetadata:\n  gauss:\n    tags: [a, b]\n---\n\nBody.\n"
         fm, body = _parse_frontmatter(content)
         assert fm["metadata"]["gauss"]["tags"] == ["a", "b"]
 
@@ -157,9 +155,7 @@ class TestRequiredEnvironmentVariablesNormalization:
         from tools.implementations.skills_tool import _is_env_var_persisted
 
         assert _is_env_var_persisted("EMPTY_FILE_KEY", {"EMPTY_FILE_KEY": ""}) is False
-        assert (
-            _is_env_var_persisted("FILLED_FILE_KEY", {"FILLED_FILE_KEY": "x"}) is True
-        )
+        assert _is_env_var_persisted("FILLED_FILE_KEY", {"FILLED_FILE_KEY": "x"}) is True
         assert _is_env_var_persisted("EMPTY_HOST_KEY", {}) is False
         assert _is_env_var_persisted("FILLED_KEY", {}) is True
 
@@ -262,9 +258,7 @@ class TestFindAllSkills:
             _make_skill(tmp_path, "real-skill")
             git_dir = tmp_path / ".git" / "fake-skill"
             git_dir.mkdir(parents=True)
-            (git_dir / "SKILL.md").write_text(
-                "---\nname: fake\ndescription: x\n---\n\nBody.\n"
-            )
+            (git_dir / "SKILL.md").write_text("---\nname: fake\ndescription: x\n---\n\nBody.\n")
             skills = _find_all_skills()
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
@@ -315,7 +309,11 @@ class TestSkillsList:
                     "path": Path("/tmp/prove.md"),
                 },
             )()
-            monkeypatch.setattr(skills_tool_module, "specs_for_skill", lambda name: [fake_record] if name == "alpha" else [])
+            monkeypatch.setattr(
+                skills_tool_module,
+                "specs_for_skill",
+                lambda name: [fake_record] if name == "alpha" else [],
+            )
             raw = skills_list()
         result = json.loads(raw)
         assert result["skills"][0]["workflow_specs"][0]["id"] == "prove"
@@ -349,7 +347,11 @@ class TestSkillView:
                     "path": Path("/tmp/formalize.md"),
                 },
             )()
-            monkeypatch.setattr(skills_tool_module, "specs_for_skill", lambda name: [fake_record] if name == "my-skill" else [])
+            monkeypatch.setattr(
+                skills_tool_module,
+                "specs_for_skill",
+                lambda name: [fake_record] if name == "my-skill" else [],
+            )
             raw = skill_view("my-skill")
         result = json.loads(raw)
         assert result["workflow_specs"][0]["id"] == "formalize"
@@ -507,7 +509,6 @@ class TestSkillViewSecureSetupOnLoad:
         assert result["content"].startswith("---")
 
 
-
 # ---------------------------------------------------------------------------
 # skills_categories
 # ---------------------------------------------------------------------------
@@ -661,9 +662,7 @@ class TestFindAllSkillsPlatformFiltering:
             patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path),
             patch("tools.implementations.skills_tool.sys") as mock_sys,
         ):
-            _make_skill(
-                tmp_path, "cross-plat", frontmatter_extra="platforms: [macos, linux]\n"
-            )
+            _make_skill(tmp_path, "cross-plat", frontmatter_extra="platforms: [macos, linux]\n")
             mock_sys.platform = "darwin"
             skills_darwin = _find_all_skills()
             mock_sys.platform = "linux"
@@ -695,9 +694,7 @@ class TestFindAllSkillsSecureSetup:
         assert "readiness_status" not in skills[0]
         assert "missing_prerequisites" not in skills[0]
 
-    def test_skills_with_met_prereqs_have_same_listing_shape(
-        self, tmp_path, monkeypatch
-    ):
+    def test_skills_with_met_prereqs_have_same_listing_shape(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MY_PRESENT_KEY", "val")
         with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
@@ -718,9 +715,7 @@ class TestFindAllSkillsSecureSetup:
         assert skills[0]["name"] == "simple-skill"
         assert "readiness_status" not in skills[0]
 
-    def test_skill_listing_does_not_probe_backend_for_env_vars(
-        self, tmp_path, monkeypatch
-    ):
+    def test_skill_listing_does_not_probe_backend_for_env_vars(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
         with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
@@ -741,9 +736,7 @@ class TestFindAllSkillsSecureSetup:
 
 
 class TestSkillViewPrerequisites:
-    def test_legacy_prerequisites_expose_required_env_setup_metadata(
-        self, tmp_path, monkeypatch
-    ):
+    def test_legacy_prerequisites_expose_required_env_setup_metadata(self, tmp_path, monkeypatch):
         monkeypatch.delenv("MISSING_KEY_XYZ", raising=False)
         with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
@@ -786,9 +779,7 @@ class TestSkillViewPrerequisites:
         assert result["setup_needed"] is False
         assert result["required_environment_variables"] == []
 
-    def test_skill_view_treats_backend_only_env_as_setup_needed(
-        self, tmp_path, monkeypatch
-    ):
+    def test_skill_view_treats_backend_only_env_as_setup_needed(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
         with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
@@ -820,7 +811,6 @@ class TestSkillViewPrerequisites:
         assert result["setup_needed"] is True
         assert result["missing_required_environment_variables"] == ["SHELL_ONLY_KEY"]
         assert result["readiness_status"] == "setup_needed"
-
 
     @pytest.mark.parametrize(
         "backend,expected_note",
@@ -884,9 +874,7 @@ class TestSkillViewPrerequisites:
 
             def fake_read_text(path_obj, *args, **kwargs):
                 if path_obj == skill_md:
-                    raise UnicodeDecodeError(
-                        "utf-8", b"\xff", 0, 1, "invalid start byte"
-                    )
+                    raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
                 return original_read_text(path_obj, *args, **kwargs)
 
             monkeypatch.setattr(Path, "read_text", fake_read_text)
@@ -930,9 +918,7 @@ Do the legacy thing.
             {"name": "LEGACY_KEY", "prompt": "Legacy key"}
         ]
 
-    def test_successful_secret_capture_reloads_empty_env_placeholder(
-        self, tmp_path, monkeypatch
-    ):
+    def test_successful_secret_capture_reloads_empty_env_placeholder(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "local")
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
 

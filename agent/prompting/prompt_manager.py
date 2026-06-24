@@ -127,9 +127,13 @@ class PromptManager:
                 if user_block:
                     prompt_parts.append(user_block)
 
-        has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
+        has_skills_tools = any(
+            name in agent.valid_tool_names for name in ["skills_list", "skill_view", "skill_manage"]
+        )
         if has_skills_tools:
-            avail_toolsets = {ts for ts, avail in run_agent.check_toolset_requirements().items() if avail}
+            avail_toolsets = {
+                ts for ts, avail in run_agent.check_toolset_requirements().items() if avail
+            }
             skills_prompt = run_agent.build_skills_system_prompt(
                 available_tools=agent.valid_tool_names,
                 available_toolsets=avail_toolsets,
@@ -145,6 +149,7 @@ class PromptManager:
                 prompt_parts.append(context_files_prompt)
 
         from core.time import now as _gauss_now
+
         now = _gauss_now()
         timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
         if agent.pass_session_id and agent.session_id:

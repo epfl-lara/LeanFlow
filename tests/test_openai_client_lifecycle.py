@@ -18,9 +18,7 @@ class FakeRequestClient:
     def __init__(self, responder):
         self._responder = responder
         self._client = SimpleNamespace(is_closed=False)
-        self.chat = SimpleNamespace(
-            completions=SimpleNamespace(create=self._create)
-        )
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
         self.responses = SimpleNamespace()
         self.close_calls = 0
 
@@ -106,7 +104,9 @@ def test_retry_after_api_connection_error_recreates_request_client(monkeypatch):
 
 
 def test_closed_shared_client_is_recreated_before_request(monkeypatch):
-    stale_shared = FakeSharedClient(lambda **kwargs: (_ for _ in ()).throw(AssertionError("stale shared client used")))
+    stale_shared = FakeSharedClient(
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("stale shared client used"))
+    )
     stale_shared._client.is_closed = True
 
     replacement_shared = FakeSharedClient(lambda **kwargs: {"replacement": True})
@@ -190,20 +190,32 @@ def test_interruptible_api_call_times_out_and_emits_provider_wait(monkeypatch):
     assert any(args and args[0] == "provider-wait" for args, _kwargs in workflow_events)
 
 
-
 def test_streaming_call_recreates_closed_shared_client_before_request(monkeypatch):
-    chunks = iter([
-        SimpleNamespace(
-            model="gpt-5-codex",
-            choices=[SimpleNamespace(delta=SimpleNamespace(content="Hello", tool_calls=None), finish_reason=None)],
-        ),
-        SimpleNamespace(
-            model="gpt-5-codex",
-            choices=[SimpleNamespace(delta=SimpleNamespace(content=" world", tool_calls=None), finish_reason="stop")],
-        ),
-    ])
+    chunks = iter(
+        [
+            SimpleNamespace(
+                model="gpt-5-codex",
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="Hello", tool_calls=None), finish_reason=None
+                    )
+                ],
+            ),
+            SimpleNamespace(
+                model="gpt-5-codex",
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content=" world", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+            ),
+        ]
+    )
 
-    stale_shared = FakeSharedClient(lambda **kwargs: (_ for _ in ()).throw(AssertionError("stale shared client used")))
+    stale_shared = FakeSharedClient(
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("stale shared client used"))
+    )
     stale_shared._client.is_closed = True
 
     replacement_shared = FakeSharedClient(lambda **kwargs: {"replacement": True})
@@ -212,7 +224,9 @@ def test_streaming_call_recreates_closed_shared_client_before_request(monkeypatc
     monkeypatch.setattr(run_agent, "OpenAI", factory)
 
     agent = _build_agent(shared_client=stale_shared)
-    response = agent._streaming_api_call({"model": agent.model, "messages": []}, lambda _delta: None)
+    response = agent._streaming_api_call(
+        {"model": agent.model, "messages": []}, lambda _delta: None
+    )
 
     assert response.choices[0].message.content == "Hello world"
     assert agent.client is replacement_shared
@@ -239,7 +253,9 @@ def test_streaming_api_call_times_out_and_emits_provider_wait(monkeypatch):
     agent._vprint = lambda *args, **kwargs: None
 
     with pytest.raises(TimeoutError, match="Provider request exceeded 1s without a response."):
-        agent._streaming_api_call({"model": agent.model, "messages": [], "timeout": 1.0}, lambda _delta: None)
+        agent._streaming_api_call(
+            {"model": agent.model, "messages": [], "timeout": 1.0}, lambda _delta: None
+        )
 
     assert request_client.close_calls >= 1
     assert any(args and args[0] == "provider-wait" for args, _kwargs in workflow_events)

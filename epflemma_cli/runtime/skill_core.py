@@ -151,7 +151,11 @@ def discover_skill_commands(cwd: str | os.PathLike[str] | None = None) -> dict[s
 def find_skill(name: str, cwd: str | os.PathLike[str] | None = None) -> SkillRecord | None:
     """Return a SkillRecord matching the given name, path, or command name, or None if not found. Supports discovery across builtin, user, and project skill directories; accepts slash-prefixed names, file paths, and normalized names. Falls back to parsing SKILL.md from a provided file path if no discovered skill matches."""
     raw_requested = (name or "").strip()
-    if raw_requested.startswith("/") and Path(raw_requested).expanduser().exists() or raw_requested.startswith(("~", ".")):
+    if (
+        raw_requested.startswith("/")
+        and Path(raw_requested).expanduser().exists()
+        or raw_requested.startswith(("~", "."))
+    ):
         requested = raw_requested
     else:
         requested = raw_requested.lstrip("/")
@@ -165,7 +169,9 @@ def find_skill(name: str, cwd: str | os.PathLike[str] | None = None) -> SkillRec
     for record in discover_skills(cwd):
         if record.name == requested or record.command_name == normalized:
             return record
-        if requested == record.relative_path or requested == str(record.skill_dir.relative_to(record.root)):
+        if requested == record.relative_path or requested == str(
+            record.skill_dir.relative_to(record.root)
+        ):
             return record
         for candidate_path in candidate_paths:
             try:
@@ -208,7 +214,11 @@ def load_skill(name: str, cwd: str | os.PathLike[str] | None = None) -> dict[str
         target = record.skill_dir / subdir
         if not target.exists():
             continue
-        files = [str(path.relative_to(record.skill_dir)) for path in sorted(target.rglob("*")) if path.is_file()]
+        files = [
+            str(path.relative_to(record.skill_dir))
+            for path in sorted(target.rglob("*"))
+            if path.is_file()
+        ]
         if files:
             linked_files[subdir] = files
 
@@ -222,7 +232,9 @@ def load_skill(name: str, cwd: str | os.PathLike[str] | None = None) -> dict[str
     }
 
 
-def load_skill_file(name: str, file_path: str, cwd: str | os.PathLike[str] | None = None) -> dict[str, Any] | None:
+def load_skill_file(
+    name: str, file_path: str, cwd: str | os.PathLike[str] | None = None
+) -> dict[str, Any] | None:
     record = find_skill(name, cwd)
     if record is None:
         return None
@@ -273,7 +285,9 @@ def build_skill_prompt(name: str, cwd: str | os.PathLike[str] | None = None) -> 
     spec_records = specs_for_skill(str(payload.get("name", "") or name))
     if spec_records:
         parts.append("")
-        parts.append("[Linked workflow specs follow. Treat them as the policy manuals for this skill.]")
+        parts.append(
+            "[Linked workflow specs follow. Treat them as the policy manuals for this skill.]"
+        )
         for record in spec_records:
             spec_content = str(record.content or "").strip()
             if not spec_content:

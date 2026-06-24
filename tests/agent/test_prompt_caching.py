@@ -119,8 +119,7 @@ class TestApplyAnthropicCacheControl:
         msgs = [
             {"role": "system", "content": "System"},
         ] + [
-            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg{i}"}
-            for i in range(10)
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg{i}"} for i in range(10)
         ]
         result = apply_anthropic_cache_control(msgs)
         # Count how many messages have cache_control

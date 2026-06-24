@@ -64,7 +64,9 @@ def _last_verification_record(
     live_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     for source in (autonomy_state, live_state):
-        record = verification_to_mapping(verification_from_mapping(dict((source or {}).get("last_verification") or {})))
+        record = verification_to_mapping(
+            verification_from_mapping(dict((source or {}).get("last_verification") or {}))
+        )
         if record:
             return record
     return {}
@@ -105,7 +107,10 @@ def _verification_task_has_aux_overrides(task: str) -> bool:
     task_config = aux.get(task, {}) if isinstance(aux, Mapping) else {}
     if not isinstance(task_config, Mapping):
         return False
-    return any(str(task_config.get(key, "") or "").strip() for key in ("model", "base_url", "api_key", "reasoning_effort"))
+    return any(
+        str(task_config.get(key, "") or "").strip()
+        for key in ("model", "base_url", "api_key", "reasoning_effort")
+    )
 
 
 def _verification_review_system_prompt(task: str) -> str:

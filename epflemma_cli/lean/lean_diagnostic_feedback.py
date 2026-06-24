@@ -204,9 +204,7 @@ def _declaration_diagnostic_feedback_reason(
             continue
         message = _single_line(str(diagnostic.get("message", "") or ""), 180)
         return (
-            f"{severity} near line {line}: {message}"
-            if message
-            else f"{severity} near line {line}"
+            f"{severity} near line {line}: {message}" if message else f"{severity} near line {line}"
         )
     for text in texts:
         if not text:
@@ -244,10 +242,7 @@ def _diagnostics_indicate_failure(diagnostics: str) -> bool:
 def _diagnostics_indicate_hard_failure(diagnostics: str) -> bool:
     items = diagnostic_items(diagnostics)
     if items:
-        return any(
-            str(item.get("severity", "") or "").strip().lower() == "error"
-            for item in items
-        )
+        return any(str(item.get("severity", "") or "").strip().lower() == "error" for item in items)
     lowered = (diagnostics or "").lower()
     for token in ("no errors found", "no errors", "without errors"):
         lowered = lowered.replace(token, "")

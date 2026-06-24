@@ -36,7 +36,3 @@ def get_product_tagline() -> str:
 
 def get_product_subtitle() -> str:
     return PRODUCT_SUBTITLE
-
-
-
-

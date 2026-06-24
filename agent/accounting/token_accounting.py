@@ -100,23 +100,15 @@ class TokenAccounter:
         agent-owned values supplied by the caller. The returned dict shape is
         identical to the former ``AIAgent._session_usage_summary`` output.
         """
-        turn_prompt_tokens = max(
-            0, self.session_prompt_tokens - self._turn_start_prompt_tokens
-        )
+        turn_prompt_tokens = max(0, self.session_prompt_tokens - self._turn_start_prompt_tokens)
         turn_completion_tokens = max(
             0, self.session_completion_tokens - self._turn_start_completion_tokens
         )
-        turn_total_tokens = max(
-            0, self.session_total_tokens - self._turn_start_total_tokens
-        )
-        turn_metered_api_calls = max(
-            0, self.session_api_calls - self._turn_start_api_calls
-        )
+        turn_total_tokens = max(0, self.session_total_tokens - self._turn_start_total_tokens)
+        turn_metered_api_calls = max(0, self.session_api_calls - self._turn_start_api_calls)
         known_pricing = has_known_pricing(model)
         estimated_cost = (
-            estimate_cost_usd(
-                model, self.session_prompt_tokens, self.session_completion_tokens
-            )
+            estimate_cost_usd(model, self.session_prompt_tokens, self.session_completion_tokens)
             if known_pricing
             else None
         )

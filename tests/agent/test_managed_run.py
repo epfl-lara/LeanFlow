@@ -20,7 +20,11 @@ def _make_tool_defs(*names):
     return [
         {
             "type": "function",
-            "function": {"name": n, "description": f"{n} tool", "parameters": {"type": "object", "properties": {}}},
+            "function": {
+                "name": n,
+                "description": f"{n} tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
         }
         for n in names
     ]
@@ -33,7 +37,12 @@ def agent():
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
-        a = AIAgent(api_key="test-key-1234567890", quiet_mode=True, skip_context_files=True, skip_memory=True)
+        a = AIAgent(
+            api_key="test-key-1234567890",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
         a.client = MagicMock()
         a._cached_system_prompt = "You are helpful."
         a._use_prompt_caching = False
@@ -44,6 +53,7 @@ def agent():
 
 
 # ---- unit: the staging/consuming helpers ---------------------------------------------------
+
 
 def test_stage_accumulates_and_backs_legacy_attr(agent):
     agent.stage_tool_result_appendix("first")
@@ -82,9 +92,15 @@ def test_apply_noop_when_unset(agent):
 
 # ---- contract surface ----------------------------------------------------------------------
 
+
 def test_aiagent_satisfies_managed_run_protocol(agent):
     assert isinstance(agent, ManagedRunAgent)
-    for attr in ("pre_tool_call_callback", "post_tool_result_callback", "tool_progress_callback", "step_callback"):
+    for attr in (
+        "pre_tool_call_callback",
+        "post_tool_result_callback",
+        "tool_progress_callback",
+        "step_callback",
+    ):
         assert hasattr(agent, attr)
     assert callable(agent.stage_tool_result_appendix)
 
@@ -94,6 +110,7 @@ def test_managed_scratch_attrs_are_not_read_by_aiagent():
     import inspect
 
     import run_agent
+
     src = inspect.getsource(run_agent)
     for attr in MANAGED_SCRATCH_ATTRS:
         assert f"self.{attr}" not in src, f"AIAgent must not read runner scratch attr {attr}"
@@ -101,9 +118,13 @@ def test_managed_scratch_attrs_are_not_read_by_aiagent():
 
 # ---- integration: the loop wires the appendix through both via the shared helper ------------
 
+
 def _mock_tool_call(name="web_search", arguments="{}", call_id=None):
-    return SimpleNamespace(id=call_id or f"call_{uuid.uuid4().hex[:8]}", type="function",
-                           function=SimpleNamespace(name=name, arguments=arguments))
+    return SimpleNamespace(
+        id=call_id or f"call_{uuid.uuid4().hex[:8]}",
+        type="function",
+        function=SimpleNamespace(name=name, arguments=arguments),
+    )
 
 
 def _mock_response(content="", finish_reason="stop", tool_calls=None):
@@ -114,6 +135,7 @@ def _mock_response(content="", finish_reason="stop", tool_calls=None):
 
 def test_post_tool_result_callback_appendix_reaches_tool_message(agent):
     """A post_tool_result_callback that stages an appendix => it is appended to the tool result."""
+
     def _cb(name, args, result):
         agent.stage_tool_result_appendix("[MANAGED HANDOFF GUIDANCE]")
 

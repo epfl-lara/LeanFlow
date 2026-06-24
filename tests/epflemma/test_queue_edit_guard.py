@@ -11,13 +11,13 @@ from types import SimpleNamespace
 from epflemma_cli.native import native_runner
 from epflemma_cli.workflows import queue_edit_guard
 
-FILE = '''\
+FILE = """\
 theorem assigned_thm : True := by
   trivial
 
 theorem future_item : 1 + 1 = 2 := by
   rfl
-'''
+"""
 
 
 def test_native_runner_reexports_are_identical():

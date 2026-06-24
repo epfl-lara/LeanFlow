@@ -57,6 +57,7 @@ def _mock_resolve(base_url="https://openrouter.ai/api/v1", api_key="test-key"):
 # _try_activate_fallback()
 # =============================================================================
 
+
 class TestTryActivateFallback:
     def test_returns_false_when_not_configured(self):
         agent = _make_agent(fallback_model=None)
@@ -326,6 +327,7 @@ class TestTryActivateFallback:
 # Fallback config init
 # =============================================================================
 
+
 class TestFallbackInit:
     def test_fallback_stored_when_configured(self):
         agent = _make_agent(
@@ -349,16 +351,20 @@ class TestFallbackInit:
 # Provider credential resolution
 # =============================================================================
 
+
 class TestProviderCredentials:
     """Verify that each supported provider resolves via the centralized router."""
 
-    @pytest.mark.parametrize("provider,env_var,base_url_fragment", [
-        ("openrouter", "OPENROUTER_API_KEY", "openrouter"),
-        ("zai", "ZAI_API_KEY", "z.ai"),
-        ("kimi-coding", "KIMI_API_KEY", "moonshot.ai"),
-        ("minimax", "MINIMAX_API_KEY", "minimax.io"),
-        ("minimax-cn", "MINIMAX_CN_API_KEY", "minimaxi.com"),
-    ])
+    @pytest.mark.parametrize(
+        "provider,env_var,base_url_fragment",
+        [
+            ("openrouter", "OPENROUTER_API_KEY", "openrouter"),
+            ("zai", "ZAI_API_KEY", "z.ai"),
+            ("kimi-coding", "KIMI_API_KEY", "moonshot.ai"),
+            ("minimax", "MINIMAX_API_KEY", "minimax.io"),
+            ("minimax-cn", "MINIMAX_CN_API_KEY", "minimaxi.com"),
+        ],
+    )
     def test_provider_resolves(self, provider, env_var, base_url_fragment):
         agent = _make_agent(
             fallback_model={"provider": provider, "model": "test-model"},

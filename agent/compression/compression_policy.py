@@ -84,18 +84,23 @@ class CompressionPolicy:
         # it already examined before compression.
         try:
             from tools.implementations.file_tools import get_read_files_summary
+
             read_files = get_read_files_summary(task_id)
             if read_files:
                 file_list = "\n".join(
-                    f"  - {f['path']} ({', '.join(f['regions'])})"
-                    for f in read_files
+                    f"  - {f['path']} ({', '.join(f['regions'])})" for f in read_files
                 )
-                compressed.append({"role": "user", "content": (
-                    "[Files already read in this session — do NOT re-read these]\n"
-                    f"{file_list}\n"
-                    "Use the information from the context summary above. "
-                    "Proceed with writing, editing, or responding."
-                )})
+                compressed.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "[Files already read in this session — do NOT re-read these]\n"
+                            f"{file_list}\n"
+                            "Use the information from the context summary above. "
+                            "Proceed with writing, editing, or responding."
+                        ),
+                    }
+                )
         except Exception:
             pass  # Don't break compression if file tracking fails
 
@@ -109,6 +114,7 @@ class CompressionPolicy:
                 # run_agent._generate_short_session_id still intercepts and no
                 # import cycle is created at module load.
                 import run_agent
+
                 # Propagate title to the new session with auto-numbering
                 old_title = agent._session_db.get_session_title(agent.session_id)
                 agent._session_db.end_session(agent.session_id, "compression")

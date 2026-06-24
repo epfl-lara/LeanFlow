@@ -61,8 +61,13 @@ def test_manager_feedback_retry_key_is_target_and_resolved_file():
 def test_incremental_timeout_readers_honor_env(monkeypatch):
     monkeypatch.delenv("EPFLEMMA_MANAGER_INCREMENTAL_PREPARE_TIMEOUT_S", raising=False)
     monkeypatch.delenv("EPFLEMMA_MANAGER_INCREMENTAL_CHECK_TIMEOUT_S", raising=False)
-    assert mv._manager_incremental_prepare_timeout_s() == mv.MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S
-    assert mv._manager_incremental_check_timeout_s() == mv.MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S
+    assert (
+        mv._manager_incremental_prepare_timeout_s()
+        == mv.MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S
+    )
+    assert (
+        mv._manager_incremental_check_timeout_s() == mv.MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S
+    )
     monkeypatch.setenv("EPFLEMMA_MANAGER_INCREMENTAL_PREPARE_TIMEOUT_S", "123")
     monkeypatch.setenv("EPFLEMMA_MANAGER_INCREMENTAL_CHECK_TIMEOUT_S", "456")
     assert mv._manager_incremental_prepare_timeout_s() == 123

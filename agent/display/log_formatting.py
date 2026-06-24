@@ -99,7 +99,11 @@ def _format_tool_args_for_log(function_name: str, function_args: dict[str, Any])
     lines: list[str] = []
     for key in ordered_keys:
         value = function_args[key]
-        if isinstance(value, list) and value and all(not isinstance(item, (dict, list)) for item in value):
+        if (
+            isinstance(value, list)
+            and value
+            and all(not isinstance(item, (dict, list)) for item in value)
+        ):
             lines.append(f"{key}: {len(value)} item(s)")
             for item in value[:12]:
                 lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=104)])
@@ -110,7 +114,9 @@ def _format_tool_args_for_log(function_name: str, function_args: dict[str, Any])
             lines.append(f"{key}:")
             for sub_key, sub_value in value.items():
                 summary = _summarize_arg_value(sub_key, sub_value)
-                lines.extend([f"  {part}" for part in _wrap_log_text(f"{sub_key}: {summary}", width=104)])
+                lines.extend(
+                    [f"  {part}" for part in _wrap_log_text(f"{sub_key}: {summary}", width=104)]
+                )
             continue
         summary = _summarize_arg_value(key, value)
         lines.extend(_wrap_log_text(f"{key}: {summary}", width=106))
@@ -166,7 +172,11 @@ def _format_tool_result_for_log_with_limits(
 
         for key in ordered_keys:
             value = parsed[key]
-            if isinstance(value, list) and value and all(not isinstance(item, (dict, list)) for item in value):
+            if (
+                isinstance(value, list)
+                and value
+                and all(not isinstance(item, (dict, list)) for item in value)
+            ):
                 lines.append(f"{key}: {len(value)} item(s)")
                 for item in value[:14]:
                     lines.extend([f"  - {part}" for part in _wrap_log_text(str(item), width=104)])
@@ -178,8 +188,12 @@ def _format_tool_result_for_log_with_limits(
                 lines.append(f"{key}:")
                 wrapped_lines: list[str] = []
                 for raw_line in value_lines:
-                    wrapped_lines.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=104)])
-                lines.extend(_truncate_log_lines(wrapped_lines, head=multiline_head, tail=multiline_tail))
+                    wrapped_lines.extend(
+                        [f"  {part}" for part in _wrap_log_text(raw_line, width=104)]
+                    )
+                lines.extend(
+                    _truncate_log_lines(wrapped_lines, head=multiline_head, tail=multiline_tail)
+                )
                 continue
             if isinstance(value, str) and len(value) > string_char_threshold:
                 wrapped = _wrap_log_text(value, width=104)
@@ -193,7 +207,9 @@ def _format_tool_result_for_log_with_limits(
                 lines.append(f"{key}:")
                 wrapped_pretty: list[str] = []
                 for raw_line in pretty_lines:
-                    wrapped_pretty.extend([f"  {part}" for part in _wrap_log_text(raw_line, width=104)])
+                    wrapped_pretty.extend(
+                        [f"  {part}" for part in _wrap_log_text(raw_line, width=104)]
+                    )
                 lines.extend(
                     _truncate_log_lines(
                         wrapped_pretty,

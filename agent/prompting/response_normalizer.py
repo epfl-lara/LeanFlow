@@ -118,7 +118,11 @@ class ResponseNormalizer:
             if isinstance(error_obj, dict):
                 error_msg = error_obj.get("message") or str(error_obj)
             else:
-                error_msg = str(error_obj) if error_obj else f"Responses API returned status '{response_status}'"
+                error_msg = (
+                    str(error_obj)
+                    if error_obj
+                    else f"Responses API returned status '{response_status}'"
+                )
             raise RuntimeError(error_msg)
 
         content_parts: list[str] = []
@@ -184,19 +188,27 @@ class ResponseNormalizer:
                 raw_call_id = getattr(item, "call_id", None)
                 raw_item_id = getattr(item, "id", None)
                 embedded_call_id, _ = agent._split_responses_tool_id(raw_item_id)
-                call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
+                call_id = (
+                    raw_call_id
+                    if isinstance(raw_call_id, str) and raw_call_id.strip()
+                    else embedded_call_id
+                )
                 if not isinstance(call_id, str) or not call_id.strip():
                     call_id = f"call_{uuid.uuid4().hex[:12]}"
                 call_id = call_id.strip()
                 response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
-                response_item_id = agent._derive_responses_function_call_id(call_id, response_item_id)
-                tool_calls.append(SimpleNamespace(
-                    id=call_id,
-                    call_id=call_id,
-                    response_item_id=response_item_id,
-                    type="function",
-                    function=SimpleNamespace(name=fn_name, arguments=arguments),
-                ))
+                response_item_id = agent._derive_responses_function_call_id(
+                    call_id, response_item_id
+                )
+                tool_calls.append(
+                    SimpleNamespace(
+                        id=call_id,
+                        call_id=call_id,
+                        response_item_id=response_item_id,
+                        type="function",
+                        function=SimpleNamespace(name=fn_name, arguments=arguments),
+                    )
+                )
             elif item_type == "custom_tool_call":
                 fn_name = getattr(item, "name", "") or ""
                 arguments = getattr(item, "input", "{}")
@@ -205,19 +217,27 @@ class ResponseNormalizer:
                 raw_call_id = getattr(item, "call_id", None)
                 raw_item_id = getattr(item, "id", None)
                 embedded_call_id, _ = agent._split_responses_tool_id(raw_item_id)
-                call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
+                call_id = (
+                    raw_call_id
+                    if isinstance(raw_call_id, str) and raw_call_id.strip()
+                    else embedded_call_id
+                )
                 if not isinstance(call_id, str) or not call_id.strip():
                     call_id = f"call_{uuid.uuid4().hex[:12]}"
                 call_id = call_id.strip()
                 response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
-                response_item_id = agent._derive_responses_function_call_id(call_id, response_item_id)
-                tool_calls.append(SimpleNamespace(
-                    id=call_id,
-                    call_id=call_id,
-                    response_item_id=response_item_id,
-                    type="function",
-                    function=SimpleNamespace(name=fn_name, arguments=arguments),
-                ))
+                response_item_id = agent._derive_responses_function_call_id(
+                    call_id, response_item_id
+                )
+                tool_calls.append(
+                    SimpleNamespace(
+                        id=call_id,
+                        call_id=call_id,
+                        response_item_id=response_item_id,
+                        type="function",
+                        function=SimpleNamespace(name=fn_name, arguments=arguments),
+                    )
+                )
 
         final_text = "\n".join([p for p in content_parts if p]).strip()
         if not final_text and hasattr(response, "output_text"):
@@ -258,7 +278,7 @@ class ResponseNormalizer:
         # directly in the content rather than returning separate API fields).
         if not reasoning_text:
             content = assistant_message.content or ""
-            think_blocks = re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
+            think_blocks = re.findall(r"<think>(.*?)</think>", content, flags=re.DOTALL)
             if think_blocks:
                 combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())
                 reasoning_text = combined or None
@@ -277,7 +297,7 @@ class ResponseNormalizer:
             "finish_reason": finish_reason,
         }
 
-        if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
+        if hasattr(assistant_message, "reasoning_details") and assistant_message.reasoning_details:
             # Pass reasoning_details back unmodified so providers (OpenRouter,
             # Anthropic, OpenAI) can maintain reasoning continuity across turns.
             # Each provider may include opaque fields (signature, encrypted_content)
@@ -332,7 +352,7 @@ class ResponseNormalizer:
                     "type": tool_call.type,
                     "function": {
                         "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments
+                        "arguments": tool_call.function.arguments,
                     },
                 }
                 # Preserve extra_content (e.g. Gemini thought_signature) so it

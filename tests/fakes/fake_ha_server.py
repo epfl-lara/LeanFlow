@@ -204,25 +204,30 @@ class FakeHAServer:
         sub_id = sub_msg.get("id", 1)
 
         # Step 5: ACK
-        await ws.send_json({
-            "id": sub_id,
-            "type": "result",
-            "success": True,
-            "result": None,
-        })
+        await ws.send_json(
+            {
+                "id": sub_id,
+                "type": "result",
+                "success": True,
+                "result": None,
+            }
+        )
 
         # Step 6: push events from queue until closed
         try:
             while not ws.closed:
                 try:
                     event_data = await asyncio.wait_for(
-                        self._event_queue.get(), timeout=0.1,
+                        self._event_queue.get(),
+                        timeout=0.1,
                     )
-                    await ws.send_json({
-                        "id": sub_id,
-                        "type": "event",
-                        "event": event_data,
-                    })
+                    await ws.send_json(
+                        {
+                            "id": sub_id,
+                            "type": "event",
+                            "event": event_data,
+                        }
+                    )
                 except TimeoutError:
                     continue
         except (ConnectionResetError, asyncio.CancelledError):
@@ -264,11 +269,13 @@ class FakeHAServer:
         service = request.match_info["service"]
         body = await request.json()
 
-        self.received_service_calls.append({
-            "domain": domain,
-            "service": service,
-            "data": body,
-        })
+        self.received_service_calls.append(
+            {
+                "domain": domain,
+                "service": service,
+                "data": body,
+            }
+        )
 
         # Return affected entities (mimics real HA behaviour for light/switch).
         affected = []
@@ -290,11 +297,13 @@ class FakeHAServer:
                             if ts["entity_id"] == "sensor.temperature":
                                 ts["state"] = str(body["temperature"] - 0.5)
                                 break
-                    affected.append({
-                        "entity_id": entity_id,
-                        "state": s["state"],
-                        "attributes": s.get("attributes", {}),
-                    })
+                    affected.append(
+                        {
+                            "entity_id": entity_id,
+                            "state": s["state"],
+                            "attributes": s.get("attributes", {}),
+                        }
+                    )
                     break
 
         return web.json_response(affected)

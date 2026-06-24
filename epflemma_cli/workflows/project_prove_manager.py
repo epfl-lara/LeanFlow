@@ -71,7 +71,9 @@ __all__ = [
 
 
 def _project_prove_manager_active(autonomy_state: Mapping[str, Any] | None = None) -> bool:
-    return isinstance(autonomy_state, Mapping) and bool(autonomy_state.get("project_prove_manager_enabled"))
+    return isinstance(autonomy_state, Mapping) and bool(
+        autonomy_state.get("project_prove_manager_enabled")
+    )
 
 
 def _lean_import_modules(file_path: str | os.PathLike[str]) -> list[str]:
@@ -172,7 +174,9 @@ def _project_prove_hint_excerpt(text: str) -> str:
         block = "\n".join(lines[start:end]).strip()
         if block and block not in selected:
             selected.append(block)
-    return _project_prove_bounded_excerpt("\n\n".join(selected), PROJECT_PROVE_MANAGER_HINT_CONTEXT_MAX_CHARS)
+    return _project_prove_bounded_excerpt(
+        "\n\n".join(selected), PROJECT_PROVE_MANAGER_HINT_CONTEXT_MAX_CHARS
+    )
 
 
 def _project_prove_file_context_excerpt(
@@ -194,8 +198,12 @@ def _project_prove_file_context_excerpt(
     for entry in pending[:2]:
         context = _project_prove_declaration_context(lines, entry, max_chars=1200)
         if context:
-            parts.append(f"Pending declaration near line {entry.get('line', '[unknown]')}:\n{context}")
-    return "selected", _project_prove_bounded_excerpt("\n\n".join(parts), PROJECT_PROVE_MANAGER_SELECTED_FILE_MAX_CHARS)
+            parts.append(
+                f"Pending declaration near line {entry.get('line', '[unknown]')}:\n{context}"
+            )
+    return "selected", _project_prove_bounded_excerpt(
+        "\n\n".join(parts), PROJECT_PROVE_MANAGER_SELECTED_FILE_MAX_CHARS
+    )
 
 
 def _project_prove_declaration_difficulty(entry: Mapping[str, Any]) -> int:
@@ -249,7 +257,9 @@ def _project_prove_file_hint_count(text: str) -> int:
     )
 
 
-def _project_prove_worked_example_count(entries: Sequence[Mapping[str, Any]], first_pending_line: int) -> int:
+def _project_prove_worked_example_count(
+    entries: Sequence[Mapping[str, Any]], first_pending_line: int
+) -> int:
     return sum(
         1
         for entry in entries
@@ -291,7 +301,8 @@ def _project_prove_file_difficulty(
     worked_example_count = _project_prove_worked_example_count(entries, first_line)
     first_score = int(pending_declarations[0].get("difficulty_score", 0) or 0)
     average_score = round(
-        sum(int(item.get("difficulty_score", 0) or 0) for item in pending_declarations) / len(pending_declarations),
+        sum(int(item.get("difficulty_score", 0) or 0) for item in pending_declarations)
+        / len(pending_declarations),
         2,
     )
     support_discount = min(4, hint_count // 2 + worked_example_count // 3)
@@ -344,7 +355,10 @@ def _project_prove_transitive_paths(start: Path, graph: Mapping[Path, set[Path]]
 
 
 def _project_prove_label_list(paths: Iterable[Path], root: Path, *, limit: int = 8) -> list[str]:
-    labels = [_relative_project_file_label(path, root) for path in sorted(paths, key=lambda value: str(value))]
+    labels = [
+        _relative_project_file_label(path, root)
+        for path in sorted(paths, key=lambda value: str(value))
+    ]
     return [label for label in labels if label][:limit]
 
 
@@ -364,7 +378,9 @@ def _project_prove_fallback_order(candidates: Sequence[Mapping[str, Any]]) -> li
             str(item.get("label", "") or ""),
         ),
     )
-    return [str(item.get("label", "") or "") for item in ordered if str(item.get("label", "") or "")]
+    return [
+        str(item.get("label", "") or "") for item in ordered if str(item.get("label", "") or "")
+    ]
 
 
 def _project_prove_priority_bucket(candidate: Mapping[str, Any]) -> tuple[int, ...]:
@@ -424,9 +440,17 @@ def _project_prove_manager_summary(autonomy_state: Mapping[str, Any] | None) -> 
     if not _project_prove_manager_active(autonomy_state):
         return ""
     state = dict(autonomy_state or {})
-    queue = [str(item or "") for item in state.get("project_prove_file_queue", []) if str(item or "")]
-    active = str(state.get("project_prove_active_file", "") or _read_native_env("ACTIVE_FILE", "") or "").strip()
-    completed = [str(item or "") for item in state.get("project_prove_completed_files", []) if str(item or "")]
+    queue = [
+        str(item or "") for item in state.get("project_prove_file_queue", []) if str(item or "")
+    ]
+    active = str(
+        state.get("project_prove_active_file", "") or _read_native_env("ACTIVE_FILE", "") or ""
+    ).strip()
+    completed = [
+        str(item or "")
+        for item in state.get("project_prove_completed_files", [])
+        if str(item or "")
+    ]
     lines = [
         "Project prove manager:",
         f"- active file: {active or '[none assigned]'}",
@@ -437,7 +461,11 @@ def _project_prove_manager_summary(autonomy_state: Mapping[str, Any] | None) -> 
         lines.append(f"- prioritization reason: {_single_line(reason, 220)}")
     if queue:
         shown = queue[:8]
-        lines.append("- file queue: " + ", ".join(shown) + (f", ... plus {len(queue) - len(shown)} more" if len(queue) > len(shown) else ""))
+        lines.append(
+            "- file queue: "
+            + ", ".join(shown)
+            + (f", ... plus {len(queue) - len(shown)} more" if len(queue) > len(shown) else "")
+        )
     else:
         lines.append("- file queue: [empty]")
     if completed:

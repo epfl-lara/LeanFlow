@@ -137,12 +137,14 @@ from tools.mcp.mcp_tool import get_mcp_status
 
 WORKFLOW_COMMANDS = build_workflow_command_set()
 
+
 def _mcp_status_payload() -> dict[str, Any]:
     servers = list(get_mcp_status())
     return {
         "servers": servers,
         "count": len(servers),
     }
+
 
 class InteractiveShell:
     def __init__(self) -> None:
@@ -307,7 +309,9 @@ class InteractiveShell:
             return 0
         if workflow_status:
             self.console.print()
-            render_workflow_status_panel(self.console, status=workflow_status, activities=self._workflow_activity(limit=6))
+            render_workflow_status_panel(
+                self.console, status=workflow_status, activities=self._workflow_activity(limit=6)
+            )
         agents = self._workflow_agents(activity_limit=4)
         if agents:
             self.console.print()
@@ -331,7 +335,9 @@ class InteractiveShell:
                 return 1
             result = terminate_workflow_agent(argv[1])
             if not result.get("success"):
-                self.console.print(f"[bold red]{result.get('error', 'Failed to kill workflow agent.')}[/]")
+                self.console.print(
+                    f"[bold red]{result.get('error', 'Failed to kill workflow agent.')}[/]"
+                )
                 return 1
             self.console.print(
                 f"[bold #5DB8F5]Sent interrupt to workflow agent[/] "
@@ -353,7 +359,9 @@ class InteractiveShell:
             return 1
         transcript = workflow_agent_transcript(agent_id, limit=recent_limit)
         render_swarm_transcript(self.console, agent=agent, transcript=transcript)
-        self.console.print("[dim]Following agent output. Press Ctrl+C to return to the swarm prompt.[/]")
+        self.console.print(
+            "[dim]Following agent output. Press Ctrl+C to return to the swarm prompt.[/]"
+        )
         shown = len(workflow_agent_transcript_all(agent_id))
         while True:
             try:
@@ -368,10 +376,14 @@ class InteractiveShell:
                     if str(agent.get("status", "") or "") != "active":
                         break
             except KeyboardInterrupt:
-                self.console.print("\n[dim]Stopped following live output. Agent remains available in swarm mode.[/]")
+                self.console.print(
+                    "\n[dim]Stopped following live output. Agent remains available in swarm mode.[/]"
+                )
             state = str(agent.get("status", "") or "[unknown]")
             if state in {"exited", "completed", "stopped", "interrupted"}:
-                self.console.print(f"[dim]Agent {agent.get('agent_id')} is {state}. Returning to the main shell.[/]")
+                self.console.print(
+                    f"[dim]Agent {agent.get('agent_id')} is {state}. Returning to the main shell.[/]"
+                )
                 return 0
             self.console.print(
                 f"[dim]Agent {agent.get('agent_id')} is {state}. "
@@ -403,7 +415,9 @@ class InteractiveShell:
             if text == "/kill":
                 result = terminate_workflow_agent(agent_id)
                 if not result.get("success"):
-                    self.console.print(f"[bold red]{result.get('error', 'Failed to kill workflow agent.')}[/]")
+                    self.console.print(
+                        f"[bold red]{result.get('error', 'Failed to kill workflow agent.')}[/]"
+                    )
                     return 1
                 self.console.print(
                     f"[bold #5DB8F5]Sent interrupt to workflow agent[/] "
@@ -421,7 +435,9 @@ class InteractiveShell:
             for entry in new_entries:
                 render_swarm_transcript_entry(self.console, entry=entry)
             shown = len(transcript_all)
-            self.console.print("[dim]Following agent output. Press Ctrl+C to return to the swarm prompt.[/]")
+            self.console.print(
+                "[dim]Following agent output. Press Ctrl+C to return to the swarm prompt.[/]"
+            )
 
     def _run_kill_command(self, argv: list[str]) -> int:
         if not argv:
@@ -429,7 +445,9 @@ class InteractiveShell:
             return 1
         result = terminate_workflow_agent(argv[0])
         if not result.get("success"):
-            self.console.print(f"[bold red]{result.get('error', 'Failed to kill workflow agent.')}[/]")
+            self.console.print(
+                f"[bold red]{result.get('error', 'Failed to kill workflow agent.')}[/]"
+            )
             return 1
         self.console.print(
             f"[bold #5DB8F5]Sent interrupt to workflow agent[/] "
@@ -452,7 +470,14 @@ class InteractiveShell:
                     "files": ", ".join(entry.get("active_files") or []) or "[none]",
                 }
             )
-        activity = [{"type": row["state"], "timestamp": row["timestamp"], "message": f"{row['label']} — {row['files']}"} for row in table]
+        activity = [
+            {
+                "type": row["state"],
+                "timestamp": row["timestamp"],
+                "message": f"{row['label']} — {row['files']}",
+            }
+            for row in table
+        ]
         render_workflow_status_panel(
             self.console,
             status=self._workflow_status_payload() or {"phase": "idle", "workflow_kind": "[none]"},
@@ -475,14 +500,20 @@ class InteractiveShell:
             if not payload:
                 self.console.print("[dim]No managed workflow state has been recorded yet.[/]")
                 return 1
-            render_workflow_status_panel(self.console, status=payload, activities=self._workflow_activity(limit=10))
+            render_workflow_status_panel(
+                self.console, status=payload, activities=self._workflow_activity(limit=10)
+            )
             return 0
         if subcmd == "history":
             self._render_workflow_history()
             return 0
         if subcmd == "activity":
             payload = self._workflow_status_payload()
-            render_workflow_status_panel(self.console, status=payload or {"phase": "idle", "workflow_kind": "[none]"}, activities=self._workflow_activity(limit=20))
+            render_workflow_status_panel(
+                self.console,
+                status=payload or {"phase": "idle", "workflow_kind": "[none]"},
+                activities=self._workflow_activity(limit=20),
+            )
             return 0
         if subcmd == "log":
             tail = 120
@@ -510,7 +541,9 @@ class InteractiveShell:
         subcmd = argv[0]
         if subcmd == "reload":
             count = len(discover_skills(self.cwd))
-            self.console.print(f"[bold #5DB8F5]Reloaded skill overlays[/] ({count} skill(s) available)")
+            self.console.print(
+                f"[bold #5DB8F5]Reloaded skill overlays[/] ({count} skill(s) available)"
+            )
             return 0
 
         if subcmd.startswith("/"):
@@ -530,7 +563,9 @@ class InteractiveShell:
             try:
                 project = discover_epflemma_project(self.cwd)
             except ProjectNotFoundError:
-                self.console.print("[dim]No active Lean workspace is open here. Use `/project init` in a Lean repo or `/project create <path>` to start one.[/]")
+                self.console.print(
+                    "[dim]No active Lean workspace is open here. Use `/project init` in a Lean repo or `/project create <path>` to start one.[/]"
+                )
                 return 1
             render_project_panel(self.console, project_summary=_project_payload(project))
             return 0
@@ -562,7 +597,9 @@ class InteractiveShell:
             return 0
         if subcmd == "create":
             if len(argv) < 2:
-                self.console.print("[dim]Usage: /project create <path> [--template-source <source>] [--name <name>] [/]")
+                self.console.print(
+                    "[dim]Usage: /project create <path> [--template-source <source>] [--name <name>] [/]"
+                )
                 return 1
             path = argv[1]
             template_source = ""
@@ -578,9 +615,13 @@ class InteractiveShell:
             if not template_source:
                 template_source = resolve_template_source(load_config(), os.environ)
             if not template_source:
-                self.console.print("[bold red]No template source configured.[/] Set `epflemma.project.template_source` or pass `--template-source`.")
+                self.console.print(
+                    "[bold red]No template source configured.[/] Set `epflemma.project.template_source` or pass `--template-source`."
+                )
                 return 1
-            project = clone_project_template(path, template_source=template_source, name=name or None)
+            project = clone_project_template(
+                path, template_source=template_source, name=name or None
+            )
             self.cwd = project.root
             self._plain_notice(f"Created project: {project.label}")
             return 0
@@ -623,7 +664,9 @@ class InteractiveShell:
         if subcmd == "use" and len(args) >= 3:
             _print_json(use_local_runtime(args[1], model=args[2]))
             return 0
-        self.console.print("[dim]Usage: /models local list|status <runtime>|start <runtime> <model>|stop <runtime>|logs <runtime>|use <runtime> <model>[/]")
+        self.console.print(
+            "[dim]Usage: /models local list|status <runtime>|start <runtime> <model>|stop <runtime>|logs <runtime>|use <runtime> <model>[/]"
+        )
         return 1
 
     def _run_config_command(self, argv: list[str]) -> int:
@@ -671,7 +714,14 @@ class InteractiveShell:
                 _print_mcp_status(payload)
             return 0
         if subcmd == "bootstrap":
-            target = next((arg for arg in args if arg not in {"bootstrap", "--json"} and not arg.startswith("--")), "lean")
+            target = next(
+                (
+                    arg
+                    for arg in args
+                    if arg not in {"bootstrap", "--json"} and not arg.startswith("--")
+                ),
+                "lean",
+            )
             if target != "lean":
                 self.console.print("[dim]Usage: /mcp bootstrap lean [--json][/]")
                 return 1
@@ -687,10 +737,14 @@ class InteractiveShell:
     def _run_workflow_command(self, raw: str) -> int:
         """Parse workflow request, deduplicate against active agents, build live-status payload (including formalization metadata), spawn background process, and display launch confirmation."""
         try:
-            plan = resolve_workflow_request(raw, active_cwd=self.cwd, active_skill=self.active_skill or None)
+            plan = resolve_workflow_request(
+                raw, active_cwd=self.cwd, active_skill=self.active_skill or None
+            )
         except ProjectNotFoundError as exc:
             self.console.print(f"[bold red]{exc}[/]")
-            self.console.print("[dim]Use `/project init` inside a Lean repo, or `/project create <path>` to clone a template.[/]")
+            self.console.print(
+                "[dim]Use `/project init` inside a Lean repo, or `/project create <path>` to clone a template.[/]"
+            )
             return 1
         except Exception as exc:
             self.console.print(f"[bold red]{format_runtime_provider_error(exc)}[/]")
@@ -698,11 +752,13 @@ class InteractiveShell:
 
         existing = next(
             (
-                agent for agent in self._workflow_agents(activity_limit=1)
+                agent
+                for agent in self._workflow_agents(activity_limit=1)
                 if not str(agent.get("parent_agent_id", "") or "")
                 and str(agent.get("project_root", "") or "") == str(plan.project.root)
                 and str(agent.get("workflow_kind", "") or "") == str(plan.workflow.workflow_kind)
-                and str(agent.get("workflow_command", "") or "") == str(plan.workflow.backend_command)
+                and str(agent.get("workflow_command", "") or "")
+                == str(plan.workflow.backend_command)
                 and str(agent.get("status", "") or "") in {"active", "blocked", "paused", "queued"}
             ),
             None,
@@ -729,7 +785,9 @@ class InteractiveShell:
             "model": str(plan.runtime.get("model", "") or "[unknown]"),
             "base_url": str(plan.runtime.get("base_url", "") or "[unknown]"),
             "process_id": int(current_status.get("process_id", 0) or 0),
-            "active_skill": str(plan.active_skill or current_status.get("active_skill", "") or "[none]"),
+            "active_skill": str(
+                plan.active_skill or current_status.get("active_skill", "") or "[none]"
+            ),
             "parallel_agents": 1,
             "active_file": str(current_status.get("active_file", "") or ""),
             "active_file_label": str(current_status.get("active_file_label", "") or "[launching]"),
@@ -741,9 +799,15 @@ class InteractiveShell:
             "sorry_count": current_status.get("sorry_count"),
             "project_sorry_count": current_status.get("project_sorry_count"),
             "checkpoint_count": int(current_status.get("checkpoint_count", 0) or 0),
-            "latest_checkpoint_label": str(current_status.get("latest_checkpoint_label", "") or "[none]"),
-            "latest_filesystem_checkpoint": str(current_status.get("latest_filesystem_checkpoint", "") or "[none]"),
-            "last_compaction_reason": str(current_status.get("last_compaction_reason", "") or "[none]"),
+            "latest_checkpoint_label": str(
+                current_status.get("latest_checkpoint_label", "") or "[none]"
+            ),
+            "latest_filesystem_checkpoint": str(
+                current_status.get("latest_filesystem_checkpoint", "") or "[none]"
+            ),
+            "last_compaction_reason": str(
+                current_status.get("last_compaction_reason", "") or "[none]"
+            ),
             "snapshot_present": bool(current_status.get("snapshot_present", False)),
             "held_locks": int(current_status.get("held_locks", 0) or 0),
         }
@@ -753,7 +817,8 @@ class InteractiveShell:
                     "formalization_document": plan.formalization_document.source_relative,
                     "formalization_document_kind": plan.formalization_document.source_kind,
                     "formalization_request_kind": str(
-                        plan.formalization_document.metadata.get("document_request_kind", "file") or "file"
+                        plan.formalization_document.metadata.get("document_request_kind", "file")
+                        or "file"
                     ),
                     "formalization_request": str(
                         plan.formalization_document.metadata.get(
@@ -765,7 +830,9 @@ class InteractiveShell:
                     "formalization_selected_source_document": plan.formalization_document.source_relative,
                     "formalization_context": str(plan.formalization_document.context_path),
                     "formalization_blueprint": str(plan.formalization_document.blueprint_path),
-                    "formalization_extracted_blueprint_path": str(plan.formalization_document.blueprint_path),
+                    "formalization_extracted_blueprint_path": str(
+                        plan.formalization_document.blueprint_path
+                    ),
                     "formalization_target_file": plan.formalization_document.target_lean_relative,
                 }
             )
@@ -787,7 +854,9 @@ class InteractiveShell:
         workflow_status = self._workflow_status_payload()
         if workflow_status:
             self.console.print()
-            render_workflow_status_panel(self.console, status=workflow_status, activities=self._workflow_activity(limit=6))
+            render_workflow_status_panel(
+                self.console, status=workflow_status, activities=self._workflow_activity(limit=6)
+            )
         return 0
 
     def _shutdown_project_workflows(self) -> None:
@@ -802,7 +871,9 @@ class InteractiveShell:
         if not project_root:
             return
         graceful = request_project_workflow_runner_exit(project_root)
-        queued = [str(agent_id or "") for agent_id in graceful.get("queued", []) if str(agent_id or "")]
+        queued = [
+            str(agent_id or "") for agent_id in graceful.get("queued", []) if str(agent_id or "")
+        ]
         if queued:
             deadline = time.monotonic() + 1.5
             remaining = queued
@@ -930,7 +1001,9 @@ class InteractiveShell:
             return True
         if stripped.startswith("/cd "):
             target = Path(stripped[len("/cd ") :].strip()).expanduser()
-            resolved = (self.cwd / target).resolve() if not target.is_absolute() else target.resolve()
+            resolved = (
+                (self.cwd / target).resolve() if not target.is_absolute() else target.resolve()
+            )
             if not resolved.exists() or not resolved.is_dir():
                 self.console.print(f"[bold red]Directory not found:[/] {resolved}")
                 return True
@@ -1020,7 +1093,9 @@ class InteractiveShell:
             self._run_workflow_command(stripped)
             return True
 
-        self.console.print("[dim]Plain chat is not part of the kernel build. Use /help, /project, or a Lean workflow command.[/]")
+        self.console.print(
+            "[dim]Plain chat is not part of the kernel build. Use /help, /project, or a Lean workflow command.[/]"
+        )
         return True
 
     def run(self) -> int:
@@ -1041,4 +1116,3 @@ class InteractiveShell:
                 continue
             if not self._handle_command(raw):
                 return 0
-

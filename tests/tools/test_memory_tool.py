@@ -17,6 +17,7 @@ from tools.implementations.memory_tool import (
 # Tool schema guidance
 # =========================================================================
 
+
 class TestMemorySchema:
     def test_discourages_diary_style_task_logs(self):
         description = MEMORY_SCHEMA["description"]
@@ -30,6 +31,7 @@ class TestMemorySchema:
 # =========================================================================
 # Security scanning
 # =========================================================================
+
 
 class TestScanMemoryContent:
     def test_clean_content_passes(self):
@@ -88,6 +90,7 @@ class TestScanMemoryContent:
 # =========================================================================
 # MemoryStore core operations
 # =========================================================================
+
 
 @pytest.fixture()
 def store(tmp_path, monkeypatch):
@@ -230,6 +233,7 @@ class TestMemoryStoreSnapshot:
 # memory_tool() dispatcher
 # =========================================================================
 
+
 class TestMemoryToolDispatcher:
     def test_no_store_returns_error(self):
         result = json.loads(memory_tool(action="add", content="test"))
@@ -245,7 +249,9 @@ class TestMemoryToolDispatcher:
         assert result["success"] is False
 
     def test_add_via_tool(self, store):
-        result = json.loads(memory_tool(action="add", target="memory", content="via tool", store=store))
+        result = json.loads(
+            memory_tool(action="add", target="memory", content="via tool", store=store)
+        )
         assert result["success"] is True
 
     def test_replace_requires_old_text(self, store):

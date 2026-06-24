@@ -17,6 +17,7 @@ class TestClarifyToolBasics:
 
     def test_simple_question_with_callback(self):
         """Should return user response for simple question."""
+
         def mock_callback(question: str, choices: list[str] | None) -> str:
             assert question == "What color?"
             assert choices is None
@@ -29,16 +30,15 @@ class TestClarifyToolBasics:
 
     def test_question_with_choices(self):
         """Should pass choices to callback and return response."""
+
         def mock_callback(question: str, choices: list[str] | None) -> str:
             assert question == "Pick a number"
             assert choices == ["1", "2", "3"]
             return "2"
 
-        result = json.loads(clarify_tool(
-            "Pick a number",
-            choices=["1", "2", "3"],
-            callback=mock_callback
-        ))
+        result = json.loads(
+            clarify_tool("Pick a number", choices=["1", "2", "3"], callback=mock_callback)
+        )
         assert result["question"] == "Pick a number"
         assert result["choices_offered"] == ["1", "2", "3"]
         assert result["user_response"] == "2"
@@ -59,6 +59,7 @@ class TestClarifyToolBasics:
         result = json.loads(clarify_tool("What do you want?"))
         assert "error" in result
         assert "not available" in result["error"].lower()
+
 
 class TestClarifyToolChoicesValidation:
     """Tests for choices parameter validation."""
@@ -102,11 +103,13 @@ class TestClarifyToolChoicesValidation:
 
     def test_invalid_choices_type_returns_error(self):
         """Non-list choices should return error."""
-        result = json.loads(clarify_tool(
-            "Question?",
-            choices="not a list",  # type: ignore
-            callback=lambda q, c: "ignored"
-        ))
+        result = json.loads(
+            clarify_tool(
+                "Question?",
+                choices="not a list",  # type: ignore
+                callback=lambda q, c: "ignored",
+            )
+        )
         assert "error" in result
         assert "list" in result["error"].lower()
 
@@ -121,11 +124,13 @@ class TestClarifyToolChoicesValidation:
         clarify_tool("Pick", choices=[1, 2, 3], callback=mock_callback)  # type: ignore
         assert choices_received == ["1", "2", "3"]
 
+
 class TestClarifyToolCallbackHandling:
     """Tests for callback error handling."""
 
     def test_callback_exception_returns_error(self):
         """Should return error if callback raises exception."""
+
         def failing_callback(question: str, choices: list[str] | None) -> str:
             raise RuntimeError("User cancelled")
 
@@ -147,11 +152,13 @@ class TestClarifyToolCallbackHandling:
 
     def test_user_response_stripped(self):
         """User response should be stripped of whitespace."""
+
         def mock_callback(question: str, choices: list[str] | None) -> str:
             return "  response with spaces  \n"
 
         result = json.loads(clarify_tool("Q?", callback=mock_callback))
         assert result["user_response"] == "response with spaces"
+
 
 class TestCheckClarifyRequirements:
     """Tests for the requirements check function."""
@@ -159,6 +166,7 @@ class TestCheckClarifyRequirements:
     def test_always_returns_true(self):
         """clarify tool has no external requirements."""
         assert check_clarify_requirements() is True
+
 
 class TestClarifySchema:
     """Tests for the OpenAI function-calling schema."""

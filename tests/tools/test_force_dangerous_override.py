@@ -9,9 +9,9 @@ non-builtin sources.
 def _old_should_allow(verdict, trust_level, force):
     """Simulate the BROKEN old logic."""
     INSTALL_POLICY = {
-        "builtin":       ("allow",  "allow",   "allow"),
-        "trusted":       ("allow",  "allow",   "block"),
-        "community":     ("allow",  "block",   "block"),
+        "builtin": ("allow", "allow", "allow"),
+        "trusted": ("allow", "allow", "block"),
+        "community": ("allow", "block", "block"),
     }
     VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}
 
@@ -35,9 +35,9 @@ def _old_should_allow(verdict, trust_level, force):
 def _new_should_allow(verdict, trust_level, force):
     """Simulate the FIXED logic."""
     INSTALL_POLICY = {
-        "builtin":       ("allow",  "allow",   "allow"),
-        "trusted":       ("allow",  "allow",   "block"),
-        "community":     ("allow",  "block",   "block"),
+        "builtin": ("allow", "allow", "allow"),
+        "trusted": ("allow", "allow", "block"),
+        "community": ("allow", "block", "block"),
     }
     VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}
 

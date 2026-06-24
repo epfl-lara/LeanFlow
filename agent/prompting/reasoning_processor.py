@@ -58,7 +58,7 @@ class ReasoningProcessor:
             return False
 
         # Remove all <think>...</think> blocks (including nested ones, non-greedy)
-        cleaned = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+        cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
 
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())
@@ -68,7 +68,7 @@ class ReasoningProcessor:
         """Remove <think>...</think> blocks from content, returning only visible text."""
         if not content:
             return ""
-        return re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+        return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
 
     @staticmethod
     def extract_reasoning(assistant_message: Any) -> str | None:
@@ -89,22 +89,22 @@ class ReasoningProcessor:
         reasoning_parts = []
 
         # Check direct reasoning field
-        if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
+        if hasattr(assistant_message, "reasoning") and assistant_message.reasoning:
             reasoning_parts.append(assistant_message.reasoning)
 
         # Check reasoning_content field (alternative name used by some providers)
-        if hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
+        if hasattr(assistant_message, "reasoning_content") and assistant_message.reasoning_content:
             # Don't duplicate if same as reasoning
             if assistant_message.reasoning_content not in reasoning_parts:
                 reasoning_parts.append(assistant_message.reasoning_content)
 
         # Check reasoning_details array (OpenRouter unified format)
         # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
-        if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
+        if hasattr(assistant_message, "reasoning_details") and assistant_message.reasoning_details:
             for detail in assistant_message.reasoning_details:
                 if isinstance(detail, dict):
                     # Extract summary from reasoning detail object
-                    summary = detail.get('summary') or detail.get('content') or detail.get('text')
+                    summary = detail.get("summary") or detail.get("content") or detail.get("text")
                     if summary and summary not in reasoning_parts:
                         reasoning_parts.append(summary)
 

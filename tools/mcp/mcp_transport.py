@@ -25,27 +25,36 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
+_DEFAULT_CONNECT_TIMEOUT = 60  # seconds for initial connection per server
 _LOCAL_LOOGLE_CONNECT_TIMEOUT = 600
 
 # Environment variables that are safe to pass to stdio subprocesses
-_SAFE_ENV_KEYS = frozenset({
-    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
-})
+_SAFE_ENV_KEYS = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "SHELL",
+        "TMPDIR",
+    }
+)
 _LOOGLE_STALE_ARTIFACT_SCAN_LIMIT = 80
 _LEAN_MODULE_PART_PATTERN = re.compile(r"^[A-Z_][A-Za-z0-9_']*$")
 
 # Regex for credential patterns to strip from error messages
 _CREDENTIAL_PATTERN = re.compile(
     r"(?:"
-    r"ghp_[A-Za-z0-9_]{1,255}"           # GitHub PAT
-    r"|sk-[A-Za-z0-9_]{1,255}"           # OpenAI-style key
-    r"|Bearer\s+\S+"                      # Bearer token
-    r"|token=[^\s&,;\"']{1,255}"         # token=...
-    r"|key=[^\s&,;\"']{1,255}"           # key=...
-    r"|API_KEY=[^\s&,;\"']{1,255}"       # API_KEY=...
-    r"|password=[^\s&,;\"']{1,255}"      # password=...
-    r"|secret=[^\s&,;\"']{1,255}"        # secret=...
+    r"ghp_[A-Za-z0-9_]{1,255}"  # GitHub PAT
+    r"|sk-[A-Za-z0-9_]{1,255}"  # OpenAI-style key
+    r"|Bearer\s+\S+"  # Bearer token
+    r"|token=[^\s&,;\"']{1,255}"  # token=...
+    r"|key=[^\s&,;\"']{1,255}"  # key=...
+    r"|API_KEY=[^\s&,;\"']{1,255}"  # API_KEY=...
+    r"|password=[^\s&,;\"']{1,255}"  # password=...
+    r"|secret=[^\s&,;\"']{1,255}"  # secret=...
     r")",
     re.IGNORECASE,
 )
@@ -54,6 +63,7 @@ _CREDENTIAL_PATTERN = re.compile(
 # ---------------------------------------------------------------------------
 # Security helpers
 # ---------------------------------------------------------------------------
+
 
 def _build_safe_env(user_env: dict | None) -> dict:
     """Build a filtered environment dict for stdio subprocesses.
@@ -138,10 +148,7 @@ def _resolve_stdio_cwd(server_name: str, config: dict) -> str | None:
         return path if os.path.isdir(path) else None
 
     if str(server_name or "").startswith("lean-"):
-        project_root = str(
-            os.getenv("EPFLEMMA_PROJECT_ROOT", "")
-            or ""
-        ).strip()
+        project_root = str(os.getenv("EPFLEMMA_PROJECT_ROOT", "") or "").strip()
         if project_root:
             path = os.path.expanduser(project_root)
             if os.path.isdir(path):
@@ -240,8 +247,7 @@ def _repair_loogle_cache_if_needed(server_name: str, env: dict) -> None:
             if not (build_lib / relative.with_suffix(".olean")).is_file():
                 module = ".".join(relative.with_suffix("").parts)
                 valid_module = all(
-                    _LEAN_MODULE_PART_PATTERN.match(part)
-                    for part in relative.with_suffix("").parts
+                    _LEAN_MODULE_PART_PATTERN.match(part) for part in relative.with_suffix("").parts
                 )
                 if valid_module and "Test" not in module and module not in missing_modules:
                     missing_modules.append(module)

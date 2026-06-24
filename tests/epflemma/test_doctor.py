@@ -93,7 +93,12 @@ def test_run_doctor_unknown_mode_normalizes_to_all(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
         "epflemma_cli.cli.doctor.resolve_runtime_provider",
-        lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://x/v1",
+            "api_mode": "chat",
+            "model": "m",
+        },
     )
     monkeypatch.setattr("epflemma_cli.cli.doctor.get_mcp_status", lambda: [])
 
@@ -148,7 +153,12 @@ def test_run_doctor_cleanup_mode_lists_legacy_candidates(monkeypatch, tmp_path):
     (tmp_path / ".gauss").mkdir()
     monkeypatch.setattr(
         "epflemma_cli.cli.doctor.resolve_runtime_provider",
-        lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://x/v1",
+            "api_mode": "chat",
+            "model": "m",
+        },
     )
     monkeypatch.setattr("epflemma_cli.cli.doctor.get_mcp_status", lambda: [])
 
@@ -164,7 +174,12 @@ def test_run_doctor_migrate_mode_reports_legacy_home_presence(monkeypatch, tmp_p
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
         "epflemma_cli.cli.doctor.resolve_runtime_provider",
-        lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://x/v1",
+            "api_mode": "chat",
+            "model": "m",
+        },
     )
     monkeypatch.setattr("epflemma_cli.cli.doctor.get_mcp_status", lambda: [])
 
@@ -216,12 +231,19 @@ def test_run_doctor_web_search_mode_uses_real_tool_surface(monkeypatch, tmp_path
     assert "sourcegraph" in text
 
 
-@pytest.mark.parametrize("mode", sorted({"all", "env", "mcp", "search", "web-search", "migrate", "cleanup"}))
+@pytest.mark.parametrize(
+    "mode", sorted({"all", "env", "mcp", "search", "web-search", "migrate", "cleanup"})
+)
 def test_run_doctor_never_throws_for_each_supported_mode(monkeypatch, tmp_path, mode):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
         "epflemma_cli.cli.doctor.resolve_runtime_provider",
-        lambda: {"provider": "custom", "base_url": "https://x/v1", "api_mode": "chat", "model": "m"},
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://x/v1",
+            "api_mode": "chat",
+            "model": "m",
+        },
     )
     monkeypatch.setattr("epflemma_cli.cli.doctor.get_mcp_status", lambda: [])
     monkeypatch.setattr(

@@ -67,6 +67,7 @@ def _locked_append(path: Path, text: str) -> None:
         handle.write(text)
         handle.flush()
 
+
 WORKFLOW_TASK_LABELS = {
     "autoprove": "prove",
     "autoformalize": "formalize",
@@ -129,7 +130,9 @@ def workflow_agent_inbox_root() -> Path:
 
 
 def workflow_agent_inbox_path(agent_id: str) -> Path:
-    safe_agent_id = "".join(ch for ch in str(agent_id or "").strip() if ch.isalnum() or ch in {"-", "_"})
+    safe_agent_id = "".join(
+        ch for ch in str(agent_id or "").strip() if ch.isalnum() or ch in {"-", "_"}
+    )
     return workflow_agent_inbox_root() / f"{safe_agent_id or 'unknown'}.jsonl"
 
 
@@ -146,18 +149,29 @@ def workflow_verified_patch_checkpoint_root() -> Path:
 
 
 def workflow_run_activity_path(run_id: str) -> Path:
-    safe_run_id = "".join(ch for ch in str(run_id or "").strip() if ch.isalnum() or ch in {"-", "_"})
+    safe_run_id = "".join(
+        ch for ch in str(run_id or "").strip() if ch.isalnum() or ch in {"-", "_"}
+    )
     return workflow_run_activity_root() / f"{safe_run_id or 'unknown'}.jsonl"
 
 
 def workflow_run_metadata_path(run_id: str) -> Path:
-    safe_run_id = "".join(ch for ch in str(run_id or "").strip() if ch.isalnum() or ch in {"-", "_"})
+    safe_run_id = "".join(
+        ch for ch in str(run_id or "").strip() if ch.isalnum() or ch in {"-", "_"}
+    )
     return workflow_run_metadata_root() / f"{safe_run_id or 'unknown'}.json"
 
 
 def workflow_agent_activity_path(agent_id: str, task_label: str = "") -> Path:
-    safe_agent_id = "".join(ch for ch in str(agent_id or "").strip() if ch.isalnum() or ch in {"-", "_"})
-    safe_task = "".join(ch for ch in str(task_label or "").strip() if ch.isalnum() or ch in {"-", "_"}).strip() or "agent"
+    safe_agent_id = "".join(
+        ch for ch in str(agent_id or "").strip() if ch.isalnum() or ch in {"-", "_"}
+    )
+    safe_task = (
+        "".join(
+            ch for ch in str(task_label or "").strip() if ch.isalnum() or ch in {"-", "_"}
+        ).strip()
+        or "agent"
+    )
     return workflow_agent_activity_root() / f"{safe_task}-{safe_agent_id or 'unknown'}.jsonl"
 
 
@@ -165,11 +179,17 @@ def _read_workflow_run_metadata(run_id: str) -> dict[str, Any]:
     return read_json_file(workflow_run_metadata_path(run_id))
 
 
-def _workflow_run_scope_from_event(event_type: str, details: Mapping[str, Any] | None = None) -> str:
+def _workflow_run_scope_from_event(
+    event_type: str, details: Mapping[str, Any] | None = None
+) -> str:
     if event_type == "runner-start":
         return WORKFLOW_RUN_SCOPE_TOP_LEVEL
     normalized_details = details if isinstance(details, Mapping) else {}
-    explicit = str(normalized_details.get("run_scope", "") or os.getenv("EPFLEMMA_WORKFLOW_RUN_SCOPE", "") or "").strip()
+    explicit = str(
+        normalized_details.get("run_scope", "")
+        or os.getenv("EPFLEMMA_WORKFLOW_RUN_SCOPE", "")
+        or ""
+    ).strip()
     if explicit:
         return explicit
     return WORKFLOW_RUN_SCOPE_BACKGROUND
@@ -194,7 +214,9 @@ def _persist_workflow_run_metadata(
     existing = read_json_file(path)
     payload = dict(existing) if isinstance(existing, dict) else {}
     payload.setdefault("run_id", run_id)
-    payload["run_scope"] = str(run_scope or payload.get("run_scope", "") or WORKFLOW_RUN_SCOPE_BACKGROUND)
+    payload["run_scope"] = str(
+        run_scope or payload.get("run_scope", "") or WORKFLOW_RUN_SCOPE_BACKGROUND
+    )
     if parent_run_id:
         payload["parent_run_id"] = parent_run_id
     elif "parent_run_id" not in payload:
@@ -295,7 +317,9 @@ def append_workflow_activity(event_type: str, message: str, **details: Any) -> N
     normalized_details = dict(details)
     env_workflow_kind = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", ""))
     normalized_details.setdefault("workflow_kind", env_workflow_kind)
-    normalized_details.setdefault("workflow_command", str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "")))
+    normalized_details.setdefault(
+        "workflow_command", str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", ""))
+    )
     normalized_details.setdefault(
         "effective_prompt",
         str(
@@ -500,10 +524,20 @@ def _process_seems_alive(process_id: int) -> bool:
     return True
 
 
-_LIVE_STATUS_TERMINAL_PHASES = {"completed", "dead", "exited", "failed", "interrupted", "stopped", "verified"}
+_LIVE_STATUS_TERMINAL_PHASES = {
+    "completed",
+    "dead",
+    "exited",
+    "failed",
+    "interrupted",
+    "stopped",
+    "verified",
+}
 
 
-def _normalize_workflow_live_status_payload(payload: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
+def _normalize_workflow_live_status_payload(
+    payload: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], bool]:
     if not isinstance(payload, Mapping):
         return {}, False
     normalized = dict(payload)
@@ -542,7 +576,9 @@ def _normalize_workflow_live_status_payload(payload: Mapping[str, Any] | None) -
     return normalized, changed
 
 
-def enqueue_workflow_agent_message(agent_ref: str, text: str, *, kind: str = "message") -> dict[str, Any]:
+def enqueue_workflow_agent_message(
+    agent_ref: str, text: str, *, kind: str = "message"
+) -> dict[str, Any]:
     """Enqueue a user message to a live workflow agent's inbox after validating process liveness.
 
     Rejects if agent process is dead or in terminal state. Appends message to agent inbox, records sequence number, and logs agent-input-queued activity.
@@ -554,9 +590,17 @@ def enqueue_workflow_agent_message(agent_ref: str, text: str, *, kind: str = "me
     process_id = int(detail.get("process_id", 0) or 0)
     status = str(detail.get("status", "") or "")
     if process_id <= 0 or not _process_seems_alive(process_id):
-        return {"success": False, "error": "Agent process is no longer running.", "agent_id": agent_id}
+        return {
+            "success": False,
+            "error": "Agent process is no longer running.",
+            "agent_id": agent_id,
+        }
     if status in {"exited", "stopped", "interrupted"}:
-        return {"success": False, "error": f"Agent is no longer accepting input ({status}).", "agent_id": agent_id}
+        return {
+            "success": False,
+            "error": f"Agent is no longer accepting input ({status}).",
+            "agent_id": agent_id,
+        }
     message = str(text or "").strip()
     if not message:
         return {"success": False, "error": "Message is empty.", "agent_id": agent_id}
@@ -600,7 +644,7 @@ def read_workflow_activity(
         events = filtered
     if event_types:
         events = [event for event in events if str(event.get("type", "") or "") in event_types]
-    return events[-max(1, limit):]
+    return events[-max(1, limit) :]
 
 
 _TERMINAL_AGENT_STATUSES = {"completed", "exited", "stopped", "interrupted", "dead", "failed"}
@@ -653,11 +697,15 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
                 "_recent_activity": [],
             },
         )
-        summary["parent_agent_id"] = str(details.get("parent_agent_session_id", "") or summary["parent_agent_id"])
+        summary["parent_agent_id"] = str(
+            details.get("parent_agent_session_id", "") or summary["parent_agent_id"]
+        )
         run_scope = str(details.get("run_scope", "") or metadata.get("run_scope", "") or "")
         if run_scope:
             summary["_run_scope"] = run_scope
-        project_root = str(details.get("project_root", "") or metadata.get("project_root", "") or "")
+        project_root = str(
+            details.get("project_root", "") or metadata.get("project_root", "") or ""
+        )
         if project_root:
             summary["project_root"] = project_root
         workflow_kind = str(details.get("workflow_kind", "") or "")
@@ -670,7 +718,9 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
         if active_skill:
             summary["active_skill"] = active_skill
         with contextlib.suppress(Exception):
-            summary["delegate_depth"] = int(details.get("delegate_depth", summary["delegate_depth"]) or 0)
+            summary["delegate_depth"] = int(
+                details.get("delegate_depth", summary["delegate_depth"]) or 0
+            )
         summary["task_label"] = _workflow_task_label(
             str(summary.get("workflow_kind", "") or ""),
             str(summary.get("active_skill", "") or ""),
@@ -713,10 +763,14 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
                 summary["status"] = "stopped"
                 summary["finished_at"] = timestamp
             with contextlib.suppress(Exception):
-                summary["api_calls"] = max(int(details.get("api_calls", 0) or 0), int(summary["api_calls"] or 0))
+                summary["api_calls"] = max(
+                    int(details.get("api_calls", 0) or 0), int(summary["api_calls"] or 0)
+                )
         elif event_type == "api-request":
             with contextlib.suppress(Exception):
-                summary["api_calls"] = max(int(details.get("iteration", 0) or 0), int(summary["api_calls"] or 0))
+                summary["api_calls"] = max(
+                    int(details.get("iteration", 0) or 0), int(summary["api_calls"] or 0)
+                )
         elif event_type == "tool-call":
             summary["tool_calls"] = int(summary["tool_calls"] or 0) + 1
         elif event_type == "agent-input-queued":
@@ -738,17 +792,24 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
                 "preview": _agent_event_preview(event),
             }
         )
-        summary["_recent_activity"] = summary["_recent_activity"][-max(1, activity_limit):]
+        summary["_recent_activity"] = summary["_recent_activity"][-max(1, activity_limit) :]
 
     ordered = sorted(
         by_agent.values(),
-        key=lambda item: (str(item.get("last_event_at", "") or ""), str(item.get("agent_id", "") or "")),
+        key=lambda item: (
+            str(item.get("last_event_at", "") or ""),
+            str(item.get("agent_id", "") or ""),
+        ),
         reverse=True,
     )
     for summary in ordered:
         process_id = int(summary.get("process_id", 0) or 0)
         status = str(summary.get("status", "") or "")
-        if process_id > 0 and status not in _TERMINAL_AGENT_STATUSES and not _process_seems_alive(process_id):
+        if (
+            process_id > 0
+            and status not in _TERMINAL_AGENT_STATUSES
+            and not _process_seems_alive(process_id)
+        ):
             summary["status"] = "dead"
             if not str(summary.get("finished_at", "") or ""):
                 summary["finished_at"] = str(summary.get("last_event_at", "") or "")
@@ -773,7 +834,11 @@ def summarize_workflow_agents(*, activity_limit: int = 5) -> list[dict[str, Any]
             summary_process_id = int(summary.get("process_id", 0) or 0)
             if summary_process_id > 0 and not _process_seems_alive(summary_process_id):
                 continue
-            if live_process_id > 0 and summary_process_id > 0 and summary_process_id != live_process_id:
+            if (
+                live_process_id > 0
+                and summary_process_id > 0
+                and summary_process_id != live_process_id
+            ):
                 continue
             if live_process_id > 0 and not live_process_alive:
                 continue
@@ -839,7 +904,11 @@ def workflow_agent_transcript(agent_id: str, *, limit: int = 12) -> list[dict[st
         elif event_type == "tool-result":
             role = "tool-result"
             content = _agent_event_preview(event)
-        elif event_type == "conversation-end" or event_type == "agent-awaiting-input" or event_type == "runner-exit":
+        elif (
+            event_type == "conversation-end"
+            or event_type == "agent-awaiting-input"
+            or event_type == "runner-exit"
+        ):
             role = "event"
             content = _agent_event_preview(event)
         transcript.append(
@@ -850,7 +919,7 @@ def workflow_agent_transcript(agent_id: str, *, limit: int = 12) -> list[dict[st
                 "content": content.strip(),
             }
         )
-    return transcript[-max(1, limit):]
+    return transcript[-max(1, limit) :]
 
 
 def workflow_agent_transcript_all(agent_id: str) -> list[dict[str, Any]]:
@@ -862,10 +931,18 @@ def resolve_workflow_agent_id(agent_ref: str) -> str:
     if not ref:
         return ""
     summaries = summarize_workflow_agents(activity_limit=1)
-    exact = [str(summary.get("agent_id", "") or "") for summary in summaries if str(summary.get("agent_id", "") or "") == ref]
+    exact = [
+        str(summary.get("agent_id", "") or "")
+        for summary in summaries
+        if str(summary.get("agent_id", "") or "") == ref
+    ]
     if exact:
         return exact[0]
-    prefix = [str(summary.get("agent_id", "") or "") for summary in summaries if str(summary.get("agent_id", "") or "").startswith(ref)]
+    prefix = [
+        str(summary.get("agent_id", "") or "")
+        for summary in summaries
+        if str(summary.get("agent_id", "") or "").startswith(ref)
+    ]
     if len(prefix) == 1:
         return prefix[0]
     return ""
@@ -878,16 +955,30 @@ def terminate_workflow_agent(agent_ref: str) -> dict[str, Any]:
     detail = workflow_agent_detail(agent_id, activity_limit=1)
     process_id = int(detail.get("process_id", 0) or 0)
     if process_id <= 0:
-        return {"success": False, "error": "No process id recorded for this agent.", "agent_id": agent_id}
+        return {
+            "success": False,
+            "error": "No process id recorded for this agent.",
+            "agent_id": agent_id,
+        }
     try:
         os.killpg(process_id, signal.SIGINT)
     except Exception:
         try:
             os.kill(process_id, signal.SIGINT)
         except ProcessLookupError:
-            return {"success": False, "error": "Process already exited.", "agent_id": agent_id, "process_id": process_id}
+            return {
+                "success": False,
+                "error": "Process already exited.",
+                "agent_id": agent_id,
+                "process_id": process_id,
+            }
         except Exception as exc:
-            return {"success": False, "error": str(exc), "agent_id": agent_id, "process_id": process_id}
+            return {
+                "success": False,
+                "error": str(exc),
+                "agent_id": agent_id,
+                "process_id": process_id,
+            }
     return {"success": True, "agent_id": agent_id, "process_id": process_id}
 
 
@@ -933,7 +1024,9 @@ def terminate_workflow_agent_descendants(agent_ref: str) -> dict[str, Any]:
     }
 
 
-def terminate_all_workflow_agents(*, exclude_agent_id: str = "", exclude_process_id: int = 0) -> dict[str, Any]:
+def terminate_all_workflow_agents(
+    *, exclude_agent_id: str = "", exclude_process_id: int = 0
+) -> dict[str, Any]:
     summaries = summarize_workflow_agents(activity_limit=1)
     results: list[dict[str, Any]] = []
     for summary in summaries:
@@ -1077,7 +1170,7 @@ def read_workflow_run_log(tail_lines: int = 120) -> str:
     except (OSError, UnicodeDecodeError):
         logger.debug("Failed to read workflow run log %s", path, exc_info=True)
         return ""
-    tail = lines[-max(1, tail_lines):]
+    tail = lines[-max(1, tail_lines) :]
     return "\n".join(tail)
 
 

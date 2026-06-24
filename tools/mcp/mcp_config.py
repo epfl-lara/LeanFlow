@@ -25,6 +25,7 @@ def _load_mcp_config() -> dict[str, dict]:
     """
     try:
         from epflemma_cli.config import load_config
+
         config = load_config()
         servers = config.get("mcp_servers")
         if not servers or not isinstance(servers, dict):

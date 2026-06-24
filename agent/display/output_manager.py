@@ -162,7 +162,9 @@ class OutputManager:
         source = str(cost.get("source") or "unavailable")
         total_cost = cost.get("total_usd")
         if source == "provider_reported" and total_cost is not None:
-            agent._vprint(f"{agent.log_prefix}   Total cost: ${float(total_cost):.4f} (provider reported)")
+            agent._vprint(
+                f"{agent.log_prefix}   Total cost: ${float(total_cost):.4f} (provider reported)"
+            )
         elif source == "estimated" and total_cost is not None:
             agent._vprint(f"{agent.log_prefix}   Total cost estimate: ${float(total_cost):.4f}")
         else:

@@ -53,7 +53,9 @@ def read_template_metadata(path: Path) -> TemplateMetadata:
         if name and description:
             break
     if not name or not description:
-        raise PublishError(f"Template file {path} must define top-level name and description fields.")
+        raise PublishError(
+            f"Template file {path} must define top-level name and description fields."
+        )
     return TemplateMetadata(name=name, description=description, yaml_text=yaml_text)
 
 
@@ -63,8 +65,14 @@ class MorphClient:
         self.api_key = api_key
         self._opener = opener
 
-    def _request(self, method: str, path: str, payload: dict | None = None, timeout: int = 120) -> dict:
-        url = path if path.startswith("http://") or path.startswith("https://") else f"{self.base_url}{path}"
+    def _request(
+        self, method: str, path: str, payload: dict | None = None, timeout: int = 120
+    ) -> dict:
+        url = (
+            path
+            if path.startswith("http://") or path.startswith("https://")
+            else f"{self.base_url}{path}"
+        )
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             url,
@@ -119,7 +127,9 @@ class MorphClient:
     def fetch_template(self, template_id: str) -> dict:
         return self._request("GET", f"/api/templates/{template_id}")
 
-    def share_template(self, *, template_id: str, alias: str, description: str, tags: list[str]) -> dict:
+    def share_template(
+        self, *, template_id: str, alias: str, description: str, tags: list[str]
+    ) -> dict:
         return self._request(
             "POST",
             f"/api/templates/{template_id}/share",
@@ -147,7 +157,9 @@ def parse_bool(raw_value: str | None, *, default: bool) -> bool:
     raise PublishError(f"Invalid boolean value: {raw_value!r}")
 
 
-def wait_for_ready(client: MorphClient, template_id: str, *, timeout_seconds: int, poll_seconds: float) -> dict:
+def wait_for_ready(
+    client: MorphClient, template_id: str, *, timeout_seconds: int, poll_seconds: float
+) -> dict:
     deadline = time.monotonic() + timeout_seconds
     last_status = None
     while True:
@@ -159,9 +171,13 @@ def wait_for_ready(client: MorphClient, template_id: str, *, timeout_seconds: in
         if current_status == "ready":
             return template
         if current_status in {"failed", "cancelled", "error"}:
-            raise PublishError(f"Template {template_id} entered terminal status {current_status}: {json.dumps(template)}")
+            raise PublishError(
+                f"Template {template_id} entered terminal status {current_status}: {json.dumps(template)}"
+            )
         if time.monotonic() >= deadline:
-            raise PublishError(f"Timed out waiting for template {template_id} to become ready; last status was {current_status!r}.")
+            raise PublishError(
+                f"Timed out waiting for template {template_id} to become ready; last status was {current_status!r}."
+            )
         time.sleep(poll_seconds)
 
 
@@ -179,7 +195,9 @@ def wait_for_alias_target(
         if alias_state and alias_state.get("template_id") == template_id:
             return alias_state
         if time.monotonic() >= deadline:
-            raise PublishError(f"Alias {alias!r} did not update to template {template_id!r} before timeout.")
+            raise PublishError(
+                f"Alias {alias!r} did not update to template {template_id!r} before timeout."
+            )
         time.sleep(poll_seconds)
 
 
@@ -219,7 +237,9 @@ def publish_template(
             f"Template alias {alias!r} does not exist and TEMPLATE_BASE_SNAPSHOT_ID was not provided."
         )
     resolved_tags = tags or (alias_state or {}).get("tags") or DEFAULT_TAGS
-    log(f"publishing_alias {alias} base_snapshot={resolved_base_snapshot} tags={','.join(resolved_tags)}")
+    log(
+        f"publishing_alias {alias} base_snapshot={resolved_base_snapshot} tags={','.join(resolved_tags)}"
+    )
 
     created = client.create_template(metadata=metadata, base_snapshot_id=resolved_base_snapshot)
     template_id = created.get("id")
@@ -232,16 +252,24 @@ def publish_template(
     if cache_run_id:
         log(f"cache_started {cache_run_id}")
 
-    ready = wait_for_ready(client, template_id, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
-    log(f"template_ready {template_id} status={ready.get('status')} final_snapshot={ready.get('final_snapshot_id')}")
+    ready = wait_for_ready(
+        client, template_id, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds
+    )
+    log(
+        f"template_ready {template_id} status={ready.get('status')} final_snapshot={ready.get('final_snapshot_id')}"
+    )
 
     if alias_state:
         current_template_id = alias_state.get("template_id")
         if not current_template_id:
-            raise PublishError(f"Alias {alias!r} did not include a template_id: {json.dumps(alias_state)}")
+            raise PublishError(
+                f"Alias {alias!r} did not include a template_id: {json.dumps(alias_state)}"
+            )
         client.delete_template(current_template_id)
         log(f"deleted_template {current_template_id}")
-        wait_for_alias_missing(client, alias, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+        wait_for_alias_missing(
+            client, alias, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds
+        )
         log(f"alias_freed {alias}")
 
     share_result = client.share_template(

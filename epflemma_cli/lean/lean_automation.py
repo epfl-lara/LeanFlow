@@ -52,7 +52,9 @@ def _proof_auto_harness_failure_message(payload: Mapping[str, Any]) -> str:
         value = str(payload.get(key, "") or "").strip()
         if value:
             parts.append(value)
-    parts.extend(str(reason) for reason in list(payload.get("degraded_reasons") or []) if str(reason).strip())
+    parts.extend(
+        str(reason) for reason in list(payload.get("degraded_reasons") or []) if str(reason).strip()
+    )
     text = " ".join(" ".join(part.split()) for part in parts)
     lowered = text.lower()
     if "failed to construct harness" in lowered or "unsafe value range shape" in lowered:

@@ -99,7 +99,11 @@ def _strip_lean_comments_and_strings(text: str) -> str:
 
 def _text_has_theorem_or_lemma(text: str) -> bool:
     sanitized = _strip_lean_comments_and_strings(str(text or ""))
-    return bool(re.search(r"^\s*(?:@[A-Za-z0-9_.]+\s+)*(?:theorem|lemma|example)\b", sanitized, flags=re.MULTILINE))
+    return bool(
+        re.search(
+            r"^\s*(?:@[A-Za-z0-9_.]+\s+)*(?:theorem|lemma|example)\b", sanitized, flags=re.MULTILINE
+        )
+    )
 
 
 def _text_has_sorry(text: str) -> bool:
@@ -109,7 +113,9 @@ def _text_has_sorry(text: str) -> bool:
 def _text_has_theorem_or_lemma_without_sorry(text: str) -> bool:
     for entry in _declaration_line_index_from_text(str(text or "")):
         kind = str(entry.get("kind", "") or "").strip().lower()
-        if kind in {"theorem", "lemma", "example"} and not _text_has_sorry(str(entry.get("text", "") or "")):
+        if kind in {"theorem", "lemma", "example"} and not _text_has_sorry(
+            str(entry.get("text", "") or "")
+        ):
             return True
     return False
 
@@ -303,7 +309,7 @@ def _declaration_line_index_from_text(content: str) -> list[dict[str, Any]]:
         if idx + 1 < len(entries):
             next_start = int(entries[idx + 1]["line"])
         end = _trim_declaration_region_end(lines, start=start, next_start=next_start)
-        region = "\n".join(lines[start - 1:end]).strip()
+        region = "\n".join(lines[start - 1 : end]).strip()
         entry["end_line"] = end
         entry["text"] = region
         entry["has_sorry"] = bool(re.search(r"\bsorry\b", _strip_lean_comments_and_strings(region)))

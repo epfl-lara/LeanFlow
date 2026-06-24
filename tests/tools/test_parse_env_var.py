@@ -35,6 +35,7 @@ class TestParseEnvVar:
         with patch.dict("os.environ", {}, clear=False):
             # Remove the var if it exists, rely on default
             import os
+
             env = os.environ.copy()
             env.pop("TERMINAL_TIMEOUT", None)
             with patch.dict("os.environ", env, clear=True):

@@ -31,6 +31,7 @@ DEFAULT_HARD_RETRY_LIMIT = 2
 # Identity / value types
 # ---------------------------------------------------------------------------
 
+
 def _normalize_path(value: str) -> str:
     """Best-effort canonicalization that never raises on bad inputs.
 
@@ -76,10 +77,10 @@ class QueueItem:
     """One pending declaration the manager could assign to the agent."""
 
     label: str
-    kind: str = ""                     # "theorem" / "lemma" / "example" / ...
+    kind: str = ""  # "theorem" / "lemma" / "example" / ...
     line: int = 0
     end_line: int = 0
-    reasons: tuple[str, ...] = ()      # e.g. ("contains sorry", "diagnostic near line 100")
+    reasons: tuple[str, ...] = ()  # e.g. ("contains sorry", "diagnostic near line 100")
     blocker_signature: str = ""
     search_hints: tuple[str, ...] = ()
     verification_gate: str = ""
@@ -155,12 +156,13 @@ class QueueAssignment:
 # Verification record (replaces _extract_recent_build_status regex)
 # ---------------------------------------------------------------------------
 
+
 class VerificationScope(str, Enum):
-    TARGET = "target"           # lean_incremental_check(check_target)
-    FILE_EXACT = "file_exact"   # lean_verify(mode=file_exact)
-    MODULE = "module"           # lake build <Module>
-    PROJECT = "project"         # lake build
-    INSPECT = "inspect"         # lean_inspect refresh (not a real verification)
+    TARGET = "target"  # lean_incremental_check(check_target)
+    FILE_EXACT = "file_exact"  # lean_verify(mode=file_exact)
+    MODULE = "module"  # lake build <Module>
+    PROJECT = "project"  # lake build
+    INSPECT = "inspect"  # lean_inspect refresh (not a real verification)
 
 
 @dataclass(frozen=True)
@@ -176,14 +178,14 @@ class VerificationRecord:
 
     scope: VerificationScope
     ok: bool
-    tool: str = ""                # "lean_incremental_check" / "lake build" / ...
-    target: str = ""              # for TARGET scope
-    cache: str = ""               # "warm" / "cold" / "rebuilt"
+    tool: str = ""  # "lean_incremental_check" / "lake build" / ...
+    target: str = ""  # for TARGET scope
+    cache: str = ""  # "warm" / "cold" / "rebuilt"
     elapsed_s: float = 0.0
     errors: int = 0
     warnings: int = 0
     sorry_count: int = 0
-    summary: str = ""             # short single-line for handoff rendering
+    summary: str = ""  # short single-line for handoff rendering
 
 
 def verification_from_mapping(raw: Mapping[str, Any] | None) -> VerificationRecord | None:
@@ -245,11 +247,12 @@ def verification_to_mapping(record: VerificationRecord | None) -> dict[str, Any]
 # Manager classification (one classifier, not two)
 # ---------------------------------------------------------------------------
 
+
 class Classification(str, Enum):
-    HARD_BLOCKER = "hard_blocker"        # error / open goals / assigned-decl sorry
-    WARNING_ONCE = "warning_once"        # warning-only, opportunity not yet spent
-    ACCEPT = "accept"                    # clean, OR warnings after opportunity
-    FUTURE_ONLY = "future_only"          # no diagnostics on assigned decl
+    HARD_BLOCKER = "hard_blocker"  # error / open goals / assigned-decl sorry
+    WARNING_ONCE = "warning_once"  # warning-only, opportunity not yet spent
+    ACCEPT = "accept"  # clean, OR warnings after opportunity
+    FUTURE_ONLY = "future_only"  # no diagnostics on assigned decl
 
 
 @dataclass(frozen=True)
@@ -265,23 +268,23 @@ class ManagerCheck:
     has_assigned_open_goals: bool = False
     has_assigned_warning: bool = False
     has_future_evidence: bool = False
-    verification_failed: bool = False     # explicit ok=False from a real check
-    raw_messages: tuple[str, ...] = ()    # unstructured fallback (lake stderr etc.)
+    verification_failed: bool = False  # explicit ok=False from a real check
+    raw_messages: tuple[str, ...] = ()  # unstructured fallback (lake stderr etc.)
 
 
 @dataclass(frozen=True)
 class FailedAttempt:
     key: TheoremKey
-    attempt: int                # 1-indexed within (theorem, file)
-    cycle: int                  # workflow cycle number
-    proof_shape: str            # short text: snippet of the body or its diff
-    reason: str                 # short text: blocker summary
+    attempt: int  # 1-indexed within (theorem, file)
+    cycle: int  # workflow cycle number
+    proof_shape: str  # short text: snippet of the body or its diff
+    reason: str  # short text: blocker summary
 
 
 @dataclass(frozen=True)
 class TheoremOutcome:
     key: TheoremKey
-    status: str                 # "solved" / "unresolved" / "skipped"
+    status: str  # "solved" / "unresolved" / "skipped"
     note: str = ""
     build_status: str = ""
     verification: VerificationRecord | None = None
@@ -296,15 +299,14 @@ class Transition:
 
     def is_new_theorem(self) -> bool:
         return (
-            self.previous is not None
-            and self.current is not None
-            and self.previous != self.current
+            self.previous is not None and self.current is not None and self.previous != self.current
         )
 
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no state, easy to unit-test)
 # ---------------------------------------------------------------------------
+
 
 def select_next_item(
     queue: Sequence[QueueItem],
@@ -356,11 +358,7 @@ def classify_check(check: ManagerCheck) -> Classification:
         # Verification said "no" but we don't have decl-scoped evidence — treat
         # as a hard blocker so we don't silently advance.
         return Classification.HARD_BLOCKER
-    if (
-        check.has_assigned_sorry
-        or check.has_assigned_error
-        or check.has_assigned_open_goals
-    ):
+    if check.has_assigned_sorry or check.has_assigned_error or check.has_assigned_open_goals:
         return Classification.HARD_BLOCKER
     if check.has_assigned_warning:
         return Classification.WARNING_ONCE

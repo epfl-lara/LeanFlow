@@ -80,9 +80,7 @@ _MODULE_EXPORTS = {
 }
 
 _EXPORTS = {
-    name: (module_name, name)
-    for module_name, names in _MODULE_EXPORTS.items()
-    for name in names
+    name: (module_name, name) for module_name, names in _MODULE_EXPORTS.items() for name in names
 }
 
 

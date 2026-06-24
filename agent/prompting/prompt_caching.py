@@ -26,9 +26,7 @@ def _apply_cache_marker(msg: dict, cache_marker: dict) -> None:
         return
 
     if isinstance(content, str):
-        msg["content"] = [
-            {"type": "text", "text": content, "cache_control": cache_marker}
-        ]
+        msg["content"] = [{"type": "text", "text": content, "cache_control": cache_marker}]
         return
 
     if isinstance(content, list) and content:

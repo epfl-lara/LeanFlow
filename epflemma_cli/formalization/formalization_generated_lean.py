@@ -102,7 +102,9 @@ def _formalization_generated_lean_paths(active_file: str = "") -> list[Path]:
     for seed in list(directory_seeds):
         if not seed.is_dir():
             continue
-        for path in sorted(seed.rglob("*.lean"), key=lambda item: str(item.relative_to(seed)).lower()):
+        for path in sorted(
+            seed.rglob("*.lean"), key=lambda item: str(item.relative_to(seed)).lower()
+        ):
             _add(path)
         parent_module_file = seed.with_suffix(".lean")
         _add(parent_module_file)
@@ -127,7 +129,9 @@ def _topologically_order_project_paths(paths: Sequence[Path], root: Path) -> lis
         for module in [_module_name_for_project_path(path, root)]
         if module
     }
-    imports_by_path, _imported_by_path, _modules = _project_prove_dependency_graph(unique_paths, module_to_path)
+    imports_by_path, _imported_by_path, _modules = _project_prove_dependency_graph(
+        unique_paths, module_to_path
+    )
     path_set = {path.resolve() for path in unique_paths}
     ordered: list[Path] = []
     visiting: set[Path] = set()
@@ -140,7 +144,9 @@ def _topologically_order_project_paths(paths: Sequence[Path], root: Path) -> lis
         if resolved in visiting:
             return
         visiting.add(resolved)
-        for dependency in sorted(imports_by_path.get(resolved, set()) & path_set, key=lambda item: str(item)):
+        for dependency in sorted(
+            imports_by_path.get(resolved, set()) & path_set, key=lambda item: str(item)
+        ):
             _visit(dependency)
         visiting.discard(resolved)
         visited.add(resolved)
@@ -153,7 +159,9 @@ def _topologically_order_project_paths(paths: Sequence[Path], root: Path) -> lis
 
 def _formalization_generated_prove_scope(active_file: str = "") -> list[str]:
     root = Path(_project_root()).expanduser().resolve()
-    paths = _topologically_order_project_paths(_formalization_generated_lean_paths(active_file), root)
+    paths = _topologically_order_project_paths(
+        _formalization_generated_lean_paths(active_file), root
+    )
     labels: list[str] = []
     for path in paths:
         label = _relative_project_file_label(path, root)
@@ -184,11 +192,16 @@ def _document_formalization_needs_planner_draft(active_file: str) -> bool:
     non_import_lines = [
         line.strip()
         for line in text.splitlines()
-        if line.strip() and not line.lstrip().startswith("--") and not line.lstrip().startswith("import ")
+        if line.strip()
+        and not line.lstrip().startswith("--")
+        and not line.lstrip().startswith("import ")
     ]
     if not non_import_lines:
         return True
-    return "EPFLemma formalization target scaffold" in text or "EPFLemma created this file as the active formalization target" in text
+    return (
+        "EPFLemma formalization target scaffold" in text
+        or "EPFLemma created this file as the active formalization target" in text
+    )
 
 
 def _formalization_generated_lean_text(
@@ -260,7 +273,9 @@ def _formalization_generated_module_names(active_file: str) -> set[str]:
     return modules
 
 
-def _document_formalization_construction_sorry_issues(active_file: str, target_text: str = "") -> list[str]:
+def _document_formalization_construction_sorry_issues(
+    active_file: str, target_text: str = ""
+) -> list[str]:
     issues: list[str] = []
     scanned_paths = _formalization_generated_lean_paths(active_file)
     if not scanned_paths and active_file:
@@ -269,7 +284,9 @@ def _document_formalization_construction_sorry_issues(active_file: str, target_t
         try:
             text = (
                 str(target_text or "")
-                if active_file and path.resolve() == Path(active_file).expanduser().resolve() and target_text
+                if active_file
+                and path.resolve() == Path(active_file).expanduser().resolve()
+                and target_text
                 else path.read_text(encoding="utf-8")
             )
         except Exception:
@@ -278,7 +295,10 @@ def _document_formalization_construction_sorry_issues(active_file: str, target_t
             kind = str(entry.get("kind", "") or "").strip().lower()
             if kind not in CONSTRUCTION_DECLARATION_KINDS or not entry.get("has_sorry"):
                 continue
-            name = str(entry.get("name", "") or "").strip() or f"[{kind} at line {entry.get('line', '?')}]"
+            name = (
+                str(entry.get("name", "") or "").strip()
+                or f"[{kind} at line {entry.get('line', '?')}]"
+            )
             line = int(entry.get("line", 0) or 0)
             label = _relative_file_label(str(path))
             location = f"{label}:{line}" if line > 0 else label
@@ -297,12 +317,16 @@ def _document_formalization_generated_proof_sorry_count(active_file: str = "") -
         except Exception:
             continue
         for entry in _declaration_line_index_from_text(text):
-            if str(entry.get("kind", "") or "").strip().lower() in PROOF_DECLARATION_KINDS and entry.get("has_sorry"):
+            if str(
+                entry.get("kind", "") or ""
+            ).strip().lower() in PROOF_DECLARATION_KINDS and entry.get("has_sorry"):
                 total += 1
     return total
 
 
-def _filter_document_formalization_proof_queue(queue: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _filter_document_formalization_proof_queue(
+    queue: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
     if not (_workflow_kind() == "formalize" and _document_formalization_requested()):
         return [dict(item) for item in queue if isinstance(item, Mapping)]
     filtered: list[dict[str, Any]] = []
@@ -357,14 +381,25 @@ def _document_formalization_blueprint_inventory_issues(
     for block in _document_formalization_manifest_blocks():
         label = block["label"]
         kind = block["kind"]
-        requires_proof_notes = bool(block.get("has_proof")) or kind in {"theorem", "lemma", "proposition", "corollary"}
+        requires_proof_notes = bool(block.get("has_proof")) or kind in {
+            "theorem",
+            "lemma",
+            "proposition",
+            "corollary",
+        }
         entry = entries.get(label, "")
         if not entry:
             issues.append(f"blueprint is missing source inventory entry `{label}`")
             continue
         locator = _blueprint_first_bullet_value(
             entry,
-            ("Source locator", "Source location", "Source line/page", "Source lines", "Source page"),
+            (
+                "Source locator",
+                "Source location",
+                "Source line/page",
+                "Source lines",
+                "Source page",
+            ),
         )
         if _blueprint_value_missing(locator):
             issues.append(f"blueprint entry `{label}` is missing a concrete source locator")
@@ -410,18 +445,32 @@ def _document_formalization_blueprint_inventory_issues(
                         + ", ".join(f"`{name}`" for name in missing)
                     )
 
-        review = _blueprint_bullet_block(entry, "Formal statement review") or _blueprint_bullet_value(entry, "Formal statement review")
+        review = _blueprint_bullet_block(
+            entry, "Formal statement review"
+        ) or _blueprint_bullet_value(entry, "Formal statement review")
         if _blueprint_block_missing(review):
             issues.append(f"blueprint entry `{label}` is missing a statement-fidelity review")
-        source_qualifiers = _blueprint_fidelity_field(entry, ("Source qualifiers", "Source qualifier", "Fidelity axes"))
+        source_qualifiers = _blueprint_fidelity_field(
+            entry, ("Source qualifiers", "Source qualifier", "Fidelity axes")
+        )
         if _blueprint_fidelity_field_unresolved(source_qualifiers):
-            issues.append(f"blueprint entry `{label}` is missing resolved source qualifiers / fidelity axes")
-        lean_coverage = _blueprint_fidelity_field(entry, ("Lean coverage", "Formal coverage", "Lean statement coverage"))
+            issues.append(
+                f"blueprint entry `{label}` is missing resolved source qualifiers / fidelity axes"
+            )
+        lean_coverage = _blueprint_fidelity_field(
+            entry, ("Lean coverage", "Formal coverage", "Lean statement coverage")
+        )
         if _blueprint_fidelity_field_unresolved(lean_coverage):
-            issues.append(f"blueprint entry `{label}` is missing resolved Lean coverage for the source qualifiers")
-        scope_changes = _blueprint_fidelity_field(entry, ("Scope changes", "Intentional scope changes", "Scope change"))
+            issues.append(
+                f"blueprint entry `{label}` is missing resolved Lean coverage for the source qualifiers"
+            )
+        scope_changes = _blueprint_fidelity_field(
+            entry, ("Scope changes", "Intentional scope changes", "Scope change")
+        )
         if _blueprint_fidelity_field_unresolved(scope_changes):
-            issues.append(f"blueprint entry `{label}` must explicitly record scope changes, or `none`")
+            issues.append(
+                f"blueprint entry `{label}` must explicitly record scope changes, or `none`"
+            )
 
         verification = _blueprint_first_bullet_value(
             entry,
@@ -437,12 +486,16 @@ def _document_formalization_blueprint_inventory_issues(
                 f"blueprint entry `{label}` is missing statement/source verification approval; "
                 "run the review workflow to check and correct the planned Lean statements before proving"
             )
-        elif not re.search(r"\b(approved|verified|reviewed|accepted)\b", verification, flags=re.IGNORECASE):
+        elif not re.search(
+            r"\b(approved|verified|reviewed|accepted)\b", verification, flags=re.IGNORECASE
+        ):
             issues.append(
                 f"blueprint entry `{label}` statement/source verification is not approved"
             )
 
-        notes = _blueprint_first_bullet_value(entry, ("Source proof / prover notes", "Proof strategy", "Prover notes"))
+        notes = _blueprint_first_bullet_value(
+            entry, ("Source proof / prover notes", "Proof strategy", "Prover notes")
+        )
         if _blueprint_value_missing(notes):
             issues.append(f"blueprint entry `{label}` is missing source proof/prover notes")
         if requires_proof_notes and notes.lower() in {"none", "none needed", "n/a"}:

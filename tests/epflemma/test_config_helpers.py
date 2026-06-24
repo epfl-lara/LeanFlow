@@ -302,14 +302,17 @@ def test_load_config_rewrites_legacy_payload_and_persists_transform(monkeypatch,
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
     ensure_epflemma_home()
     get_config_path().write_text(
-        yaml.safe_dump({
-            "gauss": {
-                "project": {"template_source": "legacy-tmpl"},
-                "autoformalize": {"managed_state_dir": ".gauss/workflow-state"},
+        yaml.safe_dump(
+            {
+                "gauss": {
+                    "project": {"template_source": "legacy-tmpl"},
+                    "autoformalize": {"managed_state_dir": ".gauss/workflow-state"},
+                },
+                "model": {"default": "legacy-model", "provider": "zai"},
+                "toolsets": ["gauss-native"],
             },
-            "model": {"default": "legacy-model", "provider": "zai"},
-            "toolsets": ["gauss-native"],
-        }, sort_keys=False),
+            sort_keys=False,
+        ),
         encoding="utf-8",
     )
 

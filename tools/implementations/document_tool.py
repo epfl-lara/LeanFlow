@@ -24,12 +24,7 @@ def formalization_document_inspect_tool(
     project_root: str = "",
     include_text: bool = False,
 ) -> str:
-    root = (
-        project_root
-        or os.getenv("EPFLEMMA_PROJECT_ROOT", "")
-        or cwd
-        or os.getcwd()
-    )
+    root = project_root or os.getenv("EPFLEMMA_PROJECT_ROOT", "") or cwd or os.getcwd()
     payload = inspect_formalization_document(
         path,
         project_root=root,
@@ -48,12 +43,7 @@ def read_pdf_tool(
     max_chars: int = PDF_READ_DEFAULT_MAX_CHARS,
 ) -> str:
     """Extract and return text from a project-local PDF file with bounded output. Validates input is a PDF, truncates extracted text to max_chars (bounded 1k–120k), and returns metadata including section structure, extraction quality, and truncation flags."""
-    root = (
-        project_root
-        or os.getenv("EPFLEMMA_PROJECT_ROOT", "")
-        or cwd
-        or os.getcwd()
-    )
+    root = project_root or os.getenv("EPFLEMMA_PROJECT_ROOT", "") or cwd or os.getcwd()
     payload = inspect_formalization_document(
         path,
         project_root=root,
@@ -153,7 +143,9 @@ registry.register(
         path=args.get("path", ""),
         cwd=args.get("cwd", ""),
         project_root=args.get("project_root", ""),
-        max_chars=int(args.get("max_chars", PDF_READ_DEFAULT_MAX_CHARS) or PDF_READ_DEFAULT_MAX_CHARS),
+        max_chars=int(
+            args.get("max_chars", PDF_READ_DEFAULT_MAX_CHARS) or PDF_READ_DEFAULT_MAX_CHARS
+        ),
     ),
     check_fn=check_document_requirements,
     emoji="",

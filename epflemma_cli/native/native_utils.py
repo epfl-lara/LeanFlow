@@ -71,7 +71,11 @@ def _positive_int_config(name: str, default: int) -> int:
 
 
 def _single_line(text: Any, limit: int | None = None) -> str:
-    effective_limit = limit if limit is not None else max(_positive_int_config("activity_preview_chars", 420) + 140, 560)
+    effective_limit = (
+        limit
+        if limit is not None
+        else max(_positive_int_config("activity_preview_chars", 420) + 140, 560)
+    )
     collapsed = " ".join(str(text or "").split())
     if len(collapsed) <= effective_limit:
         return collapsed
@@ -149,7 +153,9 @@ def _relative_file_label(active_file: str) -> str:
         return active_file
 
 
-def _relative_project_file_label(path: str | os.PathLike[str], project_root: str | os.PathLike[str] | None = None) -> str:
+def _relative_project_file_label(
+    path: str | os.PathLike[str], project_root: str | os.PathLike[str] | None = None
+) -> str:
     raw = Path(path)
     root = Path(project_root or _project_root())
     try:
@@ -206,7 +212,10 @@ def _extract_diagnostics_summary(messages: list[dict[str, Any]]) -> str:
         if not content:
             continue
         lowered = content.lower()
-        if any(token in lowered for token in ("error", "warning", "sorry", "no errors found", "diagnostic")):
+        if any(
+            token in lowered
+            for token in ("error", "warning", "sorry", "no errors found", "diagnostic")
+        ):
             snippets.append(content[:240])
     return "\n".join(snippets[:4])
 
@@ -267,7 +276,11 @@ def _format_declaration_queue(queue: list[dict[str, Any]], *, limit: int = 8) ->
         reasons = ", ".join(item.get("reasons", []) or [])
         file_path = str(item.get("file", "") or "")
         try:
-            file_label = str(Path(file_path).resolve().relative_to(Path(_project_root()).resolve())) if file_path else ""
+            file_label = (
+                str(Path(file_path).resolve().relative_to(Path(_project_root()).resolve()))
+                if file_path
+                else ""
+            )
         except Exception:
             file_label = file_path
         if file_label and label != file_label:

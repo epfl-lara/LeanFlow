@@ -15,7 +15,6 @@ import unittest
 
 
 class TestRedirectStdoutIsProcessWide(unittest.TestCase):
-
     def test_redirect_stdout_affects_other_threads(self):
         """contextlib.redirect_stdout changes sys.stdout for ALL threads."""
         captured_from_other_thread = []
@@ -45,7 +44,7 @@ class TestRedirectStdoutIsProcessWide(unittest.TestCase):
         self.assertTrue(
             other_thread_saw_devnull.is_set(),
             "redirect_stdout was NOT process-wide — other thread still saw real stdout. "
-            "This test's premise is wrong."
+            "This test's premise is wrong.",
         )
         print("Confirmed: redirect_stdout IS process-wide — affects all threads")
 

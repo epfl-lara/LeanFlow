@@ -302,7 +302,9 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
         [
             SimpleNamespace(type="response.created"),
             SimpleNamespace(type="response.in_progress"),
-            SimpleNamespace(type="response.completed", response=_codex_message_response("streamed create ok")),
+            SimpleNamespace(
+                type="response.completed", response=_codex_message_response("streamed create ok")
+            ),
         ]
     )
 
@@ -349,7 +351,9 @@ def test_run_codex_stream_repairs_empty_completed_response_from_output_item_even
         return _FakeResponsesStream(
             final_response=completed_empty,
             events=[
-                SimpleNamespace(type="response.output_item.done", output_index=0, item=streamed_item),
+                SimpleNamespace(
+                    type="response.output_item.done", output_index=0, item=streamed_item
+                ),
                 SimpleNamespace(type="response.completed", response=completed_empty),
             ],
         )
@@ -401,7 +405,9 @@ def test_run_codex_create_stream_fallback_repairs_empty_completed_response(monke
 
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
-    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK")
+    )
 
     result = agent.run_conversation("Say OK")
 
@@ -498,8 +504,13 @@ def test_run_conversation_codex_tool_round_trip(monkeypatch):
 
     assert result["completed"] is True
     assert result["final_response"] == "done"
-    assert any(msg.get("tool_calls") for msg in result["messages"] if msg.get("role") == "assistant")
-    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+    assert any(
+        msg.get("tool_calls") for msg in result["messages"] if msg.get("role") == "assistant"
+    )
+    assert any(
+        msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1"
+        for msg in result["messages"]
+    )
 
 
 def test_chat_messages_to_responses_input_uses_call_id_for_function_call(monkeypatch):
@@ -654,7 +665,9 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
 
     replay_input = requests[1]["input"]
     function_call = next(item for item in replay_input if item.get("type") == "function_call")
-    function_output = next(item for item in replay_input if item.get("type") == "function_call_output")
+    function_output = next(
+        item for item in replay_input if item.get("type") == "function_call_output"
+    )
     assert function_call["call_id"] == "call_1"
     assert "id" not in function_call
     assert function_output["call_id"] == "call_1"
@@ -691,7 +704,10 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
         and "inspect the repo structure" in (msg.get("content") or "")
         for msg in result["messages"]
     )
-    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+    assert any(
+        msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1"
+        for msg in result["messages"]
+    )
 
 
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):
@@ -735,7 +751,10 @@ def test_run_conversation_codex_continues_after_commentary_phase_message(monkeyp
         and "inspect the repo structure" in (msg.get("content") or "")
         for msg in result["messages"]
     )
-    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+    assert any(
+        msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1"
+        for msg in result["messages"]
+    )
 
 
 def test_run_conversation_codex_continues_after_ack_stop_message(monkeypatch):
@@ -776,7 +795,10 @@ def test_run_conversation_codex_continues_after_ack_stop_message(monkeypatch):
         and "Continue now. Execute the required tool calls" in (msg.get("content") or "")
         for msg in result["messages"]
     )
-    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+    assert any(
+        msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1"
+        for msg in result["messages"]
+    )
 
 
 def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt(monkeypatch):
@@ -817,4 +839,7 @@ def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt
         and "Continue now. Execute the required tool calls" in (msg.get("content") or "")
         for msg in result["messages"]
     )
-    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+    assert any(
+        msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1"
+        for msg in result["messages"]
+    )

@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _SNAPSHOT_STORE = get_epflemma_home() / "singularity_snapshots.json"
 
+
 def _load_snapshots() -> dict[str, str]:
     if _SNAPSHOT_STORE.exists():
         try:
@@ -31,13 +32,16 @@ def _load_snapshots() -> dict[str, str]:
             pass
     return {}
 
+
 def _save_snapshots(data: dict[str, str]) -> None:
     _SNAPSHOT_STORE.parent.mkdir(parents=True, exist_ok=True)
     _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
 
+
 # -------------------------------------------------------------------------
 # Singularity helpers (scratch dir, SIF cache, SIF building)
 # -------------------------------------------------------------------------
+
 
 def _get_scratch_dir() -> Path:
     """Get the best directory for Singularity sandboxes.
@@ -55,6 +59,7 @@ def _get_scratch_dir() -> Path:
         return scratch_path
 
     from tools.environments.base import get_sandbox_dir
+
     sandbox = get_sandbox_dir() / "singularity"
 
     scratch = Path("/scratch")
@@ -66,6 +71,7 @@ def _get_scratch_dir() -> Path:
 
     sandbox.mkdir(parents=True, exist_ok=True)
     return sandbox
+
 
 def _get_apptainer_cache_dir() -> Path:
     """Get the Apptainer cache directory for SIF images."""
@@ -79,7 +85,9 @@ def _get_apptainer_cache_dir() -> Path:
     cache_path.mkdir(parents=True, exist_ok=True)
     return cache_path
 
+
 _sif_build_lock = threading.Lock()
+
 
 def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
     """Get or build a SIF image from a docker:// URL.
@@ -87,12 +95,12 @@ def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
     Returns the path unchanged if it's already a .sif file.
     For docker:// URLs, checks the cache and builds if needed.
     """
-    if image.endswith('.sif') and Path(image).exists():
+    if image.endswith(".sif") and Path(image).exists():
         return image
-    if not image.startswith('docker://'):
+    if not image.startswith("docker://"):
         return image
 
-    image_name = image.replace('docker://', '').replace('/', '-').replace(':', '-')
+    image_name = image.replace("docker://", "").replace("/", "-").replace(":", "-")
     cache_dir = _get_apptainer_cache_dir()
     sif_path = cache_dir / f"{image_name}.sif"
 
@@ -117,7 +125,10 @@ def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
         try:
             result = subprocess.run(
                 [executable, "build", str(sif_path), image],
-                capture_output=True, text=True, timeout=600, env=env,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                env=env,
             )
             if result.returncode != 0:
                 logger.warning("SIF build failed, falling back to docker:// URL")
@@ -134,9 +145,11 @@ def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
             logger.warning("SIF build error: %s, falling back to docker:// URL", e)
             return image
 
+
 # -------------------------------------------------------------------------
 # SingularityEnvironment
 # -------------------------------------------------------------------------
+
 
 class SingularityEnvironment(BaseEnvironment):
     """Hardened Singularity/Apptainer container with resource limits and persistence.
@@ -208,14 +221,22 @@ class SingularityEnvironment(BaseEnvironment):
             if result.returncode != 0:
                 raise RuntimeError(f"Failed to start instance: {result.stderr}")
             self._instance_started = True
-            logger.info("Singularity instance %s started (persistent=%s)", 
-                        self.instance_id, self._persistent)
+            logger.info(
+                "Singularity instance %s started (persistent=%s)",
+                self.instance_id,
+                self._persistent,
+            )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("Instance start timed out") from exc
 
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+    def execute(
+        self,
+        command: str,
+        cwd: str = "",
+        *,
+        timeout: int | None = None,
+        stdin_data: str | None = None,
+    ) -> dict:
         """Execute a command in the Singularity container instance, merging any required sudo stdin with caller-provided input, and return output with returncode. Respects the configured timeout and detects interrupts to gracefully terminate or kill the subprocess."""
         if not self._instance_started:
             return {"output": "Instance not started", "returncode": -1}
@@ -237,16 +258,25 @@ class SingularityEnvironment(BaseEnvironment):
             exec_command = f"cd {work_dir} && {exec_command}"
             work_dir = "/tmp"
 
-        cmd = [self.executable, "exec", "--pwd", work_dir,
-               f"instance://{self.instance_id}",
-               "bash", "-c", exec_command]
+        cmd = [
+            self.executable,
+            "exec",
+            "--pwd",
+            work_dir,
+            f"instance://{self.instance_id}",
+            "bash",
+            "-c",
+            exec_command,
+        ]
 
         try:
             import time as _time
+
             _output_chunks = []
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 stdin=subprocess.PIPE if effective_stdin else subprocess.DEVNULL,
                 text=True,
             )
@@ -297,7 +327,9 @@ class SingularityEnvironment(BaseEnvironment):
             try:
                 subprocess.run(
                     [self.executable, "instance", "stop", self.instance_id],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 logger.info("Singularity instance %s stopped", self.instance_id)
             except Exception as e:
