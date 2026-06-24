@@ -44,14 +44,13 @@ class TestFirecrawlClientConfig:
         with patch.dict(os.environ, {
             "FIRECRAWL_API_KEY": "fc-test",
             "FIRECRAWL_API_URL": "http://localhost:3002",
-        }):
-            with patch("tools.implementations.web_tools.Firecrawl") as mock_fc:
-                from tools.implementations.web_tools import _get_firecrawl_client
-                result = _get_firecrawl_client()
-                mock_fc.assert_called_once_with(
-                    api_key="fc-test", api_url="http://localhost:3002"
-                )
-                assert result is mock_fc.return_value
+        }), patch("tools.implementations.web_tools.Firecrawl") as mock_fc:
+            from tools.implementations.web_tools import _get_firecrawl_client
+            result = _get_firecrawl_client()
+            mock_fc.assert_called_once_with(
+                api_key="fc-test", api_url="http://localhost:3002"
+            )
+            assert result is mock_fc.return_value
 
     def test_self_hosted_no_key(self):
         """URL only, no key → self-hosted without auth."""
@@ -111,12 +110,11 @@ class TestFirecrawlClientConfig:
         with patch.dict(os.environ, {
             "FIRECRAWL_API_KEY": "",
             "FIRECRAWL_API_URL": "http://localhost:3002",
-        }):
-            with patch("tools.implementations.web_tools.Firecrawl") as mock_fc:
-                from tools.implementations.web_tools import _get_firecrawl_client
-                _get_firecrawl_client()
-                # Empty string is falsy, so only api_url should be passed
-                mock_fc.assert_called_once_with(api_url="http://localhost:3002")
+        }), patch("tools.implementations.web_tools.Firecrawl") as mock_fc:
+            from tools.implementations.web_tools import _get_firecrawl_client
+            _get_firecrawl_client()
+            # Empty string is falsy, so only api_url should be passed
+            mock_fc.assert_called_once_with(api_url="http://localhost:3002")
 
     def test_empty_string_key_no_url_raises(self):
         """FIRECRAWL_API_KEY='' with no URL → should raise."""

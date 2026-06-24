@@ -39,6 +39,7 @@ at load and creating a controller never triggers an import cycle.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from typing import Any
@@ -141,10 +142,8 @@ class InterruptController:
     def unregister_child(self, child: Any) -> None:
         """Unregister a child agent (thread-safe); a missing child is ignored."""
         with self._children_lock:
-            try:
+            with contextlib.suppress(ValueError):
                 self._children.remove(child)
-            except ValueError:
-                pass
 
     def propagate(self, message: Any = None) -> None:
         """Forward an interrupt to every registered child agent.

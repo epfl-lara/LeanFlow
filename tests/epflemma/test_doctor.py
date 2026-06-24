@@ -86,7 +86,7 @@ def test_run_doctor_mcp_mode_surfaces_bootstrap_recommendation(monkeypatch, tmp_
 
 def test_run_doctor_supported_modes_cover_readme_surface():
     # README advertises these modes; keeping the set in sync prevents silent drift.
-    assert DOCTOR_MODES == {"all", "env", "mcp", "search", "web-search", "migrate", "cleanup"}
+    assert {"all", "env", "mcp", "search", "web-search", "migrate", "cleanup"} == DOCTOR_MODES
 
 
 def test_run_doctor_unknown_mode_normalizes_to_all(monkeypatch, tmp_path):

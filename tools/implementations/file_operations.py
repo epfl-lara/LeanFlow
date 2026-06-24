@@ -25,6 +25,7 @@ Usage:
     result = file_ops.search("TODO", path=".", file_glob="*.py")
 """
 
+import contextlib
 import difflib
 import json
 import os
@@ -986,10 +987,8 @@ class ShellFileOperations(FileOperations):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
-                        try:
+                        with contextlib.suppress(ValueError):
                             counts[parts[0]] = int(parts[1])
-                        except ValueError:
-                            pass
             return SearchResult(counts=counts, total_count=sum(counts.values()))
         
         else:
@@ -1082,10 +1081,8 @@ class ShellFileOperations(FileOperations):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
-                        try:
+                        with contextlib.suppress(ValueError):
                             counts[parts[0]] = int(parts[1])
-                        except ValueError:
-                            pass
             return SearchResult(counts=counts, total_count=sum(counts.values()))
         
         else:

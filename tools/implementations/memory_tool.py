@@ -23,6 +23,7 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -375,10 +376,8 @@ class MemoryStore:
                 os.replace(tmp_path, str(path))  # Atomic on same filesystem
             except BaseException:
                 # Clean up temp file on any failure
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(tmp_path)
-                except OSError:
-                    pass
                 raise
         except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}") from e

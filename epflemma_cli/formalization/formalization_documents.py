@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shutil
@@ -193,10 +194,8 @@ def ensure_formalization_blueprint_skill(
         return None
     target_path = (root / target_lean_relative).resolve()
     resolved_blueprint = Path(blueprint_path).expanduser() if blueprint_path else target_path.parent / "Blueprint.md"
-    try:
+    with contextlib.suppress(Exception):
         resolved_blueprint = resolved_blueprint.resolve()
-    except Exception:
-        pass
     if not resolved_blueprint.is_file():
         return None
     try:

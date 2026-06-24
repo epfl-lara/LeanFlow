@@ -1,5 +1,6 @@
 """Persistent shell mixin: file-based IPC protocol for long-lived bash shells."""
 
+import contextlib
 import logging
 import shlex
 import subprocess
@@ -109,10 +110,8 @@ class PersistentShellMixin:
         if self._session_id:
             self._cleanup_temp_files()
 
-        try:
+        with contextlib.suppress(Exception):
             self._shell_proc.stdin.close()
-        except Exception:
-            pass
         try:
             self._shell_proc.terminate()
             self._shell_proc.wait(timeout=3)

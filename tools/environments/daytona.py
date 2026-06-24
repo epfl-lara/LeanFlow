@@ -5,6 +5,7 @@ Supports persistent sandboxes: when enabled, sandboxes are stopped on cleanup
 and resumed on next creation, preserving the filesystem across sessions.
 """
 
+import contextlib
 import logging
 import math
 import shlex
@@ -148,10 +149,8 @@ class DaytonaEnvironment(BaseEnvironment):
             t.join(timeout=0.2)
             if is_interrupted():
                 with self._lock:
-                    try:
+                    with contextlib.suppress(Exception):
                         self._sandbox.stop()
-                    except Exception:
-                        pass
                 return {
                     "output": "[Command interrupted - Daytona sandbox stopped]",
                     "returncode": 130,
@@ -159,10 +158,8 @@ class DaytonaEnvironment(BaseEnvironment):
             if time.monotonic() > deadline:
                 # Shell timeout didn't fire and SDK is hung — force stop
                 with self._lock:
-                    try:
+                    with contextlib.suppress(Exception):
                         self._sandbox.stop()
-                    except Exception:
-                        pass
                 return self._timeout_result(timeout)
 
         if result_holder["error"]:

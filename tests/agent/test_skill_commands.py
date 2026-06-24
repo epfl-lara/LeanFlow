@@ -211,19 +211,18 @@ Generate some audio.
 
         with patch.dict(
             os.environ, {"EPFLEMMA_SESSION_PLATFORM": "telegram"}, clear=False
-        ):
-            with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
-                _make_skill(
-                    tmp_path,
-                    "test-skill",
-                    frontmatter_extra=(
-                        "required_environment_variables:\n"
-                        "  - name: TENOR_API_KEY\n"
-                        "    prompt: Tenor API key\n"
-                    ),
-                )
-                scan_skill_commands()
-                msg = build_skill_invocation_message("/test-skill", "do stuff")
+        ), patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "test-skill",
+                frontmatter_extra=(
+                    "required_environment_variables:\n"
+                    "  - name: TENOR_API_KEY\n"
+                    "    prompt: Tenor API key\n"
+                ),
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/test-skill", "do stuff")
 
         assert msg is not None
         assert "local cli" in msg.lower()

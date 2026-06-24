@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -311,10 +312,8 @@ def get_install_root_path() -> Path:
 
 
 def _secure_dir(path: Path) -> None:
-    try:
+    with contextlib.suppress(OSError):
         path.chmod(0o700)
-    except OSError:
-        pass
 
 
 def _secure_file(path: Path) -> None:
@@ -523,7 +522,7 @@ def load_config() -> dict[str, Any]:
     # isolation, but also any in-process home switch) is a cache miss and re-reads from disk.
     path = get_config_path()
     cache_key = str(path)
-    if _CONFIG_CACHE is not None and _CONFIG_CACHE_KEY == cache_key:
+    if _CONFIG_CACHE is not None and cache_key == _CONFIG_CACHE_KEY:
         return deepcopy(_CONFIG_CACHE)
 
     ensure_epflemma_home()

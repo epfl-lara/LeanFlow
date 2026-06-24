@@ -532,18 +532,17 @@ class TestSkillViewSecureSetupOnLoad:
 
         with patch.dict(
             os.environ, {"EPFLEMMA_SESSION_PLATFORM": "telegram"}, clear=False
-        ):
-            with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
-                _make_skill(
-                    tmp_path,
-                    "gif-search",
-                    frontmatter_extra=(
-                        "required_environment_variables:\n"
-                        "  - name: TENOR_API_KEY\n"
-                        "    prompt: Tenor API key\n"
-                    ),
-                )
-                raw = skill_view("gif-search")
+        ), patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "gif-search",
+                frontmatter_extra=(
+                    "required_environment_variables:\n"
+                    "  - name: TENOR_API_KEY\n"
+                    "    prompt: Tenor API key\n"
+                ),
+            )
+            raw = skill_view("gif-search")
 
         result = json.loads(raw)
         assert result["success"] is True
@@ -872,14 +871,13 @@ class TestSkillViewPrerequisites:
 
         with patch.dict(
             os.environ, {"EPFLEMMA_SESSION_PLATFORM": "telegram"}, clear=False
-        ):
-            with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
-                _make_skill(
-                    tmp_path,
-                    "backend-unknown",
-                    frontmatter_extra="prerequisites:\n  env_vars: [BACKEND_ONLY_KEY]\n",
-                )
-                raw = skill_view("backend-unknown")
+        ), patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "backend-unknown",
+                frontmatter_extra="prerequisites:\n  env_vars: [BACKEND_ONLY_KEY]\n",
+            )
+            raw = skill_view("backend-unknown")
         result = json.loads(raw)
         assert result["success"] is True
         assert "local cli" in result["gateway_setup_hint"].lower()

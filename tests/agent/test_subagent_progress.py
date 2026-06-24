@@ -8,6 +8,7 @@ Verifies that:
 - Parallel callbacks don't share state
 """
 
+import contextlib
 import io
 import sys
 import threading
@@ -234,10 +235,8 @@ class TestThinkingCallback:
             ).strip()
             first_line = _think_text.split('\n')[0][:80] if _think_text else ""
             if first_line:
-                try:
+                with contextlib.suppress(Exception):
                     callback("_thinking", first_line)
-                except Exception:
-                    pass
 
     def test_thinking_callback_fires_on_content(self):
         """tool_progress_callback should receive _thinking event

@@ -1,5 +1,6 @@
 """Base class for all EPFLemma execution environment backends."""
 
+import contextlib
 import os
 import subprocess
 from abc import ABC, abstractmethod
@@ -52,10 +53,8 @@ class BaseEnvironment(ABC):
         self.cleanup()
 
     def __del__(self):
-        try:
+        with contextlib.suppress(Exception):
             self.cleanup()
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Shared helpers (eliminate duplication across backends)

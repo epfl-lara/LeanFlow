@@ -1,5 +1,6 @@
 """Shared utility functions for gauss-agent."""
 
+import contextlib
 import json
 import os
 import tempfile
@@ -52,10 +53,8 @@ def atomic_json_write(
     except BaseException:
         # Intentionally catch BaseException so temp-file cleanup still runs for
         # KeyboardInterrupt/SystemExit before re-raising the original signal.
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise
 
 
@@ -100,8 +99,6 @@ def atomic_yaml_write(
     except BaseException:
         # Match atomic_json_write: cleanup must also happen for process-level
         # interruptions before we re-raise them.
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise

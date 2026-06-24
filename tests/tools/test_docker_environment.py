@@ -54,9 +54,8 @@ def test_ensure_docker_available_logs_and_raises_when_not_found(monkeypatch, cap
         lambda *args, **kwargs: pytest.fail("subprocess.run should not be called when docker is missing"),
     )
 
-    with caplog.at_level(logging.ERROR):
-        with pytest.raises(RuntimeError) as excinfo:
-            _make_dummy_env()
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError) as excinfo:
+        _make_dummy_env()
 
     assert "Docker executable not found in PATH or known install locations" in str(excinfo.value)
     assert any(
@@ -75,9 +74,8 @@ def test_ensure_docker_available_logs_and_raises_on_timeout(monkeypatch, caplog)
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/custom/docker")
     monkeypatch.setattr(docker_env.subprocess, "run", _raise_timeout)
 
-    with caplog.at_level(logging.ERROR):
-        with pytest.raises(RuntimeError) as excinfo:
-            _make_dummy_env()
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError) as excinfo:
+        _make_dummy_env()
 
     assert "Docker daemon is not responding" in str(excinfo.value)
     assert any(

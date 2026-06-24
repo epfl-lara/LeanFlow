@@ -142,6 +142,8 @@ _FINAL_SWEEP_AUTONOMY_KEYS = frozenset(
 # formalization_generated_lean.py holds the document-formalization generated-Lean inspection
 # helpers (discover/read/inspect the generated .lean files for a /formalize run, plus the
 # blueprint-inventory fidelity checks and the PROOF_/CONSTRUCTION_DECLARATION_KINDS sets).
+import contextlib
+
 from epflemma_cli.formalization.formalization_document_runner import (  # noqa: E402
     _BLUEPRINT_UNRESOLVED_FIDELITY_RE,
     _autoformalizer_advisory_review_due,
@@ -730,10 +732,8 @@ def _active_file_candidates(active_file: str) -> set[str]:
         path = Path(normalized)
         if path.is_absolute():
             candidates.add(str(path.resolve()))
-            try:
+            with contextlib.suppress(Exception):
                 candidates.add(str(path.resolve().relative_to(Path(_project_root()).resolve())))
-            except Exception:
-                pass
     except Exception:
         pass
     return {value for value in candidates if value}
@@ -981,10 +981,8 @@ def _agent_interrupted(agent: Any) -> bool:
 
 
 def _request_step_boundary_interrupt(agent: Any) -> None:
-    try:
-        setattr(agent, "_suppress_next_interrupt_log", True)
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        agent._suppress_next_interrupt_log = True
     agent.interrupt(WORKFLOW_STEP_BOUNDARY_INTERRUPT)
 
 
@@ -1968,10 +1966,8 @@ def _normalized_search_query(value: Any) -> str:
 
 
 def _append_post_tool_result_message(agent: Any, message: str) -> None:
-    try:
+    with contextlib.suppress(Exception):
         agent.stage_tool_result_appendix(message)
-    except Exception:
-        pass
 
 
 FORMALIZATION_HANDOFF_FEEDBACK_TOOLS = {
@@ -2534,21 +2530,8 @@ def _managed_pre_tool_call(agent: Any, function_name: str, args: Mapping[str, An
             "assigned_statement_signature": assigned_statement_signature,
             "protected_declarations": _queue_edit_protected_declarations(before_text, target_symbol),
         }
-        setattr(agent, "_managed_queue_edit_guard_state", guard_state)
-    setattr(
-        agent,
-        "_managed_queue_edit_snapshot",
-        {
-            "target_symbol": target_symbol,
-            "active_file": active_file,
-            "before_text": before_text,
-            "start": int(entry.get("line", 0) or 0),
-            "end": int(entry.get("end_line", 0) or 0),
-            "guard_key": guard_key,
-            "assigned_statement_signature": str(guard_state.get("assigned_statement_signature", "") or ""),
-            "protected_declarations": guard_state.get("protected_declarations") or (),
-        },
-    )
+        agent._managed_queue_edit_guard_state = guard_state
+    agent._managed_queue_edit_snapshot = {"target_symbol": target_symbol, "active_file": active_file, "before_text": before_text, "start": int(entry.get("line", 0) or 0), "end": int(entry.get("end_line", 0) or 0), "guard_key": guard_key, "assigned_statement_signature": str(guard_state.get("assigned_statement_signature", "") or ""), "protected_declarations": guard_state.get("protected_declarations") or ()}
     return None
 
 
@@ -2611,10 +2594,8 @@ def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
     if function_name not in {"patch", "write_file", "apply_verified_patch"}:
         return ""
     snapshot = dict(getattr(agent, "_managed_queue_edit_snapshot", {}) or {})
-    try:
+    with contextlib.suppress(Exception):
         delattr(agent, "_managed_queue_edit_snapshot")
-    except Exception:
-        pass
     active_file = str(snapshot.get("active_file", "") or "")
     target_symbol = str(snapshot.get("target_symbol", "") or "")
     before_text = str(snapshot.get("before_text", "") or "")
@@ -2886,10 +2867,8 @@ def _finish_queue_step_boundary(
     finally:
         continue_same_turn = bool(still_blocked or cleanup_feedback_reason)
         should_yield = bool(refresh_error or not continue_same_turn)
-        try:
-            setattr(agent, "_managed_step_boundary_recorded_attempt", attempt_recorded)
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            agent._managed_step_boundary_recorded_attempt = attempt_recorded
         _record_activity(
             (
                 "queue-theorem-feedback"
@@ -3050,14 +3029,10 @@ def _finish_queue_step_boundary(
                 )
                 _print_queue_step_separator(pending_target)
         agent._managed_pending_theorem_feedback = None
-        try:
+        with contextlib.suppress(Exception):
             agent.clear_tool_result_appendix()
-        except Exception:
-            pass
-        try:
-            setattr(agent, "_managed_step_boundary_closed", True)
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            agent._managed_step_boundary_closed = True
         _request_step_boundary_interrupt(agent)
 
 
@@ -4578,15 +4553,13 @@ def _theorem_transition_handoff_message(
     current_item = dict(current.get("current_queue_item") or {})
     view_mgr = mgr
     if current_target and current_file:
-        try:
+        with contextlib.suppress(Exception):
             view_mgr = mgr.peek_assignment(
                 QueueItem.from_mapping({**current_item, "label": current_target}),
                 active_file=current_file,
                 slice_text=str(current.get("current_queue_item_slice", "") or ""),
                 prepare=PrepareState(success=False),
             )
-        except Exception:
-            pass
     current_file_label = _display_file_label(current) or current_file or "[unknown]"
     queue_horizon = _queue_horizon_summary(
         declaration_scope=str(current.get("declaration_scope", "") or _declaration_queue_scope()),
@@ -6133,10 +6106,8 @@ def _document_formalization_handoff_verification(
     issues: list[str] = []
     blueprint_local_issues: list[str] = []
     active_path = Path(active_file).expanduser()
-    try:
+    with contextlib.suppress(Exception):
         active_path = active_path.resolve()
-    except Exception:
-        pass
 
     if _document_formalization_needs_planner_draft(str(active_path)):
         issues.append("planner has not drafted Lean declarations in the target file")
@@ -7360,10 +7331,8 @@ def _run_managed_conversation(
                 interrupt_requested = True
                 print("\nInterrupt requested. Stopping the active agent turn...")
                 if on_interrupt is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         on_interrupt()
-                    except Exception:
-                        pass
                 agent.interrupt()
             else:
                 print("\nStill stopping the active agent turn...")
@@ -7371,10 +7340,8 @@ def _run_managed_conversation(
     if "error" in error_holder:
         error = error_holder["error"]
         if isinstance(error, (KeyboardInterrupt, InterruptedError)):
-            try:
+            with contextlib.suppress(Exception):
                 agent.clear_interrupt()
-            except Exception:
-                pass
             result = {
                 "messages": list(getattr(agent, "_session_messages", []) or kwargs.get("conversation_history") or []),
                 "api_calls": 0,
@@ -7402,10 +7369,8 @@ def _run_managed_conversation(
 
     result = result_holder.get("result")
     if interrupt_requested and not isinstance(result, dict):
-        try:
+        with contextlib.suppress(Exception):
             agent.clear_interrupt()
-        except Exception:
-            pass
         result = {
             "messages": list(getattr(agent, "_session_messages", []) or kwargs.get("conversation_history") or []),
             "api_calls": 0,
@@ -8510,10 +8475,8 @@ def _drive_autonomous_followups(
         checkpoint_state = _journal_status()
         boundary_recorded_attempt = bool(getattr(agent, "_managed_step_boundary_recorded_attempt", False))
         if boundary_recorded_attempt:
-            try:
-                setattr(agent, "_managed_step_boundary_recorded_attempt", False)
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                agent._managed_step_boundary_recorded_attempt = False
         if (
             not boundary_recorded_attempt
             and not budget_recorded_attempt

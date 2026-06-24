@@ -11,6 +11,8 @@ import time
 
 _IS_WINDOWS = platform.system() == "Windows"
 
+import contextlib
+
 from tools.environments.base import BaseEnvironment
 from tools.environments.persistent_shell import PersistentShellMixin
 from tools.utilities.interrupt import is_interrupted
@@ -52,9 +54,7 @@ def _build_provider_env_blocklist() -> frozenset:
         from epflemma_cli.config import OPTIONAL_ENV_VARS
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
-            if category in {"tool", "messaging"}:
-                blocked.add(name)
-            elif category == "setting" and metadata.get("password"):
+            if category in {"tool", "messaging"} or category == "setting" and metadata.get("password"):
                 blocked.add(name)
     except ImportError:
         pass
@@ -346,13 +346,11 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
     def _kill_shell_children(self):
         if self._shell_pid is None:
             return
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired, FileNotFoundError):
             subprocess.run(
                 ["pkill", "-P", str(self._shell_pid)],
                 capture_output=True, timeout=5,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
 
     def _cleanup_temp_files(self):
         for f in glob.glob(f"{self._temp_prefix}-*"):
@@ -414,10 +412,8 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             except ValueError:
                 pass
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     proc.stdout.close()
-                except Exception:
-                    pass
 
         reader = threading.Thread(target=_drain_stdout, daemon=True)
         reader.start()

@@ -74,7 +74,7 @@ def _queue_edit_initial_declaration_keys(
         if (key := _declaration_stable_key(entry)) is not None
     }
     state[file_key] = [list(key) for key in sorted(keys)]
-    setattr(agent, "_managed_initial_declaration_keys_by_file", state)
+    agent._managed_initial_declaration_keys_by_file = state
     return keys
 
 

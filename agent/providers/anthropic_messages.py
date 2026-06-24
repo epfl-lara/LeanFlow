@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import copy
 import hashlib
 import json
@@ -122,10 +123,8 @@ class AnthropicMessagePreparer:
             description = f"Image analysis failed: {e}"
         finally:
             if cleanup_path and cleanup_path.exists():
-                try:
+                with contextlib.suppress(OSError):
                     cleanup_path.unlink()
-                except OSError:
-                    pass
 
         if not description:
             description = "Image analysis failed."

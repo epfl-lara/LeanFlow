@@ -374,6 +374,8 @@ def _transform_sudo_command(command: str) -> tuple[str, str | None]:
 
 
 # Environment classes now live in tools/environments/
+import contextlib
+
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
@@ -734,10 +736,8 @@ def _stop_cleanup_thread():
     global _cleanup_running
     _cleanup_running = False
     if _cleanup_thread is not None:
-        try:
+        with contextlib.suppress(SystemExit, KeyboardInterrupt):
             _cleanup_thread.join(timeout=5)
-        except (SystemExit, KeyboardInterrupt):
-            pass
 
 
 def get_active_environments_info() -> dict[str, Any]:
@@ -750,7 +750,7 @@ def get_active_environments_info() -> dict[str, Any]:
     
     # Calculate total disk usage (per-task to avoid double-counting)
     total_size = 0
-    for task_id in _active_environments.keys():
+    for task_id in _active_environments:
         scratch_dir = _get_scratch_dir()
         pattern = f"gauss-*{task_id[:8]}*"
         import glob
