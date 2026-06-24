@@ -531,7 +531,7 @@ class TestSkillViewSecureSetupOnLoad:
         )
 
         with patch.dict(
-            os.environ, {"GAUSS_SESSION_PLATFORM": "telegram"}, clear=False
+            os.environ, {"EPFLEMMA_SESSION_PLATFORM": "telegram"}, clear=False
         ):
             with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
                 _make_skill(
@@ -871,7 +871,7 @@ class TestSkillViewPrerequisites:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
         with patch.dict(
-            os.environ, {"GAUSS_SESSION_PLATFORM": "telegram"}, clear=False
+            os.environ, {"EPFLEMMA_SESSION_PLATFORM": "telegram"}, clear=False
         ):
             with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
                 _make_skill(

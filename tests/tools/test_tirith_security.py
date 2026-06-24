@@ -975,34 +975,33 @@ class TestDiskFailureMarker:
 
 class TestGaussHomeIsolation:
     def test_gauss_bin_dir_respects_gauss_home(self):
-        """Legacy GAUSS_HOME should still work when EPFLEMMA_HOME is unset."""
+        """$EPFLEMMA_HOME controls the install/bin location."""
         import tempfile
 
         from tools.implementations.tirith_security import _gauss_bin_dir
         tmpdir = tempfile.mkdtemp()
-        with patch.dict(os.environ, {"GAUSS_HOME": tmpdir}, clear=True):
+        with patch.dict(os.environ, {"EPFLEMMA_HOME": tmpdir}, clear=True):
             result = _gauss_bin_dir()
         assert result == os.path.join(tmpdir, "bin")
         assert os.path.isdir(result)
 
     def test_failure_marker_respects_gauss_home(self):
-        """Legacy GAUSS_HOME should still work when EPFLEMMA_HOME is unset."""
+        """$EPFLEMMA_HOME controls the install/bin location."""
         from tools.implementations.tirith_security import _failure_marker_path
-        with patch.dict(os.environ, {"GAUSS_HOME": "/custom/gauss"}, clear=True):
+        with patch.dict(os.environ, {"EPFLEMMA_HOME": "/custom/epflemma"}, clear=True):
             result = _failure_marker_path()
-        assert result == "/custom/gauss/.tirith-install-failed"
+        assert result == "/custom/epflemma/.tirith-install-failed"
 
     def test_conftest_isolation_prevents_real_home_writes(self):
-        """The conftest autouse fixture sets GAUSS_HOME; verify it's active."""
-        gauss_home = os.getenv("GAUSS_HOME")
-        assert gauss_home is not None, "GAUSS_HOME should be set by conftest"
-        assert "gauss_test" in gauss_home, "Should point to test temp dir"
+        """The conftest autouse fixture sets EPFLEMMA_HOME; verify it's active."""
+        epflemma_home = os.getenv("EPFLEMMA_HOME")
+        assert epflemma_home is not None, "EPFLEMMA_HOME should be set by conftest"
+        assert "epflemma_test" in epflemma_home, "Should point to test temp dir"
 
     def test_get_gauss_home_fallback(self):
         """Without explicit homes set, falls back to ~/.epflemma."""
-        from tools.implementations.tirith_security import _get_gauss_home
+        from tools.implementations.tirith_security import _get_epflemma_home
         with patch.dict(os.environ, {}, clear=True):
-            # Remove GAUSS_HOME entirely
-            os.environ.pop("GAUSS_HOME", None)
-            result = _get_gauss_home()
+            os.environ.pop("EPFLEMMA_HOME", None)
+            result = _get_epflemma_home()
         assert result == os.path.join(os.path.expanduser("~"), ".epflemma")

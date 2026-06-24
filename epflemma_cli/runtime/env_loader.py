@@ -19,13 +19,11 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
 def load_epflemma_dotenv(
     *,
     epflemma_home: str | Path | None = None,
-    gauss_home: str | Path | None = None,
     project_env: str | Path | None = None,
 ) -> list[Path]:
     loaded: list[Path] = []
 
-    resolved_home = epflemma_home if epflemma_home is not None else gauss_home
-    home_path = Path(resolved_home) if resolved_home else get_epflemma_home()
+    home_path = Path(epflemma_home) if epflemma_home else get_epflemma_home()
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 

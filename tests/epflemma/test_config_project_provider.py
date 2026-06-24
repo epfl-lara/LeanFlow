@@ -10,7 +10,8 @@ from epflemma_cli.workflows.project import discover_epflemma_project, initialize
 def test_load_config_imports_legacy_gauss_payload(monkeypatch, tmp_path):
     legacy_home = tmp_path / "legacy-gauss"
     legacy_home.mkdir()
-    monkeypatch.setenv("GAUSS_HOME", str(legacy_home))
+    # The legacy import source is core.home.legacy_homes() now (the GAUSS_HOME env is dropped).
+    monkeypatch.setattr("core.home.legacy_homes", lambda: (legacy_home,))
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "open-home"))
 
     (legacy_home / "config.yaml").write_text(

@@ -219,9 +219,9 @@ class ProviderClientFactory:
 
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(
-                    60, int(os.getenv("GAUSS_NOUS_MIN_KEY_TTL_SECONDS", "1800"))
+                    60, int(os.getenv("EPFLEMMA_NOUS_MIN_KEY_TTL_SECONDS", "1800"))
                 ),
-                timeout_seconds=float(os.getenv("GAUSS_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=float(os.getenv("EPFLEMMA_NOUS_TIMEOUT_SECONDS", "15")),
                 force_mint=force,
             )
         except Exception as exc:

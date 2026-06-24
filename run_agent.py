@@ -46,18 +46,15 @@ from typing import Any, Callable, Dict, List, Optional
 import fire
 from openai import OpenAI
 
+from core.home import epflemma_home
+
 # Load .env from the active EPFLemma home first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from epflemma_cli.runtime.env_loader import load_epflemma_dotenv
 
-_gauss_home = Path(
-    os.getenv("EPFLEMMA_HOME")
-    or os.getenv("OPENGAUSS_HOME")
-    or os.getenv("GAUSS_HOME")
-    or (Path.home() / ".epflemma")
-)
+_epflemma_home = epflemma_home()
 _project_env = Path(__file__).parent / '.env'
-_loaded_env_paths = load_epflemma_dotenv(gauss_home=_gauss_home, project_env=_project_env)
+_loaded_env_paths = load_epflemma_dotenv(epflemma_home=_epflemma_home, project_env=_project_env)
 if _loaded_env_paths:
     for _env_path in _loaded_env_paths:
         logger.info("Loaded environment variables from %s", _env_path)
@@ -65,7 +62,7 @@ else:
     logger.info("No .env file found. Using system environment variables.")
 
 # Point mini-swe-agent at the active EPFLemma home so it shares our config
-os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_gauss_home))
+os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_epflemma_home))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 # Import our tool system
@@ -539,7 +536,7 @@ class AIAgent:
         # handler would cause each warning/error line to be written multiple times.
         from logging.handlers import RotatingFileHandler
         root_logger = logging.getLogger()
-        error_log_dir = _gauss_home / "logs"
+        error_log_dir = _epflemma_home / "logs"
         error_log_path = error_log_dir / "errors.log"
         resolved_error_log_path = error_log_path.resolve()
         has_errors_log_handler = any(
@@ -749,9 +746,8 @@ class AIAgent:
             # Generate a new session ID
             self.session_id = _generate_short_session_id()
         
-        # Session logs go into ~/.gauss/sessions/ alongside gateway sessions
-        gauss_home = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss"))
-        self.logs_dir = gauss_home / "sessions"
+        # Session logs go into ~/.epflemma/sessions/ alongside gateway sessions
+        self.logs_dir = epflemma_home() / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
         
@@ -1292,7 +1288,7 @@ class AIAgent:
 
             self._vprint(f"{self.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
-            if os.getenv("GAUSS_DUMP_REQUEST_STDOUT", "").strip().lower() in {"1", "true", "yes", "on"}:
+            if os.getenv("EPFLEMMA_DUMP_REQUEST_STDOUT", "").strip().lower() in {"1", "true", "yes", "on"}:
                 print(json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str))
 
             return dump_file
@@ -2096,7 +2092,7 @@ class AIAgent:
         return _resolve_api_caller(self).provider_request_timeout_seconds(api_kwargs)
 
     def _provider_wait_heartbeat_seconds(self) -> float:
-        raw_value = os.getenv("GAUSS_PROVIDER_WAIT_HEARTBEAT", "30.0")
+        raw_value = os.getenv("EPFLEMMA_PROVIDER_WAIT_HEARTBEAT", "30.0")
         try:
             heartbeat_seconds = float(raw_value)
         except (TypeError, ValueError):
@@ -3330,7 +3326,7 @@ class AIAgent:
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
 
-                    if os.getenv("GAUSS_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
+                    if os.getenv("EPFLEMMA_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
                     cb = getattr(self, "_stream_callback", None)

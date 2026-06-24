@@ -210,7 +210,7 @@ Generate some audio.
         )
 
         with patch.dict(
-            os.environ, {"GAUSS_SESSION_PLATFORM": "telegram"}, clear=False
+            os.environ, {"EPFLEMMA_SESSION_PLATFORM": "telegram"}, clear=False
         ):
             with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
                 _make_skill(

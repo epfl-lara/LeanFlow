@@ -176,9 +176,9 @@ class DaytonaEnvironment(BaseEnvironment):
             self._ensure_sandbox_ready()
 
         if stdin_data is not None:
-            marker = f"GAUSS_EOF_{uuid.uuid4().hex[:8]}"
+            marker = f"EPFLEMMA_EOF_{uuid.uuid4().hex[:8]}"
             while marker in stdin_data:
-                marker = f"GAUSS_EOF_{uuid.uuid4().hex[:8]}"
+                marker = f"EPFLEMMA_EOF_{uuid.uuid4().hex[:8]}"
             command = f"{command} << '{marker}'\n{stdin_data}\n{marker}"
 
         exec_command, sudo_stdin = self._prepare_command(command)

@@ -17,7 +17,7 @@ from tools.utilities.interrupt import is_interrupted
 
 # Unique marker to isolate real command output from shell init/exit noise.
 # printf (no trailing newline) keeps the boundaries clean for splitting.
-_OUTPUT_FENCE = "__GAUSS_FENCE_a9f7b3__"
+_OUTPUT_FENCE = "__EPFLEMMA_FENCE_a9f7b3__"
 
 # EPFLemma-internal env vars that should NOT leak into terminal subprocesses.
 # These are loaded from ~/.epflemma/.env for EPFLemma's own LLM/provider calls
@@ -26,7 +26,7 @@ _OUTPUT_FENCE = "__GAUSS_FENCE_a9f7b3__"
 #
 # Built dynamically from the provider registry so new providers are
 # automatically covered without manual blocklist maintenance.
-_GAUSS_PROVIDER_ENV_FORCE_PREFIX = "_GAUSS_FORCE_"
+_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX = "_EPFLEMMA_FORCE_"
 
 
 def _build_provider_env_blocklist() -> frozenset:
@@ -128,28 +128,28 @@ def _build_provider_env_blocklist() -> frozenset:
     return frozenset(blocked)
 
 
-_GAUSS_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+_EPFLEMMA_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Gauss-managed secrets from a subprocess environment.
 
-    `_GAUSS_FORCE_<VAR>` entries in ``extra_env`` opt a blocked variable back in
+    `_EPFLEMMA_FORCE_<VAR>` entries in ``extra_env`` opt a blocked variable back in
     intentionally for callers that truly need it.
     """
     sanitized: dict[str, str] = {}
 
     for key, value in (base_env or {}).items():
-        if key.startswith(_GAUSS_PROVIDER_ENV_FORCE_PREFIX):
+        if key.startswith(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX):
             continue
-        if key not in _GAUSS_PROVIDER_ENV_BLOCKLIST:
+        if key not in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST:
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
-        if key.startswith(_GAUSS_PROVIDER_ENV_FORCE_PREFIX):
-            real_key = key[len(_GAUSS_PROVIDER_ENV_FORCE_PREFIX):]
+        if key.startswith(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX):
+            real_key = key[len(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX):]
             sanitized[real_key] = value
-        elif key not in _GAUSS_PROVIDER_ENV_BLOCKLIST:
+        elif key not in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST:
             sanitized[key] = value
 
     return sanitized
@@ -173,7 +173,7 @@ def _find_bash() -> str:
 
     # Windows: look for Git Bash (installed with Git for Windows).
     # Allow override via env var (same pattern as Claude Code).
-    custom = os.environ.get("GAUSS_GIT_BASH_PATH")
+    custom = os.environ.get("EPFLEMMA_GIT_BASH_PATH")
     if custom and os.path.isfile(custom):
         return custom
 
@@ -192,9 +192,9 @@ def _find_bash() -> str:
             return candidate
 
     raise RuntimeError(
-        "Git Bash not found. Gauss Agent requires Git for Windows on Windows.\n"
+        "Git Bash not found. EPFLemma requires Git for Windows on Windows.\n"
         "Install it from: https://git-scm.com/download/win\n"
-        "Or set GAUSS_GIT_BASH_PATH to your bash.exe location."
+        "Or set EPFLEMMA_GIT_BASH_PATH to your bash.exe location."
     )
 
 
@@ -262,10 +262,10 @@ def _make_run_env(env: dict) -> dict:
     merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
-        if k.startswith(_GAUSS_PROVIDER_ENV_FORCE_PREFIX):
-            real_key = k[len(_GAUSS_PROVIDER_ENV_FORCE_PREFIX):]
+        if k.startswith(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX):
+            real_key = k[len(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX):]
             run_env[real_key] = v
-        elif k not in _GAUSS_PROVIDER_ENV_BLOCKLIST:
+        elif k not in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST:
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
     if "/usr/bin" not in existing_path.split(":"):

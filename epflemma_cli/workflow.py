@@ -422,41 +422,23 @@ def resolve_workflow_request(
     child_env.update(
         {
             "EPFLEMMA_PROJECT_ROOT": str(project.root),
-            "OPENGAUSS_PROJECT_ROOT": str(project.root),
             "EPFLEMMA_NATIVE_PROVIDER": str(runtime["provider"]),
-            "OPENGAUSS_NATIVE_PROVIDER": str(runtime["provider"]),
             "EPFLEMMA_NATIVE_API_MODE": str(runtime["api_mode"]),
-            "OPENGAUSS_NATIVE_API_MODE": str(runtime["api_mode"]),
             "EPFLEMMA_NATIVE_BASE_URL": str(runtime["base_url"]),
-            "OPENGAUSS_NATIVE_BASE_URL": str(runtime["base_url"]),
             "EPFLEMMA_NATIVE_API_KEY": str(runtime.get("api_key", "")),
-            "OPENGAUSS_NATIVE_API_KEY": str(runtime.get("api_key", "")),
             "EPFLEMMA_NATIVE_MODEL": str(runtime.get("model") or load_default_model()),
-            "OPENGAUSS_NATIVE_MODEL": str(runtime.get("model") or load_default_model()),
             "EPFLEMMA_NATIVE_REASONING_EFFORT": str(runtime.get("reasoning_effort", "") or ""),
-            "OPENGAUSS_NATIVE_REASONING_EFFORT": str(runtime.get("reasoning_effort", "") or ""),
             "EPFLEMMA_NATIVE_WORKFLOW_KIND": workflow.workflow_kind,
-            "OPENGAUSS_NATIVE_WORKFLOW_KIND": workflow.workflow_kind,
             "EPFLEMMA_NATIVE_WORKFLOW_COMMAND": workflow.backend_command,
-            "OPENGAUSS_NATIVE_WORKFLOW_COMMAND": workflow.backend_command,
             "EPFLEMMA_NATIVE_ACTIVE_SKILL": selected_skill,
-            "OPENGAUSS_NATIVE_ACTIVE_SKILL": selected_skill,
             "EPFLEMMA_NATIVE_ADDITIONAL_SKILLS": os.pathsep.join(additional_skills_tuple),
-            "OPENGAUSS_NATIVE_ADDITIONAL_SKILLS": os.pathsep.join(additional_skills_tuple),
             "EPFLEMMA_NATIVE_PARALLEL_AGENTS": str(workflow.parallel_agents),
-            "OPENGAUSS_NATIVE_PARALLEL_AGENTS": str(workflow.parallel_agents),
             "EPFLEMMA_NATIVE_USER_APPROVED_SWARM": "1" if workflow.parallel_agents > 1 else "0",
-            "OPENGAUSS_NATIVE_USER_APPROVED_SWARM": "1" if workflow.parallel_agents > 1 else "0",
             "EPFLEMMA_NATIVE_EXPLICIT_GOAL": workflow.explicit_goal,
-            "OPENGAUSS_NATIVE_EXPLICIT_GOAL": workflow.explicit_goal,
             "EPFLEMMA_NATIVE_USER_PROMPT": workflow.explicit_goal,
-            "OPENGAUSS_NATIVE_USER_PROMPT": workflow.explicit_goal,
             "EPFLEMMA_NATIVE_EFFECTIVE_PROMPT": workflow.explicit_goal,
-            "OPENGAUSS_NATIVE_EFFECTIVE_PROMPT": workflow.explicit_goal,
             "EPFLEMMA_NATIVE_TOOLSET": toolset_name,
-            "OPENGAUSS_NATIVE_TOOLSET": toolset_name,
             "EPFLEMMA_NATIVE_ACTIVE_FILE": normalized_active_file,
-            "OPENGAUSS_NATIVE_ACTIVE_FILE": normalized_active_file,
         }
     )
     if workflow.expert_provider:
@@ -529,7 +511,6 @@ def spawn_workflow(
     )
     child_env = dict(plan.child_env)
     child_env["EPFLEMMA_NATIVE_INTERACTIVE"] = "1" if interactive else "0"
-    child_env["OPENGAUSS_NATIVE_INTERACTIVE"] = "1" if interactive else "0"
     process = subprocess.Popen(
         plan.argv,
         cwd=str(plan.project.root),

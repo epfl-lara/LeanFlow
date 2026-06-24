@@ -260,7 +260,6 @@ def _workflow_run_key(cwd: str | os.PathLike[str] | None = None) -> str:
         return run_id
     workflow_command = str(
         os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "")
-        or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")
         or ""
     ).strip()
     if workflow_command:
@@ -325,7 +324,6 @@ def _canonical_tool_file_path(
         root = Path(project_root).expanduser().resolve() if project_root else None
     configured_active = str(
         os.getenv("EPFLEMMA_NATIVE_ACTIVE_FILE", "")
-        or os.getenv("OPENGAUSS_NATIVE_ACTIVE_FILE", "")
         or ""
     ).strip()
 
@@ -403,13 +401,7 @@ def _repo_root() -> Path:
 
 
 def _project_root(cwd: str | os.PathLike[str] | None = None) -> tuple[Path | None, str]:
-    explicit = str(
-        os.getenv(
-            "EPFLEMMA_PROJECT_ROOT",
-            os.getenv("OPENGAUSS_PROJECT_ROOT", os.getenv("GAUSS_PROJECT_ROOT", "")),
-        )
-        or ""
-    ).strip()
+    explicit = str(os.getenv("EPFLEMMA_PROJECT_ROOT", "") or "").strip()
     base = Path(cwd or explicit or os.getcwd()).expanduser().resolve()
     if cwd is None and explicit:
         lean_root = find_lean_project_root(base)
@@ -639,13 +631,7 @@ def _helper_tools() -> dict[str, bool]:
 
 
 def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabilityReport:
-    explicit = str(
-        os.getenv(
-            "EPFLEMMA_PROJECT_ROOT",
-            os.getenv("OPENGAUSS_PROJECT_ROOT", os.getenv("GAUSS_PROJECT_ROOT", "")),
-        )
-        or ""
-    ).strip()
+    explicit = str(os.getenv("EPFLEMMA_PROJECT_ROOT", "") or "").strip()
     base = Path(cwd or explicit or os.getcwd()).expanduser().resolve()
     project_root, project_error = _project_root(base)
     binaries = {name: bool(shutil.which(name)) for name in ("lean", "lake", "elan", "git", "rg")}
@@ -1109,7 +1095,7 @@ def lean_search(
             degraded.append("semantic providers skipped; falling back to rg")
     if not results:
         degraded.append("search returned no results")
-        workflow_command = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", ""))
+        workflow_command = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", ""))
         if workflow_command:
             empty_streak = recent_empty_search_streak(workflow_command=workflow_command)
             if empty_streak >= 2:
@@ -1920,7 +1906,6 @@ def route_workflow_step(
     attempt_count = len(attempts)
     workflow_command = str(
         os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "")
-        or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")
     ).strip()
     empty_search_streak = recent_empty_search_streak(workflow_command=workflow_command) if workflow_command else 0
     search_exhausted = bool(current.get("search_exhausted")) or attempt_count >= 2 or not report.search_providers or empty_search_streak >= 3

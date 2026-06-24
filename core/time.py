@@ -5,7 +5,7 @@ Provides a single ``now()`` helper that returns a timezone-aware datetime
 based on the user's configured IANA timezone (e.g. ``Asia/Kolkata``).
 
 Resolution order:
-  1. ``GAUSS_TIMEZONE`` environment variable
+  1. ``EPFLEMMA_TIMEZONE`` environment variable
   2. ``timezone`` key in ``~/.gauss/config.yaml``
   3. Falls back to the server's local time (``datetime.now().astimezone()``)
 
@@ -42,15 +42,16 @@ def _resolve_timezone_name() -> str:
     should cache the result rather than calling on every ``now()``.
     """
     # 1. Environment variable (highest priority — set by Supervisor, etc.)
-    tz_env = os.getenv("GAUSS_TIMEZONE", "").strip()
+    tz_env = os.getenv("EPFLEMMA_TIMEZONE", "").strip()
     if tz_env:
         return tz_env
 
     # 2. config.yaml ``timezone`` key
     try:
         import yaml
-        gauss_home = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss"))
-        config_path = gauss_home / "config.yaml"
+
+        from core.home import epflemma_home
+        config_path = epflemma_home() / "config.yaml"
         if config_path.exists():
             with open(config_path) as f:
                 cfg = yaml.safe_load(f) or {}

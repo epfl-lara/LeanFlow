@@ -32,10 +32,7 @@ def _read_text_env(name: str, default: str = "") -> str:
 
 
 def _read_native_env(name: str, default: str = "") -> str:
-    return _read_text_env(
-        f"EPFLEMMA_NATIVE_{name}",
-        _read_text_env(f"OPENGAUSS_NATIVE_{name}", _read_text_env(f"GAUSS_NATIVE_{name}", default)),
-    )
+    return _read_text_env(f"EPFLEMMA_NATIVE_{name}", default)
 
 
 def _read_int_env(name: str, default: int, *, minimum: int = 1) -> int:
@@ -50,19 +47,11 @@ def _read_int_env(name: str, default: int, *, minimum: int = 1) -> int:
 
 
 def _managed_home() -> Path:
-    return Path(
-        _read_text_env(
-            "EPFLEMMA_HOME",
-            _read_text_env("OPENGAUSS_HOME", _read_text_env("GAUSS_HOME", str(Path.home() / ".epflemma"))),
-        )
-    ).expanduser()
+    return Path(_read_text_env("EPFLEMMA_HOME", str(Path.home() / ".epflemma"))).expanduser()
 
 
 def _project_root() -> str:
-    return _read_text_env(
-        "EPFLEMMA_PROJECT_ROOT",
-        _read_text_env("OPENGAUSS_PROJECT_ROOT", _read_text_env("GAUSS_PROJECT_ROOT", os.getcwd())),
-    )
+    return _read_text_env("EPFLEMMA_PROJECT_ROOT", os.getcwd())
 
 
 def _workflow_kind() -> str:

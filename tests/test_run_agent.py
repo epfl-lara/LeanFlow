@@ -85,7 +85,7 @@ def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()
     original_handlers = list(root_logger.handlers)
-    error_log_path = (run_agent._gauss_home / "logs" / "errors.log").resolve()
+    error_log_path = (run_agent._epflemma_home / "logs" / "errors.log").resolve()
 
     try:
         for handler in list(root_logger.handlers):

@@ -208,14 +208,10 @@ def _resolve_openai_compatible_runtime(
 
     env_openai_base_url = _read_provider_env(
         "EPFLEMMA_OPENAI_BASE_URL",
-        "OPENGAUSS_OPENAI_BASE_URL",
-        "GAUSS_OPENAI_BASE_URL",
         "OPENAI_BASE_URL",
     )
     env_openrouter_base_url = _read_provider_env(
         "EPFLEMMA_OPENROUTER_BASE_URL",
-        "OPENGAUSS_OPENROUTER_BASE_URL",
-        "GAUSS_OPENROUTER_BASE_URL",
         "OPENROUTER_BASE_URL",
     )
 
@@ -240,23 +236,15 @@ def _resolve_openai_compatible_runtime(
     if is_openrouter_url:
         api_key = explicit_api_key or _read_provider_env(
             "EPFLEMMA_OPENROUTER_API_KEY",
-            "OPENGAUSS_OPENROUTER_API_KEY",
-            "GAUSS_OPENROUTER_API_KEY",
             "OPENROUTER_API_KEY",
             "EPFLEMMA_OPENAI_API_KEY",
-            "OPENGAUSS_OPENAI_API_KEY",
-            "GAUSS_OPENAI_API_KEY",
             "OPENAI_API_KEY",
         )
     else:
         api_key = explicit_api_key or _read_provider_env(
             "EPFLEMMA_OPENAI_API_KEY",
-            "OPENGAUSS_OPENAI_API_KEY",
-            "GAUSS_OPENAI_API_KEY",
             "OPENAI_API_KEY",
             "EPFLEMMA_OPENROUTER_API_KEY",
-            "OPENGAUSS_OPENROUTER_API_KEY",
-            "GAUSS_OPENROUTER_API_KEY",
             "OPENROUTER_API_KEY",
         )
 
@@ -404,8 +392,6 @@ def resolve_runtime_provider(
             "base_url": _validate_openai_compatible_base_url(explicit_base_url or custom_provider["base_url"]),
             "api_key": explicit_api_key or custom_provider["api_key"] or _read_provider_env(
                 "EPFLEMMA_OPENAI_API_KEY",
-                "OPENGAUSS_OPENAI_API_KEY",
-                "GAUSS_OPENAI_API_KEY",
                 "OPENAI_API_KEY",
             ),
             "source": f"custom_provider:{custom_provider['name']}",

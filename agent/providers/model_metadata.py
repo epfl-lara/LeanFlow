@@ -15,6 +15,7 @@ import requests
 import yaml
 
 from core.constants import OPENROUTER_MODELS_URL
+from core.home import epflemma_home
 
 logger = logging.getLogger(__name__)
 
@@ -265,8 +266,7 @@ def fetch_provider_model_metadata(
 
 def _get_context_cache_path() -> Path:
     """Return path to the persistent context length cache file."""
-    gauss_home = Path(os.environ.get("GAUSS_HOME", Path.home() / ".gauss"))
-    return gauss_home / "context_length_cache.yaml"
+    return epflemma_home() / "context_length_cache.yaml"
 
 
 def _load_context_cache() -> dict[str, int]:

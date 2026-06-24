@@ -258,10 +258,10 @@ def _workflow_run_id() -> str:
     if run_id:
         return run_id
     started = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    workflow_kind = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_KIND", ""))
+    workflow_kind = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", ""))
     task = _workflow_task_label(
         workflow_kind,
-        str(os.getenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "") or os.getenv("OPENGAUSS_NATIVE_ACTIVE_SKILL", "")) if workflow_kind else "",
+        str(os.getenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "")) if workflow_kind else "",
         0,
     )
     safe_task = "".join(ch for ch in task if ch.isalnum() or ch in {"-", "_"}).strip() or "agent"
@@ -289,23 +289,20 @@ def save_workflow_live_status(payload: Mapping[str, Any]) -> None:
 def append_workflow_activity(event_type: str, message: str, **details: Any) -> None:
     ensure_workflow_state_root()
     normalized_details = dict(details)
-    env_workflow_kind = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_KIND", ""))
+    env_workflow_kind = str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", ""))
     normalized_details.setdefault("workflow_kind", env_workflow_kind)
-    normalized_details.setdefault("workflow_command", str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")))
+    normalized_details.setdefault("workflow_command", str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "")))
     normalized_details.setdefault(
         "effective_prompt",
         str(
             os.getenv("EPFLEMMA_NATIVE_EFFECTIVE_PROMPT", "")
-            or os.getenv("OPENGAUSS_NATIVE_EFFECTIVE_PROMPT", "")
             or os.getenv("EPFLEMMA_NATIVE_USER_PROMPT", "")
-            or os.getenv("OPENGAUSS_NATIVE_USER_PROMPT", "")
             or os.getenv("EPFLEMMA_NATIVE_EXPLICIT_GOAL", "")
-            or os.getenv("OPENGAUSS_NATIVE_EXPLICIT_GOAL", "")
         ),
     )
     normalized_details.setdefault(
         "active_skill",
-        str(os.getenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "") or os.getenv("OPENGAUSS_NATIVE_ACTIVE_SKILL", "")) if env_workflow_kind else "",
+        str(os.getenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "")) if env_workflow_kind else "",
     )
     project_root = _project_root_from_env()
     normalized_details.setdefault("project_root", str(project_root) if project_root else "")
@@ -369,8 +366,8 @@ def append_workflow_outcome(kind: str, payload: Mapping[str, Any]) -> None:
     entry = {
         "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "kind": str(kind or "").strip() or "outcome",
-        "workflow_kind": str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_KIND", "")),
-        "workflow_command": str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "") or os.getenv("OPENGAUSS_NATIVE_WORKFLOW_COMMAND", "")),
+        "workflow_kind": str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "")),
+        "workflow_command": str(os.getenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "")),
         "payload": dict(payload or {}),
     }
     path = workflow_outcomes_path()

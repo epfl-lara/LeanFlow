@@ -11,7 +11,7 @@ controlled by the ``checkpoints`` config flag or ``--checkpoints`` CLI flag.
 Architecture:
     ~/.gauss/checkpoints/{sha256(abs_dir)[:16]}/   — shadow git repo
         HEAD, refs/, objects/                        — standard git internals
-        GAUSS_WORKDIR                               — original dir path
+        EPFLEMMA_WORKDIR                               — original dir path
         info/exclude                                 — default excludes
 
 The shadow repo uses GIT_DIR + GIT_WORK_TREE so no git state leaks
@@ -27,13 +27,15 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from core.home import epflemma_home
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-CHECKPOINT_BASE = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss")) / "checkpoints"
+CHECKPOINT_BASE = epflemma_home() / "checkpoints"
 
 DEFAULT_EXCLUDES = [
     "node_modules/",
@@ -59,7 +61,7 @@ DEFAULT_EXCLUDES = [
 ]
 
 # Git subprocess timeout (seconds).
-_GIT_TIMEOUT: int = max(10, min(60, int(os.getenv("GAUSS_CHECKPOINT_TIMEOUT", "30"))))
+_GIT_TIMEOUT: int = max(10, min(60, int(os.getenv("EPFLEMMA_CHECKPOINT_TIMEOUT", "30"))))
 
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
@@ -153,7 +155,7 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> str | None:
         "\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8"
     )
 
-    (shadow_repo / "GAUSS_WORKDIR").write_text(
+    (shadow_repo / "EPFLEMMA_WORKDIR").write_text(
         str(Path(working_dir).resolve()) + "\n", encoding="utf-8"
     )
 

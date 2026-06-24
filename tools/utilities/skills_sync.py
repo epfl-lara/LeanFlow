@@ -28,11 +28,12 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from core.home import epflemma_home
+
 logger = logging.getLogger(__name__)
 
 
-GAUSS_HOME = Path(os.getenv("GAUSS_HOME", Path.home() / ".gauss"))
-SKILLS_DIR = GAUSS_HOME / "skills"
+SKILLS_DIR = epflemma_home() / "skills"
 MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
 
 

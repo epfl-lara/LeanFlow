@@ -11,27 +11,19 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from core.home import epflemma_home
+
 PROJECT_STATE_DIRNAME = ".epflemma"
 LEGACY_PROJECT_DIRNAMES = (".opengauss", ".gauss")
 
 
 def _epflemma_home() -> Path:
-    explicit = str(os.getenv("EPFLEMMA_HOME", "") or "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    branded_legacy = str(os.getenv("OPENGAUSS_HOME", "") or "").strip()
-    if branded_legacy:
-        return Path(branded_legacy).expanduser()
-    legacy = str(os.getenv("GAUSS_HOME", "") or "").strip()
-    if legacy and Path(legacy).expanduser().name in {".epflemma", ".opengauss"}:
-        return Path(legacy).expanduser()
-    return Path.home() / ".epflemma"
+    # Single source of truth — legacy ~/.opengauss / ~/.gauss resolution lives in core.home only.
+    return epflemma_home()
 
 
 def _project_root_from_env() -> Path | None:
     explicit = str(os.getenv("EPFLEMMA_PROJECT_ROOT", "") or "").strip()
-    if not explicit:
-        explicit = str(os.getenv("OPENGAUSS_PROJECT_ROOT", "") or "").strip()
     if explicit:
         candidate = Path(explicit).expanduser()
         if candidate.exists():

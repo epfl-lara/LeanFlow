@@ -26,6 +26,7 @@ from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from core.home import epflemma_home
 from tools.mcp.mcp_transport import _sanitize_error
 
 logger = logging.getLogger(__name__)
@@ -57,10 +58,8 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def _epflemma_home() -> Path:
-    explicit = str(os.getenv("EPFLEMMA_HOME", "") or os.getenv("OPENGAUSS_HOME", "") or os.getenv("GAUSS_HOME", "")).strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    return Path.home() / ".epflemma"
+    # Single source of truth — legacy ~/.opengauss / ~/.gauss resolution lives in core.home only.
+    return epflemma_home()
 
 
 def _default_sampling_audit_path() -> Path:
