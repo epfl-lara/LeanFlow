@@ -40,9 +40,12 @@ class _LocalShellEnv:
         self.cwd = str(cwd)
 
     def execute(self, command, cwd=None, timeout=None, stdin_data=None):
+        # shell=True is intentional: ShellFileOperations builds commands that use shell
+        # features (redirects/pipes/&&) and pre-escapes all interpolated paths via
+        # _escape_shell_arg, so this is the generic executor, not a raw user string.
         completed = subprocess.run(
             command,
-            shell=True,
+            shell=True,  # noqa: S602
             cwd=cwd or self.cwd,
             input=stdin_data,
             text=True,

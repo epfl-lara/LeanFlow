@@ -123,10 +123,11 @@ from epflemma_cli.workflow_state import (
     workflow_agent_transcript,
     workflow_agent_transcript_all,
 )
-from tools.mcp_tool import get_mcp_status
 
 # Derived from the single COMMAND_REGISTRY in epflemma_cli.commands: the set of all
 # frontend workflow slash commands (canonical commands plus their long-form aliases).
+from tools.mcp_tool import get_mcp_status
+
 WORKFLOW_COMMANDS = build_workflow_command_set()
 
 
@@ -331,6 +332,9 @@ from epflemma_cli.shell import InteractiveShell  # noqa: F401
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Invariant: env (EPFLEMMA_HOME/etc) is seeded here BEFORE any handler runs. tools.mcp_tool
+    # is imported at module load but only reads env at call time, so the order is safe — keep
+    # it that way (do not add module-load-time env reads to the MCP import chain). (B2)
     _seed_environment()
     ensure_epflemma_home()
     _load_runtime_env()

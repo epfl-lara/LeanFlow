@@ -131,10 +131,11 @@ from epflemma_cli.workflow_state import (
     workflow_agent_transcript,
     workflow_agent_transcript_all,
 )
-from tools.mcp_tool import get_mcp_status
 
 # Derived from the single COMMAND_REGISTRY in epflemma_cli.commands: the set of all
 # frontend workflow slash commands (canonical commands plus their long-form aliases).
+from tools.mcp_tool import get_mcp_status
+
 WORKFLOW_COMMANDS = build_workflow_command_set()
 
 
