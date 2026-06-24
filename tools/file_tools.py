@@ -11,6 +11,7 @@ from typing import Optional
 from agent.redact import redact_sensitive_text
 from epflemma_cli.file_locks import ensure_file_lock
 from tools.file_operations import ShellFileOperations
+from tools.response import dumps, error
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +202,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         if count >= 4:
             # Hard block: stop returning content to break the loop
-            return json.dumps({
+            return dumps({
                 "error": (
                     f"BLOCKED: You have read this exact file region {count} times in a row. "
                     "The content has NOT changed. You already have this information. "
@@ -209,7 +210,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
                 "path": path,
                 "already_read": count,
-            }, ensure_ascii=False)
+            })
         elif count >= 3:
             result_dict["_warning"] = (
                 f"You have read this exact file region {count} times consecutively. "
@@ -217,9 +218,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "If you are stuck in a loop, stop reading and proceed with writing or responding."
             )
 
-        return json.dumps(result_dict, ensure_ascii=False)
+        return dumps(result_dict)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error(str(e))
 
 
 def get_read_files_summary(task_id: str = "default") -> list:
@@ -289,16 +290,16 @@ def write_file_tool(path: str, content: str, task_id: str = "default", owner_id:
         if owner_id:
             conflict = _guard_file_lock(path, owner_id, "write_file")
             if conflict:
-                return json.dumps(conflict, ensure_ascii=False)
+                return dumps(conflict)
         file_ops = _get_file_ops(task_id)
         result = file_ops.write_file(path, content)
-        return json.dumps(result.to_dict(), ensure_ascii=False)
+        return dumps(result.to_dict())
     except Exception as e:
         if _is_expected_write_exception(e):
             logger.debug("write_file expected denial: %s: %s", type(e).__name__, e)
         else:
             logger.error("write_file error: %s: %s", type(e).__name__, e, exc_info=True)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error(str(e))
 
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
@@ -316,7 +317,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             if owner_id:
                 conflict = _guard_file_lock(path, owner_id, "patch")
                 if conflict:
-                    return json.dumps(conflict, ensure_ascii=False)
+                    return dumps(conflict)
             result = file_ops.patch_replace(path, old_string, new_string, replace_all)
         elif mode == "patch":
             if not patch:
@@ -326,14 +327,14 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             return json.dumps({"error": f"Unknown mode: {mode}"})
         
         result_dict = result.to_dict()
-        result_json = json.dumps(result_dict, ensure_ascii=False)
+        result_json = dumps(result_dict)
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
             result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
         return result_json
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error(str(e))
 
 
 def search_tool(pattern: str, target: str = "content", path: str = ".",
@@ -356,7 +357,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             count = task_data["consecutive"]
 
         if count >= 4:
-            return json.dumps({
+            return dumps({
                 "error": (
                     f"BLOCKED: You have run this exact search {count} times in a row. "
                     "The results have NOT changed. You already have this information. "
@@ -364,7 +365,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 ),
                 "pattern": pattern,
                 "already_searched": count,
-            }, ensure_ascii=False)
+            })
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
@@ -383,7 +384,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "The results have not changed. Use the information you already have."
             )
 
-        result_json = json.dumps(result_dict, ensure_ascii=False)
+        result_json = dumps(result_dict)
         # Hint when results were truncated — explicit next offset is clearer
         # than relying on the model to infer it from total_count vs match count.
         if result_dict.get("truncated"):
@@ -391,7 +392,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             result_json += f"\n\n[Hint: Results truncated. Use offset={next_offset} to see more, or narrow with a more specific pattern or file_glob.]"
         return result_json
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return error(str(e))
 
 
 FILE_TOOLS = [

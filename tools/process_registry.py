@@ -826,31 +826,31 @@ PROCESS_SCHEMA = {
 
 
 def _handle_process(args, **kw):
-    import json as _json
+    from tools.response import dumps, error
     task_id = kw.get("task_id")
     action = args.get("action", "")
     # Coerce to string — some models send session_id as an integer
     session_id = str(args.get("session_id", "")) if args.get("session_id") is not None else ""
 
     if action == "list":
-        return _json.dumps({"processes": process_registry.list_sessions(task_id=task_id)}, ensure_ascii=False)
+        return dumps({"processes": process_registry.list_sessions(task_id=task_id)})
     elif action in ("poll", "log", "wait", "kill", "write", "submit"):
         if not session_id:
-            return _json.dumps({"error": f"session_id is required for {action}"}, ensure_ascii=False)
+            return error(f"session_id is required for {action}")
         if action == "poll":
-            return _json.dumps(process_registry.poll(session_id), ensure_ascii=False)
+            return dumps(process_registry.poll(session_id))
         elif action == "log":
-            return _json.dumps(process_registry.read_log(
-                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200)), ensure_ascii=False)
+            return dumps(process_registry.read_log(
+                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200)))
         elif action == "wait":
-            return _json.dumps(process_registry.wait(session_id, timeout=args.get("timeout")), ensure_ascii=False)
+            return dumps(process_registry.wait(session_id, timeout=args.get("timeout")))
         elif action == "kill":
-            return _json.dumps(process_registry.kill_process(session_id), ensure_ascii=False)
+            return dumps(process_registry.kill_process(session_id))
         elif action == "write":
-            return _json.dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
+            return dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))))
         elif action == "submit":
-            return _json.dumps(process_registry.submit_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
-    return _json.dumps({"error": f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit"}, ensure_ascii=False)
+            return dumps(process_registry.submit_stdin(session_id, str(args.get("data", ""))))
+    return error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit")
 
 
 registry.register(

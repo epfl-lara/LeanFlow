@@ -56,6 +56,7 @@ import requests
 
 from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
+from tools.response import dumps, error
 
 try:
     from firecrawl import Firecrawl
@@ -912,25 +913,27 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         debug_call_data["results_count"] = results_count
         
         # Convert to JSON
-        result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-        
+        result_json = dumps(response_data, indent=2)
+
         debug_call_data["final_response_size"] = len(result_json)
-        
+
         # Log debug information
         _debug.log_call("web_search_tool", debug_call_data)
         _debug.save()
-        
+
         return result_json
-        
+
     except Exception as e:
         error_msg = f"Error searching web: {str(e)}"
         logger.debug("%s", error_msg)
-        
+
         debug_call_data["error"] = error_msg
         _debug.log_call("web_search_tool", debug_call_data)
         _debug.save()
-        
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+
+        # NOTE: `error` is rebound as a local in this function's provider loop,
+        # so the imported error() helper is shadowed here; use dumps() directly.
+        return dumps({"error": error_msg})
 
 
 async def web_extract_tool(
@@ -1168,12 +1171,12 @@ async def web_extract_tool(
         trimmed_response = {"results": trimmed_results}
 
         if trimmed_response.get("results") == []:
-            result_json = json.dumps({"error": "Content was inaccessible or not found"}, ensure_ascii=False)
+            result_json = error("Content was inaccessible or not found")
 
             cleaned_result = clean_base64_images(result_json)
-        
+
         else:
-            result_json = json.dumps(trimmed_response, indent=2, ensure_ascii=False)
+            result_json = dumps(trimmed_response, indent=2)
             
             cleaned_result = clean_base64_images(result_json)
         
@@ -1193,8 +1196,8 @@ async def web_extract_tool(
         debug_call_data["error"] = error_msg
         _debug.log_call("web_extract_tool", debug_call_data)
         _debug.save()
-        
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+
+        return error(error_msg)
 
 
 async def web_crawl_tool(
@@ -1462,7 +1465,7 @@ async def web_crawl_tool(
         ]
         trimmed_response = {"results": trimmed_results}
         
-        result_json = json.dumps(trimmed_response, indent=2, ensure_ascii=False)
+        result_json = dumps(trimmed_response, indent=2)
         # Clean base64 images from crawled content
         cleaned_result = clean_base64_images(result_json)
         
@@ -1482,8 +1485,8 @@ async def web_crawl_tool(
         debug_call_data["error"] = error_msg
         _debug.log_call("web_crawl_tool", debug_call_data)
         _debug.save()
-        
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+
+        return error(error_msg)
 
 
 # Convenience function to check if API key is available
