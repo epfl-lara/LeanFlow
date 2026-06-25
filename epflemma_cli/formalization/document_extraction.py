@@ -167,8 +167,7 @@ def _latex_theorem_environment_kinds(raw: str) -> dict[str, str]:
             envs[env] = _normalize_theorem_kind(env, title)
 
     spnewtheorem_pattern = re.compile(
-        r"\\spnewtheorem\*?\s*\{(?P<env>[^{}\s]+)\}\s*(?:\[[^\]]+\])?\s*"
-        r"\{(?P<title>[^{}]+)\}",
+        r"\\spnewtheorem\*?\s*\{(?P<env>[^{}\s]+)\}\s*(?:\[[^\]]+\])?\s*" r"\{(?P<title>[^{}]+)\}",
         flags=re.IGNORECASE | re.DOTALL,
     )
     for match in spnewtheorem_pattern.finditer(raw or ""):

@@ -339,9 +339,9 @@ def test_resolve_workflow_request_forces_single_agent_for_file_scoped_prove(monk
 )
 def test_parse_workflow_command_maps_all_aliases_to_correct_kind(command, expected_kind):
     spec = parse_workflow_command(command)
-    assert spec.workflow_kind == expected_kind, (
-        f"{command!r} → {spec.workflow_kind!r}, expected {expected_kind!r}"
-    )
+    assert (
+        spec.workflow_kind == expected_kind
+    ), f"{command!r} → {spec.workflow_kind!r}, expected {expected_kind!r}"
 
 
 @pytest.mark.parametrize(

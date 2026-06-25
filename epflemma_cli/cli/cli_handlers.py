@@ -107,9 +107,9 @@ def _project_payload(project: Any) -> dict[str, str]:
         "workflows_dir": str(project.workflows_dir),
         "template_source": str(project.template_source or "[none]"),
         "source_mode": str(project.source_mode),
-        "blueprint_markers": ", ".join(project.blueprint_markers)
-        if project.blueprint_markers
-        else "[none]",
+        "blueprint_markers": (
+            ", ".join(project.blueprint_markers) if project.blueprint_markers else "[none]"
+        ),
     }
 
 

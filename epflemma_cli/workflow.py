@@ -350,9 +350,9 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         workflow_kind=workflow_kind,
         frontend_command=command_name,
         canonical_command=canonical_command,
-        backend_command=backend_command
-        if not workflow_args
-        else f"{backend_command} {workflow_args}",
+        backend_command=(
+            backend_command if not workflow_args else f"{backend_command} {workflow_args}"
+        ),
         workflow_args=workflow_args.strip(),
         parallel_agents=parallel_agents,
         explicit_goal=explicit_goal,
@@ -412,12 +412,14 @@ def resolve_workflow_request(
             workflow,
             workflow_args=normalized_workflow_args,
             backend_command=(
-                workflow.backend_command.rsplit(" ", 1)[0]
-                if workflow.workflow_args
-                else workflow.backend_command
-            )
-            if not normalized_workflow_args
-            else f"{WORKFLOW_ALIAS_MAP[workflow.frontend_command][2]} {normalized_workflow_args}",
+                (
+                    workflow.backend_command.rsplit(" ", 1)[0]
+                    if workflow.workflow_args
+                    else workflow.backend_command
+                )
+                if not normalized_workflow_args
+                else f"{WORKFLOW_ALIAS_MAP[workflow.frontend_command][2]} {normalized_workflow_args}"
+            ),
         )
     normalized_active_file = _normalize_requested_active_file(
         project.root, cwd, workflow.workflow_args

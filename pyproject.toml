@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0", "ruff>=0.6", "mypy>=1.11"]
+dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0", "black>=24", "ruff>=0.6", "mypy>=1.11"]
 mcp = ["mcp>=1.2.0"]
 pty = [
   "ptyprocess>=0.7.0; sys_platform != 'win32'",
@@ -81,12 +81,12 @@ extend-exclude = [
     ".epflemma-venv",
 ]
 
-# Black-compatible auto-formatter (bundled with ruff — no separate `black` dependency needed).
-# Run `ruff format .` before committing; CI runs `ruff format --check .`.
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-skip-magic-trailing-comma = false
+# Black is the code formatter (https://github.com/psf/black). Run `black .` before committing;
+# CI runs `black --check .`. Ruff is used for linting + import-sorting only, not formatting.
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+extend-exclude = '''/(testdata|optional-skills|\.venv|\.epflemma-venv|.*/\.lake)/'''
 
 [tool.ruff.lint]
 # select = the enforced rule families: pyflakes (F — undefined names, redefinitions, f-string

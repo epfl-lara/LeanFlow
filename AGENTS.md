@@ -29,15 +29,19 @@ Every change must pass all four. CI (`.github/workflows/tests.yml`) enforces the
 
 ```bash
 source .venv/bin/activate
-ruff format .          # black-compatible auto-format (CI runs `ruff format --check .`)
-ruff check .           # lint: pyflakes (F), import-sort (I), pyupgrade (UP)
+black .                # format with black (https://github.com/psf/black); CI runs `black --check .`
+ruff check .           # lint: pyflakes (F incl. F401 unused-import), import-sort (I), pyupgrade (UP)
 mypy                   # type-check the gated module set (pyproject [tool.mypy] files=[...])
 python -m pytest -q    # full suite
 ```
 
-- Config lives in `pyproject.toml` (`[tool.ruff]`, `[tool.ruff.format]`, `[tool.ruff.lint]`, `[tool.mypy]`).
-- `ruff format` is the formatter the project standardized on — it is black-compatible, so there is **no
-  separate `black` dependency**. Do not hand-format; let the tool do it.
+- Config lives in `pyproject.toml` (`[tool.black]` for formatting, `[tool.ruff.lint]` for linting,
+  `[tool.mypy]` for types).
+- **Black is the formatter** ([psf/black](https://github.com/psf/black)). Do not hand-format; let
+  black do it. Ruff is used only for linting and import-sorting, not formatting.
+- **Unused imports are not allowed.** `F401` is enforced; a genuinely dead import must be removed. The
+  few deliberate re-exports / dynamic-access points (see the anti-pattern below) carry an explicit
+  `# noqa: F401`. Never add an unused import without that comment.
 - As you clean/extract a module, **add it to the mypy `files` list** so its types stay checked.
 - The suite is green except **one known xdist flake**
   (`tests/tools/test_mcp_tool.py::...::test_existing_tool_names_reflect_registered_subset`): it passes in
@@ -67,12 +71,12 @@ Keep the full suite green.
 
 ### Anti-patterns we already paid for — do NOT repeat
 
-- **Never blanket-remove "unused" imports.** Many module-level imports are deliberate re-exports /
-  monkeypatch targets reached dynamically — `run_agent.OpenAI`, `…terminal_tool._interrupt_event` — or via
-  `run_agent`'s ~46 lazy-import surface (`run_agent._get_tool_emoji` is referenced through module-attribute
-  access ruff cannot see). `ruff` flags them as F401 but removing them breaks runtime and tests *silently*.
-  F401 is intentionally ignored. Remove a dead import only with per-file evidence (no static, dynamic, test,
-  or registry reference); never run a blanket `ruff --select F --fix`.
+- **`F401` is enforced, but a few imports are deliberate re-exports / dynamic-access points** reached
+  via module-attribute access ruff cannot see — `run_agent.OpenAI`, `…terminal_tool._interrupt_event`, and
+  `run_agent`'s lazy-import surface (e.g. `run_agent._get_tool_emoji`). Those carry an explicit
+  `# noqa: F401`. When you add a `# noqa: F401`, it must be a *genuine* re-export/patch target — confirm a
+  real `module.NAME` / `from module import NAME` reference exists elsewhere. Do not use it to paper over a
+  truly dead import; remove that instead.
 - **`native_runner.py` is coupled to its tests by design.** `tests/epflemma/test_native_runner.py`
   monkeypatches internals via `setattr(runner, NAME, …)`. A function moved into a sibling module that calls
   those helpers by bare name binds to *its own* import and silently bypasses the patch. Do not extract from

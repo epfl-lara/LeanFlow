@@ -249,9 +249,10 @@ def _try_openrouter() -> tuple[OpenAI | None, str | None]:
     if not or_key:
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
-    return OpenAI(
-        api_key=or_key, base_url=OPENROUTER_BASE_URL, default_headers=_OR_HEADERS
-    ), _OPENROUTER_MODEL
+    return (
+        OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL, default_headers=_OR_HEADERS),
+        _OPENROUTER_MODEL,
+    )
 
 
 def _try_nous() -> tuple[OpenAI | None, str | None]:

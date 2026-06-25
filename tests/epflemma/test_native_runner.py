@@ -853,9 +853,9 @@ def test_handle_managed_tool_result_advances_when_target_check_clean_despite_ins
     agent = _Agent()
     runner._handle_managed_tool_result(agent, "patch", {}, "")
 
-    assert not getattr(agent, "_post_tool_result_appendix", ""), (
-        "C2: file-wide warnings must not synthesize a cleanup-feedback appendix"
-    )
+    assert not getattr(
+        agent, "_post_tool_result_appendix", ""
+    ), "C2: file-wide warnings must not synthesize a cleanup-feedback appendix"
     assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
     output = capsys.readouterr().out
     assert "Workflow step verified for addLipschitz" in output
@@ -6559,9 +6559,9 @@ def test_promote_live_state_grants_one_final_sweep_warning_cleanup(monkeypatch, 
         autonomy_state,
     )
 
-    assert promoted["verification_ok"] is False, (
-        "warnings present must hold the workflow open for cleanup"
-    )
+    assert (
+        promoted["verification_ok"] is False
+    ), "warnings present must hold the workflow open for cleanup"
     assert promoted["final_sweep_warning_cleanup_pending"] is True
     assert promoted["final_sweep_warning_count"] == 1
     assert "this tactic is never executed" in promoted["final_sweep_warning_summary"]
@@ -6805,13 +6805,13 @@ def test_promote_live_state_restores_baseline_when_cleanup_attempt_regresses(
         autonomy_state,
     )
 
-    assert promoted["verification_ok"] is True, (
-        "post-restore lake build should succeed against baseline"
-    )
+    assert (
+        promoted["verification_ok"] is True
+    ), "post-restore lake build should succeed against baseline"
     assert active.read_text(encoding="utf-8") == baseline_content
-    assert "final_sweep_baseline" not in autonomy_state, (
-        "baseline payload should be released after one shot"
-    )
+    assert (
+        "final_sweep_baseline" not in autonomy_state
+    ), "baseline payload should be released after one shot"
     assert "final_sweep_cleanup_turn_started" not in autonomy_state
     assert promoted["warning_cleanup_status"] == "blocked"
     assert promoted["warning_cleanup_blocked"] is True
@@ -7490,9 +7490,9 @@ def test_drive_autonomous_followups_does_not_pause_at_followup_limit(monkeypatch
             "active_file": "/tmp/project/Main.lean",
             "active_file_label": "Main.lean",
             "target_symbol": "demo",
-            "diagnostics": "no errors found"
-            if verified
-            else f"warning: declaration uses sorry {idx}",
+            "diagnostics": (
+                "no errors found" if verified else f"warning: declaration uses sorry {idx}"
+            ),
             "goals": "no goals",
             "build_status": "lake env lean Main.lean exits 0" if verified else "unknown",
             "verification_ok": verified,

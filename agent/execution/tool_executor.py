@@ -669,9 +669,9 @@ class ToolExecutor:
                         function_name,
                         function_args,
                         effective_task_id,
-                        enabled_tools=list(agent.valid_tool_names)
-                        if agent.valid_tool_names
-                        else None,
+                        enabled_tools=(
+                            list(agent.valid_tool_names) if agent.valid_tool_names else None
+                        ),
                         owner_id=agent.session_id,
                         parent_agent=agent,
                     )
@@ -696,9 +696,9 @@ class ToolExecutor:
                         function_name,
                         function_args,
                         effective_task_id,
-                        enabled_tools=list(agent.valid_tool_names)
-                        if agent.valid_tool_names
-                        else None,
+                        enabled_tools=(
+                            list(agent.valid_tool_names) if agent.valid_tool_names else None
+                        ),
                         owner_id=agent.session_id,
                         parent_agent=agent,
                     )

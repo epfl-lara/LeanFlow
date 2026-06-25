@@ -42,9 +42,9 @@ class TestNoUnconditionalSetsid:
         values = _get_preexec_fn_values(filepath)
         for val in values:
             # A bare os.setsid would be: Attribute(value=Name(id='os'), attr='setsid')
-            assert "attr='setsid'" not in val or "IfExp" in val or "None" in val, (
-                f"{relpath} has unconditional preexec_fn=os.setsid"
-            )
+            assert (
+                "attr='setsid'" not in val or "IfExp" in val or "None" in val
+            ), f"{relpath} has unconditional preexec_fn=os.setsid"
 
 
 class TestIsWindowsConstant:
@@ -74,6 +74,6 @@ class TestKillpgGuarded:
             if "os.killpg" in stripped or "os.getpgid" in stripped:
                 # Check that there's an _IS_WINDOWS guard in the surrounding context
                 context = "\n".join(lines[max(0, i - 15) : i + 1])
-                assert "_IS_WINDOWS" in context or "else:" in context, (
-                    f"{relpath}:{i + 1} has unguarded os.killpg/os.getpgid call"
-                )
+                assert (
+                    "_IS_WINDOWS" in context or "else:" in context
+                ), f"{relpath}:{i + 1} has unguarded os.killpg/os.getpgid call"

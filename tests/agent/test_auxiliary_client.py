@@ -669,14 +669,12 @@ class TestTaskSpecificOverrides:
     def test_task_direct_endpoint_from_config(self, monkeypatch, tmp_path):
         epflemma_home = tmp_path / "epflemma"
         epflemma_home.mkdir(parents=True, exist_ok=True)
-        (epflemma_home / "config.yaml").write_text(
-            """auxiliary:
+        (epflemma_home / "config.yaml").write_text("""auxiliary:
   web_extract:
     base_url: http://localhost:3456/v1
     api_key: config-key
     model: config-model
-"""
-        )
+""")
         monkeypatch.setenv("EPFLEMMA_HOME", str(epflemma_home))
         with patch("agent.providers.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client("web_extract")

@@ -646,9 +646,9 @@ class TestInit:
                 skip_context_files=True,
                 skip_memory=True,
             )
-            assert re.match(r"^\d{5}$", a.session_id), (
-                f"session_id doesn't match expected format: {a.session_id}"
-            )
+            assert re.match(
+                r"^\d{5}$", a.session_id
+            ), f"session_id doesn't match expected format: {a.session_id}"
 
 
 class TestInterrupt:
@@ -1854,9 +1854,9 @@ class TestConversationHistoryNotMutated:
             result = agent.run_conversation("new question", conversation_history=history)
 
         # Caller's list must be untouched
-        assert len(history) == original_len, (
-            f"conversation_history was mutated: expected {original_len} items, got {len(history)}"
-        )
+        assert (
+            len(history) == original_len
+        ), f"conversation_history was mutated: expected {original_len} items, got {len(history)}"
         # Result should have more messages than the original history
         assert len(result["messages"]) > original_len
 
@@ -2887,18 +2887,18 @@ class TestAnthropicInterruptHandler:
         import inspect
 
         source = inspect.getsource(AIAgent._interruptible_api_call)
-        assert "anthropic_messages" in source, (
-            "_interruptible_api_call must handle Anthropic interrupt (api_mode check)"
-        )
+        assert (
+            "anthropic_messages" in source
+        ), "_interruptible_api_call must handle Anthropic interrupt (api_mode check)"
 
     def test_interruptible_rebuilds_anthropic_client(self):
         """After interrupting, the Anthropic client should be rebuilt."""
         import inspect
 
         source = inspect.getsource(AIAgent._interruptible_api_call)
-        assert "build_anthropic_client" in source, (
-            "_interruptible_api_call must rebuild Anthropic client after interrupt"
-        )
+        assert (
+            "build_anthropic_client" in source
+        ), "_interruptible_api_call must rebuild Anthropic client after interrupt"
 
     def test_streaming_has_anthropic_branch(self):
         """_streaming_api_call must also handle Anthropic interrupt."""

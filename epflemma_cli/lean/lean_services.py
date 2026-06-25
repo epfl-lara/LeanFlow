@@ -761,9 +761,11 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         mcp_tools=mcp_tools,
         search_providers=search_providers,
         helper_tools=_helper_tools(),
-        workers=[record.spec_id for record in list_specs("worker")]
-        if LEAN_WORKER_DISPATCH_ENABLED
-        else [],
+        workers=(
+            [record.spec_id for record in list_specs("worker")]
+            if LEAN_WORKER_DISPATCH_ENABLED
+            else []
+        ),
         degraded_reasons=degraded,
         mcp_server_roles=mcp_server_roles,
         managed_mcp_servers=managed_mcp_servers,

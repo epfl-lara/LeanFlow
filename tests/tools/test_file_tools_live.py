@@ -47,9 +47,9 @@ def _assert_clean(text: str, context: str = "output"):
     if not text:
         return
     for noise in _ALL_NOISE_PATTERNS:
-        assert noise not in text, (
-            f"Shell noise leaked into {context}: found {noise!r} in:\n{text[:500]}"
-        )
+        assert (
+            noise not in text
+        ), f"Shell noise leaked into {context}: found {noise!r} in:\n{text[:500]}"
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────
@@ -297,9 +297,9 @@ class TestHasCommand:
         assert ops._has_command("nonexistent_tool_xyz_abc_999") is False
 
     def test_rg_or_grep_available(self, ops):
-        assert ops._has_command("rg") or ops._has_command("grep"), (
-            "Neither rg nor grep found -- search_files will break"
-        )
+        assert ops._has_command("rg") or ops._has_command(
+            "grep"
+        ), "Neither rg nor grep found -- search_files will break"
 
 
 # ── read_file ────────────────────────────────────────────────────────────

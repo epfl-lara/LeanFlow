@@ -416,9 +416,11 @@ def main(argv: list[str] | None = None) -> int:
             render_workflow_status_panel(
                 Console(),
                 status=payload or {"phase": "idle", "workflow_kind": "[none]"},
-                activities=read_workflow_activity(limit=20)
-                if args.workflow != "status"
-                else read_workflow_activity(limit=8),
+                activities=(
+                    read_workflow_activity(limit=20)
+                    if args.workflow != "status"
+                    else read_workflow_activity(limit=8)
+                ),
             )
             return 0 if payload else 1
         text = f"/{args.workflow}" if not str(args.workflow).startswith("/") else str(args.workflow)

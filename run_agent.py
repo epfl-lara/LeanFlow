@@ -1393,9 +1393,7 @@ class AIAgent:
                 + (
                     f": '{message[:40]}...'"
                     if message and len(message) > 40
-                    else f": '{message}'"
-                    if message
-                    else ""
+                    else f": '{message}'" if message else ""
                 )
             )
 
@@ -3483,9 +3481,9 @@ class AIAgent:
                     message_count=len(api_messages),
                     approx_tokens=approx_tokens,
                     total_chars=total_chars,
-                    available_tools=[tool["function"]["name"] for tool in self.tools]
-                    if self.tools
-                    else [],
+                    available_tools=(
+                        [tool["function"]["name"] for tool in self.tools] if self.tools else []
+                    ),
                     messages=api_messages,
                 ),
             )
