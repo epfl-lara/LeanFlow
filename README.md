@@ -121,23 +121,22 @@ formalize docs/paper.tex
 autoformalize docs/paper-directory
 ```
 
-## What EPFLemma Tries To Guarantee
+## What a run guarantees
 
-`prove` is not considered done because the agent made a plausible edit. A successful proof run should end with:
+A `prove` run is not "done" because the agent made a plausible edit — it is done only when Lean agrees. A successful run ends with:
 
-- the relevant Lean code building successfully
-- clean diagnostics
-- no open goals
+- the relevant Lean code building
+- clean diagnostics and no open goals
 - no `sorry` in the active target
 - no remaining project `sorry` outside dependencies
 
-Document formalization has a separate handoff boundary. `/formalize` and `/autoformalize` first produce a buildable Lean draft with source-linked declarations and intentional `sorry` proofs. That draft is considered ready when the module builds and the blueprint's statement/source review is approved. The formalizer then exits; proof filling starts only when the user explicitly runs `/prove SomeFile.lean` or `/prove` after reviewing the generated formalization.
+EPFLemma reaches that by working in small, Lean-verified steps rather than one big edit:
 
-For project-scoped work, `/prove` without a file starts the project prove manager. It scans Lean files with remaining `sorry`, ranks them with candidate-to-candidate dependency analysis, theorem difficulty, local hints/examples, bounded source context, and length signals, asks the configured LLM for a prioritized file order when available, records that plan, and then assigns one file at a time to the existing `/prove SomeFile.lean` path. Parallel agents stay disabled unless the user explicitly opts into swarm mode.
+- **`prove <file>`** drives the model one declaration at a time, re-checking with Lean after every edit (a warm LeanProbe incremental check, with Lake as the final gate) and advancing only when the target is clean. Failed attempts are recorded and the original `sorry` is restored, so the file always stays buildable.
+- **`prove`** (no file) scans the project for remaining `sorry`s, ranks the files (dependencies, difficulty, available hints), and works them one at a time. Parallel agents stay off unless you opt into swarm mode.
+- **`formalize` / `autoformalize`** turn a LaTeX/PDF source into a buildable Lean draft with source-linked statements and intentional `sorry`s. The draft is handed off once it builds and its statement/source review is approved; you then run `/prove` to fill in the proofs.
 
-For document formalization, `/formalize` accepts a project-local `.tex` file, `.pdf` file, or directory containing a TeX project. Directory inputs are resolved deterministically to a main `.tex` source, with included `.tex`, bibliography, PDF, figure, and TeX support files recorded in the preflight manifest; ambiguous TeX roots fail before launch. LaTeX preflight recognizes standard theorem environments, plain-TeX `\profess...\endprofess` blocks, and common custom theorem declarations such as `\newtheorem`, `\declaretheorem`, `\newmdtheoremenv`, `\mdtheorem`, `\spnewtheorem`, and `\newtcbtheorem`; adjacent proof environments are copied into the initial blueprint as source proof excerpts. EPFLemma exposes `read_pdf` as the direct model-facing tool for reading project-local PDF text. EPFLemma creates a preflight manifest, extracted-text cache, Markdown planner blueprint, generated blueprint skill, and active Lean target file under the project, then asks the drafting agent to plan definitions/lemmas/theorems with source comments. When the draft is otherwise ready and only source-review approval is missing, the runner starts the configured independent statement/source verifier; by default this is the managed reviewer agent, while command/model verifier outputs are logged as advisory review. After the deterministic local handoff checks, review-approved blueprint pass, and final generated-file organization pass, the formalizer stops and prints the explicit `/prove` command to run after user review. `/prove SomeFile.lean` auto-attaches the generated blueprint skill when the file has a nearby `Blueprint.md`; you can also pass `--additional-skill path/to/SKILL.md`.
-
-For file-scoped work, EPFLemma drives the agent one declaration at a time. The runner owns the queue, refreshes diagnostics after edits, records failed attempts per theorem, and advances only when Lean verification says the current target is clean. Same-file queue steps use the LeanProbe-backed incremental verifier first, so imports/header state and prior declaration environments stay warm; Lake remains the final file/project sweep and fallback gate. If a theorem turn exhausts its API-step budget, the runner records that as a failed attempt, comments the failed declaration in the Lean file, and restores the original safe `sorry` body when it has an exact baseline slice; the theorem remains pending for the next queue cycle.
+The deeper mechanics (LaTeX preflight, the blueprint/verifier handoff, the project prove-manager, queue and checkpoint internals) are in the [product reference](docs/product-reference.md).
 
 ## Main Workflows
 
