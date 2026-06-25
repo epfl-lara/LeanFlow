@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_gauss_home(tmp_path, monkeypatch):
+def _isolate_epflemma_home(tmp_path, monkeypatch):
     """Redirect legacy and EPFLemma homes so tests never write to real user state."""
     fake_home = tmp_path / "gauss_test"
     fake_epflemma_home = tmp_path / "epflemma_test"

@@ -1,4 +1,4 @@
-"""Shared utility functions for gauss-agent."""
+"""Shared utility functions for EPFLemma."""
 
 import contextlib
 import json

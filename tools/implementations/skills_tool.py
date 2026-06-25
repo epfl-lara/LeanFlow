@@ -40,7 +40,7 @@ SKILL.md Format (YAML Frontmatter, agentskills.io compatible):
       commands: [curl, jq]        #   Command checks remain advisory only.
     compatibility: Requires X     # Optional (agentskills.io)
     metadata:                     # Optional, arbitrary key-value (agentskills.io)
-      gauss:
+      epflemma:
         tags: [fine-tuning, llm]
         related_skills: [peft, lora]
     ---
@@ -455,7 +455,7 @@ def _get_category_from_path(skill_path: Path) -> str | None:
     """
     Extract category from skill path based on directory structure.
 
-    For paths like: ~/.gauss/skills/mlops/axolotl/SKILL.md -> "mlops"
+    For paths like: ~/.epflemma/skills/mlops/axolotl/SKILL.md -> "mlops"
     """
     try:
         rel_path = skill_path.relative_to(SKILLS_DIR)
@@ -549,7 +549,7 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
 
 
 def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
-    """Recursively find all skills in ~/.gauss/skills/.
+    """Recursively find all skills in ~/.epflemma/skills/.
 
     Args:
         skip_disabled: If True, return ALL skills regardless of disabled
@@ -764,7 +764,9 @@ def _local_skill_payload(name: str, file_path: str | None = None) -> dict[str, A
         "content": raw,
         "file": str(path),
         "linked_files": _linked_files_for_local_skill(path),
-        "tags": _parse_tags(((frontmatter.get("metadata") or {}).get("gauss") or {}).get("tags")),
+        "tags": _parse_tags(
+            ((frontmatter.get("metadata") or {}).get("epflemma") or {}).get("tags")
+        ),
         "required_environment_variables": required_env_vars,
         "missing_required_environment_variables": remaining,
         "setup_needed": bool(remaining),

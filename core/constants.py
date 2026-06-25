@@ -1,4 +1,4 @@
-"""Shared constants for Gauss Agent.
+"""Shared constants for EPFLemma.
 
 Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.

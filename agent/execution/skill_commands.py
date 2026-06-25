@@ -30,7 +30,7 @@ def build_plan_path(
     Relative paths are intentional: file tools are task/backend-aware and resolve
     them against the active working directory for local, docker, ssh, modal,
     daytona, and similar terminal backends. That keeps the plan with the active
-    workspace instead of the Gauss host's global home directory.
+    workspace instead of the EPFLemma host's global home directory.
     """
     slug_source = (user_instruction or "").strip().splitlines()[0] if user_instruction else ""
     slug = _PLAN_SLUG_RE.sub("-", slug_source.lower()).strip("-")
@@ -38,7 +38,7 @@ def build_plan_path(
         slug = "-".join(part for part in slug.split("-")[:8] if part)[:48].strip("-")
     slug = slug or "conversation-plan"
     timestamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
-    return Path(".gauss") / "plans" / f"{timestamp}-{slug}.md"
+    return Path(".epflemma") / "plans" / f"{timestamp}-{slug}.md"
 
 
 def _load_skill_payload(

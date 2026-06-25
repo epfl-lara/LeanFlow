@@ -567,7 +567,7 @@ class InteractiveShell:
             target = Path(path).expanduser().resolve()
             already_initialized = (
                 (target / ".epflemma" / "project.yaml").is_file()
-                or (target / ".epflemma" / "project.yaml").is_file()
+                or (target / ".opengauss" / "project.yaml").is_file()
                 or (target / ".gauss" / "project.yaml").is_file()
             )
             project = initialize_epflemma_project(path, name=name or None)

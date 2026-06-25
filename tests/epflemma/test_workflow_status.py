@@ -36,7 +36,7 @@ def test_persist_live_status_writes_shell_visible_payload(monkeypatch, tmp_path)
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_KIND", "prove")
     monkeypatch.setenv("EPFLEMMA_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
     monkeypatch.setenv("EPFLEMMA_NATIVE_PROVIDER", "custom")
-    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "google/gemma-4-31B-it")
+    monkeypatch.setenv("EPFLEMMA_NATIVE_MODEL", "google/gemma-3-27b-it")
     monkeypatch.setenv("EPFLEMMA_NATIVE_BASE_URL", "https://inference.rcp.epfl.ch/v1")
     monkeypatch.setenv("EPFLEMMA_NATIVE_ACTIVE_SKILL", "lean-proof-loop")
     monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(tmp_path / "project"))
@@ -382,7 +382,7 @@ def test_workflow_agent_summary_groups_events(monkeypatch, tmp_path):
         "Agent conversation started",
         agent_session_id="agent-main",
         process_id=12345,
-        model="google/gemma-4-31B-it",
+        model="google/gemma-3-27b-it",
         provider="custom",
         delegate_depth=0,
         user_message="Prove theorem t",
@@ -413,7 +413,7 @@ def test_workflow_agent_summary_groups_events(monkeypatch, tmp_path):
     assert summaries[0]["agent_id"] == "agent-main"
     assert summaries[0]["status"] == "completed"
     assert summaries[0]["api_calls"] == 1
-    assert summaries[0]["model"] == "google/gemma-4-31B-it"
+    assert summaries[0]["model"] == "google/gemma-3-27b-it"
     assert summaries[0]["process_id"] == 12345
     assert summaries[0]["task_label"] == "agent"
 

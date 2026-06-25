@@ -17,4 +17,4 @@ Use this skill when provider availability is unstable.
 ## Defaults
 
 - Prefer the direct requested provider when healthy.
-- For the known RCP fallback path, use `google/gemma-4-31B-it` with exact casing.
+- For the known RCP fallback path, use `google/gemma-3-27b-it` with exact casing.

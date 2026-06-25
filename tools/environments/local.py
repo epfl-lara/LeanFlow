@@ -65,7 +65,7 @@ def _build_provider_env_blocklist() -> frozenset:
     except ImportError:
         pass
 
-    # Vars not covered above but still Gauss-internal / conflict-prone.
+    # Vars not covered above but still EPFLemma-internal / conflict-prone.
     blocked.update(
         {
             "TELEGRAM_BOT_TOKEN",
@@ -140,7 +140,7 @@ _EPFLEMMA_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
-    """Filter Gauss-managed secrets from a subprocess environment.
+    """Filter EPFLemma-managed secrets from a subprocess environment.
 
     `_EPFLEMMA_FORCE_<VAR>` entries in ``extra_env`` opt a blocked variable back in
     intentionally for callers that truly need it.
@@ -329,7 +329,7 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
 
     @property
     def _temp_prefix(self) -> str:
-        return f"/tmp/gauss-local-{self._session_id}"
+        return f"/tmp/epflemma-local-{self._session_id}"
 
     def _spawn_shell_process(self) -> subprocess.Popen:
         user_shell = _find_bash()
@@ -393,9 +393,9 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         fenced_cmd = (
             f"printf '{_OUTPUT_FENCE}';"
             f" {exec_command};"
-            f" __gauss_rc=$?;"
+            f" __epflemma_rc=$?;"
             f" printf '{_OUTPUT_FENCE}';"
-            f" exit $__gauss_rc"
+            f" exit $__epflemma_rc"
         )
         run_env = _make_run_env(self.env)
 

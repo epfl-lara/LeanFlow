@@ -132,11 +132,11 @@ def test_runtime_provider_resolves_direct_custom_and_local(monkeypatch, tmp_path
     cfg_path.write_text(
         yaml.safe_dump(
             {
-                "model": {"provider": "local", "default": "google/gemma-4-31B-it"},
+                "model": {"provider": "local", "default": "google/gemma-3-27b-it"},
                 "local_models": {
                     "default_runtime": "vllm",
                     "active_runtime": "vllm",
-                    "active_model": "google/gemma-4-31B-it",
+                    "active_model": "google/gemma-3-27b-it",
                     "runtimes": {"vllm": {"host": "127.0.0.1", "port": 8000, "extra_args": []}},
                 },
             },

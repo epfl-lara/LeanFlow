@@ -271,7 +271,7 @@ def test_describe_launch_plan_formats_provider_and_model(tmp_path):
         runtime={
             "provider": "local",
             "runtime": "vllm",
-            "model": "google/gemma-4-31B-it",
+            "model": "google/gemma-3-27b-it",
             "base_url": "http://127.0.0.1:8000/v1",
         },
         child_env={"EPFLEMMA_NATIVE_ACTIVE_SKILL": "lean-proof-loop"},
@@ -283,7 +283,7 @@ def test_describe_launch_plan_formats_provider_and_model(tmp_path):
     summary = describe_launch_plan(plan)
 
     assert summary["provider"] == "local:vllm"
-    assert summary["model"] == "google/gemma-4-31B-it"
+    assert summary["model"] == "google/gemma-3-27b-it"
     assert summary["command"] == "/prove Main.lean"
     assert summary["skill"] == "lean-proof-loop"
     assert summary["agents"] == "1"
@@ -552,7 +552,7 @@ def test_swarm_command_renders_agent_table(monkeypatch, tmp_path, capsys):
         "conversation-start",
         "Agent conversation started",
         agent_session_id="agent-main",
-        model="google/gemma-4-31B-it",
+        model="google/gemma-3-27b-it",
         provider="custom",
         delegate_depth=0,
     )
