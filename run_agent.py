@@ -61,9 +61,6 @@ if _loaded_env_paths:
 else:
     logger.info("No .env file found. Using system environment variables.")
 
-# Point mini-swe-agent at the active EPFLemma home so it shares our config
-os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_epflemma_home))
-os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 # Import our tool system
 import requests
@@ -614,7 +611,6 @@ class AIAgent:
                 # INFO/WARNING messages just clutter it.
                 for quiet_logger in [
                     "tools",  # all tools.* (terminal, web, file, etc.)
-                    "minisweagent",  # mini-swe-agent execution backend
                     "run_agent",  # agent runner internals
                     "cron",  # legacy scheduler logger if present
                 ]:

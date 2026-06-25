@@ -105,7 +105,7 @@ _PLATFORM_MAP = {
     "windows": "win32",
 }
 _EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub"))
-_REMOTE_ENV_BACKENDS = frozenset({"docker", "singularity", "modal", "ssh", "daytona"})
+_REMOTE_ENV_BACKENDS = frozenset({"singularity", "ssh", "daytona"})
 _secret_capture_callback = None
 
 
@@ -387,12 +387,8 @@ def _backend_setup_help(backend: str) -> str | None:
     normalized = str(backend or "").strip().lower()
     if normalized in {"ssh", "daytona"}:
         return "This skill runs in a remote environment."
-    if normalized == "docker":
-        return "This skill runs through docker-backed skills."
     if normalized == "singularity":
         return "This skill runs through singularity-backed skills."
-    if normalized == "modal":
-        return "This skill runs through modal-backed skills."
     return None
 
 

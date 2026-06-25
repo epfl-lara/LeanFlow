@@ -186,6 +186,8 @@ Do not reintroduce broad product surfaces that were intentionally removed:
 - browser or voice-first product flows
 - data-generation/batch-runner subsystems
 - marketplace-style skill hubs
+- the mini-swe-agent dependency and its docker/modal terminal backends (removed; the supported
+  terminal backends are local, ssh, singularity, daytona, and the `epflemma sandbox` for isolation)
 
 ## Testing
 
