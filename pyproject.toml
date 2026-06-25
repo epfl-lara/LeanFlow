@@ -9,7 +9,7 @@ description = "EPFLemma is a Lean AI for Math shell shipped through the standalo
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "EPFLemma contributors" }]
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 dependencies = [
   "anthropic>=0.39.0",
   "fire",
