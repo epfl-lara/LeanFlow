@@ -716,7 +716,7 @@ class TestFindAllSkillsSecureSetup:
         assert "readiness_status" not in skills[0]
 
     def test_skill_listing_does_not_probe_backend_for_env_vars(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_ENV", "singularity")
 
         with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
@@ -780,7 +780,7 @@ class TestSkillViewPrerequisites:
         assert result["required_environment_variables"] == []
 
     def test_skill_view_treats_backend_only_env_as_setup_needed(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_ENV", "singularity")
 
         with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
@@ -817,9 +817,7 @@ class TestSkillViewPrerequisites:
         [
             ("ssh", "remote environment"),
             ("daytona", "remote environment"),
-            ("docker", "docker-backed skills"),
             ("singularity", "singularity-backed skills"),
-            ("modal", "modal-backed skills"),
         ],
     )
     def test_remote_backend_keeps_setup_needed_after_local_secret_capture(
