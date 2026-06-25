@@ -6,7 +6,6 @@ import contextlib
 import logging
 import os
 import re
-import stat
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path

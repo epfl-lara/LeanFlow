@@ -5,7 +5,6 @@ can invoke skills via /skill-name commands and prompt-only built-ins like
 /plan.
 """
 
-import json
 import logging
 import re
 from datetime import datetime

@@ -2,8 +2,6 @@
 
 import logging
 
-import pytest
-
 from agent.accounting.redact import RedactingFormatter, redact_sensitive_text
 
 

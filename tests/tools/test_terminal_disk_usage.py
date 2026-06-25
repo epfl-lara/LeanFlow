@@ -4,7 +4,6 @@
 # shadows the module of the same name.  Use sys.modules to get the real module
 # so patch.object works correctly.
 import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest

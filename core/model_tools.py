@@ -23,7 +23,6 @@ Public API retained for the Lean-first runtime:
 import asyncio
 import json
 import logging
-import os
 from typing import Any
 
 from tools.registry import registry

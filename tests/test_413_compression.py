@@ -11,7 +11,6 @@ import pytest
 pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
 
 
-import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 

@@ -11,11 +11,10 @@ import signal
 import threading
 import uuid
 from collections.abc import Mapping
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from epflemma_cli.config import load_config
 from epflemma_cli.workflows.activity_preview import (  # noqa: F401
     _activity_preview_limit,
     _agent_event_preview,

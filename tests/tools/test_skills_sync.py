@@ -4,8 +4,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.utilities.skills_sync import (
-    MANIFEST_FILE,
-    SKILLS_DIR,
     _compute_relative_dest,
     _dir_hash,
     _discover_bundled_skills,

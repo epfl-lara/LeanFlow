@@ -25,7 +25,6 @@ from epflemma_cli.runtime.runtime_provider import resolve_runtime_provider
 from epflemma_cli.runtime.skill_core import default_workflow_skill
 from epflemma_cli.workflows.project import (
     EPFLemmaProject,
-    ProjectNotFoundError,
     discover_epflemma_project,
 )
 

@@ -20,9 +20,6 @@ Usage:
     response = agent.run_conversation("Tell me about the latest Python updates")
 """
 
-import asyncio
-import base64
-import concurrent.futures
 import copy
 import hashlib
 import json
@@ -32,9 +29,6 @@ logger = logging.getLogger(__name__)
 import os
 import random
 import re
-import sys
-import tempfile
-import textwrap
 import threading
 import time
 import uuid
@@ -44,7 +38,6 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 import fire
-from openai import OpenAI
 
 from core.home import epflemma_home
 
@@ -63,26 +56,14 @@ else:
 
 
 # Import our tool system
-import requests
 
 from agent.accounting.token_accounting import TokenAccounter
-from agent.accounting.usage_pricing import estimate_cost_usd, has_known_pricing
 from agent.compression.compression_policy import CompressionPolicy
 from agent.compression.context_compressor import ContextCompressor
 from agent.compression.conversation_manager import ConversationManager
 from agent.compression.conversation_manager import clean_session_content as _clean_session_content
 from agent.display.display import (
     KawaiiSpinner,
-    _detect_tool_failure,
-)
-from agent.display.display import (
-    build_tool_preview as _build_tool_preview,
-)
-from agent.display.display import (
-    get_cute_tool_message as _get_cute_tool_message_impl,
-)
-from agent.display.display import (
-    get_tool_emoji as _get_tool_emoji,
 )
 from agent.display.output_manager import OutputManager
 from agent.execution.interrupt_controller import InterruptController
@@ -91,14 +72,7 @@ from agent.execution.tool_executor import ToolExecutor
 # Agent internals extracted to agent/ package for modularity
 from agent.prompting.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
-    MEMORY_GUIDANCE,
-    PLATFORM_HINTS,
-    SESSION_SEARCH_GUIDANCE,
-    SKILLS_GUIDANCE,
-    build_context_files_prompt,
-    build_skills_system_prompt,
 )
-from agent.prompting.prompt_caching import apply_anthropic_cache_control
 from agent.prompting.prompt_manager import PromptManager
 from agent.prompting.reasoning_processor import ReasoningProcessor
 from agent.prompting.response_normalizer import ResponseNormalizer
@@ -111,25 +85,18 @@ from agent.providers.api_caller import ApiCaller
 from agent.providers.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_tokens_rough,
-    fetch_model_metadata,
-    get_model_context_length,
     get_next_probe_tier,
     parse_context_limit_from_error,
     save_context_length,
 )
 from agent.providers.provider_client import ProviderClientFactory
 from agent.runtime.trajectory import (
-    convert_scratchpad_to_think,
     has_incomplete_scratchpad,
 )
-from agent.runtime.trajectory import (
-    save_trajectory as _save_trajectory_to_file,
-)
-from core.constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
-from model_tools import check_toolset_requirements, get_tool_definitions, handle_function_call
+from core.constants import OPENROUTER_BASE_URL
+from model_tools import check_toolset_requirements, get_tool_definitions
 from tools.implementations.terminal_tool import cleanup_vm
 from tools.utilities.interrupt import set_interrupt as _set_interrupt
-from utils import atomic_json_write
 
 
 def _cleanup_optional_browser_state(task_id: str) -> None:
@@ -206,19 +173,6 @@ _LEAN_REASONING_HELP_MAX_TOOL_RESULT_CHARS = 260_000
 #     (run_agent._is_destructive_command remains valid for internal call sites).
 #   - agent/log_formatting.py: tool argument/result log rendering
 #     (run_agent._wrap_log_text / _format_tool_result_for_log / ...).
-from agent.display.log_formatting import (  # noqa: E402
-    _format_tool_args_for_log,
-    _format_tool_result_for_log,
-    _format_tool_result_for_log_with_limits,
-    _summarize_arg_value,
-    _truncate_log_lines,
-    _wrap_log_text,
-)
-from agent.execution.command_safety import (  # noqa: E402
-    _DESTRUCTIVE_PATTERNS,
-    _REDIRECT_OVERWRITE,
-    _is_destructive_command,
-)
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -235,6 +189,24 @@ def _positive_int(value: Any, default: int) -> int:
 # module-level + isinstance-guard pattern.
 import contextlib
 
+from openai import OpenAI  # noqa: F401
+
+from agent.accounting.usage_pricing import (
+    estimate_cost_usd,  # noqa: F401
+    has_known_pricing,  # noqa: F401
+)
+from agent.display.display import _detect_tool_failure  # noqa: F401
+from agent.display.display import build_tool_preview as _build_tool_preview  # noqa: F401
+from agent.display.display import get_cute_tool_message as _get_cute_tool_message_impl  # noqa: F401
+from agent.display.display import get_tool_emoji as _get_tool_emoji  # noqa: F401
+from agent.display.log_formatting import (
+    _format_tool_args_for_log,  # noqa: F401
+    _format_tool_result_for_log,  # noqa: F401
+    _format_tool_result_for_log_with_limits,  # noqa: F401
+    _summarize_arg_value,  # noqa: F401
+    _truncate_log_lines,  # noqa: F401
+    _wrap_log_text,  # noqa: F401
+)
 from agent.execution.collaborator_resolvers import (  # noqa: E402
     _resolve_anthropic_message_preparer,
     _resolve_api_caller,
@@ -246,10 +218,25 @@ from agent.execution.collaborator_resolvers import (  # noqa: E402
     _resolve_response_normalizer,
     _resolve_tool_executor,
 )
+from agent.execution.command_safety import (
+    _DESTRUCTIVE_PATTERNS,  # noqa: F401
+    _REDIRECT_OVERWRITE,  # noqa: F401
+    _is_destructive_command,  # noqa: F401
+)
+from agent.prompting.prompt_builder import (
+    MEMORY_GUIDANCE,  # noqa: F401
+    PLATFORM_HINTS,  # noqa: F401
+    SESSION_SEARCH_GUIDANCE,  # noqa: F401
+    SKILLS_GUIDANCE,  # noqa: F401
+    build_context_files_prompt,  # noqa: F401
+    build_skills_system_prompt,  # noqa: F401
+)
 from agent.runtime.workflow_events import (  # noqa: E402,F401
     _emit_workflow_event,
     _workflow_agent_event_details,
 )
+from model_tools import handle_function_call  # noqa: F401
+from utils import atomic_json_write  # noqa: F401
 
 
 class AIAgent:

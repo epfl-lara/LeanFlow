@@ -5,13 +5,10 @@ Responses-only client, which would fail silently or with a 404.
 """
 
 import json
-import os
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))

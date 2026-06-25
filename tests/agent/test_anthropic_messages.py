@@ -10,7 +10,6 @@ vision-fallback description, and the full multimodal→text flattening.
 
 import base64
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest

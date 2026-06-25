@@ -36,7 +36,6 @@ AUXILIARY_VISION_API_KEY) let callers route a specific auxiliary task to a
 custom OpenAI-compatible endpoint without touching the main model settings.
 """
 
-import json
 import logging
 import os
 from typing import Any
@@ -44,7 +43,6 @@ from typing import Any
 from openai import OpenAI
 
 from core.constants import OPENROUTER_BASE_URL
-from epflemma_cli.config import get_epflemma_home
 from epflemma_cli.runtime.auth import (
     CODEX_AUX_DEFAULT_MODEL,
     CODEX_BASE_URL,

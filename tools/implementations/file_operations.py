@@ -27,7 +27,6 @@ Usage:
 
 import contextlib
 import difflib
-import json
 import os
 import re
 from abc import ABC, abstractmethod

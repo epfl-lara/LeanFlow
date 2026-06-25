@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 from tools.implementations.clarify_tool import (
     CLARIFY_SCHEMA,
     MAX_CHOICES,

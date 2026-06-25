@@ -1,8 +1,6 @@
 """Tests for agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
 
 import json
-import os
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,7 +9,6 @@ from agent.providers.auxiliary_client import (
     _build_call_kwargs,
     _get_auxiliary_provider,
     _read_codex_access_token,
-    _resolve_auto,
     _resolve_forced_provider,
     _resolve_task_provider_model,
     _resolve_task_reasoning_effort,

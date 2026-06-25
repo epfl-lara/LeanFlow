@@ -13,7 +13,6 @@ import pytest
 pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
 
 
-import json
 import os
 import sys
 from pathlib import Path
