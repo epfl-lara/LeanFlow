@@ -16,8 +16,6 @@ crashes due to a bad timezone string.
 import logging
 import os
 from datetime import datetime
-from datetime import timezone as _tz
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

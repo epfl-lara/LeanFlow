@@ -3,8 +3,6 @@ import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from tools.mcp.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command
 
 

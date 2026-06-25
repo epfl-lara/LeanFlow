@@ -20,7 +20,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from tools.implementations.file_tools import (
-    _read_tracker,
     clear_read_tracker,
     get_read_files_summary,
     notify_other_tool_call,

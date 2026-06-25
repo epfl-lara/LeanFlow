@@ -3,34 +3,16 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import shlex
-import signal
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import FormattedText
-from prompt_toolkit.history import FileHistory
 from rich.console import Console
 
 from epflemma_cli import __version__
 from epflemma_cli.cli.banner import (
-    build_welcome_banner,
-    render_help,
-    render_local_runtime_table,
-    render_project_panel,
     render_provider_panel,
-    render_skill_panel,
-    render_skill_table,
-    render_status_panel,
-    render_swarm_agent_panel,
-    render_swarm_table,
-    render_swarm_transcript,
-    render_swarm_transcript_entry,
     render_workflow_launch,
     render_workflow_status_panel,
 )
@@ -38,43 +20,19 @@ from epflemma_cli.cli.cli_handlers import (
     _handle_config,
     _handle_models,
     _handle_sandbox,
-    _parse_config_value,
     _print_json,
     _print_mcp_bootstrap,
     _print_mcp_status,
     _print_project_power_setup,
     _project_payload,
 )
-from epflemma_cli.cli.commands import SlashCommandCompleter, build_workflow_command_set
+from epflemma_cli.cli.commands import build_workflow_command_set
 from epflemma_cli.cli.doctor import run_doctor
 from epflemma_cli.cli.mcp_bootstrap import bootstrap_lean_mcp
-from epflemma_cli.cli.shell_ui import (
-    bottom_toolbar as _build_bottom_toolbar,
-)
-from epflemma_cli.cli.shell_ui import (
-    prompt_focus_label as _build_prompt_focus_label,
-)
-from epflemma_cli.cli.shell_ui import (
-    prompt_message as _build_prompt_message,
-)
-from epflemma_cli.cli.shell_ui import (
-    toolbar_piece as _build_toolbar_piece,
-)
 from epflemma_cli.config import (
     ensure_epflemma_home,
-    get_config_value,
     get_epflemma_home,
     load_config,
-    set_config_value,
-)
-from epflemma_cli.local_models import (
-    get_local_runtime_status,
-    list_local_runtimes,
-    read_local_runtime_logs,
-    resolve_active_local_runtime,
-    start_local_runtime,
-    stop_local_runtime,
-    use_local_runtime,
 )
 from epflemma_cli.runtime.env_loader import load_epflemma_dotenv
 from epflemma_cli.runtime.runtime_provider import (
@@ -83,44 +41,27 @@ from epflemma_cli.runtime.runtime_provider import (
     resolve_runtime_provider,
 )
 from epflemma_cli.runtime.sandbox_runtime import (
-    SandboxRuntimeError,
-    build_sandbox_image,
     format_sandbox_status,
-    run_sandbox,
     sandbox_status,
 )
-from epflemma_cli.runtime.skill_core import discover_skill_commands, discover_skills, load_skill
 from epflemma_cli.workflow import (
-    FORGIVING_WORKFLOW_ALIAS_MAP,
     describe_launch_plan,
     resolve_workflow_request,
     run_workflow,
-    spawn_workflow,
 )
 from epflemma_cli.workflows.project import (
     ProjectNotFoundError,
     clone_project_template,
     discover_epflemma_project,
-    format_project_summary,
     initialize_epflemma_project,
     resolve_template_source,
     setup_project_power_modes,
 )
 from epflemma_cli.workflows.workflow_state import (
-    enqueue_workflow_agent_message,
     load_workflow_checkpoints,
     load_workflow_live_status,
     read_workflow_activity,
     read_workflow_run_log,
-    request_project_workflow_runner_exit,
-    resolve_workflow_agent_id,
-    save_workflow_live_status,
-    summarize_workflow_agents,
-    terminate_project_workflow_agents,
-    terminate_workflow_agent,
-    workflow_agent_detail,
-    workflow_agent_transcript,
-    workflow_agent_transcript_all,
 )
 
 # Derived from the single COMMAND_REGISTRY in epflemma_cli.cli.commands: the set of all
@@ -351,6 +292,7 @@ def _handle_mcp(args: argparse.Namespace) -> int:
     raise SystemExit("Unknown MCP command")
 
 
+from epflemma_cli.cli.cli_handlers import _parse_config_value  # noqa: F401
 from epflemma_cli.shell import InteractiveShell  # noqa: F401
 
 

@@ -9,11 +9,7 @@ import pytest
 
 from epflemma_cli.lean.lean_statement_guard import ALLOW_STATEMENT_EDITS_ENV
 from tools.implementations.file_operations import (
-    BINARY_EXTENSIONS,
-    IMAGE_EXTENSIONS,
     MAX_LINE_LENGTH,
-    WRITE_DENIED_PATHS,
-    WRITE_DENIED_PREFIXES,
     LintResult,
     PatchResult,
     ReadResult,

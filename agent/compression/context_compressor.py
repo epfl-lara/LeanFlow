@@ -6,7 +6,6 @@ protecting head and tail context.
 """
 
 import logging
-import os
 from typing import Any
 
 from agent.providers.auxiliary_client import call_llm

@@ -34,7 +34,6 @@ import logging
 import os
 import platform
 import shlex
-import shutil
 import signal
 import subprocess
 import threading
@@ -43,7 +42,6 @@ import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from epflemma_cli.config import get_epflemma_home

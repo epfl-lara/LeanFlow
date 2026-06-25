@@ -1,9 +1,5 @@
 """Tests for agent/prompt_caching.py — Anthropic cache control injection."""
 
-import copy
-
-import pytest
-
 from agent.prompting.prompt_caching import (
     _apply_cache_marker,
     apply_anthropic_cache_control,

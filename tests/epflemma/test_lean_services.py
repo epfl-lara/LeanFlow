@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 import types
-from pathlib import Path
 
 from epflemma_cli.lean import lean_services
 from epflemma_cli.lean.lean_services import LeanCapabilityReport

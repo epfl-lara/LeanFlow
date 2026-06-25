@@ -72,9 +72,6 @@ Thread safety:
 import asyncio
 import json
 import logging
-import re
-import shutil
-import subprocess
 import threading
 from typing import Any
 
@@ -98,14 +95,16 @@ try:
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
         _MCP_HTTP_AVAILABLE = False
-    # Sampling types -- separated so older SDK versions don't break MCP support
+    # Sampling types -- separated so older SDK versions don't break MCP support. This import is an
+    # availability probe: it only sets _MCP_SAMPLING_TYPES (mcp_sampling imports + uses these names
+    # itself), so the names are unused here on purpose -- hence the per-line noqa.
     try:
         from mcp.types import (
-            CreateMessageResult,
-            CreateMessageResultWithTools,
-            ErrorData,
-            TextContent,
-            ToolUseContent,
+            CreateMessageResult,  # noqa: F401
+            CreateMessageResultWithTools,  # noqa: F401
+            ErrorData,  # noqa: F401
+            TextContent,  # noqa: F401
+            ToolUseContent,  # noqa: F401
         )
 
         _MCP_SAMPLING_TYPES = True
@@ -120,24 +119,16 @@ except ImportError:
 # mcp_transport does NOT import mcp_tool, so this introduces no import cycle.
 # ---------------------------------------------------------------------------
 from tools.mcp.mcp_transport import (  # noqa: E402
-    _CREDENTIAL_PATTERN,
     _DEFAULT_CONNECT_TIMEOUT,
-    _LEAN_MODULE_PART_PATTERN,
-    _LOCAL_LOOGLE_CONNECT_TIMEOUT,
-    _LOOGLE_STALE_ARTIFACT_SCAN_LIMIT,
-    _SAFE_ENV_KEYS,
     _augment_lean_stdio_env,
     _build_safe_env,
     _disable_incompatible_local_loogle,
     _effective_connect_timeout,
     _format_connect_error,
-    _prepend_path,
-    _read_lean_toolchain_from_root,
     _repair_loogle_cache_if_needed,
     _resolve_stdio_command,
     _resolve_stdio_cwd,
     _sanitize_error,
-    _truthy_env_value,
 )
 
 # ---------------------------------------------------------------------------
@@ -160,9 +151,6 @@ import contextlib
 
 from tools.mcp.mcp_sampling import (  # noqa: E402
     SamplingHandler,
-    _default_sampling_audit_path,
-    _epflemma_home,
-    _safe_numeric,
 )
 
 # ---------------------------------------------------------------------------
@@ -700,6 +688,10 @@ def _make_check_fn(server_name: str):
 # tools/mcp_schema.py and are re-exported so callers/tests that resolve
 # tools.mcp.mcp_tool.<name> keep working.  mcp_schema does NOT import mcp_tool, so
 # this introduces no import cycle.
+import shutil  # noqa: F401
+import subprocess  # noqa: F401
+
+from tools.mcp.mcp_sampling import _safe_numeric  # noqa: F401
 from tools.mcp.mcp_schema import (  # noqa: E402,F401
     _UTILITY_CAPABILITY_METHODS,
     _build_utility_schemas,
@@ -707,6 +699,16 @@ from tools.mcp.mcp_schema import (  # noqa: E402,F401
     _normalize_name_filter,
     _parse_boolish,
     _select_utility_schemas,
+)
+from tools.mcp.mcp_transport import (
+    _CREDENTIAL_PATTERN,  # noqa: F401
+    _LEAN_MODULE_PART_PATTERN,  # noqa: F401
+    _LOCAL_LOOGLE_CONNECT_TIMEOUT,  # noqa: F401
+    _LOOGLE_STALE_ARTIFACT_SCAN_LIMIT,  # noqa: F401
+    _SAFE_ENV_KEYS,  # noqa: F401
+    _prepend_path,  # noqa: F401
+    _read_lean_toolchain_from_root,  # noqa: F401
+    _truthy_env_value,  # noqa: F401
 )
 
 

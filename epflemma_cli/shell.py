@@ -10,12 +10,9 @@ methods patch collaborators on ``epflemma_cli.shell``; tests driving ``main()`` 
 
 from __future__ import annotations
 
-import argparse
-import json
 import os
 import shlex
 import signal
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -25,7 +22,6 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from rich.console import Console
 
-from epflemma_cli import __version__
 from epflemma_cli.cli.banner import (
     build_welcome_banner,
     render_help,
@@ -43,9 +39,9 @@ from epflemma_cli.cli.banner import (
     render_workflow_status_panel,
 )
 from epflemma_cli.cli.cli_handlers import (
-    _handle_config,
-    _handle_models,
-    _handle_sandbox,
+    _handle_config,  # noqa: F401
+    _handle_models,  # noqa: F401
+    _handle_sandbox,  # noqa: F401
     _parse_config_value,
     _print_json,
     _print_mcp_bootstrap,
@@ -84,25 +80,16 @@ from epflemma_cli.local_models import (
     stop_local_runtime,
     use_local_runtime,
 )
-from epflemma_cli.runtime.env_loader import load_epflemma_dotenv
 from epflemma_cli.runtime.runtime_provider import (
     format_runtime_provider_error,
     list_runtime_provider_targets,
     resolve_runtime_provider,
-)
-from epflemma_cli.runtime.sandbox_runtime import (
-    SandboxRuntimeError,
-    build_sandbox_image,
-    format_sandbox_status,
-    run_sandbox,
-    sandbox_status,
 )
 from epflemma_cli.runtime.skill_core import discover_skill_commands, discover_skills, load_skill
 from epflemma_cli.workflow import (
     FORGIVING_WORKFLOW_ALIAS_MAP,
     describe_launch_plan,
     resolve_workflow_request,
-    run_workflow,
     spawn_workflow,
 )
 from epflemma_cli.workflows.project import (

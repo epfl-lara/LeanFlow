@@ -26,19 +26,15 @@ Usage:
 """
 
 import atexit
-import importlib.util
 import json
 import logging
 import os
 import platform
 import shutil
-import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -54,8 +50,6 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # Singularity helpers (scratch dir, SIF cache) now live in tools/environments/singularity.py
 from tools.environments.singularity import _get_scratch_dir
-from tools.utilities.interrupt import _interrupt_event, is_interrupted
-from tools.utilities.interrupt import set_interrupt as set_interrupt_event
 
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = float(os.getenv("TERMINAL_DISK_WARNING_GB", "500"))
@@ -123,19 +117,10 @@ def set_approval_callback(cb):
 
 # Dangerous command detection + approval now consolidated in tools/approval.py
 from tools.utilities.approval import (
-    DANGEROUS_PATTERNS,
-)
-from tools.utilities.approval import (
     check_all_command_guards as _check_all_guards_impl,
 )
 from tools.utilities.approval import (
     check_dangerous_command as _check_dangerous_command_impl,
-)
-from tools.utilities.approval import (
-    detect_dangerous_command as _detect_dangerous_command,
-)
-from tools.utilities.approval import (
-    load_permanent_allowlist as _load_permanent_allowlist,
 )
 
 
@@ -1262,7 +1247,6 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "daytona":
-            from daytona import Daytona
 
             return os.getenv("DAYTONA_API_KEY") is not None
 
@@ -1326,6 +1310,7 @@ if __name__ == "__main__":
 # Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry
+from tools.utilities.interrupt import _interrupt_event  # noqa: F401
 
 TERMINAL_SCHEMA = {
     "name": "terminal",

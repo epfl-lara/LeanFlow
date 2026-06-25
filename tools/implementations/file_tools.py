@@ -4,7 +4,6 @@
 import errno
 import json
 import logging
-import os
 import threading
 
 from agent.accounting.redact import redact_sensitive_text
@@ -52,7 +51,6 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
 
     from tools.implementations.terminal_tool import (
         _active_environments,
-        _check_disk_usage_warning,
         _create_environment,
         _creation_locks,
         _creation_locks_lock,

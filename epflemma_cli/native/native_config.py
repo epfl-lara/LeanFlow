@@ -9,7 +9,7 @@ namespace with its legacy ``OPENGAUSS_``/``GAUSS_`` fallbacks in one place.
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 __all__ = [
