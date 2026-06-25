@@ -939,9 +939,7 @@ async def web_crawl_tool(
         # Build crawl parameters - keep it simple
         crawl_params = {
             "limit": 20,  # Limit number of pages to crawl
-            "scrape_options": {
-                "formats": ["markdown"]  # Just markdown for simplicity
-            },
+            "scrape_options": {"formats": ["markdown"]},  # Just markdown for simplicity
         }
 
         # Note: The 'prompt' parameter is not documented for crawl

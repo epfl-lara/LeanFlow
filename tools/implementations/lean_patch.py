@@ -251,9 +251,11 @@ def apply_verified_patch_tool(
             cwd=str(base_cwd),
             check_mode=normalized_check,
             checkpoint=checkpoint,
-            lock=lock_result.get("lock")
-            if isinstance(lock_result.get("lock"), dict)
-            else lock_result,
+            lock=(
+                lock_result.get("lock")
+                if isinstance(lock_result.get("lock"), dict)
+                else lock_result
+            ),
         )
 
     try:

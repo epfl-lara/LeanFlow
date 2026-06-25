@@ -212,9 +212,9 @@ class TestBlocklistCoverage:
 
         for pconfig in PROVIDER_REGISTRY.values():
             for var in pconfig.api_key_env_vars:
-                assert var in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST, (
-                    f"Registry var {var} (provider={pconfig.id}) missing from blocklist"
-                )
+                assert (
+                    var in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST
+                ), f"Registry var {var} (provider={pconfig.id}) missing from blocklist"
             if pconfig.base_url_env_var:
                 assert pconfig.base_url_env_var in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST, (
                     f"Registry base_url_env_var {pconfig.base_url_env_var} "
@@ -249,13 +249,13 @@ class TestBlocklistCoverage:
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
             if category in {"tool", "messaging"}:
-                assert name in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST, (
-                    f"Optional env var {name} (category={category}) missing from blocklist"
-                )
+                assert (
+                    name in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST
+                ), f"Optional env var {name} (category={category}) missing from blocklist"
             elif category == "setting" and metadata.get("password"):
-                assert name in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST, (
-                    f"Secret setting env var {name} missing from blocklist"
-                )
+                assert (
+                    name in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST
+                ), f"Secret setting env var {name} missing from blocklist"
 
     def test_gateway_runtime_vars_are_in_blocklist(self):
         extras = {

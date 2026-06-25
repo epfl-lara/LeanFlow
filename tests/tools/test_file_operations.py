@@ -399,12 +399,10 @@ class TestLeanStatementGuardedWrites:
         path.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
         ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
 
-        result = ops.patch_v4a(
-            """\
+        result = ops.patch_v4a("""\
 *** Begin Patch
 *** Delete File: Demo.lean
-*** End Patch"""
-        )
+*** End Patch""")
 
         assert result.success is False
         assert result.error is not None
@@ -418,12 +416,10 @@ class TestLeanStatementGuardedWrites:
         path.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
         ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
 
-        result = ops.patch_v4a(
-            """\
+        result = ops.patch_v4a("""\
 *** Begin Patch
 *** Move File: Demo.lean -> Moved.lean
-*** End Patch"""
-        )
+*** End Patch""")
 
         assert result.success is False
         assert result.error is not None

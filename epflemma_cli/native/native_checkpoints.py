@@ -207,14 +207,16 @@ def _rollback_to_checkpoint(
 ) -> tuple[list[dict[str, Any]], str]:
     checkpoint_hash = str(entry.get("linked_filesystem_checkpoint", "") or "").strip()
     if not checkpoint_hash:
-        return _checkpoint_replay_history(
-            entry
-        ), "Checkpoint has no linked filesystem snapshot; only plan state was resumed."
+        return (
+            _checkpoint_replay_history(entry),
+            "Checkpoint has no linked filesystem snapshot; only plan state was resumed.",
+        )
     checkpoint_mgr = getattr(agent, "_checkpoint_mgr", None)
     if checkpoint_mgr is None or not getattr(checkpoint_mgr, "enabled", False):
-        return _checkpoint_replay_history(
-            entry
-        ), "Filesystem checkpoints are unavailable; only plan state was resumed."
+        return (
+            _checkpoint_replay_history(entry),
+            "Filesystem checkpoints are unavailable; only plan state was resumed.",
+        )
     result = checkpoint_mgr.restore(_project_root(), checkpoint_hash)
     if not result.get("success"):
         error = str(result.get("error", "restore failed") or "restore failed")

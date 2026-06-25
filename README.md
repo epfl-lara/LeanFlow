@@ -199,8 +199,8 @@ python -m pip install -e '.[dev]'
 Run the quality gate before committing (CI enforces all four):
 
 ```bash
-ruff format .          # black-compatible formatter (CI checks with `ruff format --check .`)
-ruff check .           # lint
+black .                # format (https://github.com/psf/black); CI checks with `black --check .`
+ruff check .           # lint (incl. unused-import F401)
 mypy                   # type-check the gated module set
 python -m pytest -q    # full suite
 ```

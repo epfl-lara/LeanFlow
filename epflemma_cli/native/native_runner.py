@@ -2828,9 +2828,11 @@ def _finish_queue_step_boundary(
                 pending_file,
                 pending_target,
                 manager_check,
-                "lean_incremental_check"
-                if str(manager_check.get("mode", "") or "") == "incremental_target"
-                else verification_tool,
+                (
+                    "lean_incremental_check"
+                    if str(manager_check.get("mode", "") or "") == "incremental_target"
+                    else verification_tool
+                ),
             )
             manager_feedback_reason = str(
                 manager_check.get("output", "") or manager_check.get("error", "") or ""
@@ -2994,20 +2996,28 @@ def _finish_queue_step_boundary(
             (
                 "queue-theorem-feedback"
                 if still_blocked
-                else "queue-theorem-cleanup-feedback"
-                if cleanup_feedback_reason
-                else "queue-theorem-retry-exhausted"
-                if hard_retry_exhausted
-                else "queue-step-boundary"
+                else (
+                    "queue-theorem-cleanup-feedback"
+                    if cleanup_feedback_reason
+                    else (
+                        "queue-theorem-retry-exhausted"
+                        if hard_retry_exhausted
+                        else "queue-step-boundary"
+                    )
+                )
             ),
             (
                 f"Continuing same theorem after failed verification feedback for {pending_target}"
                 if still_blocked
-                else f"Continuing same theorem for local warning cleanup on {pending_target}"
-                if cleanup_feedback_reason
-                else f"Manager retry limit reached for {pending_target}"
-                if hard_retry_exhausted
-                else f"Yielding after verification feedback for {pending_target}"
+                else (
+                    f"Continuing same theorem for local warning cleanup on {pending_target}"
+                    if cleanup_feedback_reason
+                    else (
+                        f"Manager retry limit reached for {pending_target}"
+                        if hard_retry_exhausted
+                        else f"Yielding after verification feedback for {pending_target}"
+                    )
+                )
             ),
             queue_item=item,
             target_symbol=pending_target,
@@ -3391,11 +3401,11 @@ def _tool_progress_callback(name: str, preview: str, args: Mapping[str, Any] | N
     payload.update(
         {
             "tool": name,
-            "args_preview": _single_line(
-                json.dumps(arguments, ensure_ascii=False), activity_limit + 40
-            )
-            if arguments
-            else "",
+            "args_preview": (
+                _single_line(json.dumps(arguments, ensure_ascii=False), activity_limit + 40)
+                if arguments
+                else ""
+            ),
         }
     )
     _record_activity(
@@ -5302,8 +5312,10 @@ def _run_configured_blueprint_verification(
             "",
             "Verifier findings:",
         ]
-        lines.extend(f"- {finding}" for finding in findings) if findings else lines.append(
-            "- verifier returned BLOCK without detailed findings"
+        (
+            lines.extend(f"- {finding}" for finding in findings)
+            if findings
+            else lines.append("- verifier returned BLOCK without detailed findings")
         )
         autonomy_state["document_formalization_review_feedback_message"] = "\n".join(lines)
         autonomy_state["document_formalization_review_feedback_pending"] = True
@@ -5737,12 +5749,16 @@ def _api_step_budget_handoff_message(
             "",
             f"- declaration: {target_symbol or '[unknown]'}",
             f"- file: {active_file or '[unknown]'}",
-            f"- API steps used: {api_calls}/{max_turns}"
-            if max_turns
-            else f"- API steps used: {api_calls}",
-            "- manager action: recorded this as a failed focused attempt"
-            if attempt_recorded
-            else "- manager action: no failed attempt was recorded",
+            (
+                f"- API steps used: {api_calls}/{max_turns}"
+                if max_turns
+                else f"- API steps used: {api_calls}"
+            ),
+            (
+                "- manager action: recorded this as a failed focused attempt"
+                if attempt_recorded
+                else "- manager action: no failed attempt was recorded"
+            ),
             f"- safe-state action: {restore_line}",
             "- next action: continue this same queue item from the recorded failed-attempt state; do not claim the theorem is solved until file verification clears it.",
         ]
@@ -6593,9 +6609,9 @@ def _document_formalization_handoff_verification(
         ok=local_ok,
         summary=local_summary,
         active_file=str(active_path),
-        issues=issues[: len(issues) - len(advisory_block_issues)]
-        if advisory_block_issues
-        else issues,
+        issues=(
+            issues[: len(issues) - len(advisory_block_issues)] if advisory_block_issues else issues
+        ),
     )
     if advisory_payload:
         decision = _verification_review_decision(advisory_payload)
@@ -6796,9 +6812,11 @@ def _promote_live_state_to_verified(
     document_handoff = _document_formalization_handoff_verification(
         active_file,
         diagnostics=str(normalized.get("diagnostics", "") or ""),
-        sorry_count=normalized.get("sorry_count")
-        if isinstance(normalized.get("sorry_count"), int)
-        else None,
+        sorry_count=(
+            normalized.get("sorry_count")
+            if isinstance(normalized.get("sorry_count"), int)
+            else None
+        ),
         last_verification=_last_verification_record(autonomy_state, normalized),
         completion=True,
     )

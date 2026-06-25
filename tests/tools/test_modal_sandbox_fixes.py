@@ -92,9 +92,9 @@ class TestCwdHandling:
             },
         ):
             config = _tt_mod._get_env_config()
-            assert config["cwd"] == "/home/remote-user/work", (
-                "SSH backend should preserve /home/ paths"
-            )
+            assert (
+                config["cwd"] == "/home/remote-user/work"
+            ), "SSH backend should preserve /home/ paths"
 
 
 # =========================================================================

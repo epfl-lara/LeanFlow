@@ -48,9 +48,9 @@ def _local_proof_context_payload(
         "declaration_kind": str(entry.get("kind", "") or theorem.get("kind", "")),
         "line": int(entry.get("line", 0) or 0),
         "end_line": int(entry.get("end_line", 0) or 0),
-        "scan_theorem": dict(scan_payload or {})
-        if isinstance(scan_payload, Mapping) and scan_payload
-        else {},
+        "scan_theorem": (
+            dict(scan_payload or {}) if isinstance(scan_payload, Mapping) and scan_payload else {}
+        ),
     }
     if location:
         metadata["location"] = location

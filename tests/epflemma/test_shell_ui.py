@@ -28,9 +28,9 @@ def test_cli_handlers_reexport_identity():
     # epflemma_cli.cli.cli_handlers, so existing main.<name> references and tests keep working.
     for name in cli_handlers.__all__:
         assert hasattr(main_module, name), f"main lost re-export of {name}"
-        assert getattr(main_module, name) is getattr(cli_handlers, name), (
-            f"{name} is not the same object on main and cli_handlers"
-        )
+        assert getattr(main_module, name) is getattr(
+            cli_handlers, name
+        ), f"{name} is not the same object on main and cli_handlers"
 
 
 def test_render_help_mentions_forgiving_workflow_commands():

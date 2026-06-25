@@ -954,9 +954,11 @@ def get_mcp_status() -> list[dict]:
             entry = {
                 "name": name,
                 "transport": transport,
-                "tools": len(server._registered_tool_names)
-                if hasattr(server, "_registered_tool_names")
-                else len(server._tools),
+                "tools": (
+                    len(server._registered_tool_names)
+                    if hasattr(server, "_registered_tool_names")
+                    else len(server._tools)
+                ),
                 "connected": True,
             }
             if server._sampling:
