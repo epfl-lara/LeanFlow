@@ -103,9 +103,6 @@ class ReadResult:
     hint: str | None = None
     is_binary: bool = False
     is_image: bool = False
-    base64_content: str | None = None
-    mime_type: str | None = None
-    dimensions: str | None = None  # For images: "WIDTHxHEIGHT"
     error: str | None = None
     similar_files: list[str] = field(default_factory=list)
 
@@ -564,16 +561,13 @@ class ShellFileOperations(FileOperations):
             # Still try to read, but warn
             pass
 
-        # Images are never inlined — redirect to the vision tool
+        # Image content cannot be displayed as text; report metadata only.
         if self._is_image(path):
             return ReadResult(
                 is_image=True,
                 is_binary=True,
                 file_size=file_size,
-                hint=(
-                    "Image file detected. Automatically redirected to vision_analyze tool. "
-                    "Use vision_analyze with this file path to inspect the image contents."
-                ),
+                hint="Image file detected. Image contents cannot be displayed as text; reference it by path.",
             )
 
         # Read a sample to check for binary content
@@ -615,73 +609,6 @@ class ShellFileOperations(FileOperations):
             file_size=file_size,
             truncated=truncated,
             hint=hint,
-        )
-
-    # Images larger than this are too expensive to inline as base64 in the
-    # conversation context. Return metadata only and suggest vision_analyze.
-    MAX_IMAGE_BYTES = 512 * 1024  # 512 KB
-
-    def _read_image(self, path: str) -> ReadResult:
-        """Read an image file, returning base64 content."""
-        # Get file size (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
-        try:
-            file_size = int(stat_result.stdout.strip())
-        except ValueError:
-            file_size = 0
-
-        if file_size > self.MAX_IMAGE_BYTES:
-            return ReadResult(
-                is_image=True,
-                is_binary=True,
-                file_size=file_size,
-                hint=(
-                    f"Image is too large to inline ({file_size:,} bytes). "
-                    "Use vision_analyze to inspect the image, or reference it by path."
-                ),
-            )
-
-        # Get base64 content
-        b64_cmd = f"base64 -w 0 {self._escape_shell_arg(path)} 2>/dev/null"
-        b64_result = self._exec(b64_cmd, timeout=30)
-
-        if b64_result.exit_code != 0:
-            return ReadResult(
-                is_image=True,
-                is_binary=True,
-                file_size=file_size,
-                error=f"Failed to read image: {b64_result.stdout}",
-            )
-
-        # Try to get dimensions (requires ImageMagick)
-        dimensions = None
-        if self._has_command("identify"):
-            dim_cmd = f"identify -format '%wx%h' {self._escape_shell_arg(path)} 2>/dev/null"
-            dim_result = self._exec(dim_cmd)
-            if dim_result.exit_code == 0:
-                dimensions = dim_result.stdout.strip()
-
-        # Determine MIME type from extension
-        ext = os.path.splitext(path)[1].lower()
-        mime_types = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".gif": "image/gif",
-            ".webp": "image/webp",
-            ".bmp": "image/bmp",
-            ".ico": "image/x-icon",
-        }
-        mime_type = mime_types.get(ext, "application/octet-stream")
-
-        return ReadResult(
-            is_image=True,
-            is_binary=True,
-            file_size=file_size,
-            base64_content=b64_result.stdout,
-            mime_type=mime_type,
-            dimensions=dimensions,
         )
 
     def _suggest_similar_files(self, path: str) -> ReadResult:

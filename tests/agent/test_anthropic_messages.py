@@ -2,14 +2,12 @@
 
 Covers the resolve-accessor materialization (real agents, ``__new__`` agents,
 MagicMock fakes), the AIAgent delegation identity (wrappers forward to the
-collaborator), the ``_anthropic_image_fallback_cache`` property shim (read/write
-share the collaborator's owned memo), and behavior of the moved logic:
-no-image passthrough, the static image-part / data-url helpers, the cached
-vision-fallback description, and the full multimodal→text flattening.
+collaborator), and the moved logic: no-image passthrough, the image-part
+detector, and the full multimodal→text flattening. The native Anthropic route
+does not forward image content, so image parts flatten to a static placeholder
+(no vision/multimodal analysis).
 """
 
-import base64
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,7 +15,6 @@ import pytest
 from agent.providers.anthropic_messages import (
     AnthropicMessagePreparer,
     content_has_image_parts,
-    materialize_data_url_for_vision,
 )
 from run_agent import AIAgent, _resolve_anthropic_message_preparer
 
@@ -59,7 +56,6 @@ def test_resolve_materializes_for_new_agent():
     preparer = _resolve_anthropic_message_preparer(a)
     assert isinstance(preparer, AnthropicMessagePreparer)
     assert preparer is _resolve_anthropic_message_preparer(a)
-    assert preparer.image_fallback_cache == {}
 
 
 def test_resolve_materializes_for_mock_agent():
@@ -73,36 +69,12 @@ def test_wrappers_delegate_to_collaborator(agent):
     preparer = agent._anthropic_message_preparer_obj
     preparer.prepare_anthropic_messages_for_api = MagicMock(return_value=["sentinel"])
     preparer.preprocess_anthropic_content = MagicMock(return_value="flat")
-    preparer.describe_image_for_anthropic_fallback = MagicMock(return_value="note")
 
     assert agent._prepare_anthropic_messages_for_api([{"role": "user"}]) == ["sentinel"]
     assert agent._preprocess_anthropic_content(["x"], "user") == "flat"
-    assert agent._describe_image_for_anthropic_fallback("u", "user") == "note"
 
 
-# ── cache property shim ──────────────────────────────────────────────────────
-
-
-def test_cache_property_reads_collaborator_memo(agent):
-    agent._anthropic_message_preparer_obj.image_fallback_cache["k"] = "v"
-    assert agent._anthropic_image_fallback_cache == {"k": "v"}
-    assert (
-        agent._anthropic_image_fallback_cache
-        is agent._anthropic_message_preparer_obj.image_fallback_cache
-    )
-
-
-def test_cache_property_indexed_write_reaches_collaborator(agent):
-    agent._anthropic_image_fallback_cache["hit"] = "cached-note"
-    assert agent._anthropic_message_preparer_obj.image_fallback_cache["hit"] == "cached-note"
-
-
-def test_cache_property_setter_replaces_memo(agent):
-    agent._anthropic_image_fallback_cache = {"replaced": "yes"}
-    assert agent._anthropic_message_preparer_obj.image_fallback_cache == {"replaced": "yes"}
-
-
-# ── static helpers ───────────────────────────────────────────────────────────
+# ── image-part detector ──────────────────────────────────────────────────────
 
 
 def test_content_has_image_parts():
@@ -114,22 +86,7 @@ def test_content_has_image_parts():
     assert AIAgent._content_has_image_parts([{"type": "image_url"}]) is True
 
 
-def test_materialize_data_url_for_vision_writes_temp_png():
-    payload = base64.b64encode(b"\x89PNG-bytes").decode("ascii")
-    data_url = f"data:image/png;base64,{payload}"
-    src, path = materialize_data_url_for_vision(data_url)
-    try:
-        assert path is not None
-        assert path.exists()
-        assert str(path).endswith(".png")
-        assert src == str(path)
-        assert path.read_bytes() == b"\x89PNG-bytes"
-    finally:
-        if path is not None and path.exists():
-            path.unlink()
-
-
-# ── behavior: prepare / describe ─────────────────────────────────────────────
+# ── behavior: flattening ─────────────────────────────────────────────────────
 
 
 def test_prepare_passthrough_when_no_images(agent):
@@ -138,38 +95,7 @@ def test_prepare_passthrough_when_no_images(agent):
     assert agent._prepare_anthropic_messages_for_api(messages) is messages
 
 
-def test_describe_caches_per_image(agent):
-    preparer = agent._anthropic_message_preparer_obj
-    fake_result = json.dumps({"analysis": "a red square"})
-    calls = {"n": 0}
-
-    async def fake_vision(**_kwargs):
-        calls["n"] += 1
-        return fake_result
-
-    # The real code lazily imports ``vision_analyze_tool`` and runs it via
-    # asyncio.run; inject a fake async tool so the per-image memo is exercised
-    # for real (it must run analysis only once per distinct image).
-    import sys
-    from types import ModuleType
-
-    mod = ModuleType("tools.implementations.vision_tools")
-    mod.vision_analyze_tool = fake_vision  # type: ignore[attr-defined]
-    with patch.dict(sys.modules, {"tools.implementations.vision_tools": mod}):
-        note1 = preparer.describe_image_for_anthropic_fallback("https://img/1.png", "user")
-        note2 = preparer.describe_image_for_anthropic_fallback("https://img/1.png", "user")
-
-    assert "a red square" in note1
-    assert note1 == note2
-    # Second call served from cache → vision analysis ran exactly once.
-    assert calls["n"] == 1
-
-
-def test_prepare_flattens_image_message(agent):
-    preparer = agent._anthropic_message_preparer_obj
-    preparer.image_fallback_cache[
-        __import__("hashlib").sha256(b"https://img/x.png").hexdigest()
-    ] = "[The user attached an image. Here's what it contains:\na cat]"
+def test_prepare_flattens_image_message_to_placeholder(agent):
     messages = [
         {
             "role": "user",
@@ -180,8 +106,9 @@ def test_prepare_flattens_image_message(agent):
         }
     ]
     out = agent._prepare_anthropic_messages_for_api(messages)
-    # Original untouched (deep-copied), output content flattened to a string.
+    # Original untouched (deep-copied); output content flattened to a string with a
+    # placeholder for the image (no vision analysis) plus the text part preserved.
     assert isinstance(messages[0]["content"], list)
     assert isinstance(out[0]["content"], str)
-    assert "a cat" in out[0]["content"]
+    assert "image content is not processed" in out[0]["content"]
     assert "what is this?" in out[0]["content"]
