@@ -5,4 +5,4 @@ check_toolset_requirements` is the documented public surface used across the rep
 """
 
 from core.model_tools import *  # noqa: F401,F403
-from core.model_tools import _run_async  # noqa: F401  (used by epflemma_cli at runtime)
+from core.model_tools import _run_async  # noqa: F401  (used by leanflow_cli at runtime)

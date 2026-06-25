@@ -31,8 +31,8 @@ class TestWriteDenyExactPaths:
         path = os.path.join(str(Path.home()), ".netrc")
         assert _is_write_denied(path) is True
 
-    def test_gauss_env(self):
-        path = os.path.join(str(Path.home()), ".gauss", ".env")
+    def test_leanflow_env(self):
+        path = os.path.join(str(Path.home()), ".leanflow", ".env")
         assert _is_write_denied(path) is True
 
     def test_shell_profiles(self):
@@ -77,6 +77,6 @@ class TestWriteAllowed:
     def test_project_file(self):
         assert _is_write_denied("/home/user/project/main.py") is False
 
-    def test_gauss_config_not_env(self):
-        path = os.path.join(str(Path.home()), ".gauss", "config.yaml")
+    def test_leanflow_config_not_env(self):
+        path = os.path.join(str(Path.home()), ".leanflow", "config.yaml")
         assert _is_write_denied(path) is False

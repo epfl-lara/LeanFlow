@@ -1,45 +1,45 @@
-# EPFLemma Architecture & Refactoring Map
+# LeanFlow Architecture & Refactoring Map
 
-This document tracks the module structure of EPFLemma and the in-progress decomposition of its
+This document tracks the module structure of LeanFlow and the in-progress decomposition of its
 monoliths. It is the living companion to the refactoring program (see `TODO.md` "Refactoring
 Plan" and the per-phase plan). Update it as modules move.
 
 ## Entry points (do not break)
 
-- `epflemma` → `epflemma_cli.main:main` — the interactive shell / CLI.
-- `epflemma-agent` → `epflemma_agent:main` — thin shim that seeds `EPFLEMMA_HOME` and calls
+- `leanflow` → `leanflow_cli.main:main` — the interactive shell / CLI.
+- `leanflow-agent` → `leanflow_agent:main` — thin shim that seeds `LEANFLOW_HOME` and calls
   `run_agent.main()`.
 
-`native_runner.py` builds `run_agent.AIAgent` **in-process** (not via subprocess); the `epflemma`
-shell spawns `epflemma workflow …` subprocesses for managed runs.
+`native_runner.py` builds `run_agent.AIAgent` **in-process** (not via subprocess); the `leanflow`
+shell spawns `leanflow workflow …` subprocesses for managed runs.
 
 ## Top-level layout (post Phase II)
 
 ```
-EPFLemma/
+LeanFlow/
 ├── run_agent.py            # AIAgent conversation loop (collaborators live under agent/)
-├── epflemma_agent.py       # epflemma-agent entry shim (seeds EPFLEMMA_HOME + runs the legacy seed)
-├── core/                   # lowest layer (NO epflemma_cli deps): the home authority + shared kernel
-│   ├── home.py             #   epflemma_home() + migrate_legacy_home() — single source of truth
+├── leanflow_agent.py       # leanflow-agent entry shim (seeds LEANFLOW_HOME + runs the legacy seed)
+├── core/                   # lowest layer (NO leanflow_cli deps): the home authority + shared kernel
+│   ├── home.py             #   leanflow_home() + migrate_legacy_home() — single source of truth
 │   ├── state.py time.py constants.py   # SQLite session store / clock / endpoint constants
 │   └── model_tools.py toolsets.py utils.py minisweagent_path.py
 ├── agent/                  # AIAgent collaborators, grouped into cohesive subpackages:
 │                           #   providers/ prompting/ compression/ execution/ display/ accounting/ runtime/
 ├── tools/                  # agent tools, grouped: implementations/ utilities/ mcp/ environments/
 │                           #   (registry.py + response.py kept at the top for self-registration)
-└── epflemma_cli/           # shell UX + workflow orchestration, grouped:
+└── leanflow_cli/           # shell UX + workflow orchestration, grouped:
                             #   lean/ native/ formalization/ workflows/ cli/ runtime/
                             #   (main.py shell.py config.py workflow.py kept at the top — entrypoint + patch targets)
 ```
 
-> **Phase II reversed the earlier "keep flat / keep `gauss_*`" stance.** The conservative first wave
+> **Phase II reversed the earlier "keep everything flat" stance.** The conservative first wave
 > split the monoliths in place; Phase II then (a) grouped every extracted leaf into the subpackages
-> above, (b) dropped the legacy `gauss_*` module names (`gauss_state`→`core.state`, etc.) and the
-> `OPENGAUSS_`/`GAUSS_` env-var + `~/.gauss`/`~/.opengauss` home prefixes entirely, and (c) completed
+> above, (b) renamed the historical flat module names (e.g. the state store → `core.state`) and
+> consolidated to the single `LEANFLOW_` env + `~/.leanflow` home contract, and (c) completed
 > the managed-run contract. The detailed extraction history further down lists modules by their
 > original *flat* names — they now live under the subpackages here (e.g. the `agent/` collaborators
 > are under `agent/{accounting,execution,prompting,…}/`; the `native_runner.py`-era leaves under
-> `epflemma_cli/native/`; the `lean_*` leaves under `epflemma_cli/lean/`).
+> `leanflow_cli/native/`; the `lean_*` leaves under `leanflow_cli/lean/`).
 
 ### Phase II program (deep restructure → legacy drop → contract → quality → docs)
 
@@ -49,12 +49,11 @@ Behavior-preserving throughout; each step gated by `ruff`+`mypy`+full pytest and
    shell-injection vectors in `tools/file_operations.py`, narrowed a broad except.
 2. **Golden/characterization net** — `tests/test_golden_cores.py` pins the appendix-per-turn,
    callback-ordering, result-schema, and interrupt invariants before the DI work.
-3. **Deep restructure** — `core/` package introduced; `agent/`, `tools/`, `epflemma_cli/` each grouped
+3. **Deep restructure** — `core/` package introduced; `agent/`, `tools/`, `leanflow_cli/` each grouped
    into the subpackages above via collision-safe import rewrites (4 commits).
-4. **Legacy drop** — `core.home` single home authority + one-time `~/.gauss`→`~/.epflemma` data seed;
-   all `OPENGAUSS_`/`GAUSS_` env fallbacks/dual-writes collapsed; the `GAUSS_`-only runtime/session
-   vars renamed to `EPFLEMMA_`; internal markers renamed. *Kept:* the `scripts/install.sh`→external
-   Morph-template var contract, and the `.gauss`/`.opengauss` project-dir discovery (a migration aid).
+4. **Env/home consolidation** — `core.home` single home authority (`~/.leanflow`); all runtime/session
+   vars consolidated to the single `LEANFLOW_` prefix; internal markers renamed. *Kept:* the
+   `scripts/install.sh`→external Morph-template var contract.
 5. **Managed-run contract** — `native_runner` now drives the post-tool-result appendix through
    `AIAgent.{stage,set,clear}_tool_result_appendix` instead of reaching into the private attribute.
    (The DI seams were already in place — 14+ injected collaborators; a `PostToolResultAppendixBroker`
@@ -63,21 +62,21 @@ Behavior-preserving throughout; each step gated by `ruff`+`mypy`+full pytest and
 
 ## Monoliths being decomposed
 
-Line counts below are **current** (post-decomposition on `refactor/epflemma-cores`); the
+Line counts below are **current** (post-decomposition on `refactor/leanflow-cores`); the
 "Target" column records what was carved off. The remaining bulk in each file is the coupled
 core called out under "Deferred".
 
 | File | Lines | Target |
 |---|---|---|
-| `epflemma_cli/native/native_runner.py` | 11,671 → 8,962 | Phase 2: leaves → `native_state` boundary → cluster modules → `proof_state_builder` / `verification_review` / `lean_module_paths` / `native_lean_files` / `queue_item_predicates`; managed-conversation/follow-up core deferred |
+| `leanflow_cli/native/native_runner.py` | 11,671 → 8,962 | Phase 2: leaves → `native_state` boundary → cluster modules → `proof_state_builder` / `verification_review` / `lean_module_paths` / `native_lean_files` / `queue_item_predicates`; managed-conversation/follow-up core deferred |
 | `run_agent.py` (`AIAgent`) | 7,123 → 4,878 | Phase 4: 12 collaborators + `collaborator_resolvers`; Phase 4 module-level leaves `workflow_events` + `runtime_helpers`; `run_conversation` loop deferred |
-| `epflemma_cli/lean/lean_services.py` | 2,847 → 1,987 | Phase 5: lean_diagnostics / declarations / search_providers / automation / attempt_helpers / sorry_stats / proof_context_local + `lean_backend` wrapper + `lean_models` (result dataclasses) + `lean_worker_dispatch`; full backend abstraction deferred |
+| `leanflow_cli/lean/lean_services.py` | 2,847 → 1,987 | Phase 5: lean_diagnostics / declarations / search_providers / automation / attempt_helpers / sorry_stats / proof_context_local + `lean_backend` wrapper + `lean_models` (result dataclasses) + `lean_worker_dispatch`; full backend abstraction deferred |
 | `tools/implementations/web_tools.py` | 1,670 → 1,309 | Phase 5: `web_research_providers` (arXiv/Semantic-Scholar/Crossref/Sourcegraph search + provider-ordering router + constants) split out |
 | `agent/providers/auxiliary_client.py` | 1,626 → 1,286 | Phase 5: `auxiliary_adapters` (routing) + `model_capabilities` (metadata+pricing) + `auxiliary_rcp` (RCP predicates) + `auxiliary_nous` (Nous auth/endpoint) split out |
 | `tools/mcp/mcp_tool.py` | 1,638 → 1,029 | Phase 5: `mcp_transport` (stdio/HTTP) + `mcp_sampling` (server-initiated LLM) + `mcp_schema` (schema/utility-schema/config-filter) + `mcp_config` (`_load_mcp_config`) split out |
-| `epflemma_cli/workflows/workflow_state.py` | 1,325 → 1,068 | Phase 3: `activity_preview` (event/status shaping) + `workflow_state_paths` (path-root discovery) + `workflow_json_io` (read/write JSON) split out |
-| `epflemma_cli/formalization/formalization_documents.py` | 1,512 → 536 | Phase 5: `document_extraction` + `formalization_markdown` + `formalization_models` + `formalization_tex_discovery` split out |
-| `epflemma_cli/main.py` | 1,331 → 426 | Phase 3: `cli_handlers` + `shell_ui` + `shell` (`InteractiveShell` REPL) split out; main.py is now a thin argparse dispatcher |
+| `leanflow_cli/workflows/workflow_state.py` | 1,325 → 1,068 | Phase 3: `activity_preview` (event/status shaping) + `workflow_state_paths` (path-root discovery) + `workflow_json_io` (read/write JSON) split out |
+| `leanflow_cli/formalization/formalization_documents.py` | 1,512 → 536 | Phase 5: `document_extraction` + `formalization_markdown` + `formalization_models` + `formalization_tex_discovery` split out |
+| `leanflow_cli/main.py` | 1,331 → 426 | Phase 3: `cli_handlers` + `shell_ui` + `shell` (`InteractiveShell` REPL) split out; main.py is now a thin argparse dispatcher |
 | `tools/implementations/lean_tool.py` | 1,693 → 759 | Phase 5: `lean_experts` (advisor tools) + `lean_patch` (verified-patch apply) split out |
 
 ### Phase 6 hardening (code-cleaning / improvement; behavior-preserving)
@@ -113,7 +112,7 @@ core called out under "Deferred".
    be leaves (no back-import into the monolith) — `run_agent.py` has ~46 lazy imports that make
    cycles easy to introduce.
 4. Gate: `ruff check` + add the new module to mypy's `files` list.
-5. Verify: targeted tests → full suite → `--help` smoke → GaussTest workflow for runner changes.
+5. Verify: targeted tests → full suite → `--help` smoke → ProveDemo workflow for runner changes.
 6. One behavior-preserving extraction per commit/PR.
 
 ## Tooling gates (Phase 0)
@@ -140,10 +139,10 @@ branch base. Two earlier classes of local failure were FIXED on this branch: the
 fixture now snapshots/restores provider env between tests) and the `test_non_quiet_logging`
 assertion (stale `1/180` fixture vs the default `max_iterations=200`).
 
-## Decomposition progress (branches refactor/epflemma-deep → refactor/epflemma-cores)
+## Decomposition progress (branches refactor/leanflow-deep → refactor/leanflow-cores)
 
-> The first wave (`refactor/epflemma-deep`) was squashed and merged to `main`; the follow-on
-> `refactor/epflemma-cores` branch continues with further leaf extractions (the `shell`, `lean_models`,
+> The first wave (`refactor/leanflow-deep`) was squashed and merged to `main`; the follow-on
+> `refactor/leanflow-cores` branch continues with further leaf extractions (the `shell`, `lean_models`,
 > `formalization_*`, `native_lean_files`, `queue_item_predicates` modules below).
 
 Behavior-preserving extractions completed so far (each: move verbatim → re-export shim from the
@@ -222,9 +221,9 @@ patch/monkeypatch surface tests rely on while moving the logic out.
   already-gathered shell state into display strings.
 - `shell.py` — the full `InteractiveShell` REPL (prompt-toolkit loop, slash-command dispatch,
   workflow launch/monitor, status rendering), re-exported from `main` for the historical
-  `from epflemma_cli.main import InteractiveShell` surface. main.py is now a thin argparse
-  dispatcher (~425 lines). Tests driving shell methods patch collaborators on `epflemma_cli.shell`;
-  tests driving `main()` patch them on `epflemma_cli.main` (both import the names independently).
+  `from leanflow_cli.main import InteractiveShell` surface. main.py is now a thin argparse
+  dispatcher (~425 lines). Tests driving shell methods patch collaborators on `leanflow_cli.shell`;
+  tests driving `main()` patch them on `leanflow_cli.main` (both import the names independently).
 - Shell slash-command routing is now unified in `commands.py` behind a single `COMMAND_REGISTRY`
   (`tuple[WorkflowCommandSpec, …]`), replacing the scattered per-command branches.
 
@@ -270,9 +269,9 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 
 ### Bug fixes landed alongside the moves
 
-- **Test-pollution fix:** importing `run_agent` ran `load_epflemma_dotenv()` at import time before
-  the autouse `_isolate_epflemma_home` fixture had set `EPFLEMMA_HOME`, leaking the developer's real
-  `.env` provider-resolution vars (`EPFLEMMA_*`/`OPENGAUSS_*`/`GAUSS_*`) into the session and
+- **Test-pollution fix:** importing `run_agent` ran `load_leanflow_dotenv()` at import time before
+  the autouse `_isolate_leanflow_home` fixture had set `LEANFLOW_HOME`, leaking the developer's real
+  `.env` provider-resolution vars (`LEANFLOW_*`) into the session and
   breaking `tests/agent/test_auxiliary_client.py` whenever `test_run_agent` ran first. The fixture
   now strips those vars (`monkeypatch.delenv`, auto-restored) so resolution starts clean regardless
   of test order. No production behavior changed.

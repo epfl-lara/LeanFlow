@@ -1,13 +1,13 @@
 @echo off
 REM ============================================================================
-REM EPFLemma WSL Installer (CMD wrapper)
+REM LeanFlow WSL Installer (CMD wrapper)
 REM ============================================================================
 REM Windows support is WSL-first. This wrapper forwards to install.ps1, which
 REM bootstraps WSL2 and then runs the standard Linux installer there.
 REM ============================================================================
 
 echo.
-echo  EPFLemma WSL Installer
+echo  LeanFlow WSL Installer
 echo  Launching PowerShell bootstrap...
 echo.
 

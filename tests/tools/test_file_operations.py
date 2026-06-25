@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from epflemma_cli.lean.lean_statement_guard import ALLOW_STATEMENT_EDITS_ENV
+from leanflow_cli.lean.lean_statement_guard import ALLOW_STATEMENT_EDITS_ENV
 from tools.implementations.file_operations import (
     MAX_LINE_LENGTH,
     LintResult,
@@ -373,7 +373,7 @@ class TestLeanStatementGuardedWrites:
 
         assert result.error is not None
         assert "Lean statement guard blocked this edit" in result.error
-        assert "EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS" not in result.error
+        assert "LEANFLOW_ALLOW_LEAN_STATEMENT_EDITS" not in result.error
         assert path.read_text(encoding="utf-8") == original
 
     def test_patch_replace_blocks_lean_statement_change(self, tmp_path, monkeypatch):

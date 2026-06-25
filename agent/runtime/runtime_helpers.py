@@ -32,7 +32,7 @@ def _generate_short_session_id() -> str:
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError from broken pipes.
 
-    When EPFLemma runs as a systemd service, Docker container, or headless
+    When LeanFlow runs as a systemd service, Docker container, or headless
     daemon, the stdout/stderr pipe can become unavailable (idle timeout, buffer
     exhaustion, socket reset). Any print() call then raises
     ``OSError: [Errno 5] Input/output error``, which can crash agent setup or

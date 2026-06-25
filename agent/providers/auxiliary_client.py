@@ -6,7 +6,7 @@ duplicating fallback logic.
 
 Resolution order for text tasks (auto mode):
   1. OpenRouter  (OPENROUTER_API_KEY)
-  2. Nous Portal (~/.epflemma/auth.json active provider)
+  2. Nous Portal (~/.leanflow/auth.json active provider)
   3. Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
   4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
      wrapped to look like a chat.completions client)
@@ -34,14 +34,14 @@ from typing import Any
 from openai import OpenAI
 
 from core.constants import OPENROUTER_BASE_URL
-from epflemma_cli.runtime.auth import (
+from leanflow_cli.runtime.auth import (
     CODEX_AUX_DEFAULT_MODEL,
     CODEX_BASE_URL,
     PROVIDER_REGISTRY,
     _read_codex_tokens,
     _resolve_kimi_base_url,
 )
-from epflemma_cli.runtime.runtime_provider import resolve_runtime_provider
+from leanflow_cli.runtime.runtime_provider import resolve_runtime_provider
 
 logger = logging.getLogger(__name__)
 
@@ -56,15 +56,15 @@ _API_KEY_PROVIDER_AUX_MODELS: dict[str, str] = {
 
 # OpenRouter app attribution headers
 _OR_HEADERS = {
-    "HTTP-Referer": "https://epflemma.dev",
-    "X-OpenRouter-Title": "EPFLemma Agent",
+    "HTTP-Referer": "https://leanflow.dev",
+    "X-OpenRouter-Title": "LeanFlow Agent",
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }
 
 # Nous Portal extra_body for product attribution.
 # Callers should pass this as extra_body in chat.completions.create()
 # when the auxiliary client is backed by Nous Portal.
-NOUS_EXTRA_BODY = {"tags": ["product=epflemma-agent"]}
+NOUS_EXTRA_BODY = {"tags": ["product=leanflow-agent"]}
 
 # Set at resolve time — True if the auxiliary client points to Nous Portal
 auxiliary_is_nous: bool = False
@@ -108,7 +108,7 @@ from agent.providers.auxiliary_adapters import (  # noqa: E402,F401
 )
 
 # Nous Portal auth/endpoint helpers live in agent/auxiliary_nous.py. They read
-# ~/.epflemma/auth.json and resolve the Nous API key/base URL with no auxiliary
+# ~/.leanflow/auth.json and resolve the Nous API key/base URL with no auxiliary
 # routing state, so they were extracted as a closed cluster (with the default
 # base-URL constant) and re-exported here — every importer and test keeps
 # resolving auxiliary_client.<name>.
@@ -121,9 +121,9 @@ from agent.providers.auxiliary_nous import (  # noqa: E402,F401
 
 
 def _read_codex_access_token() -> str | None:
-    """Read a valid Codex OAuth access token from EPFLemma auth state.
+    """Read a valid Codex OAuth access token from LeanFlow auth state.
 
-    EPFLemma's auth.json is authoritative when present. Legacy ``~/.codex``
+    LeanFlow's auth.json is authoritative when present. Legacy ``~/.codex``
     fallback is opt-in to avoid unrelated desktop auth state silently changing
     auxiliary routing and tests.
     """
@@ -134,7 +134,7 @@ def _read_codex_access_token() -> str | None:
 
 def _load_runtime_config() -> dict[str, Any]:
     try:
-        from epflemma_cli import config as config_module
+        from leanflow_cli import config as config_module
 
         loaded = config_module.load_config()
         return loaded if isinstance(loaded, dict) else {}
@@ -363,7 +363,7 @@ def _resolve_forced_provider(forced: str) -> tuple[OpenAI | None, str | None]:
         client, model = _try_nous()
         if client is None:
             logger.warning(
-                "auxiliary.provider=nous but Nous Portal not configured (run: epflemma provider)"
+                "auxiliary.provider=nous but Nous Portal not configured (run: leanflow provider)"
             )
         return client, model
 
@@ -515,7 +515,7 @@ def resolve_provider_client(
         if client is None:
             logger.warning(
                 "resolve_provider_client: nous requested "
-                "but Nous Portal not configured (run: epflemma provider)"
+                "but Nous Portal not configured (run: leanflow provider)"
             )
             return None, None
         final_model = model or default
@@ -937,7 +937,7 @@ def _build_call_kwargs(
             merged_extra["chat_template_kwargs"] = template_kwargs
             merged_extra["reasoning_effort"] = _map_rcp_reasoning_effort(reasoning_effort)
     if provider == "nous" or auxiliary_is_nous:
-        merged_extra.setdefault("tags", []).extend(["product=epflemma-agent"])
+        merged_extra.setdefault("tags", []).extend(["product=leanflow-agent"])
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 
@@ -1040,7 +1040,7 @@ def call_llm(
     if client is None:
         raise RuntimeError(
             f"No LLM provider configured for task={task} provider={resolved_provider}. "
-            f"Run: epflemma setup"
+            f"Run: leanflow setup"
         )
 
     kwargs = _build_call_kwargs(
@@ -1107,7 +1107,7 @@ async def async_call_llm(
     if client is None:
         raise RuntimeError(
             f"No LLM provider configured for task={task} provider={resolved_provider}. "
-            f"Run: epflemma setup"
+            f"Run: leanflow setup"
         )
 
     kwargs = _build_call_kwargs(

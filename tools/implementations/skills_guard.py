@@ -9,7 +9,7 @@ and a trust-aware install policy that determines whether a skill is allowed
 based on both the scan verdict and the source's trust level.
 
 Trust levels:
-  - builtin:   Ships with EPFLemma. Never scanned, always trusted.
+  - builtin:   Ships with LeanFlow. Never scanned, always trusted.
   - trusted:   openai/skills and anthropics/skills only. Caution verdicts allowed.
   - community: Everything else. Any findings = blocked unless --force.
 
@@ -156,11 +156,11 @@ THREAT_PATTERNS = [
         "references Docker config (may contain registry creds)",
     ),
     (
-        r"\$HOME/\.(epflemma|opengauss|gauss)/\.env|\~/\.(epflemma|opengauss|gauss)/\.env",
+        r"\$HOME/\.leanflow/\.env|\~/\.leanflow/\.env",
         "legacy_env_access",
         "critical",
         "exfiltration",
-        "directly references EPFLemma secrets file",
+        "directly references LeanFlow secrets file",
     ),
     (
         r"cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)",
@@ -762,11 +762,11 @@ THREAT_PATTERNS = [
         "references agent config files (could persist malicious instructions across sessions)",
     ),
     (
-        r"\.(epflemma|opengauss|gauss)/config\.yaml|\.(epflemma|opengauss|gauss)/SOUL\.md",
+        r"\.leanflow/config\.yaml|\.leanflow/SOUL\.md",
         "legacy_config_mod",
         "critical",
         "persistence",
-        "references EPFLemma configuration files directly",
+        "references LeanFlow configuration files directly",
     ),
     (
         r"\.claude/settings|\.codex/config",
@@ -1482,9 +1482,9 @@ def _parse_llm_response(text: str, skill_name: str) -> list[Finding]:
 
 
 def _get_configured_model() -> str:
-    """Load the user's configured model from ~/.epflemma/config.yaml."""
+    """Load the user's configured model from ~/.leanflow/config.yaml."""
     try:
-        from epflemma_cli.config import load_config
+        from leanflow_cli.config import load_config
 
         config = load_config()
         return config.get("model", "")

@@ -170,7 +170,7 @@ def test_interruptible_api_call_times_out_and_emits_provider_wait(monkeypatch):
     request_client = ClosableHangingRequestClient()
     factory = OpenAIFactory([request_client])
     monkeypatch.setattr(run_agent, "OpenAI", factory)
-    monkeypatch.setenv("EPFLEMMA_PROVIDER_WAIT_HEARTBEAT", "0.2")
+    monkeypatch.setenv("LEANFLOW_PROVIDER_WAIT_HEARTBEAT", "0.2")
 
     workflow_events = []
     monkeypatch.setattr(
@@ -239,7 +239,7 @@ def test_streaming_api_call_times_out_and_emits_provider_wait(monkeypatch):
     request_client = ClosableHangingRequestClient()
     factory = OpenAIFactory([request_client])
     monkeypatch.setattr(run_agent, "OpenAI", factory)
-    monkeypatch.setenv("EPFLEMMA_PROVIDER_WAIT_HEARTBEAT", "0.2")
+    monkeypatch.setenv("LEANFLOW_PROVIDER_WAIT_HEARTBEAT", "0.2")
 
     workflow_events = []
     monkeypatch.setattr(

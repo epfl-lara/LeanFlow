@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import tools.implementations.skills_tool as skills_tool_module
-from epflemma_cli.runtime.skill_core import discover_skill_commands, find_skill, load_skill
+from leanflow_cli.runtime.skill_core import discover_skill_commands, find_skill, load_skill
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ def build_plan_path(
     Relative paths are intentional: file tools are task/backend-aware and resolve
     them against the active working directory for local, docker, ssh, modal,
     daytona, and similar terminal backends. That keeps the plan with the active
-    workspace instead of the EPFLemma host's global home directory.
+    workspace instead of the LeanFlow host's global home directory.
     """
     slug_source = (user_instruction or "").strip().splitlines()[0] if user_instruction else ""
     slug = _PLAN_SLUG_RE.sub("-", slug_source.lower()).strip("-")
@@ -38,7 +38,7 @@ def build_plan_path(
         slug = "-".join(part for part in slug.split("-")[:8] if part)[:48].strip("-")
     slug = slug or "conversation-plan"
     timestamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
-    return Path(".epflemma") / "plans" / f"{timestamp}-{slug}.md"
+    return Path(".leanflow") / "plans" / f"{timestamp}-{slug}.md"
 
 
 def _load_skill_payload(
@@ -77,7 +77,7 @@ def _load_skill_payload(
 
 
 def _local_skill_override_active() -> bool:
-    default_skills_dir = skills_tool_module.EPFLEMMA_HOME_DIR / "skills"
+    default_skills_dir = skills_tool_module.LEANFLOW_HOME_DIR / "skills"
     return default_skills_dir != skills_tool_module.SKILLS_DIR
 
 
@@ -161,7 +161,7 @@ def _build_skill_message(
 
 
 def scan_skill_commands() -> dict[str, dict[str, Any]]:
-    """Return the current EPFLemma skill command map."""
+    """Return the current LeanFlow skill command map."""
     global _skill_commands
     if _local_skill_override_active():
         _skill_commands = _discover_local_skill_commands()
@@ -174,7 +174,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
                 "description", f"Invoke the {payload.get('name', command.lstrip('/'))} skill"
             )
     except Exception:
-        logger.debug("Failed to scan EPFLemma skill commands", exc_info=True)
+        logger.debug("Failed to scan LeanFlow skill commands", exc_info=True)
     return _skill_commands
 
 

@@ -1,21 +1,21 @@
 # ============================================================================
-# EPFLemma WSL Installer Bootstrap
+# LeanFlow WSL Installer Bootstrap
 # ============================================================================
-# Windows convenience wrapper that installs EPFLemma inside WSL2 using the
+# Windows convenience wrapper that installs LeanFlow inside WSL2 using the
 # shared installer flow.
 #
 # Usage:
 #   .\scripts\install.ps1
 #   .\scripts\install.ps1 -WithWorkspace
 #   .\scripts\install.ps1 -Distro Ubuntu
-#   .\scripts\install.ps1 -LinuxRepoDir "~/EPFLemma"
+#   .\scripts\install.ps1 -LinuxRepoDir "~/LeanFlow"
 #
 # ============================================================================
 
 param(
     [switch]$WithWorkspace,
     [string]$Distro = "",
-    [string]$LinuxRepoDir = "~/EPFLemma",
+    [string]$LinuxRepoDir = "~/LeanFlow",
     [string]$Branch = ""
 )
 
@@ -27,13 +27,13 @@ $script:ResolvedDistro = $null
 function Write-Banner {
     Write-Host ""
     Write-Host "┌─────────────────────────────────────────────────────────┐" -ForegroundColor Magenta
-    Write-Host "│               EPFLemma WSL Installer                   │" -ForegroundColor Magenta
+    Write-Host "│               LeanFlow WSL Installer                   │" -ForegroundColor Magenta
     Write-Host "├─────────────────────────────────────────────────────────┤" -ForegroundColor Magenta
     Write-Host "│   Windows uses WSL2 and the shared installer flow      │" -ForegroundColor Magenta
     Write-Host "└─────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
     Write-Host ""
     Write-Host "[note] This install can take up to 10 minutes." -ForegroundColor Yellow
-    Write-Host "[note] For a setup in under 10 seconds, try: https://morph.new/epflemma" -ForegroundColor Yellow
+    Write-Host "[note] For a setup in under 10 seconds, try: https://morph.new/leanflow" -ForegroundColor Yellow
     Write-Host ""
 }
 
@@ -85,7 +85,7 @@ function Get-RerunCommand {
         $parts += "-Distro"
         $parts += "`"$Distro`""
     }
-    if ($LinuxRepoDir -and $LinuxRepoDir -ne "~/EPFLemma") {
+    if ($LinuxRepoDir -and $LinuxRepoDir -ne "~/LeanFlow") {
         $parts += "-LinuxRepoDir"
         $parts += "`"$LinuxRepoDir`""
     }
@@ -231,7 +231,7 @@ if ! command -v git >/dev/null 2>&1; then
     sudo apt-get update
     sudo apt-get install -y git
   else
-    echo "✗ git is required inside WSL before EPFLemma can be installed."
+    echo "✗ git is required inside WSL before LeanFlow can be installed."
     exit 1
   fi
 fi
@@ -268,7 +268,7 @@ fi
 cd "$TARGET_DIR"
 if [ "$CREATE_WORKSPACE" = "1" ]; then
   echo "→ -WithWorkspace is accepted for compatibility."
-  echo "→ The shared EPFLemma template already provisions the workspace."
+  echo "→ The shared LeanFlow template already provisions the workspace."
 fi
 ./scripts/install.sh
 '@
@@ -294,7 +294,7 @@ function Resolve-WSLPath {
 
 function Main {
     Write-Banner
-    Write-Info "EPFLemma on Windows runs through WSL2."
+    Write-Info "LeanFlow on Windows runs through WSL2."
     Write-Info "This bootstrap clones into your WSL home and then runs ./scripts/install.sh there."
     Ensure-WSL
 
@@ -309,7 +309,7 @@ function Main {
 
     $bashScript = (Build-InstallScript).Replace("`r`n", "`n").Replace("`r", "`n")
     $workspaceFlag = if ($WithWorkspace.IsPresent) { "1" } else { "0" }
-    $tempDir = Join-Path $env:TEMP "epflemma-wsl-bootstrap"
+    $tempDir = Join-Path $env:TEMP "leanflow-wsl-bootstrap"
     $tempScriptPath = Join-Path $tempDir "install.sh"
     New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
     [System.IO.File]::WriteAllText(
@@ -344,10 +344,10 @@ function Main {
     }
 
     Write-Host ""
-    Write-Success "EPFLemma is installed in WSL."
+    Write-Success "LeanFlow is installed in WSL."
     Write-Info "For daily use, open your WSL shell and run:"
     Write-Host "  cd $LinuxRepoDir" -ForegroundColor Yellow
-    Write-Host "  epflemma" -ForegroundColor Yellow
+    Write-Host "  leanflow" -ForegroundColor Yellow
     Write-Host ""
 }
 

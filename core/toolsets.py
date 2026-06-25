@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Toolset definitions for the EPFLemma kernel."""
+"""Toolset definitions for the LeanFlow kernel."""
 
 from typing import Any
 
@@ -27,7 +27,7 @@ _LEAN_TOOLS = [
     "lean_decompose_helpers",
 ]
 
-_EPFLEMMA_CORE_TOOLS = [
+_LEANFLOW_CORE_TOOLS = [
     *_FILE_TOOLS,
     *_WEB_TOOLS,
     *_TERMINAL_TOOLS,
@@ -104,19 +104,19 @@ TOOLSETS: dict[str, dict[str, Any]] = {
             "lean",
         ],
     },
-    "epflemma-cli": {
-        "description": "EPFLemma kernel CLI toolset",
-        "tools": _EPFLEMMA_CORE_TOOLS,
+    "leanflow-cli": {
+        "description": "LeanFlow kernel CLI toolset",
+        "tools": _LEANFLOW_CORE_TOOLS,
         "includes": [],
     },
-    "epflemma-native": {
-        "description": "EPFLemma native Lean workflow toolset",
-        "tools": _EPFLEMMA_CORE_TOOLS,
+    "leanflow-native": {
+        "description": "LeanFlow native Lean workflow toolset",
+        "tools": _LEANFLOW_CORE_TOOLS,
         "includes": [],
     },
-    "epflemma-native-swarm": {
-        "description": "User-approved EPFLemma Lean swarm workflow toolset",
-        "tools": [*_EPFLEMMA_CORE_TOOLS, *_DELEGATION_TOOLS],
+    "leanflow-native-swarm": {
+        "description": "User-approved LeanFlow Lean swarm workflow toolset",
+        "tools": [*_LEANFLOW_CORE_TOOLS, *_DELEGATION_TOOLS],
         "includes": [],
     },
 }

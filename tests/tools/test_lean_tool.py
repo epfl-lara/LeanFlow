@@ -8,11 +8,11 @@ import model_tools
 import tools.implementations.lean_experts as lean_experts
 import tools.implementations.lean_patch as lean_patch
 import tools.implementations.lean_tool as lean_tool
-from epflemma_cli.lean.lean_services import (
+from leanflow_cli.lean.lean_services import (
     LeanCapabilityReport,
     LeanSearchResult,
 )
-from epflemma_cli.workflows.workflow_state import load_verified_patch_status
+from leanflow_cli.workflows.workflow_state import load_verified_patch_status
 
 
 def test_lean_capabilities_tool_returns_structured_json(monkeypatch):
@@ -170,7 +170,7 @@ def test_unreliable_automation_tools_are_not_model_facing():
 
 
 def test_apply_verified_patch_tool_applies_patch_and_records_verified_status(tmp_path, monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     target = tmp_path / "Demo.lean"
     target.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
@@ -212,7 +212,7 @@ def test_apply_verified_patch_tool_applies_patch_and_records_verified_status(tmp
 
 
 def test_apply_verified_patch_tool_persists_check_failed_status(tmp_path, monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     target = tmp_path / "Demo.lean"
     target.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
@@ -248,7 +248,7 @@ def test_apply_verified_patch_tool_persists_check_failed_status(tmp_path, monkey
 
 
 def test_apply_verified_patch_tool_reports_no_changes_without_verifying(tmp_path, monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     target = tmp_path / "Demo.lean"
     original = "theorem demo : True := by\n  trivial\n"
     target.write_text(original, encoding="utf-8")
@@ -282,7 +282,7 @@ def test_apply_verified_patch_tool_reports_no_changes_without_verifying(tmp_path
 
 
 def test_apply_verified_patch_tool_blocks_statement_changes_before_verify(tmp_path, monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     target = tmp_path / "Demo.lean"
     original = "theorem demo : True := by\n  trivial\n"
     target.write_text(original, encoding="utf-8")
@@ -373,10 +373,10 @@ def test_lean_reasoning_help_tool_uses_command_provider(monkeypatch, tmp_path):
             stderr="",
         )
 
-    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("AUXILIARY_LEAN_REASONING_PROVIDER", "codex")
     monkeypatch.setenv("AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE", "codex-helper --read-only")
-    monkeypatch.setattr("epflemma_cli.cli.expert_help.subprocess.run", _fake_run)
+    monkeypatch.setattr("leanflow_cli.cli.expert_help.subprocess.run", _fake_run)
 
     payload = json.loads(
         lean_tool.lean_reasoning_help_tool(
@@ -411,9 +411,9 @@ def test_lean_reasoning_help_codex_default_reads_last_message_file(monkeypatch, 
             stderr="",
         )
 
-    monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("AUXILIARY_LEAN_REASONING_PROVIDER", "codex")
-    monkeypatch.setattr("epflemma_cli.cli.expert_help.subprocess.run", _fake_run)
+    monkeypatch.setattr("leanflow_cli.cli.expert_help.subprocess.run", _fake_run)
 
     payload = json.loads(
         lean_tool.lean_reasoning_help_tool(

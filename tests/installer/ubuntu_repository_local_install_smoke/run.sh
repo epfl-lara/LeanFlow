@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-IMAGE_TAG="${IMAGE_TAG:-epflemma-installer-ubuntu-repository-local-smoke}"
+IMAGE_TAG="${IMAGE_TAG:-leanflow-installer-ubuntu-repository-local-smoke}"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "ERROR: docker is not installed or not on PATH" >&2

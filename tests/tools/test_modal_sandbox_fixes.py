@@ -1,7 +1,7 @@
 """Tests for Modal sandbox infrastructure fixes (TBLite baseline).
 
 Covers the 9 bugs discovered while setting up TBLite evaluation:
-1. Tool resolution — minimal Gauss toolsets resolve cleanly
+1. Tool resolution — minimal LeanFlow toolsets resolve cleanly
 2. CWD fix — host paths get replaced with /root for container backends
 3. ephemeral_disk version check
 4. Tilde ~ replaced with /root for container backends
@@ -27,7 +27,7 @@ try:
 
     _tt_mod = sys.modules["tools.implementations.terminal_tool"]
 except ImportError:
-    pytest.skip("gauss-agent tools not importable (missing deps)", allow_module_level=True)
+    pytest.skip("leanflow tools not importable (missing deps)", allow_module_level=True)
 
 
 # =========================================================================

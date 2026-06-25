@@ -39,15 +39,15 @@ from typing import Any, Callable
 
 import fire
 
-from core.home import epflemma_home
+from core.home import leanflow_home
 
-# Load .env from the active EPFLemma home first, then project root as dev fallback.
+# Load .env from the active LeanFlow home first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from epflemma_cli.runtime.env_loader import load_epflemma_dotenv
+from leanflow_cli.runtime.env_loader import load_leanflow_dotenv
 
-_epflemma_home = epflemma_home()
+_leanflow_home = leanflow_home()
 _project_env = Path(__file__).parent / ".env"
-_loaded_env_paths = load_epflemma_dotenv(epflemma_home=_epflemma_home, project_env=_project_env)
+_loaded_env_paths = load_leanflow_dotenv(leanflow_home=_leanflow_home, project_env=_project_env)
 if _loaded_env_paths:
     for _env_path in _loaded_env_paths:
         logger.info("Loaded environment variables from %s", _env_path)
@@ -519,7 +519,7 @@ class AIAgent:
         except (TypeError, ValueError):
             self._advisor_result_context_reserve_tokens = 90000
 
-        # Persistent error log -- always writes WARNING+ to <EPFLEMMA_HOME>/logs/errors.log
+        # Persistent error log -- always writes WARNING+ to <LEANFLOW_HOME>/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
         # In gateway mode, each incoming message creates a new AIAgent instance,
         # while the root logger is process-global. Re-adding the same errors.log
@@ -527,7 +527,7 @@ class AIAgent:
         from logging.handlers import RotatingFileHandler
 
         root_logger = logging.getLogger()
-        error_log_dir = _epflemma_home / "logs"
+        error_log_dir = _leanflow_home / "logs"
         error_log_path = error_log_dir / "errors.log"
         resolved_error_log_path = error_log_path.resolve()
         has_errors_log_handler = any(
@@ -719,7 +719,7 @@ class AIAgent:
             missing_reqs = [name for name, available in requirements.items() if not available]
             enabled_toolset_names = {str(name) for name in (enabled_toolsets or [])}
             native_lean_only = bool(
-                enabled_toolset_names.intersection({"epflemma-native", "epflemma-native-swarm"})
+                enabled_toolset_names.intersection({"leanflow-native", "leanflow-native-swarm"})
             ) and not enabled_toolset_names.intersection({"web", "search"})
             if native_lean_only:
                 missing_reqs = [name for name in missing_reqs if name != "web"]
@@ -753,8 +753,8 @@ class AIAgent:
             # Generate a new session ID
             self.session_id = _generate_short_session_id()
 
-        # Session logs go into ~/.epflemma/sessions/ alongside gateway sessions
-        self.logs_dir = epflemma_home() / "sessions"
+        # Session logs go into ~/.leanflow/sessions/ alongside gateway sessions
+        self.logs_dir = leanflow_home() / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
 
@@ -807,7 +807,7 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         if not skip_memory:
             try:
-                from epflemma_cli.config import load_config as _load_mem_config
+                from leanflow_cli.config import load_config as _load_mem_config
 
                 mem_config = _load_mem_config().get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
@@ -828,7 +828,7 @@ class AIAgent:
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
         try:
-            from epflemma_cli.config import load_config as _load_skills_config
+            from leanflow_cli.config import load_config as _load_skills_config
 
             skills_config = _load_skills_config().get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 15))
@@ -838,7 +838,7 @@ class AIAgent:
         # Initialize context compressor for automatic context management.
         compression_cfg = {}
         try:
-            from epflemma_cli.config import load_config as _load_runtime_config
+            from leanflow_cli.config import load_config as _load_runtime_config
 
             loaded_cfg = _load_runtime_config()
             if isinstance(loaded_cfg.get("compression"), dict):
@@ -1313,7 +1313,7 @@ class AIAgent:
 
             self._vprint(f"{self.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
-            if os.getenv("EPFLEMMA_DUMP_REQUEST_STDOUT", "").strip().lower() in {
+            if os.getenv("LEANFLOW_DUMP_REQUEST_STDOUT", "").strip().lower() in {
                 "1",
                 "true",
                 "yes",
@@ -2166,7 +2166,7 @@ class AIAgent:
         return _resolve_api_caller(self).provider_request_timeout_seconds(api_kwargs)
 
     def _provider_wait_heartbeat_seconds(self) -> float:
-        raw_value = os.getenv("EPFLEMMA_PROVIDER_WAIT_HEARTBEAT", "30.0")
+        raw_value = os.getenv("LEANFLOW_PROVIDER_WAIT_HEARTBEAT", "30.0")
         try:
             heartbeat_seconds = float(raw_value)
         except (TypeError, ValueError):
@@ -2411,7 +2411,7 @@ class AIAgent:
 
     @staticmethod
     def _map_rcp_reasoning_effort(effort: str) -> str:
-        """Map EPFLemma effort names onto AIaaS/vLLM-compatible values."""
+        """Map LeanFlow effort names onto AIaaS/vLLM-compatible values."""
         normalized = str(effort or "high").lower()
         if normalized in {"low", "medium", "high"}:
             return normalized
@@ -2869,7 +2869,7 @@ class AIAgent:
         if not warning:
             return False
         content = (
-            "[EPFLEMMA-RUNTIME STEP BUDGET]\n"
+            "[LEANFLOW-RUNTIME STEP BUDGET]\n"
             f"{warning}\n"
             "Use the remaining API steps deliberately. If this is a managed Lean queue item "
             "and you cannot finish it before the budget runs out, preserve a concise failed-attempt "
@@ -3026,7 +3026,7 @@ class AIAgent:
                 else:
                     summary_extra_body["reasoning"] = {"enabled": True, "effort": "high"}
             if _is_nous:
-                summary_extra_body["tags"] = ["product=epflemma-agent"]
+                summary_extra_body["tags"] = ["product=leanflow-agent"]
 
             if self.api_mode == "codex_responses":
                 codex_kwargs = self._build_api_kwargs(api_messages)
@@ -3479,7 +3479,7 @@ class AIAgent:
                             api_kwargs, allow_stream=False
                         )
 
-                    if os.getenv("EPFLEMMA_DUMP_REQUESTS", "").strip().lower() in {
+                    if os.getenv("LEANFLOW_DUMP_REQUESTS", "").strip().lower() in {
                         "1",
                         "true",
                         "yes",
@@ -3987,10 +3987,10 @@ class AIAgent:
                         )
                         print(f"{self.log_prefix}   Troubleshooting:")
                         print(
-                            f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in ~/.epflemma/.env for EPFLemma-managed OAuth/setup tokens"
+                            f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in ~/.leanflow/.env for LeanFlow-managed OAuth/setup tokens"
                         )
                         print(
-                            f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in ~/.epflemma/.env for API keys or legacy token values"
+                            f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in ~/.leanflow/.env for API keys or legacy token values"
                         )
                         print(
                             f"{self.log_prefix}     • For API keys: verify at https://console.anthropic.com/settings/keys"
@@ -3999,10 +3999,10 @@ class AIAgent:
                             f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry"
                         )
                         print(
-                            f'{self.log_prefix}     • Clear stale keys: epflemma config set ANTHROPIC_TOKEN ""'
+                            f'{self.log_prefix}     • Clear stale keys: leanflow config set ANTHROPIC_TOKEN ""'
                         )
                         print(
-                            f'{self.log_prefix}     • Legacy cleanup: epflemma config set ANTHROPIC_API_KEY ""'
+                            f'{self.log_prefix}     • Legacy cleanup: leanflow config set ANTHROPIC_API_KEY ""'
                         )
 
                     retry_count += 1
@@ -5166,7 +5166,7 @@ def main(
         log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses. Defaults to 20.
 
     Toolset Examples:
-        - "autoformalize": Minimal EPFLemma workflow with file and web tools
+        - "autoformalize": Minimal LeanFlow workflow with file and web tools
     """
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
@@ -5195,7 +5195,7 @@ def main(
                 entry = (name, info)
                 if name in ["web", "search", "file", "browser"]:
                     basic_toolsets.append(entry)
-                elif name in ["autoformalize", "epflemma-cli", "epflemma-native"]:
+                elif name in ["autoformalize", "leanflow-cli", "leanflow-native"]:
                     composite_toolsets.append(entry)
                 else:
                     scenario_toolsets.append(entry)
@@ -5327,7 +5327,7 @@ def main(
         sample_id = str(uuid.uuid4())[:8]
         sample_filename = f"sample_{sample_id}.json"
 
-        # Convert messages to the persisted trajectory format used by EPFLemma.
+        # Convert messages to the persisted trajectory format used by LeanFlow.
         trajectory = agent._convert_to_trajectory_format(
             result["messages"], user_query, result["completed"]
         )

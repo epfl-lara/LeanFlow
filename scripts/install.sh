@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-RUNNER_VENV="${REPO_ROOT}/.epflemma-installer-venv"
+RUNNER_VENV="${REPO_ROOT}/.leanflow-installer-venv"
 RUNNER_PYTHON="${RUNNER_VENV}/bin/python"
 RUNNER_MORPH="${RUNNER_VENV}/bin/morphcloud"
 
@@ -16,7 +16,7 @@ PY
     return 0
   fi
 
-  local runner_python_version="${OPEN_GAUSS_INSTALLER_RUNNER_PYTHON:-3.13}"
+  local runner_python_version="${LEANFLOW_INSTALLER_RUNNER_PYTHON:-3.13}"
   uv venv --seed --python "$runner_python_version" "$RUNNER_VENV"
 }
 
@@ -37,28 +37,28 @@ main() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --epflemma-home|--gauss-home)
-        export GAUSS_HOME="$2"
+      --leanflow-home)
+        export LEANFLOW_HOME="$2"
         shift 2
         ;;
       --workspace-dir)
-        export GAUSS_WORKSPACE_DIR="$2"
+        export LEANFLOW_WORKSPACE_DIR="$2"
         shift 2
         ;;
       --skip-system-packages)
-        export GAUSS_SKIP_SYSTEM_PACKAGES="1"
+        export LEANFLOW_SKIP_SYSTEM_PACKAGES="1"
         shift
         ;;
       --with-workspace)
-        export GAUSS_CREATE_WORKSPACE="1"
+        export LEANFLOW_CREATE_WORKSPACE="1"
         shift
         ;;
       --skip-setup)
-        export GAUSS_SETUP_MODE="skip"
+        export LEANFLOW_SETUP_MODE="skip"
         shift
         ;;
       --recreate-venv)
-        export GAUSS_RECREATE_VENV="1"
+        export LEANFLOW_RECREATE_VENV="1"
         shift
         ;;
       --plain|--json)
@@ -76,16 +76,16 @@ main() {
     esac
   done
 
-  export OPEN_GAUSS_SKIP_SHELL_AUTOENV="1"
+  export LEANFLOW_SKIP_SHELL_AUTOENV="1"
 
   ensure_runner_venv
   ensure_runner_pip
   install_runner_morphcloud
 
   if ((${#morph_args[@]})); then
-    exec "$RUNNER_MORPH" devbox template run epflemma --experimental-run-locally "${morph_args[@]}"
+    exec "$RUNNER_MORPH" devbox template run leanflow --experimental-run-locally "${morph_args[@]}"
   fi
-  exec "$RUNNER_MORPH" devbox template run epflemma --experimental-run-locally
+  exec "$RUNNER_MORPH" devbox template run leanflow --experimental-run-locally
 }
 
 main "$@"

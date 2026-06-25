@@ -1,4 +1,4 @@
-"""The managed-run contract between ``epflemma_cli.native.native_runner`` and ``run_agent.AIAgent``.
+"""The managed-run contract between ``leanflow_cli.native.native_runner`` and ``run_agent.AIAgent``.
 
 native_runner drives an ``AIAgent`` instance through an autonomous Lean proving workflow. Today
 that coupling is expressed implicitly via private-attribute injection on the agent object. This

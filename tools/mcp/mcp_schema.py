@@ -1,7 +1,7 @@
 """MCP schema conversion and utility-tool schema selection.
 
 Pure, side-effect-free helpers extracted from ``tools/mcp_tool.py``:
-convert an MCP tool listing into the EPFLemma registry schema format, build the
+convert an MCP tool listing into the LeanFlow registry schema format, build the
 resources/prompts utility-tool schemas, parse include/exclude and boolish config
 values, and select which utility schemas to register based on config and server
 capabilities.
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
-    """Convert an MCP tool listing to the Gauss registry schema format.
+    """Convert an MCP tool listing to the LeanFlow registry schema format.
 
     Args:
         server_name: The logical server name for prefixing.

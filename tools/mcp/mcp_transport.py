@@ -122,11 +122,11 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         if which_hit:
             resolved_command = which_hit
         elif resolved_command in {"npx", "npm", "node"}:
-            epflemma_home = os.path.expanduser(
-                os.getenv("EPFLEMMA_HOME", os.path.join(os.path.expanduser("~"), ".epflemma"))
+            leanflow_home = os.path.expanduser(
+                os.getenv("LEANFLOW_HOME", os.path.join(os.path.expanduser("~"), ".leanflow"))
             )
             candidates = [
-                os.path.join(epflemma_home, "node", "bin", resolved_command),
+                os.path.join(leanflow_home, "node", "bin", resolved_command),
                 os.path.join(os.path.expanduser("~"), ".local", "bin", resolved_command),
             ]
             for candidate in candidates:
@@ -148,7 +148,7 @@ def _resolve_stdio_cwd(server_name: str, config: dict) -> str | None:
         return path if os.path.isdir(path) else None
 
     if str(server_name or "").startswith("lean-"):
-        project_root = str(os.getenv("EPFLEMMA_PROJECT_ROOT", "") or "").strip()
+        project_root = str(os.getenv("LEANFLOW_PROJECT_ROOT", "") or "").strip()
         if project_root:
             path = os.path.expanduser(project_root)
             if os.path.isdir(path):
@@ -184,7 +184,7 @@ def _disable_incompatible_local_loogle(server_name: str, env: dict, cwd: str | N
     loogle_toolchain = _read_lean_toolchain_from_root(cache_dir / "repo")
     project_root = str(
         (env or {}).get("LEAN_PROJECT_PATH")
-        or (env or {}).get("EPFLEMMA_PROJECT_ROOT")
+        or (env or {}).get("LEANFLOW_PROJECT_ROOT")
         or cwd
         or ""
     ).strip()
@@ -210,7 +210,7 @@ def _augment_lean_stdio_env(server_name: str, env: dict, cwd: str | None) -> dic
         return updated
 
     updated.setdefault("LEAN_PROJECT_PATH", cwd)
-    updated.setdefault("EPFLEMMA_PROJECT_ROOT", cwd)
+    updated.setdefault("LEANFLOW_PROJECT_ROOT", cwd)
     return updated
 
 

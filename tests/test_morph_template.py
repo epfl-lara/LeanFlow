@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-TEMPLATE_PATH = Path(__file__).resolve().parents[1] / ".github" / "morph" / "epflemma-template.yaml"
+TEMPLATE_PATH = Path(__file__).resolve().parents[1] / ".github" / "morph" / "leanflow-template.yaml"
 
 
 def _load_template() -> dict:
@@ -31,7 +31,7 @@ def test_morph_template_restores_optional_provider_secret_staging():
 
     finalize = by_id["finalize-provider-selection"]
     assert finalize["type"] == "command"
-    assert "gauss-configure-main-provider" in finalize["run"]
+    assert "leanflow-configure-main-provider" in finalize["run"]
     assert step_ids.index("optional-openrouter") < step_ids.index("finalize-provider-selection")
     assert step_ids.index("optional-openai") < step_ids.index("finalize-provider-selection")
     assert step_ids.index("optional-anthropic") < step_ids.index("finalize-provider-selection")

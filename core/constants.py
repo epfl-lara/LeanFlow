@@ -1,4 +1,4 @@
-"""Shared constants for EPFLemma.
+"""Shared constants for LeanFlow.
 
 Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.

@@ -226,7 +226,7 @@ class TestPromptBuilderImports:
 
 class TestBuildSkillsSystemPrompt:
     def test_builtin_core_shows_without_overlays(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
         monkeypatch.chdir(tmp_path)
         result = build_skills_system_prompt()
         assert "builtin core" in result
@@ -234,10 +234,10 @@ class TestBuildSkillsSystemPrompt:
         assert "project overrides" not in result
 
     def test_builds_index_with_builtin_and_overlay_skills(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
         monkeypatch.chdir(tmp_path)
-        (tmp_path / ".epflemma" / "skills" / "lean-proof-loop").mkdir(parents=True)
-        (tmp_path / ".epflemma" / "skills" / "lean-proof-loop" / "SKILL.md").write_text(
+        (tmp_path / ".leanflow" / "skills" / "lean-proof-loop").mkdir(parents=True)
+        (tmp_path / ".leanflow" / "skills" / "lean-proof-loop" / "SKILL.md").write_text(
             "---\nname: lean-proof-loop\ndescription: Project-specific proof loop\n---\n"
         )
         result = build_skills_system_prompt()
@@ -248,9 +248,9 @@ class TestBuildSkillsSystemPrompt:
         assert "available_skills" in result
 
     def test_project_override_replaces_builtin_duplicate(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
         monkeypatch.chdir(tmp_path)
-        skill_dir = tmp_path / ".epflemma" / "skills" / "lean-diagnostics"
+        skill_dir = tmp_path / ".leanflow" / "skills" / "lean-diagnostics"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
             "---\nname: lean-diagnostics\ndescription: Project diagnostics overlay\n---\n"
@@ -274,7 +274,7 @@ class TestBuildContextFilesPrompt:
         with patch("pathlib.Path.home", return_value=fake_home):
             result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Project Context" in result
-        assert "# EPFLemma" in result
+        assert "# LeanFlow" in result
         assert "Nous Research" not in result
 
     def test_loads_agents_md(self, tmp_path):
@@ -288,31 +288,31 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "type hints" in result
 
-    def test_loads_soul_md_from_epflemma_home_only(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "epflemma_home"))
-        epflemma_home = tmp_path / "epflemma_home"
-        epflemma_home.mkdir()
-        (epflemma_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
+    def test_loads_soul_md_from_leanflow_home_only(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "leanflow_home"))
+        leanflow_home = tmp_path / "leanflow_home"
+        leanflow_home.mkdir()
+        (leanflow_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
         (tmp_path / "SOUL.md").write_text("cwd soul should be ignored", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Be concise and friendly." in result
         assert "cwd soul should be ignored" not in result
 
     def test_soul_md_has_no_wrapper_text(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "epflemma_home"))
-        epflemma_home = tmp_path / "epflemma_home"
-        epflemma_home.mkdir()
-        (epflemma_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
+        monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "leanflow_home"))
+        leanflow_home = tmp_path / "leanflow_home"
+        leanflow_home.mkdir()
+        (leanflow_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Be concise and friendly." in result
         assert "If SOUL.md is present" not in result
         assert "## SOUL.md" not in result
 
     def test_empty_soul_md_adds_nothing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "epflemma_home"))
-        epflemma_home = tmp_path / "epflemma_home"
-        epflemma_home.mkdir()
-        (epflemma_home / "SOUL.md").write_text("\n\n", encoding="utf-8")
+        monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "leanflow_home"))
+        leanflow_home = tmp_path / "leanflow_home"
+        leanflow_home.mkdir()
+        (leanflow_home / "SOUL.md").write_text("\n\n", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert result == ""
 
@@ -346,9 +346,8 @@ class TestBuildContextFilesPrompt:
 class TestPromptBuilderConstants:
     def test_default_identity_non_empty(self):
         assert len(DEFAULT_AGENT_IDENTITY) > 50
-        assert "Gauss Agent" not in DEFAULT_AGENT_IDENTITY
         assert "Nous Research" not in DEFAULT_AGENT_IDENTITY
-        assert "You are EPFLemma" in DEFAULT_AGENT_IDENTITY
+        assert "You are LeanFlow" in DEFAULT_AGENT_IDENTITY
 
     def test_platform_hints_known_platforms(self):
         assert "cli" in PLATFORM_HINTS
@@ -372,7 +371,7 @@ class TestReadSkillConditions:
     def test_reads_fallback_for_toolsets(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(
-            "---\nname: ddg\ndescription: DuckDuckGo\nmetadata:\n  epflemma:\n    fallback_for_toolsets: [web]\n---\n"
+            "---\nname: ddg\ndescription: DuckDuckGo\nmetadata:\n  leanflow:\n    fallback_for_toolsets: [web]\n---\n"
         )
         conditions = _read_skill_conditions(skill_file)
         assert conditions["fallback_for_toolsets"] == ["web"]
@@ -380,7 +379,7 @@ class TestReadSkillConditions:
     def test_reads_requires_toolsets(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  epflemma:\n    requires_toolsets: [terminal]\n---\n"
+            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  leanflow:\n    requires_toolsets: [terminal]\n---\n"
         )
         conditions = _read_skill_conditions(skill_file)
         assert conditions["requires_toolsets"] == ["terminal"]
@@ -388,7 +387,7 @@ class TestReadSkillConditions:
     def test_reads_multiple_conditions(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(
-            "---\nname: test\ndescription: Test\nmetadata:\n  epflemma:\n    fallback_for_toolsets: [browser]\n    requires_tools: [terminal]\n---\n"
+            "---\nname: test\ndescription: Test\nmetadata:\n  leanflow:\n    fallback_for_toolsets: [browser]\n    requires_tools: [terminal]\n---\n"
         )
         conditions = _read_skill_conditions(skill_file)
         assert conditions["fallback_for_toolsets"] == ["browser"]
@@ -508,7 +507,7 @@ class TestSkillShouldShow:
 
 class TestBuildSkillsSystemPromptConditional:
     def test_build_skills_prompt_ignores_legacy_tool_filters(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
         monkeypatch.chdir(tmp_path)
         result = build_skills_system_prompt(
             available_tools={"terminal"},
@@ -519,14 +518,14 @@ class TestBuildSkillsSystemPromptConditional:
 
     def test_project_and_user_overlays_both_show_when_distinct(self, monkeypatch, tmp_path):
         home = tmp_path / "home"
-        monkeypatch.setenv("EPFLEMMA_HOME", str(home))
+        monkeypatch.setenv("LEANFLOW_HOME", str(home))
         monkeypatch.chdir(tmp_path)
         user_dir = home / "skills" / "provider-fallback"
         user_dir.mkdir(parents=True)
         (user_dir / "SKILL.md").write_text(
             "---\nname: provider-fallback\ndescription: User endpoint fallback notes\n---\n"
         )
-        project_dir = tmp_path / ".epflemma" / "skills" / "custom-lean-overlay"
+        project_dir = tmp_path / ".leanflow" / "skills" / "custom-lean-overlay"
         project_dir.mkdir(parents=True)
         (project_dir / "SKILL.md").write_text(
             "---\nname: custom-lean-overlay\ndescription: Project solver overlay\n---\n"

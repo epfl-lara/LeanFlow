@@ -19,16 +19,15 @@ from tools.utilities.interrupt import is_interrupted
 
 # Unique marker to isolate real command output from shell init/exit noise.
 # printf (no trailing newline) keeps the boundaries clean for splitting.
-_OUTPUT_FENCE = "__EPFLEMMA_FENCE_a9f7b3__"
+_OUTPUT_FENCE = "__LEANFLOW_FENCE_a9f7b3__"
 
-# EPFLemma-internal env vars that should NOT leak into terminal subprocesses.
-# These are loaded from ~/.epflemma/.env for EPFLemma's own LLM/provider calls
+# LeanFlow-internal env vars that should NOT leak into terminal subprocesses.
+# These are loaded from ~/.leanflow/.env for LeanFlow's own LLM/provider calls
 # but can break external CLIs (e.g. codex) that also honor them.
-# See: https://github.com/NousResearch/gauss-agent/issues/1002
 #
 # Built dynamically from the provider registry so new providers are
 # automatically covered without manual blocklist maintenance.
-_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX = "_EPFLEMMA_FORCE_"
+_LEANFLOW_PROVIDER_ENV_FORCE_PREFIX = "_LEANFLOW_FORCE_"
 
 
 def _build_provider_env_blocklist() -> frozenset:
@@ -36,13 +35,13 @@ def _build_provider_env_blocklist() -> frozenset:
 
     Automatically picks up api_key_env_vars and base_url_env_var from
     every registered provider, plus tool/messaging env vars from the
-    optional config registry, so new EPFLemma-managed secrets are blocked
+    optional config registry, so new LeanFlow-managed secrets are blocked
     in subprocesses without having to maintain multiple static lists.
     """
     blocked: set[str] = set()
 
     try:
-        from epflemma_cli.runtime.auth import PROVIDER_REGISTRY
+        from leanflow_cli.runtime.auth import PROVIDER_REGISTRY
 
         for pconfig in PROVIDER_REGISTRY.values():
             blocked.update(pconfig.api_key_env_vars)
@@ -52,7 +51,7 @@ def _build_provider_env_blocklist() -> frozenset:
         pass
 
     try:
-        from epflemma_cli.config import OPTIONAL_ENV_VARS
+        from leanflow_cli.config import OPTIONAL_ENV_VARS
 
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
@@ -65,7 +64,7 @@ def _build_provider_env_blocklist() -> frozenset:
     except ImportError:
         pass
 
-    # Vars not covered above but still EPFLemma-internal / conflict-prone.
+    # Vars not covered above but still LeanFlow-internal / conflict-prone.
     blocked.update(
         {
             "TELEGRAM_BOT_TOKEN",
@@ -136,28 +135,28 @@ def _build_provider_env_blocklist() -> frozenset:
     return frozenset(blocked)
 
 
-_EPFLEMMA_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+_LEANFLOW_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
-    """Filter EPFLemma-managed secrets from a subprocess environment.
+    """Filter LeanFlow-managed secrets from a subprocess environment.
 
-    `_EPFLEMMA_FORCE_<VAR>` entries in ``extra_env`` opt a blocked variable back in
+    `_LEANFLOW_FORCE_<VAR>` entries in ``extra_env`` opt a blocked variable back in
     intentionally for callers that truly need it.
     """
     sanitized: dict[str, str] = {}
 
     for key, value in (base_env or {}).items():
-        if key.startswith(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX):
+        if key.startswith(_LEANFLOW_PROVIDER_ENV_FORCE_PREFIX):
             continue
-        if key not in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST:
+        if key not in _LEANFLOW_PROVIDER_ENV_BLOCKLIST:
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
-        if key.startswith(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX):
-            real_key = key[len(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX) :]
+        if key.startswith(_LEANFLOW_PROVIDER_ENV_FORCE_PREFIX):
+            real_key = key[len(_LEANFLOW_PROVIDER_ENV_FORCE_PREFIX) :]
             sanitized[real_key] = value
-        elif key not in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST:
+        elif key not in _LEANFLOW_PROVIDER_ENV_BLOCKLIST:
             sanitized[key] = value
 
     return sanitized
@@ -181,7 +180,7 @@ def _find_bash() -> str:
 
     # Windows: look for Git Bash (installed with Git for Windows).
     # Allow override via env var (same pattern as Claude Code).
-    custom = os.environ.get("EPFLEMMA_GIT_BASH_PATH")
+    custom = os.environ.get("LEANFLOW_GIT_BASH_PATH")
     if custom and os.path.isfile(custom):
         return custom
 
@@ -202,9 +201,9 @@ def _find_bash() -> str:
             return candidate
 
     raise RuntimeError(
-        "Git Bash not found. EPFLemma requires Git for Windows on Windows.\n"
+        "Git Bash not found. LeanFlow requires Git for Windows on Windows.\n"
         "Install it from: https://git-scm.com/download/win\n"
-        "Or set EPFLEMMA_GIT_BASH_PATH to your bash.exe location."
+        "Or set LEANFLOW_GIT_BASH_PATH to your bash.exe location."
     )
 
 
@@ -272,10 +271,10 @@ def _make_run_env(env: dict) -> dict:
     merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
-        if k.startswith(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX):
-            real_key = k[len(_EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX) :]
+        if k.startswith(_LEANFLOW_PROVIDER_ENV_FORCE_PREFIX):
+            real_key = k[len(_LEANFLOW_PROVIDER_ENV_FORCE_PREFIX) :]
             run_env[real_key] = v
-        elif k not in _EPFLEMMA_PROVIDER_ENV_BLOCKLIST:
+        elif k not in _LEANFLOW_PROVIDER_ENV_BLOCKLIST:
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
     if "/usr/bin" not in existing_path.split(":"):
@@ -329,7 +328,7 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
 
     @property
     def _temp_prefix(self) -> str:
-        return f"/tmp/epflemma-local-{self._session_id}"
+        return f"/tmp/leanflow-local-{self._session_id}"
 
     def _spawn_shell_process(self) -> subprocess.Popen:
         user_shell = _find_bash()
@@ -393,9 +392,9 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         fenced_cmd = (
             f"printf '{_OUTPUT_FENCE}';"
             f" {exec_command};"
-            f" __epflemma_rc=$?;"
+            f" __leanflow_rc=$?;"
             f" printf '{_OUTPUT_FENCE}';"
-            f" exit $__epflemma_rc"
+            f" exit $__leanflow_rc"
         )
         run_env = _make_run_env(self.env)
 

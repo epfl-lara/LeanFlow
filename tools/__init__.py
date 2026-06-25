@@ -3,7 +3,7 @@
 
 Historically this package eagerly imported nearly every tool module at import
 time. That meant a simple ``from tools.registry import registry`` also loaded
-and registered optional legacy toolsets that EPFLemma no longer ships.
+and registered optional legacy toolsets that LeanFlow no longer ships.
 
 Keep the public ``from tools import ...`` API, but only import a tool module
 when that specific attribute is requested.

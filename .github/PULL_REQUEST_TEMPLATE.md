@@ -66,8 +66,8 @@ Fixes #
 
 - [ ] This skill is **broadly useful** to most users (if bundled) — see [Contributing Guide](https://github.com/epfl-lara/EPFLemma/blob/main/CONTRIBUTING.md#should-the-skill-be-bundled)
 - [ ] SKILL.md follows the [standard format](https://github.com/epfl-lara/EPFLemma/blob/main/CONTRIBUTING.md#skillmd-format) (frontmatter, trigger conditions, steps, pitfalls)
-- [ ] No external dependencies that aren't already available (prefer stdlib, curl, existing EPFLemma tools)
-- [ ] I've tested the skill end-to-end: `epflemma --toolsets skills -q "Use the X skill to do Y"`
+- [ ] No external dependencies that aren't already available (prefer stdlib, curl, existing LeanFlow tools)
+- [ ] I've tested the skill end-to-end: `leanflow --toolsets skills -q "Use the X skill to do Y"`
 
 ## Screenshots / Logs
 

@@ -47,9 +47,7 @@ WRITE_DENIED_PATHS = {
         os.path.join(_HOME, ".ssh", "id_rsa"),
         os.path.join(_HOME, ".ssh", "id_ed25519"),
         os.path.join(_HOME, ".ssh", "config"),
-        os.path.join(_HOME, ".epflemma", ".env"),
-        os.path.join(_HOME, ".opengauss", ".env"),
-        os.path.join(_HOME, ".gauss", ".env"),
+        os.path.join(_HOME, ".leanflow", ".env"),
         os.path.join(_HOME, ".bashrc"),
         os.path.join(_HOME, ".zshrc"),
         os.path.join(_HOME, ".profile"),
@@ -506,7 +504,7 @@ class ShellFileOperations(FileOperations):
 
     def _validate_lean_statement_write(self, path: str, content: str) -> str | None:
         """Return an error when a Lean write would alter protected statements."""
-        from epflemma_cli.lean.lean_statement_guard import (
+        from leanflow_cli.lean.lean_statement_guard import (
             should_guard_lean_statement_path,
             validate_lean_statement_edit,
         )

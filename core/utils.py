@@ -1,4 +1,4 @@
-"""Shared utility functions for EPFLemma."""
+"""Shared utility functions for LeanFlow."""
 
 import contextlib
 import json

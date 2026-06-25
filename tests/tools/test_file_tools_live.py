@@ -326,10 +326,10 @@ class TestReadFile:
         _assert_clean(result.content)
 
     def test_tilde_expansion(self, ops):
-        test_path = Path.home() / ".gauss_test_tilde_9f8a7b"
+        test_path = Path.home() / ".leanflow_test_tilde_9f8a7b"
         try:
             test_path.write_text("TILDE_EXPANSION_OK\n")
-            result = ops.read_file("~/.gauss_test_tilde_9f8a7b")
+            result = ops.read_file("~/.leanflow_test_tilde_9f8a7b")
             assert result.error is None
             assert "TILDE_EXPANSION_OK" in result.content
             _assert_clean(result.content)
@@ -516,13 +516,13 @@ class TestExpandPath:
 
     def test_tilde_injection_blocked(self, ops):
         """Paths like ~; rm -rf / must NOT execute shell commands."""
-        malicious = "~; echo PWNED > /tmp/_gauss_injection_test"
+        malicious = "~; echo PWNED > /tmp/_leanflow_injection_test"
         result = ops._expand_path(malicious)
         # The invalid username (contains ";") should prevent shell expansion.
         # The path should be returned as-is (no expansion).
         assert result == malicious
         # Verify the injected command did NOT execute
-        assert not os.path.exists("/tmp/_gauss_injection_test")
+        assert not os.path.exists("/tmp/_leanflow_injection_test")
 
     def test_tilde_username_with_subpath(self, ops):
         """~root/file.txt should attempt expansion (valid username)."""

@@ -244,7 +244,7 @@ class TestPlanSkillHelpers:
 
         assert (
             path
-            == Path(".epflemma")
+            == Path(".leanflow")
             / "plans"
             / "2026-03-15_093045-implement-oauth-login-refresh-tokens.md"
         )
@@ -254,7 +254,7 @@ class TestPlanSkillHelpers:
             _make_skill(
                 tmp_path,
                 "plan",
-                body="Save plans under .epflemma/plans in the active workspace and do not execute the work.",
+                body="Save plans under .leanflow/plans in the active workspace and do not execute the work.",
             )
             scan_skill_commands()
             msg = build_skill_invocation_message(
@@ -262,13 +262,13 @@ class TestPlanSkillHelpers:
                 "Add a /plan command",
                 runtime_note=(
                     "Save the markdown plan with write_file to this exact relative path inside "
-                    "the active workspace/backend cwd: .epflemma/plans/plan.md"
+                    "the active workspace/backend cwd: .leanflow/plans/plan.md"
                 ),
             )
 
         assert msg is not None
-        assert "Save plans under $EPFLEMMA_HOME/plans" not in msg
-        assert ".epflemma/plans" in msg
+        assert "Save plans under $LEANFLOW_HOME/plans" not in msg
+        assert ".leanflow/plans" in msg
         assert "Add a /plan command" in msg
-        assert ".epflemma/plans/plan.md" in msg
+        assert ".leanflow/plans/plan.md" in msg
         assert "Runtime note:" in msg

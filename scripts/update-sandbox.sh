@@ -8,12 +8,12 @@ INSTALL_ARGS=()
 
 usage() {
   cat <<'TXT'
-EPFLemma sandbox updater
+LeanFlow sandbox updater
 
 Usage:
   ./scripts/update-sandbox.sh [install-internal options] [--no-pull] [--with-local-lean-explore]
 
-The updater fast-forwards the repository when possible, reinstalls EPFLemma,
+The updater fast-forwards the repository when possible, reinstalls LeanFlow,
 and rebuilds the sandbox image from the current checkout.
 TXT
 }

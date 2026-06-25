@@ -1,6 +1,6 @@
-# Contributing to EPFLemma
+# Contributing to LeanFlow
 
-EPFLemma is a Lean-first automation kernel. Contributions should improve automated Lean proving, formalization, verification rigor, workflow visibility, or the shell UX around those jobs.
+LeanFlow is a Lean-first automation kernel. Contributions should improve automated Lean proving, formalization, verification rigor, workflow visibility, or the shell UX around those jobs.
 
 ## Priorities
 
@@ -20,24 +20,22 @@ python -m pip install -e ".[dev]"
 Useful checks:
 
 ```bash
-python -m pytest tests/epflemma -q -n 0
-python -m pytest tests/epflemma tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py -q -n 0
-python -m epflemma_cli.main --help
+python -m pytest tests/leanflow -q -n 0
+python -m pytest tests/leanflow tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py -q -n 0
+python -m leanflow_cli.main --help
 ./scripts/install-internal.sh
 ```
 
 ## Main Codepaths
 
-- `epflemma_cli/` for shell UX, workflow orchestration, provider routing, local runtimes, locks, and workflow state
-- `epflemma_skills/` for the curated Lean-first skill core
+- `leanflow_cli/` for shell UX, workflow orchestration, provider routing, local runtimes, locks, and workflow state
+- `leanflow_skills/` for the curated Lean-first skill core
 - `agent/` for prompt assembly, compression, display, and shared agent internals
 - `tools/` for the Lean-kernel tool surface
 - `run_agent.py` for the core conversation loop
 - `core/` for the shared kernel — session store, clock, constants, tool discovery (`model_tools`)
   and toolsets. Top-level `model_tools` / `toolsets` / `utils` are re-export shims for `core.*`.
 
-The legacy `gauss_*` module names and `OPENGAUSS_`/`GAUSS_` env/home prefixes were dropped entirely
-in Phase II (see `ARCHITECTURE.md`). Do not reintroduce them.
 
 ## Skill vs Tool
 

@@ -1,10 +1,10 @@
-# EPFLemma Agent Guide
+# LeanFlow Agent Guide
 
 Instructions for coding agents working on this repository.
 
 ## Product Scope
 
-EPFLemma is a Lean-first automation kernel.
+LeanFlow is a Lean-first automation kernel.
 
 Primary goals:
 
@@ -50,14 +50,14 @@ python -m pytest -q    # full suite
 ## Coding standards
 
 **Write modular code.** One module = one responsibility. The layering is strict and one-directional:
-`core/` (depends on nothing above it) → `agent/` and `tools/` → `epflemma_cli/`. Never import "up" the
-stack (e.g. `core/` must not import `epflemma_cli`). When a file grows past a few hundred lines or starts
+`core/` (depends on nothing above it) → `agent/` and `tools/` → `leanflow_cli/`. Never import "up" the
+stack (e.g. `core/` must not import `leanflow_cli`). When a file grows past a few hundred lines or starts
 mixing concerns, **extract a cohesive leaf module** (a sibling in the same subpackage) instead of growing
-it. `run_agent.py` and `epflemma_cli/native/native_runner.py` are legacy monoliths — put new logic in a
+it. `run_agent.py` and `leanflow_cli/native/native_runner.py` are legacy monoliths — put new logic in a
 focused module and call it; do not pile onto them. Group new modules into the existing subpackages
 (`agent/{accounting,execution,prompting,providers,compression,display,runtime}/`,
 `tools/{implementations,utilities,mcp,environments}/`,
-`epflemma_cli/{lean,native,formalization,workflows,cli,runtime}/`) and update `ARCHITECTURE.md` when you move/add modules.
+`leanflow_cli/{lean,native,formalization,workflows,cli,runtime}/`) and update `ARCHITECTURE.md` when you move/add modules.
 
 **Document as you go.** Every module opens with a docstring stating its responsibility. Every non-trivial
 function gets a concise docstring: a one-line imperative summary (`Return …`, `Build …`, `Drive …`) plus key
@@ -77,22 +77,21 @@ Keep the full suite green.
   `# noqa: F401`. When you add a `# noqa: F401`, it must be a *genuine* re-export/patch target — confirm a
   real `module.NAME` / `from module import NAME` reference exists elsewhere. Do not use it to paper over a
   truly dead import; remove that instead.
-- **`native_runner.py` is coupled to its tests by design.** `tests/epflemma/test_native_runner.py`
+- **`native_runner.py` is coupled to its tests by design.** `tests/leanflow/test_native_runner.py`
   monkeypatches internals via `setattr(runner, NAME, …)`. A function moved into a sibling module that calls
   those helpers by bare name binds to *its own* import and silently bypasses the patch. Do not extract from
   `native_runner` until those tests move off `setattr`-monkeypatching.
-- **One home authority.** All home/state paths resolve through `core.home.epflemma_home()`
-  (`$EPFLEMMA_HOME` or `~/.epflemma`). Don't add per-module home resolvers or read `~/.gauss` / `GAUSS_HOME`.
-- **The native-workflow env contract is `EPFLEMMA_`-only.** `epflemma_cli/workflow.py` sets
-  `EPFLEMMA_NATIVE_*` / `EPFLEMMA_PROJECT_ROOT`; `native_config` reads them. No `OPENGAUSS_`/`GAUSS_` arms.
-- **Don't reintroduce legacy naming** (`gauss_*` modules, `GAUSS_`/`OPENGAUSS_` env or home prefixes) — see
-  "What Not To Reintroduce".
+- **One home authority.** All home/state paths resolve through `core.home.leanflow_home()`
+  (`$LEANFLOW_HOME` or `~/.leanflow`).
+  Don't add per-module home resolvers.
+- **The native-workflow env contract is `LEANFLOW_`-only.** `leanflow_cli/workflow.py` sets
+  `LEANFLOW_NATIVE_*` / `LEANFLOW_PROJECT_ROOT`; `native_config` reads them.
 
 ## Documentation map
 
 When you want to understand or change something, this is where it is written down — keep these in sync:
 
-- **`README.md`** — product overview: what EPFLemma is, install, the core workflows.
+- **`README.md`** — product overview: what LeanFlow is, install, the core workflows.
 - **`AGENTS.md`** (this file) — how to work in the repo: standards, the quality gate, layout, anti-patterns.
 - **`ARCHITECTURE.md`** — the authoritative module map, the subpackage layout, the refactoring history, and
   the load-bearing invariants (public imports, the run_conversation result schema, the tool self-registration
@@ -105,9 +104,9 @@ When you want to understand or change something, this is where it is written dow
 ## Main Active Codepaths
 
 ```text
-EPFLemma/
-├── epflemma_cli/        # Shell UX, workflow orchestration, providers, local runtimes, locks, workflow state, Lean services
-├── epflemma_skills/     # Curated Lean-first skills
+LeanFlow/
+├── leanflow_cli/        # Shell UX, workflow orchestration, providers, local runtimes, locks, workflow state, Lean services
+├── leanflow_skills/     # Curated Lean-first skills
 ├── agent/                # Prompt assembly, compression, display, auxiliary clients, AIAgent collaborators
 ├── tools/                # Lean-kernel tools
 ├── core/                 # Lowest layer: home authority (home.py) + session store (state.py) +
@@ -118,13 +117,12 @@ EPFLemma/
 
 The shared kernel (session store, clock, constants, tool registry API, toolsets, helpers) lives under
 `core/`. Top-level `model_tools` / `toolsets` / `utils` are thin re-export shims that keep
-`from model_tools import …` etc. working. The legacy `gauss_*` module names and `OPENGAUSS_`/`GAUSS_`
-env/home prefixes were dropped entirely in Phase II — do not reintroduce them.
+`from model_tools import …` etc. working.
 
-A completed decomposition (now on `refactor/epflemma-cores-2`) split the historical monoliths into
+A completed decomposition (now on `refactor/leanflow-cores-2`) split the historical monoliths into
 single-responsibility leaf modules and then grouped them into subpackages. The entry points and public
 surface are unchanged — see `ARCHITECTURE.md` for the full module map and the subpackage layout
-(`agent/{accounting,execution,prompting,providers,…}/`, `epflemma_cli/{lean,native,formalization,workflows,cli,runtime}/`,
+(`agent/{accounting,execution,prompting,providers,…}/`, `leanflow_cli/{lean,native,formalization,workflows,cli,runtime}/`,
 `tools/{implementations,utilities,mcp,environments}/`). The leaf-module names below now live inside
 those subpackages. The key structures to know:
 
@@ -136,7 +134,7 @@ those subpackages. The key structures to know:
   `agent/collaborator_resolvers.py`), so existing imports and monkeypatch targets still resolve.
   Provider routing for the auxiliary client lives in `agent/auxiliary_adapters.py`, and model
   metadata + pricing are unified behind `agent/model_capabilities.py`.
-- `epflemma_cli/` holds leaf modules carved out of `native_runner.py` (e.g. `native_config`,
+- `leanflow_cli/` holds leaf modules carved out of `native_runner.py` (e.g. `native_config`,
   `lean_parsing`, `native_state`, `native_utils`, `native_checkpoints`, `proof_state_builder`,
   `manager_verification`, `project_prove_manager`, `lean_module_paths`), out of `lean_services.py`
   (`lean_diagnostics`, `lean_declarations`, `lean_search_providers`, `lean_automation`,
@@ -151,13 +149,13 @@ When adding behavior, prefer the smaller extracted module over growing the origi
 
 ## Current Architecture
 
-- `epflemma_cli/main.py` is the active `epflemma` CLI entrypoint (CLI handlers in `cli/cli_handlers.py`; slash-command routing in `cli/commands.py`)
-- `epflemma_cli/native/native_runner.py` is the managed Lean workflow runtime (its leaf helpers live in sibling `epflemma_cli/native/` modules)
-- `epflemma_cli/lean/lean_services.py` is the Lean services hub (diagnostics/declarations/search/automation/sorry-stats split into sibling `epflemma_cli/lean/lean_*` modules)
-- `epflemma_cli/workflow.py` resolves workflow requests and toolset selection
-- `epflemma_cli/workflows/workflow_state.py` persists activity, checkpoints, logs, and status (status shaping in `workflows/activity_preview.py`)
-- `epflemma_cli/runtime/file_locks.py` handles cross-agent file reservations
-- `epflemma_cli/runtime/skill_core.py` resolves builtin, user, and project skill overlays
+- `leanflow_cli/main.py` is the active `leanflow` CLI entrypoint (CLI handlers in `cli/cli_handlers.py`; slash-command routing in `cli/commands.py`)
+- `leanflow_cli/native/native_runner.py` is the managed Lean workflow runtime (its leaf helpers live in sibling `leanflow_cli/native/` modules)
+- `leanflow_cli/lean/lean_services.py` is the Lean services hub (diagnostics/declarations/search/automation/sorry-stats split into sibling `leanflow_cli/lean/lean_*` modules)
+- `leanflow_cli/workflow.py` resolves workflow requests and toolset selection
+- `leanflow_cli/workflows/workflow_state.py` persists activity, checkpoints, logs, and status (status shaping in `workflows/activity_preview.py`)
+- `leanflow_cli/runtime/file_locks.py` handles cross-agent file reservations
+- `leanflow_cli/runtime/skill_core.py` resolves builtin, user, and project skill overlays
 - `agent/prompt_builder.py` injects skill guidance into the agent prompt
 - `run_agent.py` hosts `AIAgent`; its responsibilities are delegated to the `agent/` collaborators listed above (the `run_conversation` loop itself is not yet extracted)
 
@@ -191,7 +189,7 @@ Do not reintroduce broad product surfaces that were intentionally removed:
 - data-generation/batch-runner subsystems
 - marketplace-style skill hubs
 - the mini-swe-agent dependency and its docker/modal terminal backends (removed; the supported
-  terminal backends are local, ssh, singularity, daytona, and the `epflemma sandbox` for isolation)
+  terminal backends are local, ssh, singularity, daytona, and the `leanflow sandbox` for isolation)
 
 ## Testing
 
@@ -199,14 +197,14 @@ Preferred verification commands:
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/epflemma -q -n 0
-python -m pytest tests/epflemma tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py -q -n 0
-python -m epflemma_cli.main --help
+python -m pytest tests/leanflow -q -n 0
+python -m pytest tests/leanflow tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py -q -n 0
+python -m leanflow_cli.main --help
 ./scripts/install-internal.sh
 ```
 
 When changing workflow UX or runner behavior, also smoke-test the installed wrapper:
 
 ```bash
-/Users/$USER/.local/bin/epflemma --help
+/Users/$USER/.local/bin/leanflow --help
 ```

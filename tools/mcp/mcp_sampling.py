@@ -24,7 +24,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from core.home import epflemma_home
+from core.home import leanflow_home
 from tools.mcp.mcp_transport import _sanitize_error
 
 logger = logging.getLogger(__name__)
@@ -56,13 +56,12 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 
-def _epflemma_home() -> Path:
-    # Single source of truth — legacy ~/.opengauss / ~/.gauss resolution lives in core.home only.
-    return epflemma_home()
+def _leanflow_home() -> Path:
+    return leanflow_home()
 
 
 def _default_sampling_audit_path() -> Path:
-    return _epflemma_home() / "logs" / "mcp-sampling.jsonl"
+    return _leanflow_home() / "logs" / "mcp-sampling.jsonl"
 
 
 # ---------------------------------------------------------------------------

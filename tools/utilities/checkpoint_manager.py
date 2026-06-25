@@ -9,9 +9,9 @@ This is NOT a tool — the LLM never sees it.  It's transparent infrastructure
 controlled by the ``checkpoints`` config flag or ``--checkpoints`` CLI flag.
 
 Architecture:
-    ~/.epflemma/checkpoints/{sha256(abs_dir)[:16]}/   — shadow git repo
+    ~/.leanflow/checkpoints/{sha256(abs_dir)[:16]}/   — shadow git repo
         HEAD, refs/, objects/                        — standard git internals
-        EPFLEMMA_WORKDIR                               — original dir path
+        LEANFLOW_WORKDIR                               — original dir path
         info/exclude                                 — default excludes
 
 The shadow repo uses GIT_DIR + GIT_WORK_TREE so no git state leaks
@@ -25,7 +25,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from core.home import epflemma_home
+from core.home import leanflow_home
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-CHECKPOINT_BASE = epflemma_home() / "checkpoints"
+CHECKPOINT_BASE = leanflow_home() / "checkpoints"
 
 DEFAULT_EXCLUDES = [
     "node_modules/",
@@ -59,7 +59,7 @@ DEFAULT_EXCLUDES = [
 ]
 
 # Git subprocess timeout (seconds).
-_GIT_TIMEOUT: int = max(10, min(60, int(os.getenv("EPFLEMMA_CHECKPOINT_TIMEOUT", "30"))))
+_GIT_TIMEOUT: int = max(10, min(60, int(os.getenv("LEANFLOW_CHECKPOINT_TIMEOUT", "30"))))
 
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
@@ -146,14 +146,14 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> str | None:
     if not ok:
         return f"Shadow repo init failed: {err}"
 
-    _run_git(["config", "user.email", "epflemma@local"], shadow_repo, working_dir)
-    _run_git(["config", "user.name", "EPFLemma Checkpoint"], shadow_repo, working_dir)
+    _run_git(["config", "user.email", "leanflow@local"], shadow_repo, working_dir)
+    _run_git(["config", "user.name", "LeanFlow Checkpoint"], shadow_repo, working_dir)
 
     info_dir = shadow_repo / "info"
     info_dir.mkdir(exist_ok=True)
     (info_dir / "exclude").write_text("\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8")
 
-    (shadow_repo / "EPFLEMMA_WORKDIR").write_text(
+    (shadow_repo / "LEANFLOW_WORKDIR").write_text(
         str(Path(working_dir).resolve()) + "\n", encoding="utf-8"
     )
 

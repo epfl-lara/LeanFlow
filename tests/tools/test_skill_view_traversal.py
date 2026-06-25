@@ -1,7 +1,7 @@
 """Tests for path traversal prevention in skill_view.
 
 Regression tests for issue #220: skill_view file_path parameter allowed
-reading arbitrary files (e.g., ~/.gauss/.env) via path traversal.
+reading arbitrary files (e.g., ~/.leanflow/.env) via path traversal.
 """
 
 import json
