@@ -461,35 +461,6 @@ def _convert_openai_image_part_to_anthropic(part: dict[str, Any]) -> dict[str, A
     return None
 
 
-def _convert_user_content_part_to_anthropic(part: Any) -> dict[str, Any] | None:
-    if isinstance(part, dict):
-        ptype = part.get("type")
-        if ptype == "text":
-            block = {"type": "text", "text": part.get("text", "")}
-            if isinstance(part.get("cache_control"), dict):
-                block["cache_control"] = dict(part["cache_control"])
-            return block
-        if ptype == "image_url":
-            return _convert_openai_image_part_to_anthropic(part)
-        if ptype == "image" and part.get("source"):
-            return dict(part)
-        if ptype == "image" and part.get("data"):
-            media_type = part.get("mimeType") or part.get("media_type") or "image/png"
-            return {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": part.get("data", ""),
-                },
-            }
-        if ptype == "tool_result":
-            return dict(part)
-    elif part is not None:
-        return {"type": "text", "text": str(part)}
-    return None
-
-
 def convert_tools_to_anthropic(tools: list[dict]) -> list[dict]:
     """Convert OpenAI tool definitions to Anthropic format."""
     if not tools:

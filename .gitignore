@@ -18,7 +18,6 @@ logs/
 data/
 .pytest_cache/
 tmp/
-temp_vision_images/
 gauss-*/*
 examples/
 tests/quick_test_dataset.jsonl

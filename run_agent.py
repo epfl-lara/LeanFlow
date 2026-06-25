@@ -79,7 +79,6 @@ from agent.prompting.response_normalizer import ResponseNormalizer
 from agent.providers.anthropic_messages import (
     AnthropicMessagePreparer,
     content_has_image_parts,
-    materialize_data_url_for_vision,
 )
 from agent.providers.api_caller import ApiCaller
 from agent.providers.model_metadata import (
@@ -614,10 +613,9 @@ class AIAgent:
         self._persist_user_message_override = None
 
         # Anthropic message preparation (multimodal → text flattening) lives on
-        # the AnthropicMessagePreparer collaborator. It owns the per-image
-        # description memo (exposed back through the
-        # ``_anthropic_image_fallback_cache`` property) so a single tool loop does
-        # not repeatedly re-run auxiliary vision on the same image history.
+        # the AnthropicMessagePreparer collaborator: the native Anthropic route
+        # does not forward image content, so image parts are replaced with a short
+        # text placeholder.
         self._anthropic_message_preparer_obj = AnthropicMessagePreparer(self)
 
         # Initialize LLM client via centralized provider router.
@@ -2347,35 +2345,10 @@ class AIAgent:
 
     # ── End provider fallback ──────────────────────────────────────────────
 
-    @property
-    def _anthropic_image_fallback_cache(self) -> dict[str, str]:
-        """Per-image Anthropic vision-fallback description memo.
-
-        The cache now lives on the AnthropicMessagePreparer collaborator; this
-        shim keeps existing reads/writes (``self._anthropic_image_fallback_cache``
-        and indexed assignment into it) working unchanged.
-        """
-        return _resolve_anthropic_message_preparer(self).image_fallback_cache
-
-    @_anthropic_image_fallback_cache.setter
-    def _anthropic_image_fallback_cache(self, value: dict[str, str]) -> None:
-        _resolve_anthropic_message_preparer(self).image_fallback_cache = value
-
     @staticmethod
     def _content_has_image_parts(content: Any) -> bool:
         """Thin wrapper delegating to AnthropicMessagePreparer (agent/anthropic_messages.py)."""
         return content_has_image_parts(content)
-
-    @staticmethod
-    def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Path | None]:
-        """Thin wrapper delegating to AnthropicMessagePreparer (agent/anthropic_messages.py)."""
-        return materialize_data_url_for_vision(image_url)
-
-    def _describe_image_for_anthropic_fallback(self, image_url: str, role: str) -> str:
-        """Thin wrapper delegating to AnthropicMessagePreparer (agent/anthropic_messages.py)."""
-        return _resolve_anthropic_message_preparer(self).describe_image_for_anthropic_fallback(
-            image_url, role
-        )
 
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
         """Thin wrapper delegating to AnthropicMessagePreparer (agent/anthropic_messages.py)."""

@@ -12,7 +12,7 @@ import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -2408,17 +2408,7 @@ class TestAnthropicImageFallback:
             }
         ]
 
-        with (
-            patch(
-                "tools.implementations.vision_tools.vision_analyze_tool",
-                new=AsyncMock(
-                    return_value=json.dumps(
-                        {"success": True, "analysis": "A cat sitting on a chair."}
-                    )
-                ),
-            ),
-            patch("agent.providers.anthropic_adapter.build_anthropic_kwargs") as mock_build,
-        ):
+        with patch("agent.providers.anthropic_adapter.build_anthropic_kwargs") as mock_build:
             mock_build.return_value = {
                 "model": "claude-sonnet-4-20250514",
                 "messages": [],
@@ -2433,51 +2423,11 @@ class TestAnthropicImageFallback:
             )
         )
         transformed = kwargs["messages"]
+        # The native Anthropic route flattens image parts to a text placeholder
+        # (no vision analysis); the text part is preserved.
         assert isinstance(transformed[0]["content"], str)
-        assert "A cat sitting on a chair." in transformed[0]["content"]
+        assert "image content is not processed" in transformed[0]["content"]
         assert "Can you see this now?" in transformed[0]["content"]
-        assert (
-            "vision_analyze with image_url: https://example.com/cat.png"
-            in transformed[0]["content"]
-        )
-
-    def test_build_api_kwargs_reuses_cached_image_analysis_for_duplicate_images(self, agent):
-        agent.api_mode = "anthropic_messages"
-        agent.reasoning_config = None
-        data_url = "data:image/png;base64,QUFBQQ=="
-
-        api_messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "first"},
-                    {"type": "input_image", "image_url": data_url},
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "second"},
-                    {"type": "input_image", "image_url": data_url},
-                ],
-            },
-        ]
-
-        mock_vision = AsyncMock(
-            return_value=json.dumps({"success": True, "analysis": "A small test image."})
-        )
-        with (
-            patch("tools.implementations.vision_tools.vision_analyze_tool", new=mock_vision),
-            patch("agent.providers.anthropic_adapter.build_anthropic_kwargs") as mock_build,
-        ):
-            mock_build.return_value = {
-                "model": "claude-sonnet-4-20250514",
-                "messages": [],
-                "max_tokens": 4096,
-            }
-            agent._build_api_kwargs(api_messages)
-
-        assert mock_vision.await_count == 1
 
 
 class TestFallbackAnthropicProvider:

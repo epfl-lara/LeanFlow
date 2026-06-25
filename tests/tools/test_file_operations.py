@@ -86,11 +86,10 @@ class TestReadResult:
         assert d["truncated"] is True
 
     def test_binary_fields(self):
-        r = ReadResult(is_binary=True, is_image=True, mime_type="image/png")
+        r = ReadResult(is_binary=True, is_image=True)
         d = r.to_dict()
         assert d["is_binary"] is True
         assert d["is_image"] is True
-        assert d["mime_type"] == "image/png"
 
 
 class TestWriteResult:
