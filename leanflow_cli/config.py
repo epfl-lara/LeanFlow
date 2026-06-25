@@ -49,7 +49,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "model": {
-        "default": "moonshotai/Kimi-K2.6",
+        "default": "moonshotai/Kimi-K2.7-Code",
         "provider": "auto",
         "base_url": "",
         "api_key": "",
@@ -150,7 +150,7 @@ DEFAULT_CONFIG_HEADER = """# LeanFlow configuration
 #
 # Main workflow model:
 #   model.default is the primary agent model used for prove/autoprove/formalize.
-#   The installation default is moonshotai/Kimi-K2.6.
+#   The installation default is moonshotai/Kimi-K2.7-Code.
 #
 # Auxiliary theorem advisor:
 #   auxiliary.lean_reasoning is used by the lean_reasoning_help tool when the
