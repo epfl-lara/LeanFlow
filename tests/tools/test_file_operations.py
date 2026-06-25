@@ -9,11 +9,7 @@ import pytest
 
 from epflemma_cli.lean.lean_statement_guard import ALLOW_STATEMENT_EDITS_ENV
 from tools.implementations.file_operations import (
-    BINARY_EXTENSIONS,
-    IMAGE_EXTENSIONS,
     MAX_LINE_LENGTH,
-    WRITE_DENIED_PATHS,
-    WRITE_DENIED_PREFIXES,
     LintResult,
     PatchResult,
     ReadResult,
@@ -90,11 +86,10 @@ class TestReadResult:
         assert d["truncated"] is True
 
     def test_binary_fields(self):
-        r = ReadResult(is_binary=True, is_image=True, mime_type="image/png")
+        r = ReadResult(is_binary=True, is_image=True)
         d = r.to_dict()
         assert d["is_binary"] is True
         assert d["is_image"] is True
-        assert d["mime_type"] == "image/png"
 
 
 class TestWriteResult:
@@ -399,12 +394,10 @@ class TestLeanStatementGuardedWrites:
         path.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
         ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
 
-        result = ops.patch_v4a(
-            """\
+        result = ops.patch_v4a("""\
 *** Begin Patch
 *** Delete File: Demo.lean
-*** End Patch"""
-        )
+*** End Patch""")
 
         assert result.success is False
         assert result.error is not None
@@ -418,12 +411,10 @@ class TestLeanStatementGuardedWrites:
         path.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
         ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
 
-        result = ops.patch_v4a(
-            """\
+        result = ops.patch_v4a("""\
 *** Begin Patch
 *** Move File: Demo.lean -> Moved.lean
-*** End Patch"""
-        )
+*** End Patch""")
 
         assert result.success is False
         assert result.error is not None

@@ -9,7 +9,7 @@ This is NOT a tool — the LLM never sees it.  It's transparent infrastructure
 controlled by the ``checkpoints`` config flag or ``--checkpoints`` CLI flag.
 
 Architecture:
-    ~/.gauss/checkpoints/{sha256(abs_dir)[:16]}/   — shadow git repo
+    ~/.epflemma/checkpoints/{sha256(abs_dir)[:16]}/   — shadow git repo
         HEAD, refs/, objects/                        — standard git internals
         EPFLEMMA_WORKDIR                               — original dir path
         info/exclude                                 — default excludes
@@ -23,7 +23,6 @@ import logging
 import os
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 from core.home import epflemma_home
@@ -147,8 +146,8 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> str | None:
     if not ok:
         return f"Shadow repo init failed: {err}"
 
-    _run_git(["config", "user.email", "gauss@local"], shadow_repo, working_dir)
-    _run_git(["config", "user.name", "Gauss Checkpoint"], shadow_repo, working_dir)
+    _run_git(["config", "user.email", "epflemma@local"], shadow_repo, working_dir)
+    _run_git(["config", "user.name", "EPFLemma Checkpoint"], shadow_repo, working_dir)
 
     info_dir = shadow_repo / "info"
     info_dir.mkdir(exist_ok=True)

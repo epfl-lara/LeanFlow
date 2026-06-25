@@ -113,8 +113,7 @@ class TestBuildSkillInvocationMessage:
     def test_loads_skill_by_stored_path_when_frontmatter_name_differs(self, tmp_path):
         skill_dir = tmp_path / "mlops" / "audiocraft"
         skill_dir.mkdir(parents=True, exist_ok=True)
-        (skill_dir / "SKILL.md").write_text(
-            """\
+        (skill_dir / "SKILL.md").write_text("""\
 ---
 name: audiocraft-audio-generation
 description: Generate audio with AudioCraft.
@@ -123,8 +122,7 @@ description: Generate audio with AudioCraft.
 # AudioCraft
 
 Generate some audio.
-"""
-        )
+""")
 
         with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()
@@ -246,7 +244,7 @@ class TestPlanSkillHelpers:
 
         assert (
             path
-            == Path(".gauss")
+            == Path(".epflemma")
             / "plans"
             / "2026-03-15_093045-implement-oauth-login-refresh-tokens.md"
         )
@@ -256,7 +254,7 @@ class TestPlanSkillHelpers:
             _make_skill(
                 tmp_path,
                 "plan",
-                body="Save plans under .gauss/plans in the active workspace and do not execute the work.",
+                body="Save plans under .epflemma/plans in the active workspace and do not execute the work.",
             )
             scan_skill_commands()
             msg = build_skill_invocation_message(
@@ -264,13 +262,13 @@ class TestPlanSkillHelpers:
                 "Add a /plan command",
                 runtime_note=(
                     "Save the markdown plan with write_file to this exact relative path inside "
-                    "the active workspace/backend cwd: .gauss/plans/plan.md"
+                    "the active workspace/backend cwd: .epflemma/plans/plan.md"
                 ),
             )
 
         assert msg is not None
-        assert "Save plans under $GAUSS_HOME/plans" not in msg
-        assert ".gauss/plans" in msg
+        assert "Save plans under $EPFLEMMA_HOME/plans" not in msg
+        assert ".epflemma/plans" in msg
         assert "Add a /plan command" in msg
-        assert ".gauss/plans/plan.md" in msg
+        assert ".epflemma/plans/plan.md" in msg
         assert "Runtime note:" in msg

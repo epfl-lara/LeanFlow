@@ -4,8 +4,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.utilities.skills_sync import (
-    MANIFEST_FILE,
-    SKILLS_DIR,
     _compute_relative_dest,
     _dir_hash,
     _discover_bundled_skills,
@@ -449,9 +447,9 @@ class TestSyncSkills:
 
             # The skill directory should still exist (rmtree destroyed it
             # but copytree failed to replace it — this is data loss)
-            assert user_skill.exists(), (
-                "Update failure destroyed user's skill copy without replacing it"
-            )
+            assert (
+                user_skill.exists()
+            ), "Update failure destroyed user's skill copy without replacing it"
 
     def test_update_records_new_origin_hash(self, tmp_path):
         """After updating a skill, the manifest should record the new bundled hash."""

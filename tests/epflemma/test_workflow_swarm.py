@@ -110,7 +110,7 @@ def test_resolve_workflow_request_uses_swarm_toolset_only_when_user_requests_age
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
-            "model": "google/gemma-4-31B-it",
+            "model": "google/gemma-3-27b-it",
         },
     )
 
@@ -170,7 +170,7 @@ def test_resolve_workflow_request_passes_configured_api_step_budget(monkeypatch,
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
-            "model": "google/gemma-4-31B-it",
+            "model": "google/gemma-3-27b-it",
         },
     )
 
@@ -228,7 +228,7 @@ def test_resolve_workflow_request_exports_expert_provider_env(monkeypatch, tmp_p
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
-            "model": "google/gemma-4-31B-it",
+            "model": "google/gemma-3-27b-it",
         },
     )
 
@@ -257,7 +257,7 @@ def test_resolve_workflow_request_exports_verifier_provider_env(monkeypatch, tmp
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
-            "model": "google/gemma-4-31B-it",
+            "model": "google/gemma-3-27b-it",
         },
     )
 
@@ -299,7 +299,7 @@ def test_resolve_workflow_request_forces_single_agent_for_file_scoped_prove(monk
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
-            "model": "google/gemma-4-31B-it",
+            "model": "google/gemma-3-27b-it",
         },
     )
 
@@ -339,9 +339,9 @@ def test_resolve_workflow_request_forces_single_agent_for_file_scoped_prove(monk
 )
 def test_parse_workflow_command_maps_all_aliases_to_correct_kind(command, expected_kind):
     spec = parse_workflow_command(command)
-    assert spec.workflow_kind == expected_kind, (
-        f"{command!r} → {spec.workflow_kind!r}, expected {expected_kind!r}"
-    )
+    assert (
+        spec.workflow_kind == expected_kind
+    ), f"{command!r} → {spec.workflow_kind!r}, expected {expected_kind!r}"
 
 
 @pytest.mark.parametrize(
@@ -491,7 +491,7 @@ def test_resolve_workflow_request_assigns_correct_default_skill_for_formalize(
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
-            "model": "google/gemma-4-31B-it",
+            "model": "google/gemma-3-27b-it",
         },
     )
 
@@ -531,7 +531,7 @@ def test_resolve_workflow_request_auto_adds_blueprint_skill_for_prove(monkeypatc
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
-            "model": "google/gemma-4-31B-it",
+            "model": "google/gemma-3-27b-it",
         },
     )
 
@@ -558,7 +558,7 @@ def test_resolve_workflow_request_requires_document_for_formalize(monkeypatch, t
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
-            "model": "google/gemma-4-31B-it",
+            "model": "google/gemma-3-27b-it",
         },
     )
 
@@ -583,7 +583,7 @@ def test_resolve_workflow_request_preserves_explicit_swarm_for_document_formaliz
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
-            "model": "google/gemma-4-31B-it",
+            "model": "google/gemma-3-27b-it",
         },
     )
 
@@ -612,7 +612,7 @@ def test_resolve_workflow_request_accepts_directory_for_autoformalize(monkeypatc
             "api_mode": "responses",
             "base_url": "http://127.0.0.1:8000/v1",
             "api_key": "sk-test",
-            "model": "google/gemma-4-31B-it",
+            "model": "google/gemma-3-27b-it",
         },
     )
 

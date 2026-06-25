@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 
 from epflemma_cli.formalization.formalization_documents import inspect_formalization_document
 from tools.registry import registry

@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-Terminal Tool Module (mini-swe-agent backend)
+Terminal Tool Module
 
-A terminal tool that executes commands using mini-swe-agent's execution environments.
-Supports local execution, Docker containers, and Modal cloud sandboxes.
+A terminal tool that executes commands in a configured execution environment.
 
 Environment Selection (via TERMINAL_ENV environment variable):
 - "local": Execute directly on the host machine (default, fastest)
-- "docker": Execute in Docker containers (isolated, requires Docker)
-- "modal": Execute in Modal cloud sandboxes (scalable, requires Modal account)
+- "ssh": Execute on a remote host over SSH
+- "singularity" / "daytona": Execute in an isolated container
 
 Features:
-- Multiple execution backends (local, docker, modal)
+- Multiple execution backends (local, ssh, singularity, daytona)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
@@ -27,19 +26,15 @@ Usage:
 """
 
 import atexit
-import importlib.util
 import json
 import logging
 import os
 import platform
 import shutil
-import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -50,18 +45,9 @@ logger = logging.getLogger(__name__)
 # The terminal tool polls this during command execution so it can kill
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
-# Add mini-swe-agent to path if not installed. In git worktrees the populated
-# submodule may live in the main checkout rather than the worktree itself.
-from core.minisweagent_path import ensure_minisweagent_on_path
-from tools.utilities.interrupt import _interrupt_event, is_interrupted
-from tools.utilities.interrupt import set_interrupt as set_interrupt_event
-
-ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
-
 # =============================================================================
 # Custom Singularity Environment with more space
 # =============================================================================
-
 # Singularity helpers (scratch dir, SIF cache) now live in tools/environments/singularity.py
 from tools.environments.singularity import _get_scratch_dir
 
@@ -74,11 +60,13 @@ def _check_disk_usage_warning():
     scratch_dir = _get_scratch_dir()
 
     try:
-        # Get total size of gauss directories
+        # Get total size of sandbox directories
         total_bytes = 0
         import glob
 
-        for path in glob.glob(str(scratch_dir / "gauss-*")):
+        for path in glob.glob(str(scratch_dir / "epflemma-*")) + glob.glob(
+            str(scratch_dir / "gauss-*")
+        ):
             for f in Path(path).rglob("*"):
                 if f.is_file():
                     try:
@@ -131,19 +119,10 @@ def set_approval_callback(cb):
 
 # Dangerous command detection + approval now consolidated in tools/approval.py
 from tools.utilities.approval import (
-    DANGEROUS_PATTERNS,
-)
-from tools.utilities.approval import (
     check_all_command_guards as _check_all_guards_impl,
 )
 from tools.utilities.approval import (
     check_dangerous_command as _check_dangerous_command_impl,
-)
-from tools.utilities.approval import (
-    detect_dangerous_command as _detect_dangerous_command,
-)
-from tools.utilities.approval import (
-    load_permanent_allowlist as _load_permanent_allowlist,
 )
 
 
@@ -179,7 +158,7 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
         if failure in output:
             return (
                 output
-                + "\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to ~/.gauss/.env on the agent machine."
+                + "\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to ~/.epflemma/.env on the agent machine."
             )
 
     return output
@@ -383,9 +362,7 @@ def _transform_sudo_command(command: str) -> tuple[str, str | None]:
 # Environment classes now live in tools/environments/
 import contextlib
 
-from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
-from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 
@@ -471,7 +448,7 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
     except (ValueError, json.JSONDecodeError) as exc:
         raise ValueError(
             f"Invalid value for {name}: {raw!r} (expected {type_label}). "
-            f"Check ~/.gauss/.env or environment variables."
+            f"Check ~/.epflemma/.env or environment variables."
         ) from exc
 
 
@@ -504,17 +481,7 @@ def _get_env_config() -> dict[str, Any]:
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
-    if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
-        candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
-        if any(candidate.startswith(p) for p in host_prefixes) or (
-            os.path.isabs(candidate)
-            and os.path.isdir(candidate)
-            and not candidate.startswith(("/workspace", "/root"))
-        ):
-            host_cwd = candidate
-            cwd = "/workspace"
-    elif env_type in ("modal", "docker", "singularity", "daytona") and cwd:
+    if env_type in ("singularity", "daytona") and cwd:
         # Host paths that won't exist inside containers
         if any(cwd.startswith(p) for p in host_prefixes) and cwd != default_cwd:
             logger.info(
@@ -574,10 +541,10 @@ def _create_environment(
     host_cwd: str = None,
 ):
     """
-    Create an execution environment from mini-swe-agent.
+    Create an execution environment for the configured terminal backend.
 
     Args:
-        env_type: One of "local", "docker", "singularity", "modal", "daytona", "ssh"
+        env_type: One of "local", "ssh", "singularity", "daytona"
         image: Docker/Singularity/Modal image name (ignored for local/ssh)
         cwd: Working directory
         timeout: Default command timeout
@@ -600,19 +567,11 @@ def _create_environment(
         lc = local_config or {}
         return _LocalEnvironment(cwd=cwd, timeout=timeout, persistent=lc.get("persistent", False))
 
-    elif env_type == "docker":
-        return _DockerEnvironment(
-            image=image,
-            cwd=cwd,
-            timeout=timeout,
-            cpu=cpu,
-            memory=memory,
-            disk=disk,
-            persistent_filesystem=persistent,
-            task_id=task_id,
-            volumes=volumes,
-            host_cwd=host_cwd,
-            auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
+    elif env_type in ("docker", "modal"):
+        raise ValueError(
+            f"The {env_type!r} terminal backend was removed (it relied on the retired mini-swe-agent "
+            "dependency). Use 'local' (default), 'ssh', 'singularity', or 'daytona', or run inside "
+            "the `epflemma sandbox` for host isolation."
         )
 
     elif env_type == "singularity":
@@ -623,32 +582,6 @@ def _create_environment(
             cpu=cpu,
             memory=memory,
             disk=disk,
-            persistent_filesystem=persistent,
-            task_id=task_id,
-        )
-
-    elif env_type == "modal":
-        sandbox_kwargs = {}
-        if cpu > 0:
-            sandbox_kwargs["cpu"] = cpu
-        if memory > 0:
-            sandbox_kwargs["memory"] = memory
-        if disk > 0:
-            try:
-                import inspect
-
-                import modal
-
-                if "ephemeral_disk" in inspect.signature(modal.Sandbox.create).parameters:
-                    sandbox_kwargs["ephemeral_disk"] = disk
-            except Exception:
-                pass
-
-        return _ModalEnvironment(
-            image=image,
-            cwd=cwd,
-            timeout=timeout,
-            modal_sandbox_kwargs=sandbox_kwargs,
             persistent_filesystem=persistent,
             task_id=task_id,
         )
@@ -802,15 +735,16 @@ def get_active_environments_info() -> dict[str, Any]:
     total_size = 0
     for task_id in _active_environments:
         scratch_dir = _get_scratch_dir()
-        pattern = f"gauss-*{task_id[:8]}*"
+        patterns = (f"epflemma-*{task_id[:8]}*", f"gauss-*{task_id[:8]}*")
         import glob
 
-        for path in glob.glob(str(scratch_dir / pattern)):
-            try:
-                size = sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file())
-                total_size += size
-            except OSError as e:
-                logger.debug("Could not stat path %s: %s", path, e)
+        for pattern in patterns:
+            for path in glob.glob(str(scratch_dir / pattern)):
+                try:
+                    size = sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file())
+                    total_size += size
+                except OSError as e:
+                    logger.debug("Could not stat path %s: %s", path, e)
 
     info["total_disk_usage_mb"] = round(total_size / (1024 * 1024), 2)
     return info
@@ -834,7 +768,9 @@ def cleanup_all_environments():
     scratch_dir = _get_scratch_dir()
     import glob
 
-    for path in glob.glob(str(scratch_dir / "gauss-*")):
+    for path in glob.glob(str(scratch_dir / "epflemma-*")) + glob.glob(
+        str(scratch_dir / "gauss-*")
+    ):
         try:
             shutil.rmtree(path, ignore_errors=True)
             logger.info("Removed orphaned: %s", path)
@@ -914,7 +850,7 @@ def terminal_tool(
     pty: bool = False,
 ) -> str:
     """
-    Execute a command using mini-swe-agent's execution environments.
+    Execute a command using the configured terminal backend.
 
     Args:
         command: The command to execute
@@ -957,12 +893,8 @@ def terminal_tool(
         overrides = _task_env_overrides.get(effective_task_id, {})
 
         # Select image based on env type, with per-task override support
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
+        if env_type == "singularity":
             image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
         elif env_type == "daytona":
             image = overrides.get("daytona_image") or config["daytona_image"]
         else:
@@ -1022,7 +954,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in ("docker", "singularity", "modal", "daytona"):
+                        if env_type in ("singularity", "daytona"):
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -1056,7 +988,7 @@ def terminal_tool(
                             {
                                 "output": "",
                                 "exit_code": -1,
-                                "error": f"Terminal tool disabled: mini-swe-agent not available ({e})",
+                                "error": f"Terminal tool disabled: backend not available ({e})",
                                 "status": "disabled",
                             },
                             ensure_ascii=False,
@@ -1283,35 +1215,24 @@ def terminal_tool(
 def check_terminal_requirements() -> bool:
     """Check if all requirements for the terminal tool are met.
 
-    Important: local and singularity backends now use Gauss' own environment
-    wrappers directly and do not require the ``minisweagent`` Python package to
-    be installed. Docker and Modal still rely on mini-swe-agent internals.
+    The supported backends — local, ssh, singularity, daytona — are EPFLemma's own environment
+    wrappers. The legacy docker/modal backends were removed with the mini-swe-agent dependency.
     """
     config = _get_env_config()
     env_type = config["env_type"]
 
     try:
         if env_type == "local":
-            # Local execution uses Gauss' own LocalEnvironment wrapper and does
+            # Local execution uses EPFLemma's own LocalEnvironment wrapper and does
             # not depend on minisweagent being importable.
             return True
 
-        elif env_type == "docker":
-            ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
-            if importlib.util.find_spec("minisweagent") is None:
-                logger.error(
-                    "mini-swe-agent is required for docker terminal backend but is not importable"
-                )
-                return False
-            # Check if docker is available (use find_docker for macOS PATH issues)
-            from tools.environments.docker import find_docker
-
-            docker = find_docker()
-            if not docker:
-                logger.error("Docker executable not found in PATH or common install locations")
-                return False
-            result = subprocess.run([docker, "version"], capture_output=True, timeout=5)
-            return result.returncode == 0
+        elif env_type in ("docker", "modal"):
+            logger.error(
+                "The %r terminal backend was removed; use 'local', 'ssh', 'singularity', or 'daytona'.",
+                env_type,
+            )
+            return False
 
         elif env_type == "singularity":
             executable = shutil.which("apptainer") or shutil.which("singularity")
@@ -1330,34 +1251,13 @@ def check_terminal_requirements() -> bool:
                 return False
             return True
 
-        elif env_type == "modal":
-            ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
-            if importlib.util.find_spec("minisweagent") is None:
-                logger.error(
-                    "mini-swe-agent is required for modal terminal backend but is not importable"
-                )
-                return False
-            # Check for modal token
-            has_token = os.getenv("MODAL_TOKEN_ID") is not None
-            has_config = Path.home().joinpath(".modal.toml").exists()
-            if not (has_token or has_config):
-                logger.error(
-                    "Modal backend selected but no MODAL_TOKEN_ID environment variable "
-                    "or ~/.modal.toml config file was found. Configure Modal or choose "
-                    "a different TERMINAL_ENV."
-                )
-                return False
-            return True
-
         elif env_type == "daytona":
-            from daytona import Daytona
 
             return os.getenv("DAYTONA_API_KEY") is not None
 
         else:
             logger.error(
-                "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
+                "Unknown TERMINAL_ENV '%s'. Use one of: local, ssh, singularity, daytona.",
                 env_type,
             )
             return False
@@ -1368,7 +1268,7 @@ def check_terminal_requirements() -> bool:
 
 if __name__ == "__main__":
     # Simple test when run directly
-    print("Terminal Tool Module (mini-swe-agent backend)")
+    print("Terminal Tool Module")
     print("=" * 50)
 
     config = _get_env_config()
@@ -1386,7 +1286,7 @@ if __name__ == "__main__":
 
     print("\n✅ All requirements met!")
     print("\nAvailable Tool:")
-    print("  - terminal_tool: Execute commands using mini-swe-agent environments")
+    print("  - terminal_tool: Execute commands using the configured terminal backend")
 
     print("\nUsage Examples:")
     print("  # Execute a command")
@@ -1407,7 +1307,7 @@ if __name__ == "__main__":
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
-    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', '~/.gauss/sandboxes')}")
+    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', '~/.epflemma/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
 
@@ -1415,6 +1315,7 @@ if __name__ == "__main__":
 # Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry
+from tools.utilities.interrupt import _interrupt_event  # noqa: F401
 
 TERMINAL_SCHEMA = {
     "name": "terminal",

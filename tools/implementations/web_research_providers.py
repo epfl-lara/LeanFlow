@@ -7,7 +7,6 @@ web_tools import), so there is no cycle. web_search_tool stays in web_tools and 
 via the re-exported names (provider-tuple identity preserved for tests).
 """
 
-import json
 import re
 import xml.etree.ElementTree as ET
 from typing import Any

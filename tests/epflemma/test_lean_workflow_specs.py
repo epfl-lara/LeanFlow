@@ -132,9 +132,9 @@ def test_workflow_specs_reference_only_known_workers():
 
 def test_spec_content_does_not_leak_frontmatter_fence():
     for record in load_lean_specs().values():
-        assert not record.content.startswith("---"), (
-            f"spec {record.spec_id} content still carries frontmatter fence"
-        )
+        assert not record.content.startswith(
+            "---"
+        ), f"spec {record.spec_id} content still carries frontmatter fence"
 
 
 def test_specs_for_skill_empty_or_missing_returns_empty_list():

@@ -9,7 +9,7 @@ and a trust-aware install policy that determines whether a skill is allowed
 based on both the scan verdict and the source's trust level.
 
 Trust levels:
-  - builtin:   Ships with Gauss. Never scanned, always trusted.
+  - builtin:   Ships with EPFLemma. Never scanned, always trusted.
   - trusted:   openai/skills and anthropics/skills only. Caution verdicts allowed.
   - community: Everything else. Any findings = blocked unless --force.
 
@@ -25,7 +25,7 @@ Usage:
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -156,11 +156,11 @@ THREAT_PATTERNS = [
         "references Docker config (may contain registry creds)",
     ),
     (
-        r"\$HOME/\.gauss/\.env|\~/\.gauss/\.env",
-        "gauss_env_access",
+        r"\$HOME/\.(epflemma|opengauss|gauss)/\.env|\~/\.(epflemma|opengauss|gauss)/\.env",
+        "legacy_env_access",
         "critical",
         "exfiltration",
-        "directly references Gauss secrets file",
+        "directly references EPFLemma secrets file",
     ),
     (
         r"cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)",
@@ -762,11 +762,11 @@ THREAT_PATTERNS = [
         "references agent config files (could persist malicious instructions across sessions)",
     ),
     (
-        r"\.gauss/config\.yaml|\.gauss/SOUL\.md",
-        "gauss_config_mod",
+        r"\.(epflemma|opengauss|gauss)/config\.yaml|\.(epflemma|opengauss|gauss)/SOUL\.md",
+        "legacy_config_mod",
         "critical",
         "persistence",
-        "references Gauss configuration files directly",
+        "references EPFLemma configuration files directly",
     ),
     (
         r"\.claude/settings|\.codex/config",

@@ -9,7 +9,7 @@ description = "EPFLemma is a Lean AI for Math shell shipped through the standalo
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "EPFLemma contributors" }]
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 dependencies = [
   "anthropic>=0.39.0",
   "fire",
@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0", "ruff>=0.6", "mypy>=1.11"]
+dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0", "black>=24", "ruff>=0.6", "mypy>=1.11"]
 mcp = ["mcp>=1.2.0"]
 pty = [
   "ptyprocess>=0.7.0; sys_platform != 'win32'",
@@ -81,24 +81,24 @@ extend-exclude = [
     ".epflemma-venv",
 ]
 
-# Black-compatible auto-formatter (bundled with ruff — no separate `black` dependency needed).
-# Run `ruff format .` before committing; CI runs `ruff format --check .`.
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-skip-magic-trailing-comma = false
+# Black is the code formatter (https://github.com/psf/black). Run `black .` before committing;
+# CI runs `black --check .`. Ruff is used for linting + import-sorting only, not formatting.
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+extend-exclude = '''/(testdata|optional-skills|\.venv|\.epflemma-venv|.*/\.lake)/'''
 
 [tool.ruff.lint]
 # select = the enforced rule families: pyflakes (F — undefined names, redefinitions, f-string
 # misuse), import-sorting (I), and pyupgrade (UP — PEP585/604 modernization). Run `ruff check .`.
 select = ["F", "I", "UP"]
-# F401 (unused-import) stays ignored because module-level imports are deliberately re-exported as
-#   patch targets / dynamic-access points without __all__ (e.g. run_agent.OpenAI,
-#   tools...terminal_tool._interrupt_event), so blanket removal silently breaks runtime + tests.
-#   The genuinely-dead typing/stdlib imports were removed per-file; what remains is intentional.
+# F401 (unused-import) is ENFORCED: genuinely-dead imports must be removed. The few deliberate
+#   re-exports / dynamic-access points that ruff cannot see (patch targets like run_agent.OpenAI and
+#   tools...terminal_tool._interrupt_event, the run_agent lazy-import surface, and the leaf-module
+#   re-export hubs pinned by the *_reexports_are_identical tests) each carry an explicit `# noqa: F401`.
 # F841 (unused-variable): a handful of occurrences, not safely auto-fixable (may hide bugs).
 # UP035/UP022/UP042: behavior-sensitive manual modernizations (StrEnum, subprocess capture_output).
-ignore = ["F401", "F841", "UP035", "UP022", "UP042"]
+ignore = ["F841", "UP035", "UP022", "UP042"]
 
 [tool.mypy]
 python_version = "3.11"

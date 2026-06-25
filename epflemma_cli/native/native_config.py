@@ -3,13 +3,13 @@
 Extracted verbatim from ``native_runner.py`` (refactor Phase 2, step 1 — the true-leaf cluster).
 These helpers depend only on the standard library and each other, so they live here and are
 re-exported from ``native_runner`` for backwards compatibility. They resolve the EPFLemma env
-namespace with its legacy ``OPENGAUSS_``/``GAUSS_`` fallbacks in one place.
+namespace in one place.
 """
 
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 __all__ = [

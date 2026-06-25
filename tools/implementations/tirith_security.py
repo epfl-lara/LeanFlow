@@ -184,7 +184,7 @@ def _clear_install_failed():
         os.unlink(_failure_marker_path())
 
 
-def _gauss_bin_dir() -> str:
+def _epflemma_bin_dir() -> str:
     """Return $EPFLEMMA_HOME/bin, creating it if needed."""
     d = os.path.join(_get_epflemma_home(), "bin")
     os.makedirs(d, exist_ok=True)
@@ -383,7 +383,7 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
                 return None, "binary_not_in_archive"
 
         src = os.path.join(tmpdir, "tirith")
-        dest = os.path.join(_gauss_bin_dir(), "tirith")
+        dest = os.path.join(_epflemma_bin_dir(), "tirith")
         shutil.move(src, dest)
         os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -449,12 +449,12 @@ def _resolve_tirith_path(configured_path: str) -> str:
         _clear_install_failed()
         return found
 
-    gauss_bin = os.path.join(_gauss_bin_dir(), "tirith")
-    if os.path.isfile(gauss_bin) and os.access(gauss_bin, os.X_OK):
-        _resolved_path = gauss_bin
+    tirith_bin = os.path.join(_epflemma_bin_dir(), "tirith")
+    if os.path.isfile(tirith_bin) and os.access(tirith_bin, os.X_OK):
+        _resolved_path = tirith_bin
         _install_failure_reason = ""
         _clear_install_failed()
-        return gauss_bin
+        return tirith_bin
 
     # Local checks failed.  If a previous install attempt already failed,
     # skip the network retry — UNLESS the failure was "cosign_missing" and
@@ -513,9 +513,9 @@ def _background_install(*, log_failures: bool = True):
             _install_failure_reason = ""
             return
 
-        gauss_bin = os.path.join(_gauss_bin_dir(), "tirith")
-        if os.path.isfile(gauss_bin) and os.access(gauss_bin, os.X_OK):
-            _resolved_path = gauss_bin
+        tirith_bin = os.path.join(_epflemma_bin_dir(), "tirith")
+        if os.path.isfile(tirith_bin) and os.access(tirith_bin, os.X_OK):
+            _resolved_path = tirith_bin
             _install_failure_reason = ""
             return
 
@@ -575,12 +575,12 @@ def ensure_installed(*, log_failures: bool = True):
         _clear_install_failed()
         return found
 
-    gauss_bin = os.path.join(_gauss_bin_dir(), "tirith")
-    if os.path.isfile(gauss_bin) and os.access(gauss_bin, os.X_OK):
-        _resolved_path = gauss_bin
+    tirith_bin = os.path.join(_epflemma_bin_dir(), "tirith")
+    if os.path.isfile(tirith_bin) and os.access(tirith_bin, os.X_OK):
+        _resolved_path = tirith_bin
         _install_failure_reason = ""
         _clear_install_failed()
-        return gauss_bin
+        return tirith_bin
 
     # If previously failed in-memory, check if the cause is now resolved
     if _resolved_path is _INSTALL_FAILED:

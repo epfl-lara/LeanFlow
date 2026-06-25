@@ -271,7 +271,7 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 ### Bug fixes landed alongside the moves
 
 - **Test-pollution fix:** importing `run_agent` ran `load_epflemma_dotenv()` at import time before
-  the autouse `_isolate_gauss_home` fixture had set `EPFLEMMA_HOME`, leaking the developer's real
+  the autouse `_isolate_epflemma_home` fixture had set `EPFLEMMA_HOME`, leaking the developer's real
   `.env` provider-resolution vars (`EPFLEMMA_*`/`OPENGAUSS_*`/`GAUSS_*`) into the session and
   breaking `tests/agent/test_auxiliary_client.py` whenever `test_run_agent` ran first. The fixture
   now strips those vars (`monkeypatch.delenv`, auto-restored) so resolution starts clean regardless

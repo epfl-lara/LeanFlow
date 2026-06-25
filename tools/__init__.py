@@ -30,10 +30,6 @@ _MODULE_EXPORTS = {
         "clear_task_env_overrides",
         "TERMINAL_TOOL_DESCRIPTION",
     ),
-    "tools.implementations.vision_tools": (
-        "vision_analyze_tool",
-        "check_vision_requirements",
-    ),
     "tools.implementations.skills_tool": (
         "skills_list",
         "skill_view",

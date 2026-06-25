@@ -32,10 +32,10 @@ jobs:
           uv pip install -e ".[all,dev]"
 
       # --- Fast gate: format + lint + types run before the (slower) test suite ---
-      - name: Ruff format check
+      - name: Black format check
         run: |
           source .venv/bin/activate
-          ruff format --check .
+          black --check .
 
       - name: Ruff lint
         run: |

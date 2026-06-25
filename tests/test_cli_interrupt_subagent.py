@@ -10,15 +10,12 @@ This tests the COMPLETE path including _run_single_child, _active_children
 registration, interrupt propagation, and child detection.
 """
 
-import json
-import os
-import queue
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
-from tools.utilities.interrupt import is_interrupted, set_interrupt
+from tools.utilities.interrupt import set_interrupt
 
 
 class TestCLISubagentInterrupt(unittest.TestCase):
@@ -145,9 +142,9 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         time.sleep(0.2)  # Give child a moment to be in its loop
 
         print(f"Parent has {len(parent._active_children)} active children")
-        assert len(parent._active_children) >= 1, (
-            f"Expected child in _active_children, got {len(parent._active_children)}"
-        )
+        assert (
+            len(parent._active_children) >= 1
+        ), f"Expected child in _active_children, got {len(parent._active_children)}"
 
         # This is what the CLI does:
         parent.interrupt("Hey stop that")
@@ -168,9 +165,9 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         assert detected, "Child never detected the interrupt!"
         result = delegate_result[0]
         assert result is not None, "Delegate returned no result"
-        assert result["status"] == "interrupted", (
-            f"Expected 'interrupted', got '{result['status']}'"
-        )
+        assert (
+            result["status"] == "interrupted"
+        ), f"Expected 'interrupted', got '{result['status']}'"
         print(f"✓ Interrupt detected! Result: {result}")
 
 

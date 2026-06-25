@@ -20,9 +20,6 @@ Usage:
     response = agent.run_conversation("Tell me about the latest Python updates")
 """
 
-import asyncio
-import base64
-import concurrent.futures
 import copy
 import hashlib
 import json
@@ -32,9 +29,6 @@ logger = logging.getLogger(__name__)
 import os
 import random
 import re
-import sys
-import tempfile
-import textwrap
 import threading
 import time
 import uuid
@@ -44,7 +38,6 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 import fire
-from openai import OpenAI
 
 from core.home import epflemma_home
 
@@ -61,31 +54,16 @@ if _loaded_env_paths:
 else:
     logger.info("No .env file found. Using system environment variables.")
 
-# Point mini-swe-agent at the active EPFLemma home so it shares our config
-os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_epflemma_home))
-os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 # Import our tool system
-import requests
 
 from agent.accounting.token_accounting import TokenAccounter
-from agent.accounting.usage_pricing import estimate_cost_usd, has_known_pricing
 from agent.compression.compression_policy import CompressionPolicy
 from agent.compression.context_compressor import ContextCompressor
 from agent.compression.conversation_manager import ConversationManager
 from agent.compression.conversation_manager import clean_session_content as _clean_session_content
 from agent.display.display import (
     KawaiiSpinner,
-    _detect_tool_failure,
-)
-from agent.display.display import (
-    build_tool_preview as _build_tool_preview,
-)
-from agent.display.display import (
-    get_cute_tool_message as _get_cute_tool_message_impl,
-)
-from agent.display.display import (
-    get_tool_emoji as _get_tool_emoji,
 )
 from agent.display.output_manager import OutputManager
 from agent.execution.interrupt_controller import InterruptController
@@ -94,45 +72,30 @@ from agent.execution.tool_executor import ToolExecutor
 # Agent internals extracted to agent/ package for modularity
 from agent.prompting.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
-    MEMORY_GUIDANCE,
-    PLATFORM_HINTS,
-    SESSION_SEARCH_GUIDANCE,
-    SKILLS_GUIDANCE,
-    build_context_files_prompt,
-    build_skills_system_prompt,
 )
-from agent.prompting.prompt_caching import apply_anthropic_cache_control
 from agent.prompting.prompt_manager import PromptManager
 from agent.prompting.reasoning_processor import ReasoningProcessor
 from agent.prompting.response_normalizer import ResponseNormalizer
 from agent.providers.anthropic_messages import (
     AnthropicMessagePreparer,
     content_has_image_parts,
-    materialize_data_url_for_vision,
 )
 from agent.providers.api_caller import ApiCaller
 from agent.providers.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_tokens_rough,
-    fetch_model_metadata,
-    get_model_context_length,
     get_next_probe_tier,
     parse_context_limit_from_error,
     save_context_length,
 )
 from agent.providers.provider_client import ProviderClientFactory
 from agent.runtime.trajectory import (
-    convert_scratchpad_to_think,
     has_incomplete_scratchpad,
 )
-from agent.runtime.trajectory import (
-    save_trajectory as _save_trajectory_to_file,
-)
-from core.constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
-from model_tools import check_toolset_requirements, get_tool_definitions, handle_function_call
+from core.constants import OPENROUTER_BASE_URL
+from model_tools import check_toolset_requirements, get_tool_definitions
 from tools.implementations.terminal_tool import cleanup_vm
 from tools.utilities.interrupt import set_interrupt as _set_interrupt
-from utils import atomic_json_write
 
 
 def _cleanup_optional_browser_state(task_id: str) -> None:
@@ -209,19 +172,6 @@ _LEAN_REASONING_HELP_MAX_TOOL_RESULT_CHARS = 260_000
 #     (run_agent._is_destructive_command remains valid for internal call sites).
 #   - agent/log_formatting.py: tool argument/result log rendering
 #     (run_agent._wrap_log_text / _format_tool_result_for_log / ...).
-from agent.display.log_formatting import (  # noqa: E402
-    _format_tool_args_for_log,
-    _format_tool_result_for_log,
-    _format_tool_result_for_log_with_limits,
-    _summarize_arg_value,
-    _truncate_log_lines,
-    _wrap_log_text,
-)
-from agent.execution.command_safety import (  # noqa: E402
-    _DESTRUCTIVE_PATTERNS,
-    _REDIRECT_OVERWRITE,
-    _is_destructive_command,
-)
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -238,6 +188,24 @@ def _positive_int(value: Any, default: int) -> int:
 # module-level + isinstance-guard pattern.
 import contextlib
 
+from openai import OpenAI  # noqa: F401
+
+from agent.accounting.usage_pricing import (
+    estimate_cost_usd,  # noqa: F401
+    has_known_pricing,  # noqa: F401
+)
+from agent.display.display import _detect_tool_failure  # noqa: F401
+from agent.display.display import build_tool_preview as _build_tool_preview  # noqa: F401
+from agent.display.display import get_cute_tool_message as _get_cute_tool_message_impl  # noqa: F401
+from agent.display.display import get_tool_emoji as _get_tool_emoji  # noqa: F401
+from agent.display.log_formatting import (
+    _format_tool_args_for_log,  # noqa: F401
+    _format_tool_result_for_log,  # noqa: F401
+    _format_tool_result_for_log_with_limits,  # noqa: F401
+    _summarize_arg_value,  # noqa: F401
+    _truncate_log_lines,  # noqa: F401
+    _wrap_log_text,  # noqa: F401
+)
 from agent.execution.collaborator_resolvers import (  # noqa: E402
     _resolve_anthropic_message_preparer,
     _resolve_api_caller,
@@ -249,10 +217,25 @@ from agent.execution.collaborator_resolvers import (  # noqa: E402
     _resolve_response_normalizer,
     _resolve_tool_executor,
 )
+from agent.execution.command_safety import (
+    _DESTRUCTIVE_PATTERNS,  # noqa: F401
+    _REDIRECT_OVERWRITE,  # noqa: F401
+    _is_destructive_command,  # noqa: F401
+)
+from agent.prompting.prompt_builder import (
+    MEMORY_GUIDANCE,  # noqa: F401
+    PLATFORM_HINTS,  # noqa: F401
+    SESSION_SEARCH_GUIDANCE,  # noqa: F401
+    SKILLS_GUIDANCE,  # noqa: F401
+    build_context_files_prompt,  # noqa: F401
+    build_skills_system_prompt,  # noqa: F401
+)
 from agent.runtime.workflow_events import (  # noqa: E402,F401
     _emit_workflow_event,
     _workflow_agent_event_details,
 )
+from model_tools import handle_function_call  # noqa: F401
+from utils import atomic_json_write  # noqa: F401
 
 
 class AIAgent:
@@ -536,7 +519,7 @@ class AIAgent:
         except (TypeError, ValueError):
             self._advisor_result_context_reserve_tokens = 90000
 
-        # Persistent error log -- always writes WARNING+ to ~/.gauss/logs/errors.log
+        # Persistent error log -- always writes WARNING+ to <EPFLEMMA_HOME>/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
         # In gateway mode, each incoming message creates a new AIAgent instance,
         # while the root logger is process-global. Re-adding the same errors.log
@@ -614,7 +597,6 @@ class AIAgent:
                 # INFO/WARNING messages just clutter it.
                 for quiet_logger in [
                     "tools",  # all tools.* (terminal, web, file, etc.)
-                    "minisweagent",  # mini-swe-agent execution backend
                     "run_agent",  # agent runner internals
                     "cron",  # legacy scheduler logger if present
                 ]:
@@ -631,10 +613,9 @@ class AIAgent:
         self._persist_user_message_override = None
 
         # Anthropic message preparation (multimodal → text flattening) lives on
-        # the AnthropicMessagePreparer collaborator. It owns the per-image
-        # description memo (exposed back through the
-        # ``_anthropic_image_fallback_cache`` property) so a single tool loop does
-        # not repeatedly re-run auxiliary vision on the same image history.
+        # the AnthropicMessagePreparer collaborator: the native Anthropic route
+        # does not forward image content, so image parts are replaced with a short
+        # text placeholder.
         self._anthropic_message_preparer_obj = AnthropicMessagePreparer(self)
 
         # Initialize LLM client via centralized provider router.
@@ -1397,9 +1378,7 @@ class AIAgent:
                 + (
                     f": '{message[:40]}...'"
                     if message and len(message) > 40
-                    else f": '{message}'"
-                    if message
-                    else ""
+                    else f": '{message}'" if message else ""
                 )
             )
 
@@ -2366,35 +2345,10 @@ class AIAgent:
 
     # ── End provider fallback ──────────────────────────────────────────────
 
-    @property
-    def _anthropic_image_fallback_cache(self) -> dict[str, str]:
-        """Per-image Anthropic vision-fallback description memo.
-
-        The cache now lives on the AnthropicMessagePreparer collaborator; this
-        shim keeps existing reads/writes (``self._anthropic_image_fallback_cache``
-        and indexed assignment into it) working unchanged.
-        """
-        return _resolve_anthropic_message_preparer(self).image_fallback_cache
-
-    @_anthropic_image_fallback_cache.setter
-    def _anthropic_image_fallback_cache(self, value: dict[str, str]) -> None:
-        _resolve_anthropic_message_preparer(self).image_fallback_cache = value
-
     @staticmethod
     def _content_has_image_parts(content: Any) -> bool:
         """Thin wrapper delegating to AnthropicMessagePreparer (agent/anthropic_messages.py)."""
         return content_has_image_parts(content)
-
-    @staticmethod
-    def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Path | None]:
-        """Thin wrapper delegating to AnthropicMessagePreparer (agent/anthropic_messages.py)."""
-        return materialize_data_url_for_vision(image_url)
-
-    def _describe_image_for_anthropic_fallback(self, image_url: str, role: str) -> str:
-        """Thin wrapper delegating to AnthropicMessagePreparer (agent/anthropic_messages.py)."""
-        return _resolve_anthropic_message_preparer(self).describe_image_for_anthropic_fallback(
-            image_url, role
-        )
 
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
         """Thin wrapper delegating to AnthropicMessagePreparer (agent/anthropic_messages.py)."""
@@ -3487,9 +3441,9 @@ class AIAgent:
                     message_count=len(api_messages),
                     approx_tokens=approx_tokens,
                     total_chars=total_chars,
-                    available_tools=[tool["function"]["name"] for tool in self.tools]
-                    if self.tools
-                    else [],
+                    available_tools=(
+                        [tool["function"]["name"] for tool in self.tools] if self.tools else []
+                    ),
                     messages=api_messages,
                 ),
             )
@@ -5212,7 +5166,7 @@ def main(
         log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses. Defaults to 20.
 
     Toolset Examples:
-        - "autoformalize": Minimal Gauss workflow with file, web, and browser tools
+        - "autoformalize": Minimal EPFLemma workflow with file and web tools
     """
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)

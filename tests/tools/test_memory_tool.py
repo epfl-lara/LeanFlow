@@ -1,12 +1,10 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
 import json
-from pathlib import Path
 
 import pytest
 
 from tools.implementations.memory_tool import (
-    ENTRY_DELIMITER,
     MEMORY_SCHEMA,
     MemoryStore,
     _scan_memory_content,

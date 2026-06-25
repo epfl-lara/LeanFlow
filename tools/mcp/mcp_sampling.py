@@ -20,9 +20,8 @@ import asyncio
 import json
 import logging
 import math
-import os
 import time
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from core.home import epflemma_home
@@ -235,9 +234,11 @@ class SamplingHandler:
                             "type": "function",
                             "function": {
                                 "name": tu.name,
-                                "arguments": json.dumps(tu.input)
-                                if isinstance(tu.input, dict)
-                                else str(tu.input),
+                                "arguments": (
+                                    json.dumps(tu.input)
+                                    if isinstance(tu.input, dict)
+                                    else str(tu.input)
+                                ),
                             },
                         }
                     )

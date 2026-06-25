@@ -8,9 +8,6 @@ Logs every step to stderr (which isn't affected by redirect_stdout)
 so we can see exactly where the interrupt gets lost.
 """
 
-import contextlib
-import io
-import json
 import logging
 import os
 import queue
@@ -29,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent, IterationBudget
-from tools.utilities.interrupt import is_interrupted, set_interrupt
+from tools.utilities.interrupt import set_interrupt
 
 
 def make_slow_response(delay=2.0):

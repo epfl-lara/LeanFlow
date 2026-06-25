@@ -148,9 +148,9 @@ class PromptManager:
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 
-        from core.time import now as _gauss_now
+        from core.time import now as _now
 
-        now = _gauss_now()
+        now = _now()
         timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
         if agent.pass_session_id and agent.session_id:
             timestamp_line += f"\nSession ID: {agent.session_id}"

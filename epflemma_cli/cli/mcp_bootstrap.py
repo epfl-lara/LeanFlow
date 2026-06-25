@@ -504,9 +504,9 @@ def managed_mcp_power_status(
         "repl_configured": repl_configured,
         "repl_available": repl_available,
         "repl_path": repl_path,
-        "repl_status": "ready"
-        if repl_available
-        else ("configured" if repl_configured else "disabled"),
+        "repl_status": (
+            "ready" if repl_available else ("configured" if repl_configured else "disabled")
+        ),
     }
 
 

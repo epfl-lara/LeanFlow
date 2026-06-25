@@ -48,11 +48,7 @@ import json
 import logging
 import os
 import re
-import xml.etree.ElementTree as ET
 from typing import Any
-from urllib.parse import urljoin
-
-import requests
 
 from agent.providers.auxiliary_client import async_call_llm
 from tools.implementations.web_research_providers import (  # noqa: F401
@@ -939,9 +935,7 @@ async def web_crawl_tool(
         # Build crawl parameters - keep it simple
         crawl_params = {
             "limit": 20,  # Limit number of pages to crawl
-            "scrape_options": {
-                "formats": ["markdown"]  # Just markdown for simplicity
-            },
+            "scrape_options": {"formats": ["markdown"]},  # Just markdown for simplicity
         }
 
         # Note: The 'prompt' parameter is not documented for crawl
@@ -1290,6 +1284,8 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
+import requests  # noqa: F401
+
 from tools.registry import registry
 
 WEB_SEARCH_SCHEMA = {

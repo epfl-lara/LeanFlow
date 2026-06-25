@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Ensure the module is importable so we can patch it
-import tools.implementations.tirith_security
 import tools.utilities.approval as approval_module
 from tools.utilities.approval import (
     approve_session,

@@ -1,9 +1,6 @@
 """Tests for tools/session_search_tool.py — helper functions and search dispatcher."""
 
 import json
-import time
-
-import pytest
 
 from tools.implementations.session_search_tool import (
     MAX_SESSION_CHARS,

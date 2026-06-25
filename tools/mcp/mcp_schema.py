@@ -35,12 +35,14 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     return {
         "name": prefixed_name,
         "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
-        "parameters": mcp_tool.inputSchema
-        if mcp_tool.inputSchema
-        else {
-            "type": "object",
-            "properties": {},
-        },
+        "parameters": (
+            mcp_tool.inputSchema
+            if mcp_tool.inputSchema
+            else {
+                "type": "object",
+                "properties": {},
+            }
+        ),
     }
 
 
@@ -153,7 +155,9 @@ _UTILITY_CAPABILITY_METHODS = {
 }
 
 
-def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: dict) -> list[dict]:  # noqa: F821
+def _select_utility_schemas(
+    server_name: str, server: "MCPServerTask", config: dict  # noqa: F821
+) -> list[dict]:
     """Select utility schemas based on config and server capabilities."""
     tools_filter = config.get("tools") or {}
     resources_enabled = _parse_boolish(tools_filter.get("resources"), default=True)

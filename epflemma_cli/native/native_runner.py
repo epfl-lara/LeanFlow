@@ -8,13 +8,11 @@ import json
 import logging
 import os
 import re
-import subprocess
 import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from difflib import unified_diff
 from pathlib import Path
 from typing import Any
@@ -31,9 +29,7 @@ from agent.providers.model_metadata import estimate_messages_tokens_rough
 from epflemma_cli.config import load_config
 from epflemma_cli.lean.lean_incremental import lean_incremental_check
 from epflemma_cli.lean.lean_services import (
-    actionable_diagnostic_line_numbers,
     diagnostic_items,
-    diagnostics_indicate_actionable_failure,
     lean_inspect,
     lean_verify,
     probe_capabilities,
@@ -78,7 +74,6 @@ from epflemma_cli.workflows.workflow_state import (
     reset_workflow_run_log,
     save_workflow_live_status,
     summarize_workflow_agents,
-    terminate_all_workflow_agents,
     terminate_project_workflow_agents,
     terminate_workflow_agent_descendants,
     workflow_agent_detail,
@@ -141,26 +136,27 @@ _FINAL_SWEEP_AUTONOMY_KEYS = frozenset(
 # helpers (discover/read/inspect the generated .lean files for a /formalize run, plus the
 # blueprint-inventory fidelity checks and the PROOF_/CONSTRUCTION_DECLARATION_KINDS sets).
 import contextlib
+import subprocess  # noqa: F401
 
 from epflemma_cli.formalization.formalization_document_runner import (  # noqa: E402
-    _BLUEPRINT_UNRESOLVED_FIDELITY_RE,
+    _BLUEPRINT_UNRESOLVED_FIDELITY_RE,  # noqa: F401
     _autoformalizer_advisory_review_due,
-    _blueprint_block_missing,
-    _blueprint_bullet_block,
-    _blueprint_bullet_value,
-    _blueprint_checklist_item_checked,
-    _blueprint_fidelity_field,
-    _blueprint_fidelity_field_unresolved,
+    _blueprint_block_missing,  # noqa: F401
+    _blueprint_bullet_block,  # noqa: F401
+    _blueprint_bullet_value,  # noqa: F401
+    _blueprint_checklist_item_checked,  # noqa: F401
+    _blueprint_fidelity_field,  # noqa: F401
+    _blueprint_fidelity_field_unresolved,  # noqa: F401
     _blueprint_first_bullet_value,
-    _blueprint_import_plan_section,
+    _blueprint_import_plan_section,  # noqa: F401
     _blueprint_source_inventory_entries,
-    _blueprint_value_missing,
+    _blueprint_value_missing,  # noqa: F401
     _document_formalization_blueprint_checklist_issues,
     _document_formalization_blueprint_waiting_for_review,
     _document_formalization_handoff_blocked_state,
     _document_formalization_has_draft_sorries,
     _document_formalization_manifest_blocks,
-    _document_formalization_manifest_labels,
+    _document_formalization_manifest_labels,  # noqa: F401
     _document_formalization_needs_blueprint_plan,
     _document_formalization_organization_phase_active,
     _document_formalization_organization_phase_needed,
@@ -171,8 +167,6 @@ from epflemma_cli.formalization.formalization_document_runner import (  # noqa: 
     _document_formalization_waiting_for_independent_review,
 )
 from epflemma_cli.formalization.formalization_generated_lean import (  # noqa: E402
-    CONSTRUCTION_DECLARATION_KINDS,
-    PROOF_DECLARATION_KINDS,
     _document_formalization_blueprint_inventory_issues,
     _document_formalization_construction_sorry_issues,
     _document_formalization_generated_proof_sorry_count,
@@ -183,10 +177,6 @@ from epflemma_cli.formalization.formalization_generated_lean import (  # noqa: E
     _formalization_generated_lean_text,
     _formalization_generated_module_names,
     _formalization_generated_prove_scope,
-    _formalization_manifest_payload,
-    _lean_comment_has_source_proof_notes,
-    _lean_declaration_preceding_comment_window,
-    _topologically_order_project_paths,
 )
 from epflemma_cli.lean.lean_diagnostic_feedback import (  # noqa: E402
     _declaration_diagnostic_feedback_reason,
@@ -207,28 +197,26 @@ from epflemma_cli.lean.lean_module_paths import (  # noqa: E402
     _blueprint_import_plan_imports,
     _lean_decl_names_from_planned_value,
     _lean_imports_from_file,
-    _lean_imports_from_text,
     _module_file_for_module,
     _module_name_for_file,
     _root_module_file_for_module,
-    _valid_lean_module_name,
 )
 from epflemma_cli.lean.lean_parsing import (  # noqa: E402
-    LEAN_DECLARATION_PREAMBLE_RE,
-    _declaration_entries_by_name_from_text,
+    LEAN_DECLARATION_PREAMBLE_RE,  # noqa: F401
+    _declaration_entries_by_name_from_text,  # noqa: F401
     _declaration_line_index_from_text,
     _declaration_matches_target,
-    _declaration_names_from_text,
+    _declaration_names_from_text,  # noqa: F401
     _declaration_stable_key,
     _extract_target_symbol,
-    _find_assignment_marker_for_statement,
+    _find_assignment_marker_for_statement,  # noqa: F401
     _strip_lean_comments_and_strings,
     _text_has_any_completed_theorem_or_lemma,
     _text_has_sorry,
-    _text_has_theorem_or_lemma,
+    _text_has_theorem_or_lemma,  # noqa: F401
     _text_has_theorem_or_lemma_without_sorry,
     _text_self_approves_document_formalization_blueprint,
-    _trim_declaration_region_end,
+    _trim_declaration_region_end,  # noqa: F401
 )
 from epflemma_cli.native.native_checkpoints import (  # noqa: E402,F401
     WORKFLOW_CHECKPOINT_PREFIX,
@@ -251,9 +239,9 @@ from epflemma_cli.native.native_checkpoints import (  # noqa: E402,F401
     _write_json_file,
 )
 from epflemma_cli.native.native_config import (  # noqa: E402
-    _managed_home,
+    _managed_home,  # noqa: F401
     _project_root,
-    _read_int_env,
+    _read_int_env,  # noqa: F401
     _read_native_env,
     _read_text_env,
     _utc_now_isoformat,
@@ -286,16 +274,16 @@ from epflemma_cli.native.native_utils import (  # noqa: E402
     _collect_message_text,
     _diagnostic_counts_from_messages,
     _extract_blocker_summary,
-    _extract_diagnostic_line_numbers,
+    _extract_diagnostic_line_numbers,  # noqa: F401
     _extract_diagnostics_summary,
     _extract_json_payload,
     _extract_next_steps,
-    _extract_recent_build_status,
+    _extract_recent_build_status,  # noqa: F401
     _format_declaration_queue,
-    _format_diagnostic_for_model,
+    _format_diagnostic_for_model,  # noqa: F401
     _format_turns_for_snapshot,
     _logging_config,
-    _message_text,
+    _message_text,  # noqa: F401
     _normalize_blocker_summary,
     _positive_int_config,
     _relative_file_label,
@@ -311,8 +299,8 @@ from epflemma_cli.proof_state_builder import (  # noqa: E402
     _queue_horizon_summary,
 )
 from epflemma_cli.workflows.manager_verification import (  # noqa: E402
-    MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S,
-    MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S,
+    MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S,  # noqa: F401
+    MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S,  # noqa: F401
     _last_verification_record,
     _manager_feedback_retry_key,
     _manager_incremental_check_timeout_s,
@@ -323,31 +311,31 @@ from epflemma_cli.workflows.manager_verification import (  # noqa: E402
 )
 from epflemma_cli.workflows.project_prove_manager import (  # noqa: E402
     PROJECT_PROVE_MANAGER_CANDIDATE_LIMIT,
-    PROJECT_PROVE_MANAGER_DECL_CONTEXT_MAX_CHARS,
-    PROJECT_PROVE_MANAGER_FULL_FILE_MAX_CHARS,
-    PROJECT_PROVE_MANAGER_HINT_CONTEXT_MAX_CHARS,
-    PROJECT_PROVE_MANAGER_PENDING_DECL_LIMIT,
-    PROJECT_PROVE_MANAGER_SELECTED_FILE_MAX_CHARS,
+    PROJECT_PROVE_MANAGER_DECL_CONTEXT_MAX_CHARS,  # noqa: F401
+    PROJECT_PROVE_MANAGER_FULL_FILE_MAX_CHARS,  # noqa: F401
+    PROJECT_PROVE_MANAGER_HINT_CONTEXT_MAX_CHARS,  # noqa: F401
+    PROJECT_PROVE_MANAGER_PENDING_DECL_LIMIT,  # noqa: F401
+    PROJECT_PROVE_MANAGER_SELECTED_FILE_MAX_CHARS,  # noqa: F401
     _guard_project_prove_llm_order,
-    _lean_import_modules,
+    _lean_import_modules,  # noqa: F401
     _module_name_for_project_path,
     _ordered_labels_from_llm_payload,
-    _project_prove_bounded_excerpt,
-    _project_prove_declaration_context,
-    _project_prove_declaration_difficulty,
+    _project_prove_bounded_excerpt,  # noqa: F401
+    _project_prove_declaration_context,  # noqa: F401
+    _project_prove_declaration_difficulty,  # noqa: F401
     _project_prove_dependency_graph,
     _project_prove_fallback_order,
-    _project_prove_file_context_excerpt,
+    _project_prove_file_context_excerpt,  # noqa: F401
     _project_prove_file_difficulty,
-    _project_prove_file_hint_count,
-    _project_prove_header_excerpt,
-    _project_prove_hint_excerpt,
+    _project_prove_file_hint_count,  # noqa: F401
+    _project_prove_header_excerpt,  # noqa: F401
+    _project_prove_hint_excerpt,  # noqa: F401
     _project_prove_label_list,
     _project_prove_manager_active,
     _project_prove_manager_summary,
-    _project_prove_priority_bucket,
+    _project_prove_priority_bucket,  # noqa: F401
     _project_prove_transitive_paths,
-    _project_prove_worked_example_count,
+    _project_prove_worked_example_count,  # noqa: F401
 )
 from epflemma_cli.workflows.queue_edit_guard import (  # noqa: E402
     _queue_edit_assigned_statement_signature,
@@ -2828,9 +2816,11 @@ def _finish_queue_step_boundary(
                 pending_file,
                 pending_target,
                 manager_check,
-                "lean_incremental_check"
-                if str(manager_check.get("mode", "") or "") == "incremental_target"
-                else verification_tool,
+                (
+                    "lean_incremental_check"
+                    if str(manager_check.get("mode", "") or "") == "incremental_target"
+                    else verification_tool
+                ),
             )
             manager_feedback_reason = str(
                 manager_check.get("output", "") or manager_check.get("error", "") or ""
@@ -2994,20 +2984,28 @@ def _finish_queue_step_boundary(
             (
                 "queue-theorem-feedback"
                 if still_blocked
-                else "queue-theorem-cleanup-feedback"
-                if cleanup_feedback_reason
-                else "queue-theorem-retry-exhausted"
-                if hard_retry_exhausted
-                else "queue-step-boundary"
+                else (
+                    "queue-theorem-cleanup-feedback"
+                    if cleanup_feedback_reason
+                    else (
+                        "queue-theorem-retry-exhausted"
+                        if hard_retry_exhausted
+                        else "queue-step-boundary"
+                    )
+                )
             ),
             (
                 f"Continuing same theorem after failed verification feedback for {pending_target}"
                 if still_blocked
-                else f"Continuing same theorem for local warning cleanup on {pending_target}"
-                if cleanup_feedback_reason
-                else f"Manager retry limit reached for {pending_target}"
-                if hard_retry_exhausted
-                else f"Yielding after verification feedback for {pending_target}"
+                else (
+                    f"Continuing same theorem for local warning cleanup on {pending_target}"
+                    if cleanup_feedback_reason
+                    else (
+                        f"Manager retry limit reached for {pending_target}"
+                        if hard_retry_exhausted
+                        else f"Yielding after verification feedback for {pending_target}"
+                    )
+                )
             ),
             queue_item=item,
             target_symbol=pending_target,
@@ -3391,11 +3389,11 @@ def _tool_progress_callback(name: str, preview: str, args: Mapping[str, Any] | N
     payload.update(
         {
             "tool": name,
-            "args_preview": _single_line(
-                json.dumps(arguments, ensure_ascii=False), activity_limit + 40
-            )
-            if arguments
-            else "",
+            "args_preview": (
+                _single_line(json.dumps(arguments, ensure_ascii=False), activity_limit + 40)
+                if arguments
+                else ""
+            ),
         }
     )
     _record_activity(
@@ -5302,8 +5300,10 @@ def _run_configured_blueprint_verification(
             "",
             "Verifier findings:",
         ]
-        lines.extend(f"- {finding}" for finding in findings) if findings else lines.append(
-            "- verifier returned BLOCK without detailed findings"
+        (
+            lines.extend(f"- {finding}" for finding in findings)
+            if findings
+            else lines.append("- verifier returned BLOCK without detailed findings")
         )
         autonomy_state["document_formalization_review_feedback_message"] = "\n".join(lines)
         autonomy_state["document_formalization_review_feedback_pending"] = True
@@ -5737,12 +5737,16 @@ def _api_step_budget_handoff_message(
             "",
             f"- declaration: {target_symbol or '[unknown]'}",
             f"- file: {active_file or '[unknown]'}",
-            f"- API steps used: {api_calls}/{max_turns}"
-            if max_turns
-            else f"- API steps used: {api_calls}",
-            "- manager action: recorded this as a failed focused attempt"
-            if attempt_recorded
-            else "- manager action: no failed attempt was recorded",
+            (
+                f"- API steps used: {api_calls}/{max_turns}"
+                if max_turns
+                else f"- API steps used: {api_calls}"
+            ),
+            (
+                "- manager action: recorded this as a failed focused attempt"
+                if attempt_recorded
+                else "- manager action: no failed attempt was recorded"
+            ),
             f"- safe-state action: {restore_line}",
             "- next action: continue this same queue item from the recorded failed-attempt state; do not claim the theorem is solved until file verification clears it.",
         ]
@@ -6593,9 +6597,9 @@ def _document_formalization_handoff_verification(
         ok=local_ok,
         summary=local_summary,
         active_file=str(active_path),
-        issues=issues[: len(issues) - len(advisory_block_issues)]
-        if advisory_block_issues
-        else issues,
+        issues=(
+            issues[: len(issues) - len(advisory_block_issues)] if advisory_block_issues else issues
+        ),
     )
     if advisory_payload:
         decision = _verification_review_decision(advisory_payload)
@@ -6796,9 +6800,11 @@ def _promote_live_state_to_verified(
     document_handoff = _document_formalization_handoff_verification(
         active_file,
         diagnostics=str(normalized.get("diagnostics", "") or ""),
-        sorry_count=normalized.get("sorry_count")
-        if isinstance(normalized.get("sorry_count"), int)
-        else None,
+        sorry_count=(
+            normalized.get("sorry_count")
+            if isinstance(normalized.get("sorry_count"), int)
+            else None
+        ),
         last_verification=_last_verification_record(autonomy_state, normalized),
         completion=True,
     )

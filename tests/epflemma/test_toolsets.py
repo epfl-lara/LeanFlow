@@ -31,9 +31,9 @@ def test_epflemma_native_swarm_adds_delegate_task_to_core():
     native = set(resolve_toolset("epflemma-native"))
     swarm = set(resolve_toolset("epflemma-native-swarm"))
 
-    assert swarm == native | set(_DELEGATION_TOOLS), (
-        f"swarm should be native + delegation. extra={swarm - native - set(_DELEGATION_TOOLS)}"
-    )
+    assert swarm == native | set(
+        _DELEGATION_TOOLS
+    ), f"swarm should be native + delegation. extra={swarm - native - set(_DELEGATION_TOOLS)}"
 
 
 def test_each_group_present_in_core_tools():

@@ -39,9 +39,7 @@ class only owns the *bookkeeping* and the invariant checks.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
-from enum import Enum
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 # ---------------------------------------------------------------------------
@@ -64,7 +62,7 @@ from epflemma_cli.workflows.queue_models import (  # noqa: E402
     TheoremOutcome,
     Transition,
     VerificationRecord,
-    VerificationScope,
+    VerificationScope,  # noqa: F401
     _normalize_path,
     classify_check,
     select_next_item,
@@ -611,7 +609,7 @@ class TheoremQueueManager:
         The runner reads ``disabled_tools`` to (a) drop the tool from the
         next API call's schema and (b) annotate the prompt. Today the disable
         is invisible to the model and wastes one API step per re-attempt
-        (lean_auto_try in the GaussTest log: 6 wasted steps).
+        (lean_auto_try in the test log: 6 wasted steps).
         """
         if name:
             self._disabled_tool_reasons[str(name)] = str(reason or "")

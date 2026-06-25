@@ -4,7 +4,6 @@
 import errno
 import json
 import logging
-import os
 import threading
 
 from agent.accounting.redact import redact_sensitive_text
@@ -52,7 +51,6 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
 
     from tools.implementations.terminal_tool import (
         _active_environments,
-        _check_disk_usage_warning,
         _create_environment,
         _creation_locks,
         _creation_locks_lock,
@@ -453,7 +451,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. NOTE: Cannot read images or binary files.",
     "parameters": {
         "type": "object",
         "properties": {

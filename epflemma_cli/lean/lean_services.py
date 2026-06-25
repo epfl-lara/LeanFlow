@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
-import importlib.util
-import io
 import json
 import logging
 import os
@@ -26,10 +23,6 @@ from typing import Any
 # lean_attempt_helpers imports only stdlib and does NOT import lean_services / native_runner, so this
 # introduces no import cycle.
 from epflemma_cli.lean.lean_attempt_helpers import (  # noqa: E402
-    MULTI_ATTEMPT_MAX_CANDIDATES,
-    MULTI_ATTEMPT_MAX_CHARS,
-    MULTI_ATTEMPT_MAX_LINES,
-    MULTI_ATTEMPT_MIN_CANDIDATES,
     _multi_attempt_validation_reasons,
     _normalize_multi_attempt_candidates,
     _strip_comments_and_strings,
@@ -46,7 +39,6 @@ from epflemma_cli.lean.lean_attempt_helpers import (  # noqa: E402
 # unchanged. lean_automation imports only stdlib and does NOT import lean_services / native_runner, so
 # this introduces no import cycle.
 from epflemma_cli.lean.lean_automation import (  # noqa: E402
-    UNSUPPORTED_PROOF_AUTO_OPTIONS,
     _auto_probe_attempt_succeeded,
     _auto_search_depth_for_objective,
     _automation_probe_replacement,
@@ -71,13 +63,9 @@ from epflemma_cli.lean.lean_backend import LeanBackend  # noqa: E402
 # callers keep resolving them as ``lean_services.<name>`` unchanged. lean_declarations imports only
 # stdlib and does NOT import lean_services / native_runner, so this introduces no import cycle.
 from epflemma_cli.lean.lean_declarations import (  # noqa: E402
-    LEAN_DECLARATION_PREAMBLE_RE,
     _declaration_index,
-    _declaration_text_from_location,
     _find_declaration_entry,
     _find_symbol_line,
-    _split_declaration_statement_and_proof,
-    _surrounding_declarations,
 )
 
 # Phase 5: pure diagnostic / blocker / goal text parsers were extracted to lean_diagnostics.
@@ -85,19 +73,9 @@ from epflemma_cli.lean.lean_declarations import (  # noqa: E402
 # keep resolving them as ``lean_services.<name>`` unchanged. lean_diagnostics imports only stdlib
 # and does NOT import lean_services / native_runner, so this introduces no import cycle.
 from epflemma_cli.lean.lean_diagnostics import (  # noqa: E402
-    ACTIONABLE_DIAGNOSTIC_SEVERITIES,
-    _coerce_positive_int,
-    _collect_diagnostic_items,
-    _diagnostic_line_from_mapping,
-    _diagnostic_line_numbers,
     _diagnostic_reason_for_entry,
-    _json_diagnostic_values,
-    _normalise_diagnostic_item,
-    actionable_diagnostic_items,
-    actionable_diagnostic_line_numbers,
     classify_blocker_kind,
     diagnostic_items,
-    diagnostics_indicate_actionable_failure,
 )
 
 # Phase 5: the pure local proof-context fallback assembler (_local_proof_context_payload rebuilds a
@@ -118,7 +96,6 @@ from epflemma_cli.lean.lean_proof_context_local import (  # noqa: E402
 # and _rg_search stay below. lean_search_providers imports only stdlib and does NOT import
 # lean_services / native_runner, so this introduces no import cycle.
 from epflemma_cli.lean.lean_search_providers import (  # noqa: E402
-    _LEANEXPLORE_LOCAL_REQUIRED_ENTRIES,
     SEARCH_PROVIDER_LABELS,
     _decode_nested_result,
     _format_search_payload_item,
@@ -126,10 +103,7 @@ from epflemma_cli.lean.lean_search_providers import (  # noqa: E402
     _leanexplore_api_key,
     _leanexplore_api_search,
     _leanexplore_backend_preference,
-    _leanexplore_cache_root,
-    _leanexplore_local_cache_path,
     _leanexplore_local_status,
-    _leanexplore_local_verbose,
     _model_to_plain_dict,
     _quiet_leanexplore_local_output,
     _search_payload_fragments,
@@ -147,9 +121,7 @@ from epflemma_cli.lean.lean_sorry_stats import (  # noqa: E402
     _project_sorry_stats,
 )
 from epflemma_cli.lean.lean_worker_dispatch import _worker_prompt, dispatch_worker  # noqa: F401
-from epflemma_cli.lean.lean_workflow_specs import get_lean_spec, list_specs
-from epflemma_cli.runtime.file_locks import acquire_file_lock as _acquire_file_lock
-from epflemma_cli.runtime.file_locks import list_file_locks as _list_file_locks
+from epflemma_cli.lean.lean_workflow_specs import list_specs
 from epflemma_cli.workflows.project import (
     ProjectManifestError,
     ProjectNotFoundError,
@@ -383,6 +355,32 @@ def _disable_proof_auto_backend_for_run(*, cwd: str | os.PathLike[str] | None = 
             _disable_mcp_tool_for_run(tool_name, cwd=cwd)
 
 
+import importlib.util  # noqa: F401
+
+from epflemma_cli.lean.lean_attempt_helpers import (
+    MULTI_ATTEMPT_MAX_CANDIDATES,  # noqa: F401
+    MULTI_ATTEMPT_MAX_CHARS,  # noqa: F401
+    MULTI_ATTEMPT_MAX_LINES,  # noqa: F401
+    MULTI_ATTEMPT_MIN_CANDIDATES,  # noqa: F401
+)
+from epflemma_cli.lean.lean_declarations import (
+    LEAN_DECLARATION_PREAMBLE_RE,  # noqa: F401
+    _declaration_text_from_location,  # noqa: F401
+    _split_declaration_statement_and_proof,  # noqa: F401
+    _surrounding_declarations,  # noqa: F401
+)
+from epflemma_cli.lean.lean_diagnostics import (
+    ACTIONABLE_DIAGNOSTIC_SEVERITIES,  # noqa: F401
+    _coerce_positive_int,  # noqa: F401
+    _collect_diagnostic_items,  # noqa: F401
+    _diagnostic_line_from_mapping,  # noqa: F401
+    _diagnostic_line_numbers,  # noqa: F401
+    _json_diagnostic_values,  # noqa: F401
+    _normalise_diagnostic_item,  # noqa: F401
+    actionable_diagnostic_items,  # noqa: F401
+    actionable_diagnostic_line_numbers,  # noqa: F401
+    diagnostics_indicate_actionable_failure,  # noqa: F401
+)
 from epflemma_cli.lean.lean_models import (  # noqa: F401
     LeanAxiomReport,
     LeanCapabilityReport,
@@ -761,9 +759,11 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         mcp_tools=mcp_tools,
         search_providers=search_providers,
         helper_tools=_helper_tools(),
-        workers=[record.spec_id for record in list_specs("worker")]
-        if LEAN_WORKER_DISPATCH_ENABLED
-        else [],
+        workers=(
+            [record.spec_id for record in list_specs("worker")]
+            if LEAN_WORKER_DISPATCH_ENABLED
+            else []
+        ),
         degraded_reasons=degraded,
         mcp_server_roles=mcp_server_roles,
         managed_mcp_servers=managed_mcp_servers,

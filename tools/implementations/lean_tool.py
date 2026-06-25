@@ -22,9 +22,7 @@ from epflemma_cli.lean.lean_services import (
 )
 from tools.implementations.lean_experts import (  # noqa: E402
     LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S,
-    LEAN_DECOMPOSE_HELPERS_MIN_TIMEOUT_S,
     LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S,
-    LEAN_REASONING_HELP_MIN_TIMEOUT_S,
     lean_decompose_helpers_tool,
     lean_reasoning_help_tool,
 )

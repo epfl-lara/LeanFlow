@@ -10,13 +10,9 @@ Coverage levels:
   Persistent cache       — save/load, corruption, update, provider isolation
 """
 
-import os
-import tempfile
 import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 import yaml
 
 from agent.providers.model_metadata import (

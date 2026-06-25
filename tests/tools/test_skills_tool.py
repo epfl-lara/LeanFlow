@@ -71,9 +71,9 @@ class TestParseFrontmatter:
         assert fm == {}
 
     def test_nested_yaml(self):
-        content = "---\nname: test\nmetadata:\n  gauss:\n    tags: [a, b]\n---\n\nBody.\n"
+        content = "---\nname: test\nmetadata:\n  epflemma:\n    tags: [a, b]\n---\n\nBody.\n"
         fm, body = _parse_frontmatter(content)
-        assert fm["metadata"]["gauss"]["tags"] == ["a", "b"]
+        assert fm["metadata"]["epflemma"]["tags"] == ["a", "b"]
 
     def test_malformed_yaml_fallback(self):
         """Malformed YAML falls back to simple key:value parsing."""
@@ -400,7 +400,7 @@ class TestSkillView:
             _make_skill(
                 tmp_path,
                 "tagged",
-                frontmatter_extra="metadata:\n  gauss:\n    tags: [fine-tuning, llm]\n",
+                frontmatter_extra="metadata:\n  epflemma:\n    tags: [fine-tuning, llm]\n",
             )
             raw = skill_view("tagged")
         result = json.loads(raw)
@@ -716,7 +716,7 @@ class TestFindAllSkillsSecureSetup:
         assert "readiness_status" not in skills[0]
 
     def test_skill_listing_does_not_probe_backend_for_env_vars(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_ENV", "singularity")
 
         with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
@@ -780,7 +780,7 @@ class TestSkillViewPrerequisites:
         assert result["required_environment_variables"] == []
 
     def test_skill_view_treats_backend_only_env_as_setup_needed(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_ENV", "singularity")
 
         with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
@@ -817,9 +817,7 @@ class TestSkillViewPrerequisites:
         [
             ("ssh", "remote environment"),
             ("daytona", "remote environment"),
-            ("docker", "docker-backed skills"),
             ("singularity", "singularity-backed skills"),
-            ("modal", "modal-backed skills"),
         ],
     )
     def test_remote_backend_keeps_setup_needed_after_local_secret_capture(
@@ -892,7 +890,7 @@ class TestSkillViewPrerequisites:
 name: legacy-flat
 description: Legacy flat skill.
 metadata:
-  gauss:
+  epflemma:
     tags: [legacy, flat]
 required_environment_variables:
   - name: LEGACY_KEY

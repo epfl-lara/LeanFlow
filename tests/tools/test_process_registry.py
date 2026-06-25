@@ -3,7 +3,6 @@
 import json
 import os
 import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,7 +10,6 @@ import pytest
 from tools.environments.local import _EPFLEMMA_PROVIDER_ENV_FORCE_PREFIX
 from tools.utilities.process_registry import (
     FINISHED_TTL_SECONDS,
-    MAX_OUTPUT_CHARS,
     MAX_PROCESSES,
     ProcessRegistry,
     ProcessSession,

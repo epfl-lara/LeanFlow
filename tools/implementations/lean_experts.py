@@ -110,9 +110,11 @@ def lean_reasoning_help_tool(
             f"Current goals:\n{current_goals}" if current_goals else "",
             f"Current attempt:\n{current_attempt}" if current_attempt else "",
             f"Recent failed attempts:\n{recent_failed_attempts}" if recent_failed_attempts else "",
-            f"Question:\n{question}"
-            if question
-            else "Question:\nSuggest the next strongest proof strategy.",
+            (
+                f"Question:\n{question}"
+                if question
+                else "Question:\nSuggest the next strongest proof strategy."
+            ),
         ]
         if part
     )
@@ -458,12 +460,12 @@ def _normalize_decomposition_payload(
                     "lean_skeleton": str(
                         item.get("lean_skeleton", "") or item.get("skeleton", "") or ""
                     ).strip(),
-                    "dependencies": dependencies
-                    if isinstance(dependencies, list)
-                    else [str(dependencies)],
-                    "proof_hints": proof_hints
-                    if isinstance(proof_hints, list)
-                    else [str(proof_hints)],
+                    "dependencies": (
+                        dependencies if isinstance(dependencies, list) else [str(dependencies)]
+                    ),
+                    "proof_hints": (
+                        proof_hints if isinstance(proof_hints, list) else [str(proof_hints)]
+                    ),
                     "insertion_point": str(item.get("insertion_point", "") or "").strip(),
                 }
             )
@@ -547,9 +549,11 @@ def lean_decompose_helpers_tool(
             f"Current goals:\n{current_goals}" if current_goals else "",
             f"Current attempt:\n{current_attempt}" if current_attempt else "",
             f"Recent failed attempts:\n{recent_failed_attempts}" if recent_failed_attempts else "",
-            f"Question:\n{question}"
-            if question
-            else "Question:\nDecompose this hard proof into helper lemmas that the main agent can insert and prove one at a time.",
+            (
+                f"Question:\n{question}"
+                if question
+                else "Question:\nDecompose this hard proof into helper lemmas that the main agent can insert and prove one at a time."
+            ),
             f"Required JSON shape:\n{json_contract}",
         ]
         if part

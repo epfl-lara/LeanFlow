@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SQLite State Store for Gauss Agent.
+SQLite State Store for EPFLemma.
 
 Provides persistent session storage with FTS5 full-text search, replacing
 the per-session JSONL file approach. Stores session metadata, full message
@@ -16,7 +16,6 @@ Key design decisions:
 
 import contextlib
 import json
-import os
 import re
 import sqlite3
 import time

@@ -12,7 +12,7 @@ import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -646,9 +646,9 @@ class TestInit:
                 skip_context_files=True,
                 skip_memory=True,
             )
-            assert re.match(r"^\d{5}$", a.session_id), (
-                f"session_id doesn't match expected format: {a.session_id}"
-            )
+            assert re.match(
+                r"^\d{5}$", a.session_id
+            ), f"session_id doesn't match expected format: {a.session_id}"
 
 
 class TestInterrupt:
@@ -1854,9 +1854,9 @@ class TestConversationHistoryNotMutated:
             result = agent.run_conversation("new question", conversation_history=history)
 
         # Caller's list must be untouched
-        assert len(history) == original_len, (
-            f"conversation_history was mutated: expected {original_len} items, got {len(history)}"
-        )
+        assert (
+            len(history) == original_len
+        ), f"conversation_history was mutated: expected {original_len} items, got {len(history)}"
         # Result should have more messages than the original history
         assert len(result["messages"]) > original_len
 
@@ -2304,7 +2304,6 @@ class TestSafeWriter:
 
     def test_double_wrap_prevented(self):
         """Wrapping an already-wrapped stream doesn't add layers."""
-        import sys
         from io import StringIO
 
         from run_agent import _SafeWriter
@@ -2409,17 +2408,7 @@ class TestAnthropicImageFallback:
             }
         ]
 
-        with (
-            patch(
-                "tools.implementations.vision_tools.vision_analyze_tool",
-                new=AsyncMock(
-                    return_value=json.dumps(
-                        {"success": True, "analysis": "A cat sitting on a chair."}
-                    )
-                ),
-            ),
-            patch("agent.providers.anthropic_adapter.build_anthropic_kwargs") as mock_build,
-        ):
+        with patch("agent.providers.anthropic_adapter.build_anthropic_kwargs") as mock_build:
             mock_build.return_value = {
                 "model": "claude-sonnet-4-20250514",
                 "messages": [],
@@ -2434,51 +2423,11 @@ class TestAnthropicImageFallback:
             )
         )
         transformed = kwargs["messages"]
+        # The native Anthropic route flattens image parts to a text placeholder
+        # (no vision analysis); the text part is preserved.
         assert isinstance(transformed[0]["content"], str)
-        assert "A cat sitting on a chair." in transformed[0]["content"]
+        assert "image content is not processed" in transformed[0]["content"]
         assert "Can you see this now?" in transformed[0]["content"]
-        assert (
-            "vision_analyze with image_url: https://example.com/cat.png"
-            in transformed[0]["content"]
-        )
-
-    def test_build_api_kwargs_reuses_cached_image_analysis_for_duplicate_images(self, agent):
-        agent.api_mode = "anthropic_messages"
-        agent.reasoning_config = None
-        data_url = "data:image/png;base64,QUFBQQ=="
-
-        api_messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "first"},
-                    {"type": "input_image", "image_url": data_url},
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "second"},
-                    {"type": "input_image", "image_url": data_url},
-                ],
-            },
-        ]
-
-        mock_vision = AsyncMock(
-            return_value=json.dumps({"success": True, "analysis": "A small test image."})
-        )
-        with (
-            patch("tools.implementations.vision_tools.vision_analyze_tool", new=mock_vision),
-            patch("agent.providers.anthropic_adapter.build_anthropic_kwargs") as mock_build,
-        ):
-            mock_build.return_value = {
-                "model": "claude-sonnet-4-20250514",
-                "messages": [],
-                "max_tokens": 4096,
-            }
-            agent._build_api_kwargs(api_messages)
-
-        assert mock_vision.await_count == 1
 
 
 class TestFallbackAnthropicProvider:
@@ -2887,18 +2836,18 @@ class TestAnthropicInterruptHandler:
         import inspect
 
         source = inspect.getsource(AIAgent._interruptible_api_call)
-        assert "anthropic_messages" in source, (
-            "_interruptible_api_call must handle Anthropic interrupt (api_mode check)"
-        )
+        assert (
+            "anthropic_messages" in source
+        ), "_interruptible_api_call must handle Anthropic interrupt (api_mode check)"
 
     def test_interruptible_rebuilds_anthropic_client(self):
         """After interrupting, the Anthropic client should be rebuilt."""
         import inspect
 
         source = inspect.getsource(AIAgent._interruptible_api_call)
-        assert "build_anthropic_client" in source, (
-            "_interruptible_api_call must rebuild Anthropic client after interrupt"
-        )
+        assert (
+            "build_anthropic_client" in source
+        ), "_interruptible_api_call must rebuild Anthropic client after interrupt"
 
     def test_streaming_has_anthropic_branch(self):
         """_streaming_api_call must also handle Anthropic interrupt."""

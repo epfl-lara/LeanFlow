@@ -5,8 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from core.model_tools import (
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,

@@ -1,6 +1,6 @@
 # EPFLemma
 
-EPFLemma is a Lean-first AI automation tool. It drives a language model inside a real Lean 4 project to repair proofs, formalize mathematics from source documents, and verify a whole project until no `sorry` remains.
+**EPFLemma is a Lean-first AI automation tool.** It drives a language model inside a real Lean 4 project to repair proofs, formalize mathematics from source documents, and verify a whole project until no `sorry` remains.
 
 Point it at a Lean file or project and it inspects diagnostics and goals, edits proofs, re-verifies with Lean after every step, and keeps going — with workflow logs, checkpoints, and resumable state — until the target actually builds clean.
 
@@ -9,11 +9,19 @@ epflemma                          # interactive shell
 epflemma workflow prove Main.lean # or run a workflow directly
 ```
 
-The scope is deliberately narrow: Lean automation — proof repair, formalization, and project verification — plus the machinery that supports it: provider routing, local model runtimes, a host-isolated sandbox, and opt-in multi-agent runs. It is not a general chat assistant.
+## Features
 
-## Quick Start
+- **Proof repair** — completes and fixes Lean proofs one declaration at a time, re-verifying with Lean after every edit (warm LeanProbe incremental checks, with Lake as the final gate). A run is "done" only when the code builds with no open goals and no `sorry`.
+- **Formalization** — turns a LaTeX/PDF source document or TeX project into a buildable, statement-verified Lean draft with source-linked declarations, then hands off to proof repair.
+- **Whole-project verification** — scans a project for remaining `sorry`s, ranks the files by dependency and difficulty, and works them in order until the project is clean.
+- **Resumable** — every run records activity, logs, checkpoints, file locks, and its work queue under the project, so long sessions resume without starting blind.
+- **Flexible providers** — OpenAI-compatible endpoints, a Codex CLI login, or local model runtimes (vLLM / Ollama / llama.cpp).
+- **Host isolation** — an optional sandbox runs the agent in a container and exports the result as a patch, never touching your working tree.
+- **Opt-in multi-agent** — file-lock-aware swarm mode for concurrent work, off by default.
 
-Install from a local checkout:
+The scope is deliberately narrow: Lean automation, not a general chat assistant.
+
+## Install
 
 ```bash
 git clone https://github.com/epfl-lara/EPFLemma.git
@@ -21,184 +29,92 @@ cd EPFLemma
 ./scripts/install-internal.sh
 ```
 
-If you already have the repo:
-
-```bash
-./scripts/install-internal.sh
-```
-
-Check the install:
+Verify the install:
 
 ```bash
 epflemma --help
-epflemma doctor
-epflemma mcp status
-epflemma config show
+epflemma doctor          # checks the Lean toolchain, MCP backends, and external tools
 ```
 
-Initialize an existing Lean project:
+`doctor` also checks the external CLIs the workflows use: `rg` for local search and Poppler's
+`pdftotext` / `pdfinfo` / `pdfimages` for reading PDF sources.
+
+## Quick start
+
+Register an existing Lean project, then run a workflow:
 
 ```bash
 cd /path/to/lean-project
-epflemma project init
-epflemma project show
+epflemma project init                  # registers the project (and sets up Lean acceleration when safe)
+epflemma workflow prove Main.lean      # repair proofs in a file
+epflemma workflow formalize paper.tex  # formalize a source document
 ```
 
-`project init` also prepares Lean REPL acceleration when it can do so safely.
-It prints step-by-step progress while checking the Lean toolchain, adding the
-`leanprover-community/repl` dependency for `lakefile.toml` projects, and running
-`lake update repl` / `lake build repl`. If REPL setup is not safe or fails,
-EPFLemma keeps working and reports the fallback clearly.
-
-The installer configures local `lean-lsp-mcp` power modes by default:
-
-- local Loogle on Linux/macOS/WSL, with public remote Loogle fallback when local setup is cold, unavailable, or built for a different Lean toolchain than the active project
-- REPL-backed `lean_multi_attempt` for faster tactic screening after `project init` builds `repl`
-- local LeanExplore semantic search when `lean-explore[local]` is installed and `lean-explore data fetch` has prepared the index; hosted LeanExplore API calls remain opt-in via `LEANEXPLORE_API_KEY`
-
-It also checks the external CLI tools used by core workflows: `rg` for local
-search and Poppler's `pdftotext`, `pdfinfo`, and `pdfimages` for PDF source
-inspection.
-
-Run the main workflows:
-
-```bash
-epflemma workflow prove Main.lean
-epflemma workflow formalize docs/paper.tex
-epflemma workflow autoformalize docs/paper-directory
-```
-
-Run those workflows in a host-isolated sandbox when you want the model to edit
-freely without touching your working tree:
-
-```bash
-./scripts/install-sandbox.sh
-cd /path/to/lean-project
-epflemma-sandbox workflow prove Main.lean
-epflemma status
-epflemma sandbox status
-```
-
-The sandbox runner builds a local Docker/Podman image, copies the active
-EPFLemma project into a per-run worktree, mounts only that worktree plus
-EPFLemma sandbox cache directories, and exports the final diff as
-`changes.patch` under `~/.epflemma/sandbox/runs/<run-id>/`. Re-run
-`./scripts/update-sandbox.sh` after pulling repository changes to reinstall and
-rebuild the sandbox image. Use `./scripts/install-sandbox.sh --with-local-lean-explore`
-when you want the image to include the local LeanExplore embedding stack.
-
-Start the interactive shell:
+Or use the interactive shell (the leading `/` is optional):
 
 ```bash
 epflemma
 ```
 
-Inside the shell, the most useful commands are:
-
 ```text
-/prove
-/prove Main.lean
-/formalize docs/paper.tex
-/autoformalize docs/paper-directory
-/goals
-/diagnostics
-/proof-state
-/workflow status
-/workflow activity
-/workflow log 120
-/skills
-/provider
-/doctor
-/mcp status
-/exit
+/prove [Main.lean]      /formalize docs/paper.tex      /autoformalize docs/
+/goals   /diagnostics   /proof-state
+/workflow status | activity | log 120
+/skills   /provider   /doctor   /mcp status   /exit
 ```
 
-The shell also accepts forgiving forms without the leading slash:
+When it can do so safely, `project init` also prepares Lean REPL acceleration (adds the
+`leanprover-community/repl` dependency and builds it) and local `lean-lsp-mcp` power modes — local
+Loogle, REPL-backed tactic screening for `lean_multi_attempt`, and optional local LeanExplore
+semantic search (`lean-explore[local]`). Anything unavailable falls back cleanly and is reported by
+`epflemma doctor`.
 
-```text
-prove Main.lean
-formalize docs/paper.tex
-autoformalize docs/paper-directory
-```
+## What a run guarantees
 
-## What EPFLemma Tries To Guarantee
+A `prove` run is not "done" because the agent made a plausible edit — it is done only when Lean agrees. A successful run ends with:
 
-`prove` is not considered done because the agent made a plausible edit. A successful proof run should end with:
-
-- the relevant Lean code building successfully
-- clean diagnostics
-- no open goals
+- the relevant Lean code building
+- clean diagnostics and no open goals
 - no `sorry` in the active target
 - no remaining project `sorry` outside dependencies
 
-Document formalization has a separate handoff boundary. `/formalize` and `/autoformalize` first produce a buildable Lean draft with source-linked declarations and intentional `sorry` proofs. That draft is considered ready when the module builds and the blueprint's statement/source review is approved. The formalizer then exits; proof filling starts only when the user explicitly runs `/prove SomeFile.lean` or `/prove` after reviewing the generated formalization.
+EPFLemma reaches that by working in small, Lean-verified steps rather than one big edit:
 
-For project-scoped work, `/prove` without a file starts the project prove manager. It scans Lean files with remaining `sorry`, ranks them with candidate-to-candidate dependency analysis, theorem difficulty, local hints/examples, bounded source context, and length signals, asks the configured LLM for a prioritized file order when available, records that plan, and then assigns one file at a time to the existing `/prove SomeFile.lean` path. Parallel agents stay disabled unless the user explicitly opts into swarm mode.
+- **`prove <file>`** drives the model one declaration at a time, re-checking with Lean after every edit and advancing only when the target is clean. Failed attempts are recorded and the original `sorry` is restored, so the file always stays buildable.
+- **`prove`** (no file) scans the project for remaining `sorry`s, ranks the files, and works them one at a time. Parallel agents stay off unless you opt into swarm mode.
+- **`formalize` / `autoformalize`** turn a LaTeX/PDF source into a buildable Lean draft with source-linked statements and intentional `sorry`s. The draft is handed off once it builds and its statement/source review is approved; you then run `/prove` to fill in the proofs.
 
-For document formalization, `/formalize` accepts a project-local `.tex` file, `.pdf` file, or directory containing a TeX project. Directory inputs are resolved deterministically to a main `.tex` source, with included `.tex`, bibliography, PDF, figure, and TeX support files recorded in the preflight manifest; ambiguous TeX roots fail before launch. LaTeX preflight recognizes standard theorem environments, plain-TeX `\profess...\endprofess` blocks, and common custom theorem declarations such as `\newtheorem`, `\declaretheorem`, `\newmdtheoremenv`, `\mdtheorem`, `\spnewtheorem`, and `\newtcbtheorem`; adjacent proof environments are copied into the initial blueprint as source proof excerpts. EPFLemma exposes `read_pdf` as the direct model-facing tool for reading project-local PDF text. EPFLemma creates a preflight manifest, extracted-text cache, Markdown planner blueprint, generated blueprint skill, and active Lean target file under the project, then asks the drafting agent to plan definitions/lemmas/theorems with source comments. When the draft is otherwise ready and only source-review approval is missing, the runner starts the configured independent statement/source verifier; by default this is the managed reviewer agent, while command/model verifier outputs are logged as advisory review. After the deterministic local handoff checks, review-approved blueprint pass, and final generated-file organization pass, the formalizer stops and prints the explicit `/prove` command to run after user review. `/prove SomeFile.lean` auto-attaches the generated blueprint skill when the file has a nearby `Blueprint.md`; you can also pass `--additional-skill path/to/SKILL.md`.
+The deeper mechanics (LaTeX preflight, the blueprint/verifier handoff, the project prove-manager, queue and checkpoint internals) are in the [product reference](docs/product-reference.md).
 
-For file-scoped work, EPFLemma drives the agent one declaration at a time. The runner owns the queue, refreshes diagnostics after edits, records failed attempts per theorem, and advances only when Lean verification says the current target is clean. Same-file queue steps use the LeanProbe-backed incremental verifier first, so imports/header state and prior declaration environments stay warm; Lake remains the final file/project sweep and fallback gate. If a theorem turn exhausts its API-step budget, the runner records that as a failed attempt, comments the failed declaration in the Lean file, and restores the original safe `sorry` body when it has an exact baseline slice; the theorem remains pending for the next queue cycle.
+## Workflows
 
-## Main Workflows
+- `prove` — repair and complete existing Lean proofs.
+- `formalize` — turn a LaTeX/PDF source document or TeX project into statement-verified Lean declarations; `/prove` then fills the resulting `sorry`s.
+- `draft` — create Lean declarations and proof skeletons.
+- `review` — inspect blockers, diagnostics, goals, and remaining `sorry`.
+- `checkpoint` — summarize workflow state for resume or handoff.
+- `refactor` / `golf` — simplify existing Lean code without breaking verification.
 
-- `prove`: repair and complete existing Lean proofs.
-- `formalize`: turn a project-local LaTeX/PDF source document or TeX project directory into statement-verified Lean declarations; `/prove` fills the resulting `sorry`s.
-- `draft`: create Lean declarations and proof skeletons.
-- `review`: inspect blockers, diagnostics, goals, and remaining `sorry`.
-- `checkpoint`: summarize workflow state for resume or handoff.
-- `refactor` / `golf`: simplify existing Lean code without breaking verification.
+`autoprove` and `autoformalize` are compatibility aliases of `prove` and `formalize`.
 
-Compatibility aliases:
+## Sandbox (host isolation)
 
-- `autoprove` is an alias of `prove`
-- `autoformalize` is an alias of `formalize`
-
-## Project State
-
-EPFLemma keeps user-level state separate from project workflow state:
-
-- user config: `~/.epflemma/config.yaml`
-- user env: `~/.epflemma/.env`
-- project manifest: `.epflemma/project.yaml`
-- project workflow state: `.epflemma/workflow-state/`
-
-Workflow state includes activity, logs, checkpoints, file locks, route decisions, failed-attempt history, project prove-manager plans, and outcomes. This is what lets long Lean runs resume without starting blind.
-
-## Skills And Specs
-
-EPFLemma steers agents with a small curated Lean skill core in `epflemma_skills/`.
-
-Common built-in skills:
-
-- `lean-proof-loop`
-- `lean-theorem-queue-worker`
-- `lean-diagnostics`
-- `lean-formalization`
-- `lean-project-search`
-- `lean-mathlib-search`
-- `lean-refactor-golf`
-- `lean-autonomous-swarm`
-- `provider-fallback`
-- `long-session-resume`
-
-The canonical workflow contract lives in markdown specs under:
-
-- `epflemma_specs/workflows/`
-- `epflemma_specs/workers/`
-
-Skills route the agent to the right workflow behavior. Specs define the native tool order, verification gates, doctor reporting, and worker recommendations. Keep skills thin: if a rule changes the workflow contract, put it in the linked spec and let the skill point to that contract instead of duplicating the full procedure.
-
-## Provider And Runtime Setup
-
-Inspect the active route:
+Run a workflow inside a container so the model can edit freely without touching your working tree:
 
 ```bash
-epflemma provider
-epflemma provider --requested custom
-epflemma provider --requested local
+./scripts/install-sandbox.sh
+cd /path/to/lean-project
+epflemma-sandbox workflow prove Main.lean
+epflemma sandbox status
 ```
 
-For OpenAI-compatible endpoints such as RCP:
+The sandbox builds a local Docker/Podman image, copies the active project into a per-run worktree,
+and exports the final diff as `changes.patch` under `~/.epflemma/sandbox/runs/<run-id>/`. See the
+[sandbox runtime](docs/sandbox-runtime.md) doc for image options and the update flow.
+
+## Providers and local runtimes
+
+Inspect the active route with `epflemma provider`. To point at an OpenAI-compatible endpoint:
 
 ```bash
 export EPFLEMMA_OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
@@ -206,97 +122,92 @@ export EPFLEMMA_OPENAI_API_KEY="..."
 epflemma provider --requested custom
 ```
 
-For an existing Codex CLI login:
+To use an existing Codex CLI login (model and reasoning effort are read from `~/.codex/config.toml`
+unless `EPFLEMMA_CODEX_MODEL` / `EPFLEMMA_CODEX_REASONING_EFFORT` are set):
 
 ```bash
 codex login
 epflemma config set model.provider codex
-epflemma provider --requested codex
 ```
 
-When using the Codex provider, EPFLemma reads the Codex CLI model and
-reasoning effort from `~/.codex/config.toml` unless
-`EPFLEMMA_CODEX_MODEL` or `EPFLEMMA_CODEX_REASONING_EFFORT` is set.
+To run a local model server (`vllm`, `ollama`, or `llama.cpp`):
 
-To test a single run without changing the saved provider:
+```bash
+epflemma models local start vllm google/gemma-3-27b-it
+epflemma provider --requested local
+```
+
+Override the provider for a single run without changing the saved default:
 
 ```bash
 epflemma workflow --provider codex prove Main.lean
 ```
 
-For local runtimes:
+## Multi-agent mode
 
-```bash
-epflemma models local use vllm google/gemma-3-27b-it
-epflemma models local start vllm google/gemma-3-27b-it
-epflemma models local status vllm
-epflemma provider --requested local
-```
-
-Supported local runtime families include `vllm`, `ollama`, and `llama.cpp`.
-
-## Multi-Agent Mode
-
-EPFLemma does not spawn agents by default.
-
-Use swarm mode only when you explicitly want concurrent Lean work:
+EPFLemma does not spawn agents by default. Opt into swarm mode only when you want concurrent Lean work:
 
 ```bash
 epflemma workflow prove Main.lean --agents 3
-epflemma workflow formalize docs/paper.tex --agents 3
 ```
 
-Swarm mode activates file-lock-aware delegation. Locks are stored in `.epflemma/workflow-state/file_locks.json`, and normal file write tools reject edits when another agent owns the file.
-
-Use `--prompt` for run-specific task guidance without replacing the Lean-first workflow contract:
+Swarm mode uses file-lock-aware delegation: locks live in `.epflemma/workflow-state/file_locks.json`,
+and file-write tools reject edits when another agent owns the file. Use `--prompt` for run-specific
+guidance on top of the Lean-first workflow contract:
 
 ```bash
 epflemma workflow prove Main.lean --prompt "try abs_abs_sub before ring_nf"
-epflemma workflow autoformalize docs/paper-directory --prompt "focus on the main theorem only"
 ```
 
-`--goal` is still accepted as a compatibility alias for the same scoped prompt field.
+## Project state
 
-## Repository Map
+EPFLemma keeps user-level state separate from per-project workflow state:
 
-- `epflemma_cli/`: CLI, shell UX, workflow orchestration, providers, local runtimes, locks, workflow state
-- `epflemma_skills/`: curated Lean-first skills
-- `epflemma_specs/`: workflow and worker contracts
-- `core/`: shared kernel — home authority (`home.py`), SQLite session store (`state.py`), clock,
-  constants, tool registry (`model_tools.py`), toolsets, helpers
-- `agent/`: prompt assembly, compression, display, auxiliary clients, `AIAgent` collaborators
-- `tools/`: Lean-kernel tools and file/session tooling
-- `run_agent.py`: core conversation loop
+- user config: `~/.epflemma/config.yaml`  ·  user env: `~/.epflemma/.env`
+- project manifest: `.epflemma/project.yaml`  ·  project workflow state: `.epflemma/workflow-state/`
+
+Workflow state holds activity, logs, checkpoints, file locks, route decisions, failed-attempt
+history, project prove-manager plans, and outcomes — this is what lets long Lean runs resume.
+
+## Skills and specs
+
+EPFLemma steers the agent with a small curated Lean skill core in `epflemma_skills/` (e.g.
+`lean-proof-loop`, `lean-theorem-queue-worker`, `lean-diagnostics`, `lean-formalization`,
+`lean-project-search`, `lean-mathlib-search`, `lean-refactor-golf`, `provider-fallback`). The canonical
+workflow contract lives in markdown specs under `epflemma_specs/workflows/` and `epflemma_specs/workers/`.
+
+Skills route the agent to the right workflow behavior; specs define the native tool order, verification
+gates, and worker recommendations. Keep skills thin — if a rule changes the workflow contract, put it in
+the linked spec and have the skill point to it rather than duplicating the procedure.
 
 ## Documentation
 
-This README is the entry point. Deeper references:
-
-- [Product reference](docs/product-reference.md): the full, detailed feature documentation.
-- [Sandbox runtime](docs/sandbox-runtime.md): the isolated container runtime, patch export, install, and update flow.
-- [Native Lean workflow surface](docs/native-lean-workflow-surface.md): the native Lean workflow and tool contract.
-- [Architecture](ARCHITECTURE.md): the module map and internals. [Contributing](AGENTS.md): coding standards and the quality gate.
+- [Product reference](docs/product-reference.md) — the full feature documentation.
+- [Sandbox runtime](docs/sandbox-runtime.md) — the isolated container runtime, patch export, and update flow.
+- [Native Lean workflow surface](docs/native-lean-workflow-surface.md) — the native Lean workflow and tool contract.
+- [Architecture](ARCHITECTURE.md) — the module map and internals.
+- [Contributing / agent guide](AGENTS.md) — coding standards, the quality gate, and the repo's gotchas.
 
 ## Development
-
-Create the repo venv and install editable deps:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e '.[dev]'
 ```
 
-Before committing, run the quality gate (format, lint, types, tests):
+Run the quality gate before committing (CI enforces all four):
 
 ```bash
-source .venv/bin/activate
-ruff format .          # black-compatible formatter (CI checks with `ruff format --check .`)
-ruff check .           # lint
+black .                # format (https://github.com/psf/black); CI checks with `black --check .`
+ruff check .           # lint (incl. unused-import F401)
 mypy                   # type-check the gated module set
 python -m pytest -q    # full suite
 ```
 
-Coding standards, the layering rules, and the gotchas to avoid are documented in
-[AGENTS.md](AGENTS.md); the module map is in [ARCHITECTURE.md](ARCHITECTURE.md).
+Coding standards, the layering rules, and the gotchas to avoid are in [AGENTS.md](AGENTS.md); the
+module map is in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -400,7 +400,8 @@ class TestEnsureInstalled:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
             patch(
                 "tools.implementations.tirith_security._is_install_failed_on_disk",
@@ -428,7 +429,8 @@ class TestEnsureInstalled:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
             patch(
                 "tools.implementations.tirith_security._is_install_failed_on_disk",
@@ -798,7 +800,8 @@ class TestBackgroundInstall:
             ),
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
             patch(
                 "tools.implementations.tirith_security._is_install_failed_on_disk",
@@ -833,7 +836,8 @@ class TestBackgroundInstall:
             ),
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
             patch(
                 "tools.implementations.tirith_security._read_failure_reason",
@@ -863,7 +867,8 @@ class TestBackgroundInstall:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
         ):
             result = _resolve_tirith_path("tirith")
@@ -1047,7 +1052,8 @@ class TestDiskFailureMarker:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
             patch(
                 "tools.implementations.tirith_security._read_failure_reason",
@@ -1086,29 +1092,29 @@ class TestDiskFailureMarker:
 
         _tirith_mod._resolved_path = None
 
-    def test_install_failed_recovers_from_gauss_bin(self):
+    def test_install_failed_recovers_from_tirith_bin(self):
         """After _INSTALL_FAILED, manual install in GAUSS_HOME/bin is picked up."""
         import tempfile
 
         from tools.implementations.tirith_security import _INSTALL_FAILED, _resolve_tirith_path
 
         tmpdir = tempfile.mkdtemp()
-        gauss_bin = os.path.join(tmpdir, "tirith")
+        tirith_bin = os.path.join(tmpdir, "tirith")
         # Create a fake executable
-        with open(gauss_bin, "w") as f:
+        with open(tirith_bin, "w") as f:
             f.write("#!/bin/sh\n")
-        os.chmod(gauss_bin, 0o755)
+        os.chmod(tirith_bin, 0o755)
 
         _tirith_mod._resolved_path = _INSTALL_FAILED
 
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
-            patch("tools.implementations.tirith_security._gauss_bin_dir", return_value=tmpdir),
+            patch("tools.implementations.tirith_security._epflemma_bin_dir", return_value=tmpdir),
             patch("tools.implementations.tirith_security._clear_install_failed") as mock_clear,
         ):
             result = _resolve_tirith_path("tirith")
-            assert result == gauss_bin
-            assert _tirith_mod._resolved_path == gauss_bin
+            assert result == tirith_bin
+            assert _tirith_mod._resolved_path == tirith_bin
             mock_clear.assert_called_once()
 
         _tirith_mod._resolved_path = None
@@ -1122,7 +1128,8 @@ class TestDiskFailureMarker:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
             patch("tools.implementations.tirith_security._install_tirith") as mock_install,
         ):
@@ -1134,7 +1141,7 @@ class TestDiskFailureMarker:
 
     def test_cosign_missing_disk_marker_allows_retry(self):
         """Disk marker with cosign_missing reason allows retry when cosign appears."""
-        from tools.implementations.tirith_security import _INSTALL_FAILED, _resolve_tirith_path
+        from tools.implementations.tirith_security import _resolve_tirith_path
 
         _tirith_mod._resolved_path = None
 
@@ -1142,7 +1149,8 @@ class TestDiskFailureMarker:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
             patch(
                 "tools.implementations.tirith_security._is_install_failed_on_disk",
@@ -1179,7 +1187,8 @@ class TestDiskFailureMarker:
                 "tools.implementations.tirith_security.shutil.which", side_effect=_which_side_effect
             ),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
             patch(
                 "tools.implementations.tirith_security._is_install_failed_on_disk",
@@ -1207,7 +1216,8 @@ class TestDiskFailureMarker:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
             patch("tools.implementations.tirith_security._install_tirith") as mock_install,
         ):
@@ -1227,7 +1237,8 @@ class TestDiskFailureMarker:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
             patch("tools.implementations.tirith_security._install_tirith") as mock_install,
         ):
@@ -1247,7 +1258,8 @@ class TestDiskFailureMarker:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
             patch(
                 "tools.implementations.tirith_security._read_failure_reason",
@@ -1275,7 +1287,8 @@ class TestDiskFailureMarker:
                 "tools.implementations.tirith_security.shutil.which", side_effect=_which_side_effect
             ),
             patch(
-                "tools.implementations.tirith_security._gauss_bin_dir", return_value="/nonexistent"
+                "tools.implementations.tirith_security._epflemma_bin_dir",
+                return_value="/nonexistent",
             ),
             patch(
                 "tools.implementations.tirith_security._is_install_failed_on_disk",
@@ -1300,19 +1313,19 @@ class TestDiskFailureMarker:
 
 
 class TestGaussHomeIsolation:
-    def test_gauss_bin_dir_respects_gauss_home(self):
+    def test_epflemma_bin_dir_respects_epflemma_home(self):
         """$EPFLEMMA_HOME controls the install/bin location."""
         import tempfile
 
-        from tools.implementations.tirith_security import _gauss_bin_dir
+        from tools.implementations.tirith_security import _epflemma_bin_dir
 
         tmpdir = tempfile.mkdtemp()
         with patch.dict(os.environ, {"EPFLEMMA_HOME": tmpdir}, clear=True):
-            result = _gauss_bin_dir()
+            result = _epflemma_bin_dir()
         assert result == os.path.join(tmpdir, "bin")
         assert os.path.isdir(result)
 
-    def test_failure_marker_respects_gauss_home(self):
+    def test_failure_marker_respects_epflemma_home(self):
         """$EPFLEMMA_HOME controls the install/bin location."""
         from tools.implementations.tirith_security import _failure_marker_path
 

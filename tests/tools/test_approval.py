@@ -365,9 +365,9 @@ class TestPatternKeyUniqueness:
         clear_session(session)
         approve_session(session, key_exec)
         assert is_approved(session, key_exec) is True
-        assert is_approved(session, key_delete) is False, (
-            "approving find -exec rm should not auto-approve find -delete"
-        )
+        assert (
+            is_approved(session, key_delete) is False
+        ), "approving find -exec rm should not auto-approve find -delete"
         clear_session(session)
 
     def test_legacy_find_key_still_approves_find_exec(self):

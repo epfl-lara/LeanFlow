@@ -5,7 +5,6 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
-import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1276,7 +1275,7 @@ class TestConfigurableTimeouts:
 
     def test_timeout_passed_to_handler(self):
         """The tool handler uses the server's configured timeout."""
-        from tools.mcp.mcp_tool import MCPServerTask, _make_tool_handler, _servers
+        from tools.mcp.mcp_tool import _make_tool_handler, _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(return_value=_make_call_result("ok", is_error=False))
@@ -1740,7 +1739,6 @@ class TestUtilityToolRegistration:
 # SamplingHandler tests
 # ===========================================================================
 
-import math
 import time
 
 from mcp.types import (
@@ -2631,9 +2629,9 @@ class TestDiscoveryFailedCount:
                     if "failed" in str(call).lower() or "MCP:" in str(call)
                 ]
                 # The summary should mention the failure
-                assert any("1 failed" in str(c) for c in info_calls), (
-                    f"Summary should report 1 failed server, got: {info_calls}"
-                )
+                assert any(
+                    "1 failed" in str(c) for c in info_calls
+                ), f"Summary should report 1 failed server, got: {info_calls}"
 
         _servers.pop("good_server", None)
         _servers.pop("bad_server", None)
@@ -2663,9 +2661,9 @@ class TestDiscoveryFailedCount:
 
                 # Summary must be printed even when all servers fail
                 info_calls = [str(call) for call in mock_logger.info.call_args_list]
-                assert any("2 failed" in str(c) for c in info_calls), (
-                    f"Summary should report 2 failed servers, got: {info_calls}"
-                )
+                assert any(
+                    "2 failed" in str(c) for c in info_calls
+                ), f"Summary should report 2 failed servers, got: {info_calls}"
 
         _servers.pop("srv1", None)
         _servers.pop("srv2", None)
@@ -2708,12 +2706,12 @@ class TestDiscoveryFailedCount:
 
                 info_calls = [str(call) for call in mock_logger.info.call_args_list]
                 # Should say "2 server(s)" not "3 server(s)"
-                assert any("2 server" in str(c) for c in info_calls), (
-                    f"Summary should report 2 ok servers, got: {info_calls}"
-                )
-                assert any("1 failed" in str(c) for c in info_calls), (
-                    f"Summary should report 1 failed, got: {info_calls}"
-                )
+                assert any(
+                    "2 server" in str(c) for c in info_calls
+                ), f"Summary should report 2 ok servers, got: {info_calls}"
+                assert any(
+                    "1 failed" in str(c) for c in info_calls
+                ), f"Summary should report 1 failed, got: {info_calls}"
 
         _servers.pop("ok1", None)
         _servers.pop("ok2", None)

@@ -8,7 +8,7 @@ import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -337,13 +337,13 @@ def _transform_legacy_manifest(root: Path, payload: Mapping[str, Any]) -> dict[s
         "created_at": str(payload.get("created_at", "") or ""),
         "paths": {
             "runtime": str(paths_payload.get("runtime", ".epflemma/runtime"))
-            .replace(".epflemma/", ".epflemma/")
+            .replace(".opengauss/", ".epflemma/")
             .replace(".gauss/", ".epflemma/"),
             "cache": str(paths_payload.get("cache", ".epflemma/cache"))
-            .replace(".epflemma/", ".epflemma/")
+            .replace(".opengauss/", ".epflemma/")
             .replace(".gauss/", ".epflemma/"),
             "workflows": str(paths_payload.get("workflows", ".epflemma/workflows"))
-            .replace(".epflemma/", ".epflemma/")
+            .replace(".opengauss/", ".epflemma/")
             .replace(".gauss/", ".epflemma/"),
         },
         "source": dict(source_payload),

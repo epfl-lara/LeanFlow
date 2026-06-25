@@ -6,7 +6,6 @@ protecting head and tail context.
 """
 
 import logging
-import os
 from typing import Any
 
 from agent.providers.auxiliary_client import call_llm
@@ -103,9 +102,9 @@ class ContextCompressor:
             "last_prompt_tokens": self.last_prompt_tokens,
             "threshold_tokens": self.threshold_tokens,
             "context_length": self.context_length,
-            "usage_percent": (self.last_prompt_tokens / self.context_length * 100)
-            if self.context_length
-            else 0,
+            "usage_percent": (
+                (self.last_prompt_tokens / self.context_length * 100) if self.context_length else 0
+            ),
             "compression_count": self.compression_count,
             "reserved_output_tokens": self.reserved_output_tokens,
             "prune_tool_output": self.prune_tool_output,
