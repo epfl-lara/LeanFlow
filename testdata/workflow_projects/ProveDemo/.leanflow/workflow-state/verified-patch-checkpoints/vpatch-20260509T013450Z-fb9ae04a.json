@@ -1,0 +1,13 @@
+{
+  "before_bytes": 79,
+  "before_content": "import Mathlib\n\ntheorem warning_smoke : True := by\n  first | trivial | exact I\n",
+  "before_sha256": "f58f568935685d4478d981cc27fe818aa59bd3328cabbbb2b5ab68015e18de59",
+  "check_mode": "file_exact",
+  "checkpoint_id": "vpatch-20260509T013450Z-fb9ae04a",
+  "created_at": "2026-05-09T01:34:50+00:00",
+  "cwd": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "file_path": "/private/var/folders/bd/zp30k_4j2nd80r2fsp540blm0000gn/T/epflemma-warning-cleanup-ok.pP3dyCuyfO.lean",
+  "patch": "*** Begin Patch\n*** Update File: /private/var/folders/bd/zp30k_4j2nd80r2fsp540blm0000gn/T/epflemma-warning-cleanup-ok.pP3dyCuyfO.lean\n theorem warning_smoke : True := by\n-  first | trivial | exact I\n+  trivial\n*** End Patch",
+  "theorem_id": "warning_smoke",
+  "version": 1
+}

@@ -352,7 +352,7 @@ def _read_raw_for_guard(file_ops: Any, path: str) -> str | None:
 
 def _lean_statement_delete_error(file_ops: Any, path: str, *, action: str) -> str | None:
     """Return a guard error for deleting or moving Lean statements."""
-    from epflemma_cli.lean.lean_statement_guard import (
+    from leanflow_cli.lean.lean_statement_guard import (
         should_guard_lean_statement_path,
         validate_lean_statement_edit,
     )

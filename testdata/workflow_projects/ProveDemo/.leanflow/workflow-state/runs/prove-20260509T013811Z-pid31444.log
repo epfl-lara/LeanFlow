@@ -1,0 +1,45 @@
+[final-smoke] project cwd: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo
+[final-smoke] active temp Lean file: /private/var/folders/bd/zp30k_4j2nd80r2fsp540blm0000gn/T/epflemma-warning-cleanup-final.KCkHb9Eobr.lean
+[final-smoke] initial Lean diagnostics:
+/private/var/folders/bd/zp30k_4j2nd80r2fsp540blm0000gn/T/epflemma-warning-cleanup-final.KCkHb9Eobr.lean:4:20: warning: this tactic is never executed
+
+Note: This linter can be disabled with `set_option linter.unreachableTactic false`
+/private/var/folders/bd/zp30k_4j2nd80r2fsp540blm0000gn/T/epflemma-warning-cleanup-final.KCkHb9Eobr.lean:4:20: warning: 'exact I' tactic does nothing
+
+Note: This linter can be disabled with `set_option linter.unusedTactic false`
+
+🔎 Manager verification (file): passed
+   file: /private/var/folders/bd/zp30k_4j2nd80r2fsp540blm0000gn/T/epflemma-warning-cleanup-final.KCkHb9Eobr.lean
+   check: lake env lean /private/var/folders/bd/zp30k_4j2nd80r2fsp540blm0000gn/T/epflemma-warning-cleanup-final.KCkHb9Eobr.lean succeeded
+
+🟢 Final file sweep — warning cleanup opportunity granted (1/1): 2 warning(s) remain on the active file
+   - line 4: this tactic is never executed
+   - line 4: 'exact I' tactic does nothing
+[final-smoke] after first promote:
+{
+  "verification_ok": false,
+  "queue_needs_final_file_sweep": true,
+  "warning_cleanup_status": "pending",
+  "warning_cleanup_attempted": true,
+  "warning_cleanup_verified": false,
+  "warning_cleanup_warning_count": 2
+}
+[final-smoke] apply_verified_patch result:
+{
+  "success": true,
+  "status": "verified",
+  "check_passed": true,
+  "verified": true,
+  "message": "Patch applied and verification passed."
+}
+[final-smoke] post-cleanup Lean diagnostics:
+no errors found
+[final-smoke] after second promote:
+{
+  "verification_ok": true,
+  "warning_cleanup_status": "verified",
+  "warning_cleanup_attempted": true,
+  "warning_cleanup_verified": true,
+  "warning_cleanup_warning_count": 0,
+  "warning_cleanup_diagnostics": "warning cleanup verified; no warnings remain"
+}

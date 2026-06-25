@@ -206,8 +206,8 @@ class TestGetModelContextLength:
         monkeypatch,
         tmp_path,
     ):
-        monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
-        from epflemma_cli.config import save_config
+        monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+        from leanflow_cli.config import save_config
 
         save_config({"model": {"context_lengths": {"moonshotai/Kimi-K2.6": 262144}}})
         mock_provider_fetch.return_value = {"moonshotai/Kimi-K2.6": {"context_length": 32768}}

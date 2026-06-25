@@ -400,7 +400,7 @@ class TestEnsureInstalled:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
             patch(
@@ -429,7 +429,7 @@ class TestEnsureInstalled:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
             patch(
@@ -800,7 +800,7 @@ class TestBackgroundInstall:
             ),
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
             patch(
@@ -836,7 +836,7 @@ class TestBackgroundInstall:
             ),
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
             patch(
@@ -867,7 +867,7 @@ class TestBackgroundInstall:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
         ):
@@ -1052,7 +1052,7 @@ class TestDiskFailureMarker:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
             patch(
@@ -1093,7 +1093,7 @@ class TestDiskFailureMarker:
         _tirith_mod._resolved_path = None
 
     def test_install_failed_recovers_from_tirith_bin(self):
-        """After _INSTALL_FAILED, manual install in GAUSS_HOME/bin is picked up."""
+        """After _INSTALL_FAILED, manual install in LEANFLOW_HOME/bin is picked up."""
         import tempfile
 
         from tools.implementations.tirith_security import _INSTALL_FAILED, _resolve_tirith_path
@@ -1109,7 +1109,7 @@ class TestDiskFailureMarker:
 
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
-            patch("tools.implementations.tirith_security._epflemma_bin_dir", return_value=tmpdir),
+            patch("tools.implementations.tirith_security._leanflow_bin_dir", return_value=tmpdir),
             patch("tools.implementations.tirith_security._clear_install_failed") as mock_clear,
         ):
             result = _resolve_tirith_path("tirith")
@@ -1128,7 +1128,7 @@ class TestDiskFailureMarker:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
             patch("tools.implementations.tirith_security._install_tirith") as mock_install,
@@ -1149,7 +1149,7 @@ class TestDiskFailureMarker:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
             patch(
@@ -1187,7 +1187,7 @@ class TestDiskFailureMarker:
                 "tools.implementations.tirith_security.shutil.which", side_effect=_which_side_effect
             ),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
             patch(
@@ -1216,7 +1216,7 @@ class TestDiskFailureMarker:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
             patch("tools.implementations.tirith_security._install_tirith") as mock_install,
@@ -1237,7 +1237,7 @@ class TestDiskFailureMarker:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
             patch("tools.implementations.tirith_security._install_tirith") as mock_install,
@@ -1258,7 +1258,7 @@ class TestDiskFailureMarker:
         with (
             patch("tools.implementations.tirith_security.shutil.which", return_value=None),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
             patch(
@@ -1287,7 +1287,7 @@ class TestDiskFailureMarker:
                 "tools.implementations.tirith_security.shutil.which", side_effect=_which_side_effect
             ),
             patch(
-                "tools.implementations.tirith_security._epflemma_bin_dir",
+                "tools.implementations.tirith_security._leanflow_bin_dir",
                 return_value="/nonexistent",
             ),
             patch(
@@ -1308,42 +1308,42 @@ class TestDiskFailureMarker:
 
 
 # ---------------------------------------------------------------------------
-# GAUSS_HOME isolation
+# LEANFLOW_HOME isolation
 # ---------------------------------------------------------------------------
 
 
-class TestGaussHomeIsolation:
-    def test_epflemma_bin_dir_respects_epflemma_home(self):
-        """$EPFLEMMA_HOME controls the install/bin location."""
+class TestLeanFlowHomeIsolation:
+    def test_leanflow_bin_dir_respects_leanflow_home(self):
+        """$LEANFLOW_HOME controls the install/bin location."""
         import tempfile
 
-        from tools.implementations.tirith_security import _epflemma_bin_dir
+        from tools.implementations.tirith_security import _leanflow_bin_dir
 
         tmpdir = tempfile.mkdtemp()
-        with patch.dict(os.environ, {"EPFLEMMA_HOME": tmpdir}, clear=True):
-            result = _epflemma_bin_dir()
+        with patch.dict(os.environ, {"LEANFLOW_HOME": tmpdir}, clear=True):
+            result = _leanflow_bin_dir()
         assert result == os.path.join(tmpdir, "bin")
         assert os.path.isdir(result)
 
-    def test_failure_marker_respects_epflemma_home(self):
-        """$EPFLEMMA_HOME controls the install/bin location."""
+    def test_failure_marker_respects_leanflow_home(self):
+        """$LEANFLOW_HOME controls the install/bin location."""
         from tools.implementations.tirith_security import _failure_marker_path
 
-        with patch.dict(os.environ, {"EPFLEMMA_HOME": "/custom/epflemma"}, clear=True):
+        with patch.dict(os.environ, {"LEANFLOW_HOME": "/custom/leanflow"}, clear=True):
             result = _failure_marker_path()
-        assert result == "/custom/epflemma/.tirith-install-failed"
+        assert result == "/custom/leanflow/.tirith-install-failed"
 
     def test_conftest_isolation_prevents_real_home_writes(self):
-        """The conftest autouse fixture sets EPFLEMMA_HOME; verify it's active."""
-        epflemma_home = os.getenv("EPFLEMMA_HOME")
-        assert epflemma_home is not None, "EPFLEMMA_HOME should be set by conftest"
-        assert "epflemma_test" in epflemma_home, "Should point to test temp dir"
+        """The conftest autouse fixture sets LEANFLOW_HOME; verify it's active."""
+        leanflow_home = os.getenv("LEANFLOW_HOME")
+        assert leanflow_home is not None, "LEANFLOW_HOME should be set by conftest"
+        assert "leanflow_test" in leanflow_home, "Should point to test temp dir"
 
-    def test_get_gauss_home_fallback(self):
-        """Without explicit homes set, falls back to ~/.epflemma."""
-        from tools.implementations.tirith_security import _get_epflemma_home
+    def test_get_leanflow_home_fallback(self):
+        """Without explicit homes set, falls back to ~/.leanflow."""
+        from tools.implementations.tirith_security import _get_leanflow_home
 
         with patch.dict(os.environ, {}, clear=True):
-            os.environ.pop("EPFLEMMA_HOME", None)
-            result = _get_epflemma_home()
-        assert result == os.path.join(os.path.expanduser("~"), ".epflemma")
+            os.environ.pop("LEANFLOW_HOME", None)
+            result = _get_leanflow_home()
+        assert result == os.path.join(os.path.expanduser("~"), ".leanflow")

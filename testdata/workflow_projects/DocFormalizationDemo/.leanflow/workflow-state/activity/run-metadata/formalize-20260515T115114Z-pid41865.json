@@ -1,0 +1,13 @@
+{
+  "active_skill": "lean-formalization",
+  "created_at": "2026-05-15T11:51:44+00:00",
+  "parent_run_id": "",
+  "process_id": 41865,
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/DocFormalizationDemo",
+  "run_id": "formalize-20260515T115114Z-pid41865",
+  "run_scope": "background-session",
+  "task_label": "formalize",
+  "updated_at": "2026-05-15T11:59:48+00:00",
+  "workflow_command": "/formalize docs/PythagoreanPolynomialParametrization/pyth.tex",
+  "workflow_kind": "formalize"
+}

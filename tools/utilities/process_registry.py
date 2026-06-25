@@ -44,13 +44,13 @@ _IS_WINDOWS = platform.system() == "Windows"
 from dataclasses import dataclass, field
 from typing import Any
 
-from epflemma_cli.config import get_epflemma_home
+from leanflow_cli.config import get_leanflow_home
 from tools.environments.local import _find_shell, _sanitize_subprocess_env
 
 logger = logging.getLogger(__name__)
 
 # Checkpoint file for crash recovery (gateway only)
-CHECKPOINT_PATH = get_epflemma_home() / "processes.json"
+CHECKPOINT_PATH = get_leanflow_home() / "processes.json"
 
 # Limits
 MAX_OUTPUT_CHARS = 200_000  # 200KB rolling output buffer
@@ -260,8 +260,8 @@ class ProcessRegistry:
         )
 
         # Run the command in the sandbox with output capture
-        log_path = f"/tmp/epflemma_bg_{session.id}.log"
-        pid_path = f"/tmp/epflemma_bg_{session.id}.pid"
+        log_path = f"/tmp/leanflow_bg_{session.id}.log"
+        pid_path = f"/tmp/leanflow_bg_{session.id}.pid"
         quoted_command = shlex.quote(command)
         bg_command = (
             f"nohup bash -c {quoted_command} > {log_path} 2>&1 & "

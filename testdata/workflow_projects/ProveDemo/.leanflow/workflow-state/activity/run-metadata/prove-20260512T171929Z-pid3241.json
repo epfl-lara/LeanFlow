@@ -1,0 +1,13 @@
+{
+  "active_skill": "lean-theorem-queue-worker",
+  "created_at": "2026-05-12T17:20:01+00:00",
+  "parent_run_id": "",
+  "process_id": 3241,
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "run_id": "prove-20260512T171929Z-pid3241",
+  "run_scope": "background-session",
+  "task_label": "prove",
+  "updated_at": "2026-05-12T17:25:50+00:00",
+  "workflow_command": "/prove ProveDemo/IMOMath0.lean",
+  "workflow_kind": "prove"
+}

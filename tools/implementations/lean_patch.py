@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verified-patch application tool for EPFLemma.
+"""Verified-patch application tool for LeanFlow.
 
 This module holds the ``apply_verified_patch`` tool that was split out of
 ``tools/lean_tool.py``: ``apply_verified_patch_tool`` applies a one-file V4A Lean
@@ -12,8 +12,8 @@ path/diff/verification-gate helpers it uses (``_LocalShellEnv``,
 ``tools.implementations.lean_tool`` re-exports ``apply_verified_patch_tool`` so callers and the
 tool registry keep resolving it as ``lean_tool.apply_verified_patch_tool``. This
 module must NOT import ``tools.implementations.lean_tool`` (it would create an import cycle); it
-reaches its collaborators directly via ``epflemma_cli.runtime.file_locks`` /
-``epflemma_cli.lean.lean_services`` / ``epflemma_cli.workflows.workflow_state`` /
+reaches its collaborators directly via ``leanflow_cli.runtime.file_locks`` /
+``leanflow_cli.lean.lean_services`` / ``leanflow_cli.workflows.workflow_state`` /
 ``tools.implementations.file_operations`` / ``tools.utilities.patch_parser``.
 """
 
@@ -24,9 +24,9 @@ import os
 import subprocess
 from pathlib import Path
 
-from epflemma_cli.lean.lean_services import lean_verify
-from epflemma_cli.runtime.file_locks import ensure_file_lock, release_file_lock
-from epflemma_cli.workflows.workflow_state import (
+from leanflow_cli.lean.lean_services import lean_verify
+from leanflow_cli.runtime.file_locks import ensure_file_lock, release_file_lock
+from leanflow_cli.workflows.workflow_state import (
     append_workflow_outcome,
     save_verified_patch_status,
     write_verified_patch_checkpoint,

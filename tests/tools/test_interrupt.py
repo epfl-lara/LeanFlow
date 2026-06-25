@@ -215,7 +215,7 @@ class TestSIGKILLEscalation:
 SMOKE_TESTS = """
 Manual Smoke Test Checklist:
 
-1. CLI: Run `gauss`, ask it to `sleep 30` in terminal, type "stop" + Enter.
+1. CLI: Run `leanflow`, ask it to `sleep 30` in terminal, type "stop" + Enter.
    Expected: command dies within 2s, agent responds to "stop".
 
 2. CLI: Ask it to extract content from 5 URLs, type interrupt mid-way.

@@ -1,8 +1,8 @@
-# EPFLemma Product Reference
+# LeanFlow Product Reference
 
-This is the detailed operational reference for EPFLemma. It preserves the deeper workflow, skill, provider, runtime, and verification notes that previously made the main README hard to scan.
+This is the detailed operational reference for LeanFlow. It preserves the deeper workflow, skill, provider, runtime, and verification notes that previously made the main README hard to scan.
 
-EPFLemma is a Lean AI for Math shell focused on automated Lean coding agents. The command you install and run is still `epflemma`, so existing local setup and scripts stay stable.
+LeanFlow is a Lean AI for Math shell focused on automated Lean coding agents. The command you install and run is still `leanflow`, so existing local setup and scripts stay stable.
 
 The product is optimized for two main jobs:
 
@@ -11,15 +11,13 @@ The product is optimized for two main jobs:
 
 Internally, `/prove` and `/autoprove` normalize to the same native workflow, and `/formalize` and `/autoformalize` normalize to the same native workflow. The auto-prefixed forms are compatibility aliases, not separate product surfaces.
 
-It installs as `epflemma`, uses `~/.epflemma` for user-level config, and keeps project-owned workflow state in `.epflemma/`.
+It installs as `leanflow`, uses `~/.leanflow` for user-level config, and keeps project-owned workflow state in `.leanflow/`.
 
-This fork removes the old managed `claude-code` and `codex` backend flow. EPFLemma now runs Lean workflows through its own internal `epflemma-native` runtime and routes inference through direct provider APIs, OpenAI-compatible endpoints such as RCP, or local runtimes such as `vllm`, `ollama`, and `llama.cpp`.
-
-EPFLemma builds on earlier OpenGauss work. The project history traces back to [math-inc/OpenGauss](https://github.com/math-inc/OpenGauss), and this repo carries that lineage forward in a Lean-first direction.
+This fork removes the old managed `claude-code` and `codex` backend flow. LeanFlow now runs Lean workflows through its own internal `leanflow-native` runtime and routes inference through direct provider APIs, OpenAI-compatible endpoints such as RCP, or local runtimes such as `vllm`, `ollama`, and `llama.cpp`.
 
 ## Product Direction
 
-EPFLemma is intentionally Lean-first and automation-first.
+LeanFlow is intentionally Lean-first and automation-first.
 
 - The default shell and workflow UX are built around Lean proving and formalization, not generic assistant chat.
 - Autonomous workflows are judged by strict Lean verification, not by partial progress:
@@ -33,9 +31,9 @@ EPFLemma is intentionally Lean-first and automation-first.
 
 ## Skills
 
-EPFLemma ships with a small curated skill core for Lean workflows. Skills are not a side feature here; they are part of how the agent is steered toward proving, diagnostics, formalization, resume, and user-approved swarm behavior.
+LeanFlow ships with a small curated skill core for Lean workflows. Skills are not a side feature here; they are part of how the agent is steered toward proving, diagnostics, formalization, resume, and user-approved swarm behavior.
 
-Skills are now the routing/index layer over native workflow and worker specs in `epflemma_specs/`. The canonical Lean contract lives in those markdown-backed specs; skills point the agent at the right spec and tool order for the current workflow state.
+Skills are now the routing/index layer over native workflow and worker specs in `leanflow_specs/`. The canonical Lean contract lives in those markdown-backed specs; skills point the agent at the right spec and tool order for the current workflow state.
 
 Built-in skills:
 
@@ -96,9 +94,9 @@ When a skill is active, its `SKILL.md` content is inserted into the agent prompt
 
 Skill discovery order is:
 
-- built-in repo skills in `epflemma_skills/`
-- user overrides in `~/.epflemma/skills`
-- project overrides in `.epflemma/skills`
+- built-in repo skills in `leanflow_skills/`
+- user overrides in `~/.leanflow/skills`
+- project overrides in `.leanflow/skills`
 
 Precedence is:
 
@@ -110,15 +108,15 @@ That means you can replace a built-in skill for one machine or one project witho
 Install patterns:
 
 - user-wide skill:
-  - create `~/.epflemma/skills/<skill-name>/SKILL.md`
+  - create `~/.leanflow/skills/<skill-name>/SKILL.md`
 - project-local skill:
-  - create `.epflemma/skills/<skill-name>/SKILL.md` inside the Lean project
+  - create `.leanflow/skills/<skill-name>/SKILL.md` inside the Lean project
 
 Example:
 
 ```text
-~/.epflemma/skills/my-proof-policy/SKILL.md
-.epflemma/skills/lean-proof-loop/SKILL.md
+~/.leanflow/skills/my-proof-policy/SKILL.md
+.leanflow/skills/lean-proof-loop/SKILL.md
 ```
 
 The second example overrides the built-in `lean-proof-loop` only for that project.
@@ -128,7 +126,7 @@ The second example overrides the built-in `lean-proof-loop` only for that projec
 The agent does not install skills as code plugins. It loads them as prompt-time workflow instructions:
 
 - the skill resolver finds the highest-precedence matching skill
-- EPFLemma reads the skill’s `SKILL.md`
+- LeanFlow reads the skill’s `SKILL.md`
 - that content is embedded into the agent prompt for the active workflow
 - supporting files under `references/`, `templates/`, `scripts/`, and `assets/` stay discoverable through the skill system when needed
 
@@ -136,12 +134,12 @@ Use `/skills` to see what the agent can currently load and where each skill came
 
 ## Native Workflow Contract
 
-EPFLemma now treats native markdown specs as the canonical Lean workflow contract.
+LeanFlow now treats native markdown specs as the canonical Lean workflow contract.
 
 Spec roots:
 
-- `epflemma_specs/workflows/`
-- `epflemma_specs/workers/`
+- `leanflow_specs/workflows/`
+- `leanflow_specs/workers/`
 
 Workflow specs shipped in the repo:
 
@@ -176,8 +174,8 @@ For a developer-oriented summary of the native workflow/tool surface, see [nativ
 
 ## What Ships
 
-- `epflemma` CLI with EPFLemma shell branding
-- `epflemma-agent` shared agent entrypoint
+- `leanflow` CLI with LeanFlow shell branding
+- `leanflow-agent` shared agent entrypoint
 - Lean workflows:
   - `/draft`
   - `/review`
@@ -189,12 +187,12 @@ For a developer-oriented summary of the native workflow/tool surface, see [nativ
   - `/autoprove` -> alias of `/prove`
   - `/autoformalize` -> alias of `/formalize`
 - Local runtime commands:
-  - `epflemma models local list`
-  - `epflemma models local start`
-  - `epflemma models local stop`
-  - `epflemma models local status`
-  - `epflemma models local logs`
-  - `epflemma models local use`
+  - `leanflow models local list`
+  - `leanflow models local start`
+  - `leanflow models local stop`
+  - `leanflow models local status`
+  - `leanflow models local logs`
+  - `leanflow models local use`
 
 ## Kernel-Only Scope
 
@@ -202,11 +200,11 @@ This repo is now intentionally trimmed to the Lean workflow kernel.
 
 Supported product surface:
 
-- EPFLemma shell UX on top of `epflemma`
+- LeanFlow shell UX on top of `leanflow`
 - Lean proving and formalization workflows
 - user-approved multi-agent swarm mode
 - file locking for concurrent Lean editing
-- curated Lean skill core in `epflemma_skills/`
+- curated Lean skill core in `leanflow_skills/`
 - provider routing for direct APIs, RCP/custom endpoints, and local runtimes
 - managed local runtimes: `vllm`, `ollama`, `llama.cpp`
 
@@ -220,16 +218,14 @@ Removed from the supported product:
 - generic and marketplace-style skill catalogs
 - WhatsApp bridge and other non-Lean platform extras
 
-If you still see references to legacy Gauss-era modules in comments or compatibility fallbacks, treat them as migration residue rather than supported product features.
-
 ## Name, CLI, and Paths
 
-- Product name: `EPFLemma`
-- CLI command: `epflemma`
-- State directory: `~/.epflemma`
-- Project manifest: `.epflemma/project.yaml`
+- Product name: `LeanFlow`
+- CLI command: `leanflow`
+- State directory: `~/.leanflow`
+- Project manifest: `.leanflow/project.yaml`
 
-The interface is styled around EPFL / Lean / AI-for-math work, but the executable name stays `epflemma`.
+The interface is styled around EPFL / Lean / AI-for-math work, but the executable name stays `leanflow`.
 
 ## Install
 
@@ -251,23 +247,21 @@ If you already have the repo checked out locally, just run:
 
 Default install locations:
 
-- state: `~/.epflemma`
-- wrappers: `~/.local/bin/epflemma`, `~/.local/bin/epflemma-agent`
-- virtualenv: `./.epflemma-venv`
+- state: `~/.leanflow`
+- wrappers: `~/.local/bin/leanflow`, `~/.local/bin/leanflow-agent`
+- virtualenv: `./.leanflow-venv`
 
 The installer also checks or wires the external CLI tools used by normal
 workflows: `rg` for repository search and Poppler's `pdftotext`, `pdfinfo`, and
 `pdfimages` for PDF source inspection.
 
-The installer does not modify any retired `~/.opengauss` / `~/.gauss` home.
-
 Custom install locations:
 
 ```bash
 ./scripts/install-internal.sh \
-  --epflemma-home "$HOME/.epflemma" \
+  --leanflow-home "$HOME/.leanflow" \
   --bin-dir "$HOME/.local/bin" \
-  --venv-dir "$PWD/.epflemma-venv"
+  --venv-dir "$PWD/.leanflow-venv"
 ```
 
 ## Update
@@ -287,68 +281,58 @@ Sandboxed install:
 ```
 
 The sandbox installer runs the normal install, builds the local Docker/Podman
-image, and writes an `epflemma-sandbox` wrapper. To upgrade that runtime:
+image, and writes an `leanflow-sandbox` wrapper. To upgrade that runtime:
 
 ```bash
 ./scripts/update-sandbox.sh
 ```
 
-The sandbox runtime copies the active EPFLemma project into a per-run worktree,
+The sandbox runtime copies the active LeanFlow project into a per-run worktree,
 mounts only that copy plus sandbox cache/home directories, and exports the final
-diff to `~/.epflemma/sandbox/runs/<run-id>/changes.patch`. See
+diff to `~/.leanflow/sandbox/runs/<run-id>/changes.patch`. See
 [sandbox-runtime.md](sandbox-runtime.md) for the isolation and patch-export
 contract.
-
-## Migration
-
-EPFLemma stores everything under its own paths — `~/.epflemma` for user-level config and `.epflemma/` for project workflow state. On first run, if no EPFLemma home exists yet, it seeds one **once** from a retired predecessor home (`~/.opengauss` or `~/.gauss`):
-
-- `~/.opengauss/config.yaml` or `~/.gauss/config.yaml`
-- `~/.opengauss/.env` or `~/.gauss/.env`
-- a legacy `.opengauss/project.yaml` or `.gauss/project.yaml` manifest
-
-That import is one-time and non-destructive — the legacy home is read, never modified — and afterward EPFLemma uses only its own paths.
 
 ## Quick Start
 
 Check the install:
 
 ```bash
-epflemma --help
-epflemma doctor
-epflemma doctor env --json
-epflemma mcp bootstrap lean
-epflemma mcp status --json
-epflemma config show
+leanflow --help
+leanflow doctor
+leanflow doctor env --json
+leanflow mcp bootstrap lean
+leanflow mcp status --json
+leanflow config show
 ```
 
 Initialize an existing Lean project:
 
 ```bash
 cd /path/to/lean-project
-epflemma project init
-epflemma project show
+leanflow project init
+leanflow project show
 ```
 
 Run a workflow:
 
 ```bash
-epflemma workflow prove Main.lean
-epflemma workflow prove Main.lean --agents 3
-epflemma workflow prove Main.lean --no-parallel
-epflemma workflow formalize docs/paper.tex
+leanflow workflow prove Main.lean
+leanflow workflow prove Main.lean --agents 3
+leanflow workflow prove Main.lean --no-parallel
+leanflow workflow formalize docs/paper.tex
 ```
 
 ## Workflow Example Projects
 
 The repo also carries opt-in Lean workflow projects under `testdata/workflow_projects/`.
 
-These are for manual workflow runs and future targeted integration coverage, not for the default pytest or CI path. `testdata/workflow_projects/GaussTest` is the proof-repair fixture, and `testdata/workflow_projects/DocFormalizationDemo` is the document-formalization fixture.
+These are for manual workflow runs and future targeted integration coverage, not for the default pytest or CI path. `testdata/workflow_projects/ProveDemo` is the proof-repair fixture, and `testdata/workflow_projects/DocFormalizationDemo` is the document-formalization fixture.
 
 Interactive mode:
 
 ```bash
-epflemma
+leanflow
 ```
 
 Inside the shell:
@@ -397,7 +381,7 @@ prove Main.lean --no-parallel
 formalize docs/paper.tex
 ```
 
-The interactive shell starts with an EPFLemma banner that shows the current route and the main Lean commands you are expected to use.
+The interactive shell starts with an LeanFlow banner that shows the current route and the main Lean commands you are expected to use.
 
 The bottom toolbar is live workflow context, not decoration. It surfaces:
 
@@ -447,10 +431,10 @@ Autonomous workflows are intentionally stricter than a local file-only loop. `pr
 
 The resolver prepares a document formalization workspace before the native runner starts:
 
-- source-document preflight manifest under `.epflemma/workflow-state/formalization/`
+- source-document preflight manifest under `.leanflow/workflow-state/formalization/`
 - bounded extracted-text cache
 - Markdown planner blueprint
-- generated supplemental blueprint skill under `.epflemma/skills/`
+- generated supplemental blueprint skill under `.leanflow/skills/`
 - active Lean target file for drafted declarations
 - original request metadata, selected source document metadata, and deterministic TeX project discovery metadata when the user provided a directory
 
@@ -462,9 +446,9 @@ The deterministic preflight is intentionally modest, but it recognizes common ma
 
 Expected document-prep completion is a buildable statement/source-approved draft that may still contain intentional `sorry`s. Proof filling is the next phase: it starts only when the user explicitly runs `/prove SomeFile.lean` or `/prove` after reviewing the generated formalization, and it is not part of judging whether the source formalization draft itself is ready.
 
-EPFLemma writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.epflemma/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
+LeanFlow writes managed workflow status, activity, checkpoints, file locks, and the full latest managed runner log into the active project’s `.leanflow/workflow-state/` directory by default so long runs stay next to the Lean repo you are debugging.
 
-That state now also includes structured capability snapshots and route decisions in `.epflemma/workflow-state/outcomes.jsonl`, so resumed runs can reuse prior blocker classification instead of starting blind.
+That state now also includes structured capability snapshots and route decisions in `.leanflow/workflow-state/outcomes.jsonl`, so resumed runs can reuse prior blocker classification instead of starting blind.
 
 ### Project-Scoped `/prove`
 
@@ -491,9 +475,9 @@ Parallel agents are disabled by default. The manager assigns one file at a time 
 
 Project prove-manager state is visible in the same surfaces as other managed workflows:
 
-- `/workflow status` reads `.epflemma/workflow-state/live_status.json`
-- `/workflow activity` reads structured JSONL events under `.epflemma/workflow-state/activity/runs/`
-- `/workflow log 120` tails the saved raw runner transcript from `.epflemma/workflow-state/latest-run.log` or the timestamped file under `.epflemma/workflow-state/runs/`
+- `/workflow status` reads `.leanflow/workflow-state/live_status.json`
+- `/workflow activity` reads structured JSONL events under `.leanflow/workflow-state/activity/runs/`
+- `/workflow log 120` tails the saved raw runner transcript from `.leanflow/workflow-state/latest-run.log` or the timestamped file under `.leanflow/workflow-state/runs/`
 - `/proof-state` includes the live proof-state message that is also sent back into autonomous continuation prompts
 
 For fileless `/prove`, `live_status.json` includes:
@@ -537,7 +521,7 @@ The verification loop is intentionally Lean-LSP-first:
 - prefer a focused `lake build <Module>` when the active file is close to clean
 - reserve full-project `lake build` for milestone verification and final success checks
 
-Managed automation backends are intentionally treated as optional infrastructure behind the native Lean tools, not as authoritative proof state. When an automation backend misses a declaration that the local file queue can already see, EPFLemma records the backend miss in `degraded_reasons`, degrades cleanly, and continues with local source context instead of stalling the run.
+Managed automation backends are intentionally treated as optional infrastructure behind the native Lean tools, not as authoritative proof state. When an automation backend misses a declaration that the local file queue can already see, LeanFlow records the backend miss in `degraded_reasons`, degrades cleanly, and continues with local source context instead of stalling the run.
 
 The inspection split is intentional:
 
@@ -549,7 +533,7 @@ The inspection split is intentional:
 
 ## Native Lean Tool Surface
 
-The agent now has a repo-owned Lean tool surface instead of relying on prompt text and shell heuristics alone. These tools are available through the `lean`, `epflemma-native`, and `epflemma-native-swarm` toolsets.
+The agent now has a repo-owned Lean tool surface instead of relying on prompt text and shell heuristics alone. These tools are available through the `lean`, `leanflow-native`, and `leanflow-native-swarm` toolsets.
 
 - `lean_capabilities`
   - probe project validity, Lean/Lake/Elan binaries, MCP/LSP tools, search providers, helper availability, worker availability, and degraded-mode reasons
@@ -578,9 +562,9 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
 - `lean_proof_context`
   - theorem-context retrieval from the managed automation backend: theorem statement, original proof text, hypotheses, in-scope names, namespace, and similar proofs
   - this is not a replacement for `lean_inspect` goals
-  - when the active file already contains the target declaration, EPFLemma first stabilizes lookup from the local declaration range before asking the backend for richer context
-  - if the proof-auto backend reports `theorem_not_found` or another backend-side context failure, EPFLemma falls back to a local declaration-slice context instead of pretending the backend succeeded
-  - a theorem-lookup miss does not disable proof-auto for the rest of the run; EPFLemma only sticky-disables proof-auto after transport or systemic backend failures
+  - when the active file already contains the target declaration, LeanFlow first stabilizes lookup from the local declaration range before asking the backend for richer context
+  - if the proof-auto backend reports `theorem_not_found` or another backend-side context failure, LeanFlow falls back to a local declaration-slice context instead of pretending the backend succeeded
+  - a theorem-lookup miss does not disable proof-auto for the rest of the run; LeanFlow only sticky-disables proof-auto after transport or systemic backend failures
 - `lean_multi_attempt`
   - screen 2-6 concrete tactic candidates at one proof location through the MCP backend
 - `lean_auto_search`
@@ -594,7 +578,7 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
   - run a best-effort `#print axioms` check for one declaration and report `axioms`, `custom_axioms`, `classical`, and `choice`
 ## Theorem-By-Theorem Proving Loop
 
-For file-scoped autonomous workflows (`prove` / `formalize` with an active Lean file), EPFLemma drives the agent one declaration at a time instead of letting it roam the whole file. The runner owns the queue; the agent only owns the current assignment.
+For file-scoped autonomous workflows (`prove` / `formalize` with an active Lean file), LeanFlow drives the agent one declaration at a time instead of letting it roam the whole file. The runner owns the queue; the agent only owns the current assignment.
 
 What the runner does each cycle:
 
@@ -786,7 +770,7 @@ Route decisions are persisted into workflow state so later cycles can reuse them
 
 ## Reasoning / Thinking Policy
 
-EPFLemma now defaults to:
+LeanFlow now defaults to:
 
 ```yaml
 agent:
@@ -810,8 +794,8 @@ agent:
 Operational details:
 
 - the failed-attempt counter increments on each failed `edit -> verification feedback -> still blocked` boundary, not only once per long conversation
-- the default reasoning escalation threshold is configurable with `EPFLEMMA_NATIVE_FAILED_ATTEMPT_REASONING_THRESHOLD`
-- the `PREVIOUS ATTEMPTS` cap is configurable with `EPFLEMMA_NATIVE_FAILED_ATTEMPT_HISTORY` and defaults to `10`
+- the default reasoning escalation threshold is configurable with `LEANFLOW_NATIVE_FAILED_ATTEMPT_REASONING_THRESHOLD`
+- the `PREVIOUS ATTEMPTS` cap is configurable with `LEANFLOW_NATIVE_FAILED_ATTEMPT_HISTORY` and defaults to `10`
 
 You can still override it explicitly:
 
@@ -825,7 +809,7 @@ You can still override it explicitly:
 /reasoning xhigh
 ```
 
-On routes that only support `low|medium|high`, EPFLemma maps automatically:
+On routes that only support `low|medium|high`, LeanFlow maps automatically:
 
 - `minimal -> low`
 - `xhigh -> high`
@@ -841,7 +825,7 @@ This mode is automatic for autonomous workflows with an `ACTIVE_FILE`. For proje
 
 ## User-Approved Swarm Mode
 
-EPFLemma supports multi-agent Lean work, but only when the user explicitly requests it.
+LeanFlow supports multi-agent Lean work, but only when the user explicitly requests it.
 
 Default behavior:
 
@@ -851,13 +835,13 @@ Default behavior:
 Explicit swarm behavior:
 
 ```bash
-epflemma workflow prove Main.lean --agents 3
-epflemma workflow formalize docs/paper.tex --agents 3
+leanflow workflow prove Main.lean --agents 3
+leanflow workflow formalize docs/paper.tex --agents 3
 ```
 
 What `--agents N` does:
 
-- switches the native workflow from `epflemma-native` to the swarm-capable tool surface
+- switches the native workflow from `leanflow-native` to the swarm-capable tool surface
 - enables user-approved delegation inside that workflow only
 - activates the `lean-autonomous-swarm` skill unless you manually selected another skill
 - records the configured agent count in workflow status
@@ -875,11 +859,11 @@ Recommended use:
 
 ## Project Model
 
-EPFLemma currently exposes two project commands:
+LeanFlow currently exposes two project commands:
 
-- `epflemma project init [path] [--name NAME]`
-- `epflemma project create <path> [--template-source SOURCE] [--name NAME]`
-- `epflemma project show [path]`
+- `leanflow project init [path] [--name NAME]`
+- `leanflow project create <path> [--template-source SOURCE] [--name NAME]`
+- `leanflow project show [path]`
 
 Requirements for `project init`:
 
@@ -887,14 +871,14 @@ Requirements for `project init`:
 - a Lean root must be detectable from `lakefile.lean` or `lakefile.toml`
 - REPL acceleration setup is attempted automatically; `lakefile.toml` projects can be updated safely, while ambiguous `lakefile.lean` projects receive manual setup instructions
 
-EPFLemma writes:
+LeanFlow writes:
 
-- `.epflemma/project.yaml`
-- `.epflemma/runtime/`
-- `.epflemma/cache/`
-- `.epflemma/workflows/`
+- `.leanflow/project.yaml`
+- `.leanflow/runtime/`
+- `.leanflow/cache/`
+- `.leanflow/workflows/`
 
-During `project init`, EPFLemma prints visible REPL setup progress:
+During `project init`, LeanFlow prints visible REPL setup progress:
 
 - inspect Lean project
 - detect `lean-toolchain`
@@ -904,23 +888,23 @@ During `project init`, EPFLemma prints visible REPL setup progress:
 - run `lake build repl`
 
 Long Lake commands print status before and after execution, including elapsed time. A failed REPL setup is a warning, not a project-init failure; proof workflows continue with LSP-backed tactic screening.
-- `.epflemma/workflow-state/`
+- `.leanflow/workflow-state/`
 
 ## Skills And Overlays
 
-EPFLemma ships a curated Lean-first skill core. It does not use the old broad marketplace-style catalog in the supported product.
+LeanFlow ships a curated Lean-first skill core. It does not use the old broad marketplace-style catalog in the supported product.
 
 Builtin skills live in:
 
 ```text
-epflemma_skills/
+leanflow_skills/
 ```
 
 User and project overlays live in:
 
 ```text
-~/.epflemma/skills
-.epflemma/skills
+~/.leanflow/skills
+.leanflow/skills
 ```
 
 Overlay precedence is:
@@ -962,7 +946,7 @@ The swarm-specific skill is only relevant when the user enabled parallel agents.
 
 ## File Locking
 
-EPFLemma includes file reservations for concurrent Lean work.
+LeanFlow includes file reservations for concurrent Lean work.
 
 Purpose:
 
@@ -971,7 +955,7 @@ Purpose:
 
 How it works:
 
-- file reservations are stored in `.epflemma/workflow-state/file_locks.json` inside the active project
+- file reservations are stored in `.leanflow/workflow-state/file_locks.json` inside the active project
 - the native workflow tool surface includes:
   - `acquire_file_lock`
   - `release_file_lock`
@@ -991,11 +975,11 @@ Current scope:
 
 The main active codepaths are:
 
-- `epflemma_cli/` for shell UX, config, project/workflow orchestration, local runtimes, locks, and workflow state
-- `epflemma_skills/` for the curated Lean skill core
+- `leanflow_cli/` for shell UX, config, project/workflow orchestration, local runtimes, locks, and workflow state
+- `leanflow_skills/` for the curated Lean skill core
 - `agent/` for prompt assembly, context compression, display, and shared agent internals
 - `tools/` for the Lean-kernel tool surface
-- `tests/epflemma/` plus selected agent/runtime tests for the supported product
+- `tests/leanflow/` plus selected agent/runtime tests for the supported product
 
 You should not expect deleted gateway, website, cron, data-generation, voice, or broad skill-catalog directories to exist anymore.
 
@@ -1004,13 +988,13 @@ You should not expect deleted gateway, website, cron, data-generation, voice, or
 Inspect the active provider selection:
 
 ```bash
-epflemma provider
-epflemma provider --requested zai
-epflemma provider --requested local
-epflemma provider --requested custom
+leanflow provider
+leanflow provider --requested zai
+leanflow provider --requested local
+leanflow provider --requested custom
 ```
 
-EPFLemma supports three provider classes:
+LeanFlow supports three provider classes:
 
 1. Direct provider APIs
 2. OpenAI-compatible remote endpoints
@@ -1031,7 +1015,7 @@ Example:
 
 ```bash
 export GLM_API_KEY=...
-epflemma provider --requested zai
+leanflow provider --requested zai
 ```
 
 ### OpenAI-Compatible Remote Endpoints
@@ -1039,17 +1023,17 @@ epflemma provider --requested zai
 RCP-style endpoints work through the `custom` path:
 
 ```bash
-export EPFLEMMA_OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
-export EPFLEMMA_OPENAI_API_KEY="..."
-epflemma provider --requested custom
+export LEANFLOW_OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
+export LEANFLOW_OPENAI_API_KEY="..."
+leanflow provider --requested custom
 ```
 
-Preferred env var names for EPFLemma are `EPFLEMMA_OPENAI_BASE_URL` and `EPFLEMMA_OPENAI_API_KEY`.
-Legacy/generic names such as `OPENAI_BASE_URL` and `OPENAI_API_KEY` are still accepted, but the EPFLemma-prefixed names are the stable user-facing ones.
+Preferred env var names for LeanFlow are `LEANFLOW_OPENAI_BASE_URL` and `LEANFLOW_OPENAI_API_KEY`.
+Legacy/generic names such as `OPENAI_BASE_URL` and `OPENAI_API_KEY` are still accepted, but the LeanFlow-prefixed names are the stable user-facing ones.
 
-The `EPFLEMMA_NATIVE_*` variables are internal workflow-launcher plumbing. The CLI sets those automatically when it starts `epflemma-native`; you should not need to export them manually.
+The `LEANFLOW_NATIVE_*` variables are internal workflow-launcher plumbing. The CLI sets those automatically when it starts `leanflow-native`; you should not need to export them manually.
 
-For RCP / vLLM-style endpoints, EPFLemma enables model thinking through provider-compatible request fields instead of only the OpenRouter-style `reasoning` payload:
+For RCP / vLLM-style endpoints, LeanFlow enables model thinking through provider-compatible request fields instead of only the OpenRouter-style `reasoning` payload:
 
 - `extra_body.chat_template_kwargs.enable_thinking`
 - `extra_body.reasoning_effort`
@@ -1071,16 +1055,16 @@ Inside the interactive shell, `/provider` shows both the resolved provider and t
 Select a local runtime:
 
 ```bash
-epflemma models local use vllm google/gemma-3-27b-it
-epflemma provider --requested local
+leanflow models local use vllm google/gemma-3-27b-it
+leanflow provider --requested local
 ```
 
 Start a local runtime:
 
 ```bash
-epflemma models local start vllm google/gemma-3-27b-it
-epflemma models local status vllm
-epflemma models local logs vllm
+leanflow models local start vllm google/gemma-3-27b-it
+leanflow models local status vllm
+leanflow models local logs vllm
 ```
 
 Other supported runtimes:
@@ -1099,11 +1083,11 @@ There are now three important internal workflow surfaces:
   - project-local source-document inspection for formalization
   - includes `read_pdf` and `formalization_document_inspect`
 
-- `epflemma-native`
+- `leanflow-native`
   - default single-agent Lean workflow runtime
   - includes the shared `lean` and `document` toolsets plus file, terminal, web, session search, skills, and file-lock coordination
   - does not include delegation
-- `epflemma-native-swarm`
+- `leanflow-native-swarm`
   - enabled only for user-approved `--agents N` workflows
   - adds delegation on top of the same native Lean tool surface
   - intended for bounded multi-agent Lean runs with file ownership rules
@@ -1113,19 +1097,19 @@ There are now three important internal workflow surfaces:
 Main config file:
 
 ```text
-~/.epflemma/config.yaml
+~/.leanflow/config.yaml
 ```
 
 Main env file:
 
 ```text
-~/.epflemma/.env
+~/.leanflow/.env
 ```
 
 Top-level config shape:
 
 ```yaml
-epflemma:
+leanflow:
   project:
     template_source: ""
   workflow:
@@ -1213,38 +1197,38 @@ logging:
 Useful commands:
 
 ```bash
-epflemma config get model.default
-epflemma config set model.default '"moonshotai/Kimi-K2.6"'
-epflemma config set model.provider '"auto"'
-epflemma config set model.base_url '"https://inference.rcp.epfl.ch/v1"'
-epflemma config set auxiliary.lean_reasoning.model '"moonshotai/Kimi-K2.6-int4"'
-epflemma config set auxiliary.lean_reasoning.provider '"main"'
-epflemma config set auxiliary.lean_reasoning.reasoning_effort '"high"'
-epflemma workflow prove Main.lean --expert-provider codex
-epflemma workflow prove Main.lean --expert-provider claude-code
-epflemma config set auxiliary.blueprint_verification.provider '"claude-code"'
-epflemma config set auxiliary.autoformalizer_verification.provider '"local"'
-epflemma config set agent.reasoning_effort '"auto"'
-epflemma config set agent.seed '42'
-epflemma config set agent.temperature '0.3'
-epflemma config set agent.top_p 'null'
-epflemma config set agent.top_k 'null'
-epflemma config set agent.min_p 'null'
+leanflow config get model.default
+leanflow config set model.default '"moonshotai/Kimi-K2.6"'
+leanflow config set model.provider '"auto"'
+leanflow config set model.base_url '"https://inference.rcp.epfl.ch/v1"'
+leanflow config set auxiliary.lean_reasoning.model '"moonshotai/Kimi-K2.6-int4"'
+leanflow config set auxiliary.lean_reasoning.provider '"main"'
+leanflow config set auxiliary.lean_reasoning.reasoning_effort '"high"'
+leanflow workflow prove Main.lean --expert-provider codex
+leanflow workflow prove Main.lean --expert-provider claude-code
+leanflow config set auxiliary.blueprint_verification.provider '"claude-code"'
+leanflow config set auxiliary.autoformalizer_verification.provider '"local"'
+leanflow config set agent.reasoning_effort '"auto"'
+leanflow config set agent.seed '42'
+leanflow config set agent.temperature '0.3'
+leanflow config set agent.top_p 'null'
+leanflow config set agent.top_k 'null'
+leanflow config set agent.min_p 'null'
 ```
 
 `lean_reasoning_help` uses the configured `auxiliary.lean_reasoning` model as a
 deep theorem advisor. Its default response budget is `64000` tokens so hard
 proof advice is not prematurely clipped; override with
-`EPFLEMMA_LEAN_REASONING_HELP_MAX_TOKENS` when a provider needs a lower cap.
-Main model calls wait up to `1200` seconds by default before EPFLemma treats the
-provider request as timed out; override with `GAUSS_API_TIMEOUT` if needed.
+`LEANFLOW_LEAN_REASONING_HELP_MAX_TOKENS` when a provider needs a lower cap.
+Main model calls wait up to `1200` seconds by default before LeanFlow treats the
+provider request as timed out; override with `LEANFLOW_API_TIMEOUT` if needed.
 
 For opt-in command advisors, set `auxiliary.lean_reasoning.provider` or pass
 `--expert-provider codex` / `--expert-provider claude-code` on a workflow.
 Command templates may be supplied with `--expert-command-template`,
 `AUXILIARY_LEAN_REASONING_COMMAND_TEMPLATE`, or the provider-specific
-`EPFLEMMA_EXPERT_CODEX_COMMAND_TEMPLATE` /
-`EPFLEMMA_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE` variables. Commands are split
+`LEANFLOW_EXPERT_CODEX_COMMAND_TEMPLATE` /
+`LEANFLOW_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE` variables. Commands are split
 without a shell and receive the full advisor prompt on stdin; workflow activity
 logs record the prompt, command, exit status, response, and truncation metadata.
 
@@ -1259,7 +1243,7 @@ fidelity, but deterministic local checks and Lean kernel verification remain the
 authoritative acceptance gate.
 
 If an endpoint omits or misreports model context-window metadata, pin the value
-in `~/.epflemma/config.yaml`:
+in `~/.leanflow/config.yaml`:
 
 ```yaml
 model:
@@ -1273,8 +1257,8 @@ deleting, renaming, moving, or changing existing `theorem`, `lemma`, and
 managed theorem queue turn, the queue guard additionally restores edits to
 pre-existing non-assigned declarations while allowing new helper declarations
 for the assigned theorem. For an intentional statement refactor, set
-`EPFLEMMA_ALLOW_LEAN_STATEMENT_EDITS=1` in the process environment or
-`~/.epflemma/.env`, then unset it again after the refactor.
+`LEANFLOW_ALLOW_LEAN_STATEMENT_EDITS=1` in the process environment or
+`~/.leanflow/.env`, then unset it again after the refactor.
 
 Compression defaults are tuned for long Lean sessions:
 
@@ -1283,20 +1267,20 @@ Compression defaults are tuned for long Lean sessions:
 - `prune_keep_recent_user_turns` keeps the newest user turns and their nearby tool output intact.
 - the compression gate checks the exact outgoing API payload before every model call, including provider-specific reasoning replay fields such as `reasoning_content`.
 - provider usage accounting can undercount replayed reasoning for some backends; the `Request: ~N tokens` log line is the local payload estimate used for pre-send compression.
-- for custom endpoints, EPFLemma does not use OpenRouter context metadata; it uses config overrides, provider `/models` metadata, curated defaults, or the conservative `200,000` token fallback.
+- for custom endpoints, LeanFlow does not use OpenRouter context metadata; it uses config overrides, provider `/models` metadata, curated defaults, or the conservative `200,000` token fallback.
 
 ## Doctor And MCP Status
 
 Run:
 
 ```bash
-epflemma doctor
-epflemma doctor env
-epflemma doctor mcp --json
-epflemma doctor search --json
-epflemma mcp bootstrap lean
-epflemma mcp status
-epflemma mcp status --json
+leanflow doctor
+leanflow doctor env
+leanflow doctor mcp --json
+leanflow doctor search --json
+leanflow mcp bootstrap lean
+leanflow mcp status
+leanflow mcp status --json
 ```
 
 Supported doctor modes:
@@ -1314,7 +1298,7 @@ Supported doctor modes:
 - `rg`
 - `lake`
 - `elan`
-- current EPFLemma home and config
+- current LeanFlow home and config
 - active project discovery
 - current provider resolution
 - MCP/LSP tool availability
@@ -1323,12 +1307,12 @@ Supported doctor modes:
 - available native workers
 - degraded-mode reasons
 
-EPFLemma now treats MCP as default backend infrastructure for native Lean tools, not as a separate user-facing workflow.
+LeanFlow now treats MCP as default backend infrastructure for native Lean tools, not as a separate user-facing workflow.
 
 Installer/bootstrap-managed default Lean MCP backends:
 
 - `lean-probe>=0.2.2,<0.3`
-  - Python package dependency powering the EPFLemma `lean_incremental_check` compatibility tool
+  - Python package dependency powering the LeanFlow `lean_incremental_check` compatibility tool
   - provides the LeanProbe/LeanInteract-backed queue-step verifier, target feedback, tactic states, and warm same-file declaration cache
   - used as an internal verifier surface, not exposed as a separate user workflow; final file/project acceptance still goes through Lake
 - `lean-lsp-mcp==0.26.1`
@@ -1339,32 +1323,32 @@ Installer/bootstrap-managed default Lean MCP backends:
 - `lean-proof-auto-mcp@v0.4.0`
   - secondary automation/context backend
   - theorem-local context and automation helpers such as `get_proof_context`, `probe`, `search_automated_proof`, and `try_automated_proof`
-  - EPFLemma uses it through native wrappers and now degrades cleanly when backend lookup misses a declaration that exists in the local file
+  - LeanFlow uses it through native wrappers and now degrades cleanly when backend lookup misses a declaration that exists in the local file
 - `lean-explore`
   - optional semantic declaration-search backend
   - `lean_search` prefers the local backend when `lean-explore[local]` is installed and `lean-explore data fetch` has prepared the index
   - `lean_search` uses the hosted API only when `LEANEXPLORE_API_KEY` is present and local search is unavailable or disabled
-  - installed and configured disabled by default as an MCP server because the API backend requires credentials; enable it in `~/.epflemma/config.yaml` for MCP tools or switch its args to the local backend after fetching LeanExplore data
+  - installed and configured disabled by default as an MCP server because the API backend requires credentials; enable it in `~/.leanflow/config.yaml` for MCP tools or switch its args to the local backend after fetching LeanExplore data
 
-The install script bootstraps these backends by default under `~/.epflemma/mcp/venvs/`. To repair or recreate them later, run:
+The install script bootstraps these backends by default under `~/.leanflow/mcp/venvs/`. To repair or recreate them later, run:
 
 ```bash
-epflemma mcp bootstrap lean
+leanflow mcp bootstrap lean
 ```
 
-`epflemma mcp status` now shows server role labels, whether a server is EPFLemma-managed, whether it is configured/installed, local Loogle/REPL power-mode status, public remote fallback policy, and whether bootstrap is recommended. The same surfaces are available in the interactive shell through `/doctor ...`, `/mcp bootstrap lean`, and `/mcp status [--json]`.
+`leanflow mcp status` now shows server role labels, whether a server is LeanFlow-managed, whether it is configured/installed, local Loogle/REPL power-mode status, public remote fallback policy, and whether bootstrap is recommended. The same surfaces are available in the interactive shell through `/doctor ...`, `/mcp bootstrap lean`, and `/mcp status [--json]`.
 
-Local Loogle requires Unix-like systems (Linux, macOS, or WSL), `git`, `lake`/`elan`, and roughly 2GB of disk. The first local Loogle build can take 5-10 minutes; later starts are fast. If local Loogle is unavailable, EPFLemma allows public remote Lean search fallbacks. Paid or API-key backends are never required by the installer.
+Local Loogle requires Unix-like systems (Linux, macOS, or WSL), `git`, `lake`/`elan`, and roughly 2GB of disk. The first local Loogle build can take 5-10 minutes; later starts are fast. If local Loogle is unavailable, LeanFlow allows public remote Lean search fallbacks. Paid or API-key backends are never required by the installer.
 
 Raw `mcp_*` tools are still available through explicit `mcp-{server}` toolsets for debugging, but they are not part of the normal native Lean workflow surface. The model should use the native Lean wrappers instead.
 
 For theorem-local automation, the important behavior is:
 
 - `lean_proof_context` prefers backend context when available
-- if proof-auto lookup fails for a declaration that the local file already contains, EPFLemma falls back to a local declaration slice and nearby declarations
+- if proof-auto lookup fails for a declaration that the local file already contains, LeanFlow falls back to a local declaration slice and nearby declarations
 - a proof-auto `theorem_not_found` miss is treated as a local context miss, not a run-wide backend failure; proof-auto remains available for later declarations
 
-To persist MCP sampling audit events to disk, enable it per server in `~/.epflemma/config.yaml`:
+To persist MCP sampling audit events to disk, enable it per server in `~/.leanflow/config.yaml`:
 
 ```yaml
 mcp_servers:
@@ -1372,31 +1356,31 @@ mcp_servers:
     sampling:
       enabled: true
       audit_jsonl: true
-      audit_jsonl_path: "~/.epflemma/logs/mcp-sampling.jsonl"  # optional override
+      audit_jsonl_path: "~/.leanflow/logs/mcp-sampling.jsonl"  # optional override
 ```
 
-If `audit_jsonl_path` is omitted, EPFLemma writes to `~/.epflemma/logs/mcp-sampling.jsonl`.
+If `audit_jsonl_path` is omitted, LeanFlow writes to `~/.leanflow/logs/mcp-sampling.jsonl`.
 
 ## Packaging
 
 Python package:
 
 ```text
-epflemma-agent
+leanflow-agent
 ```
 
 Console scripts:
 
-- `epflemma`
-- `epflemma-agent`
+- `leanflow`
+- `leanflow-agent`
 
 ## Verification Notes
 
 Current verified behavior from this repo:
 
-- focused EPFLemma test suite passes
-- standalone install works with a separate EPFLemma home
-- workflow request resolution works against `.epflemma/project.yaml`
+- focused LeanFlow test suite passes
+- standalone install works with a separate LeanFlow home
+- workflow request resolution works against `.leanflow/project.yaml`
 - RCP remote smoke succeeded with `google/gemma-3-27b-it`
 - dead gateway/cron/voice/data-generation/website/community-skill directories have been removed from the repo tree
 
@@ -1411,16 +1395,16 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e '.[dev]'
 ```
 
-Run the focused EPFLemma tests:
+Run the focused LeanFlow tests:
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/epflemma -q -n 0
+python -m pytest tests/leanflow -q -n 0
 ```
 
 Recommended broader verification for the supported kernel:
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/epflemma tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py tests/test_run_agent.py tests/test_run_agent_codex_responses.py tests/test_windows_installer_links.py -q -n 0
+python -m pytest tests/leanflow tests/agent/test_prompt_builder.py tests/agent/test_context_compressor.py tests/test_run_agent.py tests/test_run_agent_codex_responses.py tests/test_windows_installer_links.py -q -n 0
 ```

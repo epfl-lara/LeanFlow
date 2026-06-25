@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 
-from epflemma_cli.formalization.formalization_documents import inspect_formalization_document
+from leanflow_cli.formalization.formalization_documents import inspect_formalization_document
 from tools.registry import registry
 
 PDF_READ_DEFAULT_MAX_CHARS = 24_000
@@ -23,7 +23,7 @@ def formalization_document_inspect_tool(
     project_root: str = "",
     include_text: bool = False,
 ) -> str:
-    root = project_root or os.getenv("EPFLEMMA_PROJECT_ROOT", "") or cwd or os.getcwd()
+    root = project_root or os.getenv("LEANFLOW_PROJECT_ROOT", "") or cwd or os.getcwd()
     payload = inspect_formalization_document(
         path,
         project_root=root,
@@ -42,7 +42,7 @@ def read_pdf_tool(
     max_chars: int = PDF_READ_DEFAULT_MAX_CHARS,
 ) -> str:
     """Extract and return text from a project-local PDF file with bounded output. Validates input is a PDF, truncates extracted text to max_chars (bounded 1k–120k), and returns metadata including section structure, extraction quality, and truncation flags."""
-    root = project_root or os.getenv("EPFLEMMA_PROJECT_ROOT", "") or cwd or os.getcwd()
+    root = project_root or os.getenv("LEANFLOW_PROJECT_ROOT", "") or cwd or os.getcwd()
     payload = inspect_formalization_document(
         path,
         project_root=root,
@@ -84,7 +84,7 @@ FORMALIZATION_DOCUMENT_INSPECT_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Project-local .tex or .pdf path"},
             "cwd": {"type": "string", "description": "Optional working directory"},
-            "project_root": {"type": "string", "description": "Optional EPFLemma project root"},
+            "project_root": {"type": "string", "description": "Optional LeanFlow project root"},
             "include_text": {
                 "type": "boolean",
                 "description": "Include the bounded extracted text cache in addition to the excerpt",
@@ -109,7 +109,7 @@ READ_PDF_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Project-local .pdf path"},
             "cwd": {"type": "string", "description": "Optional working directory"},
-            "project_root": {"type": "string", "description": "Optional EPFLemma project root"},
+            "project_root": {"type": "string", "description": "Optional LeanFlow project root"},
             "max_chars": {
                 "type": "integer",
                 "description": "Maximum extracted-text characters to return, capped at 120000",

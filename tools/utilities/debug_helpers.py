@@ -1,4 +1,4 @@
-"""Shared debug session infrastructure for EPFLemma tools.
+"""Shared debug session infrastructure for LeanFlow tools.
 
 Replaces the identical DEBUG_MODE / _log_debug_call / _save_debug_log /
 get_debug_session_info boilerplate previously duplicated across tool modules.

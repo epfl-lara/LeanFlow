@@ -1,0 +1,31 @@
+{
+  "active_files": [
+    "ProveDemo/RealTheorems.lean",
+    "//github.com/leanprover-community/mathlib4/blob/e336692c249fa8d3928f5cad3e1b9fd4485ec3bc/Mathlib/Algebra/Order/Group/Abs.lean",
+    "//github.com/leanprover-community/mathlib4/blob/e336692c249fa8d3928f5cad3e1b9fd4485ec3bc/Mathlib/Algebra/Order/AbsoluteValue/Basic.lean",
+    "//github.com/leanprover-community/mathlib4/blob/e336692c249fa8d3928f5cad3e1b9fd4485ec3bc/Mathlib/Algebra/Order/Group/Unbundled/Abs.lean",
+    "//github.com/leanprover/lean4/blob/v4.30.0-rc2/src/lean/Init/Data/Int/Order.lean",
+    "//github.com/leanprover-community/mathlib4/blob/e336692c249fa8d3928f5cad3e1b9fd4485ec3bc/Mathlib/Algebra/Order/Module/Basic.lean",
+    "a/ProveDemo/RealTheorems.lean",
+    "b/ProveDemo/RealTheorems.lean"
+  ],
+  "blocker_summary": "",
+  "checkpoint_id": "ckpt-1782233071212",
+  "created_at": "2026-06-23T16:44:31+00:00",
+  "diagnostics_summary": "[EPFLEMMA-NATIVE MANAGED SNAPSHOT] Earlier managed workflow turns were compacted to preserve context space. Use this snapshot as the authoritative handoff for prior work, but still inspect the live project state before repeating work.\n\nWork\n[EPFLEMMA-NATIVE THEOREM TRANSITION ACTIVE SKILL]\n\nThe active and supplemental skill contracts are preserved after clearing theorem-local context.\n\n[EPFLEMMA ACTIVE SKILL: lean-theorem-queue-worker (builtin)]\n\n---\nname: lean-theorem-queue-w\n[EPFLEMMA-NATIVE THEOREM TRANSITION HANDOFF]\n\nPrevious theorem outcome:\n- declaration: addLipschitz\n- file: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean\n- final status\n{\"success\": true, \"status\": \"local-fallback\", \"backend_tool\": \"local-declaration-slice\", \"degraded_reasons\": [\"proof context backend failure: Theorem not found: abs_mul_diff\", \"using local declaration fallback after theorem_not_found withou",
+  "label": "successful build/typecheck after edits",
+  "linked_filesystem_checkpoint": "",
+  "model": "moonshotai/Kimi-K2.7-Code",
+  "next_steps": "Resume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "note": "",
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "rough_tokens": 6166,
+  "snapshot_path": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/.epflemma/workflow-state/ckpt-1782233071212.json",
+  "success_state": "in-progress",
+  "summary_text": "## Goal\nContinue the prove workflow for `/prove ProveDemo/RealTheorems.lean`.\n\n## Workflow\nLabel: successful build/typecheck after edits\nTrigger: build-verified\nProject root: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\n\n## Current state\nSuccess state: in-progress\nTarget: was\n\n## Lean findings\n[EPFLEMMA-NATIVE MANAGED SNAPSHOT] Earlier managed workflow turns were compacted to preserve context space. Use this snapshot as the authoritative handoff for prior work, but still inspect the live project state before repeating work.\n\nWork\n[EPFLEMMA-NATIVE THEOREM TRANSITION ACTIVE SKILL]\n\nThe active and supplemental skill contracts are preserved after clearing theorem-local context.\n\n[EPFLEMMA ACTIVE SKILL: lean-theorem-queue-worker (builtin)]\n\n---\nname: lean-theorem-queue-w\n[EPFLEMMA-NATIVE THEOREM TRANSITION HANDOFF]\n\nPrevious theorem outcome:\n- declaration: addLipschitz\n- file: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean\n- final status\n{\"success\": true, \"status\": \"local-fallback\", \"backend_tool\": \"local-declaration-slice\", \"degraded_reasons\": [\"proof context backend failure: Theorem not found: abs_mul_diff\", \"using local declaration fallback after theorem_not_found withou\n\n## Relevant files\nProveDemo/RealTheorems.lean, //github.com/leanprover-community/mathlib4/blob/e336692c249fa8d3928f5cad3e1b9fd4485ec3bc/Mathlib/Algebra/Order/Group/Abs.lean, //github.com/leanprover-community/mathlib4/blob/e336692c249fa8d3928f5cad3e1b9fd4485ec3bc/Mathlib/Algebra/Order/AbsoluteValue/Basic.lean, //github.com/leanprover-community/mathlib4/blob/e336692c249fa8d3928f5cad3e1b9fd4485ec3bc/Mathlib/Algebra/Order/Group/Unbundled/Abs.lean, //github.com/leanprover/lean4/blob/v4.30.0-rc2/src/lean/Init/Data/Int/Order.lean, //github.com/leanprover-community/mathlib4/blob/e336692c249fa8d3928f5cad3e1b9fd4485ec3bc/Mathlib/Algebra/Order/Module/Basic.lean, a/ProveDemo/RealTheorems.lean, b/ProveDemo/RealTheorems.lean\n\n## Blockers\nNo blocker declared at this checkpoint.\n\n## Next steps\nResume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "target_symbol": "outcome",
+  "trigger": "build-verified",
+  "version": 1,
+  "workflow_command": "/prove ProveDemo/RealTheorems.lean",
+  "workflow_kind": "prove"
+}

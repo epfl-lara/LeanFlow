@@ -5,7 +5,7 @@ bare `ubuntu:24.04` container using a mounted local checkout.
 
 It exercises:
 
-- `./scripts/install-internal.sh --workspace-dir /root/GaussWorkspaceSmoke`
+- `./scripts/install-internal.sh --workspace-dir /root/LeanFlowWorkspaceSmoke`
 - the installer's own Debian/Ubuntu bootstrap step for required prerequisites
 - repository-local dependency installation (`.[full]`, `mini-swe-agent`, `npm ci`)
 - helper script generation and provider auto-configuration with a dummy

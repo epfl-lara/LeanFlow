@@ -1,0 +1,13 @@
+{
+  "active_skill": "lean-theorem-queue-worker",
+  "created_at": "2026-06-24T11:58:37+00:00",
+  "parent_run_id": "",
+  "process_id": 7899,
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "run_id": "prove-20260624T115836Z-pid7899",
+  "run_scope": "background-session",
+  "task_label": "prove",
+  "updated_at": "2026-06-24T11:58:48+00:00",
+  "workflow_command": "/prove ProveDemo/RealTheorems.lean",
+  "workflow_kind": "prove"
+}

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Tool-facing wrappers for EPFLemma file reservations."""
+"""Tool-facing wrappers for LeanFlow file reservations."""
 
 from __future__ import annotations
 
 import json
 
-from epflemma_cli.runtime.file_locks import (
+from leanflow_cli.runtime.file_locks import (
     acquire_file_lock as _acquire_file_lock,
 )
-from epflemma_cli.runtime.file_locks import (
+from leanflow_cli.runtime.file_locks import (
     list_file_locks as _list_file_locks,
 )
-from epflemma_cli.runtime.file_locks import (
+from leanflow_cli.runtime.file_locks import (
     release_file_lock as _release_file_lock,
 )
 from tools.registry import registry
@@ -92,7 +92,7 @@ FILE_LOCK_RELEASE_SCHEMA = {
 
 FILE_LOCK_LIST_SCHEMA = {
     "name": "list_file_locks",
-    "description": "List active EPFLemma file reservations so swarm agents can avoid conflicting edits.",
+    "description": "List active LeanFlow file reservations so swarm agents can avoid conflicting edits.",
     "parameters": {"type": "object", "properties": {}},
 }
 

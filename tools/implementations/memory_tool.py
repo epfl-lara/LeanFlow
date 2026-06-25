@@ -32,12 +32,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from core.home import epflemma_home
+from core.home import leanflow_home
 
 logger = logging.getLogger(__name__)
 
 # Where memory files live
-MEMORY_DIR = epflemma_home() / "memories"
+MEMORY_DIR = leanflow_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -66,7 +66,7 @@ _MEMORY_THREAT_PATTERNS = [
     (r"authorized_keys", "ssh_backdoor"),
     (r"\$HOME/\.ssh|\~/\.ssh", "ssh_access"),
     (
-        r"\$HOME/\.(epflemma|opengauss|gauss)/\.env|\~/\.(epflemma|opengauss|gauss)/\.env",
+        r"\$HOME/\.leanflow/\.env|\~/\.leanflow/\.env",
         "agent_env",
     ),
 ]

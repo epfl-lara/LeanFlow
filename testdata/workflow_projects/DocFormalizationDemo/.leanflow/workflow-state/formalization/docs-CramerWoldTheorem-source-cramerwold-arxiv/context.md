@@ -1,0 +1,476 @@
+# EPFLemma Document Formalization Context
+
+Source document: `docs/CramerWoldTheorem/source/cramerwold-arxiv.tex`
+Input request: `docs/CramerWoldTheorem` (directory)
+Document kind: `latex`
+Detected title: A Calculus Proof of the Cram\'er--Wold Theorem
+Target Lean file: `DocFormalizationDemo/CramerwoldArxiv/Main.lean`
+Planner blueprint: `/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/DocFormalizationDemo/DocFormalizationDemo/CramerwoldArxiv/Blueprint.md`
+Extracted text cache: `/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/DocFormalizationDemo/.epflemma/workflow-state/formalization/docs-CramerWoldTheorem-source-cramerwold-arxiv/extracted.txt`
+Preflight manifest: `/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/DocFormalizationDemo/.epflemma/workflow-state/formalization/docs-CramerWoldTheorem-source-cramerwold-arxiv/manifest.json`
+
+## Hard Workflow Contract
+
+This is a document formalization run. Do not treat the request as a proof-only repair.
+
+Required planner phase:
+1. Read the source document, nearby PDFs/figures/support files from this manifest, and this preflight manifest before drafting Lean.
+2. Use `read_pdf` to read project-local PDF text, and use `formalization_document_inspect` for deterministic re-inspection when the source is a .tex or .pdf file.
+3. Search local project facts and Mathlib before inventing names or definitions.
+4. Use web search only for references or surrounding literature that the source document actually points to.
+5. Create or update the planner blueprint before drafting Lean, recording definitions, lemmas, theorem dependencies, source pointers, formal-statement review, complete source proof text when available, and natural-language proof/prover notes. The initial `_pending_` blueprint is only a placeholder and does not satisfy the workflow.
+6. Draft Lean files in small units with stable names, minimal imports, and `sorry` placeholders only for theorem/lemma/example proofs that a later explicit prove workflow should solve. Do not do deep proof repair in the planner draft.
+7. Lean import discipline is mandatory: every generated Lean file must begin with all `import` commands before any `/-! ... -/` module doc comment or declaration.
+8. Before marking the formalization proof-ready, satisfy the document formalization handoff verifier: keep `## Import Plan` to direct Lean imports only, put non-gating search hints under `## Suggested Search Modules`, ensure the root project module imports the generated target module path so plain `lake build` covers it, and keep direct imports aligned with the target Lean files.
+9. Verify draft readiness with `lean_inspect`, then `lean_verify(mode=project)` after the generated files and root imports are in place. Module/file checks are useful while iterating, but they do not satisfy the final formalization gate.
+10. Stop after the source map, blueprint, theorem statements, and proof `sorry` skeletons are ready. Ask for an independent statement/source verification pass; verifier agents are read-only reviewers and drafting agents apply corrections.
+11. Definition, structure, class, and instance construction gaps block proof handoff. A declaration such as `noncomputable def foo := sorry` is not a theorem queue item; either implement the construction or record the blocker instead of launching `/prove`.
+12. During the source-fidelity drafting phase, prefer clarity and correctness over premature file splitting. It is acceptable to stabilize the first draft in one generated Lean file if that helps you read the source carefully and respond to verifier feedback.
+13. After independent statement/source review passes, the runner will give one final organization pass before the formalizer exits. In that pass, decide whether the generated formalization should be split into multiple files, preserve every blueprint declaration/source mapping, update imports and `## Generated File Layout`, and run project-level Lean verification.
+14. Do not check the proof-ready checklist item yourself. Leave it unchecked until independent statement/source review has approved every source entry.
+
+Statement fidelity:
+- keep source pointers, ambiguity notes, dependencies, complete source proof text, and proof notes in the planner blueprint
+- put a compact `Source proof` / `Proof sketch` / `Prover notes` paragraph in the Lean doc comment immediately above each source theorem or lemma so the prover gets the right proof nudge immediately
+- the generated supplemental blueprint skill keeps the `Blueprint.md` path available to prover turns after compaction
+- explicitly compare each Lean statement against the corresponding source statement before marking the formalization proof-ready
+- when the source theorem quantifies over a structured object class or representation, do not count a simpler Lean encoding as full coverage unless a definition or companion declaration records the bridge
+- if a representation bridge is intentionally omitted, mark the Lean coverage as partial and record the representation change under `Scope changes`; do not approve the entry as exact source coverage
+- record `Statement verification status: approved` only after the verification pass has checked source-proof completeness, doc-comment nudges, and Lean statement correctness
+- do not silently weaken or strengthen the source theorem
+- avoid adding Lean comments unless they clarify a concrete formalization choice
+- the blueprint is intentionally next to the Lean files so planner and prover turns can reread it easily
+
+Proof phase:
+- After the declaration skeleton is stable and statement/source verification is approved, the formalizer exits. Do not start the prover queue or a fresh prove workflow automatically.
+- Print/log the suggested `/prove` command so the user can review the generated formalization before starting proof search explicitly.
+- The theorem queue includes only `theorem`, `lemma`, and `example` proof obligations; construction stubs block handoff.
+- Do not force suggested search modules into `.lean` imports. The prover may add imports when needed, then update the direct import plan.
+- If the handoff verifier blocks the queue, update the root module, target imports, or blueprint first; do not work around the blocker by editing theorem statements opportunistically.
+- When proving, consult the nearby blueprint and the original source document for natural-language proof strategy before inventing a proof.
+- Keep blueprint entries aligned when a theorem is split or renamed.
+- Completion still requires clean diagnostics, no open goals, no `sorry` in the requested scope, and final Lean verification.
+
+Blueprint format:
+- The default artifact is Markdown so it works without extra dependencies.
+- If the project already has a `blueprint/` directory or `leanblueprint` is available, also keep a leanblueprint-compatible TeX blueprint in sync using `\lean`, `\uses`, and `\leanok` when appropriate.
+
+## Detected Sections
+
+- No section headings were detected by preflight.
+
+## Detected Theorem-Like Blocks
+
+- No theorem-like LaTeX environments were detected by preflight.
+
+## TeX Project Discovery
+
+Selected `docs/CramerWoldTheorem/source/cramerwold-arxiv.tex` from `docs/CramerWoldTheorem`; 4 included .tex file(s), 0 bibliography file(s), 3 referenced local asset file(s), 1 PDF file(s), 1 figure file(s), 1 TeX support file(s).
+
+Included TeX files:
+- `docs/CramerWoldTheorem/source/math10.macros`
+- `docs/CramerWoldTheorem/source/Ref.macros`
+- `docs/CramerWoldTheorem/source/cramerwold.key`
+- `docs/CramerWoldTheorem/source/cramerwold.bbl`
+
+Bibliography files:
+- [none]
+
+Local assets:
+- `docs/CramerWoldTheorem/1607.03206.source`
+- `docs/CramerWoldTheorem/lyons_zumbrun2016_cramer_wold.images.txt`
+- `docs/CramerWoldTheorem/lyons_zumbrun2016_cramer_wold.txt`
+
+Nearby PDF files:
+- `docs/CramerWoldTheorem/lyons_zumbrun2016_cramer_wold.pdf`
+
+Figure/image files:
+- `docs/CramerWoldTheorem/lyons_zumbrun2016_cramer_wold.pdf`
+
+TeX support files:
+- `docs/CramerWoldTheorem/source/cramerwold.bbl`
+
+Missing or external TeX inputs:
+- `eplain.tex`
+- `amssym.def`
+- `amssym.tex`
+- `ifpdf.sty`
+- `\jobname.lbl`
+- `navigator.tex`
+- `\jobname.toc`
+- `\csname.tex`
+- `\jobname.nam`
+- `\jobname.exr`
+- `\jobname.txr`
+
+## Source Excerpt
+
+```text
+% arxiv does not suport pdftex; dvidfmx does not work well either
+\def\versiondate{22 April 2017}
+\input math10.macros
+\magnification=1140
+
+\let\nobibtex = t
+\let\noarrow = t
+\input eplain
+\beginpackages
+ \usepackage{url}
+ \usepackage{color}  %  This is for the hyperlinks.
+ \usepackage{graphicx}
+\endpackages
+
+\input Ref.macros
+
+
+%\proofmodetrue
+%\leftsectionheadtrue
+\checkdefinedreferencetrue
+%\continuousnumberingtrue
+\continuousfigurenumberingtrue
+\theoremcountingtrue
+\sectionnumberstrue
+%\figuresectionnumberstrue
+\forwardreferencetrue
+%\lefteqnumberstrue
+%\tocgenerationtrue
+\citationgenerationtrue
+\nobracketcittrue
+\hyperstrue
+\initialeqmacro
+
+
+\font\frak=eufm10   %% or  eufb10a  
+
+\input cramerwold.key
+\bibsty{../../texstuff/myapalike}
+
+
+\def\bfo{{\bf 1}}
+\def\bfz{{\bf 0}}
+\def\Xsp{{\scr X}}  %metric space for X
+\def\Ysp{{\scr Y}}  %metric space for Y
+\def\dCov{\mathop {\rm dCov}}
+\def\dcov{\mathop {\rm dcov}}
+\def\ip#1,#2{\langle #1, #2 \rangle}
+\def\Bigip#1,#2{\Big\langle #1, #2 \Big\rangle}
+\def\bigip#1,#2{\big\langle #1, #2 \big\rangle}
+\def\bry{{\beta}}  % barycenter
+\def\tr{\mathop {\rm tr}}  % trace
+\def\phih{\widehat\phi}
+\def\psih{\widehat\psi}
+\def\F{\scr F}
+\def\sphere{\Bbb S}
+\def\sfc{\Omega} % surface measure
+\def\hfsp{{\scr S}}  % half-spaces
+\def\csp{{\rm c}}  % compact support
+\def\n{{\bf n}}
+\def\bfz{{\bf 0}}
+
+\ifproofmode \relax \else\head{}
+{Version of \versiondate}\fi 
+\vglue20pt
+
+\title{A Calculus Proof of the Cram\'er--Wold Theorem}
+
+\author{Russell Lyons and Kevin Zumbrun}
+
+\abstract{We present a short, elementary proof not involving Fourier transforms
+of the theorem of Cram\'er and Wold that a Borel probability measure is
+determined by its values on half-spaces.
+}
+
+
+\bottomII{Primary 
+60E10. %Characteristic functions; other transforms
+Secondary
+44A12, %Radon transform
+53C65. %Integral geometry
+}
+{Distributions of probability measures, Radon transform, integral geometry.}
+{Research partially supported by NSF grants DMS-1007244 and DMS-1400555.}
+
+\bsection{Introduction}{s.intro}
+
+
+In this note, we give a brief and elementary proof, not involving Fourier
+transforms, of a theorem of Cram\'er and Wold.
+
+The fundamental theorem of \ref b.CramerWold/ states that a Borel probability
+measure on Euclidean space is determined by the values it
+assigns to all half-spaces (equivalently, by its projections to lines through
+the origin).
+This theorem is proved easily with the aid of Fourier analysis. However,
+generations of probabilists have learned from the editions of the
+textbook of \ref b.Billingsley:PM/ that despite the elementary statement of
+the theorem,
+no proof was known that did not use Fourier transforms.
+That changed with the publication of
+\ref b.walther:withAdd/, who used
+Gaussians.
+Walther's proof depends on
+a nice idea, but its implementation uses $1 {1 \over 2}$ pages of
+calculations. See Section 8.7 of \ref b.Pollard/ for another presentation
+of Walther's proof.
+By contrast, our proof uses only natural constructions and avoids
+calculations.
+
+A brief and somewhat inaccurate outline of our proof is the following.
+Using Crofton's measure on half-spaces, we show that knowledge of $\mu(S)$
+for all half-spaces $S$ determines the $\mu$-average distance $f_\mu(x)$
+to every point, $x$.
+We then show that a suitable power of the Laplacian applied to $f_\mu$
+yields a constant times $\mu$.
+Thus, integral geometry combined with differentiation recovers $\mu$.
+
+\bsection{Proof}{s.proof}
+
+
+Let $\hfsp$ be the set of closed half-spaces $S \subset\R^n$.
+
+\proclaim The Cram\'er--Wold Theorem. Let $\mu$ and $\nu$ be Borel
+probability measures on $\R^n$ such that $\mu(S) = \nu(S)$ for all $S \in
+\hfsp$. Then $\mu = \nu$.
+
+\proof
+Let
+$\sigma$ be the (infinite) Borel measure on $\hfsp$ 
+that is invariant under isometries, normalized so that
+$$
+\sigma\big(\{0 \in S, x \notin S\}\big) = \|x\|/2
+\label e.distance
+$$
+for $\|x\|= 1$.
+The measure $\sigma$ goes back to \ref b.Crofton/ (in two dimensions); it
+can be constructed as follows. (See Theorem 5.1.1 of \ref b.SW:book/ for
+a generalization.)
+Let $\sfc_{n-1}$ denote hypersurface area measure on the unit sphere
+$\sphere^{n-1} \subset \R^n$, and let
+$\lambda$ denote Lebesgue measure on $\R$.
+Write $\varphi \colon \sphere^{n-1} \times \R \to \hfsp$ for the map
+$$
+\varphi(\omega, p)
+:=
+\bigl\{ x \in \R^n \st \ip \omega, x \ge p \bigr\}
+\,.
+$$
+Then $\sigma := \alpha_n \cdot \varphi_*(\sfc_{n-1} \times \lambda)$ for some
+constant $\alpha_n$ whose value does not concern us.
+It is clear that $\sigma$ is invariant under rotations about the origin
+and under reflections in hyperplanes that pass through the origin.
+Translation invariance
+amounts to the property that for $y \in \R^n$, the pushforward by
+$\varphi_y(\omega, p) := \varphi(\omega, p) - y$ is the same measure. But
+since 
+$$\eqaln{
+\varphi(\omega, p) - y 
+&= 
+\bigl\{ x - y \in \R^n \st \ip \omega, x \ge p \bigr\}
+=
+\bigl\{ x \in \R^n \st \ip \omega, {x + y} \ge p \bigr\}
+\cr&=
+\bigl\{ x \in \R^n \st \ip \omega, x \ge p - \ip \omega, y \bigr\}
+=
+\varphi\bigl(\omega, p - \ip \omega, y\bigr)
+\,,
+}$$
+isometry invariance of $\lambda$ gives this property.
+The isometry invariance of $\sigma$ implies that $\sigma\big(\{0 \in S,\, x
+\notin S\}\big)$ is a function of $\|x\|$ alone; additivity for collinear
+segments shows that it is a linear function. Thus, we may choose $\alpha_n$
+so that \ref e.distance/ holds.
+
+From \ref e.distance/ and isometry invariance, we have
+$$
+\|x\| =
+\int_\hfsp |1_S(0) - 1_S(x)|^2 \,d\sigma(S)
+\,.
+$$
+Integrating with respect to a
+signed measure $\mu$ on $\R^n$ with compact support, we obtain
+$$
+\int_{\R^n} \|x\| \,d\mu(x)
+=
+\int_\hfsp \int_{\R^n} |1_S(0) - 1_S(x)|^2 \,d\mu(x) \,d\sigma(S)
+=
+\int_\hfsp \Bigl[1_S(0)\big(1 - 2\mu(S)\big) + \mu(S)\Bigr] \,d\sigma(S)
+\,.
+$$
+The choice of 0 was arbitrary, so making another
+choice and subtracting, we get
+$$
+\int_{\R^n} \big(\|y - x\| - \|x\|\big) \,d\mu(x)
+=
+\int_\hfsp \Bigl[\bigl(1_S(y) - 1_S(0)\bigr)\bigl(1 - 2\mu(S)\bigr)\Bigr]
+\,d\sigma(S)
+\,.
+$$
+By taking a limit, we see that this equation holds for every finite signed
+measure, $\mu$.
+
+Define
+$$
+f_\mu(y)
+:=
+\int_{\R^n} \big(\|y - x\| - \|x\|\big) \,d\mu(x)
+\,.
+$$
+We have shown that the function $S \mapsto \mu(S)$ determines $f_\mu$. It
+remains to show that $f_\mu$ determines $\mu$.
+
+The idea is that if $n = 2m-1$ is odd, then $\Delta^m f_\mu = c_m
+\mu$ for some constant $c_m$, using the fundamental solution of the
+Laplacian, $\Delta$. This then establishes the Cram\'er--Wold theorem
+in odd dimensions.
+But since an even dimension embeds in the next higher dimension, 
+the Cram\'er--Wold theorem follows in even dimensions as well.
+That is, we may identify a measure $\mu$ on $\R^{2m}$ with a measure $\mu'$
+on $\R^{2m} \times \{0\} \subset \R^{2m+1}$. 
+%Note that values on closed
+%half-spaces determine values on open half-spaces by continuity.
+%Thus, 
+The function $S \mapsto
+\mu(S)$ on half-spaces $S \subset \R^{2m}$ determines the values
+$\mu'(S')$ for half-spaces $S' \subset \R^{2m+1}$. Since this determines
+$\mu'$, the theorem follows for $\mu$.
+
+\iffalse
+To prove this, it suffices to show that $f_\mu$
+determines $\int g \,d\mu$ for all $g \in C^\infty_{\csp}(\R^{2m-1})$. I claim
+that if $\Delta^m r = c_m \delta_0$, then $\int g \,d\mu = c_m^{-1}
+\int_{\R^{2m-1}} f_\mu(y) (\Delta^m g)(y) \,d\lambda(y)$. Indeed,
+$$\eqaln{
+\int_{\R^{2m-1}} f_\mu(y) (\Delta^m g)(y) \,d\lambda(y) 
+&=
+\int_{\R^{2m-1}} \int_{\R^{2m-1}} (\Delta^m g)(y) \big(\|y - x\| - \|x\|\big) \,
+d\lambda(y) \,d\mu(x)
+\cr&=
+\int_{\R^{2m-1}} \int_{\R^{2m-1}} g(y) \Delta_y^m \big(\|y - x\| - \|x\|\big) \,
+d\lambda(y) \,d\mu(x)
+\cr&=
+\int_{\R^{2m-1}} c_m g(x) \,d\mu(x)
+\,.
+}$$
+\fi
+
+We now show that
+$\Delta^m f_\mu = c_m \mu$ in an appropriate sense for $\mu$ on $\R^{2m-1}$.
+Recall Green's second identity, which says that for a
+bounded domain $D \subset \R^n$ with $C^1$ boundary $\partial D$ having
+outward unit normal $\n$ and two functions $\phi, \psi \in C^2(\overlinesl
+D\,)$, we
+have
+$$
+\int_D (\phi \Delta \psi - \psi \Delta \phi) 
+=
+\int_{\partial D} (\phi \nabla_\n \psi - \psi \nabla_\n \phi)
+\,.
+$$
+Recall also that if $F \colon \R^n \to \R$ is such that $F(x) =
+G\bigl(\|x\|\bigr)$ depends only on $r := \|x\|$, then 
+$$
+(\Delta F)(x)
+=
+G''(r) + {n-1 \over r} G'(r)
+\,.
+$$
+In particular, $\Delta r^k = k (k + n - 2) r^{k-2}$.
+If the support of $\psi$ lies in the interior of a ball $B(\bfz, R)$ 
+and $\phi(x) = r^k$ with $k > -n + 2$, then letting $D$ be $B(\bfz,
+R) \setminus B(\bfz, \epsilon)$ with $\epsilon \to 0$ shows that
+$\int_{\R^n} \phi \Delta \psi = \int_{\R^n} \psi \Delta \phi$. Similarly,
+if $k = - n +2$, then 
+$\int_{\R^n} \phi \Delta \psi = \beta_{n-1} \psi(\bfz)$, where
+$\beta_{n-1}$ is the surface area of $\sphere^{n-1}$.
+
+To show that $f_\mu$
+determines $\int g \,d\mu$ for all $g \in C^\infty_{\csp}(\R^{2m-1})$, we
+now prove that with $c_m := 2(-2\pi)^{m-1} (2m-2)!!$, where $!!$ denotes
+the double factorial, we have
+$$
+\int g \,d\mu = c_m^{-1}
+\int_{\R^{2m-1}} f_\mu(y) (\Delta^m g)(y) \,d\lambda(y)
+\,,
+$$
+where now
+$\lambda$ denotes Lebesgue measure on $\R^{2m-1}$. Fubini's theorem
+yields
+$$
+\int_{\R^{2m-1}} f_\mu(y) (\Delta^m g)(y) \,d\lambda(y) 
+=
+\int_{\R^{2m-1}} \int_{\R^{2m-1}} \big(\|y - x\| - \|x\|\big) (\Delta^m g)(y)
+\, d\lambda(y) \,d\mu(x)
+\,.
+$$
+Applying the preceding Green formulas (translated to $x$)
+repeatedly to the inner integral, we obtain
+$$\eqaln{
+\int_{\R^{2m-1}} \big(\|y - x\| - \|x\|\big) (\Delta^m g)(y)
+\, d\lambda(y) 
+&=
+\int_{\R^{2m-1}} \Delta_y^{m-1}
+\big(\|y - x\| - \|x\|\big) \Delta g(y) \,
+d\lambda(y) 
+\cr&=
+c_m g(x) 
+\,,
+}$$
+as desired.
+\Qed
+
+\eject
+
+Our inversion formula $\mu = c_m^{-1} \Delta^m f_\mu$ in $\R^{2m-1}$
+is similar to a well-known inversion formula for the Radon
+transform due to \ref b.Radon/ and \ref b.John:book/, p.~13:
+If $f \in C^1_{\csp}(\R^n)$, then writing $J(\omega, p) := \int_{\langle
+\omega, x \rangle = p} f(x) \,dx$ for the integral of $f$ on a hyperplane
+perpendicular to $\omega\in \sphere^{n-1}$, we have
+$$
+f(x) = \cases{\vadjust{\kern1pt}%
+{1 \over 2} (2\pi)^{1-n} (-\Delta_x)^{(n-1)/2}
+\int_{\sphere^{n-1}} J(\omega,\langle\omega, x\rangle)\,
+d\Omega_{n-1}(\omega) &if $n$ is
+odd\cr
+- (2\pi)^{-n} (-\Delta_x)^{(n-2)/2}
+\int_{\sphere^{n-1}} \int_\R {dJ(\omega, p) \over p - \langle\omega,
+x\rangle}\, d\Omega_{n-1}(\omega) &if $n$ is
+even.\cr}
+$$
+%(Here, we are integrating with respect to unnormalized area measure.)
+%This is from Helgason's remarks; in his book, he has a factor of 1/2 for
+%the even case as well. John does not have the 1/2, but he has a large typo
+%for $n$ odd.
+Apparently it was not realized until pointed out by \ref b.Renyi/ that the
+theorem of \ref b.CramerWold/ generalized the injectivity
+results of Radon, John, and others.
+
+The injectivity of the map $\mu \mapsto \int_{\R^n} \|x\| \,d\mu(x)$ for
+probability measures $\mu$ with finite first moment holds in other spaces
+as well. On metric spaces of negative type, it is equivalent to strong
+negative type. See Remark 3.4 of \ref b.L:dcov/ for details and references.
+That paper also shows its relevance to statistics.
+
+\def\noop#1{\relax}
+\input cramerwold.bbl
+
+\filbreak
+\begingroup
+\eightpoint\sc
+\parindent=0pt\baselineskip=10pt
+
+Department of Mathematics,
+831 E. 3rd St.,
+Indiana University,
+Bloomington, IN 47405-7106
+\emailwww{rdlyons@indiana.edu}
+{http://pages.iu.edu/\string~rdlyons/}
+\emailwww{kzumbrun@indiana.edu}
+{http://pages.iu.edu/\string~kzumbrun/}
+
+\endgroup
+
+
+
+\bye
+```

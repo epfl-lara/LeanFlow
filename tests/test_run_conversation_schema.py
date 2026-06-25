@@ -89,7 +89,7 @@ def test_run_conversation_returns_exactly_the_contract_keys(agent):
     result = _run(agent)
     assert set(result.keys()) == EXPECTED_KEYS, (
         "run_conversation result schema changed. If intentional, update EXPECTED_KEYS and any "
-        "downstream consumers (native_runner, epflemma_cli shell status, tests)."
+        "downstream consumers (native_runner, leanflow_cli shell status, tests)."
     )
 
 

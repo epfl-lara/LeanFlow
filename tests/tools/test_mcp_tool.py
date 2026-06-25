@@ -54,7 +54,7 @@ def _make_mock_server(name, session=None, tools=None):
 class TestLoadMCPConfig:
     def test_no_config_returns_empty(self):
         """No mcp_servers key in config -> empty dict."""
-        with patch("epflemma_cli.config.load_config", return_value={"model": "test"}):
+        with patch("leanflow_cli.config.load_config", return_value={"model": "test"}):
             from tools.mcp.mcp_tool import _load_mcp_config
 
             result = _load_mcp_config()
@@ -69,7 +69,7 @@ class TestLoadMCPConfig:
                 "env": {},
             }
         }
-        with patch("epflemma_cli.config.load_config", return_value={"mcp_servers": servers}):
+        with patch("leanflow_cli.config.load_config", return_value={"mcp_servers": servers}):
             from tools.mcp.mcp_tool import _load_mcp_config
 
             result = _load_mcp_config()
@@ -78,7 +78,7 @@ class TestLoadMCPConfig:
 
     def test_mcp_servers_not_dict_returns_empty(self):
         """mcp_servers set to non-dict value -> empty dict."""
-        with patch("epflemma_cli.config.load_config", return_value={"mcp_servers": "invalid"}):
+        with patch("leanflow_cli.config.load_config", return_value={"mcp_servers": "invalid"}):
             from tools.mcp.mcp_tool import _load_mcp_config
 
             result = _load_mcp_config()
@@ -91,7 +91,7 @@ class TestLoadMCPConfig:
 
 
 class TestSchemaConversion:
-    def test_converts_mcp_tool_to_gauss_schema(self):
+    def test_converts_mcp_tool_to_leanflow_schema(self):
         from tools.mcp.mcp_tool import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(name="read_file", description="Read a file")
@@ -449,7 +449,7 @@ class TestMCPServerTask:
         """Managed Lean MCP subprocesses should start in the active Lean project."""
         from tools.mcp.mcp_tool import MCPServerTask
 
-        monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(tmp_path))
+        monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
         mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
@@ -464,7 +464,7 @@ class TestMCPServerTask:
                 assert mock_params.call_args.kwargs["cwd"] == str(tmp_path)
                 env_arg = mock_params.call_args.kwargs["env"]
                 assert env_arg["LEAN_PROJECT_PATH"] == str(tmp_path)
-                assert env_arg["EPFLEMMA_PROJECT_ROOT"] == str(tmp_path)
+                assert env_arg["LEANFLOW_PROJECT_ROOT"] == str(tmp_path)
 
                 await server.shutdown()
 
@@ -478,7 +478,7 @@ class TestMCPServerTask:
         explicit = tmp_path / "explicit"
         project.mkdir()
         explicit.mkdir()
-        monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+        monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
         mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
@@ -519,7 +519,7 @@ class TestMCPServerTask:
             "leanprover/lean4:v4.30.0-rc1\n",
             encoding="utf-8",
         )
-        monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+        monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
         mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
@@ -562,7 +562,7 @@ class TestMCPServerTask:
         binary.parent.mkdir(parents=True)
         binary.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
         binary.chmod(0o755)
-        monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+        monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
         mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
@@ -617,7 +617,7 @@ class TestMCPServerTask:
         configured.mkdir()
         project = tmp_path / "project"
         project.mkdir()
-        monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", str(project))
+        monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
         mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
@@ -683,10 +683,10 @@ class TestToolsetInjection:
             return server
 
         fake_toolsets = {
-            "gauss-cli": {"tools": ["terminal"], "description": "CLI", "includes": []},
-            "gauss-telegram": {"tools": ["terminal"], "description": "TG", "includes": []},
-            "gauss-gateway": {"tools": [], "description": "GW", "includes": []},
-            "non-gauss": {"tools": [], "description": "other", "includes": []},
+            "leanflow-cli": {"tools": ["terminal"], "description": "CLI", "includes": []},
+            "leanflow-telegram": {"tools": ["terminal"], "description": "TG", "includes": []},
+            "leanflow-gateway": {"tools": [], "description": "GW", "includes": []},
+            "non-leanflow": {"tools": [], "description": "other", "includes": []},
         }
         fake_config = {"fs": {"command": "npx", "args": []}}
 
@@ -702,11 +702,11 @@ class TestToolsetInjection:
             result = discover_mcp_tools()
 
         assert "mcp_fs_list_files" in result
-        assert "mcp_fs_list_files" not in fake_toolsets["gauss-cli"]["tools"]
-        assert "mcp_fs_list_files" not in fake_toolsets["gauss-telegram"]["tools"]
-        assert "mcp_fs_list_files" not in fake_toolsets["gauss-gateway"]["tools"]
-        assert "mcp_fs_list_files" not in fake_toolsets["non-gauss"]["tools"]
-        assert "terminal" in fake_toolsets["gauss-cli"]["tools"]
+        assert "mcp_fs_list_files" not in fake_toolsets["leanflow-cli"]["tools"]
+        assert "mcp_fs_list_files" not in fake_toolsets["leanflow-telegram"]["tools"]
+        assert "mcp_fs_list_files" not in fake_toolsets["leanflow-gateway"]["tools"]
+        assert "mcp_fs_list_files" not in fake_toolsets["non-leanflow"]["tools"]
+        assert "terminal" in fake_toolsets["leanflow-cli"]["tools"]
 
     def test_server_connection_failure_skipped(self):
         """If one server fails to connect, others still proceed."""
@@ -733,7 +733,7 @@ class TestToolsetInjection:
             "good": {"command": "npx", "args": []},
         }
         fake_toolsets = {
-            "gauss-cli": {"tools": [], "description": "CLI", "includes": []},
+            "leanflow-cli": {"tools": [], "description": "CLI", "includes": []},
         }
 
         with (
@@ -778,7 +778,7 @@ class TestToolsetInjection:
             "good": {"command": "npx", "args": []},
         }
         fake_toolsets = {
-            "gauss-cli": {"tools": [], "description": "CLI", "includes": []},
+            "leanflow-cli": {"tools": [], "description": "CLI", "includes": []},
         }
 
         with (
@@ -2936,7 +2936,7 @@ class TestMCPSelectiveToolLoading:
             }
         }
         fake_toolsets = {
-            "gauss-cli": {"tools": [], "description": "CLI", "includes": []},
+            "leanflow-cli": {"tools": [], "description": "CLI", "includes": []},
         }
 
         with (

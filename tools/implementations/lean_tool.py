@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Native Lean workflow tools for EPFLemma."""
+"""Native Lean workflow tools for LeanFlow."""
 
 from __future__ import annotations
 
 import json
 
-from epflemma_cli.lean.lean_incremental import lean_incremental_check
-from epflemma_cli.lean.lean_services import (
+from leanflow_cli.lean.lean_incremental import lean_incremental_check
+from leanflow_cli.lean.lean_services import (
     LEAN_WORKER_DISPATCH_ENABLED,
     LeanWorkerRequest,
     dispatch_worker,
@@ -232,7 +232,7 @@ def lean_auto_search_tool(
 LEAN_CAPABILITIES_SCHEMA = {
     "name": "lean_capabilities",
     "description": (
-        "Inspect the native EPFLemma Lean workflow capability surface: project detection, "
+        "Inspect the native LeanFlow Lean workflow capability surface: project detection, "
         "Lean/Lake/Elan binaries, MCP/LSP tool availability, search providers, local Loogle/REPL "
         "power-mode status, helper availability, workers, and degraded-mode reasons. Use this early "
         "to learn which proof-search and tactic-screening backends are actually available."

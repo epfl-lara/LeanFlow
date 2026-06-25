@@ -1,0 +1,27 @@
+{
+  "active_files": [
+    "ProveDemo/IMOMath0.lean",
+    "IMOMath0.lean",
+    "a/ProveDemo/IMOMath0.lean",
+    "b/ProveDemo/IMOMath0.lean"
+  ],
+  "blocker_summary": "- status: still blocked; continue the same theorem turn",
+  "checkpoint_id": "ckpt-1778291191533",
+  "created_at": "2026-05-09T01:46:31+00:00",
+  "diagnostics_summary": "[EPFLEMMA-NATIVE MANAGED SNAPSHOT] Earlier managed workflow turns were compacted to preserve context space. Use this snapshot as the authoritative handoff for prior work, but still inspect the live project state before repeating work.\n\nWork\n[EPFLEMMA-NATIVE THEOREM TRANSITION ACTIVE SKILL]\n\nThe active and supplemental skill contracts are preserved after clearing theorem-local context.\n\n[EPFLEMMA ACTIVE SKILL: lean-theorem-queue-worker (builtin)]\n\n---\nname: lean-theorem-queue-w\n[EPFLEMMA-NATIVE THEOREM TRANSITION HANDOFF]\n\nPrevious theorem outcome:\n- declaration: mathd_algebra_440\n- file: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath0.lean\n- final statu\n{\"success\": true, \"target\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath0.lean\", \"project_root\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_project",
+  "label": "pre-exit checkpoint",
+  "linked_filesystem_checkpoint": "",
+  "model": "moonshotai/Kimi-K2.6",
+  "next_steps": "Resume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "note": "",
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "rough_tokens": 4349,
+  "snapshot_path": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/.epflemma/workflow-state/ckpt-1778291191533.json",
+  "success_state": "verified",
+  "summary_text": "## Goal\nContinue the prove workflow for `/prove ProveDemo/IMOMath0.lean`.\n\n## Workflow\nLabel: pre-exit checkpoint\nTrigger: pre-exit\nProject root: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\n\n## Current state\nSuccess state: verified\nTarget: was\n\n## Lean findings\n[EPFLEMMA-NATIVE MANAGED SNAPSHOT] Earlier managed workflow turns were compacted to preserve context space. Use this snapshot as the authoritative handoff for prior work, but still inspect the live project state before repeating work.\n\nWork\n[EPFLEMMA-NATIVE THEOREM TRANSITION ACTIVE SKILL]\n\nThe active and supplemental skill contracts are preserved after clearing theorem-local context.\n\n[EPFLEMMA ACTIVE SKILL: lean-theorem-queue-worker (builtin)]\n\n---\nname: lean-theorem-queue-w\n[EPFLEMMA-NATIVE THEOREM TRANSITION HANDOFF]\n\nPrevious theorem outcome:\n- declaration: mathd_algebra_440\n- file: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath0.lean\n- final statu\n{\"success\": true, \"target\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath0.lean\", \"project_root\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_project\n\n## Relevant files\nProveDemo/IMOMath0.lean, IMOMath0.lean, a/ProveDemo/IMOMath0.lean, b/ProveDemo/IMOMath0.lean\n\n## Blockers\n- status: still blocked; continue the same theorem turn\n\n## Next steps\nResume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "target_symbol": "outcome",
+  "trigger": "pre-exit",
+  "version": 1,
+  "workflow_command": "/prove ProveDemo/IMOMath0.lean",
+  "workflow_kind": "prove"
+}

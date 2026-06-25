@@ -1,0 +1,26 @@
+{
+  "active_files": [
+    "a/ProveDemo/IMOMath0.lean",
+    "b/ProveDemo/IMOMath0.lean",
+    "ProveDemo/IMOMath0.lean"
+  ],
+  "blocker_summary": "",
+  "checkpoint_id": "ckpt-1778614996390",
+  "created_at": "2026-05-12T19:43:16+00:00",
+  "diagnostics_summary": "{\"success\": true, \"ok\": true, \"backend\": \"lean_interact\", \"action\": \"check_target\", \"file\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath0.lean\", \"target\": \"putnam_2012_a2\", \"ta\nThe assigned declaration `putnam_2012_a2` is clean: `lean_incremental_check(check_target)` passed with no errors, no sorry, and no open goals. The file verification (`lake env lean`) also passed cleanly.\n\nI made two focused warning-cleanup ",
+  "label": "verified proof milestone",
+  "linked_filesystem_checkpoint": "",
+  "model": "moonshotai/Kimi-K2.6",
+  "next_steps": "Resume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "note": "",
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "rough_tokens": 15969,
+  "snapshot_path": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/.epflemma/workflow-state/ckpt-1778614996390.json",
+  "success_state": "verified",
+  "summary_text": "## Goal\nContinue the prove workflow for `/prove ProveDemo/IMOMath0.lean`.\n\n## Workflow\nLabel: verified proof milestone\nTrigger: verified-progress\nProject root: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\n\n## Current state\nSuccess state: verified\nTarget: numbertheory_3pow2pownm1mod2pownp3eq2pownp2\n\n## Lean findings\n{\"success\": true, \"ok\": true, \"backend\": \"lean_interact\", \"action\": \"check_target\", \"file\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath0.lean\", \"target\": \"putnam_2012_a2\", \"ta\nThe assigned declaration `putnam_2012_a2` is clean: `lean_incremental_check(check_target)` passed with no errors, no sorry, and no open goals. The file verification (`lake env lean`) also passed cleanly.\n\nI made two focused warning-cleanup \n\n## Relevant files\na/ProveDemo/IMOMath0.lean, b/ProveDemo/IMOMath0.lean, ProveDemo/IMOMath0.lean\n\n## Blockers\nNo blocker declared at this checkpoint.\n\n## Next steps\nResume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "target_symbol": "numbertheory_3pow2pownm1mod2pownp3eq2pownp2",
+  "trigger": "verified-progress",
+  "version": 1,
+  "workflow_command": "/prove ProveDemo/IMOMath0.lean",
+  "workflow_kind": "prove"
+}

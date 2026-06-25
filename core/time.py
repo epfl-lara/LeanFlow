@@ -1,15 +1,15 @@
 """
-Timezone-aware clock for EPFLemma.
+Timezone-aware clock for LeanFlow.
 
 Provides a single ``now()`` helper that returns a timezone-aware datetime
 based on the user's configured IANA timezone (e.g. ``Asia/Kolkata``).
 
 Resolution order:
-  1. ``EPFLEMMA_TIMEZONE`` environment variable
-  2. ``timezone`` key in ``~/.epflemma/config.yaml``
+  1. ``LEANFLOW_TIMEZONE`` environment variable
+  2. ``timezone`` key in ``~/.leanflow/config.yaml``
   3. Falls back to the server's local time (``datetime.now().astimezone()``)
 
-Invalid timezone values log a warning and fall back safely — EPFLemma never
+Invalid timezone values log a warning and fall back safely — LeanFlow never
 crashes due to a bad timezone string.
 """
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
-    # Python 3.8 fallback (shouldn't be needed — EPFLemma requires 3.9+)
+    # Python 3.8 fallback (shouldn't be needed — LeanFlow requires 3.9+)
     from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 
 # Cached state — resolved once, reused on every call.
@@ -39,7 +39,7 @@ def _resolve_timezone_name() -> str:
     should cache the result rather than calling on every ``now()``.
     """
     # 1. Environment variable (highest priority — set by Supervisor, etc.)
-    tz_env = os.getenv("EPFLEMMA_TIMEZONE", "").strip()
+    tz_env = os.getenv("LEANFLOW_TIMEZONE", "").strip()
     if tz_env:
         return tz_env
 
@@ -47,9 +47,9 @@ def _resolve_timezone_name() -> str:
     try:
         import yaml
 
-        from core.home import epflemma_home
+        from core.home import leanflow_home
 
-        config_path = epflemma_home() / "config.yaml"
+        config_path = leanflow_home() / "config.yaml"
         if config_path.exists():
             with open(config_path) as f:
                 cfg = yaml.safe_load(f) or {}

@@ -1,0 +1,27 @@
+{
+  "active_files": [
+    "ProveDemo/RealTheorems.lean",
+    "RealTheorems.lean",
+    "a/ProveDemo/RealTheorems.lean",
+    "b/ProveDemo/RealTheorems.lean"
+  ],
+  "blocker_summary": "- status: still blocked; continue the same theorem turn",
+  "checkpoint_id": "ckpt-1778980406279",
+  "created_at": "2026-05-17T01:13:26+00:00",
+  "diagnostics_summary": "[EPFLEMMA-NATIVE MANAGED SNAPSHOT] Earlier managed workflow turns were compacted to preserve context space. Use this snapshot as the authoritative handoff for prior work, but still inspect the live project state before repeating work.\n\nWork\n[EPFLEMMA-NATIVE THEOREM TRANSITION ACTIVE SKILL]\n\nThe active and supplemental skill contracts are preserved after clearing theorem-local context.\n\n[EPFLEMMA ACTIVE SKILL: lean-theorem-queue-worker (builtin)]\n\n---\nname: lean-theorem-queue-w\n[EPFLEMMA-NATIVE THEOREM TRANSITION HANDOFF]\n\nPrevious theorem outcome:\n- declaration: abs_mul_diff\n- file: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean\n- final status\n{\"success\": true, \"cwd\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\", \"project_root\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\", \"project_vali",
+  "label": "verified proof milestone",
+  "linked_filesystem_checkpoint": "",
+  "model": "gpt-5.5",
+  "next_steps": "Resume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "note": "",
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "rough_tokens": 11190,
+  "snapshot_path": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/.epflemma/workflow-state/ckpt-1778980406279.json",
+  "success_state": "verified",
+  "summary_text": "## Goal\nContinue the prove workflow for `/prove ProveDemo/RealTheorems.lean`.\n\n## Workflow\nLabel: verified proof milestone\nTrigger: verified-progress\nProject root: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\n\n## Current state\nSuccess state: verified\nTarget: turn\n\n## Lean findings\n[EPFLEMMA-NATIVE MANAGED SNAPSHOT] Earlier managed workflow turns were compacted to preserve context space. Use this snapshot as the authoritative handoff for prior work, but still inspect the live project state before repeating work.\n\nWork\n[EPFLEMMA-NATIVE THEOREM TRANSITION ACTIVE SKILL]\n\nThe active and supplemental skill contracts are preserved after clearing theorem-local context.\n\n[EPFLEMMA ACTIVE SKILL: lean-theorem-queue-worker (builtin)]\n\n---\nname: lean-theorem-queue-w\n[EPFLEMMA-NATIVE THEOREM TRANSITION HANDOFF]\n\nPrevious theorem outcome:\n- declaration: abs_mul_diff\n- file: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean\n- final status\n{\"success\": true, \"cwd\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\", \"project_root\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\", \"project_vali\n\n## Relevant files\nProveDemo/RealTheorems.lean, RealTheorems.lean, a/ProveDemo/RealTheorems.lean, b/ProveDemo/RealTheorems.lean\n\n## Blockers\n- status: still blocked; continue the same theorem turn\n\n## Next steps\nResume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "target_symbol": "outcome",
+  "trigger": "verified-progress",
+  "version": 1,
+  "workflow_command": "/prove ProveDemo/RealTheorems.lean",
+  "workflow_kind": "prove"
+}

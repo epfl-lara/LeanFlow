@@ -1,0 +1,8 @@
+🤖 AI Agent initialized with model: moonshotai/Kimi-K2.6
+🔗 Using custom base URL: https://inference.rcp.epfl.ch/v1
+🔑 Using API key: sk-lfwpN...O3Vg
+✅ Requested toolset 'epflemma-native' (28 configured tools; availability filtered below)
+🛠️  Final tool selection (28 tools): acquire_file_lock, apply_verified_patch, formalization_document_inspect, lean_auto_search, lean_axioms, lean_capabilities, lean_decompose_helpers, lean_incremental_check, lean_inspect, lean_multi_attempt, lean_proof_context, lean_reasoning_help, lean_search, lean_sorries, lean_verify, lean_worker_dispatch, list_file_locks, patch, read_file, read_pdf, release_file_lock, search_files, session_search, skill_view, skills_list, terminal, web_search, write_file
+🛠️  Loaded 28 tools: acquire_file_lock, apply_verified_patch, formalization_document_inspect, lean_auto_search, lean_axioms, lean_capabilities, lean_decompose_helpers, lean_incremental_check, lean_inspect, lean_multi_attempt, lean_proof_context, lean_reasoning_help, lean_search, lean_sorries, lean_verify, lean_worker_dispatch, list_file_locks, patch, read_file, read_pdf, release_file_lock, search_files, session_search, skill_view, skills_list, terminal, web_search, write_file
+   ✅ Enabled toolsets: epflemma-native
+📊 Context limit: 262,144 tokens (compress at 75% = 196,608, reserve 20,000 for output)

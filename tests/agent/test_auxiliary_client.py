@@ -28,7 +28,7 @@ def _clean_env(monkeypatch):
         "LLM_MODEL",
         "NOUS_INFERENCE_BASE_URL",
         "CODEX_HOME",
-        "EPFLEMMA_USE_LEGACY_CODEX_AUTH",
+        "LEANFLOW_USE_LEGACY_CODEX_AUTH",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
@@ -49,8 +49,8 @@ def _clean_env(monkeypatch):
         "AUXILIARY_LEAN_DECOMPOSE_HELPERS_API_KEY",
         "AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT",
         "AUXILIARY_LEAN_DECOMPOSE_HELPERS_COMMAND_TEMPLATE",
-        "EPFLEMMA_EXPERT_CODEX_COMMAND_TEMPLATE",
-        "EPFLEMMA_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE",
+        "LEANFLOW_EXPERT_CODEX_COMMAND_TEMPLATE",
+        "LEANFLOW_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE",
         "CONTEXT_COMPRESSION_PROVIDER",
         "CONTEXT_COMPRESSION_MODEL",
     ):
@@ -82,9 +82,9 @@ def codex_auth_dir(tmp_path, monkeypatch):
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):
-        epflemma_home = tmp_path / "epflemma"
-        epflemma_home.mkdir(parents=True, exist_ok=True)
-        (epflemma_home / "auth.json").write_text(
+        leanflow_home = tmp_path / "leanflow"
+        leanflow_home.mkdir(parents=True, exist_ok=True)
+        (leanflow_home / "auth.json").write_text(
             json.dumps(
                 {
                     "version": 1,
@@ -96,22 +96,22 @@ class TestReadCodexAccessToken:
                 }
             )
         )
-        monkeypatch.setenv("EPFLEMMA_HOME", str(epflemma_home))
+        monkeypatch.setenv("LEANFLOW_HOME", str(leanflow_home))
         result = _read_codex_access_token()
         assert result == "tok-123"
 
     def test_missing_returns_none(self, tmp_path, monkeypatch):
-        epflemma_home = tmp_path / "epflemma"
-        epflemma_home.mkdir(parents=True, exist_ok=True)
-        (epflemma_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
-        monkeypatch.setenv("EPFLEMMA_HOME", str(epflemma_home))
+        leanflow_home = tmp_path / "leanflow"
+        leanflow_home.mkdir(parents=True, exist_ok=True)
+        (leanflow_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+        monkeypatch.setenv("LEANFLOW_HOME", str(leanflow_home))
         result = _read_codex_access_token()
         assert result is None
 
     def test_empty_token_returns_none(self, tmp_path, monkeypatch):
-        epflemma_home = tmp_path / "epflemma"
-        epflemma_home.mkdir(parents=True, exist_ok=True)
-        (epflemma_home / "auth.json").write_text(
+        leanflow_home = tmp_path / "leanflow"
+        leanflow_home.mkdir(parents=True, exist_ok=True)
+        (leanflow_home / "auth.json").write_text(
             json.dumps(
                 {
                     "version": 1,
@@ -123,31 +123,31 @@ class TestReadCodexAccessToken:
                 }
             )
         )
-        monkeypatch.setenv("EPFLEMMA_HOME", str(epflemma_home))
+        monkeypatch.setenv("LEANFLOW_HOME", str(leanflow_home))
         result = _read_codex_access_token()
         assert result is None
 
     def test_malformed_json_returns_none(self, tmp_path, monkeypatch):
-        epflemma_home = tmp_path / "epflemma"
-        epflemma_home.mkdir()
+        leanflow_home = tmp_path / "leanflow"
+        leanflow_home.mkdir()
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
         (codex_dir / "auth.json").write_text("{bad json")
-        monkeypatch.setenv("EPFLEMMA_HOME", str(epflemma_home))
+        monkeypatch.setenv("LEANFLOW_HOME", str(leanflow_home))
         monkeypatch.setenv("CODEX_HOME", str(codex_dir))
-        monkeypatch.setenv("EPFLEMMA_USE_LEGACY_CODEX_AUTH", "1")
+        monkeypatch.setenv("LEANFLOW_USE_LEGACY_CODEX_AUTH", "1")
         result = _read_codex_access_token()
         assert result is None
 
     def test_missing_tokens_key_returns_none(self, tmp_path, monkeypatch):
-        epflemma_home = tmp_path / "epflemma"
-        epflemma_home.mkdir()
+        leanflow_home = tmp_path / "leanflow"
+        leanflow_home.mkdir()
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
         (codex_dir / "auth.json").write_text(json.dumps({"other": "data"}))
-        monkeypatch.setenv("EPFLEMMA_HOME", str(epflemma_home))
+        monkeypatch.setenv("LEANFLOW_HOME", str(leanflow_home))
         monkeypatch.setenv("CODEX_HOME", str(codex_dir))
-        monkeypatch.setenv("EPFLEMMA_USE_LEGACY_CODEX_AUTH", "1")
+        monkeypatch.setenv("LEANFLOW_USE_LEGACY_CODEX_AUTH", "1")
         result = _read_codex_access_token()
         assert result is None
 
@@ -221,8 +221,8 @@ class TestGetTextAuxiliaryClient:
             }
         }
         monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
-        monkeypatch.setattr("epflemma_cli.config.load_config", lambda: config)
-        monkeypatch.setattr("epflemma_cli.runtime.runtime_provider.load_config", lambda: config)
+        monkeypatch.setattr("leanflow_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("leanflow_cli.runtime.runtime_provider.load_config", lambda: config)
 
         with (
             patch("agent.providers.auxiliary_client._read_nous_auth", return_value=None),
@@ -358,8 +358,8 @@ class TestResolveForcedProvider:
             }
         }
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        monkeypatch.setattr("epflemma_cli.config.load_config", lambda: config)
-        monkeypatch.setattr("epflemma_cli.runtime.runtime_provider.load_config", lambda: config)
+        monkeypatch.setattr("leanflow_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("leanflow_cli.runtime.runtime_provider.load_config", lambda: config)
         with (
             patch("agent.providers.auxiliary_client._read_nous_auth", return_value=None),
             patch("agent.providers.auxiliary_client._read_codex_access_token", return_value=None),
@@ -458,15 +458,15 @@ class TestTaskSpecificOverrides:
         assert model == "google/gemini-3-flash-preview"
 
     def test_task_direct_endpoint_from_config(self, monkeypatch, tmp_path):
-        epflemma_home = tmp_path / "epflemma"
-        epflemma_home.mkdir(parents=True, exist_ok=True)
-        (epflemma_home / "config.yaml").write_text("""auxiliary:
+        leanflow_home = tmp_path / "leanflow"
+        leanflow_home.mkdir(parents=True, exist_ok=True)
+        (leanflow_home / "config.yaml").write_text("""auxiliary:
   web_extract:
     base_url: http://localhost:3456/v1
     api_key: config-key
     model: config-model
 """)
-        monkeypatch.setenv("EPFLEMMA_HOME", str(epflemma_home))
+        monkeypatch.setenv("LEANFLOW_HOME", str(leanflow_home))
         with patch("agent.providers.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client("web_extract")
         assert model == "config-model"

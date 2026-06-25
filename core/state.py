@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SQLite State Store for EPFLemma.
+SQLite State Store for LeanFlow.
 
 Provides persistent session storage with FTS5 full-text search, replacing
 the per-session JSONL file approach. Stores session metadata, full message
@@ -22,9 +22,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.home import epflemma_home
+from core.home import leanflow_home
 
-DEFAULT_DB_PATH = epflemma_home() / "state.db"
+DEFAULT_DB_PATH = leanflow_home() / "state.db"
 
 SCHEMA_VERSION = 4
 

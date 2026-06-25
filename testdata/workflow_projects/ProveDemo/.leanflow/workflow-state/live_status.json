@@ -1,0 +1,277 @@
+{
+  "active_file": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean",
+  "active_file_label": "ProveDemo/RealTheorems.lean",
+  "active_skill": "lean-theorem-queue-worker",
+  "base_url": "https://inference.rcp.epfl.ch/v1",
+  "build_status": "",
+  "capability_report": {
+    "binaries": {
+      "elan": false,
+      "git": true,
+      "lake": false,
+      "lean": false,
+      "rg": true
+    },
+    "cwd": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+    "degraded_reasons": [
+      "lean binary unavailable",
+      "lake binary unavailable"
+    ],
+    "helper_tools": {
+      "axiom_checker": true,
+      "error_parser": true,
+      "golf_candidates": true,
+      "instance_search": true,
+      "search_fallback": true,
+      "solver_cascade": true,
+      "sorry_analyzer": true,
+      "usage_search": true
+    },
+    "incremental": {
+      "active_sessions": [],
+      "available": true,
+      "code_sessions": [],
+      "degraded_codes": [],
+      "degraded_reasons": [],
+      "max_code_sessions": 16,
+      "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+      "repl_dir": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/.lake/packages/repl"
+    },
+    "managed_mcp_servers": {
+      "lean-explore": true,
+      "lean-lsp": true,
+      "lean-proof-auto": true
+    },
+    "mcp_server_roles": {
+      "lean-explore": "semantic-declaration-search",
+      "lean-lsp": "primary-state-search",
+      "lean-proof-auto": "secondary-automation-context"
+    },
+    "mcp_tools": {
+      "auto_search": "mcp_lean_proof_auto_search_automated_proof",
+      "code_actions": "mcp_lean_lsp_lean_code_actions",
+      "declaration_file": "mcp_lean_lsp_lean_declaration_file",
+      "diagnostics": "mcp_lean_lsp_lean_diagnostic_messages",
+      "file_outline": "mcp_lean_lsp_lean_file_outline",
+      "goals": "mcp_lean_lsp_lean_goal",
+      "hammer_premise": "mcp_lean_lsp_lean_hammer_premise",
+      "hover_info": "mcp_lean_lsp_lean_hover_info",
+      "leanexplore": "mcp_lean_explore_search_summary",
+      "leanfinder": "mcp_lean_lsp_lean_leanfinder",
+      "leansearch": "mcp_lean_lsp_lean_leansearch",
+      "local_search": "mcp_lean_lsp_lean_local_search",
+      "loogle": "mcp_lean_lsp_lean_loogle",
+      "multi_attempt": "mcp_lean_lsp_lean_multi_attempt",
+      "profile_proof": "mcp_lean_lsp_lean_profile_proof",
+      "proof_context": "mcp_lean_proof_auto_get_proof_context",
+      "run_code": "mcp_lean_lsp_lean_run_code",
+      "state_search": "mcp_lean_lsp_lean_state_search"
+    },
+    "power_modes": {
+      "leanexplore_api_configured": false,
+      "leanexplore_backend": "auto",
+      "leanexplore_cli_installed": false,
+      "leanexplore_local_available": true,
+      "leanexplore_local_cache_path": "/Users/lmilikic/.lean_explore/cache/20260507_203639",
+      "leanexplore_local_data_ready": true,
+      "leanexplore_local_package_available": true,
+      "loogle_cache_dir": "/Users/lmilikic/.epflemma/mcp/cache/loogle-v4.30.0-rc2",
+      "loogle_local_available": true,
+      "loogle_local_configured": true,
+      "loogle_local_ready": true,
+      "loogle_local_status": "ready",
+      "loogle_local_supported": true,
+      "loogle_toolchain": "leanprover/lean4:v4.30.0-rc2",
+      "loogle_toolchain_compatible": true,
+      "project_toolchain": "leanprover/lean4:v4.30.0-rc2",
+      "remote_search_policy": "public-fallbacks-enabled",
+      "repl_available": true,
+      "repl_configured": true,
+      "repl_path": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/.lake/packages/repl/.lake/build/bin/repl",
+      "repl_status": "ready"
+    },
+    "project_error": "",
+    "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+    "project_valid": true,
+    "remote_search_policy": "public-fallbacks-enabled",
+    "search_providers": [
+      "leanexplore-local",
+      "mcp-leanexplore",
+      "mcp-leanfinder",
+      "mcp-local-search",
+      "mcp-leansearch",
+      "mcp-loogle",
+      "project-rg",
+      "mathlib-rg"
+    ],
+    "workers": []
+  },
+  "checkpoint_count": 38,
+  "current_blocker": "contains sorry",
+  "current_queue_item": {
+    "blocker_signature": "04c35e811ecf",
+    "end_line": 107,
+    "file": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean",
+    "kind": "theorem",
+    "label": "absLipschitz1",
+    "line": 100,
+    "reasons": [
+      "contains sorry"
+    ],
+    "search_hints": [
+      "absLipschitz1",
+      "theorem"
+    ],
+    "verification_gate": "lake env lean RealTheorems.lean"
+  },
+  "current_queue_item_prefix": "Current file prefix ending at `absLipschitz1` (1-104):\n-- In this homework, please prove theorems marked by TODO, whose proof is given as `sorry`\n-- As a strong hint, we indicate useful mathlib lemmas using `#check` statements.\nimport Mathlib\nset_option linter.style.longLine false\n\n-- low-level proofs refer to axioms that the structure satisfies. calc chains = or \u2264\nexample (x y u v : \u211d) : ((x + u) + y) + v = v + ((y + x) + u) := by\n  -- we will use calc as well as add_assoc and add_comm\n  calc ((x + u) + y) + v\n     = (y + (x + u)) + v := by simp [add_comm]\n   _ = ((y + x) + u) + v := by simp [add_assoc]\n   _ = v + ((y + x) + u) := by simp [add_comm]\n\n\n-- example of tacticts with numbers\nexample (x y u v : \u211d) : x + u + y + v = v + y + x + u := by\n  ring\n\n-- https://en.wikipedia.org/wiki/Ring_(mathematics)#Definition\n\nexample (x y u : \u211d) : x * u * y = y * x * u := by\n  ring_nf\n\nexample (x : \u211d) : x * x = x^2 := by\n  ring -- there are functions that define repeated + and * operations in rings\n       -- Repeated * is ^ and is expanded for constant exponents\n\nexample (x y : \u211d) : (x + y)^2 = x^2 + 2*x*y + y^2 := by\n  ring\n\nexample (x y : \u211d) : (x - y)*(x + y) = x^2 - y^2 := by\n  ring\n\nexample (x y : \u211d) : (x - y)*(x^2 + x*y + y^2) = x^3 - y^3 := by\n  ring\n\nexample (x y c1 c2 : \u211d) (h1 : x \u2264 y) (h2 : c1 \u2264 c2) : 0.1 * x + c1 \u2264 0.1 * y + c2 := by\n  linarith\n\n-- see mathlib/Mathlib/Tactic/Linarith/Frontend.lean for explanation of linarith\n-- decision procedure for implication validity (via UNSAT) or dense linear orders\n-- based on Simplex\n\nexample (x y : \u211d) : (x^2 + y^2)^2 \u2265 (x^2 - y^2)^2 := by\n  nlinarith\n\nexample (x y : \u211d) (h : x * y \u2265 0) : (x + y)^2 \u2265 x^2 + y^2 := by\n  linarith -- even this works!\n\nexample (x y : \u211d) (nh : x * y \u2260 0) : (x + y)^2 \u2260 x^2 + y^2 := by\n  -- linearith -- does not work; out of the scope of procedure\n  contrapose nh with h-- equalities are better than inequalities. This swaps negated goal and assumption\n  ring_nf at h -- Progress. Q: why did it not cancel x^2?\n  simp at h  -- check `simp?` to see what it used\n  simp only [mul_eq_zero] -- simplify the goal\n  assumption\n\nexample (x y : \u211d) (h : x * y \u2260 0) : (x + y)^2 \u2260 x^2 + y^2 := by\n  grind -- based on highly successful satisfiability modulo theory (SMT) techniques\n  -- https://lean-lang.org/doc/reference/latest/The--grind--tactic/\n\nexample (x : \u211d) : x^2 \u2265 0 := by\n  nlinarith -- grind does not work here. nlinarith adds a special trick for >= 0\n            -- if someone ports nlsat from z3 to grind, this and many other things will work\n\nexample (x : \u211d) (h : x \u2260 0) : \u2203 y, \u00ac (x + y)^2 \u2265 (x - y)^2 := by\n  exists -x\n  simp only [add_neg_cancel, ne_eq, OfNat.ofNat_ne_zero, not_false_eq_true, zero_pow, sub_neg_eq_add,\n    ge_iff_le, sq_nonpos_iff, add_self_eq_zero]\n  exact h\n\n-- we want something with absolute value, so use Lean 4: Loogle \"abs\"\n-- found it at point 29\n\nexample (x y : \u211d) : |x - y| \u2265 0 := by\n  exact abs_nonneg (x - y)\n\n/- --------------------------------------------------------------\n           Lipschitz\n-------------------------------------------------------------- -/\n\ndef isLipschitz (f : \u211d \u2192 \u211d) (L : \u211d) : Prop :=\n    \u2200 (x:\u211d) (y: \u211d), |f x - f y| \u2264 L * |x-y|\n\n#check abs_mul\n\ntheorem ex1 : isLipschitz (fun x => 2 * x) 2 := by\n  intro x y\n  simp only\n  have h: 2*x - 2*y = 2*(x-y) := by ring\n  rw [h]\n  simp [abs_mul]\n\n-- useful lemmas\n\n#check abs_abs_sub_abs_le\n#check one_mul\n\n-- TODO: prove this\ntheorem absLipschitz1 : isLipschitz abs 1 := by\n  sorry\n\n-- show definition of continuous function from R to R from mathlib:\n#check ContinuousAt",
+  "current_queue_item_slice": "Assigned declaration slice (100-104):\ntheorem absLipschitz1 : isLipschitz abs 1 := by\n  sorry\n\n-- show definition of continuous function from R to R from mathlib:\n#check ContinuousAt",
+  "declaration_queue_preview": [
+    {
+      "blocker_signature": "04c35e811ecf",
+      "end_line": 107,
+      "file": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean",
+      "kind": "theorem",
+      "label": "absLipschitz1",
+      "line": 100,
+      "reasons": [
+        "contains sorry"
+      ],
+      "search_hints": [
+        "absLipschitz1",
+        "theorem"
+      ],
+      "verification_gate": "lake env lean RealTheorems.lean"
+    },
+    {
+      "blocker_signature": "cb94b477e7e3",
+      "end_line": 147,
+      "file": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean",
+      "kind": "lemma",
+      "label": "abs_add_diff",
+      "line": 143,
+      "reasons": [
+        "contains sorry"
+      ],
+      "search_hints": [
+        "abs_add_diff",
+        "lemma"
+      ],
+      "verification_gate": "lake env lean RealTheorems.lean"
+    },
+    {
+      "blocker_signature": "8fcd14744b82",
+      "end_line": 154,
+      "file": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean",
+      "kind": "theorem",
+      "label": "addLipschitz",
+      "line": 148,
+      "reasons": [
+        "contains sorry"
+      ],
+      "search_hints": [
+        "addLipschitz",
+        "theorem"
+      ],
+      "verification_gate": "lake env lean RealTheorems.lean"
+    },
+    {
+      "blocker_signature": "001d874833ab",
+      "end_line": 177,
+      "file": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean",
+      "kind": "lemma",
+      "label": "abs_mul_diff",
+      "line": 172,
+      "reasons": [
+        "contains sorry"
+      ],
+      "search_hints": [
+        "abs_mul_diff",
+        "lemma"
+      ],
+      "verification_gate": "lake env lean RealTheorems.lean"
+    },
+    {
+      "blocker_signature": "d2f7be180866",
+      "end_line": 182,
+      "file": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean",
+      "kind": "theorem",
+      "label": "mulLipschitz",
+      "line": 178,
+      "reasons": [
+        "contains sorry"
+      ],
+      "search_hints": [
+        "mulLipschitz",
+        "theorem"
+      ],
+      "verification_gate": "lake env lean RealTheorems.lean"
+    }
+  ],
+  "declaration_queue_summary": "- absLipschitz1 [ProveDemo/RealTheorems.lean] \u2014 contains sorry\n- abs_add_diff [ProveDemo/RealTheorems.lean] \u2014 contains sorry\n- addLipschitz [ProveDemo/RealTheorems.lean] \u2014 contains sorry\n- abs_mul_diff [ProveDemo/RealTheorems.lean] \u2014 contains sorry\n- mulLipschitz [ProveDemo/RealTheorems.lean] \u2014 contains sorry",
+  "declaration_queue_total": 5,
+  "declaration_scope": "file",
+  "diagnostics": "Error executing tool lean_diagnostic_messages: Failed to start Lean language server at '/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo': [Errno 2] No such file or directory: 'lake'",
+  "document_formalization_construction_sorry_count": 0,
+  "document_formalization_handoff": {
+    "issues": [],
+    "ok": true,
+    "summary": "document formalization not active"
+  },
+  "document_formalization_proof_sorry_count": 0,
+  "effective_prompt": "",
+  "formalization_blueprint": "",
+  "formalization_context": "",
+  "formalization_document": "",
+  "formalization_document_kind": "",
+  "formalization_extracted_blueprint_path": "",
+  "formalization_request": "",
+  "formalization_request_kind": "",
+  "formalization_selected_source_document": "",
+  "formalization_target_file": "",
+  "goals": "Error executing tool lean_goal: Failed to start Lean language server at '/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo': [Errno 2] No such file or directory: 'lake'",
+  "held_locks": 0,
+  "last_compaction_reason": "[none]",
+  "last_verification": {},
+  "latest_checkpoint_label": "verified proof milestone",
+  "latest_filesystem_checkpoint": "[none]",
+  "model": "moonshotai/Kimi-K2.7-Code",
+  "parallel_agents": 1,
+  "phase": "failed",
+  "process_id": 7899,
+  "project_prove_completed_files": [],
+  "project_prove_file_queue": [],
+  "project_prove_manager": false,
+  "project_prove_plan_reason": "",
+  "project_prove_plan_source": "",
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "project_sorry_count": 35,
+  "proof_solved": false,
+  "proof_state_message": "[EPFLEMMA-NATIVE LIVE PROOF STATE] This is the latest runner-refreshed Lean state for the active workflow. Treat it as current unless newer tool results contradict it.\n\nWorkflow: prove\nActive file: ProveDemo/RealTheorems.lean\nActive file path: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean\nTarget theorem: absLipschitz1\n\nDiagnostics:\nDiagnostics could not be scoped reliably for the assigned declaration. Use `lean_inspect` on the assigned declaration before editing.\n\nGoals:\nError executing tool lean_goal: Failed to start Lean language server at '/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo': [Errno 2] No such file or directory: 'lake'\n\nBuild:\nno recent manager verification\n\nQueue horizon:\n- assigned declaration: absLipschitz1 - contains sorry\n- future queue items: hidden until the manager assigns them (4 pending)\n\nDocument formalization handoff verifier:\ndocument formalization not active\n\nRoute:\nqueue-worker via lean-theorem-queue-worker\nfile-scoped queue item active\n\nRecommended verification path:\n`lean_inspect` on ProveDemo/RealTheorems.lean, then `lean_incremental_check(check_target)` for this file-scoped queue step\n\nCapabilities:\ndegraded reasons: lean binary unavailable, lake binary unavailable\n\nProof status:\nassigned declaration has sorry: yes\nfuture declaration sorry counts: hidden until manager assignment",
+  "provider": "custom",
+  "route_decision": {
+    "blocker_kind": "open_goals",
+    "reason": "file-scoped queue item active",
+    "recommended_worker": "",
+    "route_action": "queue-worker",
+    "search_exhausted": false,
+    "skill_name": "lean-theorem-queue-worker",
+    "workflow_kind": "prove"
+  },
+  "snapshot_present": false,
+  "sorry_count": 5,
+  "target_symbol": "absLipschitz1",
+  "updated_at": "2026-06-24T11:58:48+00:00",
+  "version": 1,
+  "warning_cleanup": {},
+  "warning_cleanup_attempted": false,
+  "warning_cleanup_blocked": false,
+  "warning_cleanup_diagnostics": "",
+  "warning_cleanup_skipped": false,
+  "warning_cleanup_status": "",
+  "warning_cleanup_verified": false,
+  "warning_cleanup_warning_count": 0,
+  "warning_cleanup_warning_summary": "",
+  "workflow_command": "/prove ProveDemo/RealTheorems.lean",
+  "workflow_kind": "prove"
+}

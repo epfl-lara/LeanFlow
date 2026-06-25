@@ -4,12 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-EPFLEMMA_HOME="${EPFLEMMA_HOME:-$HOME/.epflemma}"
-EPFLEMMA_BIN_DIR="${EPFLEMMA_BIN_DIR:-${OPENGAUSS_BIN_DIR:-$HOME/.local/bin}}"
-EPFLEMMA_VENV_DIR="${EPFLEMMA_VENV_DIR:-${OPENGAUSS_VENV_DIR:-$REPO_ROOT/.epflemma-venv}}"
-EPFLEMMA_INSTALL_PYTHON="${EPFLEMMA_INSTALL_PYTHON:-${OPENGAUSS_INSTALL_PYTHON:-python3}}"
-EPFLEMMA_FETCH_LEANEXPLORE_DATA="${EPFLEMMA_FETCH_LEANEXPLORE_DATA:-1}"
-EPFLEMMA_INSTALL_OS_TOOLS="${EPFLEMMA_INSTALL_OS_TOOLS:-1}"
+LEANFLOW_HOME="${LEANFLOW_HOME:-$HOME/.leanflow}"
+LEANFLOW_BIN_DIR="${LEANFLOW_BIN_DIR:-$HOME/.local/bin}"
+LEANFLOW_VENV_DIR="${LEANFLOW_VENV_DIR:-$REPO_ROOT/.leanflow-venv}"
+LEANFLOW_INSTALL_PYTHON="${LEANFLOW_INSTALL_PYTHON:-python3}"
+LEANFLOW_FETCH_LEANEXPLORE_DATA="${LEANFLOW_FETCH_LEANEXPLORE_DATA:-1}"
+LEANFLOW_INSTALL_OS_TOOLS="${LEANFLOW_INSTALL_OS_TOOLS:-1}"
 INSTALL_MODE="editable"
 RECREATE_VENV=0
 STEP=0
@@ -19,7 +19,7 @@ REQUIRED_EXTERNAL_TOOLS=(rg pdftotext pdfinfo pdfimages)
 banner() {
   printf '\n'
   printf '============================================================\n'
-  printf ' EPFLemma Installer\n'
+  printf ' LeanFlow Installer\n'
   printf ' Lean-first automation kernel setup\n'
   printf '============================================================\n'
   printf '\n'
@@ -81,13 +81,13 @@ link_external_tool_candidates() {
   for binary in "${REQUIRED_EXTERNAL_TOOLS[@]}"; do
     if tool_version_ok "$binary"; then
       resolved="$(command -v "$binary" 2>/dev/null || true)"
-      if [[ -n "$resolved" && "$resolved" != "$EPFLEMMA_BIN_DIR/$binary" ]]; then
-        ln -sf "$resolved" "$EPFLEMMA_BIN_DIR/$binary"
+      if [[ -n "$resolved" && "$resolved" != "$LEANFLOW_BIN_DIR/$binary" ]]; then
+        ln -sf "$resolved" "$LEANFLOW_BIN_DIR/$binary"
       fi
       continue
     fi
     for candidate in \
-      "$EPFLEMMA_HOME/vendor/os-tools/usr/bin/$binary" \
+      "$LEANFLOW_HOME/vendor/os-tools/usr/bin/$binary" \
       "$HOME/.local/usr/bin/$binary" \
       "$HOME/miniconda3/bin/$binary" \
       "$HOME/miniforge3/bin/$binary" \
@@ -97,12 +97,12 @@ link_external_tool_candidates() {
       "/usr/bin/$binary" \
       "/bin/$binary"; do
       if [[ -x "$candidate" ]]; then
-        ln -sf "$candidate" "$EPFLEMMA_BIN_DIR/$binary"
+        ln -sf "$candidate" "$LEANFLOW_BIN_DIR/$binary"
         if tool_version_ok "$binary"; then
           ok "linked $binary: $candidate"
           break
         fi
-        rm -f "$EPFLEMMA_BIN_DIR/$binary"
+        rm -f "$LEANFLOW_BIN_DIR/$binary"
       fi
     done
   done
@@ -148,9 +148,9 @@ install_user_local_ripgrep_with_apt_download() {
   ); then
     deb="$(find "$tmp_dir" -name 'ripgrep_*.deb' -print -quit)"
     if [[ -n "$deb" ]]; then
-      mkdir -p "$EPFLEMMA_HOME/vendor/os-tools"
-      dpkg-deb -x "$deb" "$EPFLEMMA_HOME/vendor/os-tools"
-      ln -sf "$EPFLEMMA_HOME/vendor/os-tools/usr/bin/rg" "$EPFLEMMA_BIN_DIR/rg"
+      mkdir -p "$LEANFLOW_HOME/vendor/os-tools"
+      dpkg-deb -x "$deb" "$LEANFLOW_HOME/vendor/os-tools"
+      ln -sf "$LEANFLOW_HOME/vendor/os-tools/usr/bin/rg" "$LEANFLOW_BIN_DIR/rg"
     fi
   fi
   rm -rf "$tmp_dir"
@@ -158,7 +158,7 @@ install_user_local_ripgrep_with_apt_download() {
 }
 
 ensure_external_cli_tools() {
-  if [[ "$EPFLEMMA_INSTALL_OS_TOOLS" != "1" ]]; then
+  if [[ "$LEANFLOW_INSTALL_OS_TOOLS" != "1" ]]; then
     warn "skipped external CLI tool installation"
     return 0
   fi
@@ -190,15 +190,15 @@ ensure_external_cli_tools() {
 
 usage() {
   cat <<'TXT'
-EPFLemma local installer
+LeanFlow local installer
 
 Usage:
   ./scripts/install-internal.sh [options]
 
 Options:
-  --epflemma-home PATH  EPFLemma state directory (default: ~/.epflemma)
-  --bin-dir PATH         Directory for EPFLemma wrappers (default: ~/.local/bin)
-  --venv-dir PATH        Virtualenv path (default: ./.epflemma-venv)
+  --leanflow-home PATH  LeanFlow state directory (default: ~/.leanflow)
+  --bin-dir PATH         Directory for LeanFlow wrappers (default: ~/.local/bin)
+  --venv-dir PATH        Virtualenv path (default: ./.leanflow-venv)
   --python BIN           Python interpreter to use (default: python3)
   --recreate-venv        Remove and recreate the virtualenv
   --skip-leanexplore-data
@@ -208,27 +208,26 @@ Options:
   -h, --help             Show this help
 
 Behavior:
-  This installer creates separate EPFLemma binaries and state under ~/.epflemma.
-  It does not touch ~/.gauss or existing gauss binaries.
+  This installer creates separate LeanFlow binaries and state under ~/.leanflow.
 TXT
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --epflemma-home|--gauss-home)
-      EPFLEMMA_HOME="$2"
+    --leanflow-home)
+      LEANFLOW_HOME="$2"
       shift 2
       ;;
     --bin-dir)
-      EPFLEMMA_BIN_DIR="$2"
+      LEANFLOW_BIN_DIR="$2"
       shift 2
       ;;
     --venv-dir)
-      EPFLEMMA_VENV_DIR="$2"
+      LEANFLOW_VENV_DIR="$2"
       shift 2
       ;;
     --python)
-      EPFLEMMA_INSTALL_PYTHON="$2"
+      LEANFLOW_INSTALL_PYTHON="$2"
       shift 2
       ;;
     --recreate-venv)
@@ -236,11 +235,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --skip-leanexplore-data)
-      EPFLEMMA_FETCH_LEANEXPLORE_DATA=0
+      LEANFLOW_FETCH_LEANEXPLORE_DATA=0
       shift
       ;;
     --skip-os-tools)
-      EPFLEMMA_INSTALL_OS_TOOLS=0
+      LEANFLOW_INSTALL_OS_TOOLS=0
       shift
       ;;
     --no-editable)
@@ -261,31 +260,31 @@ done
 
 banner
 step "Preparing install directories"
-mkdir -p "$EPFLEMMA_HOME" "$EPFLEMMA_BIN_DIR"
-export PATH="$EPFLEMMA_BIN_DIR:$PATH"
-ok "home: $EPFLEMMA_HOME"
-ok "bin : $EPFLEMMA_BIN_DIR"
+mkdir -p "$LEANFLOW_HOME" "$LEANFLOW_BIN_DIR"
+export PATH="$LEANFLOW_BIN_DIR:$PATH"
+ok "home: $LEANFLOW_HOME"
+ok "bin : $LEANFLOW_BIN_DIR"
 
-if [[ "$RECREATE_VENV" == "1" && -e "$EPFLEMMA_VENV_DIR" ]]; then
-  warn "recreating virtualenv: $EPFLEMMA_VENV_DIR"
-  rm -rf "$EPFLEMMA_VENV_DIR"
+if [[ "$RECREATE_VENV" == "1" && -e "$LEANFLOW_VENV_DIR" ]]; then
+  warn "recreating virtualenv: $LEANFLOW_VENV_DIR"
+  rm -rf "$LEANFLOW_VENV_DIR"
 fi
 
 step "Checking external CLI tools"
 ensure_external_cli_tools
 
 step "Preparing Python environment"
-if [[ ! -x "$EPFLEMMA_VENV_DIR/bin/python" ]]; then
-  "$EPFLEMMA_INSTALL_PYTHON" -m venv "$EPFLEMMA_VENV_DIR"
-  ok "created virtualenv: $EPFLEMMA_VENV_DIR"
+if [[ ! -x "$LEANFLOW_VENV_DIR/bin/python" ]]; then
+  "$LEANFLOW_INSTALL_PYTHON" -m venv "$LEANFLOW_VENV_DIR"
+  ok "created virtualenv: $LEANFLOW_VENV_DIR"
 else
-  ok "using existing virtualenv: $EPFLEMMA_VENV_DIR"
+  ok "using existing virtualenv: $LEANFLOW_VENV_DIR"
 fi
 
 # shellcheck disable=SC1090
-source "$EPFLEMMA_VENV_DIR/bin/activate"
+source "$LEANFLOW_VENV_DIR/bin/activate"
 
-step "Installing EPFLemma package"
+step "Installing LeanFlow package"
 python -m pip install --quiet --quiet --upgrade pip "setuptools<82" wheel
 if [[ "$INSTALL_MODE" == "editable" ]]; then
   python -m pip install --quiet --quiet -e "$REPO_ROOT[mcp,lean-explore]"
@@ -296,8 +295,8 @@ else
 fi
 
 step "Fetching local LeanExplore data"
-if [[ "$EPFLEMMA_FETCH_LEANEXPLORE_DATA" == "1" ]]; then
-  if "$EPFLEMMA_VENV_DIR/bin/lean-explore" data fetch; then
+if [[ "$LEANFLOW_FETCH_LEANEXPLORE_DATA" == "1" ]]; then
+  if "$LEANFLOW_VENV_DIR/bin/lean-explore" data fetch; then
     ok "LeanExplore local data ready"
   else
     warn "LeanExplore data fetch failed; semantic search will fall back to hosted API/MCP/rg until you run lean-explore data fetch"
@@ -307,74 +306,74 @@ else
 fi
 
 # Create/backfill user-visible config before any bootstrap step that may need
-# provider/env discovery. This makes ~/.epflemma/config.yaml and ~/.epflemma/.env
+# provider/env discovery. This makes ~/.leanflow/config.yaml and ~/.leanflow/.env
 # explicit installation artifacts instead of hidden first-run side effects.
-step "Creating EPFLemma config"
-EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_VENV_DIR/bin/python" <<'PY'
-from epflemma_cli.config import ensure_epflemma_home, load_config
+step "Creating LeanFlow config"
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/python" <<'PY'
+from leanflow_cli.config import ensure_leanflow_home, load_config
 
-ensure_epflemma_home()
+ensure_leanflow_home()
 load_config()
 PY
-ok "config: $EPFLEMMA_HOME/config.yaml"
+ok "config: $LEANFLOW_HOME/config.yaml"
 
 step "Installing managed Lean MCP backends and power modes"
-EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_VENV_DIR/bin/epflemma" mcp bootstrap lean
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/leanflow" mcp bootstrap lean
 ok "managed MCP bootstrap complete"
 
 step "Writing command wrappers"
-cat > "$EPFLEMMA_BIN_DIR/epflemma" <<EOF
+cat > "$LEANFLOW_BIN_DIR/leanflow" <<EOF
 #!/usr/bin/env bash
-: "\${EPFLEMMA_HOME:=${EPFLEMMA_HOME}}"
-export OPENGAUSS_HOME="\${OPENGAUSS_HOME:-\${EPFLEMMA_HOME}}"
-export EPFLEMMA_HOME
-export PATH="${EPFLEMMA_BIN_DIR}:\$PATH"
-exec "${EPFLEMMA_VENV_DIR}/bin/epflemma" "\$@"
+: "\${LEANFLOW_HOME:=${LEANFLOW_HOME}}"
+export OPENLEANFLOW_HOME="\${OPENLEANFLOW_HOME:-\${LEANFLOW_HOME}}"
+export LEANFLOW_HOME
+export PATH="${LEANFLOW_BIN_DIR}:\$PATH"
+exec "${LEANFLOW_VENV_DIR}/bin/leanflow" "\$@"
 EOF
 
-cat > "$EPFLEMMA_BIN_DIR/epflemma-agent" <<EOF
+cat > "$LEANFLOW_BIN_DIR/leanflow-agent" <<EOF
 #!/usr/bin/env bash
-: "\${EPFLEMMA_HOME:=${EPFLEMMA_HOME}}"
-export OPENGAUSS_HOME="\${OPENGAUSS_HOME:-\${EPFLEMMA_HOME}}"
-export EPFLEMMA_HOME
-export PATH="${EPFLEMMA_BIN_DIR}:\$PATH"
-exec "${EPFLEMMA_VENV_DIR}/bin/epflemma-agent" "\$@"
+: "\${LEANFLOW_HOME:=${LEANFLOW_HOME}}"
+export OPENLEANFLOW_HOME="\${OPENLEANFLOW_HOME:-\${LEANFLOW_HOME}}"
+export LEANFLOW_HOME
+export PATH="${LEANFLOW_BIN_DIR}:\$PATH"
+exec "${LEANFLOW_VENV_DIR}/bin/leanflow-agent" "\$@"
 EOF
 
 chmod +x \
-  "$EPFLEMMA_BIN_DIR/epflemma" \
-  "$EPFLEMMA_BIN_DIR/epflemma-agent"
-ok "wrapper: $EPFLEMMA_BIN_DIR/epflemma"
-ok "wrapper: $EPFLEMMA_BIN_DIR/epflemma-agent"
+  "$LEANFLOW_BIN_DIR/leanflow" \
+  "$LEANFLOW_BIN_DIR/leanflow-agent"
+ok "wrapper: $LEANFLOW_BIN_DIR/leanflow"
+ok "wrapper: $LEANFLOW_BIN_DIR/leanflow-agent"
 
 step "Cleaning legacy wrapper names"
-rm -f "$EPFLEMMA_BIN_DIR/epflemma-acp" "$EPFLEMMA_BIN_DIR/opengauss" "$EPFLEMMA_BIN_DIR/opengauss-agent"
+rm -f "$LEANFLOW_BIN_DIR/leanflow-acp"
 ok "legacy wrappers removed if present"
 
 step "Recording install metadata"
-cat > "${EPFLEMMA_HOME}/install-root" <<EOF
+cat > "${LEANFLOW_HOME}/install-root" <<EOF
 repo_root=${REPO_ROOT}
-venv_dir=${EPFLEMMA_VENV_DIR}
-bin_dir=${EPFLEMMA_BIN_DIR}
+venv_dir=${LEANFLOW_VENV_DIR}
+bin_dir=${LEANFLOW_BIN_DIR}
 installed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 EOF
-ok "metadata: ${EPFLEMMA_HOME}/install-root"
+ok "metadata: ${LEANFLOW_HOME}/install-root"
 
 step "Final smoke check"
-EPFLEMMA_HOME="$EPFLEMMA_HOME" "$EPFLEMMA_VENV_DIR/bin/epflemma" --help >/dev/null
-ok "epflemma --help"
+LEANFLOW_HOME="$LEANFLOW_HOME" "$LEANFLOW_VENV_DIR/bin/leanflow" --help >/dev/null
+ok "leanflow --help"
 
-printf '\nEPFLemma installed.\n'
+printf '\nLeanFlow installed.\n'
 printf '  repo: %s\n' "$REPO_ROOT"
-printf '  home: %s\n' "$EPFLEMMA_HOME"
-printf '  config: %s/config.yaml\n' "$EPFLEMMA_HOME"
-printf '  env : %s/.env\n' "$EPFLEMMA_HOME"
-printf '  venv: %s\n' "$EPFLEMMA_VENV_DIR"
-printf '  bin : %s\n' "$EPFLEMMA_BIN_DIR"
-printf '  mcp : managed Lean MCP backends installed under %s/mcp\n' "$EPFLEMMA_HOME"
+printf '  home: %s\n' "$LEANFLOW_HOME"
+printf '  config: %s/config.yaml\n' "$LEANFLOW_HOME"
+printf '  env : %s/.env\n' "$LEANFLOW_HOME"
+printf '  venv: %s\n' "$LEANFLOW_VENV_DIR"
+printf '  bin : %s\n' "$LEANFLOW_BIN_DIR"
+printf '  mcp : managed Lean MCP backends installed under %s/mcp\n' "$LEANFLOW_HOME"
 printf '  power modes: local Loogle/REPL configured when supported; public remote search fallbacks remain enabled\n'
 printf '\n'
-printf 'Add %s to PATH if needed, then run:\n' "$EPFLEMMA_BIN_DIR"
-printf '  epflemma --help\n'
-printf '  epflemma mcp status\n'
-printf '  epflemma project init   # inside a Lean repo, to build REPL acceleration\n'
+printf 'Add %s to PATH if needed, then run:\n' "$LEANFLOW_BIN_DIR"
+printf '  leanflow --help\n'
+printf '  leanflow mcp status\n'
+printf '  leanflow project init   # inside a Lean repo, to build REPL acceleration\n'

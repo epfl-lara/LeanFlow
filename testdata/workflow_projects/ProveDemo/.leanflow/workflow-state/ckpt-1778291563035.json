@@ -1,0 +1,27 @@
+{
+  "active_files": [
+    "ProveDemo/IMOMath0.lean",
+    "IMOMath0.lean",
+    "a/ProveDemo/IMOMath0.lean",
+    "b/ProveDemo/IMOMath0.lean"
+  ],
+  "blocker_summary": "",
+  "checkpoint_id": "ckpt-1778291563035",
+  "created_at": "2026-05-09T01:52:43+00:00",
+  "diagnostics_summary": "The only warning is a long line on line 3. I'll split the `open` statement across two lines to stay under the 100-character limit.\nFile `ProveDemo/IMOMath0.lean` is clean.\n\n- Long-line warning on line 3 resolved by splitting the `open` declaration across two lines.\n- `lake env lean ProveDemo/IMOMath0.lean` passes with no errors or warnings.\n- Queue is empty; no `sorry`",
+  "label": "pre-exit checkpoint",
+  "linked_filesystem_checkpoint": "",
+  "model": "moonshotai/Kimi-K2.6",
+  "next_steps": "Resume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "note": "",
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "rough_tokens": 2766,
+  "snapshot_path": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/.epflemma/workflow-state/ckpt-1778291563035.json",
+  "success_state": "verified",
+  "summary_text": "## Goal\nContinue the prove workflow for `/prove ProveDemo/IMOMath0.lean`.\n\n## Workflow\nLabel: pre-exit checkpoint\nTrigger: pre-exit\nProject root: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\n\n## Current state\nSuccess state: verified\nTarget: outcome\n\n## Lean findings\nThe only warning is a long line on line 3. I'll split the `open` statement across two lines to stay under the 100-character limit.\nFile `ProveDemo/IMOMath0.lean` is clean.\n\n- Long-line warning on line 3 resolved by splitting the `open` declaration across two lines.\n- `lake env lean ProveDemo/IMOMath0.lean` passes with no errors or warnings.\n- Queue is empty; no `sorry`\n\n## Relevant files\nProveDemo/IMOMath0.lean, IMOMath0.lean, a/ProveDemo/IMOMath0.lean, b/ProveDemo/IMOMath0.lean\n\n## Blockers\nNo blocker declared at this checkpoint.\n\n## Next steps\nResume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "target_symbol": "outcome",
+  "trigger": "pre-exit",
+  "version": 1,
+  "workflow_command": "/prove ProveDemo/IMOMath0.lean",
+  "workflow_kind": "prove"
+}

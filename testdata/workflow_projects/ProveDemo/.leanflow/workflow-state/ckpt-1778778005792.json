@@ -1,0 +1,30 @@
+{
+  "active_files": [
+    "ProveDemo/IMOMath0.lean",
+    "a/ProveDemo/IMOMath0.lean",
+    "b/ProveDemo/IMOMath0.lean",
+    "ProveDemo/IMOMath1.lean",
+    "ProveDemo/IMOMath2.lean",
+    "ProveDemo/IMOMath3.lean",
+    "ProveDemo/RealTheorems.lean"
+  ],
+  "blocker_summary": "",
+  "checkpoint_id": "ckpt-1778778005792",
+  "created_at": "2026-05-14T17:00:06+00:00",
+  "diagnostics_summary": "File verification passed \u2014 `ProveDemo/IMOMath0.lean` is clean with no errors.\n\nSummary of this theorem turn:\n- declaration: `putnam_2003_b4`\n- status: **solved**\n- final verification: `lake env lean ProveDemo/IMOMath0.lean` succeeded with n\n`ProveDemo/IMOMath0.lean` is fully verified \u2014 0 errors, 0 sorrys, build succeeded.\n\nThis file is now complete. The project has 27 remaining sorrys across:\n- `ProveDemo/IMOMath1.lean` (9)\n- `ProveDemo/IMOMath2.lean` (5)\n- `ProveDemo/IMOMath3",
+  "label": "verified proof milestone",
+  "linked_filesystem_checkpoint": "",
+  "model": "moonshotai/Kimi-K2.6",
+  "next_steps": "Resume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "note": "",
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "rough_tokens": 7578,
+  "snapshot_path": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/.epflemma/workflow-state/ckpt-1778778005792.json",
+  "success_state": "verified",
+  "summary_text": "## Goal\nContinue the prove workflow for `/prove ProveDemo/IMOMath0.lean`.\n\n## Workflow\nLabel: verified proof milestone\nTrigger: verified-progress\nProject root: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\n\n## Current state\nSuccess state: verified\nTarget: turn\n\n## Lean findings\nFile verification passed \u2014 `ProveDemo/IMOMath0.lean` is clean with no errors.\n\nSummary of this theorem turn:\n- declaration: `putnam_2003_b4`\n- status: **solved**\n- final verification: `lake env lean ProveDemo/IMOMath0.lean` succeeded with n\n`ProveDemo/IMOMath0.lean` is fully verified \u2014 0 errors, 0 sorrys, build succeeded.\n\nThis file is now complete. The project has 27 remaining sorrys across:\n- `ProveDemo/IMOMath1.lean` (9)\n- `ProveDemo/IMOMath2.lean` (5)\n- `ProveDemo/IMOMath3\n\n## Relevant files\na/ProveDemo/IMOMath0.lean, b/ProveDemo/IMOMath0.lean, ProveDemo/IMOMath0.lean, ProveDemo/IMOMath1.lean, ProveDemo/IMOMath2.lean, ProveDemo/IMOMath3.lean, ProveDemo/RealTheorems.lean\n\n## Blockers\nNo blocker declared at this checkpoint.\n\n## Next steps\nResume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "target_symbol": "turn",
+  "trigger": "verified-progress",
+  "version": 1,
+  "workflow_command": "/prove ProveDemo/IMOMath0.lean",
+  "workflow_kind": "prove"
+}

@@ -1,0 +1,26 @@
+{
+  "active_files": [
+    "a/ProveDemo/IMOMath0.lean",
+    "b/ProveDemo/IMOMath0.lean",
+    "ProveDemo/IMOMath0.lean"
+  ],
+  "blocker_summary": "{\"success\": true, \"target\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath0.lean\", \"project_root\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\", \"diagnostics\": \"{\\n  \\\"suc",
+  "checkpoint_id": "ckpt-1778635653086",
+  "created_at": "2026-05-13T01:27:33+00:00",
+  "diagnostics_summary": "{\"success\": true, \"target\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath0.lean\", \"project_root\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_project\n[EPFLEMMA-NATIVE WORKFLOW REPORT]\n\nFile: `ProveDemo/IMOMath0.lean`\nStatus: **VERIFIED** \u2014 no errors, no warnings, no `sorry`\n\n- `lake env lean ProveDemo/IMOMath0.lean` passed cleanly\n- `lean_inspect` reports zero diagnostics and zero sorrie",
+  "label": "verified proof milestone",
+  "linked_filesystem_checkpoint": "",
+  "model": "moonshotai/Kimi-K2.6",
+  "next_steps": "Resume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "note": "",
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "rough_tokens": 92373,
+  "snapshot_path": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/.epflemma/workflow-state/ckpt-1778635653086.json",
+  "success_state": "verified",
+  "summary_text": "## Goal\nContinue the prove workflow for `/prove ProveDemo/IMOMath0.lean`.\n\n## Workflow\nLabel: verified proof milestone\nTrigger: verified-progress\nProject root: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\n\n## Current state\nSuccess state: verified\nTarget: numbertheory_3pow2pownm1mod2pownp3eq2pownp2\n\n## Lean findings\n{\"success\": true, \"target\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath0.lean\", \"project_root\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_project\n[EPFLEMMA-NATIVE WORKFLOW REPORT]\n\nFile: `ProveDemo/IMOMath0.lean`\nStatus: **VERIFIED** \u2014 no errors, no warnings, no `sorry`\n\n- `lake env lean ProveDemo/IMOMath0.lean` passed cleanly\n- `lean_inspect` reports zero diagnostics and zero sorrie\n\n## Relevant files\na/ProveDemo/IMOMath0.lean, b/ProveDemo/IMOMath0.lean, ProveDemo/IMOMath0.lean\n\n## Blockers\n{\"success\": true, \"target\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath0.lean\", \"project_root\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\", \"diagnostics\": \"{\\n  \\\"suc\n\n## Next steps\nResume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "target_symbol": "turn",
+  "trigger": "verified-progress",
+  "version": 1,
+  "workflow_command": "/prove ProveDemo/IMOMath0.lean",
+  "workflow_kind": "prove"
+}

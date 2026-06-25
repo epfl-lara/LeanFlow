@@ -1,0 +1,26 @@
+{
+  "active_files": [
+    "ProveDemo/RealTheorems.lean",
+    "a/ProveDemo/RealTheorems.lean",
+    "b/ProveDemo/RealTheorems.lean"
+  ],
+  "blocker_summary": "- status: still blocked; continue the same theorem turn",
+  "checkpoint_id": "ckpt-1782236069429",
+  "created_at": "2026-06-23T17:34:29+00:00",
+  "diagnostics_summary": "{\"success\": true, \"ok\": false, \"backend\": \"lean_interact\", \"tool\": \"lean_probe\", \"action\": \"feedback\", \"file\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean\", \"target\"\n{\"success\": true, \"diff\": \"--- a/ProveDemo/RealTheorems.lean\\n+++ b/ProveDemo/RealTheorems.lean\\n@@ -206,10 +206,21 @@\\n   have h2' : |f2 x - f2 y| \u2264 L2 * |x - y| := h2 x y\\n   have b2x : |f2 x| \u2264 M2 := b2 x\\n   have b1y : |f1 y| \u2264 M1 := b1\n{\"success\": true, \"ok\": false, \"backend\": \"lean_interact\", \"tool\": \"lean_probe\", \"action\": \"feedback\", \"file\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean\", \"target\"\n{\"success\": true, \"diff\": \"--- a/ProveDemo/RealTheorems.lean\\n+++ b/ProveDemo/RealTheorems.lean\\n@@ -209,18 +209,24 @@\\n   have n1 : |f1 x - f1 y| \u2265 0 := abs_nonneg (f1 x - f1 y)\\n   have n2 : |f2 x - f2 y| \u2265 0 := abs_nonneg (f2 x - f2 y)\\n",
+  "label": "verified proof milestone",
+  "linked_filesystem_checkpoint": "",
+  "model": "moonshotai/Kimi-K2.7-Code",
+  "next_steps": "Resume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "note": "",
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "rough_tokens": 30080,
+  "snapshot_path": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/.epflemma/workflow-state/ckpt-1782236069429.json",
+  "success_state": "verified",
+  "summary_text": "## Goal\nContinue the prove workflow for `/prove ProveDemo/RealTheorems.lean`.\n\n## Workflow\nLabel: verified proof milestone\nTrigger: verified-progress\nProject root: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\n\n## Current state\nSuccess state: verified\nTarget: mulLipschitz\n\n## Lean findings\n{\"success\": true, \"ok\": false, \"backend\": \"lean_interact\", \"tool\": \"lean_probe\", \"action\": \"feedback\", \"file\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean\", \"target\"\n{\"success\": true, \"diff\": \"--- a/ProveDemo/RealTheorems.lean\\n+++ b/ProveDemo/RealTheorems.lean\\n@@ -206,10 +206,21 @@\\n   have h2' : |f2 x - f2 y| \u2264 L2 * |x - y| := h2 x y\\n   have b2x : |f2 x| \u2264 M2 := b2 x\\n   have b1y : |f1 y| \u2264 M1 := b1\n{\"success\": true, \"ok\": false, \"backend\": \"lean_interact\", \"tool\": \"lean_probe\", \"action\": \"feedback\", \"file\": \"/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/RealTheorems.lean\", \"target\"\n{\"success\": true, \"diff\": \"--- a/ProveDemo/RealTheorems.lean\\n+++ b/ProveDemo/RealTheorems.lean\\n@@ -209,18 +209,24 @@\\n   have n1 : |f1 x - f1 y| \u2265 0 := abs_nonneg (f1 x - f1 y)\\n   have n2 : |f2 x - f2 y| \u2265 0 := abs_nonneg (f2 x - f2 y)\\n\n\n## Relevant files\nProveDemo/RealTheorems.lean, a/ProveDemo/RealTheorems.lean, b/ProveDemo/RealTheorems.lean\n\n## Blockers\n- status: still blocked; continue the same theorem turn\n\n## Next steps\nResume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "target_symbol": "turn",
+  "trigger": "verified-progress",
+  "version": 1,
+  "workflow_command": "/prove ProveDemo/RealTheorems.lean",
+  "workflow_kind": "prove"
+}

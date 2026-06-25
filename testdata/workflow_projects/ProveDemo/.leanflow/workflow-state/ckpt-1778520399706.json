@@ -1,0 +1,28 @@
+{
+  "active_files": [
+    "ProveDemo/IMOMath0.lean",
+    "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath0.lean",
+    "a/ProveDemo/IMOMath0.lean",
+    "b/ProveDemo/IMOMath0.lean",
+    "ProveDemo/IMOMath2.lean"
+  ],
+  "blocker_summary": "",
+  "checkpoint_id": "ckpt-1778520399706",
+  "created_at": "2026-05-11T17:26:40+00:00",
+  "diagnostics_summary": "[EPFLEMMA-NATIVE WORKFLOW CHECKPOINT] This persisted workflow handoff captures a previous autonomous milestone. Use it as the source of truth for resuming this managed session, and reconcile it with the current filesystem before redoing wor\n{\"content\": \"     1|import Mathlib\\n     2|\\n     3|open Topology Filter Set Polynomial Function Matrix Nat Real Complex\\n     4|open MeasureTheory Metric MvPolynomial\\n     5|open scoped InnerProductSpace\\n     6|\\n     7|/--\\n     8|Let $",
+  "label": "pre-exit checkpoint",
+  "linked_filesystem_checkpoint": "",
+  "model": "moonshotai/Kimi-K2.6",
+  "next_steps": "Resume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "note": "",
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "rough_tokens": 5986,
+  "snapshot_path": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/.epflemma/workflow-state/ckpt-1778520399706.json",
+  "success_state": "in-progress",
+  "summary_text": "## Goal\nContinue the prove workflow for `/prove ProveDemo/IMOMath2.lean`.\n\n## Workflow\nLabel: pre-exit checkpoint\nTrigger: pre-exit\nProject root: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\n\n## Current state\nSuccess state: in-progress\nTarget: amc12a_2021_p19\n\n## Lean findings\n[EPFLEMMA-NATIVE WORKFLOW CHECKPOINT] This persisted workflow handoff captures a previous autonomous milestone. Use it as the source of truth for resuming this managed session, and reconcile it with the current filesystem before redoing wor\n{\"content\": \"     1|import Mathlib\\n     2|\\n     3|open Topology Filter Set Polynomial Function Matrix Nat Real Complex\\n     4|open MeasureTheory Metric MvPolynomial\\n     5|open scoped InnerProductSpace\\n     6|\\n     7|/--\\n     8|Let $\n\n## Relevant files\nProveDemo/IMOMath0.lean, /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/ProveDemo/IMOMath0.lean, a/ProveDemo/IMOMath0.lean, b/ProveDemo/IMOMath0.lean, ProveDemo/IMOMath2.lean\n\n## Blockers\nNo blocker declared at this checkpoint.\n\n## Next steps\nResume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "target_symbol": "amc12a_2021_p19",
+  "trigger": "pre-exit",
+  "version": 1,
+  "workflow_command": "/prove ProveDemo/IMOMath2.lean",
+  "workflow_kind": "prove"
+}

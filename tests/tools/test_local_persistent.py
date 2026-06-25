@@ -61,8 +61,8 @@ class TestLocalOneShotRegression:
 
     def test_state_does_not_persist(self):
         env = LocalEnvironment(persistent=False)
-        env.execute("export GAUSS_ONESHOT_LOCAL=yes")
-        r = env.execute("echo $GAUSS_ONESHOT_LOCAL")
+        env.execute("export LEANFLOW_ONESHOT_LOCAL=yes")
+        r = env.execute("echo $LEANFLOW_ONESHOT_LOCAL")
         assert r["output"].strip() == ""
         env.cleanup()
 
@@ -80,8 +80,8 @@ class TestLocalPersistent:
         assert "hello-persistent" in r["output"]
 
     def test_env_var_persists(self, env):
-        env.execute("export GAUSS_LOCAL_PERSIST_TEST=works")
-        r = env.execute("echo $GAUSS_LOCAL_PERSIST_TEST")
+        env.execute("export LEANFLOW_LOCAL_PERSIST_TEST=works")
+        r = env.execute("echo $LEANFLOW_LOCAL_PERSIST_TEST")
         assert r["output"].strip() == "works"
 
     def test_cwd_persists(self, env):

@@ -47,7 +47,7 @@ DANGEROUS_PATTERNS = [
         "execute remote script via process substitution",
     ),
     (
-        r"\btee\b.*(/etc/|/dev/sd|\.ssh/|\.(epflemma|opengauss|gauss)/\.env)",
+        r"\btee\b.*(/etc/|/dev/sd|\.ssh/|\.leanflow/\.env)",
         "overwrite system file via tee",
     ),
     (r"\bxargs\s+.*\brm\b", "xargs with rm"),
@@ -177,7 +177,7 @@ def load_permanent_allowlist() -> set:
     patterns added via 'always' in a previous session.
     """
     try:
-        from epflemma_cli.config import load_config
+        from leanflow_cli.config import load_config
 
         config = load_config()
         patterns = set(config.get("command_allowlist", []) or [])
@@ -191,7 +191,7 @@ def load_permanent_allowlist() -> set:
 def save_permanent_allowlist(patterns: set):
     """Save permanently allowed command patterns to config."""
     try:
-        from epflemma_cli.config import load_config, save_config
+        from leanflow_cli.config import load_config, save_config
 
         config = load_config()
         config["command_allowlist"] = list(patterns)
@@ -230,7 +230,7 @@ def prompt_dangerous_approval(
         except Exception:
             return "deny"
 
-    os.environ["EPFLEMMA_SPINNER_PAUSE"] = "1"
+    os.environ["LEANFLOW_SPINNER_PAUSE"] = "1"
     try:
         is_truncated = len(command) > 80
         while True:
@@ -292,8 +292,8 @@ def prompt_dangerous_approval(
         print("\n      ✗ Cancelled")
         return "deny"
     finally:
-        if "EPFLEMMA_SPINNER_PAUSE" in os.environ:
-            del os.environ["EPFLEMMA_SPINNER_PAUSE"]
+        if "LEANFLOW_SPINNER_PAUSE" in os.environ:
+            del os.environ["LEANFLOW_SPINNER_PAUSE"]
         print()
         sys.stdout.flush()
 
@@ -301,7 +301,7 @@ def prompt_dangerous_approval(
 def _get_approval_mode() -> str:
     """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
     try:
-        from epflemma_cli.config import load_config
+        from leanflow_cli.config import load_config
 
         config = load_config()
         return config.get("approvals", {}).get("mode", "manual")
@@ -382,24 +382,24 @@ def check_dangerous_command(command: str, env_type: str, approval_callback=None)
         return {"approved": True, "message": None}
 
     # --yolo: bypass all approval prompts
-    if os.getenv("EPFLEMMA_YOLO_MODE"):
+    if os.getenv("LEANFLOW_YOLO_MODE"):
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return {"approved": True, "message": None}
 
-    session_key = os.getenv("EPFLEMMA_SESSION_KEY", "default")
+    session_key = os.getenv("LEANFLOW_SESSION_KEY", "default")
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
-    is_cli = os.getenv("EPFLEMMA_INTERACTIVE")
-    is_gateway = os.getenv("EPFLEMMA_GATEWAY_SESSION")
+    is_cli = os.getenv("LEANFLOW_INTERACTIVE")
+    is_gateway = os.getenv("LEANFLOW_GATEWAY_SESSION")
 
     if not is_cli and not is_gateway:
         return {"approved": True, "message": None}
 
-    if is_gateway or os.getenv("EPFLEMMA_EXEC_ASK"):
+    if is_gateway or os.getenv("LEANFLOW_EXEC_ASK"):
         submit_pending(
             session_key,
             {
@@ -456,12 +456,12 @@ def check_all_command_guards(command: str, env_type: str, approval_callback=None
 
     # --yolo or approvals.mode=off: bypass all approval prompts
     approval_mode = _get_approval_mode()
-    if os.getenv("EPFLEMMA_YOLO_MODE") or approval_mode == "off":
+    if os.getenv("LEANFLOW_YOLO_MODE") or approval_mode == "off":
         return {"approved": True, "message": None}
 
-    is_cli = os.getenv("EPFLEMMA_INTERACTIVE")
-    is_gateway = os.getenv("EPFLEMMA_GATEWAY_SESSION")
-    is_ask = os.getenv("EPFLEMMA_EXEC_ASK")
+    is_cli = os.getenv("LEANFLOW_INTERACTIVE")
+    is_gateway = os.getenv("LEANFLOW_GATEWAY_SESSION")
+    is_ask = os.getenv("LEANFLOW_EXEC_ASK")
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
@@ -496,7 +496,7 @@ def check_all_command_guards(command: str, env_type: str, approval_callback=None
     # Collect warnings that need approval
     warnings = []  # list of (pattern_key, description, is_tirith)
 
-    session_key = os.getenv("EPFLEMMA_SESSION_KEY", "default")
+    session_key = os.getenv("LEANFLOW_SESSION_KEY", "default")
 
     if tirith_result["action"] == "warn":
         findings = tirith_result.get("findings") or []

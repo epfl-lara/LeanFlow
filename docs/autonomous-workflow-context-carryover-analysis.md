@@ -16,11 +16,11 @@ Current behavior summary:
 - the latest failed proof stays in the file; older failed attempts are shown through structured `PREVIOUS ATTEMPTS`
 - failed-attempt memory is cleared when the workflow advances to a different theorem
 - model context fallback is now conservative (`200,000` tokens when provider metadata is unknown), so 75% compaction triggers around `150,000`, not `1,000,000`
-- stale runner snapshots in `.epflemma/workflow-state/live_status.json` are normalized to `phase: dead` / `process_id: 0` instead of appearing live forever
+- stale runner snapshots in `.leanflow/workflow-state/live_status.json` are normalized to `phase: dead` / `process_id: 0` instead of appearing live forever
 
 Reference run:
-- Activity: `/Users/lmilikic/GaussWorkspace/GaussTest/.epflemma/workflow-state/activity/runs/prove-20260421T134949Z-pid9680.jsonl`
-- Log: `/Users/lmilikic/GaussWorkspace/GaussTest/.epflemma/workflow-state/runs/prove-20260421T134949Z-pid9680.log`
+- Activity: `/Users/lmilikic/LeanFlowWorkspace/ProveDemo/.leanflow/workflow-state/activity/runs/prove-20260421T134949Z-pid9680.jsonl`
+- Log: `/Users/lmilikic/LeanFlowWorkspace/ProveDemo/.leanflow/workflow-state/runs/prove-20260421T134949Z-pid9680.log`
 
 ## Short Answer
 
@@ -39,7 +39,7 @@ For that historical run, the route was treated as having a `2,000,000` token con
 
 ### 1. One workflow run uses one long message history
 
-The autonomous loop in `epflemma_cli/native_runner.py` passes the same `history` back into each continuation:
+The autonomous loop in `leanflow_cli/native_runner.py` passes the same `history` back into each continuation:
 
 ```py
 result = _run_managed_conversation(
@@ -47,7 +47,7 @@ result = _run_managed_conversation(
     user_message=augmented_text,
     system_message=system_prompt,
     conversation_history=history,
-    persist_user_message=f"[epflemma-native autonomous continuation #{cycle}]",
+    persist_user_message=f"[leanflow-native autonomous continuation #{cycle}]",
 )
 history = result["messages"]
 ```
@@ -237,7 +237,7 @@ For theorem-queue workflows, the model should usually carry forward:
 
 It usually does not need the full search trace and proof scratchwork of an already-finished or abandoned theorem.
 
-Right now EPFLemma optimizes for whole-workflow continuity, not theorem-local isolation. That makes sense for some long sessions, but it is too sticky for queue-driven Lean proving.
+Right now LeanFlow optimizes for whole-workflow continuity, not theorem-local isolation. That makes sense for some long sessions, but it is too sticky for queue-driven Lean proving.
 
 ## Current Behavior: Benefits vs Costs
 

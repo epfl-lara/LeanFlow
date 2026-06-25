@@ -3,10 +3,10 @@
 MCP (Model Context Protocol) Client Support
 
 Connects to external MCP servers via stdio or HTTP/StreamableHTTP transport,
-discovers their tools, and registers them into the EPFLemma tool registry
+discovers their tools, and registers them into the LeanFlow tool registry
 so the agent can call them like any built-in tool.
 
-Configuration is read from ~/.epflemma/config.yaml under the ``mcp_servers`` key.
+Configuration is read from ~/.leanflow/config.yaml under the ``mcp_servers`` key.
 The ``mcp`` Python package is optional -- if not installed, this module is a
 no-op and logs a debug message.
 
@@ -935,7 +935,7 @@ def get_mcp_status() -> list[dict]:
     """
     configured = _load_mcp_config()
     try:
-        from epflemma_cli.cli.mcp_bootstrap import managed_mcp_server_status
+        from leanflow_cli.cli.mcp_bootstrap import managed_mcp_server_status
 
         managed_status = managed_mcp_server_status()
     except Exception:

@@ -1,0 +1,30 @@
+{
+  "active_files": [
+    "//github.com/google-deepmind/formal-conjectures/blob/4d4c3831f50733101db62c5bf34b6666df97897f/FormalConjectures/Wikipedia/SumOfThreeCubes.lean",
+    "//github.com/leanprover/lean4/blob/v4.30.0-rc2/src/lean/Init/Data/Int/Order.lean",
+    "//github.com/leanprover-community/mathlib4/blob/e336692c249fa8d3928f5cad3e1b9fd4485ec3bc/Mathlib/Algebra/Order/Group/Abs.lean",
+    "//github.com/leanprover/lean4/blob/v4.30.0-rc2/src/lean/Init/Omega/Int.lean",
+    "a/ProveDemo/IMOMath0.lean",
+    "b/ProveDemo/IMOMath0.lean",
+    "ProveDemo/IMOMath0.lean"
+  ],
+  "blocker_summary": "No remaining blockers in this file. Handing back to manager for next queue item.",
+  "checkpoint_id": "ckpt-1778708529481",
+  "created_at": "2026-05-13T21:42:09+00:00",
+  "diagnostics_summary": "Final sweep complete. File `ProveDemo/IMOMath0.lean` is now clean:\n\n- imo_1964_p2: solved (no sorry, no goals)\n- Warning on line 3 (long line): fixed by splitting `open` across two lines\n- Warning on line 138 (`<;> ring` \u2192 `ring`): fixed\n- ",
+  "label": "verified proof milestone",
+  "linked_filesystem_checkpoint": "",
+  "model": "moonshotai/Kimi-K2.6",
+  "next_steps": "Resume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "note": "",
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo",
+  "rough_tokens": 15961,
+  "snapshot_path": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo/.epflemma/workflow-state/ckpt-1778708529481.json",
+  "success_state": "verified",
+  "summary_text": "## Goal\nContinue the prove workflow for `/prove ProveDemo/IMOMath0.lean`.\n\n## Workflow\nLabel: verified proof milestone\nTrigger: verified-progress\nProject root: /Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/ProveDemo\n\n## Current state\nSuccess state: verified\nTarget: [unknown]\n\n## Lean findings\nFinal sweep complete. File `ProveDemo/IMOMath0.lean` is now clean:\n\n- imo_1964_p2: solved (no sorry, no goals)\n- Warning on line 3 (long line): fixed by splitting `open` across two lines\n- Warning on line 138 (`<;> ring` \u2192 `ring`): fixed\n- \n\n## Relevant files\na/ProveDemo/IMOMath0.lean, b/ProveDemo/IMOMath0.lean, ProveDemo/IMOMath0.lean\n\n## Blockers\nNo remaining blockers in this file. Handing back to manager for next queue item.\n\n## Next steps\nResume from the latest verified or in-progress state and inspect the active Lean file before continuing.",
+  "target_symbol": "imo_1964_p2",
+  "trigger": "verified-progress",
+  "version": 1,
+  "workflow_command": "/prove ProveDemo/IMOMath0.lean",
+  "workflow_kind": "prove"
+}

@@ -1,0 +1,13 @@
+{
+  "active_skill": "lean-formalization",
+  "created_at": "2026-05-23T17:52:25+00:00",
+  "parent_run_id": "",
+  "process_id": 8497,
+  "project_root": "/Users/lmilikic/Desktop/runai_start/vllm012/EPFLemma/testdata/workflow_projects/DocFormalizationDemo",
+  "run_id": "formalize-20260523T175150Z-pid8497",
+  "run_scope": "background-session",
+  "task_label": "formalize",
+  "updated_at": "2026-05-23T18:13:06+00:00",
+  "workflow_command": "/formalize docs/HiltonMilnerTheorem/source/A_short_proof_of_the_Hilton-Milner_theorem.tex",
+  "workflow_kind": "formalize"
+}

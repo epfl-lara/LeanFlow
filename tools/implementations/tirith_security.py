@@ -11,7 +11,7 @@ Operational failures (spawn error, timeout, unknown exit code) respect
 the fail_open config setting. Programming errors propagate.
 
 Auto-install: if tirith is not found on PATH or at the configured path,
-it is automatically downloaded from GitHub releases to $EPFLEMMA_HOME/bin/tirith.
+it is automatically downloaded from GitHub releases to $LEANFLOW_HOME/bin/tirith.
 The download verifies SHA-256 checksums and cosign provenance (when cosign
 is available). Installation runs in a background thread so startup never
 blocks.
@@ -32,7 +32,7 @@ import threading
 import time
 import urllib.request
 
-from core.home import epflemma_home
+from core.home import leanflow_home
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ def _load_security_config() -> dict:
         "tirith_fail_open": True,
     }
     try:
-        from epflemma_cli.config import load_config
+        from leanflow_cli.config import load_config
 
         cfg = load_config().get("security", {}) or {}
     except Exception:
@@ -113,18 +113,18 @@ _install_thread: threading.Thread | None = None
 _MARKER_TTL = 86400  # 24 hours
 
 
-def _get_epflemma_home() -> str:
-    """Return the EPFLemma home directory as a string.
+def _get_leanflow_home() -> str:
+    """Return the LeanFlow home directory as a string.
 
-    Resolution (incl. the EPFLEMMA_HOME override that gives tests automatic isolation) lives in
+    Resolution (incl. the LEANFLOW_HOME override that gives tests automatic isolation) lives in
     core.home — tirith state stays inside the active profile via that single source of truth.
     """
-    return str(epflemma_home())
+    return str(leanflow_home())
 
 
 def _failure_marker_path() -> str:
     """Return the path to the install-failure marker file."""
-    return os.path.join(_get_epflemma_home(), ".tirith-install-failed")
+    return os.path.join(_get_leanflow_home(), ".tirith-install-failed")
 
 
 def _read_failure_reason() -> str | None:
@@ -184,9 +184,9 @@ def _clear_install_failed():
         os.unlink(_failure_marker_path())
 
 
-def _epflemma_bin_dir() -> str:
-    """Return $EPFLEMMA_HOME/bin, creating it if needed."""
-    d = os.path.join(_get_epflemma_home(), "bin")
+def _leanflow_bin_dir() -> str:
+    """Return $LEANFLOW_HOME/bin, creating it if needed."""
+    d = os.path.join(_get_leanflow_home(), "bin")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -297,7 +297,7 @@ def _verify_checksum(archive_path: str, checksums_path: str, archive_name: str) 
 
 
 def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
-    """Download and install tirith to $EPFLEMMA_HOME/bin/tirith.
+    """Download and install tirith to $LEANFLOW_HOME/bin/tirith.
 
     Verifies provenance via cosign and SHA-256 checksum.
     Returns (installed_path, failure_reason).  On success failure_reason is "".
@@ -383,7 +383,7 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
                 return None, "binary_not_in_archive"
 
         src = os.path.join(tmpdir, "tirith")
-        dest = os.path.join(_epflemma_bin_dir(), "tirith")
+        dest = os.path.join(_leanflow_bin_dir(), "tirith")
         shutil.move(src, dest)
         os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -408,8 +408,8 @@ def _resolve_tirith_path(configured_path: str) -> str:
 
     For the default "tirith":
     1. PATH lookup via shutil.which
-    2. $EPFLEMMA_HOME/bin/tirith (previously auto-installed)
-    3. Auto-install from GitHub releases → $EPFLEMMA_HOME/bin/tirith
+    2. $LEANFLOW_HOME/bin/tirith (previously auto-installed)
+    3. Auto-install from GitHub releases → $LEANFLOW_HOME/bin/tirith
 
     Failed installs are cached for the process lifetime (and persisted to
     disk for 24h) to avoid repeated network attempts.
@@ -449,7 +449,7 @@ def _resolve_tirith_path(configured_path: str) -> str:
         _clear_install_failed()
         return found
 
-    tirith_bin = os.path.join(_epflemma_bin_dir(), "tirith")
+    tirith_bin = os.path.join(_leanflow_bin_dir(), "tirith")
     if os.path.isfile(tirith_bin) and os.access(tirith_bin, os.X_OK):
         _resolved_path = tirith_bin
         _install_failure_reason = ""
@@ -513,7 +513,7 @@ def _background_install(*, log_failures: bool = True):
             _install_failure_reason = ""
             return
 
-        tirith_bin = os.path.join(_epflemma_bin_dir(), "tirith")
+        tirith_bin = os.path.join(_leanflow_bin_dir(), "tirith")
         if os.path.isfile(tirith_bin) and os.access(tirith_bin, os.X_OK):
             _resolved_path = tirith_bin
             _install_failure_reason = ""
@@ -575,7 +575,7 @@ def ensure_installed(*, log_failures: bool = True):
         _clear_install_failed()
         return found
 
-    tirith_bin = os.path.join(_epflemma_bin_dir(), "tirith")
+    tirith_bin = os.path.join(_leanflow_bin_dir(), "tirith")
     if os.path.isfile(tirith_bin) and os.access(tirith_bin, os.X_OK):
         _resolved_path = tirith_bin
         _install_failure_reason = ""

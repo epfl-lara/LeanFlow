@@ -147,7 +147,7 @@ class TestBuildApiKwargsNousPortal:
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         extra = kwargs.get("extra_body", {})
-        assert extra.get("tags") == ["product=epflemma-agent"]
+        assert extra.get("tags") == ["product=leanflow-agent"]
 
     def test_uses_chat_completions_format(self, monkeypatch):
         agent = _make_agent(
@@ -596,8 +596,8 @@ class TestAuxiliaryClientProviderPriority:
     @staticmethod
     def _clear_competing_provider_env(monkeypatch):
         for key in (
-            "EPFLEMMA_OPENAI_BASE_URL",
-            "EPFLEMMA_OPENAI_API_KEY",
+            "LEANFLOW_OPENAI_BASE_URL",
+            "LEANFLOW_OPENAI_API_KEY",
             "GLM_API_KEY",
             "ZAI_API_KEY",
             "Z_AI_API_KEY",

@@ -7,7 +7,7 @@ import logging
 import threading
 
 from agent.accounting.redact import redact_sensitive_text
-from epflemma_cli.runtime.file_locks import ensure_file_lock
+from leanflow_cli.runtime.file_locks import ensure_file_lock
 from tools.implementations.file_operations import ShellFileOperations
 from tools.response import dumps, error
 
