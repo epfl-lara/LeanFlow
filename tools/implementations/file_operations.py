@@ -47,6 +47,8 @@ WRITE_DENIED_PATHS = {
         os.path.join(_HOME, ".ssh", "id_rsa"),
         os.path.join(_HOME, ".ssh", "id_ed25519"),
         os.path.join(_HOME, ".ssh", "config"),
+        os.path.join(_HOME, ".epflemma", ".env"),
+        os.path.join(_HOME, ".opengauss", ".env"),
         os.path.join(_HOME, ".gauss", ".env"),
         os.path.join(_HOME, ".bashrc"),
         os.path.join(_HOME, ".zshrc"),

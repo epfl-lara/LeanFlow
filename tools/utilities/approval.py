@@ -46,7 +46,10 @@ DANGEROUS_PATTERNS = [
         r"\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b",
         "execute remote script via process substitution",
     ),
-    (r"\btee\b.*(/etc/|/dev/sd|\.ssh/|\.gauss/\.env)", "overwrite system file via tee"),
+    (
+        r"\btee\b.*(/etc/|/dev/sd|\.ssh/|\.(epflemma|opengauss|gauss)/\.env)",
+        "overwrite system file via tee",
+    ),
     (r"\bxargs\s+.*\brm\b", "xargs with rm"),
     (r"\bfind\b.*-exec\s+(/\S*/)?rm\b", "find -exec rm"),
     (r"\bfind\b.*-delete\b", "find -delete"),

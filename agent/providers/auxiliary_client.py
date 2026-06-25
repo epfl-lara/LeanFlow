@@ -6,7 +6,7 @@ duplicating fallback logic.
 
 Resolution order for text tasks (auto mode):
   1. OpenRouter  (OPENROUTER_API_KEY)
-  2. Nous Portal (~/.gauss/auth.json active provider)
+  2. Nous Portal (~/.epflemma/auth.json active provider)
   3. Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
   4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
      wrapped to look like a chat.completions client)
@@ -108,7 +108,7 @@ from agent.providers.auxiliary_adapters import (  # noqa: E402,F401
 )
 
 # Nous Portal auth/endpoint helpers live in agent/auxiliary_nous.py. They read
-# ~/.gauss/auth.json and resolve the Nous API key/base URL with no auxiliary
+# ~/.epflemma/auth.json and resolve the Nous API key/base URL with no auxiliary
 # routing state, so they were extracted as a closed cluster (with the default
 # base-URL constant) and re-exported here — every importer and test keeps
 # resolving auxiliary_client.<name>.
@@ -259,7 +259,7 @@ def _try_nous() -> tuple[OpenAI | None, str | None]:
 def _read_main_model() -> str:
     """Read the user's configured main model from config/env.
 
-    Falls back through GAUSS_MODEL → LLM_MODEL → config.yaml model.default
+    Falls back through OPENAI_MODEL → LLM_MODEL → config.yaml model.default
     so the auxiliary client can use the same model as the main agent when no
     dedicated auxiliary model is available.
     """
@@ -363,7 +363,7 @@ def _resolve_forced_provider(forced: str) -> tuple[OpenAI | None, str | None]:
         client, model = _try_nous()
         if client is None:
             logger.warning(
-                "auxiliary.provider=nous but Nous Portal not configured (run: gauss login)"
+                "auxiliary.provider=nous but Nous Portal not configured (run: epflemma provider)"
             )
         return client, model
 
@@ -371,7 +371,7 @@ def _resolve_forced_provider(forced: str) -> tuple[OpenAI | None, str | None]:
         client, model = _try_codex()
         if client is None:
             logger.warning(
-                "auxiliary.provider=codex but no Codex OAuth token found (run: gauss model)"
+                "auxiliary.provider=codex but no Codex OAuth token found (run: codex login)"
             )
         return client, model
 
@@ -515,7 +515,7 @@ def resolve_provider_client(
         if client is None:
             logger.warning(
                 "resolve_provider_client: nous requested "
-                "but Nous Portal not configured (run: gauss login)"
+                "but Nous Portal not configured (run: epflemma provider)"
             )
             return None, None
         final_model = model or default
@@ -530,7 +530,7 @@ def resolve_provider_client(
             if not codex_token:
                 logger.warning(
                     "resolve_provider_client: openai-codex requested "
-                    "but no Codex OAuth token found (run: gauss model)"
+                    "but no Codex OAuth token found (run: codex login)"
                 )
                 return None, None
             final_model = model or _CODEX_AUX_MODEL
@@ -541,7 +541,7 @@ def resolve_provider_client(
         if client is None:
             logger.warning(
                 "resolve_provider_client: openai-codex requested "
-                "but no Codex OAuth token found (run: gauss model)"
+                "but no Codex OAuth token found (run: codex login)"
             )
             return None, None
         final_model = model or default

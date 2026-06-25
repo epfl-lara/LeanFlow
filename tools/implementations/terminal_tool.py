@@ -60,11 +60,13 @@ def _check_disk_usage_warning():
     scratch_dir = _get_scratch_dir()
 
     try:
-        # Get total size of gauss directories
+        # Get total size of sandbox directories
         total_bytes = 0
         import glob
 
-        for path in glob.glob(str(scratch_dir / "gauss-*")):
+        for path in glob.glob(str(scratch_dir / "epflemma-*")) + glob.glob(
+            str(scratch_dir / "gauss-*")
+        ):
             for f in Path(path).rglob("*"):
                 if f.is_file():
                     try:
@@ -156,7 +158,7 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
         if failure in output:
             return (
                 output
-                + "\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to ~/.gauss/.env on the agent machine."
+                + "\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to ~/.epflemma/.env on the agent machine."
             )
 
     return output
@@ -446,7 +448,7 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
     except (ValueError, json.JSONDecodeError) as exc:
         raise ValueError(
             f"Invalid value for {name}: {raw!r} (expected {type_label}). "
-            f"Check ~/.gauss/.env or environment variables."
+            f"Check ~/.epflemma/.env or environment variables."
         ) from exc
 
 
@@ -733,15 +735,16 @@ def get_active_environments_info() -> dict[str, Any]:
     total_size = 0
     for task_id in _active_environments:
         scratch_dir = _get_scratch_dir()
-        pattern = f"gauss-*{task_id[:8]}*"
+        patterns = (f"epflemma-*{task_id[:8]}*", f"gauss-*{task_id[:8]}*")
         import glob
 
-        for path in glob.glob(str(scratch_dir / pattern)):
-            try:
-                size = sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file())
-                total_size += size
-            except OSError as e:
-                logger.debug("Could not stat path %s: %s", path, e)
+        for pattern in patterns:
+            for path in glob.glob(str(scratch_dir / pattern)):
+                try:
+                    size = sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file())
+                    total_size += size
+                except OSError as e:
+                    logger.debug("Could not stat path %s: %s", path, e)
 
     info["total_disk_usage_mb"] = round(total_size / (1024 * 1024), 2)
     return info
@@ -765,7 +768,9 @@ def cleanup_all_environments():
     scratch_dir = _get_scratch_dir()
     import glob
 
-    for path in glob.glob(str(scratch_dir / "gauss-*")):
+    for path in glob.glob(str(scratch_dir / "epflemma-*")) + glob.glob(
+        str(scratch_dir / "gauss-*")
+    ):
         try:
             shutil.rmtree(path, ignore_errors=True)
             logger.info("Removed orphaned: %s", path)
@@ -1218,7 +1223,7 @@ def check_terminal_requirements() -> bool:
 
     try:
         if env_type == "local":
-            # Local execution uses Gauss' own LocalEnvironment wrapper and does
+            # Local execution uses EPFLemma's own LocalEnvironment wrapper and does
             # not depend on minisweagent being importable.
             return True
 
@@ -1302,7 +1307,7 @@ if __name__ == "__main__":
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
-    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', '~/.gauss/sandboxes')}")
+    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', '~/.epflemma/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
 

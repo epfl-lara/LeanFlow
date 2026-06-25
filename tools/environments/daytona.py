@@ -33,7 +33,7 @@ class DaytonaEnvironment(BaseEnvironment):
         cwd: str = "/home/daytona",
         timeout: int = 60,
         cpu: int = 1,
-        memory: int = 5120,  # MB (gauss convention)
+        memory: int = 5120,  # MB (EPFLemma convention)
         disk: int = 10240,  # MB (Daytona platform max is 10GB)
         persistent_filesystem: bool = True,
         task_id: str = "default",
@@ -68,7 +68,7 @@ class DaytonaEnvironment(BaseEnvironment):
             disk_gib = 10
         resources = Resources(cpu=cpu, memory=memory_gib, disk=disk_gib)
 
-        labels = {"gauss_task_id": task_id}
+        labels = {"epflemma_task_id": task_id}
 
         # Try to resume an existing stopped sandbox for this task
         if self._persistent:

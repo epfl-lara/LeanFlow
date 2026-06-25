@@ -1,6 +1,6 @@
 """Nous Portal auth/endpoint helpers for the auxiliary router.
 
-Reads ``~/.gauss/auth.json`` (via ``epflemma_cli.config.get_epflemma_home``) to
+Reads ``~/.epflemma/auth.json`` (via ``epflemma_cli.config.get_epflemma_home``) to
 detect an active Nous provider, and resolves the API key and inference base URL
 for it. These helpers hold no auxiliary routing state, so they form a closed
 cluster that ``auxiliary_client`` re-exports unchanged (importers and tests keep
@@ -22,7 +22,7 @@ _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 
 
 def _read_nous_auth() -> dict | None:
-    """Read and validate ~/.gauss/auth.json for an active Nous provider.
+    """Read and validate ~/.epflemma/auth.json for an active Nous provider.
 
     Returns the provider state dict if Nous is active with tokens,
     otherwise None.

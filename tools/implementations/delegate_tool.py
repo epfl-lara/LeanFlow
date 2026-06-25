@@ -638,7 +638,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     if not api_key:
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
-            f"Set the appropriate environment variable or run 'gauss login'."
+            f"Set the appropriate environment variable or run 'epflemma provider'."
         )
 
     return {

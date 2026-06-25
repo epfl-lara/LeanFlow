@@ -11,7 +11,7 @@ The product is optimized for two main jobs:
 
 Internally, `/prove` and `/autoprove` normalize to the same native workflow, and `/formalize` and `/autoformalize` normalize to the same native workflow. The auto-prefixed forms are compatibility aliases, not separate product surfaces.
 
-It installs as `epflemma`, uses `~/.epflemma` for user-level config, keeps project-owned workflow state in `.epflemma/`, and can live alongside an existing `gauss` install without overwriting it.
+It installs as `epflemma`, uses `~/.epflemma` for user-level config, and keeps project-owned workflow state in `.epflemma/`.
 
 This fork removes the old managed `claude-code` and `codex` backend flow. EPFLemma now runs Lean workflows through its own internal `epflemma-native` runtime and routes inference through direct provider APIs, OpenAI-compatible endpoints such as RCP, or local runtimes such as `vllm`, `ollama`, and `llama.cpp`.
 
@@ -229,7 +229,7 @@ If you still see references to legacy Gauss-era modules in comments or compatibi
 - State directory: `~/.epflemma`
 - Project manifest: `.epflemma/project.yaml`
 
-The interface is styled around EPFL / Lean / AI-for-math work, but the executable name stays `epflemma` for compatibility and coexistence.
+The interface is styled around EPFL / Lean / AI-for-math work, but the executable name stays `epflemma`.
 
 ## Install
 
@@ -259,7 +259,7 @@ The installer also checks or wires the external CLI tools used by normal
 workflows: `rg` for repository search and Poppler's `pdftotext`, `pdfinfo`, and
 `pdfimages` for PDF source inspection.
 
-The installer does not touch `~/.gauss` or replace an existing `gauss` binary.
+The installer does not modify any retired `~/.opengauss` / `~/.gauss` home.
 
 Custom install locations:
 
@@ -272,7 +272,7 @@ Custom install locations:
 
 ## Update
 
-EPFLemma no longer uses the old `gauss update` flow. Update by reinstalling from the repo:
+Update by reinstalling from the repo:
 
 ```bash
 cd EPFLemma
@@ -299,23 +299,15 @@ diff to `~/.epflemma/sandbox/runs/<run-id>/changes.patch`. See
 [sandbox-runtime.md](sandbox-runtime.md) for the isolation and patch-export
 contract.
 
-## Coexistence And Migration
+## Migration
 
-EPFLemma is designed to coexist with Gauss:
+EPFLemma stores everything under its own paths — `~/.epflemma` for user-level config and `.epflemma/` for project workflow state. On first run, if no EPFLemma home exists yet, it seeds one **once** from a retired predecessor home (`~/.opengauss` or `~/.gauss`):
 
-- `gauss` and `epflemma` are separate binaries
-- Gauss state stays in `~/.gauss`
-- EPFLemma state stays in `~/.epflemma`
-- Gauss project manifests stay in `.gauss/project.yaml`
-- EPFLemma project manifests stay in `.epflemma/project.yaml`
+- `~/.opengauss/config.yaml` or `~/.gauss/config.yaml`
+- `~/.opengauss/.env` or `~/.gauss/.env`
+- a legacy `.opengauss/project.yaml` or `.gauss/project.yaml` manifest
 
-On first run, EPFLemma can import legacy settings from:
-
-- `~/.gauss/config.yaml`
-- `~/.gauss/.env`
-- `.gauss/project.yaml`
-
-That import is one-time and non-destructive. After import, EPFLemma uses only its own paths.
+That import is one-time and non-destructive — the legacy home is read, never modified — and afterward EPFLemma uses only its own paths.
 
 ## Quick Start
 
@@ -1067,7 +1059,7 @@ That matches AIaaS/RCP-style models such as Qwen hybrid reasoning checkpoints an
 If GLM is down, the tested fallback model on that endpoint is:
 
 ```text
-google/gemma-4-31B-it
+google/gemma-3-27b-it
 ```
 
 Use the exact model name. The endpoint is case-sensitive.
@@ -1079,14 +1071,14 @@ Inside the interactive shell, `/provider` shows both the resolved provider and t
 Select a local runtime:
 
 ```bash
-epflemma models local use vllm google/gemma-4-31B-it
+epflemma models local use vllm google/gemma-3-27b-it
 epflemma provider --requested local
 ```
 
 Start a local runtime:
 
 ```bash
-epflemma models local start vllm google/gemma-4-31B-it
+epflemma models local start vllm google/gemma-3-27b-it
 epflemma models local status vllm
 epflemma models local logs vllm
 ```
@@ -1404,9 +1396,8 @@ Current verified behavior from this repo:
 
 - focused EPFLemma test suite passes
 - standalone install works with a separate EPFLemma home
-- existing `gauss` remains independently resolvable
 - workflow request resolution works against `.epflemma/project.yaml`
-- RCP remote smoke succeeded with `google/gemma-4-31B-it`
+- RCP remote smoke succeeded with `google/gemma-3-27b-it`
 - dead gateway/cron/voice/data-generation/website/community-skill directories have been removed from the repo tree
 
 ## Development

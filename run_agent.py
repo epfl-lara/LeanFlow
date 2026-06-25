@@ -519,7 +519,7 @@ class AIAgent:
         except (TypeError, ValueError):
             self._advisor_result_context_reserve_tokens = 90000
 
-        # Persistent error log -- always writes WARNING+ to ~/.gauss/logs/errors.log
+        # Persistent error log -- always writes WARNING+ to <EPFLEMMA_HOME>/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
         # In gateway mode, each incoming message creates a new AIAgent instance,
         # while the root logger is process-global. Re-adding the same errors.log
@@ -5166,7 +5166,7 @@ def main(
         log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses. Defaults to 20.
 
     Toolset Examples:
-        - "autoformalize": Minimal Gauss workflow with file, web, and browser tools
+        - "autoformalize": Minimal EPFLemma workflow with file and web tools
     """
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)

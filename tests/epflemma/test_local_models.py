@@ -19,15 +19,15 @@ from epflemma_cli.local_models import (
 def test_use_local_runtime_persists_active_selection(monkeypatch, tmp_path):
     monkeypatch.setenv("EPFLEMMA_HOME", str(tmp_path / "home"))
 
-    payload = use_local_runtime("vllm", model="google/gemma-4-31B-it")
+    payload = use_local_runtime("vllm", model="google/gemma-3-27b-it")
 
     assert payload["runtime"] == "vllm"
-    assert payload["model"] == "google/gemma-4-31B-it"
+    assert payload["model"] == "google/gemma-3-27b-it"
 
     active = resolve_active_local_runtime()
     assert active is not None
     assert active["runtime"] == "vllm"
-    assert active["model"] == "google/gemma-4-31B-it"
+    assert active["model"] == "google/gemma-3-27b-it"
 
 
 def test_use_local_runtime_rejects_unsupported_runtime(monkeypatch, tmp_path):
@@ -136,11 +136,11 @@ def test_resolve_active_local_runtime_returns_none_without_config(monkeypatch, t
 
 
 def test_build_command_vllm_includes_model_and_port():
-    cmd = _build_command("vllm", "google/gemma-4-31B-it", "127.0.0.1", 8000, [])
+    cmd = _build_command("vllm", "google/gemma-3-27b-it", "127.0.0.1", 8000, [])
 
     assert "vllm.entrypoints.openai.api_server" in " ".join(cmd)
     assert "--model" in cmd
-    assert "google/gemma-4-31B-it" in cmd
+    assert "google/gemma-3-27b-it" in cmd
     assert "--port" in cmd
     assert "8000" in cmd
     assert "--host" in cmd
@@ -171,7 +171,7 @@ def test_build_command_raises_for_unknown_runtime():
 
 def test_build_command_appends_extra_args():
     extra = ["--tensor-parallel-size", "2"]
-    cmd = _build_command("vllm", "google/gemma-4-31B-it", "127.0.0.1", 8000, extra)
+    cmd = _build_command("vllm", "google/gemma-3-27b-it", "127.0.0.1", 8000, extra)
 
     assert "--tensor-parallel-size" in cmd
     assert "2" in cmd

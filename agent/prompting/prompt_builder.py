@@ -168,12 +168,12 @@ def _read_skill_conditions(skill_file: Path) -> dict:
 
         raw = skill_file.read_text(encoding="utf-8")[:2000]
         frontmatter, _ = _parse_frontmatter(raw)
-        gauss = frontmatter.get("metadata", {}).get("gauss", {})
+        meta = frontmatter.get("metadata", {}).get("epflemma", {})
         return {
-            "fallback_for_toolsets": gauss.get("fallback_for_toolsets", []),
-            "requires_toolsets": gauss.get("requires_toolsets", []),
-            "fallback_for_tools": gauss.get("fallback_for_tools", []),
-            "requires_tools": gauss.get("requires_tools", []),
+            "fallback_for_toolsets": meta.get("fallback_for_toolsets", []),
+            "requires_toolsets": meta.get("requires_toolsets", []),
+            "fallback_for_tools": meta.get("fallback_for_tools", []),
+            "requires_tools": meta.get("requires_tools", []),
         }
     except Exception as e:
         logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)

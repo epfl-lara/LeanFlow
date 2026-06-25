@@ -83,7 +83,7 @@ def test_publish_template_reuses_alias_snapshot_and_tags(tmp_path, monkeypatch):
             {
                 "alias": "demo",
                 "base_snapshot_id": "snap_base",
-                "tags": ["template", "gauss"],
+                "tags": ["template", "epflemma"],
                 "template_id": "tpl_current",
             }
         )
@@ -122,12 +122,12 @@ def test_publish_template_reuses_alias_snapshot_and_tags(tmp_path, monkeypatch):
     def share_template(request):
         body = json.loads(request.data.decode("utf-8"))
         assert body["alias"] == "demo"
-        assert body["tags"] == ["template", "gauss"]
+        assert body["tags"] == ["template", "epflemma"]
         return FakeResponse({"published": True})
 
     def alias_after(_request):
         return FakeResponse(
-            {"alias": "demo", "template_id": "tpl_new", "tags": ["template", "gauss"]}
+            {"alias": "demo", "template_id": "tpl_new", "tags": ["template", "epflemma"]}
         )
 
     opener = FakeOpener(
@@ -155,7 +155,7 @@ def test_publish_template_reuses_alias_snapshot_and_tags(tmp_path, monkeypatch):
 
     assert result["template_id"] == "tpl_new"
     assert result["alias"] == "demo"
-    assert result["tags"] == ["template", "gauss"]
+    assert result["tags"] == ["template", "epflemma"]
     assert [method for method, *_ in opener.requests] == [
         "GET",
         "POST",
@@ -232,12 +232,12 @@ def test_publish_template_creates_and_shares_when_alias_is_missing(tmp_path, mon
     def share_template(request):
         body = json.loads(request.data.decode("utf-8"))
         assert body["alias"] == "demo"
-        assert body["tags"] == ["template", "gauss"]
+        assert body["tags"] == ["template", "epflemma"]
         return FakeResponse({"published": True})
 
     def alias_after(_request):
         return FakeResponse(
-            {"alias": "demo", "template_id": "tpl_new", "tags": ["template", "gauss"]}
+            {"alias": "demo", "template_id": "tpl_new", "tags": ["template", "epflemma"]}
         )
 
     opener = FakeOpener(

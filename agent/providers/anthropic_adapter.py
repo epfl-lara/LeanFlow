@@ -1,6 +1,6 @@
-"""Anthropic Messages API adapter for Gauss Agent.
+"""Anthropic Messages API adapter for EPFLemma.
 
-Translates between Gauss's internal OpenAI-style message format and
+Translates between EPFLemma's internal OpenAI-style message format and
 Anthropic's Messages API. Follows the same pattern as the codex_responses
 adapter — all provider-specific logic is isolated here.
 
@@ -261,7 +261,7 @@ def _prefer_refreshable_claude_code_token(
 ) -> str | None:
     """Prefer Claude Code creds when a persisted env OAuth token would shadow refresh.
 
-    Gauss historically persisted setup tokens into ANTHROPIC_TOKEN. That makes
+    Setup tokens were historically persisted into ANTHROPIC_TOKEN. That makes
     later refresh impossible because the static env token wins before we ever
     inspect Claude Code's refreshable credential file. If we have a refreshable
     Claude Code credential record, prefer it over the static env OAuth token.
@@ -313,7 +313,7 @@ def resolve_anthropic_token() -> str | None:
     """Resolve an Anthropic token from all available sources.
 
     Priority:
-      1. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Gauss)
+      1. ANTHROPIC_TOKEN env var (OAuth/setup token saved at setup time)
       2. CLAUDE_CODE_OAUTH_TOKEN env var
       3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
@@ -323,7 +323,7 @@ def resolve_anthropic_token() -> str | None:
     """
     creds = read_claude_code_credentials()
 
-    # 1. Gauss-managed OAuth/setup token env var
+    # 1. Managed OAuth/setup token env var
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()
     if token:
         preferred = _prefer_refreshable_claude_code_token(token, creds)
@@ -345,7 +345,7 @@ def resolve_anthropic_token() -> str | None:
         return resolved_claude_token
 
     # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
-    # This remains as a compatibility fallback for pre-migration Gauss configs.
+    # This remains as a compatibility fallback for pre-migration configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:
         return api_key

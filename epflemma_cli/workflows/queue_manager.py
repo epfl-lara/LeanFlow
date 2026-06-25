@@ -609,7 +609,7 @@ class TheoremQueueManager:
         The runner reads ``disabled_tools`` to (a) drop the tool from the
         next API call's schema and (b) annotate the prompt. Today the disable
         is invisible to the model and wastes one API step per re-attempt
-        (lean_auto_try in the GaussTest log: 6 wasted steps).
+        (lean_auto_try in the test log: 6 wasted steps).
         """
         if name:
             self._disabled_tool_reasons[str(name)] = str(reason or "")

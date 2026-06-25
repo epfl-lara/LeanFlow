@@ -372,7 +372,7 @@ class TestReadSkillConditions:
     def test_reads_fallback_for_toolsets(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(
-            "---\nname: ddg\ndescription: DuckDuckGo\nmetadata:\n  gauss:\n    fallback_for_toolsets: [web]\n---\n"
+            "---\nname: ddg\ndescription: DuckDuckGo\nmetadata:\n  epflemma:\n    fallback_for_toolsets: [web]\n---\n"
         )
         conditions = _read_skill_conditions(skill_file)
         assert conditions["fallback_for_toolsets"] == ["web"]
@@ -380,7 +380,7 @@ class TestReadSkillConditions:
     def test_reads_requires_toolsets(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  gauss:\n    requires_toolsets: [terminal]\n---\n"
+            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  epflemma:\n    requires_toolsets: [terminal]\n---\n"
         )
         conditions = _read_skill_conditions(skill_file)
         assert conditions["requires_toolsets"] == ["terminal"]
@@ -388,7 +388,7 @@ class TestReadSkillConditions:
     def test_reads_multiple_conditions(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(
-            "---\nname: test\ndescription: Test\nmetadata:\n  gauss:\n    fallback_for_toolsets: [browser]\n    requires_tools: [terminal]\n---\n"
+            "---\nname: test\ndescription: Test\nmetadata:\n  epflemma:\n    fallback_for_toolsets: [browser]\n    requires_tools: [terminal]\n---\n"
         )
         conditions = _read_skill_conditions(skill_file)
         assert conditions["fallback_for_toolsets"] == ["browser"]
