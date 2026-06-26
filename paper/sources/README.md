@@ -1,6 +1,6 @@
 # Source Manifest
 
-This directory caches papers and web references used to revise `epflemma_paper.tex`.
+This directory caches papers and web references used to revise `leanflow_paper.tex`.
 For each PDF source, the companion `.txt`, `.pdfinfo.txt`, and `.images.txt` files were generated with `pdftotext -layout`, `pdfinfo`, and `pdfimages -list`.
 
 ## Document-Scale And Autoformalization
