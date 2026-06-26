@@ -4983,7 +4983,9 @@ class AIAgent:
 
                     if not self.quiet_mode:
                         print(
-                            f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)"
+                            f"📋 Agent ended its turn after {api_call_count} API call(s) "
+                            "— final message had no tool calls. This ends the turn, not "
+                            "necessarily the task; the workflow verification gate decides success."
                         )
                     break
 

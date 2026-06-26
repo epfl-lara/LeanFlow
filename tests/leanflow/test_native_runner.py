@@ -173,8 +173,9 @@ def test_run_managed_conversation_interrupts_on_ctrl_c(monkeypatch, capsys):
         def __init__(self):
             self.interrupt_calls = 0
 
-        def interrupt(self):
+        def interrupt(self, message=None):
             self.interrupt_calls += 1
+            self.last_interrupt_message = message
 
         def run_conversation(self, **kwargs):
             return {"messages": [{"role": "assistant", "content": "partial"}], "interrupted": True}
@@ -220,8 +221,9 @@ def test_run_managed_conversation_returns_interrupted_result_when_no_payload_arr
             self.interrupt_calls = 0
             self._session_messages = [{"role": "assistant", "content": "partial"}]
 
-        def interrupt(self):
+        def interrupt(self, message=None):
             self.interrupt_calls += 1
+            self.last_interrupt_message = message
 
         def clear_interrupt(self):
             return None
@@ -286,8 +288,9 @@ def test_run_managed_conversation_calls_interrupt_callback(monkeypatch):
         def __init__(self):
             self.interrupt_calls = 0
 
-        def interrupt(self):
+        def interrupt(self, message=None):
             self.interrupt_calls += 1
+            self.last_interrupt_message = message
 
         def run_conversation(self, **kwargs):
             return {"messages": [], "interrupted": True}
@@ -9226,3 +9229,58 @@ def test_autonomous_stop_reason_stalls_despite_volatile_elapsed(monkeypatch):
         }
         reasons.append(runner._autonomous_stop_reason([], live_state, autonomy_state))
     assert "stalled" in reasons, f"stall net never tripped despite a stable state: {reasons}"
+
+
+def test_autonomous_stop_reason_blocker_prose_does_not_stop_while_state_advances(monkeypatch):
+    # Regression: GPT/codex models constantly emit give-up phrasing ("I was unable
+    # to ...", "failed to typecheck") even while still editing. The hard "blocked"
+    # stop must require BOTH a declared blocker AND a non-advancing live state, so
+    # that ordinary progress narration never terminates a run that is making real
+    # changes.
+    monkeypatch.setattr(
+        runner, "_document_formalization_ready_for_prover_handoff", lambda ls: False
+    )
+    monkeypatch.setattr(
+        runner, "_document_formalization_waiting_for_independent_review", lambda ls: False
+    )
+    blocker_history = [
+        {
+            "role": "assistant",
+            "content": "I was unable to close the goal; the tactic failed to unify. Still working.",
+        }
+    ]
+
+    # State advances every cycle (diagnostics differ) -> never "blocked".
+    autonomy_state: dict = {}
+    advancing = []
+    for i in range(6):
+        live_state = {
+            "active_file": "",
+            "active_file_label": "F.lean",
+            "target_symbol": "thm",
+            "diagnostics": f"error variant {i}",
+            "goals": "open goal",
+            "build_status": "reported errors",
+            "sorry_count": 1,
+        }
+        advancing.append(
+            runner._autonomous_stop_reason(blocker_history, live_state, autonomy_state)
+        )
+    assert "blocked" not in advancing, f"blocker prose ended an advancing run: {advancing}"
+    assert autonomy_state.get("continuation_blocked_runs", 0) == 0
+
+    # Unchanging state + the same blocker prose -> genuinely stuck -> "blocked".
+    autonomy_state = {}
+    stuck = []
+    for _ in range(4):
+        live_state = {
+            "active_file": "",
+            "active_file_label": "F.lean",
+            "target_symbol": "thm",
+            "diagnostics": "identical error",
+            "goals": "open goal",
+            "build_status": "reported errors",
+            "sorry_count": 1,
+        }
+        stuck.append(runner._autonomous_stop_reason(blocker_history, live_state, autonomy_state))
+    assert "blocked" in stuck, f"genuinely stuck run never gave up: {stuck}"

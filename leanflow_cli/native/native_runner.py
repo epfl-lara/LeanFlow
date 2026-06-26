@@ -91,6 +91,12 @@ LIVE_PROOF_STATE_PREFIX = (
 )
 AUTONOMOUS_WORKFLOW_KINDS = {"prove", "formalize"}
 WORKFLOW_STEP_BOUNDARY_INTERRUPT = "[leanflow-native workflow step boundary]"
+# Sentinel passed to agent.interrupt() when the runner's own KeyboardInterrupt
+# handler fires (a real SIGINT/Ctrl+C delivered to the process). Tagging it lets
+# the autonomous loop record WHY a run paused — a genuine signal interrupt — and
+# keeps it distinguishable from a deliberate user pause or a step-boundary stop
+# when reading live_status.json / the activity log after the fact.
+RUNNER_KEYBOARD_INTERRUPT = "[leanflow-native runner keyboard interrupt]"
 STARTUP_SKILL_CONTRACT_MAX_CHARS = 7000
 MANAGER_WARNING_RETRY_LIMIT = 1
 MANAGER_HARD_RETRY_LIMIT = 2
@@ -445,6 +451,30 @@ def _is_step_boundary_interrupt(result: Mapping[str, Any] | None) -> bool:
     )
 
 
+def _interrupt_source_label(result: Mapping[str, Any] | None) -> str:
+    """Best-effort label for WHY a managed conversation reported ``interrupted``.
+
+    A non-user interrupt (e.g. an external ``kill -INT``, or — if it ever slipped
+    past the terminal guard — a model-issued signal) is indistinguishable from a
+    deliberate Ctrl+C at the OS level, but tagging the runner's own handler with
+    ``RUNNER_KEYBOARD_INTERRUPT`` at least separates a real signal interrupt from a
+    programmatic step-boundary stop, and records it for post-hoc analysis.
+    """
+    if not result:
+        return "unknown"
+    explicit = str(result.get("interrupt_source", "") or "").strip()
+    if explicit:
+        return explicit
+    message = str(result.get("interrupt_message", "") or "").strip()
+    if message == RUNNER_KEYBOARD_INTERRUPT:
+        return "runner-keyboard-interrupt"
+    if message == WORKFLOW_STEP_BOUNDARY_INTERRUPT:
+        return "step-boundary"
+    if message:
+        return f"message:{message[:40]}"
+    return "signal"
+
+
 def _swarm_enabled() -> bool:
     return _parallel_agents() > 1 and _read_native_env("USER_APPROVED_SWARM", "0") == "1"
 
@@ -554,6 +584,7 @@ def _persist_live_status(
         "model": _read_native_env("MODEL"),
         "base_url": _read_native_env("BASE_URL"),
         "process_id": os.getpid(),
+        "interrupt_source": str(live_state.get("interrupt_source", "") or ""),
         "active_skill": _effective_skill_name(live_state),
         "parallel_agents": _parallel_agents(),
         "active_file": str(live_state.get("active_file", "") or ""),
@@ -7691,7 +7722,10 @@ def _run_managed_conversation(
                 if on_interrupt is not None:
                     with contextlib.suppress(Exception):
                         on_interrupt()
-                agent.interrupt()
+                # Tag the interrupt so downstream handling can record that this run
+                # paused because of a real SIGINT/Ctrl+C to the process (vs a
+                # programmatic step-boundary interrupt or a deliberate user pause).
+                agent.interrupt(RUNNER_KEYBOARD_INTERRUPT)
             else:
                 print("\nStill stopping the active agent turn...")
 
@@ -7709,7 +7743,9 @@ def _run_managed_conversation(
                 "api_calls": 0,
                 "completed": False,
                 "interrupted": True,
-                "final_response": "Operation interrupted by user.",
+                "interrupt_message": RUNNER_KEYBOARD_INTERRUPT,
+                "interrupt_source": "runner-keyboard-interrupt",
+                "final_response": "Operation interrupted (runner received SIGINT/Ctrl+C).",
             }
             print(f"Returned to {_interactive_mode_label()} mode after interrupt.")
             return result
@@ -7742,7 +7778,9 @@ def _run_managed_conversation(
             "api_calls": 0,
             "completed": False,
             "interrupted": True,
-            "final_response": "Operation interrupted by user.",
+            "interrupt_message": RUNNER_KEYBOARD_INTERRUPT,
+            "interrupt_source": "runner-keyboard-interrupt",
+            "final_response": "Operation interrupted (runner received SIGINT/Ctrl+C).",
         }
         print(f"Returned to {_interactive_mode_label()} mode after interrupt.")
         return result
@@ -8625,7 +8663,16 @@ def _autonomous_stop_reason(
 
     recent_text = _collect_message_text(history[-8:])
     blocker_summary = _extract_blocker_summary(recent_text)
-    if blocker_summary:
+    # A declared blocker only counts toward the hard "blocked" stop when the live
+    # proof state is ALSO not advancing. `stable_cycles > 0` means this cycle's
+    # diagnostics/goals/sorry/build signature is identical to the previous cycle.
+    # Without this corroboration, ordinary progress narration that merely contains
+    # words like "failed to" / "unable to" — extremely common with GPT/codex models
+    # even while they are still editing — would terminate a run that is making real
+    # progress. Requiring a stalled signature means we only give up when the model
+    # SAYS it is blocked AND the Lean state confirms nothing changed. Any genuine
+    # state change resets the give-up counter via the `else` branch below.
+    if blocker_summary and stable_cycles > 0:
         blocked_runs = int(autonomy_state.get("continuation_blocked_runs", 0)) + 1
         autonomy_state["continuation_blocked_runs"] = blocked_runs
         if blocked_runs >= _autonomous_blocked_limit():
@@ -8964,10 +9011,16 @@ def _drive_autonomous_followups(
         )
         _persist_live_status(history, compaction_state, checkpoint_state, live_state)
         if result.get("interrupted") and not _is_step_boundary_interrupt(result):
+            interrupt_source = _interrupt_source_label(result)
+            # Record the source on the live state so _persist_live_status writes it
+            # to live_status.json — a signal interrupt is then distinguishable from a
+            # deliberate user pause when triaging a batch of autonomous runs.
+            live_state = {**live_state, "interrupt_source": interrupt_source}
             _record_activity(
                 "autonomy-interrupted",
-                f"Autonomous continuation #{cycle} interrupted by user",
+                f"Autonomous continuation #{cycle} interrupted ({interrupt_source})",
                 cycle=cycle,
+                interrupt_source=interrupt_source,
             )
             _persist_live_status(
                 history, compaction_state, checkpoint_state, live_state, phase="paused"

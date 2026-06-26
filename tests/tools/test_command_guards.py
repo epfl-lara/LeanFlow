@@ -345,3 +345,54 @@ class TestProgrammingErrorsPropagateFromWrapper:
         os.environ["LEANFLOW_INTERACTIVE"] = "1"
         with pytest.raises(AttributeError, match="bug in wrapper"):
             check_all_command_guards("echo hello", "local")
+
+
+# ---------------------------------------------------------------------------
+# Self-termination: hard-blocked in every mode, never approvable
+# ---------------------------------------------------------------------------
+
+
+class TestSelfTermination:
+    SELF_KILL = [
+        "kill -INT $PPID",
+        "kill -2 $$",
+        "pkill -INT -f leanflow",
+        "pkill -f run_agent",
+        "killall -9 native_runner",
+        "kill -9 $(pgrep -f leanflow)",
+        "kill -- -12345",
+        "kill -9 -1",
+        "leanflow workflow stop",
+        "leanflow stop",
+        "epflemma workflow terminate",
+    ]
+    BENIGN = [
+        "lake build",
+        "lake env lean Challenge.lean",
+        "git status",
+        "kill -9 4242",  # a specific non-agent pid (e.g. a stuck lean child)
+        "echo killall is a word",
+        "grep -n stop notes.txt",
+        "leanflow workflow prove File.lean",
+    ]
+
+    @pytest.mark.parametrize("command", SELF_KILL)
+    def test_blocks_self_termination_even_in_yolo(self, command):
+        # --yolo and headless must NOT bypass the self-termination guard.
+        os.environ["LEANFLOW_YOLO_MODE"] = "1"
+        result = check_all_command_guards(command, "local")
+        assert result["approved"] is False
+        assert result.get("self_termination") is True
+        assert result.get("status") == "blocked"
+
+    @pytest.mark.parametrize("command", SELF_KILL)
+    def test_blocks_self_termination_in_container_backends(self, command):
+        # Applies before the container short-circuit too.
+        result = check_all_command_guards(command, "singularity")
+        assert result["approved"] is False
+        assert result.get("self_termination") is True
+
+    @pytest.mark.parametrize("command", BENIGN)
+    def test_allows_benign_commands(self, command):
+        result = check_all_command_guards(command, "local")
+        assert not result.get("self_termination")
