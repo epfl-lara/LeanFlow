@@ -1,5 +1,5 @@
 name: LeanFlow Batteries Included Devbox
-description: Installer-driven LeanFlow template that uses the current checkout when run locally and otherwise clones epfl-lara/EPFLemma, runs the internal installer, stages optional provider keys, exposes the local guide, and opens a ready LeanFlow session.
+description: Installer-driven LeanFlow template that uses the current checkout when run locally and otherwise clones epfl-lara/LeanFlow, runs the internal installer, stages optional provider keys, exposes the local guide, and opens a ready LeanFlow session.
 steps:
   - id: bootstrap-installer-runtime
     title: Prepare LeanFlow Installer Runtime
@@ -33,7 +33,7 @@ steps:
           git -C "$repo_root" fetch origin --prune
         else
           rm -rf "$repo_root"
-          git clone https://github.com/epfl-lara/EPFLemma.git "$repo_root"
+          git clone https://github.com/epfl-lara/LeanFlow.git "$repo_root"
         fi
         git -C "$repo_root" fetch origin --prune
         git -C "$repo_root" reset --hard origin/main

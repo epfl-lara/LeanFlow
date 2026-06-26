@@ -21,7 +21,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$DefaultRepoUrl = "https://github.com/epfl-lara/EPFLemma.git"
+$DefaultRepoUrl = "https://github.com/epfl-lara/LeanFlow.git"
 $script:ResolvedDistro = $null
 
 function Write-Banner {

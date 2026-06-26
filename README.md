@@ -24,8 +24,8 @@ The scope is deliberately narrow: Lean automation, not a general chat assistant.
 ## Install
 
 ```bash
-git clone https://github.com/epfl-lara/EPFLemma.git
-cd EPFLemma
+git clone https://github.com/epfl-lara/LeanFlow.git
+cd LeanFlow
 ./scripts/install-internal.sh
 ```
 
