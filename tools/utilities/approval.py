@@ -56,6 +56,73 @@ DANGEROUS_PATTERNS = [
 ]
 
 
+# =========================================================================
+# Self-termination patterns (HARD-BLOCKED, never approvable)
+# =========================================================================
+#
+# An autonomous agent must never be able to signal/kill or `stop` its own run.
+# In the native prove/formalize workflows a SIGINT to the runner process is
+# interpreted as a user interrupt and silently terminates the whole workflow —
+# so a model that "gives up" by killing the job ends the run with nothing proven.
+# These are blocked UNCONDITIONALLY: before the container/yolo/headless
+# short-circuits and with no approval path, because there is no legitimate reason
+# for the model to terminate its own workflow process. (Subprocesses already run
+# under os.setsid, so process-group signals can't reach the agent; this closes the
+# by-name / by-PID / CLI-stop vectors that setsid does not.)
+SELF_TERMINATION_PATTERNS = [
+    (
+        r"\b(pkill|killall)\b[^\n]*\b(run_agent|leanflow|epflemma|native_runner)\b",
+        "signal the LeanFlow agent/workflow process by name",
+    ),
+    (
+        r"\bkill\b[^\n]*\b(pgrep|pidof)\b[^\n]*\b(run_agent|leanflow|epflemma|native_runner)\b",
+        "signal a PID resolved from the agent/workflow process name",
+    ),
+    (
+        r"\bkill(pg)?\b[^\n]*(\$\$|\$ppid|--\s+-\d|\s-1\b)",
+        "signal the agent's own process, parent, or process group",
+    ),
+    (
+        r"\b(leanflow|epflemma)\s+([\w-]+\s+)*(stop|kill|terminate|interrupt)\b",
+        "stop or terminate the LeanFlow workflow via its CLI",
+    ),
+]
+
+
+def detect_self_termination_command(command: str) -> tuple:
+    """Check whether a command would signal/stop the agent's own run.
+
+    Returns ``(True, description)`` for a self-termination command, else
+    ``(False, None)``. The result is hard-blocked by the guards below regardless
+    of approval mode, interactivity, or ``--yolo``.
+    """
+    lowered = command.lower()
+    for pattern, description in SELF_TERMINATION_PATTERNS:
+        if re.search(pattern, lowered, re.IGNORECASE | re.DOTALL):
+            return (True, description)
+    return (False, None)
+
+
+def _self_termination_block(command: str) -> dict | None:
+    """Return a blocked-approval payload if *command* is a self-termination command."""
+    is_self_term, description = detect_self_termination_command(command)
+    if not is_self_term:
+        return None
+    logger.warning("Blocked self-termination command (%s): %s", description, command[:200])
+    return {
+        "approved": False,
+        "status": "blocked",
+        "self_termination": True,
+        "message": (
+            f"BLOCKED: this command would {description}, which would interrupt or kill "
+            "the running LeanFlow workflow itself. An autonomous agent is never allowed "
+            "to stop its own run. If the assigned work is genuinely impossible, report a "
+            "concrete blocker in your response instead of terminating the process. "
+            "Do NOT retry this command."
+        ),
+    }
+
+
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
     return pattern.split(r"\b")[1] if r"\b" in pattern else pattern[:20]
@@ -378,6 +445,12 @@ def check_dangerous_command(command: str, env_type: str, approval_callback=None)
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
+    # Hard block self-termination first: never approvable, applies in every mode
+    # (containers, --yolo, headless) since the model must not kill its own run.
+    self_term = _self_termination_block(command)
+    if self_term is not None:
+        return self_term
+
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
@@ -450,6 +523,13 @@ def check_all_command_guards(command: str, env_type: str, approval_callback=None
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
     """
+    # Hard block self-termination first: never approvable, applies in every mode
+    # (containers, --yolo, approvals.mode=off, headless) since the model must not
+    # kill/stop its own workflow process.
+    self_term = _self_termination_block(command)
+    if self_term is not None:
+        return self_term
+
     # Skip containers for both checks
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
