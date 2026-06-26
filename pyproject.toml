@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "epflemma-agent"
+name = "leanflow-agent"
 version = "0.3.0"
-description = "EPFLemma is a Lean AI for Math shell shipped through the standalone epflemma CLI and native runtime."
+description = "LeanFlow is a Lean AI for Math shell shipped through the standalone leanflow CLI and native runtime."
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "EPFLemma contributors" }]
+authors = [{ name = "LeanFlow contributors" }]
 license = { text = "Apache-2.0" }
 dependencies = [
   "anthropic>=0.39.0",
@@ -38,20 +38,20 @@ web = ["firecrawl-py"]
 lean-explore = ["lean-explore[local]"]
 local-vllm = ["vllm>=0.8.0"]
 all = [
-  "epflemma-agent[dev]",
-  "epflemma-agent[mcp]",
-  "epflemma-agent[pty]",
-  "epflemma-agent[web]",
-  "epflemma-agent[lean-explore]",
+  "leanflow-agent[dev]",
+  "leanflow-agent[mcp]",
+  "leanflow-agent[pty]",
+  "leanflow-agent[web]",
+  "leanflow-agent[lean-explore]",
 ]
 
 [project.scripts]
-epflemma = "epflemma_cli.main:main"
-epflemma-agent = "epflemma_agent:main"
+leanflow = "leanflow_cli.main:main"
+leanflow-agent = "leanflow_agent:main"
 
 [tool.setuptools]
 py-modules = [
-  "epflemma_agent",
+  "leanflow_agent",
   "run_agent",
   "model_tools",
   "toolsets",
@@ -59,7 +59,7 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "core", "core.*", "epflemma_cli", "epflemma_cli.*", "tools", "tools.*"]
+include = ["agent", "agent.*", "core", "core.*", "leanflow_cli", "leanflow_cli.*", "tools", "tools.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -78,7 +78,7 @@ extend-exclude = [
     "optional-skills",
     "**/.lake/**",
     ".venv",
-    ".epflemma-venv",
+    ".leanflow-venv",
 ]
 
 # Black is the code formatter (https://github.com/psf/black). Run `black .` before committing;
@@ -86,7 +86,7 @@ extend-exclude = [
 [tool.black]
 line-length = 100
 target-version = ["py311"]
-extend-exclude = '''/(testdata|optional-skills|\.venv|\.epflemma-venv|.*/\.lake)/'''
+extend-exclude = '''/(testdata|optional-skills|\.venv|\.leanflow-venv|.*/\.lake)/'''
 
 [tool.ruff.lint]
 # select = the enforced rule families: pyflakes (F — undefined names, redefinitions, f-string
@@ -130,51 +130,51 @@ files = [
   "tools/implementations/lean_experts.py",
   "tools/implementations/lean_patch.py",
   "agent/runtime/managed_run.py",
-  "epflemma_cli/native/native_config.py",
-  "epflemma_cli/native/native_lean_files.py",
-  "epflemma_cli/lean/lean_diagnostics.py",
-  "epflemma_cli/lean/lean_attempt_helpers.py",
-  "epflemma_cli/lean/lean_declarations.py",
-  "epflemma_cli/lean/lean_proof_context_local.py",
-  "epflemma_cli/lean/lean_backend.py",
-  "epflemma_cli/lean/lean_models.py",
-  "epflemma_cli/lean/lean_worker_dispatch.py",
-  "epflemma_cli/lean/lean_diagnostic_feedback.py",
-  "epflemma_cli/lean/lean_search_providers.py",
-  "epflemma_cli/lean/lean_automation.py",
-  "epflemma_cli/lean/lean_sorry_stats.py",
-  "epflemma_cli/lean/lean_parsing.py",
-  "epflemma_cli/lean/lean_module_paths.py",
-  "epflemma_cli/native/native_checkpoints.py",
-  "epflemma_cli/native/native_state.py",
-  "epflemma_cli/workflows/queue_edit_guard.py",
-  "epflemma_cli/workflows/queue_models.py",
-  "epflemma_cli/workflows/queue_item_predicates.py",
-  "epflemma_cli/formalization/formalization_document_runner.py",
-  "epflemma_cli/formalization/formalization_generated_lean.py",
-  "epflemma_cli/formalization/document_extraction.py",
-  "epflemma_cli/formalization/formalization_markdown.py",
-  "epflemma_cli/formalization/formalization_models.py",
-  "epflemma_cli/formalization/formalization_tex_discovery.py",
-  "epflemma_cli/workflows/manager_verification.py",
-  "epflemma_cli/native/native_utils.py",
-  "epflemma_cli/workflows/activity_preview.py",
-  "epflemma_cli/proof_state_builder.py",
-  "epflemma_cli/workflows/project_prove_manager.py",
-  "epflemma_cli/workflows/verification_review.py",
-  "epflemma_cli/cli/cli_handlers.py",
-  "epflemma_cli/cli/shell_ui.py",
+  "leanflow_cli/native/native_config.py",
+  "leanflow_cli/native/native_lean_files.py",
+  "leanflow_cli/lean/lean_diagnostics.py",
+  "leanflow_cli/lean/lean_attempt_helpers.py",
+  "leanflow_cli/lean/lean_declarations.py",
+  "leanflow_cli/lean/lean_proof_context_local.py",
+  "leanflow_cli/lean/lean_backend.py",
+  "leanflow_cli/lean/lean_models.py",
+  "leanflow_cli/lean/lean_worker_dispatch.py",
+  "leanflow_cli/lean/lean_diagnostic_feedback.py",
+  "leanflow_cli/lean/lean_search_providers.py",
+  "leanflow_cli/lean/lean_automation.py",
+  "leanflow_cli/lean/lean_sorry_stats.py",
+  "leanflow_cli/lean/lean_parsing.py",
+  "leanflow_cli/lean/lean_module_paths.py",
+  "leanflow_cli/native/native_checkpoints.py",
+  "leanflow_cli/native/native_state.py",
+  "leanflow_cli/workflows/queue_edit_guard.py",
+  "leanflow_cli/workflows/queue_models.py",
+  "leanflow_cli/workflows/queue_item_predicates.py",
+  "leanflow_cli/formalization/formalization_document_runner.py",
+  "leanflow_cli/formalization/formalization_generated_lean.py",
+  "leanflow_cli/formalization/document_extraction.py",
+  "leanflow_cli/formalization/formalization_markdown.py",
+  "leanflow_cli/formalization/formalization_models.py",
+  "leanflow_cli/formalization/formalization_tex_discovery.py",
+  "leanflow_cli/workflows/manager_verification.py",
+  "leanflow_cli/native/native_utils.py",
+  "leanflow_cli/workflows/activity_preview.py",
+  "leanflow_cli/proof_state_builder.py",
+  "leanflow_cli/workflows/project_prove_manager.py",
+  "leanflow_cli/workflows/verification_review.py",
+  "leanflow_cli/cli/cli_handlers.py",
+  "leanflow_cli/cli/shell_ui.py",
   "tools/mcp/mcp_transport.py",
   "tools/mcp/mcp_sampling.py",
   "tools/mcp/mcp_config.py",
   "agent/prompting/prompt_caching.py",
   "agent/accounting/usage_pricing.py",
   "agent/accounting/redact.py",
-  "epflemma_cli/runtime/branding.py",
-  "epflemma_cli/runtime/env_loader.py",
-  "epflemma_cli/lean/lean_workflow_specs.py",
+  "leanflow_cli/runtime/branding.py",
+  "leanflow_cli/runtime/env_loader.py",
+  "leanflow_cli/lean/lean_workflow_specs.py",
   "tools/utilities/interrupt.py",
   "tools/utilities/debug_helpers.py",
-  "epflemma_cli/workflows/workflow_state_paths.py",
-  "epflemma_cli/workflows/workflow_json_io.py",
+  "leanflow_cli/workflows/workflow_state_paths.py",
+  "leanflow_cli/workflows/workflow_json_io.py",
 ]

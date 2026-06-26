@@ -379,7 +379,7 @@ def _run_single_child(
         except (ValueError, UnboundLocalError) as e:
             logger.debug("Could not remove child from active_children: %s", e)
         try:
-            from epflemma_cli.runtime.file_locks import release_all_file_locks
+            from leanflow_cli.runtime.file_locks import release_all_file_locks
 
             child_session_id = str(getattr(locals().get("child"), "session_id", "") or "")
             if child_session_id:
@@ -623,7 +623,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     # Provider is configured — resolve full credentials
     try:
-        from epflemma_cli.runtime.runtime_provider import resolve_runtime_provider
+        from leanflow_cli.runtime.runtime_provider import resolve_runtime_provider
 
         runtime = resolve_runtime_provider(requested=configured_provider)
     except Exception as exc:
@@ -638,7 +638,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     if not api_key:
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
-            f"Set the appropriate environment variable or run 'epflemma provider'."
+            f"Set the appropriate environment variable or run 'leanflow provider'."
         )
 
     return {
@@ -651,9 +651,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from the EPFLemma persistent config."""
+    """Load delegation config from the LeanFlow persistent config."""
     try:
-        from epflemma_cli.config import load_config
+        from leanflow_cli.config import load_config
 
         full = load_config()
         return full.get("delegation", {})

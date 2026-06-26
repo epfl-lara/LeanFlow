@@ -156,10 +156,10 @@ class ApiCaller:
 
     def provider_request_timeout_seconds(self, api_kwargs: dict) -> float:
         os = _ra().os
-        timeout_value = api_kwargs.get("timeout", os.getenv("EPFLEMMA_API_TIMEOUT", 1200.0))
+        timeout_value = api_kwargs.get("timeout", os.getenv("LEANFLOW_API_TIMEOUT", 1200.0))
         if isinstance(timeout_value, (int, float)) and not isinstance(timeout_value, bool):
             return max(float(timeout_value), 1.0)
-        return max(float(os.getenv("EPFLEMMA_API_TIMEOUT", 1200.0)), 1.0)
+        return max(float(os.getenv("LEANFLOW_API_TIMEOUT", 1200.0)), 1.0)
 
     # ── Interruptible (non-streaming) call ──────────────────────────────────
 
@@ -532,7 +532,7 @@ class ApiCaller:
             "model": agent.model,
             "messages": sanitized_messages,
             "tools": agent.tools if agent.tools else None,
-            "timeout": float(ra.os.getenv("EPFLEMMA_API_TIMEOUT", 1200.0)),
+            "timeout": float(ra.os.getenv("LEANFLOW_API_TIMEOUT", 1200.0)),
         }
 
         if agent.max_tokens is not None:
@@ -584,7 +584,7 @@ class ApiCaller:
 
         # Nous Portal product attribution
         if _is_nous:
-            extra_body["tags"] = ["product=epflemma-agent"]
+            extra_body["tags"] = ["product=leanflow-agent"]
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body

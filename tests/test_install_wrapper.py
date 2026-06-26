@@ -39,8 +39,8 @@ def test_install_wrapper_translates_installer_flags_for_local_template_run(tmp_p
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
-    runner_root = repo / ".epflemma-installer-venv"
-    runner_bin = repo / ".epflemma-installer-venv" / "bin"
+    runner_root = repo / ".leanflow-installer-venv"
+    runner_bin = repo / ".leanflow-installer-venv" / "bin"
     runner_bin.mkdir(parents=True)
     _write_executable(
         runner_bin / "python",
@@ -59,13 +59,13 @@ import os
 from pathlib import Path
 
 keys = [
-    "GAUSS_HOME",
-    "GAUSS_WORKSPACE_DIR",
-    "GAUSS_SKIP_SYSTEM_PACKAGES",
-    "GAUSS_CREATE_WORKSPACE",
-    "GAUSS_SETUP_MODE",
-    "GAUSS_RECREATE_VENV",
-    "OPEN_GAUSS_SKIP_SHELL_AUTOENV",
+    "LEANFLOW_HOME",
+    "LEANFLOW_WORKSPACE_DIR",
+    "LEANFLOW_SKIP_SYSTEM_PACKAGES",
+    "LEANFLOW_CREATE_WORKSPACE",
+    "LEANFLOW_SETUP_MODE",
+    "LEANFLOW_RECREATE_VENV",
+    "LEANFLOW_SKIP_SHELL_AUTOENV",
 ]
 Path("{env_log}").write_text(
     "".join(f"{{key}}={{os.environ.get(key, '')}}\\n" for key in keys),
@@ -94,14 +94,14 @@ PY
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["OPEN_GAUSS_AUTO_ATTACH"] = "0"
+    env["LEANFLOW_AUTO_ATTACH"] = "0"
 
     result = subprocess.run(
         [
             "bash",
             "scripts/install.sh",
-            "--gauss-home",
-            "/tmp/custom-gauss-home",
+            "--leanflow-home",
+            "/tmp/custom-leanflow-home",
             "--workspace-dir",
             "/tmp/custom-workspace",
             "--skip-system-packages",
@@ -126,7 +126,7 @@ PY
         "devbox",
         "template",
         "run",
-        "epflemma",
+        "leanflow",
         "--experimental-run-locally",
         "--plain",
         "--json",
@@ -139,13 +139,13 @@ PY
         line.split("=", 1) for line in env_log.read_text(encoding="utf-8").splitlines() if line
     )
     assert env_values == {
-        "GAUSS_HOME": "/tmp/custom-gauss-home",
-        "GAUSS_WORKSPACE_DIR": "/tmp/custom-workspace",
-        "GAUSS_SKIP_SYSTEM_PACKAGES": "1",
-        "GAUSS_CREATE_WORKSPACE": "1",
-        "GAUSS_SETUP_MODE": "skip",
-        "GAUSS_RECREATE_VENV": "1",
-        "OPEN_GAUSS_SKIP_SHELL_AUTOENV": "1",
+        "LEANFLOW_HOME": "/tmp/custom-leanflow-home",
+        "LEANFLOW_WORKSPACE_DIR": "/tmp/custom-workspace",
+        "LEANFLOW_SKIP_SYSTEM_PACKAGES": "1",
+        "LEANFLOW_CREATE_WORKSPACE": "1",
+        "LEANFLOW_SETUP_MODE": "skip",
+        "LEANFLOW_RECREATE_VENV": "1",
+        "LEANFLOW_SKIP_SHELL_AUTOENV": "1",
     }
 
 
@@ -155,8 +155,8 @@ def test_install_wrapper_supports_empty_morph_passthrough_on_bash_nounset(tmp_pa
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
-    runner_root = repo / ".epflemma-installer-venv"
-    runner_bin = repo / ".epflemma-installer-venv" / "bin"
+    runner_root = repo / ".leanflow-installer-venv"
+    runner_bin = repo / ".leanflow-installer-venv" / "bin"
     runner_bin.mkdir(parents=True)
     _write_executable(
         runner_bin / "python",
@@ -191,14 +191,14 @@ def test_install_wrapper_supports_empty_morph_passthrough_on_bash_nounset(tmp_pa
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["OPEN_GAUSS_AUTO_ATTACH"] = "0"
+    env["LEANFLOW_AUTO_ATTACH"] = "0"
 
     result = subprocess.run(
         [
             "bash",
             "scripts/install.sh",
-            "--gauss-home",
-            "/tmp/custom-gauss-home",
+            "--leanflow-home",
+            "/tmp/custom-leanflow-home",
             "--workspace-dir",
             "/tmp/custom-workspace",
             "--skip-setup",
@@ -213,7 +213,7 @@ def test_install_wrapper_supports_empty_morph_passthrough_on_bash_nounset(tmp_pa
         "devbox",
         "template",
         "run",
-        "epflemma",
+        "leanflow",
         "--experimental-run-locally",
     ]
 
@@ -305,7 +305,7 @@ EOF
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["OPEN_GAUSS_AUTO_ATTACH"] = "0"
+    env["LEANFLOW_AUTO_ATTACH"] = "0"
 
     result = subprocess.run(
         [
@@ -326,13 +326,13 @@ EOF
         "--seed",
         "--python",
         "3.13",
-        str(repo / ".epflemma-installer-venv"),
+        str(repo / ".leanflow-installer-venv"),
     ]
     assert args_log.read_text(encoding="utf-8").splitlines() == [
         "devbox",
         "template",
         "run",
-        "epflemma",
+        "leanflow",
         "--experimental-run-locally",
     ]
 
@@ -343,7 +343,7 @@ def test_install_wrapper_recreates_unsupported_runner_venv(tmp_path):
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
-    runner_bin = repo / ".epflemma-installer-venv" / "bin"
+    runner_bin = repo / ".leanflow-installer-venv" / "bin"
     runner_bin.mkdir(parents=True)
     _write_executable(
         runner_bin / "python",
@@ -426,8 +426,8 @@ EOF
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["OPEN_GAUSS_AUTO_ATTACH"] = "0"
-    env["OPEN_GAUSS_INSTALLER_RUNNER_PYTHON"] = "3.13"
+    env["LEANFLOW_AUTO_ATTACH"] = "0"
+    env["LEANFLOW_INSTALLER_RUNNER_PYTHON"] = "3.13"
 
     result = subprocess.run(
         [
@@ -448,13 +448,13 @@ EOF
         "--seed",
         "--python",
         "3.13",
-        str(repo / ".epflemma-installer-venv"),
+        str(repo / ".leanflow-installer-venv"),
     ]
     assert args_log.read_text(encoding="utf-8").splitlines() == [
         "devbox",
         "template",
         "run",
-        "epflemma",
+        "leanflow",
         "--experimental-run-locally",
     ]
 
@@ -465,8 +465,8 @@ def test_install_wrapper_installs_morphcloud_with_runner_venv_pip(tmp_path):
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
-    runner_root = repo / ".epflemma-installer-venv"
-    runner_bin = repo / ".epflemma-installer-venv" / "bin"
+    runner_root = repo / ".leanflow-installer-venv"
+    runner_bin = repo / ".leanflow-installer-venv" / "bin"
     runner_bin.mkdir(parents=True)
 
     pip_log = tmp_path / "runner-pip-log.txt"
@@ -525,7 +525,7 @@ def test_install_wrapper_installs_morphcloud_with_runner_venv_pip(tmp_path):
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["OPEN_GAUSS_AUTO_ATTACH"] = "0"
+    env["LEANFLOW_AUTO_ATTACH"] = "0"
 
     result = subprocess.run(
         [
@@ -556,7 +556,7 @@ def test_install_wrapper_installs_morphcloud_with_runner_venv_pip(tmp_path):
         "devbox",
         "template",
         "run",
-        "epflemma",
+        "leanflow",
         "--experimental-run-locally",
     ]
 
@@ -567,7 +567,7 @@ def test_install_wrapper_reseeds_runner_pip_when_existing_runner_uses_external_p
     scripts_dir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / "install.sh", scripts_dir / "install.sh")
 
-    runner_root = repo / ".epflemma-installer-venv"
+    runner_root = repo / ".leanflow-installer-venv"
     runner_bin = runner_root / "bin"
     runner_bin.mkdir(parents=True)
 
@@ -629,7 +629,7 @@ def test_install_wrapper_reseeds_runner_pip_when_existing_runner_uses_external_p
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["OPEN_GAUSS_AUTO_ATTACH"] = "0"
+    env["LEANFLOW_AUTO_ATTACH"] = "0"
 
     result = subprocess.run(
         [
@@ -656,6 +656,6 @@ def test_install_wrapper_reseeds_runner_pip_when_existing_runner_uses_external_p
         "devbox",
         "template",
         "run",
-        "epflemma",
+        "leanflow",
         "--experimental-run-locally",
     ]

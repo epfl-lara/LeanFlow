@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Auxiliary LLM-advisor Lean tools for EPFLemma.
+"""Auxiliary LLM-advisor Lean tools for LeanFlow.
 
 This module holds the LLM-backed advisor tools that were split out of
 ``tools/lean_tool.py``: ``lean_reasoning_help_tool`` (proof-strategy advice) and
@@ -11,7 +11,7 @@ helper-skeleton validation helpers they use.
 so callers and the tool registry keep resolving them as ``lean_tool.<name>``. This
 module must NOT import ``tools.implementations.lean_tool`` (it would create an import cycle); it
 reaches its collaborators directly via ``agent.auxiliary_client`` /
-``epflemma_cli.cli.expert_help`` / ``epflemma_cli.lean.lean_incremental``.
+``leanflow_cli.cli.expert_help`` / ``leanflow_cli.lean.lean_incremental``.
 """
 
 from __future__ import annotations
@@ -22,13 +22,13 @@ import re
 from typing import Any
 
 from agent.providers.auxiliary_client import call_llm
-from epflemma_cli.cli.expert_help import (
+from leanflow_cli.cli.expert_help import (
     is_command_expert_provider,
     record_expert_help_activity,
     resolve_expert_provider,
     run_command_expert_help,
 )
-from epflemma_cli.lean.lean_incremental import lean_incremental_check
+from leanflow_cli.lean.lean_incremental import lean_incremental_check
 
 LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S = 1200
 LEAN_REASONING_HELP_MIN_TIMEOUT_S = 1200
@@ -77,12 +77,12 @@ def lean_reasoning_help_tool(
         return _advisor_failure("invalid_request", "missing file_path.", theorem_id=theorem_id)
 
     try:
-        max_tokens = max(1000, int(os.getenv("EPFLEMMA_LEAN_REASONING_HELP_MAX_TOKENS", "64000")))
+        max_tokens = max(1000, int(os.getenv("LEANFLOW_LEAN_REASONING_HELP_MAX_TOKENS", "64000")))
     except (TypeError, ValueError):
         max_tokens = 64000
 
     system_prompt = (
-        "You are an auxiliary Lean proof-strategy advisor for EPFLemma. "
+        "You are an auxiliary Lean proof-strategy advisor for LeanFlow. "
         "Act as a world-class mathematical strategist, combining deep olympiad, "
         "analysis, algebra, and formal-verification taste with practical Lean and "
         "Mathlib expertise. "
@@ -511,13 +511,13 @@ def lean_decompose_helpers_tool(
         max_helper_count = 6
     try:
         max_tokens = max(
-            1000, int(os.getenv("EPFLEMMA_LEAN_DECOMPOSE_HELPERS_MAX_TOKENS", "64000"))
+            1000, int(os.getenv("LEANFLOW_LEAN_DECOMPOSE_HELPERS_MAX_TOKENS", "64000"))
         )
     except (TypeError, ValueError):
         max_tokens = 64000
 
     system_prompt = (
-        "You are an auxiliary Lean proof-decomposition planner for EPFLemma. "
+        "You are an auxiliary Lean proof-decomposition planner for LeanFlow. "
         "Return strict JSON only. Do not use markdown fences or prose outside JSON. "
         "Your job is to split one hard Lean theorem into small helper declarations "
         "that preserve the target statement exactly. You do not edit files and your "

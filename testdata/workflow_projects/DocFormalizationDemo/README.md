@@ -1,8 +1,8 @@
 # DocFormalizationDemo
 
-Small mathlib-based Lean project for EPFLemma document formalization testing.
+Small mathlib-based Lean project for LeanFlow document formalization testing.
 
-The project is intentionally separate from `GaussTest`: `GaussTest` remains a
+The project is intentionally separate from `ProveDemo`: `ProveDemo` remains a
 proof-repair fixture, while this project exercises the `/formalize` and
 `/autoformalize` document pipeline.
 
@@ -30,25 +30,25 @@ Typical run:
 ```bash
 lake update
 lake build
-epflemma project init
-epflemma workflow formalize docs/PythagoreanPolynomialParametrization/pyth.tex
+leanflow project init
+leanflow workflow formalize docs/PythagoreanPolynomialParametrization/pyth.tex
 ```
 
 Or try the q-deformation source:
 
 ```bash
-epflemma workflow formalize docs/QuantizingPythagoreanTriples/Pythagore2.tex
+leanflow workflow formalize docs/QuantizingPythagoreanTriples/Pythagore2.tex
 ```
 
 Expected preflight artifacts after starting the workflow:
 
-- `.epflemma/workflow-state/formalization/.../context.md`
-- `.epflemma/workflow-state/formalization/.../manifest.json`
+- `.leanflow/workflow-state/formalization/.../context.md`
+- `.leanflow/workflow-state/formalization/.../manifest.json`
 - `DocFormalizationDemo/<DocumentName>/Blueprint.md`
 - `DocFormalizationDemo/<DocumentName>/Main.lean`
 
 Document-specific generated modules should not exist in the clean base fixture.
-EPFLemma creates them when a formalization workflow starts. The blueprint lives
+LeanFlow creates them when a formalization workflow starts. The blueprint lives
 beside the generated Lean files so planner and prover turns can reread it
 easily. There is no pre-written Lean formalization of either target in this
 fixture.
@@ -56,7 +56,7 @@ fixture.
 Commit guard:
 
 - The repository pre-commit hook protects this project, including `docs/`.
-- Runtime workflow output should remain in ignored paths such as `.epflemma/`,
+- Runtime workflow output should remain in ignored paths such as `.leanflow/`,
   `.lake/`, `.artifacts/`, or ignored LaTeX build files.
 - Intentional fixture updates require
   `ALLOW_DOCFORMALIZATIONDEMO_COMMIT=1 git commit`.

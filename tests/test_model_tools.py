@@ -110,7 +110,7 @@ class TestBackwardCompat:
         assert len(TOOL_TO_TOOLSET_MAP) > 0
 
 
-def test_model_tools_discovery_stays_on_minimal_gauss_surface():
+def test_model_tools_discovery_stays_on_minimal_leanflow_surface():
     repo_root = Path(__file__).resolve().parent.parent
     code = f"""
 import json

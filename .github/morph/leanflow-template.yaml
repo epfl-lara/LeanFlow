@@ -1,0 +1,176 @@
+name: LeanFlow Batteries Included Devbox
+description: Installer-driven LeanFlow template that uses the current checkout when run locally and otherwise clones epfl-lara/LeanFlow, runs the internal installer, stages optional provider keys, exposes the local guide, and opens a ready LeanFlow session.
+steps:
+  - id: bootstrap-installer-runtime
+    title: Prepare LeanFlow Installer Runtime
+    type: command
+    run: |
+      set -euo pipefail
+      if command -v apt-get >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -y
+        apt-get install -y --no-install-recommends git curl ca-certificates tmux
+      else
+        command -v git >/dev/null 2>&1 || { printf '%s\n' 'git is required.' >&2; exit 1; }
+        command -v curl >/dev/null 2>&1 || { printf '%s\n' 'curl is required.' >&2; exit 1; }
+      fi
+      mkdir -p "$HOME/.leanflow-template"
+  - id: resolve-leanflow-repository
+    title: Prepare LeanFlow Repository
+    type: command
+    run: |
+      set -euo pipefail
+      state_dir="$HOME/.leanflow-template"
+      state_env="$state_dir/runtime.env"
+      mkdir -p "$state_dir"
+
+      repo_root=""
+      if [ -x "./scripts/install-internal.sh" ] && [ -f "./pyproject.toml" ] && [ -f "./README.md" ]; then
+        repo_root="$(pwd)"
+      else
+        repo_root="$HOME/LeanFlow"
+        if [ -d "$repo_root/.git" ]; then
+          git -C "$repo_root" fetch origin --prune
+        else
+          rm -rf "$repo_root"
+          git clone https://github.com/epfl-lara/LeanFlow.git "$repo_root"
+        fi
+        git -C "$repo_root" fetch origin --prune
+        git -C "$repo_root" reset --hard origin/main
+      fi
+
+      leanflow_home="${LEANFLOW_HOME:-$HOME/.leanflow}"
+      workspace_dir="${LEANFLOW_WORKSPACE_DIR:-$HOME/LeanFlowWorkspace}"
+
+      cat > "$state_env" <<EOF
+      export LEANFLOW_REPO_ROOT="$repo_root"
+      export LEANFLOW_HOME="$leanflow_home"
+      export LEANFLOW_INSTALL_ROOT="$repo_root"
+      export LEANFLOW_WORKSPACE_DIR="$workspace_dir"
+      export PATH="$HOME/.local/bin:$repo_root/venv/bin:$HOME/.elan/bin:$PATH"
+      export PROMPT_TOOLKIT_NO_CPR=1
+      EOF
+
+      printf 'Using LeanFlow repository at %s\n' "$repo_root"
+      git -C "$repo_root" rev-parse --short=12 HEAD || true
+  - id: install-leanflow
+    title: Run LeanFlow Installer
+    type: command
+    run: |
+      set -euo pipefail
+      . "$HOME/.leanflow-template/runtime.env"
+      cd "$LEANFLOW_REPO_ROOT"
+      ./scripts/install-internal.sh --with-workspace --noninteractive
+      . "$HOME/.leanflow-template/runtime.env"
+      "$HOME/.local/bin/leanflow-launch-session" --print-summary || true
+  - id: optional-openrouter
+    title: Optionally Stage OPENROUTER_API_KEY
+    type: exportSecret
+    name: OPENROUTER_API_KEY
+    optional: true
+    run: |
+      set -euo pipefail
+      . "$HOME/.leanflow-template/runtime.env"
+      mkdir -p "$LEANFLOW_HOME"
+      touch "$LEANFLOW_HOME/.env"
+      python3 - <<'PY'
+      from pathlib import Path
+      import os
+
+      env_path = Path(os.environ["LEANFLOW_HOME"]) / ".env"
+      lines = []
+      if env_path.exists():
+          lines = [line for line in env_path.read_text().splitlines() if line and not line.startswith("OPENROUTER_API_KEY=")]
+      value = os.environ.get("OPENROUTER_API_KEY")
+      if not value:
+          raise SystemExit(0)
+      lines.append("OPENROUTER_API_KEY=" + value)
+      env_path.write_text("\n".join(lines) + "\n")
+      PY
+  - id: optional-openai
+    title: Optionally Stage OPENAI_API_KEY
+    type: exportSecret
+    name: OPENAI_API_KEY
+    optional: true
+    run: |
+      set -euo pipefail
+      . "$HOME/.leanflow-template/runtime.env"
+      mkdir -p "$LEANFLOW_HOME"
+      touch "$LEANFLOW_HOME/.env"
+      python3 - <<'PY'
+      from pathlib import Path
+      import os
+
+      env_path = Path(os.environ["LEANFLOW_HOME"]) / ".env"
+      lines = []
+      if env_path.exists():
+          lines = [line for line in env_path.read_text().splitlines() if line and not line.startswith("OPENAI_API_KEY=")]
+      value = os.environ.get("OPENAI_API_KEY")
+      if not value:
+          raise SystemExit(0)
+      lines.append("OPENAI_API_KEY=" + value)
+      env_path.write_text("\n".join(lines) + "\n")
+      PY
+  - id: optional-anthropic
+    title: Optionally Stage ANTHROPIC_API_KEY
+    type: exportSecret
+    name: ANTHROPIC_API_KEY
+    optional: true
+    run: |
+      set -euo pipefail
+      . "$HOME/.leanflow-template/runtime.env"
+      mkdir -p "$LEANFLOW_HOME"
+      touch "$LEANFLOW_HOME/.env"
+      python3 - <<'PY'
+      from pathlib import Path
+      import os
+
+      env_path = Path(os.environ["LEANFLOW_HOME"]) / ".env"
+      lines = []
+      if env_path.exists():
+          lines = [line for line in env_path.read_text().splitlines() if line and not line.startswith("ANTHROPIC_API_KEY=")]
+      value = os.environ.get("ANTHROPIC_API_KEY")
+      if not value:
+          raise SystemExit(0)
+      lines.append("ANTHROPIC_API_KEY=" + value)
+      env_path.write_text("\n".join(lines) + "\n")
+      PY
+  - id: finalize-provider-selection
+    title: Apply Main Provider Selection
+    type: command
+    run: |
+      set -euo pipefail
+      . "$HOME/.leanflow-template/runtime.env"
+      if [ -f "$LEANFLOW_HOME/.env" ]; then
+        set -a
+        . "$LEANFLOW_HOME/.env"
+        set +a
+      fi
+      "$HOME/.local/bin/leanflow-configure-main-provider" auto || true
+  - id: start-guide-server
+    title: Start Guide Iframe Server
+    type: command
+    run: |
+      set -euo pipefail
+      . "$HOME/.leanflow-template/runtime.env"
+      nohup python3 -m http.server 4310 --directory "$LEANFLOW_HOME/guide" >/tmp/leanflow-guide.log 2>&1 &
+      sleep 1
+  - id: expose-guide
+    title: Expose Guide Iframe
+    type: exposeHttpService
+    name: guide
+    port: 4310
+    autoOpenIframe: true
+  - id: leanflow-session
+    title: LeanFlow tmux Session
+    type: tmuxSession
+    name: leanflow
+    command: |
+      set -euo pipefail
+      . "$HOME/.leanflow-template/runtime.env"
+      if [ -f "$LEANFLOW_HOME/.env" ]; then
+        set -a
+        . "$LEANFLOW_HOME/.env"
+        set +a
+      fi
+      exec "$HOME/.local/bin/leanflow-launch-session"

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from tools.mcp.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command
 
 
-def test_resolve_stdio_command_falls_back_to_gauss_node_bin(tmp_path):
+def test_resolve_stdio_command_falls_back_to_leanflow_node_bin(tmp_path):
     node_bin = tmp_path / "node" / "bin"
     node_bin.mkdir(parents=True)
     npx_path = node_bin / "npx"
@@ -17,7 +17,7 @@ def test_resolve_stdio_command_falls_back_to_gauss_node_bin(tmp_path):
         patch("tools.mcp.mcp_tool.shutil.which", return_value=None),
         patch.dict(
             "os.environ",
-            {"GAUSS_HOME": str(tmp_path), "EPFLEMMA_HOME": str(tmp_path)},
+            {"LEANFLOW_HOME": str(tmp_path)},
             clear=False,
         ),
     ):
@@ -78,8 +78,7 @@ def test_run_stdio_uses_resolved_command_and_prepended_path(tmp_path):
             patch.dict(
                 "os.environ",
                 {
-                    "GAUSS_HOME": str(tmp_path),
-                    "EPFLEMMA_HOME": str(tmp_path),
+                    "LEANFLOW_HOME": str(tmp_path),
                     "PATH": "/usr/bin",
                     "HOME": str(tmp_path),
                 },

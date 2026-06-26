@@ -14,7 +14,7 @@ from urllib.parse import urljoin
 
 import requests
 
-RESEARCH_SEARCH_USER_AGENT = "EPFLemma/0.3 free-research-search"
+RESEARCH_SEARCH_USER_AGENT = "LeanFlow/0.3 free-research-search"
 RESEARCH_SEARCH_TIMEOUT_SECONDS = 12
 SOURCEGRAPH_SEARCH_TIMEOUT_SECONDS = 8
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
@@ -348,7 +348,7 @@ def _sourcegraph_code_terms(query: str) -> str:
 def _search_sourcegraph_code(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
     """Query Sourcegraph for code snippets in Lean/Coq repositories via GraphQL API. Generates language-specific queries (Lean and/or Coq/Rocq), fetches FileMatch results, and extracts repository, file path, code preview, and line numbers. Returns (results, error_msgs) where results is a list of code-match dicts and error_msgs is a semicolon-joined string of per-language failures."""
     graphql_query = """
-query EPFLemmaCodeSearch($query: String!) {
+query LeanFlowCodeSearch($query: String!) {
   search(query: $query, version: V3) {
     results {
       results {

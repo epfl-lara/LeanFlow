@@ -114,10 +114,10 @@ class ProviderClientFactory:
 
     @staticmethod
     def openrouter_default_headers() -> dict[str, str]:
-        """Attribution headers OpenRouter expects from the EPFLemma agent."""
+        """Attribution headers OpenRouter expects from the LeanFlow agent."""
         return {
-            "HTTP-Referer": "https://epflemma.dev",
-            "X-OpenRouter-Title": "EPFLemma Agent",
+            "HTTP-Referer": "https://leanflow.dev",
+            "X-OpenRouter-Title": "LeanFlow Agent",
             "X-OpenRouter-Categories": "productivity,cli-agent",
         }
 
@@ -188,7 +188,7 @@ class ProviderClientFactory:
         or ``None`` when refresh fails / yields invalid creds.
         """
         try:
-            from epflemma_cli.runtime.auth import resolve_codex_runtime_credentials
+            from leanflow_cli.runtime.auth import resolve_codex_runtime_credentials
 
             creds = resolve_codex_runtime_credentials(force_refresh=force, allow_legacy_store=True)
         except Exception as exc:
@@ -211,13 +211,13 @@ class ProviderClientFactory:
         or ``None`` when refresh fails / yields invalid creds.
         """
         try:
-            from epflemma_cli.runtime.auth import resolve_nous_runtime_credentials
+            from leanflow_cli.runtime.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(
-                    60, int(os.getenv("EPFLEMMA_NOUS_MIN_KEY_TTL_SECONDS", "1800"))
+                    60, int(os.getenv("LEANFLOW_NOUS_MIN_KEY_TTL_SECONDS", "1800"))
                 ),
-                timeout_seconds=float(os.getenv("EPFLEMMA_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=float(os.getenv("LEANFLOW_NOUS_TIMEOUT_SECONDS", "15")),
                 force_mint=force,
             )
         except Exception as exc:

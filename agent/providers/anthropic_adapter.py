@@ -1,6 +1,6 @@
-"""Anthropic Messages API adapter for EPFLemma.
+"""Anthropic Messages API adapter for LeanFlow.
 
-Translates between EPFLemma's internal OpenAI-style message format and
+Translates between LeanFlow's internal OpenAI-style message format and
 Anthropic's Messages API. Follows the same pattern as the codex_responses
 adapter — all provider-specific logic is isolated here.
 

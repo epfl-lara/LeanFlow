@@ -1,10 +1,10 @@
 # Native Lean Workflow Surface
 
-This document summarizes the native Lean workflow/tooling contract that now drives EPFLemma.
+This document summarizes the native Lean workflow/tooling contract that now drives LeanFlow.
 
 ## Canonical Workflow IDs
 
-EPFLemma normalizes the public Lean workflow commands to these internal workflow IDs:
+LeanFlow normalizes the public Lean workflow commands to these internal workflow IDs:
 
 - `prove`
   - `/prove`
@@ -26,8 +26,8 @@ The auto-prefixed forms are aliases only. They are not separate runtimes or poli
 
 The canonical contract lives in markdown-backed specs under:
 
-- `epflemma_specs/workflows/`
-- `epflemma_specs/workers/`
+- `leanflow_specs/workflows/`
+- `leanflow_specs/workers/`
 
 Workflow specs currently shipped:
 
@@ -48,13 +48,13 @@ Dormant worker specs currently shipped:
 - `axiom-eliminator`
 - `sorry-filler-deep`
 
-Skills remain the routing layer, but the prompt builder, doctor, router, and Lean tools all read the same spec metadata. `epflemma_cli/lean_workflow_specs.py` validates alias collisions and unknown worker references in tests.
+Skills remain the routing layer, but the prompt builder, doctor, router, and Lean tools all read the same spec metadata. `leanflow_cli/lean_workflow_specs.py` validates alias collisions and unknown worker references in tests.
 
 ## Native Lean And Document Tools
 
-The repo-owned Lean tool surface is defined in `tools/lean_tool.py` and backed by `epflemma_cli/lean_services.py`.
+The repo-owned Lean tool surface is defined in `tools/lean_tool.py` and backed by `leanflow_cli/lean_services.py`.
 
-Document formalization also exposes `read_pdf` and `formalization_document_inspect` from `tools/document_tool.py`, backed by `epflemma_cli/formalization_documents.py`. `read_pdf` is the obvious model-facing tool for extracting text from project-local PDF papers. `formalization_document_inspect` inspects project-local `.tex` and `.pdf` sources, extracts LaTeX sections, standard and custom theorem-like environments, adjacent proof excerpts, and PDF text metadata when local tools are available, and reports degraded extraction reasons.
+Document formalization also exposes `read_pdf` and `formalization_document_inspect` from `tools/document_tool.py`, backed by `leanflow_cli/formalization_documents.py`. `read_pdf` is the obvious model-facing tool for extracting text from project-local PDF papers. `formalization_document_inspect` inspects project-local `.tex` and `.pdf` sources, extracts LaTeX sections, standard and custom theorem-like environments, adjacent proof excerpts, and PDF text metadata when local tools are available, and reports degraded extraction reasons.
 
 Managed queue turns allow new helper declarations that directly support the assigned theorem. The edit guards preserve existing theorem/lemma/example statements and restore edits to pre-existing non-assigned declarations or future queue items.
 
@@ -105,9 +105,9 @@ Managed queue turns allow new helper declarations that directly support the assi
   - uses file locks when owner/delegation context is available
   - returns a structured plan instead of hard-failing when delegation is unavailable
 
-These tools are available through the `lean`, `epflemma-native`, and `epflemma-native-swarm` toolsets.
+These tools are available through the `lean`, `leanflow-native`, and `leanflow-native-swarm` toolsets.
 
-EPFLemma installs and manages the Lean MCP backends by default:
+LeanFlow installs and manages the Lean MCP backends by default:
 
 - `lean-lsp-mcp`
   - role: `primary-state-search`
@@ -181,7 +181,7 @@ Startup behavior:
 5. A deterministic fallback queue is built from candidate-to-candidate dependency importance, unresolved candidate dependencies, project-wide downstream importance, theorem difficulty, first-pending-declaration difficulty, `sorry` count, length, declaration count, and stable path order.
 6. The configured LLM is asked to reorder the bounded candidate list using the same policy and the provided source context, with competition-style theorem names treated as harder and hinted/worked-example-heavy files treated as easier.
 7. The LLM response is accepted only as JSON-like file labels that match known candidates; missing fallback files are appended, and deterministic dependency/difficulty buckets remain guardrails around the model order.
-8. The first file is assigned by setting `EPFLEMMA_NATIVE_ACTIVE_FILE`.
+8. The first file is assigned by setting `LEANFLOW_NATIVE_ACTIVE_FILE`.
 9. The normal file-scoped theorem queue takes over.
 
 Continuation behavior:
@@ -203,22 +203,22 @@ Parallelism policy:
 
 Before launch, the resolver:
 
-1. requires the source path to exist inside the active EPFLemma project
+1. requires the source path to exist inside the active LeanFlow project
 2. accepts `.tex`, `.pdf`, or a directory containing a TeX project
 3. for directory inputs, deterministically selects the main `.tex` entrypoint, collects included `.tex` files, bibliography files, and local assets, and fails ambiguous roots with a clear error
-4. creates `.epflemma/workflow-state/formalization/<source>/manifest.json`
-5. creates `.epflemma/workflow-state/formalization/<source>/extracted.txt`
-6. creates `.epflemma/workflow-state/formalization/<source>/blueprint.md`
+4. creates `.leanflow/workflow-state/formalization/<source>/manifest.json`
+5. creates `.leanflow/workflow-state/formalization/<source>/extracted.txt`
+6. creates `.leanflow/workflow-state/formalization/<source>/blueprint.md`
 7. creates an active Lean target file if it does not already exist
 8. records both the original request path and the selected source document in workflow state
-9. sets `EPFLEMMA_WORKFLOW_CONTEXT` so the runner prompt includes the document contract
-10. sets `EPFLEMMA_NATIVE_ACTIVE_FILE` to the generated target file so statement/source review and later proof work have a stable Lean entrypoint
+9. sets `LEANFLOW_WORKFLOW_CONTEXT` so the runner prompt includes the document contract
+10. sets `LEANFLOW_NATIVE_ACTIVE_FILE` to the generated target file so statement/source review and later proof work have a stable Lean entrypoint
 
 The generated Markdown blueprint is the default planning artifact. If a project already has `blueprint/` or `leanblueprint` available, the planner should keep that TeX blueprint in sync with the generated declaration names and dependency labels.
 
 ## Doctor And MCP
 
-`epflemma doctor` now uses the same capability layer as the Lean workflows.
+`leanflow doctor` now uses the same capability layer as the Lean workflows.
 
 Supported modes:
 
@@ -232,31 +232,31 @@ Supported modes:
 Useful commands:
 
 ```bash
-epflemma doctor
-epflemma doctor mcp --json
-epflemma doctor search --json
-epflemma mcp bootstrap lean
-epflemma mcp status
-epflemma mcp status --json
+leanflow doctor
+leanflow doctor mcp --json
+leanflow doctor search --json
+leanflow mcp bootstrap lean
+leanflow mcp status
+leanflow mcp status --json
 ```
 
-`epflemma mcp status` reports server role, managed/install/config health, connection state, registered tools, local Loogle/REPL power-mode status, public remote fallback policy, and sampling counters.
+`leanflow mcp status` reports server role, managed/install/config health, connection state, registered tools, local Loogle/REPL power-mode status, public remote fallback policy, and sampling counters.
 
-`epflemma mcp bootstrap lean` is the idempotent repair/setup command for the managed Lean MCP stack.
+`leanflow mcp bootstrap lean` is the idempotent repair/setup command for the managed Lean MCP stack.
 
 Power-mode details:
 
 - Local Loogle avoids the public Loogle rate limit and is attempted on Linux/macOS/WSL. First local setup may take 5-10 minutes and about 2GB of disk. If it is cold or unavailable, public remote Lean search fallback remains enabled.
-- REPL mode makes line-based `lean_multi_attempt` faster after the project has a built `repl` binary. `epflemma project init` attempts safe setup, prints progress for `lake update repl` and `lake build repl`, and continues with LSP fallback if setup fails.
-- LeanExplore local mode is preferred when available. Install with `pip install 'epflemma-agent[lean-explore]'` or `pip install 'lean-explore[local]'`, run `lean-explore data fetch`, then use `lean_search mode=semantic|natural-language`. Hosted API mode remains credential-gated through `LEANEXPLORE_API_KEY`.
+- REPL mode makes line-based `lean_multi_attempt` faster after the project has a built `repl` binary. `leanflow project init` attempts safe setup, prints progress for `lake update repl` and `lake build repl`, and continues with LSP fallback if setup fails.
+- LeanExplore local mode is preferred when available. Install with `pip install 'leanflow-agent[lean-explore]'` or `pip install 'lean-explore[local]'`, run `lean-explore data fetch`, then use `lean_search mode=semantic|natural-language`. Hosted API mode remains credential-gated through `LEANEXPLORE_API_KEY`.
 
-For persistent sampling audit logs, set `mcp_servers.<name>.sampling.audit_jsonl: true` in `~/.epflemma/config.yaml`. The default path is `~/.epflemma/logs/mcp-sampling.jsonl`, with `audit_jsonl_path` available as an override.
+For persistent sampling audit logs, set `mcp_servers.<name>.sampling.audit_jsonl: true` in `~/.leanflow/config.yaml`. The default path is `~/.leanflow/logs/mcp-sampling.jsonl`, with `audit_jsonl_path` available as an override.
 
 ## Persisted Workflow State
 
 Native Lean workflows now persist more than logs and checkpoints.
 
-Relevant files under `.epflemma/workflow-state/` include:
+Relevant files under `.leanflow/workflow-state/` include:
 
 - `live_status.json`
 - `activity/`

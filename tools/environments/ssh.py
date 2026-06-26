@@ -58,7 +58,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         self.key_path = key_path
         self.persistent = persistent
 
-        self.control_dir = Path(tempfile.gettempdir()) / "epflemma-ssh"
+        self.control_dir = Path(tempfile.gettempdir()) / "leanflow-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
         self.control_socket = self.control_dir / f"{user}@{host}:{port}.sock"
         _ensure_ssh_available()
@@ -99,7 +99,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
 
     @property
     def _temp_prefix(self) -> str:
-        return f"/tmp/epflemma-ssh-{self._session_id}"
+        return f"/tmp/leanflow-ssh-{self._session_id}"
 
     def _spawn_shell_process(self) -> subprocess.Popen:
         cmd = self._build_ssh_command()
@@ -127,7 +127,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             except (subprocess.TimeoutExpired, OSError):
                 return [""]
 
-        delim = f"__EPFLEMMA_SEP_{self._session_id}__"
+        delim = f"__LEANFLOW_SEP_{self._session_id}__"
         script = "; ".join(f"cat {p} 2>/dev/null; echo '{delim}'" for p in paths)
         cmd = self._build_ssh_command()
         cmd.append(script)

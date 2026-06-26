@@ -14,7 +14,7 @@ import requests
 import yaml
 
 from core.constants import OPENROUTER_MODELS_URL
-from core.home import epflemma_home
+from core.home import leanflow_home
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +191,7 @@ def _lookup_default_context_length(model: str) -> int | None:
 
 def _lookup_configured_context_length(model: str) -> int | None:
     try:
-        from epflemma_cli.config import load_config
+        from leanflow_cli.config import load_config
 
         config = load_config()
     except Exception:
@@ -271,7 +271,7 @@ def fetch_provider_model_metadata(
 
 def _get_context_cache_path() -> Path:
     """Return path to the persistent context length cache file."""
-    return epflemma_home() / "context_length_cache.yaml"
+    return leanflow_home() / "context_length_cache.yaml"
 
 
 def _load_context_cache() -> dict[str, int]:
@@ -369,7 +369,7 @@ def get_model_context_length(model: str, base_url: str = "", api_key: str = "") 
         if cached is not None:
             return cached
 
-    # 2. Explicit user overrides in ~/.epflemma/config.yaml.
+    # 2. Explicit user overrides in ~/.leanflow/config.yaml.
     configured_length = _lookup_configured_context_length(model)
     if configured_length is not None:
         return configured_length

@@ -1,12 +1,12 @@
-# EPFLemma
+# LeanFlow
 
-**EPFLemma is a Lean-first AI automation tool.** It drives a language model inside a real Lean 4 project to repair proofs, formalize mathematics from source documents, and verify a whole project until no `sorry` remains.
+**LeanFlow is a Lean-first AI automation tool.** It drives a language model inside a real Lean 4 project to repair proofs, formalize mathematics from source documents, and verify a whole project until no `sorry` remains.
 
 Point it at a Lean file or project and it inspects diagnostics and goals, edits proofs, re-verifies with Lean after every step, and keeps going — with workflow logs, checkpoints, and resumable state — until the target actually builds clean.
 
 ```bash
-epflemma                          # interactive shell
-epflemma workflow prove Main.lean # or run a workflow directly
+leanflow                          # interactive shell
+leanflow workflow prove Main.lean # or run a workflow directly
 ```
 
 ## Features
@@ -24,16 +24,16 @@ The scope is deliberately narrow: Lean automation, not a general chat assistant.
 ## Install
 
 ```bash
-git clone https://github.com/epfl-lara/EPFLemma.git
-cd EPFLemma
+git clone https://github.com/epfl-lara/LeanFlow.git
+cd LeanFlow
 ./scripts/install-internal.sh
 ```
 
 Verify the install:
 
 ```bash
-epflemma --help
-epflemma doctor          # checks the Lean toolchain, MCP backends, and external tools
+leanflow --help
+leanflow doctor          # checks the Lean toolchain, MCP backends, and external tools
 ```
 
 `doctor` also checks the external CLIs the workflows use: `rg` for local search and Poppler's
@@ -45,15 +45,15 @@ Register an existing Lean project, then run a workflow:
 
 ```bash
 cd /path/to/lean-project
-epflemma project init                  # registers the project (and sets up Lean acceleration when safe)
-epflemma workflow prove Main.lean      # repair proofs in a file
-epflemma workflow formalize paper.tex  # formalize a source document
+leanflow project init                  # registers the project (and sets up Lean acceleration when safe)
+leanflow workflow prove Main.lean      # repair proofs in a file
+leanflow workflow formalize paper.tex  # formalize a source document
 ```
 
 Or use the interactive shell (the leading `/` is optional):
 
 ```bash
-epflemma
+leanflow
 ```
 
 ```text
@@ -67,7 +67,7 @@ When it can do so safely, `project init` also prepares Lean REPL acceleration (a
 `leanprover-community/repl` dependency and builds it) and local `lean-lsp-mcp` power modes — local
 Loogle, REPL-backed tactic screening for `lean_multi_attempt`, and optional local LeanExplore
 semantic search (`lean-explore[local]`). Anything unavailable falls back cleanly and is reported by
-`epflemma doctor`.
+`leanflow doctor`.
 
 ## What a run guarantees
 
@@ -78,7 +78,7 @@ A `prove` run is not "done" because the agent made a plausible edit — it is do
 - no `sorry` in the active target
 - no remaining project `sorry` outside dependencies
 
-EPFLemma reaches that by working in small, Lean-verified steps rather than one big edit:
+LeanFlow reaches that by working in small, Lean-verified steps rather than one big edit:
 
 - **`prove <file>`** drives the model one declaration at a time, re-checking with Lean after every edit and advancing only when the target is clean. Failed attempts are recorded and the original `sorry` is restored, so the file always stays buildable.
 - **`prove`** (no file) scans the project for remaining `sorry`s, ranks the files, and works them one at a time. Parallel agents stay off unless you opt into swarm mode.
@@ -104,77 +104,77 @@ Run a workflow inside a container so the model can edit freely without touching 
 ```bash
 ./scripts/install-sandbox.sh
 cd /path/to/lean-project
-epflemma-sandbox workflow prove Main.lean
-epflemma sandbox status
+leanflow-sandbox workflow prove Main.lean
+leanflow sandbox status
 ```
 
 The sandbox builds a local Docker/Podman image, copies the active project into a per-run worktree,
-and exports the final diff as `changes.patch` under `~/.epflemma/sandbox/runs/<run-id>/`. See the
+and exports the final diff as `changes.patch` under `~/.leanflow/sandbox/runs/<run-id>/`. See the
 [sandbox runtime](docs/sandbox-runtime.md) doc for image options and the update flow.
 
 ## Providers and local runtimes
 
-Inspect the active route with `epflemma provider`. To point at an OpenAI-compatible endpoint:
+Inspect the active route with `leanflow provider`. To point at an OpenAI-compatible endpoint:
 
 ```bash
-export EPFLEMMA_OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
-export EPFLEMMA_OPENAI_API_KEY="..."
-epflemma provider --requested custom
+export LEANFLOW_OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
+export LEANFLOW_OPENAI_API_KEY="..."
+leanflow provider --requested custom
 ```
 
 To use an existing Codex CLI login (model and reasoning effort are read from `~/.codex/config.toml`
-unless `EPFLEMMA_CODEX_MODEL` / `EPFLEMMA_CODEX_REASONING_EFFORT` are set):
+unless `LEANFLOW_CODEX_MODEL` / `LEANFLOW_CODEX_REASONING_EFFORT` are set):
 
 ```bash
 codex login
-epflemma config set model.provider codex
+leanflow config set model.provider codex
 ```
 
 To run a local model server (`vllm`, `ollama`, or `llama.cpp`):
 
 ```bash
-epflemma models local start vllm google/gemma-3-27b-it
-epflemma provider --requested local
+leanflow models local start vllm google/gemma-3-27b-it
+leanflow provider --requested local
 ```
 
 Override the provider for a single run without changing the saved default:
 
 ```bash
-epflemma workflow --provider codex prove Main.lean
+leanflow workflow --provider codex prove Main.lean
 ```
 
 ## Multi-agent mode
 
-EPFLemma does not spawn agents by default. Opt into swarm mode only when you want concurrent Lean work:
+LeanFlow does not spawn agents by default. Opt into swarm mode only when you want concurrent Lean work:
 
 ```bash
-epflemma workflow prove Main.lean --agents 3
+leanflow workflow prove Main.lean --agents 3
 ```
 
-Swarm mode uses file-lock-aware delegation: locks live in `.epflemma/workflow-state/file_locks.json`,
+Swarm mode uses file-lock-aware delegation: locks live in `.leanflow/workflow-state/file_locks.json`,
 and file-write tools reject edits when another agent owns the file. Use `--prompt` for run-specific
 guidance on top of the Lean-first workflow contract:
 
 ```bash
-epflemma workflow prove Main.lean --prompt "try abs_abs_sub before ring_nf"
+leanflow workflow prove Main.lean --prompt "try abs_abs_sub before ring_nf"
 ```
 
 ## Project state
 
-EPFLemma keeps user-level state separate from per-project workflow state:
+LeanFlow keeps user-level state separate from per-project workflow state:
 
-- user config: `~/.epflemma/config.yaml`  ·  user env: `~/.epflemma/.env`
-- project manifest: `.epflemma/project.yaml`  ·  project workflow state: `.epflemma/workflow-state/`
+- user config: `~/.leanflow/config.yaml`  ·  user env: `~/.leanflow/.env`
+- project manifest: `.leanflow/project.yaml`  ·  project workflow state: `.leanflow/workflow-state/`
 
 Workflow state holds activity, logs, checkpoints, file locks, route decisions, failed-attempt
 history, project prove-manager plans, and outcomes — this is what lets long Lean runs resume.
 
 ## Skills and specs
 
-EPFLemma steers the agent with a small curated Lean skill core in `epflemma_skills/` (e.g.
+LeanFlow steers the agent with a small curated Lean skill core in `leanflow_skills/` (e.g.
 `lean-proof-loop`, `lean-theorem-queue-worker`, `lean-diagnostics`, `lean-formalization`,
 `lean-project-search`, `lean-mathlib-search`, `lean-refactor-golf`, `provider-fallback`). The canonical
-workflow contract lives in markdown specs under `epflemma_specs/workflows/` and `epflemma_specs/workers/`.
+workflow contract lives in markdown specs under `leanflow_specs/workflows/` and `leanflow_specs/workers/`.
 
 Skills route the agent to the right workflow behavior; specs define the native tool order, verification
 gates, and worker recommendations. Keep skills thin — if a rule changes the workflow contract, put it in

@@ -72,7 +72,7 @@ def _scan_context_content(content: str, filename: str) -> str:
 # =========================================================================
 
 DEFAULT_AGENT_IDENTITY = (
-    "You are EPFLemma, a direct and capable AI assistant for Lean and AI-for-math workflows. "
+    "You are LeanFlow, a direct and capable AI assistant for Lean and AI-for-math workflows. "
     "Focus on the user's task instead of introducing yourself. "
     "Do not volunteer company history, model lineage, product background, or "
     "a general self-summary unless the user explicitly asks. When asked who you "
@@ -111,7 +111,7 @@ SESSION_SEARCH_GUIDANCE = (
 )
 
 SKILLS_GUIDANCE = (
-    "Treat the EPFLemma skill system as a Lean workflow aid, not a marketplace. "
+    "Treat the LeanFlow skill system as a Lean workflow aid, not a marketplace. "
     "If the task matches a curated Lean skill or a project-local override, load it and follow it. "
     "Prefer project-local overlays when they exist because they capture repo-specific solver guidance."
 )
@@ -168,7 +168,7 @@ def _read_skill_conditions(skill_file: Path) -> dict:
 
         raw = skill_file.read_text(encoding="utf-8")[:2000]
         frontmatter, _ = _parse_frontmatter(raw)
-        meta = frontmatter.get("metadata", {}).get("epflemma", {})
+        meta = frontmatter.get("metadata", {}).get("leanflow", {})
         return {
             "fallback_for_toolsets": meta.get("fallback_for_toolsets", []),
             "requires_toolsets": meta.get("requires_toolsets", []),
@@ -215,14 +215,14 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
 ) -> str:
-    """Build a compact EPFLemma skill index for the system prompt."""
+    """Build a compact LeanFlow skill index for the system prompt."""
     try:
-        from epflemma_cli.lean.lean_workflow_specs import specs_for_skill
-        from epflemma_cli.runtime.skill_core import discover_skills
+        from leanflow_cli.lean.lean_workflow_specs import specs_for_skill
+        from leanflow_cli.runtime.skill_core import discover_skills
 
         skills = discover_skills()
     except Exception as exc:
-        logger.debug("Failed to discover EPFLemma skills: %s", exc)
+        logger.debug("Failed to discover LeanFlow skills: %s", exc)
         return ""
 
     if not skills:
@@ -261,7 +261,7 @@ def build_skills_system_prompt(
                 index_lines.append(f"    - {name}{spec_suffix}")
 
     return (
-        "## EPFLemma Skills\n"
+        "## LeanFlow Skills\n"
         "Before replying, scan the skills below. Load a skill with `skill_view(name)` when it clearly matches the task. "
         "Prefer Lean workflow skills and any project-local override over the builtin default. "
         "When a skill exposes native workflow specs, treat those specs as the operational contract.\n"
@@ -293,7 +293,7 @@ def build_context_files_prompt(cwd: str | None = None) -> str:
     """Discover and load context files for the system prompt.
 
     Discovery: AGENTS.md (recursive), .cursorrules / .cursor/rules/*.mdc,
-    and SOUL.md from EPFLEMMA_HOME only. Each capped at 20,000 chars.
+    and SOUL.md from LEANFLOW_HOME only. Each capped at 20,000 chars.
     """
     if cwd is None:
         cwd = os.getcwd()
@@ -366,15 +366,15 @@ def build_context_files_prompt(cwd: str | None = None) -> str:
         cursorrules_content = _truncate_content(cursorrules_content, ".cursorrules")
         sections.append(cursorrules_content)
 
-    # SOUL.md from EPFLEMMA_HOME only
+    # SOUL.md from LEANFLOW_HOME only
     try:
-        from epflemma_cli.config import ensure_epflemma_home
+        from leanflow_cli.config import ensure_leanflow_home
 
-        ensure_epflemma_home()
+        ensure_leanflow_home()
     except Exception as e:
-        logger.debug("Could not ensure EPFLEMMA_HOME before loading SOUL.md: %s", e)
+        logger.debug("Could not ensure LEANFLOW_HOME before loading SOUL.md: %s", e)
 
-    soul_path = Path(os.getenv("EPFLEMMA_HOME", Path.home() / ".epflemma")) / "SOUL.md"
+    soul_path = Path(os.getenv("LEANFLOW_HOME", Path.home() / ".leanflow")) / "SOUL.md"
     if soul_path.exists():
         try:
             content = soul_path.read_text(encoding="utf-8").strip()

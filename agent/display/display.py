@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_skin():
-    """Legacy skins were removed from EPFLemma."""
+    """Legacy skins were removed from LeanFlow."""
     return None
 
 
@@ -250,7 +250,7 @@ class KawaiiSpinner:
         wings = skin.get_spinner_wings() if skin else []
 
         while self.running:
-            if os.getenv("EPFLEMMA_SPINNER_PAUSE"):
+            if os.getenv("LEANFLOW_SPINNER_PAUSE"):
                 time.sleep(0.1)
                 continue
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]

@@ -83,7 +83,7 @@ def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()
     original_handlers = list(root_logger.handlers)
-    error_log_path = (run_agent._epflemma_home / "logs" / "errors.log").resolve()
+    error_log_path = (run_agent._leanflow_home / "logs" / "errors.log").resolve()
 
     try:
         for handler in list(root_logger.handlers):
@@ -148,7 +148,7 @@ def test_aiagent_suppresses_optional_web_warning_for_native_lean_toolset(capsys)
             quiet_mode=False,
             skip_context_files=True,
             skip_memory=True,
-            enabled_toolsets=["epflemma-native"],
+            enabled_toolsets=["leanflow-native"],
         )
 
     output = capsys.readouterr().out
@@ -239,13 +239,13 @@ def test_format_tool_args_for_log_summarizes_patch_payload():
     lines = run_agent._format_tool_args_for_log(
         "patch",
         {
-            "path": "GaussTest/GaussTest/RealTheorems-homework.lean",
+            "path": "ProveDemo/ProveDemo/RealTheorems-homework.lean",
             "old_string": "abc",
             "new_string": "abc",
         },
     )
 
-    assert any("path: GaussTest/GaussTest/RealTheorems-homework.lean" in line for line in lines)
+    assert any("path: ProveDemo/ProveDemo/RealTheorems-homework.lean" in line for line in lines)
     assert any("old_string: 3 chars across 1 line(s)" in line for line in lines)
     assert any("new_string: 3 chars across 1 line(s)" in line for line in lines)
 
@@ -254,13 +254,13 @@ def test_format_tool_args_for_log_summarizes_verified_patch_payload():
     lines = run_agent._format_tool_args_for_log(
         "apply_verified_patch",
         {
-            "path": "GaussTest/GaussTest/RealTheorems-homework.lean",
+            "path": "ProveDemo/ProveDemo/RealTheorems-homework.lean",
             "patch": "*** Begin Patch\n*** Update File: Demo.lean\n-old\n+new\n*** End Patch",
             "check_mode": "file_exact",
         },
     )
 
-    assert any("path: GaussTest/GaussTest/RealTheorems-homework.lean" in line for line in lines)
+    assert any("path: ProveDemo/ProveDemo/RealTheorems-homework.lean" in line for line in lines)
     assert any("patch: 66 chars across 5 line(s)" in line for line in lines)
     assert any("check_mode: file_exact" in line for line in lines)
 
@@ -268,7 +268,7 @@ def test_format_tool_args_for_log_summarizes_verified_patch_payload():
 def test_format_tool_result_for_log_pretty_prints_terminal_result():
     payload = json.dumps(
         {
-            "output": "error: [root]: no configuration file\n/Users/lmilikic/GaussWorkspace/GaussTest/lakefile.toml",
+            "output": "error: [root]: no configuration file\n/Users/lmilikic/GaussWorkspace/ProveDemo/lakefile.toml",
             "exit_code": 1,
             "error": None,
         }
@@ -286,7 +286,7 @@ def test_format_tool_result_for_log_summarizes_large_file_list():
     payload = json.dumps(
         {
             "total_count": 19,
-            "files": [f"./GaussTest/File{i}.lean" for i in range(19)],
+            "files": [f"./ProveDemo/File{i}.lean" for i in range(19)],
         }
     )
 
@@ -294,7 +294,7 @@ def test_format_tool_result_for_log_summarizes_large_file_list():
 
     assert "total_count: 19" in lines
     assert "files: 19 item(s)" in lines
-    assert any("./GaussTest/File0.lean" in line for line in lines)
+    assert any("./ProveDemo/File0.lean" in line for line in lines)
     assert any("more item(s) omitted" in line for line in lines)
 
 
@@ -334,7 +334,7 @@ def test_format_tool_result_for_log_with_limits_respects_custom_head_tail():
 
 
 def test_emit_workflow_event_forwards_full_details(monkeypatch):
-    monkeypatch.setenv("EPFLEMMA_PROJECT_ROOT", "/tmp/project")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", "/tmp/project")
     captured = {}
 
     def _fake_append(event_type, message, **details):
@@ -343,7 +343,7 @@ def test_emit_workflow_event_forwards_full_details(monkeypatch):
         captured["details"] = details
 
     monkeypatch.setattr(
-        "epflemma_cli.workflows.workflow_state.append_workflow_activity", _fake_append
+        "leanflow_cli.workflows.workflow_state.append_workflow_activity", _fake_append
     )
 
     run_agent._emit_workflow_event(
@@ -741,7 +741,7 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert DEFAULT_AGENT_IDENTITY in prompt
 
-    def test_includes_epflemma_lean_entry_workflow_guidance(self, agent):
+    def test_includes_leanflow_lean_entry_workflow_guidance(self, agent):
         prompt = agent._build_system_prompt()
         assert "point them to /project" in prompt
         assert "then /prove, /autoprove, /formalize, or /autoformalize" in prompt
@@ -1896,7 +1896,7 @@ class TestNousCredentialRefresh:
             return _RebuiltClient()
 
         monkeypatch.setattr(
-            "epflemma_cli.runtime.auth.resolve_nous_runtime_credentials", _fake_resolve
+            "leanflow_cli.runtime.auth.resolve_nous_runtime_credentials", _fake_resolve
         )
 
         agent.client = _ExistingClient()
@@ -2007,8 +2007,7 @@ class TestSystemPromptStability:
         # Should have built fresh, not queried the DB
         mock_db.get_session.assert_not_called()
         assert agent._cached_system_prompt is not None
-        assert "You are EPFLemma" in agent._cached_system_prompt
-        assert "Gauss Agent" not in agent._cached_system_prompt
+        assert "You are LeanFlow" in agent._cached_system_prompt
 
     def test_fresh_build_when_db_has_no_prompt(self, agent):
         """If the session DB has no stored prompt, build fresh even with history."""
@@ -2035,8 +2034,7 @@ class TestSystemPromptStability:
                 agent._cached_system_prompt = agent._build_system_prompt()
 
         # Empty string is falsy, so should fall through to fresh build
-        assert "You are EPFLemma" in agent._cached_system_prompt
-        assert "Gauss Agent" not in agent._cached_system_prompt
+        assert "You are LeanFlow" in agent._cached_system_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -2086,7 +2084,7 @@ class TestBudgetPressure:
 
         assert injected is True
         assert messages[-1]["role"] == "user"
-        assert "EPFLEMMA-RUNTIME STEP BUDGET" in messages[-1]["content"]
+        assert "LEANFLOW-RUNTIME STEP BUDGET" in messages[-1]["content"]
         assert "3 iterations left" in messages[-1]["content"]
 
     def test_runtime_budget_warning_skips_duplicate_tool_warning(self, agent):

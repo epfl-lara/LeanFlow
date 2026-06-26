@@ -40,7 +40,7 @@ SKILL.md Format (YAML Frontmatter, agentskills.io compatible):
       commands: [curl, jq]        #   Command checks remain advisory only.
     compatibility: Requires X     # Optional (agentskills.io)
     metadata:                     # Optional, arbitrary key-value (agentskills.io)
-      epflemma:
+      leanflow:
         tags: [fine-tuning, llm]
         related_skills: [peft, lora]
     ---
@@ -77,21 +77,21 @@ from typing import Any
 
 import yaml
 
-from epflemma_cli.config import _ENV_VAR_NAME_RE, get_epflemma_home, load_config, load_env
-from epflemma_cli.lean.lean_workflow_specs import specs_for_skill
-from epflemma_cli.runtime.skill_core import discover_skills as _og_discover_skills
-from epflemma_cli.runtime.skill_core import load_skill as _og_load_skill
-from epflemma_cli.runtime.skill_core import load_skill_file as _og_load_skill_file
+from leanflow_cli.config import _ENV_VAR_NAME_RE, get_leanflow_home, load_config, load_env
+from leanflow_cli.lean.lean_workflow_specs import specs_for_skill
+from leanflow_cli.runtime.skill_core import discover_skills as _og_discover_skills
+from leanflow_cli.runtime.skill_core import load_skill as _og_load_skill
+from leanflow_cli.runtime.skill_core import load_skill_file as _og_load_skill_file
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
 
-# All skills live in ~/.epflemma/skills/ (seeded from bundled skills/ on install).
+# All skills live in ~/.leanflow/skills/ (seeded from bundled skills/ on install).
 # This is the single source of truth -- agent edits, hub installs, and bundled
 # skills all coexist here without polluting the git repo.
-EPFLEMMA_HOME_DIR = get_epflemma_home()
-SKILLS_DIR = EPFLEMMA_HOME_DIR / "skills"
+LEANFLOW_HOME_DIR = get_leanflow_home()
+SKILLS_DIR = LEANFLOW_HOME_DIR / "skills"
 
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
@@ -410,7 +410,7 @@ def _spec_detail(record: Any) -> dict[str, Any]:
 
 
 def check_skills_requirements() -> bool:
-    """EPFLemma curated skills are always available."""
+    """LeanFlow curated skills are always available."""
     return True
 
 
@@ -455,7 +455,7 @@ def _get_category_from_path(skill_path: Path) -> str | None:
     """
     Extract category from skill path based on directory structure.
 
-    For paths like: ~/.epflemma/skills/mlops/axolotl/SKILL.md -> "mlops"
+    For paths like: ~/.leanflow/skills/mlops/axolotl/SKILL.md -> "mlops"
     """
     try:
         rel_path = skill_path.relative_to(SKILLS_DIR)
@@ -513,7 +513,7 @@ def _parse_tags(tags_value) -> list[str]:
 def _get_disabled_skill_names() -> set[str]:
     """Load disabled skill names from config (once per call).
 
-    Resolves platform from ``EPFLEMMA_PLATFORM`` env var, falls back to
+    Resolves platform from ``LEANFLOW_PLATFORM`` env var, falls back to
     the global disabled list.
     """
     import os
@@ -521,7 +521,7 @@ def _get_disabled_skill_names() -> set[str]:
     try:
         config = load_config()
         skills_cfg = config.get("skills", {})
-        resolved_platform = os.getenv("EPFLEMMA_PLATFORM")
+        resolved_platform = os.getenv("LEANFLOW_PLATFORM")
         if resolved_platform:
             platform_disabled = skills_cfg.get("platform_disabled", {}).get(resolved_platform)
             if platform_disabled is not None:
@@ -538,7 +538,7 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
     try:
         config = load_config()
         skills_cfg = config.get("skills", {})
-        resolved_platform = platform or os.getenv("EPFLEMMA_PLATFORM")
+        resolved_platform = platform or os.getenv("LEANFLOW_PLATFORM")
         if resolved_platform:
             platform_disabled = skills_cfg.get("platform_disabled", {}).get(resolved_platform)
             if platform_disabled is not None:
@@ -549,11 +549,11 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
 
 
 def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
-    """Recursively find all skills in ~/.epflemma/skills/.
+    """Recursively find all skills in ~/.leanflow/skills/.
 
     Args:
         skip_disabled: If True, return ALL skills regardless of disabled
-            state (used by ``gauss skills`` config UI). Default False
+            state (used by the ``leanflow skills`` config UI). Default False
             filters out disabled skills.
 
     Returns:
@@ -765,7 +765,7 @@ def _local_skill_payload(name: str, file_path: str | None = None) -> dict[str, A
         "file": str(path),
         "linked_files": _linked_files_for_local_skill(path),
         "tags": _parse_tags(
-            ((frontmatter.get("metadata") or {}).get("epflemma") or {}).get("tags")
+            ((frontmatter.get("metadata") or {}).get("leanflow") or {}).get("tags")
         ),
         "required_environment_variables": required_env_vars,
         "missing_required_environment_variables": remaining,
@@ -905,7 +905,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     try:
         SKILLS_DIR.mkdir(parents=True, exist_ok=True)
         local_skills = _find_all_skills()
-        default_skills_dir = EPFLEMMA_HOME_DIR / "skills"
+        default_skills_dir = LEANFLOW_HOME_DIR / "skills"
         if local_skills or default_skills_dir != SKILLS_DIR:
             all_skills = [
                 {
@@ -926,7 +926,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 {
                     "name": skill.name,
                     "description": skill.description,
-                    "category": "epflemma",
+                    "category": "leanflow",
                     "source": skill.source,
                     "workflow_specs": [
                         _spec_summary(record) for record in specs_for_skill(skill.name)
@@ -934,9 +934,9 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 }
                 for skill in _og_discover_skills()
             ]
-            if category and category != "epflemma":
+            if category and category != "leanflow":
                 all_skills = []
-            categories = ["epflemma"] if all_skills else []
+            categories = ["leanflow"] if all_skills else []
         return json.dumps(
             {
                 "success": True,
@@ -978,7 +978,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     "success": False,
                     "error": f"Skill '{name}' not found.",
                     "available_skills": available,
-                    "hint": "Use skills_list to inspect the curated EPFLemma skill set.",
+                    "hint": "Use skills_list to inspect the curated LeanFlow skill set.",
                 },
                 ensure_ascii=False,
             )

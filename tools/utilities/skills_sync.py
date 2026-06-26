@@ -2,7 +2,7 @@
 """
 Skills Sync -- Manifest-based seeding and updating of bundled skills.
 
-Copies bundled skills from the repo's skills/ directory into ~/.epflemma/skills/
+Copies bundled skills from the repo's skills/ directory into ~/.leanflow/skills/
 and uses a manifest to track which skills have been synced and their origin hash.
 
 Manifest format (v2): each line is "skill_name:origin_hash" where origin_hash
@@ -18,7 +18,7 @@ Update logic:
   - DELETED by user (in manifest, absent from user dir): respected, not re-added.
   - REMOVED from bundled (in manifest, gone from repo): cleaned from manifest.
 
-The manifest lives at ~/.epflemma/skills/.bundled_manifest.
+The manifest lives at ~/.leanflow/skills/.bundled_manifest.
 """
 
 import contextlib
@@ -28,12 +28,12 @@ import os
 import shutil
 from pathlib import Path
 
-from core.home import epflemma_home
+from core.home import leanflow_home
 
 logger = logging.getLogger(__name__)
 
 
-SKILLS_DIR = epflemma_home() / "skills"
+SKILLS_DIR = leanflow_home() / "skills"
 MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
 
 
@@ -123,7 +123,7 @@ def _discover_bundled_skills(bundled_dir: Path) -> list[tuple[str, Path]]:
 def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
     """
     Compute the destination path in SKILLS_DIR preserving the category structure.
-    e.g., bundled/skills/mlops/axolotl -> ~/.epflemma/skills/mlops/axolotl
+    e.g., bundled/skills/mlops/axolotl -> ~/.leanflow/skills/mlops/axolotl
     """
     rel = skill_dir.relative_to(bundled_dir)
     return SKILLS_DIR / rel
@@ -145,7 +145,7 @@ def _dir_hash(directory: Path) -> str:
 
 def sync_skills(quiet: bool = False) -> dict:
     """
-    Sync bundled skills into ~/.epflemma/skills/ using the manifest.
+    Sync bundled skills into ~/.leanflow/skills/ using the manifest.
 
     Returns:
         dict with keys: copied (list), updated (list), skipped (int),
@@ -276,7 +276,7 @@ def sync_skills(quiet: bool = False) -> dict:
 
 
 if __name__ == "__main__":
-    print("Syncing bundled skills into ~/.epflemma/skills/ ...")
+    print("Syncing bundled skills into ~/.leanflow/skills/ ...")
     result = sync_skills(quiet=False)
     parts = [
         f"{len(result['copied'])} new",
