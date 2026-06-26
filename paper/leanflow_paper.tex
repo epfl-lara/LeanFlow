@@ -144,6 +144,22 @@
     align=center,
     inner sep=1pt,
     text width=18mm
+  },
+  epfGroup/.style={
+    draw=#1!70,
+    dashed,
+    rounded corners=4pt,
+    thick,
+    inner xsep=3mm,
+    inner ysep=3mm
+  },
+  epfStateLink/.style={
+    -{Latex[length=1.5mm]},
+    densely dotted,
+    draw=epfGreen!75,
+    line width=0.55pt,
+    shorten >=0.5mm,
+    shorten <=0.5mm
   }
 }
 
@@ -155,14 +171,14 @@
 \icmltitle{\method: A Case Study in Workflow-Driven Lean Autoformalization}
 
   \begin{icmlauthorlist}
-    \icmlauthor{Lazar Milikic}{epfl}
+    \icmlauthor{Lazar Miliki\'c}{epfl}
     \icmlauthor{Simon Guilloud}{epfl}
     \icmlauthor{Khanh Nguyen}{epfl}
-    \icmlauthor{Viktor Kun{\v c}ak}{epfl}
+    \icmlauthor{Viktor Kun\v{c}ak}{epfl}
   \end{icmlauthorlist}
 
   \icmlaffiliation{epfl}{EPFL, Lausanne, Switzerland}
-  \icmlcorrespondingauthor{Lazar Milikic}{lazar.milikic@epfl.ch}
+  \icmlcorrespondingauthor{Lazar Miliki\'{c}}{lazar.milikic@epfl.ch}
   \icmlkeywords{autoformalization, theorem proving, Lean, LLM agents, document-level formalization, proof repair}
 
   \vskip 0.3in
@@ -171,11 +187,11 @@
 \printAffiliationsAndNotice{}
 
 \begin{abstract}
-  We present and evaluate \method, an LLM agent system specialized for translating mathematical papers into buildable \lean projects.
-  Recent verifier-in-the-loop systems show that large formal artifacts can be produced, but it remains unclear which runtime mechanisms affect completion, auditability, or efficiency in document-to-project formalization.
-  We study this question through case studies on two previously unformalized mathematical papers in number theory and measure theory, using model, proof-workflow, and toolset ablations with \kimi and \gpt; we report task outcome, API calls, input tokens, and output tokens.
-  With \kimi, the full workflow completes both document-level projects within the 2000-call budget, while no-queue variants reach the budget limit; with \gpt, all document-level variants complete, and the full workflow has the lowest or tied-lowest input-token cost on both sources.
-  As complementary calibration, \method reaches 75.7\% BEq+ on the PFR slice of RLM25 and solves all five ICML 2026 AI for Math TCS challenge projects in our \gpt runs.
+We present and evaluate \method, an LLM agent system specialized for translating mathematical papers into buildable \lean projects.
+Recent verifier-in-the-loop systems show that large formal artifacts can be produced, but it remains unclear which runtime mechanisms affect completion, auditability, or efficiency in document-to-project formalization.
+We study this question through case studies on two previously unformalized mathematical papers in number theory and measure theory, using model, proof-workflow, and toolset ablations with \kimi and \gpt; we report task outcome, API calls, input tokens, and output tokens.
+With \kimi, the full workflow completes both document-level projects within the 2000-call budget, while no-queue variants reach the budget limit; with \gpt, all document-level variants complete, and the full workflow has the lowest or tied-lowest input-token cost on both sources.
+As complementary calibration, \method reaches 75.7\% BEq+ on the PFR slice of RLM25 and solves all five ICML 2026 AI for Math TCS challenge projects in our \gpt runs.
 \end{abstract}
 
 \section{Introduction}
@@ -183,9 +199,9 @@
 Autoformalization is moving from isolated theorem translation toward turning whole mathematical sources into \lean projects.
 Early language-model formalization work focused on translating individual natural-language statements into proof-assistant syntax~\citep{wu2022autoformalization}, and many theorem-proving benchmarks still ask the model to prove one supplied formal statement at a time~\citep{zheng2022minif2f,azerbayev2023proofnet}.
 A document-level agent faces a different problem: it must convert mathematical prose, \TeX{} structure, references, definitions, and proofs into a buildable \lean project while preserving the intended statements and managing a long sequence of dependent proof obligations.
-M2F~\citep{wang2026m2f} and recent textbook- or project-scale systems~\citep{gloeckle2026automatictextbookformalization,hariharan2026milestoneformalizationspherepacking,tsoukalas2026advancingmathematicsresearchaidriven} show that verifier-in-the-loop formalization can produce large \lean artifacts; we examine which parts of the runtime help agents keep the source claims fixed and finish the resulting proof work.
+M2F~\citep{wang2026m2f} and recent textbook- or project-scale systems~\citep{gloeckle2026automatictextbookformalization,mathinc2025gauss,hariharan2026milestoneformalizationspherepacking,tsoukalas2026advancingmathematicsresearchaidriven} show that verifier-in-the-loop formalization can produce large \lean artifacts; we examine which parts of the runtime help agents keep the source claims fixed and finish the resulting proof work.
 
-Motivated by this document-scale setting, \method is a \lean-specific runtime that separates mathematical editing from workflow control.
+Motivated by this document-scale setting, we introduce \method as a \lean-specific runtime that separates mathematical editing from workflow control.
 It first runs a deterministic source preflight: the runtime resolves the input document, extracts or records source blocks, labels, references, PDFs, figures, and support files, and refuses ambiguous \TeX{} roots before the model starts.
 The formalizer then builds a blueprint, a project-local source map linking source spans to planned \lean declarations, dependencies, proof notes, and recorded scope changes.
 Before proof search, a statement/source gate checks that the generated declaration types still match the original source claims.
@@ -196,14 +212,14 @@ This separation has different benefits across the two model settings in our expe
 For \kimi~\citep{moonshot2026kimi}, workflow control is decisive in our two document-level runs: the full workflow finishes both sources, while no-queue variants exhaust the call budget.
 For \gpt, all document-level variants finish, so the observed benefit is not a binary success difference; the same structure instead improves token efficiency and preserves an explicit audit trail for the proof work.
 
-\method also introduces LeanProbe\footnote{\url{https://github.com/Lemmy00/LeanProbe}}, a cached same-file verifier built on LeanInteract~\citep{leaninteract2025}, for repeated proof-repair checks.
+\method also introduces LeanProbe\footnote{\url{https://github.com/epfl-lara/LeanProbe}}, a cached same-file verifier built on LeanInteract~\citep{leaninteract2025}, for repeated proof-repair checks.
 LeanProbe gives the proving agent low-latency diagnostics and proof-state feedback while leaving final acceptance to standard \lean/Lake checks.
 In the sequential same-file benchmark summarized in \cref{tab:leanprobe-summary}, cached checking is roughly 9--14$\times$ faster than rerunning growing-prefix Lake checks.
 
-Although proof-only benchmarks are a standard way to measure \lean agents, they do not exercise the full document-to-project workflow.
-In a proof-only setting, the formal statement is already provided and the system only has to replace the proof placeholder.
-Our main evaluation therefore ablates the components of \method on real document-level formalizations: queue management versus free-running proof loops, full \lean tools versus terminal-only interaction, and source-blueprint checkpoints versus direct source-to-code generation.
-We then report RLM25-PFR agent runs and the ICML 2026 AI for Math TCS challenge~\citep{ai4math2026challenge} as complementary measurements.
+Our main evaluation ablates \method on real document-level formalizations, where the system must recover statements from source documents and then complete the resulting proof work.
+We compare queue management with free-running proof loops, full \lean tool access with terminal-only interaction, and source-blueprint checkpoints with direct source-to-code generation.
+Proof-only benchmarks remain useful calibration, but they provide the formal statement in advance and only test whether the system can replace the proof placeholder.
+We therefore report RLM25-PFR agent runs and the ICML 2026 AI for Math TCS challenge~\citep{ai4math2026challenge} as complementary measurements.
 
 The two document-level case studies are Frisch and Vaserstein's \emph{Parametrization of Pythagorean Triples by a Single Triple of Polynomials}~\citep{frisch2007pythagorean} and Lyons and Zumbrun's \emph{A Calculus Proof of the Cramer--Wold Theorem}~\citep{lyons2017cramerwold}.
 The Pythagorean source combines integer-valued polynomial definitions, an obstruction over $\mathbb{Z}[x_1,\ldots,x_n]$, explicit rational-polynomial witnesses, and custom plain-\TeX{} theorem macros.
@@ -211,9 +227,15 @@ The Cramer--Wold source combines probability measures on Euclidean space, closed
 These sources are short enough for controlled ablations, but they are still full mathematical papers with nontrivial definitions, representation choices, and proof dependencies.
 Both require source-aware definitions and reusable \lean infrastructure that the prose leaves implicit.
 
-This paper makes two contributions.
-First, it describes \method as an autonomous workflow for document-to-project formalization and proof repair: the runtime records how source claims become \lean declarations, reviews those declarations before proving, manages the proof queue, and uses LeanProbe for fast local feedback while keeping final acceptance in standard \lean/Lake checks.
-Second, it evaluates those design choices through case-study ablations under \kimi and \gpt, distinguishing workflow effects on completion from effects on model-side efficiency and auditability.
+This paper makes three \textbf{main contributions}:
+\begin{itemize}
+    \item A document-to-project workflow for \lean formalization. \method starts from a paper or \TeX{} project, records which source text supports each generated declaration, checks statements before proof search, and moves to the next theorem only after \lean accepts the current proof edit.
+    \item A fast local verifier for proof repair. LeanProbe caches the \lean environment before the current declaration and returns proof states and diagnostics through a CLI and MCP server; final acceptance remains a standard \lean/Lake build.
+    \item An evaluation on full mathematical sources and proof-only benchmarks. We ablate queue control, tool access, and source checkpoints on two paper formalizations with \kimi and \gpt, and report RLM25-PFR and ICML 2026 AI for Math TCS challenge runs as calibration.
+\end{itemize}
+We release on GitHub the \href{https://github.com/epfl-lara/LeanFlow}{\method implementation},
+\href{https://github.com/epfl-lara/LeanProbe}{LeanProbe verifier}, and
+\href{https://github.com/epfl-lara/AutoformalizedProjects}{generated case-study projects}.
 
 \section{Related Work}
 
@@ -221,12 +243,12 @@ Second, it evaluates those design choices through case-study ablations under \ki
 Lean 4~\citep{demoura2021lean4} and \mathlib~\citep{mathlib2020} provide the verification substrate for many recent neural theorem-proving systems.
 Benchmarks such as miniF2F~\citep{zheng2022minif2f}, ProofNet~\citep{azerbayev2023proofnet}, PutnamBench~\citep{tsoukalas2024putnambench}, FormalMATH~\citep{yu2025formalmath}, SorryDB~\citep{letson2026sorrydb}, and VeriSoftBench~\citep{xin2026verisoftbench} measure different proof-only or repository-scale capabilities.
 They provide useful calibration, but most start from an existing formal statement or repository context.
-\method instead studies the runtime needed when the source begins as mathematical prose, and the output must be a buildable project.
+Our work instead studies the runtime needed when the source begins as mathematical prose, and the output must be a buildable project.
 
 \paragraph{Autoformalization across scales.}
 Early LLM autoformalization work studied natural-language-to-formal translation at theorem scale~\citep{wu2022autoformalization}; later work improved process supervision and evaluation for \lean statements~\citep{lu2024process,poiroux2024reliable,poiroux2025rlmeval}.
 M2F~\citep{wang2026m2f} and Automatic Textbook Formalization~\citep{gloeckle2026automatictextbookformalization} formalize long mathematical sources into \lean projects, audit generated statements, and repair proofs under a pinned environment.
-The Gauss project~\citep{hariharan2026milestoneformalizationspherepacking} completes a sorry-free formalization of the sphere-packing problem in dimension 8 from an existing blueprint and \lean development.
+Math, Inc.'s Gauss system is an autoformalization agent for large \lean projects~\citep{mathinc2025gauss}. In the sphere-packing project~\citep{hariharan2026milestoneformalizationspherepacking}, it helps complete a sorry-free formalization of the dimension-8 result from an existing blueprint and \lean development.
 AlphaProof Nexus~\citep{tsoukalas2026advancingmathematicsresearchaidriven} uses an agentic evolutionary framework for formal proof search over a large set of formalized conjectures.
 Direct comparison with M2F is difficult from the currently available public artifacts: reproducing our document-level runs under M2F would require the same source documents, model, \mathlib version, budget, prompts, workflow logs, tool surface, and final acceptance criteria.
 Our study is smaller in document volume but different in emphasis: we isolate queue control, tool routing, statement handoff, and model-side budget under the two model settings in our experiments.
@@ -247,11 +269,11 @@ For each generated declaration $d \in \mathrm{Decl}(P)$, the workflow should rec
 \[
   \pi(d) \subseteq \mathrm{Span}(D),
 \]
-where $\pi(d)$ is the finite set of source spans, labels, sections, pages, equations, or bibliography references used to justify $d$.
+where $\pi(d)$ is the finite set of source spans, labels, sections, pages, equations, or bibliography references  justifying $d$.
 
 We separate three checks.
 Statement type-checking asks whether the generated \lean declaration is well typed under $E$ when theorem-like proof bodies are replaced by explicit \texttt{sorry} placeholders.
-Statement faithfulness asks whether that well-typed declaration states the source claim, including object classes, quantifiers, domains, hypotheses, and conclusion.
+Statement faithfulness asks whether that well-typed declaration states the source claim, including statement type, quantifiers, domains, hypotheses, and conclusion.
 Proof completion asks whether a faithful declaration has a complete proof with no unacceptable placeholders or custom axioms.
 The final project gate is stricter than a theorem-local check: the requested file or full Lake project must build under $E$, and a hygiene scan must report no unapproved \texttt{sorry}, \texttt{admit}, \texttt{unsafe}, or hidden axiom.
 
@@ -263,22 +285,65 @@ The final project gate is stricter than a theorem-local check: the requested fil
   \node[epfStage, text width=24mm, right=of source] (preflight) {Preflight\\manifest\\blocks, PDFs, refs};
   \node[epfStage, text width=24mm, right=of preflight] (blueprint) {Blueprint\\source map\\deps, names, notes};
   \node[epfStage, text width=24mm, right=of blueprint] (draft) {Lean draft\\statements with\\\texttt{sorry} proofs};
-  \node[epfGate, text width=24mm, right=of draft] (review) {Statement/source\\gate\\audit or redraft};
+  \node[epfGate, text width=24mm, right=of draft] (review) {Statement/source\\gate\\approve or redraft};
 
-  \node[epfStage, text width=28mm, below=12mm of draft] (prove) {Prover queue\\one declaration\\at a time};
+  \node[epfStage, text width=28mm, below=18mm of draft] (prove) {Prover queue\\one declaration\\at a time};
   \node[epfTool, text width=28mm, right=of prove] (fast) {LeanProbe\\cached checks\\warm env};
   \node[epfGate, text width=28mm, right=of fast] (build) {Final gates\\Lake build\\sorry/axioms};
+  \node[inner sep=0pt, minimum width=40mm, minimum height=15mm, below=9mm of preflight] (state) {};
+  \path[
+    draw=epfGreen!65,
+    fill=epfGreen!5,
+    line width=0.55pt
+  ]
+    ($(state.center)+(-20mm,4.5mm)$)
+    arc[start angle=180,end angle=0,x radius=20mm,y radius=3mm]
+    -- ($(state.center)+(20mm,-4.5mm)$)
+    arc[start angle=0,end angle=-180,x radius=20mm,y radius=3mm]
+    -- cycle;
+  \draw[draw=epfGreen!65, line width=0.55pt]
+    ($(state.center)+(0,4.5mm)$) ellipse[x radius=20mm,y radius=3mm];
+  \node[font=\sffamily\scriptsize\bfseries, align=center] at ($(state.center)+(0,-1.9mm)$)
+    {Workflow state record};
 
   \foreach \a/\b in {source/preflight,preflight/blueprint,blueprint/draft,draft/review,prove/fast,fast/build}
     \draw[epfArrow] (\a) -- (\b);
-  \coordinate (handoff) at ($(review.south)+(0,-5mm)$);
-  \draw[epfArrow] (review.south) -- (handoff) -| (prove.north);
+  \coordinate (handoff) at ($(review.south)+(0,-10mm)$);
+  \coordinate (handoffProve) at (prove.north |- handoff);
+  \draw[epfArrow] (review.south) -- (handoff) -- (handoffProve) -- (prove.north);
+  \node[
+    font=\sffamily\tiny,
+    text=epfOrange,
+    fill=white,
+    inner sep=0.45mm
+  ] at ($(handoff)!0.54!(handoffProve)+(0,2.2mm)$) {Formal statements};
+  \coordinate (redraftCeil) at ($(draft.north)!0.5!(review.north)+(0,5.5mm)$);
+  \coordinate (redraftRight) at (review.north |- redraftCeil);
+  \coordinate (redraftLeft) at (draft.north |- redraftCeil);
+  \draw[-{Latex[length=1.7mm]}, draw=epfOrange!80, line width=0.55pt]
+    (review.north) -- (redraftRight)
+    -- node[midway, above, font=\sffamily\tiny, text=epfOrange, fill=white, inner sep=0.35mm]
+      {redraft}
+    (redraftLeft) -- (draft.north);
+  \coordinate (formalState) at ($(preflight.south)!0.5!(blueprint.south)$);
+  \draw[epfStateLink] ($(state.north)+(1.4mm,0)$) -- ($(formalState)+(1.0mm,0)$);
+  \draw[epfStateLink] ($(formalState)+(-1.0mm,0)$) -- ($(state.north)+(-1.4mm,0)$);
+  \draw[epfStateLink] ($(state.east)+(0,1.2mm)$) -- ($(prove.west)+(0,1.2mm)$);
+  \draw[epfStateLink] ($(prove.west)+(0,-1.2mm)$) -- ($(state.east)+(0,-1.2mm)$);
 
-  \node[epfStore, below=8mm of fast, text width=112mm] (state)
-    {Project-local workflow state records activity, proof checkpoints, failed attempts, route decisions, prover plans, and outcomes};
+  \node[
+    epfGroup=epfBlue,
+    fit=(source)(preflight)(blueprint)(draft)(review)(redraftCeil),
+    label={[font=\sffamily\scriptsize\bfseries,text=epfBlue]above:Formalizer}
+  ] {};
+  \node[
+    epfGroup=epfTeal,
+    fit=(prove)(fast)(build),
+    label={[font=\sffamily\scriptsize\bfseries,text=epfTeal]below:Prover}
+  ] {};
 \end{tikzpicture}
 }
-\caption{\method document-to-project pipeline. The formalizer emits a well-typed statement skeleton and a durable blueprint; a statement/source gate checks faithfulness; the prover queue then attempts proof closure under verifier and hygiene gates. Redrafts, failed proof attempts, and build failures are persisted in workflow state rather than transient conversation state.}
+\caption{\method document-to-project pipeline. Dashed regions separate the formalizer and prover phases; the green silo is the project-local workflow state record shared by both. The formalizer emits a well-typed statement skeleton and a durable blueprint, and formal theorem statements pass through a statement/source gate before the prover queue attempts proof closure under verifier and hygiene gates. The workflow state records activity, proof checkpoints, failed attempts, route decisions, prover plans, and outcomes, so redrafts and build failures persist outside the transient conversation state.}
 \label{fig:pipeline}
 \end{figure*}
 
@@ -293,12 +358,12 @@ Formalization may introduce definitions, names, imports, and theorem statements,
 Proof repair then treats those declarations as fixed targets: it may edit proof bodies and add local helper lemmas, but it may not modify theorem statements, add axioms, or leave the assigned proof partially solved.
 
 \begin{algorithm}[t]
-\caption{\method workflow contract}
+\caption{\method agent workflow contract}
 \label{alg:method}
 \begin{algorithmic}[1]
 \STATE Resolve source document $D$ and pinned \lean environment $E$.
 \STATE Extract a preflight manifest: source blocks, labels, references, PDFs, figures, and support files.
-\STATE Create a blueprint mapping source spans to planned declarations, dependencies, scope changes, and proof notes.
+\STATE Create a ``blueprint'' mapping source spans to planned declarations, dependencies, scope changes, and proof notes.
   \STATE Draft \lean declarations with placeholders only for theorem-like proofs; verify that the statement layer type-checks.
 \STATE Run a statement/source gate; if faithfulness fails, redraft before proof search.
 \WHILE{the requested file or project still contains assigned proof obligations}
@@ -312,14 +377,14 @@ Proof repair then treats those declarations as fixed targets: it may edit proof 
 
 \subsection{Source-Backed Skeleton Construction}
 
-\method begins by resolving the source deterministically.
-For a \TeX{} project directory, deterministic preflight selects a main entry point, follows local includes, records bibliography files, figures, PDFs, and support files, and fails on ambiguous roots before the agent starts.
+\method begins by resolving the source deterministically using document processing tools.
+For a \TeX{} project directory, deterministic preflight uses regular expression search to identify and select a main entry point, follow local includes, record bibliography files, figures, PDFs, and support files, and fail on ambiguous roots before the agent starts.
 The same pass extracts standard theorem-like environments, custom theorem declarations, plain-\TeX{} theorem/proof blocks, labels, references, citations, section structure, and nearby proof environments when available.
 For PDFs, it records extracted text, metadata, and image inventories through local Poppler tools such as \texttt{pdftotext}, \texttt{pdfinfo}, and \texttt{pdfimages}; the model reads this bounded source view through \texttt{read\_pdf}.
 
 The \emph{formalize} workflow next creates a project-local blueprint before the proof skeleton is considered ready.
 The blueprint is the durable source map for the run: it lists source statements, planned \lean names, dependencies, source locators, statement-fidelity checks, proof notes, and known scope changes.
-For each source theorem or lemma, it spells out the parts of the formal type that are most prone to drift: object classes, quantifier order, parameter domains, codomains, hypotheses, side conditions, and follow-on equivalences.
+For each source theorem or lemma, it spells out the parts of the formal type that are most prone to drift: statement type, quantifier order, parameter domains, codomains, hypotheses, side conditions, and follow-on equivalences.
 The generated \lean module must type-check with theorem bodies left as \texttt{by sorry}; proof filling is deferred until the statement/source gate has approved the skeleton.
 
 \subsection{Statement/Source Gate}
@@ -327,7 +392,7 @@ The generated \lean module must type-check with theorem bodies left as \texttt{b
 The statement/source gate checks the generated skeleton before proof search begins.
 Compilation only shows that a declaration is well typed; it does not show that the declaration is the theorem stated in the paper.
 \method therefore launches a fresh LLM reviewer context---a separate model context with no human in the loop---over the blueprint, generated \lean declarations, and original source spans.
-The reviewer can approve, reject, or request redrafting, but it does not fill proof bodies.
+The reviewer is a single invocation of a thinking model; it can approve, reject, or request redrafting, but it does not fill proof bodies.
 If any check in \cref{tab:review-checks} fails, the formalizer returns to the skeleton before the \emph{prove} workflow starts; the prover should not receive a weakened, strengthened, or incomparable target.
 We call the version that passes this gate the \emph{reviewed skeleton}.
 
@@ -353,17 +418,24 @@ Hygiene & Hidden \texttt{axiom}, \texttt{unsafe}, \texttt{admit}, or unreported 
 \end{tabular}
 \end{table}
 
-\subsection{Queue-Managed Proof Repair}
+\subsection{Project-wide Prover Queue}
+The project-wide prover queue chooses which file the prover should work on next.
+When a requested project still contains \texttt{sorry}, the manager scans the files, ranks candidate files using declaration dependencies, local hints, examples, and size estimates, records the route decision, and hands one file to the file-scoped declaration queue.
+This outer queue is needed because document formalizations produce many dependent proof obligations.
+Without route control, the agent can spend calls on the wrong file, revisit failed paths, or move to later work before earlier dependencies are stable.
 
-The proof workflow is organized around a queue manager rather than a free-form chat loop.
-The queue manager is a programmatic controller that decides which theorem is active, builds the bounded context shown to the model, runs or routes verification, records failed attempts, and allows the model to advance only when the current assignment is clean.
-For a file-scoped run, the manager stores the current top-of-queue declaration, the remaining queue, theorem-local failed attempts and diagnostics, retry counters, the latest verification record, and accepted or failed outcomes.
-The model sees only the current target, a bounded queue horizon, relevant source/proof context, and theorem-local failed attempts.
-This prevents common long-run failures: losing the active theorem after compaction, retrying a previously failed proof shape, changing a future statement, or advancing because a text search no longer finds \texttt{sorry} while \lean still reports open goals.
+\subsection{File-Scoped Declaration Queue}
 
-For project-wide proving, the manager scans files with remaining \texttt{sorry}, ranks candidates using declaration-dependency information, local hints/examples, and size estimates, records the plan, and assigns files through the same file-scoped path.
-After each edit, the proving LLM agent refreshes the structured \lean state and asks the manager whether to continue the theorem, accept the edit, restore a baseline \texttt{sorry}, or move to the next target.
-\cref{fig:prover-loop} shows the file-scoped loop.
+\cref{fig:prover-loop} shows the declaration queue and repair loop inside an assigned file.
+Once the project queue selects a file, the manager builds a file-scoped declaration queue from pending \texttt{sorry} declarations and diagnostics.
+The front queue item becomes the active declaration; the prover loop repairs only that declaration before the manager advances to the next queue item.
+For the active queue item, the manager stores the target, theorem-local failed attempts and diagnostics, retry counters, and the latest verification record; it also tracks the remaining declarations in the file and each accepted or failed outcome.
+It builds the bounded context shown to the model, runs or routes verification, and lets the model advance only after the assigned declaration is clean.
+The model sees the current target, a small view of the remaining file work, relevant source/proof context, and theorem-local failed attempts.
+
+The file-scoped declaration queue keeps proof search focused by exposing only one active assignment at a time.
+It prevents common long-run failures: losing the active theorem after compaction, retrying a previously failed proof shape, changing a future statement, or advancing because a text search no longer finds \texttt{sorry} while \lean still reports open goals.
+After each edit, the proving LLM agent refreshes the structured \lean state and asks the manager whether to continue the same declaration, accept the edit, restore a baseline \texttt{sorry}, or assign the next declaration.
 
 \begin{figure}[t]
 \centering
@@ -394,19 +466,7 @@ After each edit, the proving LLM agent refreshes the structured \lean state and 
 \label{fig:prover-loop}
 \end{figure}
 
-\subsection{LeanProbe and Tool Surface}
-\label{sec:leanprobe-tools}
-
-LeanProbe is a declaration-level verifier for repeated proof attempts in one \lean file.
-It is a standalone CLI, Python library, and MCP server built on LeanInteract~\citep{leaninteract2025}, and is openly available at \href{https://github.com/Lemmy00/LeanProbe}{\texttt{Lemmy00/LeanProbe}}.
-At assignment time, LeanProbe runs a \emph{prepare} step for the active declaration: it checks imports, the file header, and all prior declarations, then stores the resulting environment immediately before the target.
-Each \emph{check} step replaces the target declaration with one candidate proof or helper block and checks it against that cached environment.
-The cache advances only after a complete declaration replacement is accepted, so failed candidates give diagnostics without changing the environment seen by later obligations.
-
-LeanProbe returns proof-agent feedback: diagnostics, warnings, \texttt{sorry} detection, tactic metadata, goal states, and inline \lean comments at the failing location.
-A failed candidate can be returned as model-readable \lean with compact comments containing the local proof state and the diagnostic beside the failing tactic, as illustrated in \cref{fig:leanprobe-feedback}.
-
-\begin{figure}[H]
+\begin{figure}[bth]
 \centering
 \begin{leanexamplebox}[title={LeanProbe feedback on a failed candidate}]
 \textcolor{leanKeyword}{theorem} add\_comm\_candidate (x y : \textcolor{leanType}{Nat}) :\\
@@ -428,13 +488,22 @@ x y : \textcolor{leanType}{Nat}\\
 \caption{Example LeanProbe feedback embedded into a failed \lean candidate. The proof state is injected before the failing tactic (green marker) and the diagnostic after it (red marker); the failing tactic is underlined in red.}
 \label{fig:leanprobe-feedback}
 \end{figure}
-This information is used for fast local repair inside the queue loop, not for final acceptance.
-The final gates remain module or project Lake builds and verification that the project is free from unapproved \texttt{axiom} declarations and remaining \texttt{sorry} placeholders.
-\cref{tab:toolset} summarizes the tool classes exposed to the model; ablations in \cref{sec:experiments} remove this surface to isolate its effect.
 
-\begin{table}[H]
+\subsection{LeanProbe and Tool Surface}
+\label{sec:leanprobe-tools}
+
+LeanProbe is a declaration-level verifier for repeated proof attempts in one \lean file.
+It is a standalone CLI, Python library, and MCP server built on LeanInteract~\citep{leaninteract2025}, and is openly available at \href{https://github.com/epfl-lara/LeanProbe}{\texttt{epfl-lara/LeanProbe}}.
+At assignment time, LeanProbe runs a \emph{prepare} step for the active declaration: it checks imports, the file header, and all prior declarations, then stores the resulting environment immediately before the target.
+Each \emph{check} step replaces the target declaration with one candidate proof or helper block and checks it against that cached environment.
+The cache advances only after a complete declaration replacement is accepted, so failed candidates give diagnostics without changing the environment seen by later obligations.
+
+LeanProbe returns proof-agent feedback: diagnostics, warnings, \texttt{sorry} detection, tactic metadata, goal states, and inline \lean comments at the failing location.
+A failed candidate can be returned as model-readable \lean with compact comments containing the local proof state and the diagnostic beside the failing tactic, as illustrated in \cref{fig:leanprobe-feedback}.
+
+\begin{table}[bth]
 \centering
-\caption{Default tool surface exposed to the agent. The manager decides which tool class is relevant for the current proof obligation or failure mode.}
+\caption{Default tool surface exposed to the agent currently comprises 27 tools. The following table groups them by purpose. The manager decides which tool class is relevant for the current proof obligation or failure mode.}
 \label{tab:toolset}
 \scriptsize
 \setlength{\tabcolsep}{3pt}
@@ -447,12 +516,17 @@ File editing & Read, search, patch, and write project files under manager checks
 Lean verification & Run canonical \lean/Lake checks and LeanProbe cached target checks \\
 Search/context & Retrieve local/\mathlib facts, nearby declarations, and theorem context \\
 Proof exploration & Try bounded proof candidates, request reasoning help, and decompose helpers \\
-Hygiene & Scan for remaining \texttt{sorry}, custom axioms, unsafe constructs, and axiom profiles \\
+Code hygiene & Scan for remaining \texttt{sorry}, custom axioms, unsafe constructs, and axiom profiles \\
 Workflow memory & Reattach skills, blueprints, session notes, and theorem-local failed attempts \\
 Terminal fallback & Run explicit shell commands when the bounded tools are insufficient \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+This information is used for fast local repair inside the queue loop, not for final acceptance.
+The final gates remain module or project Lake builds and verification that the project is free from unapproved \texttt{axiom} declarations and remaining \texttt{sorry} placeholders.
+\cref{tab:toolset} summarizes the tool classes exposed to the model; ablations in \cref{sec:experiments} remove this surface to isolate its effect.
+
 
 \section{Evaluation}
 \label{sec:experiments}
@@ -484,17 +558,18 @@ Statement translation, skeleton construction, the statement/source gate, and pro
 
 \subsection{Workflow Ablations on Real Sources}
 
-The primary evaluation is an ablation study: it compares the full \method against variants that remove the queue manager and/or the specialized \lean tools.
+The primary evaluation is an ablation study: it compares the full \method against variants that remove the queue system and/or the specialized \lean tools.
 For each model, we run the full $2\times2$ design: queue versus no queue, and full tool surface versus terminal-only interaction. \cref{tab:longform-ablation} is organized by source so that completion behavior and model-side budget can be compared within the same mathematical project.
-All four conditions for a given source start from the same reviewed skeleton and use the same proof goal, prompt template, model settings, and call budget; only the queue controller and tool surface are changed.
+Here and in later tables, \emph{queue} means the two-layer queue system: the project-wide file queue plus the file-scoped declaration queue.
+All four conditions for a given source start from the same reviewed skeleton and use the same proof goal, prompt template, model settings, and call budget; only the queue system and tool surface are changed.
 All document-level proving runs have a maximum budget of 2000 prover-agent API calls, where one call is one model turn in the proof-repair loop.
 In the terminal-only condition, the agent may still read and edit files, search with shell tools such as \texttt{rg}, and run commands such as \texttt{lake build}, but it has no access to LeanProbe, MCP-backed \lean tools, structured declaration search, or proof-state APIs.
-In the no-queue condition, an outer runner still keeps the prover running until the project succeeds or the call budget expires, but it disables the assignment and memory behavior in \cref{alg:method}, Step 6: the model is not restricted to a single top-of-queue theorem, and theorem-local failed-attempt history is not used to gate the next target.
+In the no-queue condition, an outer runner still keeps the prover running until the project succeeds or the call budget expires, but both queue layers are disabled: the manager does not route files through a project queue, does not restrict the model to one top-of-queue declaration, and does not use theorem-local failed-attempt history to gate the next target.
 Source preflight, the statement/source gate, final \lean/Lake verification, and hygiene checks are held fixed across conditions.
 
 \begin{table*}[t]
 \centering
-\caption{Long-form workflow ablation on the two document-level case studies. Workflow abbreviations encode queue and tool configuration: Full = queue with full tools; NoQ+Tools = no queue with full tools; Q+CLI = queue with terminal-only interaction; NoQ+CLI = no queue with terminal-only interaction. Outcome is \emph{success} when the requested project builds under $E$ from the reviewed skeleton with no remaining \texttt{sorry} and no unapproved axioms within the 2000-call budget, and \emph{failure} otherwise. Calls are prover-agent API calls with a 2000-call cap.}
+\caption{Long-form workflow ablation on the two document-level case studies. Workflow abbreviations encode queue-system and tool configuration: Full = both queue layers with full tools; NoQ+Tools = no queue system with full tools; Q+CLI = both queue layers with terminal-only interaction; NoQ+CLI = no queue system with terminal-only interaction. Outcome is \emph{success} when the requested project builds under $E$ from the reviewed skeleton with no remaining \texttt{sorry} and no unapproved axioms within the 2000-call budget, and \emph{failure} otherwise. Calls are prover-agent API calls with a 2000-call cap.}
 \label{tab:longform-ablation}
 \footnotesize
 \setlength{\tabcolsep}{3pt}
@@ -523,7 +598,7 @@ Cramer--Wold & \gpt & NoQ+CLI & \textbf{success} & 476 & 49.7M & 281.6K \\
 \end{tabular*}
 \end{table*}
 
-\cref{tab:longform-ablation} shows that queue management is decisive for \kimi in these two document-level runs: both no-queue variants exhaust the 2000-call budget on both case studies, while full \method succeeds in 1043 calls on Pythagorean triples and 1278 calls on Cramer--Wold.
+\cref{tab:longform-ablation} shows that the combined queue system is decisive for \kimi in these two document-level runs: both no-queue variants exhaust the 2000-call budget on both case studies, while full \method succeeds in 1043 calls on Pythagorean triples and 1278 calls on Cramer--Wold.
 The effect of the tool surface is most visible on the analytic case study, where \kimi with a queue but terminal-only interaction still fails on Cramer--Wold.
 For \gpt, all document-level variants succeed, so these rows do not establish \method as necessary for completion under this model. Instead, they support an efficiency and auditability claim: full \method has the lowest or tied-lowest input-token cost on both sources, although the Cramer--Wold no-queue/full-tools run uses slightly fewer calls at a higher input-token cost.
 
@@ -542,6 +617,8 @@ Runs are autonomous after launch, with no human edits to the generated statement
 If the 200-call budget is exhausted before final verification, the example is counted as a proof failure.
 Proof success requires final \lean/Lake verification and the same hygiene scan used in our document-level runs.
 \cref{tab:autoformalization-experiments} summarizes the completed \gpt runs. In this single \gpt run, \method reduces calls (3{,}541 vs.\ 4{,}053) and input tokens (203.2M vs.\ 236.6M) while increasing BEq+ from 72.9\% to 75.7\%; because the runs lack variance estimates, we treat the BEq+ change as a small effect rather than a significance claim. The gap between proof success and statement-equivalence metrics reinforces why verified proof completion cannot replace statement/source checks: a proved declaration can still formalize the wrong mathematical claim.
+
+To our knowledge, no published baseline reports provide proof-of-completion results for the RLM25-PFR two-stage setting; the original source \cite{poiroux2025rlmeval} is not concerned with producing proofs of statements.
 
 \begin{table}[t]
 \centering
@@ -567,14 +644,14 @@ The ICML 2026 AI for Math Track 2 TCS proving challenge tests project-level algo
 The five challenge projects cover binary heap operations, a heap-backed Dijkstra proof, Kruskal minimum spanning trees, segment-tree construction and range queries, and treap invariant/runtime obligations.
 Each run uses the same 2000-call proof budget as the document-level proof-repair runs.
 Success means that the final project passes the official SafeVerify/comparator check and also passes our local final \lean/Lake verification and hygiene scan with no remaining \texttt{sorry}/\texttt{admit} placeholders or unapproved axioms.
-We run all five projects with \gpt under three conditions: full \method, no queue with LeanProbe still available, and no queue with only terminal \lean/Lake interaction.
-For \kimi, we additionally run the Kruskal project with full \method and with neither queue management nor the specialized tool surface.
+We run all five projects with \gpt under three conditions: full \method, no queue system with LeanProbe still available, and no queue system with only terminal \lean/Lake interaction.
+For \kimi, we additionally run the Kruskal project with full \method and without either the queue system or the specialized tool surface.
 All challenge runs are autonomous after launch, with no human edits to the proof files during the run.
 The public Track 2 leaderboard lists our competition submission under the \texttt{lmilikic} identifier at rank 2 in the combined Phase 1+2 ranking~\citep{ai4math2026challenge}.
 
 \begin{table*}[!b]
 \centering
-\caption{AI4Math TCS challenge outcomes by project and workflow condition. Workflow abbreviations encode queue and tool configuration: Full = queue with full tools; NoQ+Probe = no queue with LeanProbe available; NoQ+CLI = no queue with terminal-only \lean/Lake interaction. Calls are prover-agent API calls with a 2000-call per-project cap.}
+\caption{AI4Math TCS challenge outcomes by project and workflow condition. Workflow abbreviations encode queue-system and tool configuration: Full = both queue layers with full tools; NoQ+Probe = no queue system with LeanProbe available; NoQ+CLI = no queue system with terminal-only \lean/Lake interaction. Calls are prover-agent API calls with a 2000-call per-project cap.}
 \label{tab:proof-experiments}
 \footnotesize
 \setlength{\tabcolsep}{3pt}
@@ -659,11 +736,15 @@ The detailed declaration-level contrast is reported in Appendix~\ref{app:docs-ca
 The evaluation has several limitations.
 Buildability is necessary but not sufficient: a project can build while encoding a different claim.
 The statement/source gate runs autonomously, but we still confirm faithfulness by expert inspection, because there is currently no automated way to guarantee that a well-typed declaration matches the source; reducing this manual confirmation is important future work.
+The workflow also assumes that the source definitions and theorem statements are the targets to preserve.
+After the statement/source gate accepts a skeleton, the prover is not allowed to change definitions or theorem statements; this improves auditability, but it can make a proof obligation impossible if the source contains a typo, an omitted side condition, or an undetected mistranslation.
+Such errors must be caught during statement/source review or expert audit rather than silently repaired during proof search.
 The document-level evidence covers only two case studies; the Cramer--Wold skeleton was initialized with \gpt rather than \kimi because of its representation choices.
 The ablations are single runs, so they do not estimate variance; repeated document-level runs would be more informative but costly, since each can require hundreds to thousands of calls, tens to hundreds of millions of input tokens, and substantial wall-clock time.
 Several mechanisms also remain bundled: queue/tool ablations do not isolate blueprinting, statement review, failed-attempt memory, hygiene scanning, and LeanProbe feedback.
 The complementary benchmarks do not fully exercise document-to-project formalization, the RLM25-PFR rows cover only the PFR slice rather than the full RLM25 benchmark, the \gpt rows support efficiency claims more than necessity claims, and we do not include a matched document-level M2F comparison.
 Calls and token counts are useful proxies for model-side effort, but not full measures of wall-clock, monetary, or human engineering cost.
+
 
 \section{Conclusion}
 
@@ -679,11 +760,19 @@ Potential risks include over-reliance on generated formal artifacts, mistaking b
 \method is designed to mitigate these risks by recording source-to-\lean decisions, separating statement review from proof search, preserving workflow logs and checkpoints, and accepting final artifacts only after external \lean verification with no leftover placeholders or unapproved axioms.
 The system is intended to assist expert formalizers rather than replace human mathematical judgment.
 
+\section*{Author Contributions}
+
+Lazar Miliki\'c led the system design, implementation, experiments, and paper writing.
+Simon Guilloud helped with benchmarking code, research direction, and paper writing. 
+Khanh Nguyen contributed with research direction and paper writing.
+Viktor Kun\v{c}ak supervised the project, contributed to the research direction, and helped revise the manuscript.
+
 \section*{Acknowledgments}
+
 This research is supported by the AI For Math Fund, administered by Renaissance Philanthropy and funded by XTX Markets. We also gratefully acknowledge the support of the EPFL School of Computer and Communication Sciences.
 
 \bibliographystyle{icml2026}
-\bibliography{epflemma_paper}
+\bibliography{leanflow_paper}
 
 \clearpage
 \onecolumn
@@ -691,7 +780,7 @@ This research is supported by the AI For Math Fund, administered by Renaissance 
 \section{Document Case Study Details}
 \label{app:case-studies}
 
-The \method implementation is available at \href{https://github.com/epfl-lara/LeanFlow}{\texttt{epfl-lara/LeanFlow}}, the LeanProbe verifier at \href{https://github.com/Lemmy00/LeanProbe}{\texttt{Lemmy00/LeanProbe}}, and the generated formalization projects at \href{https://github.com/epfl-lara/AutoformalizedProjects}{\texttt{epfl-lara/AutoformalizedProjects}}.
+The \method implementation is available on GitHub at \href{https://github.com/epfl-lara/LeanFlow}{\texttt{epfl-lara/LeanFlow}}, the LeanProbe verifier at \href{https://github.com/epfl-lara/LeanProbe}{\texttt{epfl-lara/LeanProbe}}, and the generated formalization projects at \href{https://github.com/epfl-lara/AutoformalizedProjects}{\texttt{epfl-lara/AutoformalizedProjects}}.
 Each released project is self-contained and pins its own \lean toolchain and \mathlib revision (for example, \lean \texttt{v4.30.0-rc2} for the Pythagorean project and \texttt{v4.29.1} for Cramer--Wold), so builds are reproducible without a single global environment.
 The two case studies have also been contributed to the community \href{https://github.com/Vilin97/lean-pool}{\texttt{lean-pool}} repository of AI-produced \lean developments (pull requests \href{https://github.com/Vilin97/lean-pool/pull/185}{\#185} and \href{https://github.com/Vilin97/lean-pool/pull/186}{\#186}).
 
