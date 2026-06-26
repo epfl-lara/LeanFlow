@@ -232,8 +232,8 @@ The interface is styled around EPFL / Lean / AI-for-math work, but the executabl
 Direct local install from the current repo:
 
 ```bash
-git clone https://github.com/epfl-lara/EPFLemma.git
-cd EPFLemma
+git clone https://github.com/epfl-lara/LeanFlow.git
+cd LeanFlow
 ./scripts/install-internal.sh
 ```
 
@@ -269,7 +269,7 @@ Custom install locations:
 Update by reinstalling from the repo:
 
 ```bash
-cd EPFLemma
+cd LeanFlow
 git pull
 ./scripts/install-internal.sh
 ```
