@@ -378,8 +378,33 @@ def _stdin_is_interactive() -> bool:
         return False
 
 
+def _stay_interactive_after_verified() -> bool:
+    """Opt-in escape hatch to keep the chat prompt open after a verified completion.
+
+    By default a fully verified workflow (all goals closed, no sorries) exits cleanly so
+    the shell is returned to the user — running ``leanflow workflow prove file.lean`` and
+    succeeding should hand the terminal back, not drop into a chat loop. Set
+    ``LEANFLOW_NATIVE_STAY_AFTER_VERIFIED=1`` to restore the old behavior of entering the
+    interactive prompt after completion.
+    """
+    raw = _read_native_env("STAY_AFTER_VERIFIED", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _verified_workflow_should_exit_without_prompt(live_state: Mapping[str, Any]) -> bool:
-    return _live_state_is_verified(live_state) and not _stdin_is_interactive()
+    """Whether a verified workflow should exit cleanly instead of prompting.
+
+    A verified proof exits without the interactive chat loop in BOTH headless and TTY
+    runs: there is nothing left to do once every goal is closed, so blocking on a chat
+    prompt only strands the terminal. The single exception is the opt-in
+    ``LEANFLOW_NATIVE_STAY_AFTER_VERIFIED`` flag combined with a real TTY, which preserves
+    the legacy post-completion chat.
+    """
+    if not _live_state_is_verified(live_state):
+        return False
+    if _stdin_is_interactive() and _stay_interactive_after_verified():
+        return False
+    return True
 
 
 def _interactive_prompt_loop_allowed() -> bool:
@@ -9170,7 +9195,7 @@ def main() -> int:
             _record_agent_activity(
                 agent,
                 "runner-exit",
-                "Managed workflow runner exited after verified completion (non-interactive)",
+                "Managed workflow runner exited cleanly after verified completion",
             )
             return 0
         if not _native_interactive_enabled():
