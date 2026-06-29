@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import TextIO
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,60 @@ def _resolve_stdio_cwd(server_name: str, config: dict) -> str | None:
 
 def _truthy_env_value(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _mcp_stderr_log_dir(cwd: str | None) -> Path:
+    """Resolve the directory for per-server MCP stderr logs.
+
+    Prefers the project-local ``.leanflow/workflow-state/mcp-logs`` (so logs sit
+    next to the run that produced them); falls back to the managed home.
+    """
+    root = str(os.getenv("LEANFLOW_PROJECT_ROOT", "") or "").strip() or str(cwd or "").strip()
+    if root:
+        candidate = Path(root).expanduser()
+        if candidate.is_dir():
+            return candidate / ".leanflow" / "workflow-state" / "mcp-logs"
+    home = Path(os.path.expanduser(os.getenv("LEANFLOW_HOME", os.path.join("~", ".leanflow"))))
+    return home / "workflow-state" / "mcp-logs"
+
+
+def open_mcp_stderr_log(server_name: str, cwd: str | None) -> TextIO | None:
+    """Return a writable file for a stdio MCP server's stderr, or ``None`` to inherit ``sys.stderr``.
+
+    The managed Lean MCP servers (notably ``lean-lsp``) emit a high volume of *benign*
+    runtime logging. Every ``lean_multi_attempt`` candidate edits the file in the Lean
+    language server, which supersedes the previous version and cancels the in-flight
+    request — the server then logs ``the file worker for ... has been terminated`` (LSP
+    error ``-32801``) plus an asyncio ``Future exception was never retrieved``. These are
+    NOT LeanFlow failures: the tool call still returns ``success: True`` with its
+    diagnostics. But ``stdio_client`` defaults ``errlog=sys.stderr``, so that chatter is
+    piped straight into the workflow console where it reads as a wall of errors.
+
+    Routing these servers' stderr to a per-server log file keeps the detail available for
+    debugging (``.leanflow/workflow-state/mcp-logs/<server>.stderr.log``) without polluting
+    the run. Genuine connection/startup failures are unaffected — they surface through the
+    ``stdio_client`` exception path, independent of this stream.
+
+    Only the managed Lean servers are redirected; other servers keep inheriting the console.
+    Set ``LEANFLOW_MCP_STDERR_INHERIT=1`` to force every server back to ``sys.stderr``.
+    """
+    if _truthy_env_value(os.getenv("LEANFLOW_MCP_STDERR_INHERIT")):
+        return None
+    if not str(server_name or "").startswith("lean-"):
+        return None
+    try:
+        log_dir = _mcp_stderr_log_dir(cwd)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(server_name or "server")).strip("-")
+        path = log_dir / f"{safe_name or 'server'}.stderr.log"
+        return open(path, "a", encoding="utf-8", buffering=1)
+    except Exception as exc:  # never let log plumbing break a connection
+        logger.debug(
+            "Could not open MCP stderr log for %s (%s); inheriting console stderr",
+            server_name,
+            exc,
+        )
+        return None
 
 
 def _read_lean_toolchain_from_root(path: str | os.PathLike[str] | None) -> str:
