@@ -2463,7 +2463,15 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
     # (proof-context MCP, incremental verifier, etc.), so we require BOTH a search-provider term and
     # a failure term — otherwise an unrelated capability outage would wrongly suppress search.
     _SEARCH_TERMS = ("loogle", "leanexplore", "lean explore", "search", "semantic provider")
-    _FAILURE_TERMS = ("disabled", "malformed", "unavailable", "corrupt", "failed", "outage", "error")
+    _FAILURE_TERMS = (
+        "disabled",
+        "malformed",
+        "unavailable",
+        "corrupt",
+        "failed",
+        "outage",
+        "error",
+    )
     degraded_reasons = [
         str(reason) for reason in (payload.get("degraded_reasons") or []) if str(reason).strip()
     ]
@@ -2480,9 +2488,7 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
             "`lean_decompose_helpers`, or `lean_reasoning_help`, or draft and check a proof directly."
         )
     else:
-        health_line = (
-            "- search providers are responding; this is a route-progress nudge, not a search outage."
-        )
+        health_line = "- search providers are responding; this is a route-progress nudge, not a search outage."
     _append_post_tool_result_message(
         agent,
         "\n".join(
@@ -7572,9 +7578,9 @@ def _write_workflow_checkpoint(
     # Prefer the structured target from live_state; fall back to prose regex extraction only when
     # it is unavailable. Scraping the summary/history for a target symbol is fragile and has
     # produced garbage like target_symbol="was" on resume — the queue state is authoritative.
-    target_symbol = str((live_state or {}).get("target_symbol", "") or "").strip() or _extract_target_symbol(
-        summary_text + "\n" + combined_text
-    )
+    target_symbol = str(
+        (live_state or {}).get("target_symbol", "") or ""
+    ).strip() or _extract_target_symbol(summary_text + "\n" + combined_text)
     checkpoint_id = f"ckpt-{int(time.time() * 1000)}"
     snapshot_path = _workflow_state_root() / f"{checkpoint_id}.json"
     linked_hash = _latest_filesystem_checkpoint_hash(
@@ -9249,9 +9255,7 @@ def main() -> int:
             ),
             live_state,
         )
-        _record_turn_prompt_fingerprint(
-            autonomy_state, initial_message, phase="startup", cycle=0
-        )
+        _record_turn_prompt_fingerprint(autonomy_state, initial_message, phase="startup", cycle=0)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
         _record_queue_assignment(live_state, phase="startup")
         _prepare_queue_assignment_state(autonomy_state, live_state)

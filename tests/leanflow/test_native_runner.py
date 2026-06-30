@@ -662,7 +662,9 @@ def test_search_progress_nudge_is_honest_about_degraded_providers(monkeypatch, t
         }
     )
     for _ in range(runner.SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT):
-        runner._handle_managed_tool_result(agent, "lean_search", {"query": "sq_div_le"}, degraded_result)
+        runner._handle_managed_tool_result(
+            agent, "lean_search", {"query": "sq_div_le"}, degraded_result
+        )
 
     appendix = agent._post_tool_result_appendix
     assert "SEARCH PROGRESS NUDGE" in appendix
