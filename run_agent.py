@@ -193,6 +193,7 @@ from openai import OpenAI  # noqa: F401
 from agent.accounting.usage_pricing import (
     estimate_cost_usd,  # noqa: F401
     has_known_pricing,  # noqa: F401
+    has_listed_pricing,  # noqa: F401
 )
 from agent.display.display import _detect_tool_failure  # noqa: F401
 from agent.display.display import build_tool_preview as _build_tool_preview  # noqa: F401

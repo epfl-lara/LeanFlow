@@ -100,11 +100,20 @@ RUNNER_KEYBOARD_INTERRUPT = "[leanflow-native runner keyboard interrupt]"
 STARTUP_SKILL_CONTRACT_MAX_CHARS = 7000
 MANAGER_WARNING_RETRY_LIMIT = 1
 MANAGER_HARD_RETRY_LIMIT = 2
-MANAGER_POST_EDIT_HARD_RETRY_LIMIT = 40
-SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT = 3
-SEARCH_PROGRESS_TOTAL_NUDGE_LIMIT = 14
-FAILED_ATTEMPT_ESCALATION_NUDGE_LIMIT = 20
-FAILED_ATTEMPT_ESCALATION_NUDGE_INTERVAL = 8
+# Post-edit hard-blocker retries on a SINGLE declaration before the manager restores the
+# baseline `sorry` and records a failed attempt. Was 40 — far too high: one stuck theorem
+# could burn an enormous turn budget re-attempting the same proof shape. Lowered to 8 so the
+# loop escalates strategy (the failed-attempt nudge below fires well before this) or moves on.
+MANAGER_POST_EDIT_HARD_RETRY_LIMIT = 8
+# Search-only stalling guards. Lowered (was repeat=3 / total=14) so the route-progress nudge
+# fires before the worker burns a long lean_search spiral with no edit/check in between.
+SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT = 2
+SEARCH_PROGRESS_TOTAL_NUDGE_LIMIT = 6
+# Failed-attempt strategy-transition nudge. Lowered (was 20 / every 8) so the
+# "switch to decompose / reasoning-help" escalation lands at attempt 4 (and 7), i.e. before
+# the post-edit hard-retry exhaustion at 8 — turning exhaustion into a forced strategy change.
+FAILED_ATTEMPT_ESCALATION_NUDGE_LIMIT = 4
+FAILED_ATTEMPT_ESCALATION_NUDGE_INTERVAL = 3
 ACTIVE_AGENT_STATUSES = {"active"}
 LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
@@ -2395,6 +2404,27 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
         if int(used_tools.get("lean_proof_context", 0) or 0) > 0
         else "- if you still need context, call `lean_proof_context` once; if the proof needs intermediate invariants, use `lean_decompose_helpers`; otherwise draft and check a proof."
     )
+    # Be honest about search health: if the providers report degraded state (e.g. local Loogle
+    # disabled on a toolchain mismatch, or a malformed LeanExplore DB), telling the model "search
+    # providers are responding" sends it back into a useless lean_search spiral. Detect degradation
+    # from the tool payload and steer the worker off search instead.
+    _DEGRADED_KEYWORDS = ("disabled", "malformed", "unavailable", "corrupt", "failed", "outage", "error")
+    degraded_reasons = [
+        str(reason) for reason in (payload.get("degraded_reasons") or []) if str(reason).strip()
+    ]
+    degraded_hits = [
+        reason for reason in degraded_reasons if any(k in reason.lower() for k in _DEGRADED_KEYWORDS)
+    ]
+    if degraded_hits:
+        health_line = (
+            f"- search is DEGRADED ({degraded_hits[0][:160]}); the local search backend is unhealthy, "
+            "so more `lean_search` calls will not help — switch now to `lean_proof_context`, "
+            "`lean_decompose_helpers`, or `lean_reasoning_help`, or draft and check a proof directly."
+        )
+    else:
+        health_line = (
+            "- search providers are responding; this is a route-progress nudge, not a search outage."
+        )
     _append_post_tool_result_message(
         agent,
         "\n".join(
@@ -2405,7 +2435,7 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
                 f"- observed: {nudge_reason}",
                 f"- latest query: {query[:240] or '[unknown]'}",
                 f"- latest result count: {result_count}",
-                "- search providers are responding; this is a route-progress nudge, not a search outage.",
+                health_line,
                 "- do not call `lean_search` again in this turn unless the query strategy materially changes.",
                 context_hint,
                 "- next useful action should be a concrete proof edit, `lean_incremental_check(check_target)` on a draft, `lean_multi_attempt`, `lean_decompose_helpers` for a helper-lemma split, or `lean_reasoning_help`.",
@@ -7447,7 +7477,12 @@ def _write_workflow_checkpoint(
     active_files = _extract_active_files(combined_text + "\n" + summary_text)
     diagnostics_summary = _extract_diagnostics_summary(history)
     blocker_summary = _extract_blocker_summary(summary_text + "\n" + combined_text)
-    target_symbol = _extract_target_symbol(summary_text + "\n" + combined_text)
+    # Prefer the structured target from live_state; fall back to prose regex extraction only when
+    # it is unavailable. Scraping the summary/history for a target symbol is fragile and has
+    # produced garbage like target_symbol="was" on resume — the queue state is authoritative.
+    target_symbol = str((live_state or {}).get("target_symbol", "") or "").strip() or _extract_target_symbol(
+        summary_text + "\n" + combined_text
+    )
     checkpoint_id = f"ckpt-{int(time.time() * 1000)}"
     snapshot_path = _workflow_state_root() / f"{checkpoint_id}.json"
     linked_hash = _latest_filesystem_checkpoint_hash(
@@ -8821,8 +8856,10 @@ def _autonomous_continuation_prompt(
             if command and not _runner_lean_prompt_enabled():
                 prompt += (
                     "\n\n"
-                    "For this assigned file-scoped queue item, use `lean_inspect` for iteration, "
-                    f"but only accept the theorem as solved after `{command}` succeeds. "
+                    "For this assigned file-scoped queue item, iterate with `lean_inspect` and accept "
+                    "the declaration with `lean_incremental_check(check_target)` — that is the queue-step "
+                    f"acceptance check. The manager owns the final `{command}` Lake sweep, so you do not "
+                    "need to run Lake yourself for this theorem. "
                     "Do not use `lake build`, `grep`, `head`, or truncated output as the acceptance check for this theorem."
                 )
     if _swarm_enabled():

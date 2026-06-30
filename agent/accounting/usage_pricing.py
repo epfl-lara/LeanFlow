@@ -38,6 +38,8 @@ MODEL_PRICING = {
     "glm-4.5": {"input": 0.0, "output": 0.0},
     "glm-4.5-flash": {"input": 0.0, "output": 0.0},
     "kimi-k2.5": {"input": 0.0, "output": 0.0},
+    "kimi-k2.7": {"input": 0.0, "output": 0.0},
+    "kimi-k2.7-code": {"input": 0.0, "output": 0.0},
     "kimi-k2-thinking": {"input": 0.0, "output": 0.0},
     "kimi-k2-turbo-preview": {"input": 0.0, "output": 0.0},
     "kimi-k2-0905-preview": {"input": 0.0, "output": 0.0},
@@ -83,6 +85,11 @@ def get_pricing(model_name: str) -> dict[str, float]:
         return {"input": 0.14, "output": 0.28}
     if "gemini" in bare:
         return {"input": 0.15, "output": 0.60}
+    # Self-hosted / internally-served model families (EPFL RCP, etc.): known to be unmetered
+    # ($0 marginal API cost). Returning a fresh listed entry (rather than DEFAULT_PRICING) marks
+    # them as KNOWN so accounting reports "$0 (self-hosted)" instead of "no pricing metadata".
+    if "kimi" in bare or "minimax" in bare or bare.startswith("glm"):
+        return {"input": 0.0, "output": 0.0}
 
     return DEFAULT_PRICING
 
@@ -90,6 +97,15 @@ def get_pricing(model_name: str) -> dict[str, float]:
 def has_known_pricing(model_name: str) -> bool:
     pricing = get_pricing(model_name)
     return pricing is not DEFAULT_PRICING and any(float(value) > 0 for value in pricing.values())
+
+
+def has_listed_pricing(model_name: str) -> bool:
+    """True if the model resolves to an explicit pricing entry (including self-hosted $0 models).
+
+    Distinguishes "known self-hosted / unmetered" (listed at $0) from "truly unknown" (absent
+    from the table). Used to report $0 self-hosted cost instead of "no pricing metadata".
+    """
+    return get_pricing(model_name) is not DEFAULT_PRICING
 
 
 def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:

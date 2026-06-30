@@ -478,7 +478,9 @@ def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypat
                         "proof_shape": "same rewrite shape",
                         "reason": "type mismatch",
                     }
-                    for i in range(19)
+                    # Seed one below the escalation limit so the next recorded attempt lands
+                    # exactly on the firing boundary, regardless of how the limit is tuned.
+                    for i in range(runner.FAILED_ATTEMPT_ESCALATION_NUDGE_LIMIT - 1)
                 ],
             }
             self._managed_pending_theorem_feedback = None
@@ -520,7 +522,7 @@ def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypat
     runner._handle_managed_tool_result(agent, "patch", {}, "")
 
     attempts = agent._managed_autonomy_state["failed_attempts"]
-    assert attempts[-1]["attempt"] == 20
+    assert attempts[-1]["attempt"] == runner.FAILED_ATTEMPT_ESCALATION_NUDGE_LIMIT
     assert "[LEANFLOW-NATIVE FAILED ATTEMPT NUDGE]" in agent._post_tool_result_appendix
     assert "lean_decompose_helpers" in agent._post_tool_result_appendix
     assert "lean_reasoning_help" in agent._post_tool_result_appendix
@@ -619,10 +621,54 @@ def test_handle_managed_tool_result_nudges_repeated_successful_search(monkeypatc
 
     appendix = agent._post_tool_result_appendix
     assert "SEARCH PROGRESS NUDGE" in appendix
-    assert "same lean_search query repeated 3 times" in appendix
+    assert "same lean_search query repeated" in appendix
     assert "search providers are responding" in appendix
     assert "do not call `lean_search` again" in appendix
     assert "lean_decompose_helpers" in appendix
+
+
+def test_search_progress_nudge_is_honest_about_degraded_providers(monkeypatch, tmp_path):
+    """When the search payload reports degraded providers, the nudge must say so and steer off
+    search — not claim 'search providers are responding'."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    agent = _Agent()
+    degraded_result = json.dumps(
+        {
+            "success": True,
+            "query": "sq_div_le",
+            "results": [],
+            "degraded_reasons": [
+                "LeanExplore local search failed: (sqlite3.DatabaseError) database disk image is malformed",
+                "local Loogle disabled for this project because its managed Lean toolchain differs",
+            ],
+        }
+    )
+    for _ in range(runner.SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT):
+        runner._handle_managed_tool_result(agent, "lean_search", {"query": "sq_div_le"}, degraded_result)
+
+    appendix = agent._post_tool_result_appendix
+    assert "SEARCH PROGRESS NUDGE" in appendix
+    assert "search is DEGRADED" in appendix
+    assert "search providers are responding" not in appendix
+    assert "malformed" in appendix
 
 
 def test_generate_checkpoint_summary_falls_back_on_keyboard_interrupt(monkeypatch):

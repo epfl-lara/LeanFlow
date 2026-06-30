@@ -1682,6 +1682,35 @@ class TestRunConversation:
         assert new_tokens < approx_tokens
         assert not any("reasoning_content" in msg for msg in new_api_messages)
 
+    def test_reasoning_replay_keeps_only_most_recent_assistant(self, agent, monkeypatch):
+        """By default, only the most recent assistant reasoning is replayed as reasoning_content.
+
+        Replaying every prior reasoning block multiplies hidden-input tokens across tool turns; the
+        default now keeps just the last, with LEANFLOW_REPLAY_ALL_REASONING=1 to restore old behavior.
+        """
+        self._setup_agent(agent)
+        messages = [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1", "reasoning": "older thinking"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2", "reasoning": "newest thinking"},
+        ]
+
+        monkeypatch.delenv("LEANFLOW_REPLAY_ALL_REASONING", raising=False)
+        api_messages = agent._build_api_messages_for_turn(messages, "sys")
+        carriers = [
+            m for m in api_messages if m.get("role") == "assistant" and "reasoning_content" in m
+        ]
+        assert len(carriers) == 1
+        assert carriers[0]["reasoning_content"] == "newest thinking"
+
+        monkeypatch.setenv("LEANFLOW_REPLAY_ALL_REASONING", "1")
+        api_all = agent._build_api_messages_for_turn(messages, "sys")
+        carriers_all = [
+            m for m in api_all if m.get("role") == "assistant" and "reasoning_content" in m
+        ]
+        assert len(carriers_all) == 2
+
     @pytest.mark.parametrize(
         ("first_content", "second_content", "expected_final"),
         [

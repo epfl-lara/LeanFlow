@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -415,16 +416,31 @@ class ConversationManager:
         """Build the exact message payload sent for one chat-completions turn."""
         agent = self._agent
         api_messages = []
-        for msg in messages:
+        # Replay assistant reasoning only on the MOST RECENT assistant message by default.
+        # Replaying every prior <think>/reasoning block (Moonshot/Novita/OpenRouter
+        # `reasoning_content`) multiplies hidden-input tokens across every tool turn — a large,
+        # uncosted tax during long Lean loops — with little continuity benefit on chat-completions
+        # routes. Set LEANFLOW_REPLAY_ALL_REASONING=1 to restore replaying every block.
+        replay_all_reasoning = os.getenv("LEANFLOW_REPLAY_ALL_REASONING", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        last_reasoning_idx = -1
+        if not replay_all_reasoning:
+            for _i, _m in enumerate(messages):
+                if _m.get("role") == "assistant" and _m.get("reasoning"):
+                    last_reasoning_idx = _i
+        for idx, msg in enumerate(messages):
             api_msg = msg.copy()
 
-            # For ALL assistant messages, pass reasoning back to the API.
-            # This ensures multi-turn reasoning context is preserved.
+            # Pass assistant reasoning back to the API as reasoning_content (Moonshot AI, Novita,
+            # OpenRouter). By default only the most recent assistant reasoning is replayed; the
+            # full history is gated behind LEANFLOW_REPLAY_ALL_REASONING.
             if msg.get("role") == "assistant":
                 reasoning_text = msg.get("reasoning")
-                if reasoning_text:
-                    # Moonshot AI, Novita, and OpenRouter use reasoning_content
-                    # for replaying assistant reasoning across tool turns.
+                if reasoning_text and (replay_all_reasoning or idx == last_reasoning_idx):
                     api_msg["reasoning_content"] = reasoning_text
 
             # Remove 'reasoning' field - it is trajectory storage only.
