@@ -54,10 +54,13 @@ __all__ = [
 
 # Matches a top-level `axiom` declaration, tolerating modifiers/attributes
 # (`@[...] private noncomputable axiom foo : ...`). Comments/strings are stripped first.
+# The name group is deliberately broad so it catches every syntactically valid Lean axiom name —
+# ASCII (`foo`, `foo.bar`), Unicode (`α`, `f₁`), and guillemet-quoted (`«cheat ax»`) — rather than
+# only ASCII identifiers, which would let a cheating edit slip an axiom past the guard.
 _AXIOM_DECL_RE = re.compile(
-    r"^\s*(?:@\[[^\]]*\]\s*)*"
-    r"(?:private\s+|protected\s+|noncomputable\s+|scoped\s+|local\s+|unsafe\s+)*"
-    r"axiom\s+([A-Za-z_][A-Za-z0-9_'.]*)",
+    r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
+    r"(?:private[ \t]+|protected[ \t]+|noncomputable[ \t]+|scoped[ \t]+|local[ \t]+|unsafe[ \t]+)*"
+    r"axiom[ \t]+(«[^»]+»|[^\s:({\[]+)",
     re.MULTILINE,
 )
 

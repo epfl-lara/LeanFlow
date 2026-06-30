@@ -106,9 +106,23 @@ def test_axiom_declaration_names_detects_modifiers_and_ignores_comments():
         "-- axiom commented : False\n"
         "/- axiom blocked : True -/\n"
         'def s := "axiom in_a_string : False"\n'
+        "def myaxiom := 1\n"  # the word 'axiom' inside an identifier must not match
     )
     names = queue_edit_guard._axiom_declaration_names(text)
     assert names == {"plain", "decorated", "nc"}
+
+
+def test_axiom_declaration_names_detects_unicode_and_quoted_identifiers():
+    # A cheating edit must not bypass the guard via Unicode or guillemet-quoted axiom names.
+    text = (
+        "axiom α : False\n"
+        "noncomputable axiom f₁ : Nat\n"
+        "axiom «cheat ax» : False\n"
+        "axiom foo.bar : T\n"
+        "axiom no_space:False\n"
+    )
+    names = queue_edit_guard._axiom_declaration_names(text)
+    assert names == {"α", "f₁", "«cheat ax»", "foo.bar", "no_space"}
 
 
 def test_introduced_forbidden_axioms_respects_allowlist():
