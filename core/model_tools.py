@@ -120,7 +120,7 @@ _last_resolved_tool_names: list[str] = []
 # =============================================================================
 
 _LEGACY_TOOLSET_MAP = {
-    "web_tools": ["web_search", "web_fetch"],
+    "web_tools": ["web_search", "web_fetch", "web_download"],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
 }
 

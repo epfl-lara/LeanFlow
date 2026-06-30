@@ -191,5 +191,87 @@ def test_html_to_text_strips_tags_and_scripts():
     assert "<" not in text
 
 
+class _StreamingResponse:
+    """Minimal stand-in for a streaming requests.Response context manager."""
+
+    def __init__(self, chunks, *, status_code=200, headers=None):
+        self._chunks = chunks
+        self.status_code = status_code
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def iter_content(self, chunk_size=65536):
+        yield from self._chunks
+
+
+def test_web_download_saves_file_to_workspace(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    def fake_get(url, *, headers=None, timeout=None, stream=False):
+        assert stream is True
+        return _StreamingResponse(
+            [b"%PDF-1.4 ", b"data"], headers={"Content-Type": "application/pdf"}
+        )
+
+    monkeypatch.setattr(web_fetch.requests, "get", fake_get)
+    out = json.loads(web_fetch.web_download_tool("https://example.org/paper.pdf"))
+
+    assert out["success"] is True
+    assert out["bytes"] == len(b"%PDF-1.4 data")
+    assert out["content_type"] == "application/pdf"
+    saved = tmp_path / ".leanflow" / "downloads" / "paper.pdf"
+    assert saved.exists() and saved.read_bytes() == b"%PDF-1.4 data"
+    assert out["path"] == str(saved.resolve())
+
+
+def test_web_download_enforces_size_cap(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    def fake_get(url, *, headers=None, timeout=None, stream=False):
+        return _StreamingResponse([b"x" * 1000], headers={"Content-Type": "text/plain"})
+
+    monkeypatch.setattr(web_fetch.requests, "get", fake_get)
+    out = json.loads(web_fetch.web_download_tool("https://e/big.bin", max_bytes=100))
+
+    assert "error" in out
+    assert not (tmp_path / ".leanflow" / "downloads" / "big.bin").exists()
+
+
+def test_web_download_sanitizes_filename(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    monkeypatch.chdir(tmp_path)
+
+    def fake_get(url, *, headers=None, timeout=None, stream=False):
+        return _StreamingResponse([b"d"], headers={})
+
+    monkeypatch.setattr(web_fetch.requests, "get", fake_get)
+    out = json.loads(web_fetch.web_download_tool("https://e/f", filename="../../etc/passwd"))
+
+    downloads = (tmp_path / ".leanflow" / "downloads").resolve()
+    assert Path(out["path"]).parent == downloads
+    assert ".." not in Path(out["path"]).name
+
+
+def test_web_download_rejects_empty_url():
+    assert "error" in json.loads(web_fetch.web_download_tool(""))
+
+
+def test_web_download_registered_in_web_toolsets():
+    from core.toolsets import resolve_toolset
+
+    assert "web_download" in set(resolve_toolset("web"))
+    assert "web_download" in set(resolve_toolset("leanflow-prove-worker"))
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

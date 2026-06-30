@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
-"""Single-URL fetch-and-read tool (``web_fetch``).
+"""Web retrieval tools: ``web_fetch`` (read a URL) and ``web_download`` (save a URL to disk).
 
 Closes the "found a paper but cannot read it" gap: ``web_search`` returns titles, URLs,
-and snippets, but nothing the model can call actually opens the page or PDF it found.
+and snippets, but nothing the model can call actually opens the page/PDF it found or saves a
+file for later use.
 
-Backend: Jina Reader (``GET https://r.jina.ai/<url>``), which converts both HTML pages and
-PDFs to clean markdown with no API key required. ``JINA_API_KEY`` is attached as a bearer
-token only when set (higher rate limits). On any Jina failure we fall back to a plain
-``requests.get`` plus a stdlib-only HTML->text reduction (no new third-party deps). Long
-output is bounded by reusing the existing summarizer ``process_content_with_llm`` from
-web_tools so a single fetch never floods the model's context.
+``web_fetch`` backend: Jina Reader (``GET https://r.jina.ai/<url>``), which converts both HTML
+pages and PDFs to clean markdown with no API key required. ``JINA_API_KEY`` is attached as a
+bearer token only when set (higher rate limits). On any Jina failure we fall back to a plain
+``requests.get`` plus a stdlib-only HTML->text reduction (no new third-party deps). Long output
+is bounded by reusing the existing summarizer ``process_content_with_llm`` from web_tools so a
+single fetch never floods the model's context.
+
+``web_download`` streams a URL to ``<cwd>/.leanflow/downloads/`` (size-capped, filename
+sanitized, destination sandboxed under the project) and returns the local path so ``read_pdf`` /
+file tools / Lean can consume it.
 """
 
 import logging
 import os
+import re
 from html.parser import HTMLParser
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import requests
 
@@ -224,6 +232,88 @@ def check_web_fetch_available() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# web_download
+# ---------------------------------------------------------------------------
+WEB_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB hard ceiling
+WEB_DOWNLOAD_DIRNAME = ".leanflow/downloads"
+
+
+def _safe_download_filename(url: str, override: str) -> str:
+    """Derive a safe basename for a downloaded file (no path traversal, restricted charset)."""
+    name = (override or "").strip()
+    if not name:
+        name = unquote(os.path.basename(urlparse(url).path)) or "download"
+    name = os.path.basename(name)  # strip any directory components
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", name).strip("._") or "download"
+    return name[:200]
+
+
+def web_download_tool(url: str, filename: str = "", max_bytes: int = WEB_DOWNLOAD_MAX_BYTES) -> str:
+    """Download a URL (PDF, dataset, artifact) into the project workspace; return its local path.
+
+    Streams the body to ``<cwd>/.leanflow/downloads/`` with the destination sandboxed under that
+    directory, a sanitized filename, and a hard size cap so a runaway download can't fill the disk.
+    Returns JSON ``{success, url, path, bytes, content_type}`` so the model can then read the file
+    (e.g. via read_pdf) or hand it to Lean.
+    """
+    url = (url or "").strip()
+    if not url:
+        return error("web_download requires a non-empty 'url'")
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    try:
+        cap = int(max_bytes)
+    except (TypeError, ValueError):
+        cap = WEB_DOWNLOAD_MAX_BYTES
+    cap = max(1, min(WEB_DOWNLOAD_MAX_BYTES, cap))
+
+    dest_dir = (Path.cwd() / WEB_DOWNLOAD_DIRNAME).resolve()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = (dest_dir / _safe_download_filename(url, filename)).resolve()
+    if dest.parent != dest_dir:  # defense in depth against traversal
+        return error("Refusing to write outside the downloads directory")
+
+    total = 0
+    try:
+        with requests.get(
+            url,
+            headers={"User-Agent": _FETCH_USER_AGENT},
+            timeout=WEB_FETCH_TIMEOUT_SECONDS,
+            stream=True,
+        ) as response:
+            response.raise_for_status()
+            content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip()
+            with open(dest, "wb") as handle:
+                for chunk in response.iter_content(chunk_size=65536):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > cap:
+                        handle.close()
+                        dest.unlink(missing_ok=True)
+                        return error(f"Download exceeds the {cap}-byte cap; aborted")
+                    handle.write(chunk)
+    except Exception as exc:
+        dest.unlink(missing_ok=True)
+        return error(f"Failed to download {url}: {exc}")
+
+    return dumps(
+        {
+            "success": True,
+            "url": url,
+            "path": str(dest),
+            "bytes": total,
+            "content_type": content_type,
+        }
+    )
+
+
+def check_web_download_available() -> bool:
+    """web_download is always available (plain HTTP GET to a sandboxed local directory)."""
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry  # noqa: E402
@@ -269,4 +359,37 @@ registry.register(
     requires_env=[],
     is_async=True,
     emoji="📖",
+)
+
+WEB_DOWNLOAD_SCHEMA = {
+    "name": "web_download",
+    "description": (
+        "Download a file from a URL (PDF, dataset, artifact) into the project workspace and return "
+        "its local path. Use this when you need the actual file — e.g. save an arXiv PDF, then read "
+        "it with read_pdf. The file is saved under .leanflow/downloads/ with a sanitized name and a "
+        "50MB cap. Returns {path, bytes, content_type}."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "The URL of the file to download."},
+            "filename": {
+                "type": "string",
+                "description": "Optional destination filename (basename only; sanitized).",
+            },
+        },
+        "required": ["url"],
+    },
+}
+
+registry.register(
+    name="web_download",
+    toolset="web",
+    schema=WEB_DOWNLOAD_SCHEMA,
+    handler=lambda args, **kw: web_download_tool(
+        args.get("url", ""), filename=args.get("filename", "")
+    ),
+    check_fn=check_web_download_available,
+    requires_env=[],
+    emoji="⬇️",
 )

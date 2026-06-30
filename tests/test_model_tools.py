@@ -81,7 +81,7 @@ class TestLegacyToolsetMap:
     def test_web_tools_legacy_alias_excludes_web_extract(self):
         # The legacy alias exposes the key-free web tools (web_search + web_fetch) but never
         # the Firecrawl-gated web_extract, which is unavailable without an API key.
-        assert _LEGACY_TOOLSET_MAP["web_tools"] == ["web_search", "web_fetch"]
+        assert _LEGACY_TOOLSET_MAP["web_tools"] == ["web_search", "web_fetch", "web_download"]
         assert "web_extract" not in _LEGACY_TOOLSET_MAP["web_tools"]
 
 
