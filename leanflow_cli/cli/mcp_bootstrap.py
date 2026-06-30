@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -86,8 +87,23 @@ def managed_mcp_root(home: str | os.PathLike[str] | None = None) -> Path:
     return base / "mcp"
 
 
-def managed_loogle_cache_dir(home: str | os.PathLike[str] | None = None) -> Path:
-    return managed_mcp_root(home) / "cache" / "loogle"
+def loogle_toolchain_slug(toolchain: str | None) -> str:
+    """Filesystem-safe slug for a Lean toolchain (e.g. ``leanprover/lean4:v4.30.0-rc2`` ->
+    ``leanprover-lean4-v4.30.0-rc2``). MUST match the convention in
+    ``tools/mcp/mcp_transport._augment_lean_stdio_env`` so the server, the builder, and the
+    status check all resolve the SAME per-toolchain cache dir."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", str(toolchain or "").strip()).strip("-")
+
+
+def managed_loogle_cache_dir(
+    home: str | os.PathLike[str] | None = None, toolchain: str | None = None
+) -> Path:
+    """Loogle cache dir. With a toolchain, returns a per-toolchain dir (``loogle-<slug>``) so
+    projects on different toolchains don't thrash a single shared Loogle build; without one,
+    the generic ``loogle`` dir (the base/fallback)."""
+    base = managed_mcp_root(home) / "cache"
+    slug = loogle_toolchain_slug(toolchain)
+    return base / (f"loogle-{slug}" if slug else "loogle")
 
 
 def local_loogle_supported() -> bool:
@@ -231,6 +247,16 @@ def _ensure_managed_server_entry(
         for key, value in env_defaults.items():
             if key not in env:
                 env[key] = value
+        if spec.name == "lean-lsp":
+            # Migration: heal a stale MANAGED LEAN_LOOGLE_CACHE_DIR (e.g. an older per-toolchain
+            # value ".../cache/loogle-v4.30.0-rc2") back to the generic base, so the runtime's
+            # per-toolchain re-suffixing applies consistently. Only paths under the managed
+            # cache root are touched; user-custom cache dirs are left untouched.
+            current = str(env.get("LEAN_LOOGLE_CACHE_DIR", "") or "").strip()
+            generic = str(managed_loogle_cache_dir(home))
+            cache_root = str(managed_mcp_root(home) / "cache") + os.sep
+            if current and current != generic and current.startswith(cache_root):
+                env["LEAN_LOOGLE_CACHE_DIR"] = generic
     entry["role"] = spec.role
     entry["managed"] = True
     if "enabled" not in entry or (
@@ -441,6 +467,54 @@ def _patch_lean_lsp_loogle_project_paths(venv_dir: Path) -> bool:
     return True
 
 
+def _patch_lean_lsp_loogle_build_lock(venv_dir: Path) -> bool:
+    """Patch lean-lsp-mcp so its Loogle build takes the same lock LeanFlow uses.
+
+    Without this, the lean-lsp-mcp server could run ``lake build`` in the Loogle repo at the
+    same time as LeanFlow's managed build, corrupting the build dir. Wrapping ``_build_loogle``
+    in an exclusive flock on ``<cache_dir>/.loogle-build.lock`` (the same file LeanFlow locks)
+    makes the two serialize: whoever wins builds, the loser re-checks ``is_installed`` and skips.
+    Idempotent via the ``_leanflow_build_loogle_inner`` marker.
+    """
+    candidates = [
+        *venv_dir.glob("lib/python*/site-packages/lean_lsp_mcp/loogle.py"),
+        venv_dir / "Lib" / "site-packages" / "lean_lsp_mcp" / "loogle.py",
+    ]
+    target = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if target is None:
+        return False
+    text = target.read_text(encoding="utf-8")
+    if "_leanflow_build_loogle_inner" in text:
+        return True
+    needle = "    def _build_loogle(self) -> bool:\n        if self.is_installed:\n            return True\n"
+    if needle not in text:
+        return False
+    replacement = (
+        "    def _build_loogle(self) -> bool:\n"
+        "        import fcntl\n"
+        "        self.cache_dir.mkdir(parents=True, exist_ok=True)\n"
+        '        _lf_lock = open(self.cache_dir / ".loogle-build.lock", "w")\n'
+        "        try:\n"
+        "            try:\n"
+        "                fcntl.flock(_lf_lock, fcntl.LOCK_EX)\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "            return self._leanflow_build_loogle_inner()\n"
+        "        finally:\n"
+        "            try:\n"
+        "                fcntl.flock(_lf_lock, fcntl.LOCK_UN)\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "            _lf_lock.close()\n"
+        "\n"
+        "    def _leanflow_build_loogle_inner(self) -> bool:\n"
+        "        if self.is_installed:\n"
+        "            return True\n"
+    )
+    target.write_text(text.replace(needle, replacement, 1), encoding="utf-8")
+    return True
+
+
 def managed_mcp_power_status(
     home: str | os.PathLike[str] | None = None,
     *,
@@ -458,9 +532,14 @@ def managed_mcp_power_status(
     )
     repl_configured = _truthy(lean_lsp_env.get("LEAN_REPL"))
     repl_available = bool(repl_path and Path(repl_path).is_file())
-    loogle_cache_dir = Path(
-        str(lean_lsp_env.get("LEAN_LOOGLE_CACHE_DIR", "") or managed_loogle_cache_dir(home_path))
-    ).expanduser()
+    # Resolve the per-toolchain cache dir for the project (matching the build + the server
+    # launch). Without a project, fall back to the config value or the generic dir.
+    if _read_lean_toolchain(project_root):
+        loogle_cache_dir = loogle_cache_dir_for_project(home_path, project_root)
+    else:
+        loogle_cache_dir = Path(
+            str(lean_lsp_env.get("LEAN_LOOGLE_CACHE_DIR", "") or managed_loogle_cache_dir(home_path))
+        ).expanduser()
     loogle_supported = local_loogle_supported()
     loogle_configured = _truthy(lean_lsp_env.get("LEAN_LOOGLE_LOCAL"))
     loogle_toolchain = _read_lean_toolchain(loogle_cache_dir / "repo")
@@ -568,6 +647,26 @@ def _loogle_binary_path(repo_dir: Path) -> Path:
     return repo_dir / ".lake" / "build" / "bin" / ("loogle.exe" if os.name == "nt" else "loogle")
 
 
+def loogle_cache_dir_for_project(
+    home_path: Path, project_root: str | os.PathLike[str] | None
+) -> Path:
+    """Resolve the per-toolchain Loogle cache dir for a project.
+
+    Keyed on the project's Lean toolchain so different toolchains get isolated builds (no
+    rebuild thrash when switching projects). Falls back to the config/generic dir when the
+    project toolchain is unknown. The lean-lsp server is pointed at the SAME dir by
+    ``_augment_lean_stdio_env``, so build, server, and status stay consistent.
+    """
+    tc = _read_lean_toolchain(project_root)
+    if tc:
+        return managed_loogle_cache_dir(home_path, toolchain=tc)
+    return _active_loogle_cache_dir(home_path)
+
+
+def _loogle_build_lock_path(cache_dir: Path) -> Path:
+    return cache_dir / ".loogle-build.lock"
+
+
 def local_loogle_needs_build(
     project_root: str | os.PathLike[str] | None, home: str | os.PathLike[str] | None = None
 ) -> bool:
@@ -588,7 +687,7 @@ def local_loogle_needs_build(
     home_path = Path(home).expanduser().resolve() if home else get_leanflow_home()
     if not _truthy(_lean_lsp_env_from_home(home_path).get("LEAN_LOOGLE_LOCAL")):
         return False
-    repo_dir = _active_loogle_cache_dir(home_path) / "repo"
+    repo_dir = loogle_cache_dir_for_project(home_path, project_root) / "repo"
     if not _loogle_binary_path(repo_dir).is_file():
         return True
     return _read_lean_toolchain(repo_dir) != project_tc
@@ -626,7 +725,7 @@ def ensure_local_loogle_for_project(
             result["reason"] = "missing-git-or-lake"
             return result
         home_path = Path(home).expanduser().resolve() if home else get_leanflow_home()
-        cache_dir = _active_loogle_cache_dir(home_path)
+        cache_dir = loogle_cache_dir_for_project(home_path, project_root)
         repo_dir = cache_dir / "repo"
         binary = _loogle_binary_path(repo_dir)
         result.update(toolchain=project_tc, cache_dir=str(cache_dir))
@@ -636,36 +735,61 @@ def ensure_local_loogle_for_project(
             return result
 
         cache_dir.mkdir(parents=True, exist_ok=True)
-        has_lakefile = (repo_dir / "lakefile.lean").exists() or (repo_dir / "lakefile.toml").exists()
-        if not has_lakefile:
-            clone = subprocess.run(
-                ["git", "clone", "--depth", "1", _LOOGLE_REPO_URL, str(repo_dir)],
+        # Exclusive build lock: serialize with any other builder of THIS cache dir — a
+        # concurrent LeanFlow workflow or the lean-lsp-mcp server (which is patched to take
+        # the same lock). Whoever gets the lock builds; the others re-check is_installed and
+        # skip. fcntl is POSIX-only, which is fine: local Loogle is gated to non-Windows.
+        import fcntl
+
+        lock_handle = open(_loogle_build_lock_path(cache_dir), "w", encoding="utf-8")
+        try:
+            with contextlib.suppress(OSError):
+                fcntl.flock(lock_handle, fcntl.LOCK_EX)
+            # Re-check after acquiring: another builder may have just finished.
+            if binary.is_file() and _read_lean_toolchain(repo_dir) == project_tc:
+                result.update(ok=True, action="already-built")
+                return result
+
+            has_lakefile = (repo_dir / "lakefile.lean").exists() or (
+                repo_dir / "lakefile.toml"
+            ).exists()
+            if not has_lakefile:
+                clone = subprocess.run(
+                    ["git", "clone", "--depth", "1", _LOOGLE_REPO_URL, str(repo_dir)],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                if clone.returncode != 0:
+                    result.update(
+                        reason="clone-failed", detail=((clone.stderr or clone.stdout) or "")[:400]
+                    )
+                    return result
+
+            # Pin Loogle to the project's toolchain, then force a rebuild of the binary so it
+            # is compiled with that exact toolchain (and can therefore read the project oleans).
+            (repo_dir / "lean-toolchain").write_text(project_tc + "\n", encoding="utf-8")
+            with contextlib.suppress(OSError):
+                binary.unlink()
+            build = subprocess.run(
+                ["lake", "build"],
+                cwd=str(repo_dir),
+                env={**os.environ, "LAKE_ARTIFACT_CACHE": "false"},
                 capture_output=True,
                 text=True,
                 timeout=timeout,
             )
-            if clone.returncode != 0:
-                result.update(reason="clone-failed", detail=((clone.stderr or clone.stdout) or "")[:400])
+            if build.returncode != 0 or not binary.is_file():
+                result.update(
+                    reason="build-failed", detail=((build.stderr or build.stdout) or "")[-400:]
+                )
                 return result
-
-        # Pin Loogle to the project's toolchain, then force a rebuild of the binary so it
-        # is compiled with that exact toolchain (and can therefore read the project oleans).
-        (repo_dir / "lean-toolchain").write_text(project_tc + "\n", encoding="utf-8")
-        with contextlib.suppress(OSError):
-            binary.unlink()
-        build = subprocess.run(
-            ["lake", "build"],
-            cwd=str(repo_dir),
-            env={**os.environ, "LAKE_ARTIFACT_CACHE": "false"},
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        if build.returncode != 0 or not binary.is_file():
-            result.update(reason="build-failed", detail=((build.stderr or build.stdout) or "")[-400:])
+            result.update(ok=True, action="built")
             return result
-        result.update(ok=True, action="built")
-        return result
+        finally:
+            with contextlib.suppress(OSError):
+                fcntl.flock(lock_handle, fcntl.LOCK_UN)
+            lock_handle.close()
     except Exception as exc:  # never break callers; remote Loogle remains the fallback
         result["reason"] = f"error: {exc}"
         return result
@@ -732,6 +856,7 @@ def bootstrap_lean_mcp(
         )
         if spec.name == "lean-lsp":
             _patch_lean_lsp_loogle_project_paths(venv_dir)
+            _patch_lean_lsp_loogle_build_lock(venv_dir)
         installed_servers.append(
             {
                 "name": spec.name,

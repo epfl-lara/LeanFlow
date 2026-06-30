@@ -95,28 +95,24 @@ def test_managed_mcp_server_status_marks_missing_servers_for_bootstrap(tmp_path)
 
 
 def test_managed_mcp_power_status_marks_local_loogle_toolchain_mismatch(tmp_path):
+    # Per-toolchain model: status resolves the project's per-toolchain cache dir. A
+    # wrong-toolchain (rc1) Loogle sitting in the rc2 project's dir is still flagged
+    # "incompatible" so it falls back to remote rather than loading mismatched oleans.
     home = tmp_path / "home"
     home.mkdir()
     config_path = home / "config.yaml"
-    cache = tmp_path / "loogle-cache"
-    repo = cache / "repo"
-    repo.mkdir(parents=True)
-    (repo / "lean-toolchain").write_text(
-        "leanprover/lean4:v4.30.0-rc1\n",
-        encoding="utf-8",
-    )
     project = tmp_path / "project"
     project.mkdir()
     (project / "lean-toolchain").write_text(
         "leanprover/lean4:v4.30.0-rc2\n",
         encoding="utf-8",
     )
+    cache = mcp_bootstrap.managed_loogle_cache_dir(home, toolchain="leanprover/lean4:v4.30.0-rc2")
+    repo = cache / "repo"
+    repo.mkdir(parents=True)
+    (repo / "lean-toolchain").write_text("leanprover/lean4:v4.30.0-rc1\n", encoding="utf-8")
     config_path.write_text(
-        "mcp_servers:\n"
-        "  lean-lsp:\n"
-        "    env:\n"
-        "      LEAN_LOOGLE_LOCAL: 'true'\n"
-        f"      LEAN_LOOGLE_CACHE_DIR: {cache}\n",
+        "mcp_servers:\n  lean-lsp:\n    env:\n      LEAN_LOOGLE_LOCAL: 'true'\n",
         encoding="utf-8",
     )
 
@@ -127,6 +123,62 @@ def test_managed_mcp_power_status_marks_local_loogle_toolchain_mismatch(tmp_path
     assert power["loogle_local_ready"] is False
     assert power["loogle_toolchain"] == "leanprover/lean4:v4.30.0-rc1"
     assert power["project_toolchain"] == "leanprover/lean4:v4.30.0-rc2"
+
+
+def test_managed_loogle_cache_dir_is_per_toolchain(tmp_path):
+    home = tmp_path / "home"
+    generic = mcp_bootstrap.managed_loogle_cache_dir(home)
+    per_tc = mcp_bootstrap.managed_loogle_cache_dir(home, toolchain="leanprover/lean4:v4.30.0-rc2")
+    assert generic.name == "loogle"
+    assert per_tc.name == "loogle-leanprover-lean4-v4.30.0-rc2"
+    assert per_tc.parent == generic.parent  # both under <home>/mcp/cache
+
+
+def test_loogle_resolvers_agree_on_per_toolchain_dir(tmp_path):
+    # build, status, and the lean-lsp server launch MUST resolve the SAME per-toolchain dir,
+    # or local Loogle silently goes "incompatible" again.
+    from tools.mcp.mcp_transport import _augment_lean_stdio_env
+
+    home = tmp_path / "home"
+    home.mkdir()
+    write_managed_mcp_config(home)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.30.0-rc2\n", encoding="utf-8")
+
+    build_dir = mcp_bootstrap.loogle_cache_dir_for_project(home, project)
+    status_dir = Path(managed_mcp_power_status(home, project_root=project)["loogle_cache_dir"])
+    cfg_cache = mcp_bootstrap._lean_lsp_env_from_home(home)["LEAN_LOOGLE_CACHE_DIR"]
+    server_dir = Path(
+        _augment_lean_stdio_env(
+            "lean-lsp", {"LEAN_LOOGLE_CACHE_DIR": cfg_cache}, str(project)
+        )["LEAN_LOOGLE_CACHE_DIR"]
+    )
+    assert build_dir == status_dir == server_dir
+    assert build_dir.name == "loogle-leanprover-lean4-v4.30.0-rc2"
+
+
+def test_patch_lean_lsp_loogle_build_lock_is_valid_and_idempotent(tmp_path):
+    import ast
+
+    pkg = tmp_path / "lib" / "python3.12" / "site-packages" / "lean_lsp_mcp"
+    pkg.mkdir(parents=True)
+    (pkg / "loogle.py").write_text(
+        "class LocalLoogle:\n"
+        "    def _build_loogle(self) -> bool:\n"
+        "        if self.is_installed:\n"
+        "            return True\n"
+        "        return self._do_build()\n",
+        encoding="utf-8",
+    )
+    assert mcp_bootstrap._patch_lean_lsp_loogle_build_lock(tmp_path) is True
+    patched = (pkg / "loogle.py").read_text(encoding="utf-8")
+    ast.parse(patched)  # must remain valid Python
+    assert "_leanflow_build_loogle_inner" in patched
+    assert ".loogle-build.lock" in patched
+    # Idempotent: a second pass is a no-op and does not double-wrap.
+    assert mcp_bootstrap._patch_lean_lsp_loogle_build_lock(tmp_path) is True
+    assert (pkg / "loogle.py").read_text(encoding="utf-8") == patched
 
 
 def test_bootstrap_patches_lean_lsp_loogle_project_paths(tmp_path):
@@ -234,7 +286,7 @@ def test_ensure_local_loogle_builds_against_project_toolchain(tmp_path, monkeypa
     cache = tmp_path / "cache" / "loogle"
     monkeypatch.setattr(mcp_bootstrap, "local_loogle_supported", lambda: True)
     monkeypatch.setattr(mcp_bootstrap.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(mcp_bootstrap, "_active_loogle_cache_dir", lambda home: cache)
+    monkeypatch.setattr(mcp_bootstrap, "loogle_cache_dir_for_project", lambda home, proj: cache)
 
     calls = []
 
@@ -269,7 +321,7 @@ def test_ensure_local_loogle_noop_when_already_matching(tmp_path, monkeypatch):
     (cache / "repo" / "lean-toolchain").write_text("tc:v1\n", encoding="utf-8")
     monkeypatch.setattr(mcp_bootstrap, "local_loogle_supported", lambda: True)
     monkeypatch.setattr(mcp_bootstrap.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(mcp_bootstrap, "_active_loogle_cache_dir", lambda home: cache)
+    monkeypatch.setattr(mcp_bootstrap, "loogle_cache_dir_for_project", lambda home, proj: cache)
 
     def boom(*a, **k):
         raise AssertionError("must not rebuild when Loogle already matches the project")
