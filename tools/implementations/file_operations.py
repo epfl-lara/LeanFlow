@@ -222,7 +222,7 @@ class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
 
     @abstractmethod
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """Read a file with pagination support."""
         ...
 
@@ -525,7 +525,7 @@ class ShellFileOperations(FileOperations):
     # READ Implementation
     # =========================================================================
 
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
 

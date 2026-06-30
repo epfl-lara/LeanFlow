@@ -7,6 +7,7 @@ web_tools import), so there is no cycle. web_search_tool stays in web_tools and 
 via the re-exported names (provider-tuple identity preserved for tests).
 """
 
+import os
 import re
 import xml.etree.ElementTree as ET
 from typing import Any
@@ -69,14 +70,36 @@ def _append_unique_result(
 
 
 def _research_headers() -> dict[str, str]:
-    return {"User-Agent": RESEARCH_SEARCH_USER_AGENT}
+    """Return shared HTTP headers for the free research providers.
+
+    Attaches a Semantic Scholar API key (``SEMANTIC_SCHOLAR_API_KEY`` / ``S2_API_KEY``) when set, so
+    S2 uses its authenticated quota instead of the heavily-throttled shared anonymous pool. Behavior
+    is unchanged when no key is configured.
+    """
+    headers = {"User-Agent": RESEARCH_SEARCH_USER_AGENT}
+    api_key = (os.getenv("SEMANTIC_SCHOLAR_API_KEY") or os.getenv("S2_API_KEY") or "").strip()
+    if api_key:
+        headers["x-api-key"] = api_key
+    return headers
 
 
 def _arxiv_search_query(query: str) -> str:
-    tokens = re.findall(r"[A-Za-z0-9_.+-]+", query)[:10]
+    """Build an arXiv ``search_query`` that favors relevance.
+
+    AND-ing every token across all fields (the previous behavior) is far too strict and surfaced
+    unrelated papers (e.g. "liquid tensor experiment" matched a nematic-liquid-crystals paper).
+    Instead, quote the full phrase against title/abstract and OR it with a token disjunction so a
+    strong phrase match ranks first while individual terms still match.
+    """
+    phrase = query.strip()
+    tokens = re.findall(r"[A-Za-z0-9_.+-]+", query)[:12]
     if not tokens:
-        return f'all:"{query}"'
-    return " AND ".join(f"all:{token}" for token in tokens)
+        return f'all:"{phrase}"' if phrase else "all:mathematics"
+    token_clause = " OR ".join(f"all:{token}" for token in tokens)
+    if len(tokens) > 1 and phrase:
+        safe_phrase = phrase.replace('"', "")
+        return f'(ti:"{safe_phrase}" OR abs:"{safe_phrase}" OR ({token_clause}))'
+    return token_clause
 
 
 def _search_arxiv(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:

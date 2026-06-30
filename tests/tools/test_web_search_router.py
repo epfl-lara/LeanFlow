@@ -208,3 +208,27 @@ def test_semantic_scholar_result_is_normalized(monkeypatch):
             "pdf_url": "https://example.test/paper.pdf",
         }
     ]
+
+
+def test_arxiv_query_is_field_aware_not_and_of_all_tokens():
+    q = web_tools._arxiv_search_query("liquid tensor experiment condensed")
+    # Phrase clause against title/abstract + token OR-disjunction; never AND-of-all-tokens.
+    assert "ti:" in q and "abs:" in q
+    assert " OR " in q
+    assert " AND " not in q
+    # A single-token query collapses to a plain all: clause.
+    assert web_tools._arxiv_search_query("propext") == "all:propext"
+
+
+def test_research_headers_attach_semantic_scholar_key(monkeypatch):
+    monkeypatch.delenv("SEMANTIC_SCHOLAR_API_KEY", raising=False)
+    monkeypatch.delenv("S2_API_KEY", raising=False)
+    assert "x-api-key" not in web_tools._research_headers()
+    monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", "sk-s2-test")
+    assert web_tools._research_headers()["x-api-key"] == "sk-s2-test"
+
+
+def test_web_search_schema_exposes_limit():
+    props = web_tools.WEB_SEARCH_SCHEMA["parameters"]["properties"]
+    assert "limit" in props
+    assert props["limit"]["maximum"] == 10

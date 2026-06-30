@@ -421,26 +421,14 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
 
 def _apply_update(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
     """Apply an update file operation."""
-    # Read current content
-    read_result = file_ops.read_file(op.file_path, limit=10000)
-
-    if read_result.error:
-        return False, f"Cannot read file: {read_result.error}"
-
-    # Parse content (remove line numbers)
-    current_lines = []
-    for line in read_result.content.split("\n"):
-        if re.match(r"^\s*\d+\|", line):
-            # Line format: "    123|content"
-            parts = line.split("|", 1)
-            if len(parts) == 2:
-                current_lines.append(parts[1])
-            else:
-                current_lines.append(line)
-        else:
-            current_lines.append(line)
-
-    current_content = "\n".join(current_lines)
+    # Read current content RAW. The previous path read line-number-decorated content with a
+    # 10000-line cap and then stripped "NNN|" prefixes — which silently lost data on files larger
+    # than 10000 lines and corrupted any genuine source line shaped like "  12|x" (Lean tables,
+    # comments, Vector literals). `_read_raw_for_guard` cats the file with no cap and no
+    # decorate/strip round trip (falling back to the old behavior only when `_exec` is unavailable).
+    current_content = _read_raw_for_guard(file_ops, op.file_path)
+    if current_content is None:
+        return False, f"Cannot read file: {op.file_path}"
 
     # Apply each hunk
     new_content = current_content
