@@ -269,6 +269,14 @@ def test_duckduckgo_html_is_parsed(monkeypatch):
     ]
 
 
+def test_duckduckgo_href_decode_preserves_encoded_values():
+    from tools.implementations import web_research_providers as wp
+
+    # parse_qs decodes uddg once; the target URL keeps its own encoded value (no double-decode).
+    href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fex.org%2Fq%3Fa%3D1%252B2"
+    assert wp._decode_duckduckgo_href(href) == "https://ex.org/q?a=1%2B2"
+
+
 def test_general_web_prefers_tavily_when_keyed(monkeypatch):
     def fake_post(url, *, json=None, headers=None, timeout=None):
         assert json["query"] == "lean 4 install"

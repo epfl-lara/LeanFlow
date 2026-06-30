@@ -266,6 +266,27 @@ def test_web_download_rejects_empty_url():
     assert "error" in json.loads(web_fetch.web_download_tool(""))
 
 
+def test_web_download_rejects_symlinked_downloads_escape(monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    # .leanflow/downloads is a symlink escaping the project sandbox.
+    (project / ".leanflow").mkdir()
+    (project / ".leanflow" / "downloads").symlink_to(outside, target_is_directory=True)
+    monkeypatch.chdir(project)
+
+    def fake_get(url, *, headers=None, timeout=None, stream=False):
+        return _StreamingResponse([b"d"], headers={})
+
+    monkeypatch.setattr(web_fetch.requests, "get", fake_get)
+    out = json.loads(web_fetch.web_download_tool("https://e/f"))
+
+    assert "error" in out
+    assert "escapes the project sandbox" in out["error"]
+    assert not any(outside.iterdir())  # nothing was written outside the project
+
+
 def test_web_download_registered_in_web_toolsets():
     from core.toolsets import resolve_toolset
 

@@ -51,11 +51,14 @@ class FreshnessVerdict:
 
 
 def _normalize(path: str) -> str:
-    """Normalize a path so the same file hashes to the same key across calls."""
-    # expanduser handles ~; normpath collapses redundant separators. We do NOT
-    # resolve symlinks or require existence — the read and patch paths must simply
-    # agree, and they flow through the same expansion in the tool layer.
-    return os.path.normpath(os.path.expanduser(str(path)))
+    """Normalize a path so the same file hashes to the same key across calls.
+
+    Resolves to an absolute path (expanduser for ~, abspath for relative -> cwd-relative
+    absolute, which also normpaths) so that reading ``src/F.lean`` and later patching the same
+    file by its absolute path map to the SAME key. Symlinks are deliberately not resolved — the
+    read and patch paths only need to agree, and both flow through this function.
+    """
+    return os.path.abspath(os.path.expanduser(str(path)))
 
 
 def hash_text(content: str) -> str:

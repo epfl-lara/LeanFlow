@@ -314,7 +314,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default", owner_id:
                 return dumps(conflict)
         file_ops = _get_file_ops(task_id)
         result = file_ops.write_file(path, content)
-        return dumps(result.to_dict())
+        result_dict = result.to_dict()
+        # Record the just-written content so a subsequent patch of this file isn't
+        # hard-rejected as "stale" against the agent's own write (D2 freshness).
+        if not result_dict.get("error"):
+            note_write(task_id, path, content)
+        return dumps(result_dict)
     except Exception as e:
         if _is_expected_write_exception(e):
             logger.debug("write_file expected denial: %s: %s", type(e).__name__, e)
@@ -395,7 +400,36 @@ def patch_tool(
         elif mode == "patch":
             if not patch:
                 return json.dumps({"error": "patch content required"})
+            # D2 read-before-edit for V4A: reject if any UPDATE target changed since last read,
+            # soft-warn for never-read targets — mirroring replace mode, which the schema promises.
+            from tools.utilities.patch_parser import OperationType, parse_v4a_patch
+
+            ops, _parse_err = parse_v4a_patch(patch)
+            update_paths = [
+                op.file_path
+                for op in (ops or [])
+                if op.operation in (OperationType.UPDATE, OperationType.MOVE)
+            ]
+            warnings: list[str] = []
+            try:
+                for update_path in update_paths:
+                    _raw, warning = _freshness_guard(file_ops, update_path, task_id)
+                    if warning:
+                        warnings.append(warning)
+            except _FreshnessError as fe:
+                return dumps({"success": False, "error": str(fe), "stale": True})
+            if warnings and not freshness_warning:
+                freshness_warning = " ".join(warnings)
             result = file_ops.patch_v4a(patch)
+            # Refresh tracked hashes for the files this patch just wrote.
+            if getattr(result, "success", False):
+                for update_path in update_paths:
+                    try:
+                        new_raw = file_ops.read_raw(update_path)
+                        if isinstance(new_raw, str):
+                            note_write(task_id, update_path, new_raw)
+                    except Exception:
+                        pass
         else:
             return json.dumps({"error": f"Unknown mode: {mode}"})
 

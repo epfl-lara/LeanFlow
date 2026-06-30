@@ -267,7 +267,13 @@ def web_download_tool(url: str, filename: str = "", max_bytes: int = WEB_DOWNLOA
         cap = WEB_DOWNLOAD_MAX_BYTES
     cap = max(1, min(WEB_DOWNLOAD_MAX_BYTES, cap))
 
-    dest_dir = (Path.cwd() / WEB_DOWNLOAD_DIRNAME).resolve()
+    project_root = Path.cwd().resolve()
+    dest_dir = (project_root / WEB_DOWNLOAD_DIRNAME).resolve()
+    # Reject if the downloads dir (or an ancestor) is a symlink that escapes the project — the
+    # filename is already basename-sanitized, but a symlinked .leanflow/downloads could redirect
+    # writes outside the sandbox while still passing the dest.parent == dest_dir check.
+    if project_root != dest_dir and project_root not in dest_dir.parents:
+        return error("Refusing to write: downloads directory escapes the project sandbox")
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = (dest_dir / _safe_download_filename(url, filename)).resolve()
     if dest.parent != dest_dir:  # defense in depth against traversal

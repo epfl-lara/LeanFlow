@@ -322,9 +322,11 @@ def _decode_duckduckgo_href(href: str) -> str:
     if href.startswith("//"):
         href = "https:" + href
     parsed = urllib.parse.urlparse(href)
+    # parse_qs already percent-decodes once; do NOT unquote again or a target URL that
+    # legitimately contains an encoded value (e.g. %252B) gets corrupted to %2B/+.
     params = urllib.parse.parse_qs(parsed.query)
     if "uddg" in params and params["uddg"]:
-        return urllib.parse.unquote(params["uddg"][0])
+        return params["uddg"][0]
     return href if href.startswith("http") else ""
 
 

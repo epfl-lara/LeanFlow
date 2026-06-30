@@ -18,8 +18,10 @@ from tools.implementations.file_tools import (
     clear_read_tracker,
     patch_tool,
     read_file_tool,
+    write_file_tool,
 )
 from tools.utilities.read_freshness import (
+    _normalize,
     check_freshness,
     clear_freshness,
     record_read,
@@ -88,6 +90,17 @@ class TestFreshnessTracker:
         assert check_freshness("a", "/f", "x").status == "never_read"
         assert check_freshness("b", "/f", "x").status == "fresh"
 
+    def test_relative_and_absolute_paths_share_a_key(self):
+        # A read by relative path and a patch by the resolved absolute path (what
+        # ShellFileOperations uses) must hash to the same key — else stale edits fail open.
+        import os
+
+        rel = "sub/dir/file.txt"
+        assert _normalize(rel) == _normalize(os.path.abspath(rel))
+        record_read("t", os.path.abspath(rel), "X")
+        assert check_freshness("t", rel, "X").status == "fresh"
+        assert check_freshness("t", rel, "X CHANGED").status == "stale"
+
 
 # ---------------------------------------------------------------------------
 # D2 — freshness contract through the real patch_tool
@@ -150,6 +163,39 @@ class TestPatchFreshnessGuard:
         assert second["success"] is True
         assert "freshness_warning" not in second
         assert Path(path).read_text(encoding="utf-8") == "A B c\n"
+
+    def test_write_file_then_patch_is_not_stale(self, local_ops, tmp_path):
+        # write_file records the write, so patching the agent's own just-written
+        # content is not hard-rejected as stale (Codex review: write_file note_write).
+        path = str(tmp_path / "f.txt")
+        write_file_tool(path, "fresh content\n")
+        result = json.loads(
+            patch_tool(mode="replace", path=path, old_string="fresh", new_string="brand new")
+        )
+        assert result["success"] is True
+        assert "freshness_warning" not in result
+        assert Path(path).read_text(encoding="utf-8") == "brand new content\n"
+
+    def test_v4a_patch_after_external_change_is_rejected(self, local_ops, tmp_path):
+        # V4A patch mode is guarded too (Codex review: mode="patch" bypassed freshness).
+        path = str(tmp_path / "f.txt")
+        Path(path).write_text("line one\nline two\n", encoding="utf-8")
+        read_file_tool(path)
+        Path(path).write_text("line one CHANGED\nline two\n", encoding="utf-8")
+
+        v4a = (
+            "*** Begin Patch\n"
+            f"*** Update File: {path}\n"
+            "@@\n"
+            "-line two\n"
+            "+line TWO\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=v4a))
+        assert result["success"] is False
+        assert result.get("stale") is True
+        # The stale V4A edit must NOT have been applied.
+        assert Path(path).read_text(encoding="utf-8") == "line one CHANGED\nline two\n"
 
 
 # ---------------------------------------------------------------------------
