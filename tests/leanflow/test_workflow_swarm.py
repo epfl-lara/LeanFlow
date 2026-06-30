@@ -51,6 +51,18 @@ def test_parse_workflow_command_extracts_provider_override():
     assert spec.provider_override == "codex"
 
 
+def test_parse_workflow_command_extracts_allowed_axioms():
+    spec = parse_workflow_command("/prove Main.lean --axioms my_ax,other_ax")
+
+    assert spec.workflow_args == "Main.lean"
+    assert spec.allowed_axioms == "my_ax,other_ax"
+    # The axiom list is not leaked into the workflow args / backend command.
+    assert "--axioms" not in spec.backend_command
+
+    default_spec = parse_workflow_command("/prove Main.lean")
+    assert default_spec.allowed_axioms == ""
+
+
 def test_parse_workflow_command_extracts_expert_provider_options():
     spec = parse_workflow_command(
         "/prove Main.lean --expert-provider codex --expert-command-template 'codex exec --sandbox read-only -'"

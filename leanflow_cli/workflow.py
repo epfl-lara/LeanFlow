@@ -55,6 +55,7 @@ class NativeWorkflowSpec:
     autoformalizer_verifier_provider: str = ""
     autoformalizer_verifier_command_template: str = ""
     additional_skills: tuple[str, ...] = ()
+    allowed_axioms: str = ""
 
 
 @dataclass(frozen=True)
@@ -262,6 +263,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
     autoformalizer_verifier_provider = ""
     autoformalizer_verifier_command_template = ""
     additional_skills: list[str] = []
+    allowed_axioms = ""
     workflow_tokens: list[str] = []
     idx = 0
     while idx < len(remaining):
@@ -339,6 +341,12 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             additional_skills.append(remaining[idx + 1])
             idx += 2
             continue
+        if token == "--axioms":
+            if idx + 1 >= len(remaining):
+                raise ValueError("--axioms requires a value (comma/space-separated axiom names)")
+            allowed_axioms = remaining[idx + 1].strip()
+            idx += 2
+            continue
         workflow_tokens.append(token)
         idx += 1
     if no_parallel:
@@ -363,6 +371,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         autoformalizer_verifier_provider=autoformalizer_verifier_provider,
         autoformalizer_verifier_command_template=autoformalizer_verifier_command_template,
         additional_skills=tuple(additional_skills),
+        allowed_axioms=allowed_axioms,
     )
 
 
@@ -488,6 +497,8 @@ def resolve_workflow_request(
             "LEANFLOW_NATIVE_ACTIVE_FILE": normalized_active_file,
         }
     )
+    if workflow.allowed_axioms:
+        child_env["LEANFLOW_NATIVE_ALLOWED_AXIOMS"] = workflow.allowed_axioms
     if workflow.expert_provider:
         child_env["AUXILIARY_LEAN_REASONING_PROVIDER"] = workflow.expert_provider
     if workflow.expert_command_template:

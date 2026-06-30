@@ -96,3 +96,43 @@ def test_initial_declaration_keys_are_cached_on_the_agent():
         agent, "/tmp/Main.lean", "theorem only_now : True := by trivial\n"
     )
     assert cached == keys
+
+
+def test_axiom_declaration_names_detects_modifiers_and_ignores_comments():
+    text = (
+        "axiom plain : False\n"
+        "@[simp] private axiom decorated : 1 = 2\n"
+        "noncomputable axiom nc : Nat\n"
+        "-- axiom commented : False\n"
+        "/- axiom blocked : True -/\n"
+        'def s := "axiom in_a_string : False"\n'
+    )
+    names = queue_edit_guard._axiom_declaration_names(text)
+    assert names == {"plain", "decorated", "nc"}
+
+
+def test_introduced_forbidden_axioms_respects_allowlist():
+    before = "theorem t : True := by\n  trivial\n"
+    after = before + "axiom sneaky : False\nprivate axiom helper_ax : 1 = 2\n"
+
+    standard = {"propext", "Classical.choice", "Quot.sound"}
+    # Declaring new axioms is forbidden even though standard dependency axioms are allowed.
+    assert queue_edit_guard._introduced_forbidden_axioms(before, after, standard) == [
+        "helper_ax",
+        "sneaky",
+    ]
+    # An explicitly allow-listed name (e.g. via --axioms) is permitted.
+    assert queue_edit_guard._introduced_forbidden_axioms(
+        before, after, standard | {"helper_ax"}
+    ) == ["sneaky"]
+    # An axiom already present before the edit is not flagged as "introduced".
+    assert queue_edit_guard._introduced_forbidden_axioms(after, after, standard) == []
+
+
+def test_native_runner_allowed_axioms_reads_env(monkeypatch):
+    monkeypatch.delenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", raising=False)
+    assert native_runner._allowed_axioms() == set(native_runner.DEFAULT_ALLOWED_AXIOMS)
+    monkeypatch.setenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", "myAx, other_ax  third.ax")
+    allowed = native_runner._allowed_axioms()
+    assert {"myAx", "other_ax", "third.ax"} <= allowed
+    assert set(native_runner.DEFAULT_ALLOWED_AXIOMS) <= allowed

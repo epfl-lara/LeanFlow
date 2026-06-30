@@ -2573,6 +2573,74 @@ def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch,
     )
 
 
+def test_axiom_guard_restores_file_when_edit_introduces_axiom(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    before = "theorem demo : False := by\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.delenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", raising=False)
+    events = []
+    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: events.append((a, k)))
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    # Model "cheats" by declaring an axiom that closes the goal instead of proving it.
+    active.write_text(
+        "axiom cheat : False\ntheorem demo : False := by\n  exact cheat\n", encoding="utf-8"
+    )
+
+    feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
+
+    assert "AXIOM GUARD" in feedback
+    assert "cheat" in feedback
+    # File restored to its pre-edit state (no axiom).
+    assert active.read_text(encoding="utf-8") == before
+    assert any(a[0] == "axiom-guard" for a, _ in events)
+
+
+def test_axiom_guard_allows_explicitly_allowlisted_axiom(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    before = "theorem demo : True := by\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", "my_allowed_ax")
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    edited = "axiom my_allowed_ax : True\ntheorem demo : True := by\n  trivial\n"
+    active.write_text(edited, encoding="utf-8")
+
+    feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
+
+    # Allow-listed axiom is not treated as a forbidden introduction; the axiom guard stays silent.
+    assert "AXIOM GUARD" not in feedback
+    assert active.read_text(encoding="utf-8") == edited
+
+
 def test_out_of_scope_queue_edit_guard_allows_new_helper_declarations(monkeypatch, tmp_path):
     active = tmp_path / "Main.lean"
     active.write_text(

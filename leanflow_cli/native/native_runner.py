@@ -114,6 +114,11 @@ SEARCH_PROGRESS_TOTAL_NUDGE_LIMIT = 6
 # the post-edit hard-retry exhaustion at 8 — turning exhaustion into a forced strategy change.
 FAILED_ATTEMPT_ESCALATION_NUDGE_LIMIT = 4
 FAILED_ATTEMPT_ESCALATION_NUDGE_INTERVAL = 3
+# Axioms a prover run may introduce/allow. The standard Lean/Mathlib axioms are permitted by
+# default; a run may extend this with LEANFLOW_NATIVE_ALLOWED_AXIOMS (set by the `--axioms` flag).
+# Declaring ANY other `axiom` in a proof file is rejected by the axiom guard, because declaring an
+# axiom assumes the goal instead of proving it.
+DEFAULT_ALLOWED_AXIOMS = ("propext", "Classical.choice", "Quot.sound")
 ACTIVE_AGENT_STATUSES = {"active"}
 LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
@@ -353,6 +358,8 @@ from leanflow_cli.workflows.project_prove_manager import (  # noqa: E402
     _project_prove_worked_example_count,  # noqa: F401
 )
 from leanflow_cli.workflows.queue_edit_guard import (  # noqa: E402
+    _axiom_declaration_names,  # noqa: F401
+    _introduced_forbidden_axioms,
     _queue_edit_assigned_statement_signature,
     _queue_edit_changed_protected_declarations,
     _queue_edit_guard_key,
@@ -2821,8 +2828,20 @@ def _queue_edit_protect_assigned_statement(
     return False
 
 
+def _allowed_axioms() -> set[str]:
+    """Axiom names a prover run may introduce: the standard defaults plus any from the
+    LEANFLOW_NATIVE_ALLOWED_AXIOMS env var (set by `--axioms`, comma/space separated)."""
+    allowed = set(DEFAULT_ALLOWED_AXIOMS)
+    raw = _read_native_env("ALLOWED_AXIOMS", "")
+    for token in re.split(r"[,\s]+", str(raw or "")):
+        token = token.strip()
+        if token:
+            allowed.add(token)
+    return allowed
+
+
 def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
-    """Restore file to pre-edit state if a Lean edit removed the assigned theorem, changed its statement signature, or modified protected declarations outside assignment scope. Returns guard message summarizing what was restored; called post-edit to enforce queue boundaries."""
+    """Restore file to pre-edit state if a Lean edit removed the assigned theorem, changed its statement signature, introduced a forbidden axiom, or modified protected declarations outside assignment scope. Returns guard message summarizing what was restored; called post-edit to enforce queue boundaries."""
     if function_name not in {"patch", "write_file", "apply_verified_patch"}:
         return ""
     snapshot = dict(getattr(agent, "_managed_queue_edit_snapshot", {}) or {})
@@ -2846,6 +2865,28 @@ def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
         return ""
     if current_text == before_text:
         return ""
+    # Axiom guard: declaring a new axiom in a proof file assumes the goal instead of proving it.
+    forbidden_axioms = _introduced_forbidden_axioms(before_text, current_text, _allowed_axioms())
+    if forbidden_axioms:
+        try:
+            path.write_text(before_text, encoding="utf-8")
+        except Exception:
+            return ""
+        names = ", ".join(forbidden_axioms[:6])
+        _record_activity(
+            "axiom-guard",
+            f"Restored file after `{function_name}` introduced forbidden axiom(s): {names}",
+            active_file=active_file,
+            target_symbol=target_symbol,
+            axioms=list(forbidden_axioms),
+        )
+        return (
+            "[LEANFLOW-NATIVE AXIOM GUARD]\n"
+            f"The `{function_name}` edit introduced forbidden `axiom` declaration(s) ({names}) while "
+            f"solving `{target_symbol}`. Declaring an axiom assumes the goal instead of proving it, so "
+            "the manager restored the file to its pre-tool state. Prove the result (or a helper lemma) "
+            "directly; only axioms explicitly allowlisted for this run (via `--axioms`) are permitted."
+        )
     current_entry = _find_declaration_entry(active_file, target_symbol)
     if not current_entry:
         try:
