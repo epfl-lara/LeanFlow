@@ -99,12 +99,14 @@ from leanflow_cli.lean.lean_search_providers import (  # noqa: E402
     SEARCH_PROVIDER_LABELS,
     _decode_nested_result,
     _format_search_payload_item,
+    _is_leanexplore_corrupt_db_error,
     _is_leanexplore_reranker_load_error,
     _leanexplore_api_key,
     _leanexplore_api_search,
     _leanexplore_backend_preference,
     _leanexplore_local_status,
     _model_to_plain_dict,
+    _quarantine_corrupt_leanexplore_db,
     _quiet_leanexplore_local_output,
     _search_payload_fragments,
 )
@@ -517,6 +519,17 @@ def _leanexplore_local_search(query: str, *, limit: int = 10) -> tuple[list[dict
                 _LEANEXPLORE_LOCAL_RERANK_DISABLED = True
                 response = asyncio.run(_run_search(0))
     except Exception as exc:
+        if _is_leanexplore_corrupt_db_error(exc):
+            moved = _quarantine_corrupt_leanexplore_db()
+            logger.warning(
+                "LeanExplore local index is corrupt%s; quarantined and falling back to "
+                "remote/MCP search providers. Rebuild it with `lean-explore data fetch`.",
+                f" (moved to {moved})" if moved else "",
+            )
+            return [], (
+                "LeanExplore local index was corrupt and has been quarantined; "
+                "rebuild it with `lean-explore data fetch`. Remote/MCP search still ran."
+            )
         return [], f"LeanExplore local search failed: {exc}"
     raw_results = getattr(response, "results", [])
     if not isinstance(raw_results, list):

@@ -129,6 +129,7 @@ from tools.mcp.mcp_transport import (  # noqa: E402
     _resolve_stdio_command,
     _resolve_stdio_cwd,
     _sanitize_error,
+    open_mcp_stderr_log,
 )
 
 # ---------------------------------------------------------------------------
@@ -222,13 +223,28 @@ class MCPServerTask:
         )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
-        async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                await session.initialize()
-                self.session = session
-                await self._discover_tools()
-                self._ready.set()
-                await self._shutdown_event.wait()
+        # Route noisy managed-Lean server stderr to a log file instead of the workflow
+        # console (see open_mcp_stderr_log). None -> inherit sys.stderr as before.
+        errlog = open_mcp_stderr_log(self.name, cwd)
+        stdio_ctx = (
+            stdio_client(server_params, errlog)
+            if errlog is not None
+            else stdio_client(server_params)
+        )
+        try:
+            async with stdio_ctx as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                    await session.initialize()
+                    self.session = session
+                    await self._discover_tools()
+                    self._ready.set()
+                    await self._shutdown_event.wait()
+        finally:
+            if errlog is not None:
+                try:
+                    errlog.close()
+                except Exception:
+                    pass
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""

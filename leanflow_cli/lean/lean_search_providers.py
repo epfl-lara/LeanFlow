@@ -97,6 +97,54 @@ def _leanexplore_local_cache_path() -> Path | None:
     return None
 
 
+# Substrings that mark a *corrupt* local LeanExplore SQLite index (not a transient
+# query error). A 100MB+ index in this state cannot self-repair, so we move it aside
+# and let `lean-explore data fetch` rebuild it; meanwhile remote/MCP providers answer
+# the query. Matching is done on the lower-cased exception text so it catches the
+# SQLAlchemy wrapper around the underlying sqlite3 error.
+_LEANEXPLORE_CORRUPT_DB_SIGNATURES = (
+    "database disk image is malformed",
+    "file is not a database",
+    "file is encrypted or is not a database",
+    "malformed database schema",
+    "database or disk is full",
+)
+
+
+def _is_leanexplore_corrupt_db_error(exc: BaseException) -> bool:
+    """True if *exc* indicates the local LeanExplore index is corrupt (vs a query bug)."""
+    text = str(exc).lower()
+    return any(signature in text for signature in _LEANEXPLORE_CORRUPT_DB_SIGNATURES)
+
+
+def _quarantine_corrupt_leanexplore_db() -> Path | None:
+    """Move a corrupt local LeanExplore DB aside so the next fetch rebuilds it.
+
+    Renames ``lean_explore.db`` to ``lean_explore.db.corrupt`` (never deletes — the move
+    is reversible). With the DB gone the cache no longer satisfies the required-entries
+    check, so ``_leanexplore_local_cache_path`` reports the data as unavailable and the
+    backend returns the clean "run `lean-explore data fetch`" message instead of erroring
+    on every query. Best-effort: returns the quarantine path, or ``None`` if there was
+    nothing to move or the move failed.
+    """
+    try:
+        cache_path = _leanexplore_local_cache_path()
+        if cache_path is None:
+            return None
+        db_path = cache_path / "lean_explore.db"
+        if not db_path.is_file():
+            return None
+        target = db_path.parent / (db_path.name + ".corrupt")
+        index = 1
+        while target.exists():
+            target = db_path.parent / (f"{db_path.name}.corrupt{index}")
+            index += 1
+        db_path.rename(target)
+        return target
+    except Exception:
+        return None
+
+
 def _leanexplore_local_status() -> dict[str, Any]:
     try:
         package_available = importlib.util.find_spec("lean_explore.search") is not None

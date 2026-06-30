@@ -88,6 +88,46 @@ def test_verified_workflow_exits_without_prompt_when_stdin_is_not_interactive(mo
     assert runner._verified_workflow_should_exit_without_prompt({"phase": "verified"}) is True
 
 
+def test_verified_workflow_exits_without_prompt_when_stdin_is_tty(monkeypatch):
+    # A fully verified proof in a real terminal must exit cleanly, NOT drop into the
+    # chat prompt loop, so the user's shell is handed back for new commands.
+    class _Stdin:
+        def isatty(self):
+            return True
+
+    monkeypatch.delenv("LEANFLOW_NATIVE_STAY_AFTER_VERIFIED", raising=False)
+    monkeypatch.setattr(runner.sys, "stdin", _Stdin())
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: True)
+
+    assert runner._verified_workflow_should_exit_without_prompt({"phase": "verified"}) is True
+
+
+def test_verified_workflow_stays_interactive_when_opt_in_flag_set(monkeypatch):
+    # Opt-in escape hatch: with the flag set and a real TTY, keep the legacy chat loop.
+    class _Stdin:
+        def isatty(self):
+            return True
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_STAY_AFTER_VERIFIED", "1")
+    monkeypatch.setattr(runner.sys, "stdin", _Stdin())
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: True)
+
+    assert runner._verified_workflow_should_exit_without_prompt({"phase": "verified"}) is False
+
+
+def test_unverified_workflow_does_not_exit_without_prompt(monkeypatch):
+    # An unfinished proof in a TTY still gets the interactive prompt (guidance/resume).
+    class _Stdin:
+        def isatty(self):
+            return True
+
+    monkeypatch.delenv("LEANFLOW_NATIVE_STAY_AFTER_VERIFIED", raising=False)
+    monkeypatch.setattr(runner.sys, "stdin", _Stdin())
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: False)
+
+    assert runner._verified_workflow_should_exit_without_prompt({"phase": "paused"}) is False
+
+
 def test_interactive_prompt_loop_disallowed_when_stdin_not_tty(monkeypatch):
     # Headless run: main() must not enter the blocking input() loop, or it hangs forever.
     class _Stdin:
