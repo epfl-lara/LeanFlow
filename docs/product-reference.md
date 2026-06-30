@@ -49,23 +49,15 @@ Built-in skills:
 - `lean-formalization`
   - formalization and declaration-building skill for `formalize` and `draft`
   - emphasizes: source-document inspection, blueprint planning, source comments, small verifiable steps, dependency order, and zero build errors / zero `sorry`
-- `lean-project-search`
-  - local project search helper used before editing proofs
-  - emphasizes: nearby declarations, imports, naming/style reuse, and file-local context
-- `lean-mathlib-search`
-  - Mathlib search helper used when a proof likely depends on an existing library lemma
-  - emphasizes: theorem-name discovery, statement inspection, and reducing proof guessing
+- `lean-search`
+  - unified search helper used before editing proofs, covering both local-project context and Mathlib/semantic discovery
+  - emphasizes: nearby declarations, imports, naming/style reuse, theorem-name discovery, statement inspection, and reducing proof guessing
 - `lean-refactor-golf`
   - refactor / golfing skill for `refactor` and `golf`
   - emphasizes: simplifying proof structure without breaking verification
 - `lean-autonomous-swarm`
   - swarm skill used only when you explicitly launch a workflow with `--agents N`
   - emphasizes: file ownership, verifier roles, and strict final verification
-- `provider-fallback`
-  - provider/runtime fallback helper when you need to switch between direct APIs, RCP/custom endpoints, or local runtimes
-- `long-session-resume`
-  - resume/handoff skill for compacted or checkpoint-restored workflows
-  - emphasizes: trust persisted state, compare it to the current filesystem, and continue from the real current Lean state
 
 ### How Skills Are Assigned
 
@@ -928,12 +920,9 @@ Current curated builtin skills:
 - `lean-theorem-queue-worker`
 - `lean-diagnostics`
 - `lean-formalization`
-- `lean-project-search`
-- `lean-mathlib-search`
+- `lean-search`
 - `lean-refactor-golf`
 - `lean-autonomous-swarm`
-- `provider-fallback`
-- `long-session-resume`
 
 Lean workflows automatically select a matching default skill unless you activate another one explicitly.
 

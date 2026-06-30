@@ -173,7 +173,7 @@ history, project prove-manager plans, and outcomes — this is what lets long Le
 
 LeanFlow steers the agent with a small curated Lean skill core in `leanflow_skills/` (e.g.
 `lean-proof-loop`, `lean-theorem-queue-worker`, `lean-diagnostics`, `lean-formalization`,
-`lean-project-search`, `lean-mathlib-search`, `lean-refactor-golf`, `provider-fallback`). The canonical
+`lean-search`, `lean-refactor-golf`). The canonical
 workflow contract lives in markdown specs under `leanflow_specs/workflows/` and `leanflow_specs/workers/`.
 
 Skills route the agent to the right workflow behavior; specs define the native tool order, verification
