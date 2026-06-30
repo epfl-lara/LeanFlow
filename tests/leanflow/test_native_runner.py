@@ -1984,6 +1984,47 @@ def test_review_agent_final_report_accepts_claim_only_after_manager_check(
     assert events
 
 
+def test_review_agent_final_report_rejects_disallowed_axiom_dependency(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : False := by\n  exact bad\n", encoding="utf-8")
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {
+            "ok": True,
+            "command": "lake env lean Main.lean",
+            "output": "succeeded",
+        },
+    )
+    monkeypatch.setattr(
+        runner, "_query_live_diagnostics", lambda active_file, target_symbol="": "no errors found"
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: None)
+    # Axiom profile enabled; the (Lean-clean) proof depends on a disallowed axiom.
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.delenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", raising=False)
+    monkeypatch.setattr(
+        runner, "lean_axioms", lambda target, **kw: _fake_axiom_report(["propext", "sorryAx"])
+    )
+
+    result = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "`demo` solved.",
+            "messages": [{"role": "assistant", "content": "done"}],
+        },
+        {"current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}},
+    )
+
+    review = result["manager_final_report_review"]
+    assert review["ok"] is False
+    assert review.get("axiom_violation") == ["sorryAx"]
+
+
 def test_review_agent_final_report_accepts_incremental_queue_success_with_future_file_errors(
     monkeypatch, tmp_path
 ):
@@ -2669,6 +2710,59 @@ def test_axiom_guard_allows_explicitly_allowlisted_axiom(monkeypatch, tmp_path):
     # Allow-listed axiom is not treated as a forbidden introduction; the axiom guard stays silent.
     assert "AXIOM GUARD" not in feedback
     assert active.read_text(encoding="utf-8") == edited
+
+
+def test_axiom_profile_check_flag(monkeypatch):
+    monkeypatch.delenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", raising=False)
+    assert runner._axiom_profile_check_enabled() is False
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    assert runner._axiom_profile_check_enabled() is True
+
+
+def _fake_axiom_report(axioms):
+    from leanflow_cli.lean.lean_models import LeanAxiomReport
+
+    custom = [a for a in axioms if a not in ("propext", "Classical.choice", "Quot.sound")]
+    return LeanAxiomReport(
+        target="demo",
+        file_path="M.lean",
+        ok=not custom,
+        axioms=list(axioms),
+        custom_axioms=custom,
+        classical=any("Classical" in a for a in axioms),
+        choice="Classical.choice" in axioms,
+        note="",
+    )
+
+
+def test_manager_axiom_profile_blocker_flags_disallowed(monkeypatch, tmp_path):
+    monkeypatch.delenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", raising=False)
+    monkeypatch.setattr(
+        runner,
+        "lean_axioms",
+        lambda target, **kw: _fake_axiom_report(["propext", "sorryAx", "Lean.ofReduceBool"]),
+    )
+    disallowed, message = runner._manager_axiom_profile_blocker(str(tmp_path / "M.lean"), "demo")
+    assert disallowed == ["Lean.ofReduceBool", "sorryAx"]
+    assert "sorryAx" in message
+
+
+def test_manager_axiom_profile_blocker_clean_and_allowlisted(monkeypatch, tmp_path):
+    # Standard axioms are clean...
+    monkeypatch.delenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", raising=False)
+    monkeypatch.setattr(
+        runner,
+        "lean_axioms",
+        lambda target, **kw: _fake_axiom_report(["propext", "Classical.choice"]),
+    )
+    assert runner._manager_axiom_profile_blocker(str(tmp_path / "M.lean"), "demo") == ([], "")
+
+    # ...and an explicitly allow-listed axiom is permitted.
+    monkeypatch.setenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", "myAx")
+    monkeypatch.setattr(
+        runner, "lean_axioms", lambda target, **kw: _fake_axiom_report(["propext", "myAx"])
+    )
+    assert runner._manager_axiom_profile_blocker(str(tmp_path / "M.lean"), "demo") == ([], "")
 
 
 def test_out_of_scope_queue_edit_guard_allows_new_helper_declarations(monkeypatch, tmp_path):
