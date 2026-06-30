@@ -5,7 +5,7 @@ title: Prove
 summary: Queue-driven autonomous theorem proving with LSP-first inspection, native search fallbacks, helper decomposition, and strict verification gates.
 aliases: [autoprove]
 skills: [lean-proof-loop, lean-theorem-queue-worker]
-tools: [lean_capabilities, lean_inspect, lean_search, lean_proof_context, lean_auto_search, lean_multi_attempt, lean_decompose_helpers, lean_reasoning_help, lean_verify, lean_sorries, lean_axioms]
+tools: [lean_capabilities, lean_inspect, lean_search, lean_proof_context, lean_auto_search, lean_multi_attempt, lean_decompose_helpers, lean_reasoning_help, lean_verify, lean_sorries, lean_axioms, web_search, web_fetch, web_download]
 workers: []
 review_actions: [continue, replan, redraft, falsify, stop]
 stop_conditions: [verified, blocked, interrupted, stalled]
@@ -82,6 +82,10 @@ Use `review`, `checkpoint`, `draft`, `refactor`, or `golf` for those cases.
    - do not treat `grep`, truncated logs, or disappearing `sorry` text as verification
 11. `lean_sorries` or `lean_axioms`
    - use when the blocker is global `sorry` inventory or axiom risk rather than local proof construction
+12. `web_search` / `web_fetch` / `web_download` (external research — for HARD or unfamiliar problems)
+   - after local `lean_search` is exhausted and the obstacle is conceptual or needs outside knowledge, use `web_search` for the open web, code (Sourcegraph/GitHub), and papers (arXiv/Semantic Scholar): find a known proof, a prior formalization, a similar result, or the right lemma/technique
+   - use `web_fetch <url>` to actually READ a promising page or PDF, and `web_download <url>` to save a paper/artifact (then `read_pdf` it)
+   - this is research to inform the Lean proof, never a substitute for verification — the theorem is only solved when the verification gate passes
 
 ## Queue Contract
 
