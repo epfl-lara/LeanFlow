@@ -79,7 +79,10 @@ class TestLegacyToolsetMap:
                 assert isinstance(tool, str), f"{name} contains non-string: {tool}"
 
     def test_web_tools_legacy_alias_excludes_web_extract(self):
-        assert _LEGACY_TOOLSET_MAP["web_tools"] == ["web_search"]
+        # The legacy alias exposes the key-free web tools (web_search + web_fetch) but never
+        # the Firecrawl-gated web_extract, which is unavailable without an API key.
+        assert _LEGACY_TOOLSET_MAP["web_tools"] == ["web_search", "web_fetch"]
+        assert "web_extract" not in _LEGACY_TOOLSET_MAP["web_tools"]
 
 
 # =========================================================================

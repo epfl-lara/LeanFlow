@@ -574,6 +574,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             "degraded_reasons": degraded_reasons,
         }
 
+        # Surface degraded backends to the model: results may be incomplete, and
+        # web_fetch on a known URL is the reliable fallback for a thin result set.
+        if degraded_reasons:
+            response_data["degraded"] = (
+                "Some search backends were degraded ("
+                + "; ".join(degraded_reasons)
+                + "); results may be incomplete. Try rephrasing, or use web_fetch on a known URL."
+            )
+
         # Capture debug information
         debug_call_data["results_count"] = results_count
 
