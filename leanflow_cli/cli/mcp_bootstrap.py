@@ -546,6 +546,167 @@ def managed_mcp_server_status(
     return status
 
 
+_LOOGLE_REPO_URL = "https://github.com/nomeata/loogle.git"
+
+
+def _lean_lsp_env_from_home(home_path: Path) -> dict[str, Any]:
+    """Read the persisted lean-lsp server env block from the LeanFlow config."""
+    config_path = home_path / get_config_path().name
+    _yaml, doc = _load_bootstrap_document(config_path)
+    configured = doc.get("mcp_servers")
+    configured = dict(configured) if isinstance(configured, Mapping) else {}
+    return _server_env_from_config(configured, "lean-lsp")
+
+
+def _active_loogle_cache_dir(home_path: Path) -> Path:
+    """Resolve the Loogle cache dir the runtime actually uses (config value, else default)."""
+    raw = str(_lean_lsp_env_from_home(home_path).get("LEAN_LOOGLE_CACHE_DIR", "") or "").strip()
+    return Path(raw).expanduser() if raw else managed_loogle_cache_dir(home_path)
+
+
+def _loogle_binary_path(repo_dir: Path) -> Path:
+    return repo_dir / ".lake" / "build" / "bin" / ("loogle.exe" if os.name == "nt" else "loogle")
+
+
+def local_loogle_needs_build(
+    project_root: str | os.PathLike[str] | None, home: str | os.PathLike[str] | None = None
+) -> bool:
+    """Fast check (no build): does local Loogle need a (re)build for this project's toolchain?
+
+    True only when local Loogle is supported, enabled in config, a project toolchain is
+    known, git+lake are present, and the cached Loogle is either missing or was built for
+    a *different* toolchain. False otherwise (including when a build couldn't succeed), so
+    callers can gate work without ever shelling out.
+    """
+    if not local_loogle_supported():
+        return False
+    project_tc = _read_lean_toolchain(project_root)
+    if not project_tc:
+        return False
+    if not (shutil.which("git") and shutil.which("lake")):
+        return False
+    home_path = Path(home).expanduser().resolve() if home else get_leanflow_home()
+    if not _truthy(_lean_lsp_env_from_home(home_path).get("LEAN_LOOGLE_LOCAL")):
+        return False
+    repo_dir = _active_loogle_cache_dir(home_path) / "repo"
+    if not _loogle_binary_path(repo_dir).is_file():
+        return True
+    return _read_lean_toolchain(repo_dir) != project_tc
+
+
+def ensure_local_loogle_for_project(
+    project_root: str | os.PathLike[str] | None,
+    home: str | os.PathLike[str] | None = None,
+    *,
+    timeout: int = 1200,
+) -> dict[str, Any]:
+    """Build managed local Loogle against the PROJECT's Lean toolchain (idempotent).
+
+    lean-lsp-mcp clones Loogle and builds it with Loogle's OWN pinned toolchain, but
+    LeanFlow only enables local Loogle when that toolchain equals the project's — which it
+    almost never does, so local Loogle stays ``incompatible`` and search silently falls back
+    to remote. This repins Loogle's ``lean-toolchain`` to the project's and rebuilds the
+    binary so the two match and local Loogle actually activates. Loogle has no Mathlib
+    dependency, so the build is light (~1-2 min) and cached until the project toolchain
+    changes.
+
+    Best-effort: returns a status dict and never raises. A no-op (``action="already-built"``)
+    when the binary already exists and was built for the project's toolchain.
+    """
+    result: dict[str, Any] = {"ok": False, "action": "skipped", "reason": "", "toolchain": ""}
+    try:
+        if not local_loogle_supported():
+            result["reason"] = "unsupported-platform"
+            return result
+        project_tc = _read_lean_toolchain(project_root)
+        if not project_tc:
+            result["reason"] = "no-project-toolchain"
+            return result
+        if not (shutil.which("git") and shutil.which("lake")):
+            result["reason"] = "missing-git-or-lake"
+            return result
+        home_path = Path(home).expanduser().resolve() if home else get_leanflow_home()
+        cache_dir = _active_loogle_cache_dir(home_path)
+        repo_dir = cache_dir / "repo"
+        binary = _loogle_binary_path(repo_dir)
+        result.update(toolchain=project_tc, cache_dir=str(cache_dir))
+
+        if binary.is_file() and _read_lean_toolchain(repo_dir) == project_tc:
+            result.update(ok=True, action="already-built")
+            return result
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        has_lakefile = (repo_dir / "lakefile.lean").exists() or (repo_dir / "lakefile.toml").exists()
+        if not has_lakefile:
+            clone = subprocess.run(
+                ["git", "clone", "--depth", "1", _LOOGLE_REPO_URL, str(repo_dir)],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if clone.returncode != 0:
+                result.update(reason="clone-failed", detail=((clone.stderr or clone.stdout) or "")[:400])
+                return result
+
+        # Pin Loogle to the project's toolchain, then force a rebuild of the binary so it
+        # is compiled with that exact toolchain (and can therefore read the project oleans).
+        (repo_dir / "lean-toolchain").write_text(project_tc + "\n", encoding="utf-8")
+        with contextlib.suppress(OSError):
+            binary.unlink()
+        build = subprocess.run(
+            ["lake", "build"],
+            cwd=str(repo_dir),
+            env={**os.environ, "LAKE_ARTIFACT_CACHE": "false"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if build.returncode != 0 or not binary.is_file():
+            result.update(reason="build-failed", detail=((build.stderr or build.stdout) or "")[-400:])
+            return result
+        result.update(ok=True, action="built")
+        return result
+    except Exception as exc:  # never break callers; remote Loogle remains the fallback
+        result["reason"] = f"error: {exc}"
+        return result
+
+
+def ensure_local_loogle_for_project_async(
+    project_root: str | os.PathLike[str] | None, home: str | os.PathLike[str] | None = None
+) -> bool:
+    """Kick off :func:`ensure_local_loogle_for_project` in a detached background process.
+
+    Returns True if a build was launched, False when no build was needed (the common
+    steady state) or one could not be started. Non-blocking: the current run proceeds and
+    uses remote Loogle while the build is in flight; the next run picks up local Loogle.
+    """
+    try:
+        if not local_loogle_needs_build(project_root, home):
+            return False
+        home_path = Path(home).expanduser().resolve() if home else get_leanflow_home()
+        log_dir = _active_loogle_cache_dir(home_path)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_handle = open(log_dir / "loogle-build.log", "a", encoding="utf-8")
+        try:
+            code = (
+                "import sys;"
+                "from leanflow_cli.cli.mcp_bootstrap import ensure_local_loogle_for_project as e;"
+                "print(e(sys.argv[1] or None, sys.argv[2] or None))"
+            )
+            subprocess.Popen(  # noqa: S603 - fixed argv, detached best-effort build
+                [sys.executable, "-c", code, str(project_root or ""), str(home or "")],
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        finally:
+            log_handle.close()
+        return True
+    except Exception:
+        return False
+
+
 def bootstrap_lean_mcp(
     *, home: str | os.PathLike[str] | None = None, python_bin: str | None = None
 ) -> dict[str, Any]:

@@ -218,3 +218,86 @@ def test_bootstrap_lean_mcp_repairs_missing_managed_command(monkeypatch, tmp_pat
     assert str(managed_mcp_command_path("lean-lsp", home)) in rendered
     assert str(managed_mcp_command_path("lean-proof-auto", home)) in rendered
     assert str(managed_mcp_command_path("lean-explore", home)) in rendered
+
+
+def _make_loogle_project(tmp_path, toolchain):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "lean-toolchain").write_text(toolchain + "\n", encoding="utf-8")
+    return proj
+
+
+def test_ensure_local_loogle_builds_against_project_toolchain(tmp_path, monkeypatch):
+    # The decisive behavior: Loogle must be (re)pinned to the PROJECT toolchain and built,
+    # so its toolchain matches the project and local Loogle stops being "incompatible".
+    proj = _make_loogle_project(tmp_path, "leanprover/lean4:v9.9-rc7")
+    cache = tmp_path / "cache" / "loogle"
+    monkeypatch.setattr(mcp_bootstrap, "local_loogle_supported", lambda: True)
+    monkeypatch.setattr(mcp_bootstrap.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(mcp_bootstrap, "_active_loogle_cache_dir", lambda home: cache)
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        repo = cache / "repo"
+        if cmd[:2] == ["git", "clone"]:
+            repo.mkdir(parents=True, exist_ok=True)
+            (repo / "lakefile.toml").write_text("", encoding="utf-8")
+        elif cmd[:2] == ["lake", "build"]:
+            binp = repo / ".lake" / "build" / "bin"
+            binp.mkdir(parents=True, exist_ok=True)
+            (binp / "loogle").write_text("#!/bin/sh\n", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(mcp_bootstrap.subprocess, "run", fake_run)
+
+    res = mcp_bootstrap.ensure_local_loogle_for_project(proj, home=tmp_path)
+    assert res["ok"] is True
+    assert res["action"] == "built"
+    assert (cache / "repo" / "lean-toolchain").read_text().strip() == "leanprover/lean4:v9.9-rc7"
+    assert any(c[:2] == ["git", "clone"] for c in calls)
+    assert any(c[:2] == ["lake", "build"] for c in calls)
+
+
+def test_ensure_local_loogle_noop_when_already_matching(tmp_path, monkeypatch):
+    proj = _make_loogle_project(tmp_path, "tc:v1")
+    cache = tmp_path / "cache" / "loogle"
+    binp = cache / "repo" / ".lake" / "build" / "bin"
+    binp.mkdir(parents=True)
+    (binp / "loogle").write_text("x", encoding="utf-8")
+    (cache / "repo" / "lean-toolchain").write_text("tc:v1\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_bootstrap, "local_loogle_supported", lambda: True)
+    monkeypatch.setattr(mcp_bootstrap.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(mcp_bootstrap, "_active_loogle_cache_dir", lambda home: cache)
+
+    def boom(*a, **k):
+        raise AssertionError("must not rebuild when Loogle already matches the project")
+
+    monkeypatch.setattr(mcp_bootstrap.subprocess, "run", boom)
+    res = mcp_bootstrap.ensure_local_loogle_for_project(proj, home=tmp_path)
+    assert res["ok"] is True
+    assert res["action"] == "already-built"
+
+
+def test_local_loogle_needs_build_and_async_gate(tmp_path, monkeypatch):
+    proj = _make_loogle_project(tmp_path, "tc:v2")
+    cache = tmp_path / "cache" / "loogle"
+    monkeypatch.setattr(mcp_bootstrap, "local_loogle_supported", lambda: True)
+    monkeypatch.setattr(mcp_bootstrap.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        mcp_bootstrap,
+        "_lean_lsp_env_from_home",
+        lambda home: {"LEAN_LOOGLE_LOCAL": "true", "LEAN_LOOGLE_CACHE_DIR": str(cache)},
+    )
+    # Binary missing -> a build is needed.
+    assert mcp_bootstrap.local_loogle_needs_build(proj, home=tmp_path) is True
+
+    # The async launcher must NOT spawn a process when no build is needed.
+    monkeypatch.setattr(mcp_bootstrap, "local_loogle_needs_build", lambda *a, **k: False)
+
+    def no_popen(*a, **k):
+        raise AssertionError("Popen must not be called when no build is needed")
+
+    monkeypatch.setattr(mcp_bootstrap.subprocess, "Popen", no_popen)
+    assert mcp_bootstrap.ensure_local_loogle_for_project_async(proj, home=tmp_path) is False

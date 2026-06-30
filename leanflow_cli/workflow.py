@@ -393,6 +393,16 @@ def resolve_workflow_request(
     workflow = parse_workflow_command(command)
     cwd = Path(active_cwd or os.getcwd()).expanduser().resolve()
     project = discover_leanflow_project(cwd)
+    # Make local Loogle work by default: lean-lsp-mcp builds Loogle with Loogle's own
+    # pinned toolchain, which rarely matches the project's, so local Loogle would stay
+    # "incompatible" and silently fall back to remote. Trigger a detached rebuild against
+    # the project's toolchain when needed (no-op once built; never blocks the launch).
+    try:
+        from leanflow_cli.cli.mcp_bootstrap import ensure_local_loogle_for_project_async
+
+        ensure_local_loogle_for_project_async(project.root)
+    except Exception:
+        pass
     runtime = resolve_runtime_provider(
         requested=requested_provider or workflow.provider_override or None
     )
