@@ -204,6 +204,53 @@ def test_leanexplore_local_search_retries_without_reranker_on_meta_tensor(monkey
     ]
 
 
+def test_leanexplore_local_search_quarantines_corrupt_db(monkeypatch):
+    # A corrupt SQLite index must yield a concise message + quarantine, NOT a raw
+    # SQLAlchemy dump (the 450-parameter statement that polluted the run log).
+    monkeypatch.setattr(
+        lean_services,
+        "_leanexplore_local_status",
+        lambda: {
+            "package_available": True,
+            "data_ready": True,
+            "cache_path": "/tmp/cache",
+            "available": True,
+        },
+    )
+    monkeypatch.setattr(lean_services, "_LEANEXPLORE_LOCAL_SERVICE", None)
+    monkeypatch.setattr(lean_services, "_LEANEXPLORE_LOCAL_RERANK_DISABLED", False)
+
+    class FakeService:
+        async def search(self, *, query, limit, rerank_top):
+            raise RuntimeError(
+                "(sqlite3.DatabaseError) database disk image is malformed "
+                "[SQL: SELECT declarations.id ...] [parameters: (1, 2, 3, ...)]"
+            )
+
+    fake_package = types.ModuleType("lean_explore")
+    fake_search = types.ModuleType("lean_explore.search")
+    fake_search.Service = FakeService
+    monkeypatch.setitem(sys.modules, "lean_explore", fake_package)
+    monkeypatch.setitem(sys.modules, "lean_explore.search", fake_search)
+
+    quarantined: list[bool] = []
+    monkeypatch.setattr(
+        lean_services,
+        "_quarantine_corrupt_leanexplore_db",
+        lambda: quarantined.append(True) or "/tmp/cache/lean_explore.db.corrupt",
+    )
+
+    results, error = lean_services._leanexplore_local_search("IsRelPrime 2 (2 ^ k)", limit=10)
+
+    assert results == []
+    assert quarantined == [True]
+    assert "quarantined" in error
+    assert "lean-explore data fetch" in error
+    # The raw SQL / bound parameters must NOT leak into the surfaced message.
+    assert "SELECT" not in error
+    assert "parameters" not in error
+
+
 def test_leanexplore_local_search_reuses_service_and_suppresses_noise(monkeypatch, capsys):
     monkeypatch.setattr(
         lean_services,
