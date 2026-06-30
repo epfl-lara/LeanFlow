@@ -266,6 +266,22 @@ def _augment_lean_stdio_env(server_name: str, env: dict, cwd: str | None) -> dic
 
     updated.setdefault("LEAN_PROJECT_PATH", cwd)
     updated.setdefault("LEANFLOW_PROJECT_ROOT", cwd)
+
+    # Point the lean-lsp server's local Loogle at a per-toolchain cache dir keyed on the
+    # project's Lean toolchain, so switching projects on different toolchains does not thrash
+    # a single shared Loogle build. The builder + status resolve the SAME dir via
+    # mcp_bootstrap.managed_loogle_cache_dir(toolchain=...); the slug convention here MUST
+    # match mcp_bootstrap.loogle_toolchain_slug. Only rewrites the generic ``loogle`` base —
+    # an already per-toolchain or custom path is left untouched.
+    if str(server_name or "") == "lean-lsp":
+        toolchain = _read_lean_toolchain_from_root(cwd)
+        base = str(updated.get("LEAN_LOOGLE_CACHE_DIR", "") or "").strip()
+        if toolchain and base:
+            base_path = Path(base).expanduser()
+            if base_path.name == "loogle":
+                slug = re.sub(r"[^A-Za-z0-9._-]+", "-", toolchain.strip()).strip("-")
+                if slug:
+                    updated["LEAN_LOOGLE_CACHE_DIR"] = str(base_path.parent / f"loogle-{slug}")
     return updated
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -86,8 +87,23 @@ def managed_mcp_root(home: str | os.PathLike[str] | None = None) -> Path:
     return base / "mcp"
 
 
-def managed_loogle_cache_dir(home: str | os.PathLike[str] | None = None) -> Path:
-    return managed_mcp_root(home) / "cache" / "loogle"
+def loogle_toolchain_slug(toolchain: str | None) -> str:
+    """Filesystem-safe slug for a Lean toolchain (e.g. ``leanprover/lean4:v4.30.0-rc2`` ->
+    ``leanprover-lean4-v4.30.0-rc2``). MUST match the convention in
+    ``tools/mcp/mcp_transport._augment_lean_stdio_env`` so the server, the builder, and the
+    status check all resolve the SAME per-toolchain cache dir."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", str(toolchain or "").strip()).strip("-")
+
+
+def managed_loogle_cache_dir(
+    home: str | os.PathLike[str] | None = None, toolchain: str | None = None
+) -> Path:
+    """Loogle cache dir. With a toolchain, returns a per-toolchain dir (``loogle-<slug>``) so
+    projects on different toolchains don't thrash a single shared Loogle build; without one,
+    the generic ``loogle`` dir (the base/fallback)."""
+    base = managed_mcp_root(home) / "cache"
+    slug = loogle_toolchain_slug(toolchain)
+    return base / (f"loogle-{slug}" if slug else "loogle")
 
 
 def local_loogle_supported() -> bool:
@@ -231,6 +247,16 @@ def _ensure_managed_server_entry(
         for key, value in env_defaults.items():
             if key not in env:
                 env[key] = value
+        if spec.name == "lean-lsp":
+            # Migration: heal a stale MANAGED LEAN_LOOGLE_CACHE_DIR (e.g. an older per-toolchain
+            # value ".../cache/loogle-v4.30.0-rc2") back to the generic base, so the runtime's
+            # per-toolchain re-suffixing applies consistently. Only paths under the managed
+            # cache root are touched; user-custom cache dirs are left untouched.
+            current = str(env.get("LEAN_LOOGLE_CACHE_DIR", "") or "").strip()
+            generic = str(managed_loogle_cache_dir(home))
+            cache_root = str(managed_mcp_root(home) / "cache") + os.sep
+            if current and current != generic and current.startswith(cache_root):
+                env["LEAN_LOOGLE_CACHE_DIR"] = generic
     entry["role"] = spec.role
     entry["managed"] = True
     if "enabled" not in entry or (
@@ -458,9 +484,18 @@ def managed_mcp_power_status(
     )
     repl_configured = _truthy(lean_lsp_env.get("LEAN_REPL"))
     repl_available = bool(repl_path and Path(repl_path).is_file())
-    loogle_cache_dir = Path(
-        str(lean_lsp_env.get("LEAN_LOOGLE_CACHE_DIR", "") or managed_loogle_cache_dir(home_path))
-    ).expanduser()
+    # Resolve the per-toolchain cache dir for the project (matching the build + the server
+    # launch). Without a project, fall back to the config value or the generic dir.
+    if _read_lean_toolchain(project_root):
+        from leanflow_cli.cli.loogle_local import loogle_cache_dir_for_project
+
+        loogle_cache_dir = loogle_cache_dir_for_project(home_path, project_root)
+    else:
+        loogle_cache_dir = Path(
+            str(
+                lean_lsp_env.get("LEAN_LOOGLE_CACHE_DIR", "") or managed_loogle_cache_dir(home_path)
+            )
+        ).expanduser()
     loogle_supported = local_loogle_supported()
     loogle_configured = _truthy(lean_lsp_env.get("LEAN_LOOGLE_LOCAL"))
     loogle_toolchain = _read_lean_toolchain(loogle_cache_dir / "repo")
@@ -546,6 +581,15 @@ def managed_mcp_server_status(
     return status
 
 
+def _lean_lsp_env_from_home(home_path: Path) -> dict[str, Any]:
+    """Read the persisted lean-lsp server env block from the LeanFlow config."""
+    config_path = home_path / get_config_path().name
+    _yaml, doc = _load_bootstrap_document(config_path)
+    configured = doc.get("mcp_servers")
+    configured = dict(configured) if isinstance(configured, Mapping) else {}
+    return _server_env_from_config(configured, "lean-lsp")
+
+
 def bootstrap_lean_mcp(
     *, home: str | os.PathLike[str] | None = None, python_bin: str | None = None
 ) -> dict[str, Any]:
@@ -570,7 +614,10 @@ def bootstrap_lean_mcp(
             extra_install_specs=spec.extra_install_specs,
         )
         if spec.name == "lean-lsp":
+            from leanflow_cli.cli.loogle_local import patch_lean_lsp_loogle_build_lock
+
             _patch_lean_lsp_loogle_project_paths(venv_dir)
+            patch_lean_lsp_loogle_build_lock(venv_dir)
         installed_servers.append(
             {
                 "name": spec.name,
