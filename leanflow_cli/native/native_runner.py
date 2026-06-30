@@ -2330,6 +2330,51 @@ def _note_non_search_tool_progress(agent: Any, function_name: str) -> None:
     autonomy_state["search_progress"] = tracker
 
 
+def _record_turn_prompt_fingerprint(
+    autonomy_state: Mapping[str, Any] | None,
+    user_message: str,
+    *,
+    phase: str,
+    cycle: int,
+) -> None:
+    """Record a fingerprint of the ACTUAL per-turn user message sent to the model.
+
+    The activity log's ``effective_prompt`` is the original CLI goal (empty for a bare
+    ``/prove <file>``), so it cannot reconstruct what the model was told each cycle. This emits a
+    ``turn-prompt`` event with a hash, size, preview, and a changed/unchanged + delta vs the
+    previous turn, making the loop auditable and prompt-size optimizations measurable.
+    """
+    text = str(user_message or "")
+    fingerprint = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+    char_count = len(text)
+    approx_tokens = char_count // 4
+    previous = {}
+    if isinstance(autonomy_state, dict):
+        previous = dict(autonomy_state.get("last_turn_prompt_fingerprint") or {})
+    prev_fingerprint = str(previous.get("fingerprint", "") or "")
+    changed = bool(prev_fingerprint) and prev_fingerprint != fingerprint or not prev_fingerprint
+    delta_chars = char_count - int(previous.get("char_count", 0) or 0)
+    preview = " ".join(text.split())[:200]
+    if isinstance(autonomy_state, dict):
+        autonomy_state["last_turn_prompt_fingerprint"] = {
+            "fingerprint": fingerprint,
+            "char_count": char_count,
+        }
+    _record_activity(
+        "turn-prompt",
+        f"{phase} turn prompt: {char_count} chars (~{approx_tokens} tok), "
+        f"{'changed' if changed else 'unchanged'} vs previous",
+        phase=phase,
+        cycle=cycle,
+        prompt_fingerprint=fingerprint,
+        prompt_char_count=char_count,
+        prompt_approx_tokens=approx_tokens,
+        prompt_changed=changed,
+        prompt_delta_chars=delta_chars,
+        prompt_preview=preview,
+    )
+
+
 def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: str) -> None:
     """Monitor lean_search tool usage per theorem and emit nudge if repetition or call-count thresholds hit. Updates autonomy state tracker with query, result count, and streak metrics; appends progress nudge to agent feedback if search-only stalling is detected."""
     autonomy_state = getattr(agent, "_managed_autonomy_state", None)
@@ -9013,6 +9058,9 @@ def _drive_autonomous_followups(
             _autonomous_continuation_prompt(live_state, cycle, autonomy_state),
             live_state,
         )
+        _record_turn_prompt_fingerprint(
+            autonomy_state, augmented_text, phase="autonomous", cycle=cycle
+        )
         _set_runtime_active_skill(_effective_skill_name(live_state))
         effective_reasoning = _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
         _record_managed_reasoning_policy(
@@ -9159,6 +9207,9 @@ def main() -> int:
                 autonomy_state=autonomy_state,
             ),
             live_state,
+        )
+        _record_turn_prompt_fingerprint(
+            autonomy_state, initial_message, phase="startup", cycle=0
         )
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
         _record_queue_assignment(live_state, phase="startup")

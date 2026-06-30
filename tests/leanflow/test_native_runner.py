@@ -671,6 +671,31 @@ def test_search_progress_nudge_is_honest_about_degraded_providers(monkeypatch, t
     assert "malformed" in appendix
 
 
+def test_record_turn_prompt_fingerprint_tracks_change_and_size(monkeypatch):
+    events = []
+    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: events.append((a, k)))
+    state: dict = {}
+
+    runner._record_turn_prompt_fingerprint(state, "hello world prompt", phase="startup", cycle=0)
+    runner._record_turn_prompt_fingerprint(state, "hello world prompt", phase="autonomous", cycle=1)
+    runner._record_turn_prompt_fingerprint(
+        state, "a different, longer prompt body here", phase="autonomous", cycle=2
+    )
+
+    assert [a[0] for a, _ in events] == ["turn-prompt", "turn-prompt", "turn-prompt"]
+    k0, k1, k2 = (events[0][1], events[1][1], events[2][1])
+    # First turn has no previous -> treated as changed; size is recorded.
+    assert k0["prompt_changed"] is True
+    assert k0["prompt_char_count"] == len("hello world prompt")
+    # Identical re-send is flagged unchanged with zero delta (the optimization target).
+    assert k1["prompt_changed"] is False
+    assert k1["prompt_delta_chars"] == 0
+    # A genuinely different prompt is flagged changed with a distinct fingerprint.
+    assert k2["prompt_changed"] is True
+    assert k2["prompt_fingerprint"] != k1["prompt_fingerprint"]
+    assert "prompt_preview" in k2
+
+
 def test_search_progress_nudge_ignores_non_search_capability_degradation(monkeypatch, tmp_path):
     """Capability degradation unrelated to search (e.g. proof-context MCP) must NOT flip the nudge
     to 'search is DEGRADED' — lean_search seeds degraded_reasons from the full capability report."""
