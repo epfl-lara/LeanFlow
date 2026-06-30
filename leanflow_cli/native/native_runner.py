@@ -525,6 +525,18 @@ def _runner_lean_prompt_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _rcp_prefix_cache_enabled() -> bool:
+    """Whether to optimize the per-cycle prompt for server-side prefix caching (default off).
+
+    On the self-hosted vLLM/RCP route there is no client cache_control knob; the only lever is to
+    keep the byte prefix stable and stop re-sending static content inside the volatile per-cycle
+    user message. When enabled, continuation cycles stop re-appending the (static) supplemental
+    skill contract — it stays available via the system-prompt skills catalog and `skill_view`.
+    """
+    raw = _read_text_env("LEANFLOW_RCP_PREFIX_CACHE", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _runner_owner_id() -> str:
     return _read_native_env("RUNNER_OWNER", "")
 
@@ -6476,14 +6488,26 @@ def _build_live_proof_state_compat(
         return _build_live_proof_state(history, checkpoint_state)
 
 
-def _attach_live_proof_state(user_message: str, live_state: Mapping[str, Any]) -> str:
+def _attach_live_proof_state(
+    user_message: str,
+    live_state: Mapping[str, Any],
+    *,
+    include_skill_contracts: bool = True,
+) -> str:
+    """Append the live-proof-state block (and, optionally, supplemental skill contracts) to a turn.
+
+    ``include_skill_contracts=False`` is used by continuation cycles under the RCP prefix-cache
+    optimization to stop re-sending the static skill contract every turn (it remains available via
+    the system-prompt skills catalog and ``skill_view``).
+    """
     block = str(live_state.get("message", "") or "").strip()
-    supplemental = _startup_additional_skill_contracts(_effective_skill_name(live_state))
     parts = [str(user_message or "").strip()]
     if block:
         parts.append(block)
-    if supplemental:
-        parts.append(supplemental)
+    if include_skill_contracts:
+        supplemental = _startup_additional_skill_contracts(_effective_skill_name(live_state))
+        if supplemental:
+            parts.append(supplemental)
     return "\n\n".join(part for part in parts if part).strip()
 
 
@@ -9104,6 +9128,9 @@ def _drive_autonomous_followups(
         augmented_text = _attach_live_proof_state(
             _autonomous_continuation_prompt(live_state, cycle, autonomy_state),
             live_state,
+            # Under the RCP prefix-cache optimization, stop re-sending the static skill contract on
+            # every continuation cycle (the startup turn already established it; skill_view re-pulls).
+            include_skill_contracts=not _rcp_prefix_cache_enabled(),
         )
         _record_turn_prompt_fingerprint(
             autonomy_state, augmented_text, phase="autonomous", cycle=cycle

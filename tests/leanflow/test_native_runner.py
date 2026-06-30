@@ -698,6 +698,34 @@ def test_record_turn_prompt_fingerprint_tracks_change_and_size(monkeypatch):
     assert "prompt_preview" in k2
 
 
+def test_rcp_prefix_cache_flag_reads_env(monkeypatch):
+    monkeypatch.delenv("LEANFLOW_RCP_PREFIX_CACHE", raising=False)
+    assert runner._rcp_prefix_cache_enabled() is False
+    monkeypatch.setenv("LEANFLOW_RCP_PREFIX_CACHE", "1")
+    assert runner._rcp_prefix_cache_enabled() is True
+
+
+def test_attach_live_proof_state_can_drop_skill_contracts(monkeypatch):
+    monkeypatch.setattr(
+        runner, "_startup_additional_skill_contracts", lambda *a, **k: "[SKILL CONTRACT BODY]"
+    )
+    monkeypatch.setattr(
+        runner, "_effective_skill_name", lambda live_state: "lean-theorem-queue-worker"
+    )
+    live_state = {"message": "[LIVE STATE]"}
+
+    # Default keeps the contract (current behavior, prefix-cache off).
+    with_contracts = runner._attach_live_proof_state("USER MSG", live_state)
+    assert "[SKILL CONTRACT BODY]" in with_contracts
+    assert "[LIVE STATE]" in with_contracts
+
+    # Continuation under prefix-cache drops the static contract but keeps the volatile state.
+    without = runner._attach_live_proof_state("USER MSG", live_state, include_skill_contracts=False)
+    assert "[SKILL CONTRACT BODY]" not in without
+    assert "[LIVE STATE]" in without
+    assert "USER MSG" in without
+
+
 def test_search_progress_nudge_ignores_non_search_capability_degradation(monkeypatch, tmp_path):
     """Capability degradation unrelated to search (e.g. proof-context MCP) must NOT flip the nudge
     to 'search is DEGRADED' — lean_search seeds degraded_reasons from the full capability report."""
