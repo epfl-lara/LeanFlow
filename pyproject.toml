@@ -164,6 +164,7 @@ files = [
   "leanflow_cli/workflows/verification_review.py",
   "leanflow_cli/cli/cli_handlers.py",
   "leanflow_cli/cli/shell_ui.py",
+  "leanflow_cli/cli/loogle_local.py",
   "tools/mcp/mcp_transport.py",
   "tools/mcp/mcp_sampling.py",
   "tools/mcp/mcp_config.py",

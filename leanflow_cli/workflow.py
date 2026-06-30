@@ -398,7 +398,7 @@ def resolve_workflow_request(
     # "incompatible" and silently fall back to remote. Trigger a detached rebuild against
     # the project's toolchain when needed (no-op once built; never blocks the launch).
     try:
-        from leanflow_cli.cli.mcp_bootstrap import ensure_local_loogle_for_project_async
+        from leanflow_cli.cli.loogle_local import ensure_local_loogle_for_project_async
 
         ensure_local_loogle_for_project_async(project.root)
     except Exception:

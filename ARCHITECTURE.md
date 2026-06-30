@@ -227,6 +227,19 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 - Shell slash-command routing is now unified in `commands.py` behind a single `COMMAND_REGISTRY`
   (`tuple[WorkflowCommandSpec, …]`), replacing the scattered per-command branches.
 
+### From `mcp_bootstrap.py`
+
+- `loogle_local.py` — project-toolchain-matched local Loogle: per-toolchain cache resolution
+  (`loogle_cache_dir_for_project`), the idempotent build (`ensure_local_loogle_for_project` and its
+  detached `_async` launcher, both under an exclusive `<cache>/.loogle-build.lock`), the fast
+  no-build gate (`local_loogle_needs_build`), and the `patch_lean_lsp_loogle_build_lock` patch that
+  makes lean-lsp-mcp take the same lock. It builds on the low-level primitives kept in
+  `mcp_bootstrap` (`managed_loogle_cache_dir`, `local_loogle_supported`, `_read_lean_toolchain`,
+  `_lean_lsp_env_from_home`); `mcp_bootstrap` reaches back only via lazy imports
+  (`managed_mcp_power_status`, `bootstrap_lean_mcp`) to avoid a cycle. The lean-lsp server is pointed
+  at the same per-toolchain dir by `tools/mcp/mcp_transport._augment_lean_stdio_env` — build, server,
+  and status must agree (a test pins this). mypy-gated.
+
 ### From `formalization_documents.py`
 
 - `document_extraction.py` — the text/LaTeX/PDF extraction layer: turns a resolved source file
