@@ -2406,14 +2406,20 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
     )
     # Be honest about search health: if the providers report degraded state (e.g. local Loogle
     # disabled on a toolchain mismatch, or a malformed LeanExplore DB), telling the model "search
-    # providers are responding" sends it back into a useless lean_search spiral. Detect degradation
-    # from the tool payload and steer the worker off search instead.
-    _DEGRADED_KEYWORDS = ("disabled", "malformed", "unavailable", "corrupt", "failed", "outage", "error")
+    # providers are responding" sends it back into a useless lean_search spiral. Steer the worker
+    # off search instead. NOTE: lean_search seeds degraded_reasons from the FULL capability report
+    # (proof-context MCP, incremental verifier, etc.), so we require BOTH a search-provider term and
+    # a failure term — otherwise an unrelated capability outage would wrongly suppress search.
+    _SEARCH_TERMS = ("loogle", "leanexplore", "lean explore", "search", "semantic provider")
+    _FAILURE_TERMS = ("disabled", "malformed", "unavailable", "corrupt", "failed", "outage", "error")
     degraded_reasons = [
         str(reason) for reason in (payload.get("degraded_reasons") or []) if str(reason).strip()
     ]
     degraded_hits = [
-        reason for reason in degraded_reasons if any(k in reason.lower() for k in _DEGRADED_KEYWORDS)
+        reason
+        for reason in degraded_reasons
+        if any(s in reason.lower() for s in _SEARCH_TERMS)
+        and any(f in reason.lower() for f in _FAILURE_TERMS)
     ]
     if degraded_hits:
         health_line = (

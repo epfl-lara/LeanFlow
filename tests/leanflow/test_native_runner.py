@@ -671,6 +671,50 @@ def test_search_progress_nudge_is_honest_about_degraded_providers(monkeypatch, t
     assert "malformed" in appendix
 
 
+def test_search_progress_nudge_ignores_non_search_capability_degradation(monkeypatch, tmp_path):
+    """Capability degradation unrelated to search (e.g. proof-context MCP) must NOT flip the nudge
+    to 'search is DEGRADED' — lean_search seeds degraded_reasons from the full capability report."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    agent = _Agent()
+    # Non-search degradation + valid search results: must stay "providers are responding".
+    result = json.dumps(
+        {
+            "success": True,
+            "query": "sq_div_le",
+            "results": [{"provider": "mcp-leanexplore", "match": "sq_div_le"}],
+            "degraded_reasons": [
+                "lean proof context MCP unavailable",
+                "LeanInteract incremental verifier unavailable",
+            ],
+        }
+    )
+    for _ in range(runner.SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT):
+        runner._handle_managed_tool_result(agent, "lean_search", {"query": "sq_div_le"}, result)
+
+    appendix = agent._post_tool_result_appendix
+    assert "SEARCH PROGRESS NUDGE" in appendix
+    assert "search is DEGRADED" not in appendix
+    assert "search providers are responding" in appendix
+
+
 def test_generate_checkpoint_summary_falls_back_on_keyboard_interrupt(monkeypatch):
     monkeypatch.setattr(
         runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(KeyboardInterrupt())

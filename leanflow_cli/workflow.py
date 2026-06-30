@@ -455,7 +455,13 @@ def resolve_workflow_request(
         if blueprint_skill is not None:
             additional_skills.append(str(blueprint_skill))
     additional_skills_tuple = _dedupe_skills(additional_skills)
-    toolset_name = "leanflow-native-swarm" if workflow.parallel_agents > 1 else "leanflow-native"
+    if workflow.parallel_agents > 1:
+        toolset_name = "leanflow-native-swarm"
+    elif workflow.workflow_kind in {"prove", "autoprove"}:
+        # The inner single-agent /prove worker uses a focused toolset (no session/document noise).
+        toolset_name = "leanflow-prove-worker"
+    else:
+        toolset_name = "leanflow-native"
     agent_max_turns = load_agent_max_turns()
 
     child_env = dict(os.environ)
