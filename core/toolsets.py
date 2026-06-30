@@ -114,6 +114,16 @@ TOOLSETS: dict[str, dict[str, Any]] = {
         "tools": _LEANFLOW_CORE_TOOLS,
         "includes": [],
     },
+    "leanflow-prove-worker": {
+        # Focused single-declaration proving surface for the inner /prove worker. Drops
+        # session_search (cross-session recall is irrelevant to autonomous theorem repair, and
+        # dropping it also removes its system-prompt guidance) and the document tools
+        # (formalization_document_inspect / read_pdf are formalize-only). Web is kept available
+        # for hard problems. Lean + file + skills + coordination + terminal remain.
+        "description": "Focused single-declaration Lean proving toolset for the /prove worker",
+        "tools": [],
+        "includes": ["file", "web", "terminal", "skills", "coordination", "lean"],
+    },
     "leanflow-native-swarm": {
         "description": "User-approved LeanFlow Lean swarm workflow toolset",
         "tools": [*_LEANFLOW_CORE_TOOLS, *_DELEGATION_TOOLS],

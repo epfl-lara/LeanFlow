@@ -205,6 +205,13 @@ class OutputManager:
                 f"{agent.log_prefix}   💵 Cost estimate: "
                 f"step ${step_cost:.4f} · session ${session_cost:.4f}"
             )
+        elif run_agent.has_listed_pricing(agent.model):
+            # Known self-hosted / unmetered model (e.g. EPFL RCP): no per-token USD cost — token
+            # counts above are the meaningful cost signal. Avoid the misleading "no metadata" line.
+            agent._vprint(
+                f"{agent.log_prefix}   💵 Cost estimate: $0.0000 "
+                f"(self-hosted / unmetered model {agent.model}; track tokens above)"
+            )
         else:
             agent._vprint(
                 f"{agent.log_prefix}   💵 Cost estimate: unavailable "

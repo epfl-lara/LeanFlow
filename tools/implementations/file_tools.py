@@ -172,7 +172,7 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
         file_ops = _get_file_ops(task_id)
@@ -467,8 +467,8 @@ READ_FILE_SCHEMA = {
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum number of lines to read (default: 500, max: 2000)",
-                "default": 500,
+                "description": "Maximum number of lines to read (default: 2000, max: 2000)",
+                "default": 2000,
                 "maximum": 2000,
             },
         },
@@ -494,7 +494,7 @@ WRITE_FILE_SCHEMA = {
 
 PATCH_SCHEMA = {
     "name": "patch",
-    "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nReplace mode (default): find a unique string and replace it.\nPatch mode: apply V4A multi-file patches for bulk changes.",
+    "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (8 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nReplace mode (default): find a unique string and replace it.\nPatch mode: apply V4A multi-file patches for bulk changes.",
     "parameters": {
         "type": "object",
         "properties": {

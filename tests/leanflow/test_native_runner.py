@@ -478,7 +478,9 @@ def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypat
                         "proof_shape": "same rewrite shape",
                         "reason": "type mismatch",
                     }
-                    for i in range(19)
+                    # Seed one below the escalation limit so the next recorded attempt lands
+                    # exactly on the firing boundary, regardless of how the limit is tuned.
+                    for i in range(runner.FAILED_ATTEMPT_ESCALATION_NUDGE_LIMIT - 1)
                 ],
             }
             self._managed_pending_theorem_feedback = None
@@ -520,7 +522,7 @@ def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypat
     runner._handle_managed_tool_result(agent, "patch", {}, "")
 
     attempts = agent._managed_autonomy_state["failed_attempts"]
-    assert attempts[-1]["attempt"] == 20
+    assert attempts[-1]["attempt"] == runner.FAILED_ATTEMPT_ESCALATION_NUDGE_LIMIT
     assert "[LEANFLOW-NATIVE FAILED ATTEMPT NUDGE]" in agent._post_tool_result_appendix
     assert "lean_decompose_helpers" in agent._post_tool_result_appendix
     assert "lean_reasoning_help" in agent._post_tool_result_appendix
@@ -619,10 +621,153 @@ def test_handle_managed_tool_result_nudges_repeated_successful_search(monkeypatc
 
     appendix = agent._post_tool_result_appendix
     assert "SEARCH PROGRESS NUDGE" in appendix
-    assert "same lean_search query repeated 3 times" in appendix
+    assert "same lean_search query repeated" in appendix
     assert "search providers are responding" in appendix
     assert "do not call `lean_search` again" in appendix
     assert "lean_decompose_helpers" in appendix
+
+
+def test_search_progress_nudge_is_honest_about_degraded_providers(monkeypatch, tmp_path):
+    """When the search payload reports degraded providers, the nudge must say so and steer off
+    search — not claim 'search providers are responding'."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    agent = _Agent()
+    degraded_result = json.dumps(
+        {
+            "success": True,
+            "query": "sq_div_le",
+            "results": [],
+            "degraded_reasons": [
+                "LeanExplore local search failed: (sqlite3.DatabaseError) database disk image is malformed",
+                "local Loogle disabled for this project because its managed Lean toolchain differs",
+            ],
+        }
+    )
+    for _ in range(runner.SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT):
+        runner._handle_managed_tool_result(
+            agent, "lean_search", {"query": "sq_div_le"}, degraded_result
+        )
+
+    appendix = agent._post_tool_result_appendix
+    assert "SEARCH PROGRESS NUDGE" in appendix
+    assert "search is DEGRADED" in appendix
+    assert "search providers are responding" not in appendix
+    assert "malformed" in appendix
+
+
+def test_record_turn_prompt_fingerprint_tracks_change_and_size(monkeypatch):
+    events = []
+    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: events.append((a, k)))
+    state: dict = {}
+
+    runner._record_turn_prompt_fingerprint(state, "hello world prompt", phase="startup", cycle=0)
+    runner._record_turn_prompt_fingerprint(state, "hello world prompt", phase="autonomous", cycle=1)
+    runner._record_turn_prompt_fingerprint(
+        state, "a different, longer prompt body here", phase="autonomous", cycle=2
+    )
+
+    assert [a[0] for a, _ in events] == ["turn-prompt", "turn-prompt", "turn-prompt"]
+    k0, k1, k2 = (events[0][1], events[1][1], events[2][1])
+    # First turn has no previous -> treated as changed; size is recorded.
+    assert k0["prompt_changed"] is True
+    assert k0["prompt_char_count"] == len("hello world prompt")
+    # Identical re-send is flagged unchanged with zero delta (the optimization target).
+    assert k1["prompt_changed"] is False
+    assert k1["prompt_delta_chars"] == 0
+    # A genuinely different prompt is flagged changed with a distinct fingerprint.
+    assert k2["prompt_changed"] is True
+    assert k2["prompt_fingerprint"] != k1["prompt_fingerprint"]
+    assert "prompt_preview" in k2
+
+
+def test_rcp_prefix_cache_flag_reads_env(monkeypatch):
+    monkeypatch.delenv("LEANFLOW_RCP_PREFIX_CACHE", raising=False)
+    assert runner._rcp_prefix_cache_enabled() is False
+    monkeypatch.setenv("LEANFLOW_RCP_PREFIX_CACHE", "1")
+    assert runner._rcp_prefix_cache_enabled() is True
+
+
+def test_attach_live_proof_state_can_drop_skill_contracts(monkeypatch):
+    monkeypatch.setattr(
+        runner, "_startup_additional_skill_contracts", lambda *a, **k: "[SKILL CONTRACT BODY]"
+    )
+    monkeypatch.setattr(
+        runner, "_effective_skill_name", lambda live_state: "lean-theorem-queue-worker"
+    )
+    live_state = {"message": "[LIVE STATE]"}
+
+    # Default keeps the contract (current behavior, prefix-cache off).
+    with_contracts = runner._attach_live_proof_state("USER MSG", live_state)
+    assert "[SKILL CONTRACT BODY]" in with_contracts
+    assert "[LIVE STATE]" in with_contracts
+
+    # Continuation under prefix-cache drops the static contract but keeps the volatile state.
+    without = runner._attach_live_proof_state("USER MSG", live_state, include_skill_contracts=False)
+    assert "[SKILL CONTRACT BODY]" not in without
+    assert "[LIVE STATE]" in without
+    assert "USER MSG" in without
+
+
+def test_search_progress_nudge_ignores_non_search_capability_degradation(monkeypatch, tmp_path):
+    """Capability degradation unrelated to search (e.g. proof-context MCP) must NOT flip the nudge
+    to 'search is DEGRADED' — lean_search seeds degraded_reasons from the full capability report."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    agent = _Agent()
+    # Non-search degradation + valid search results: must stay "providers are responding".
+    result = json.dumps(
+        {
+            "success": True,
+            "query": "sq_div_le",
+            "results": [{"provider": "mcp-leanexplore", "match": "sq_div_le"}],
+            "degraded_reasons": [
+                "lean proof context MCP unavailable",
+                "LeanInteract incremental verifier unavailable",
+            ],
+        }
+    )
+    for _ in range(runner.SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT):
+        runner._handle_managed_tool_result(agent, "lean_search", {"query": "sq_div_le"}, result)
+
+    appendix = agent._post_tool_result_appendix
+    assert "SEARCH PROGRESS NUDGE" in appendix
+    assert "search is DEGRADED" not in appendix
+    assert "search providers are responding" in appendix
 
 
 def test_generate_checkpoint_summary_falls_back_on_keyboard_interrupt(monkeypatch):
@@ -2456,6 +2601,74 @@ def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch,
     assert active.read_text(encoding="utf-8") == (
         "theorem demo : True := by\n  trivial\n\ntheorem later : True := by\n  sorry\n"
     )
+
+
+def test_axiom_guard_restores_file_when_edit_introduces_axiom(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    before = "theorem demo : False := by\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.delenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", raising=False)
+    events = []
+    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: events.append((a, k)))
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    # Model "cheats" by declaring an axiom that closes the goal instead of proving it.
+    active.write_text(
+        "axiom cheat : False\ntheorem demo : False := by\n  exact cheat\n", encoding="utf-8"
+    )
+
+    feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
+
+    assert "AXIOM GUARD" in feedback
+    assert "cheat" in feedback
+    # File restored to its pre-edit state (no axiom).
+    assert active.read_text(encoding="utf-8") == before
+    assert any(a[0] == "axiom-guard" for a, _ in events)
+
+
+def test_axiom_guard_allows_explicitly_allowlisted_axiom(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    before = "theorem demo : True := by\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", "my_allowed_ax")
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    edited = "axiom my_allowed_ax : True\ntheorem demo : True := by\n  trivial\n"
+    active.write_text(edited, encoding="utf-8")
+
+    feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
+
+    # Allow-listed axiom is not treated as a forbidden introduction; the axiom guard stays silent.
+    assert "AXIOM GUARD" not in feedback
+    assert active.read_text(encoding="utf-8") == edited
 
 
 def test_out_of_scope_queue_edit_guard_allows_new_helper_declarations(monkeypatch, tmp_path):

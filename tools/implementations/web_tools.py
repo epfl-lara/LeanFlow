@@ -1300,7 +1300,13 @@ WEB_SEARCH_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "The search query to look up on the web"}
+            "query": {"type": "string", "description": "The search query to look up on the web"},
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return (default 5, max 10).",
+                "minimum": 1,
+                "maximum": 10,
+            },
         },
         "required": ["query"],
     },
@@ -1327,7 +1333,7 @@ registry.register(
     name="web_search",
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
+    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
     check_fn=check_research_search_available,
     requires_env=[],
     emoji="🔍",
