@@ -43,12 +43,14 @@ def test_web_search_is_exposed_without_firecrawl_config(monkeypatch):
 
     assert [item["function"]["name"] for item in definitions] == ["web_search"]
     description = definitions[0]["function"]["description"]
-    assert "prefer lean_search first" in description
-    assert "theorem/proof lookup" in description
+    assert "prefer lean_search" in description.lower()
+    assert "web_fetch" in description
 
 
 def test_web_search_uses_free_research_providers_and_no_firecrawl(monkeypatch):
     monkeypatch.setattr(web_tools, "Firecrawl", None)
+
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
 
     def fake_get(url, *, params=None, headers=None, timeout=None):
         if url == web_tools.ARXIV_API_URL:
@@ -57,6 +59,8 @@ def test_web_search_uses_free_research_providers_and_no_firecrawl(monkeypatch):
             return FakeResponse(status_code=429, payload={})
         if url == web_tools.CROSSREF_SEARCH_URL:
             return FakeResponse(payload={"message": {"items": []}})
+        if url == web_tools.DUCKDUCKGO_HTML_URL:
+            return FakeResponse(text="")  # general web returns nothing parseable here
         raise AssertionError(f"unexpected GET {url}")
 
     def fake_post(url, *, json=None, headers=None, timeout=None):
@@ -112,8 +116,10 @@ def test_sourcegraph_code_query_keeps_identifiers_and_drops_filler():
 
 
 def test_code_only_query_skips_paper_providers():
+    # Code queries skip the paper providers but still include general web.
     assert web_tools._web_search_provider_order("Nat.Prime dvd_mul Lean code") == (
         web_tools._search_sourcegraph_code,
+        web_tools._search_general_web,
     )
 
 
@@ -125,6 +131,7 @@ def test_formal_proof_title_query_keeps_paper_providers():
         web_tools._search_semantic_scholar,
         web_tools._search_crossref,
         web_tools._search_sourcegraph_code,
+        web_tools._search_general_web,
     )
 
 
@@ -208,3 +215,97 @@ def test_semantic_scholar_result_is_normalized(monkeypatch):
             "pdf_url": "https://example.test/paper.pdf",
         }
     ]
+
+
+def test_arxiv_query_is_field_aware_not_and_of_all_tokens():
+    q = web_tools._arxiv_search_query("liquid tensor experiment condensed")
+    # Phrase clause against title/abstract + token OR-disjunction; never AND-of-all-tokens.
+    assert "ti:" in q and "abs:" in q
+    assert " OR " in q
+    assert " AND " not in q
+    # A single-token query collapses to a plain all: clause.
+    assert web_tools._arxiv_search_query("propext") == "all:propext"
+
+
+def test_research_headers_attach_semantic_scholar_key(monkeypatch):
+    monkeypatch.delenv("SEMANTIC_SCHOLAR_API_KEY", raising=False)
+    monkeypatch.delenv("S2_API_KEY", raising=False)
+    assert "x-api-key" not in web_tools._research_headers()
+    monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", "sk-s2-test")
+    assert web_tools._research_headers()["x-api-key"] == "sk-s2-test"
+
+
+def test_web_search_schema_exposes_limit():
+    props = web_tools.WEB_SEARCH_SCHEMA["parameters"]["properties"]
+    assert "limit" in props
+    assert props["limit"]["maximum"] == 10
+
+
+def test_duckduckgo_html_is_parsed(monkeypatch):
+    html_doc = (
+        '<a rel="nofollow" class="result__a" '
+        'href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fpage&rut=z">'
+        "Example &amp; Title</a>"
+        '<a class="result__snippet" href="x">A useful <b>snippet</b> here.</a>'
+    )
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        assert "duckduckgo" in url
+        return FakeResponse(text=html_doc)
+
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setattr(web_tools.requests, "get", fake_get)
+
+    results, error = web_tools._search_duckduckgo_html("example query", limit=5)
+    assert error == ""
+    assert results == [
+        {
+            "provider": "duckduckgo",
+            "kind": "web",
+            "title": "Example & Title",
+            "url": "https://example.org/page",
+            "snippet": "A useful snippet here.",
+        }
+    ]
+
+
+def test_duckduckgo_href_decode_preserves_encoded_values():
+    from tools.implementations import web_research_providers as wp
+
+    # parse_qs decodes uddg once; the target URL keeps its own encoded value (no double-decode).
+    href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fex.org%2Fq%3Fa%3D1%252B2"
+    assert wp._decode_duckduckgo_href(href) == "https://ex.org/q?a=1%2B2"
+
+
+def test_general_web_prefers_tavily_when_keyed(monkeypatch):
+    def fake_post(url, *, json=None, headers=None, timeout=None):
+        assert json["query"] == "lean 4 install"
+        return FakeResponse(
+            payload={
+                "results": [
+                    {"title": "Install Lean", "url": "https://t.example/1", "content": "steps"}
+                ]
+            }
+        )
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tv-key")
+    monkeypatch.setattr(web_tools.requests, "post", fake_post)
+
+    results, error = web_tools._search_general_web("lean 4 install", limit=3)
+    assert error == ""
+    assert results[0]["provider"] == "tavily"
+    assert results[0]["kind"] == "web"
+    assert results[0]["url"] == "https://t.example/1"
+
+
+def test_provider_order_always_includes_general_web():
+    from tools.implementations import web_research_providers as wp
+
+    # Plain query -> general web leads.
+    assert wp._search_general_web in wp._web_search_provider_order("how to install lean 4 mathlib")
+    # Code query -> sourcegraph + general.
+    code_order = wp._web_search_provider_order("Finset.sum_range code")
+    assert wp._search_general_web in code_order and wp._search_sourcegraph_code in code_order
+    # Paper query -> academic + general.
+    paper_order = wp._web_search_provider_order("liquid tensor experiment paper")
+    assert wp._search_general_web in paper_order and wp._search_arxiv in paper_order

@@ -4,7 +4,7 @@
 from typing import Any
 
 _FILE_TOOLS = ["read_file", "write_file", "patch", "search_files"]
-_WEB_TOOLS = ["web_search"]
+_WEB_TOOLS = ["web_search", "web_fetch", "web_download"]
 _TERMINAL_TOOLS = ["terminal"]
 _SKILL_TOOLS = ["skills_list", "skill_view"]
 _SESSION_TOOLS = ["session_search"]
@@ -113,6 +113,16 @@ TOOLSETS: dict[str, dict[str, Any]] = {
         "description": "LeanFlow native Lean workflow toolset",
         "tools": _LEANFLOW_CORE_TOOLS,
         "includes": [],
+    },
+    "leanflow-prove-worker": {
+        # Focused single-declaration proving surface for the inner /prove worker. Drops
+        # session_search (cross-session recall is irrelevant to autonomous theorem repair, and
+        # dropping it also removes its system-prompt guidance) and the document tools
+        # (formalization_document_inspect / read_pdf are formalize-only). Web is kept available
+        # for hard problems. Lean + file + skills + coordination + terminal remain.
+        "description": "Focused single-declaration Lean proving toolset for the /prove worker",
+        "tools": [],
+        "includes": ["file", "web", "terminal", "skills", "coordination", "lean"],
     },
     "leanflow-native-swarm": {
         "description": "User-approved LeanFlow Lean swarm workflow toolset",

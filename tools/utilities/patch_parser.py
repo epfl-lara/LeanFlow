@@ -243,6 +243,9 @@ def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> "Pa
     files_deleted = []
     all_diffs = []
     errors = []
+    # Track the least-confident fuzzy match across all UPDATE hunks (F2).
+    matched_via: str | None = None
+    worst_similarity: float | None = None
 
     for op in operations:
         try:
@@ -271,12 +274,20 @@ def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> "Pa
                     errors.append(f"Failed to move {op.file_path}: {result[1]}")
 
             elif op.operation == OperationType.UPDATE:
-                result = _apply_update(op, file_ops)
-                if result[0]:
+                ok, diff_or_err, strategy, similarity = _apply_update(op, file_ops)
+                if ok:
                     files_modified.append(op.file_path)
-                    all_diffs.append(result[1])
+                    all_diffs.append(diff_or_err)
+                    # Report the least-confident hunk match for this patch so a
+                    # fuzzy V4A hit is observable just like a replace-mode one.
+                    if strategy is not None and (
+                        worst_similarity is None
+                        or (similarity is not None and similarity < worst_similarity)
+                    ):
+                        matched_via = strategy
+                        worst_similarity = similarity
                 else:
-                    errors.append(f"Failed to update {op.file_path}: {result[1]}")
+                    errors.append(f"Failed to update {op.file_path}: {diff_or_err}")
 
         except Exception as e:
             errors.append(f"Error processing {op.file_path}: {str(e)}")
@@ -299,6 +310,8 @@ def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> "Pa
             files_deleted=files_deleted,
             lint=lint_results if lint_results else None,
             error="; ".join(errors),
+            matched_via=matched_via,
+            similarity=worst_similarity,
         )
 
     return PatchResult(
@@ -308,6 +321,8 @@ def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> "Pa
         files_created=files_created,
         files_deleted=files_deleted,
         lint=lint_results if lint_results else None,
+        matched_via=matched_via,
+        similarity=worst_similarity,
     )
 
 
@@ -419,31 +434,26 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
     return True, diff
 
 
-def _apply_update(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
-    """Apply an update file operation."""
-    # Read current content
-    read_result = file_ops.read_file(op.file_path, limit=10000)
+def _apply_update(op: PatchOperation, file_ops: Any) -> tuple[bool, str, str | None, float | None]:
+    """Apply an update file operation.
 
-    if read_result.error:
-        return False, f"Cannot read file: {read_result.error}"
-
-    # Parse content (remove line numbers)
-    current_lines = []
-    for line in read_result.content.split("\n"):
-        if re.match(r"^\s*\d+\|", line):
-            # Line format: "    123|content"
-            parts = line.split("|", 1)
-            if len(parts) == 2:
-                current_lines.append(parts[1])
-            else:
-                current_lines.append(line)
-        else:
-            current_lines.append(line)
-
-    current_content = "\n".join(current_lines)
+    Returns (ok, diff_or_error, matched_via, similarity). The last two surface
+    the least-confident fuzzy strategy used across this file's hunks (F2 observability);
+    they are None when nothing matched fuzzily (e.g. a pure structural hit).
+    """
+    # Read current content RAW. The previous path read line-number-decorated content with a
+    # 10000-line cap and then stripped "NNN|" prefixes — which silently lost data on files larger
+    # than 10000 lines and corrupted any genuine source line shaped like "  12|x" (Lean tables,
+    # comments, Vector literals). `_read_raw_for_guard` cats the file with no cap and no
+    # decorate/strip round trip (falling back to the old behavior only when `_exec` is unavailable).
+    current_content = _read_raw_for_guard(file_ops, op.file_path)
+    if current_content is None:
+        return False, f"Cannot read file: {op.file_path}", None, None
 
     # Apply each hunk
     new_content = current_content
+    matched_via: str | None = None
+    worst_similarity: float | None = None
 
     for hunk in op.hunks:
         # Build search pattern from context and removed lines
@@ -463,12 +473,14 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
             search_pattern = "\n".join(search_lines)
             replacement = "\n".join(replace_lines)
 
-            # Use fuzzy matching
-            from tools.utilities.fuzzy_match import fuzzy_find_and_replace
+            # Use fuzzy matching (observable variant: also reports the strategy).
+            from tools.utilities.fuzzy_match import fuzzy_find_and_replace_ex
 
-            new_content, count, error = fuzzy_find_and_replace(
+            match = fuzzy_find_and_replace_ex(
                 new_content, search_pattern, replacement, replace_all=False
             )
+            new_content, count, error = match.content, match.count, match.error
+            strategy, similarity = match.strategy, match.similarity
 
             if error and count == 0:
                 # Try with context hint if available
@@ -481,9 +493,15 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
                         window_end = min(len(new_content), hint_pos + 2000)
                         window = new_content[window_start:window_end]
 
-                        window_new, count, error = fuzzy_find_and_replace(
+                        window_match = fuzzy_find_and_replace_ex(
                             window, search_pattern, replacement, replace_all=False
                         )
+                        window_new, count, error = (
+                            window_match.content,
+                            window_match.count,
+                            window_match.error,
+                        )
+                        strategy, similarity = window_match.strategy, window_match.similarity
 
                         if count > 0:
                             new_content = (
@@ -492,12 +510,20 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
                             error = None
 
                 if error:
-                    return False, f"Could not apply hunk: {error}"
+                    return False, f"Could not apply hunk: {error}", None, None
+
+            # Track the least-confident matched strategy across hunks.
+            if strategy is not None and (
+                worst_similarity is None
+                or (similarity is not None and similarity < worst_similarity)
+            ):
+                matched_via = strategy
+                worst_similarity = similarity
 
     # Write new content
     write_result = file_ops.write_file(op.file_path, new_content)
     if write_result.error:
-        return False, write_result.error
+        return False, write_result.error, None, None
 
     # Generate diff
     import difflib
@@ -510,4 +536,4 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
     )
     diff = "".join(diff_lines)
 
-    return True, diff
+    return True, diff, matched_via, worst_similarity

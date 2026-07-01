@@ -514,16 +514,16 @@ class TestBuildSkillsSystemPromptConditional:
             available_toolsets={"web", "terminal"},
         )
         assert "lean-proof-loop" in result
-        assert "provider-fallback" in result
+        assert "lean-search" in result
 
     def test_project_and_user_overlays_both_show_when_distinct(self, monkeypatch, tmp_path):
         home = tmp_path / "home"
         monkeypatch.setenv("LEANFLOW_HOME", str(home))
         monkeypatch.chdir(tmp_path)
-        user_dir = home / "skills" / "provider-fallback"
+        user_dir = home / "skills" / "custom-user-overlay"
         user_dir.mkdir(parents=True)
         (user_dir / "SKILL.md").write_text(
-            "---\nname: provider-fallback\ndescription: User endpoint fallback notes\n---\n"
+            "---\nname: custom-user-overlay\ndescription: User endpoint fallback notes\n---\n"
         )
         project_dir = tmp_path / ".leanflow" / "skills" / "custom-lean-overlay"
         project_dir.mkdir(parents=True)

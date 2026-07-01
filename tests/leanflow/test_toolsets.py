@@ -80,9 +80,41 @@ def test_autoformalize_is_composite_and_includes_core_groups():
 
 
 def test_resolved_toolsets_contain_no_duplicates():
-    for name in ("leanflow-native", "leanflow-native-swarm", "autoformalize", "leanflow-cli"):
+    for name in (
+        "leanflow-native",
+        "leanflow-native-swarm",
+        "leanflow-prove-worker",
+        "autoformalize",
+        "leanflow-cli",
+    ):
         tools = resolve_toolset(name)
         assert len(tools) == len(set(tools)), f"{name!r} has duplicate tools: {tools}"
+
+
+def test_prove_worker_toolset_drops_session_and_document_noise():
+    prove = set(resolve_toolset("leanflow-prove-worker"))
+    native = set(resolve_toolset("leanflow-native"))
+
+    # Inner proof worker drops cross-session recall and source-document inspection.
+    for dropped in ("session_search", "formalization_document_inspect", "read_pdf"):
+        assert dropped not in prove, f"{dropped!r} should not be in the prove-worker toolset"
+        assert dropped in native, f"{dropped!r} should still be in leanflow-native"
+
+    # All Lean tools and the core edit/read/search tools remain available (web kept too).
+    for kept in (
+        "lean_inspect",
+        "lean_incremental_check",
+        "lean_search",
+        "lean_decompose_helpers",
+        "lean_reasoning_help",
+        "read_file",
+        "patch",
+        "apply_verified_patch",
+        "web_search",
+    ):
+        assert kept in prove, f"{kept!r} should be in the prove-worker toolset"
+
+    assert prove == native - {"session_search", "formalization_document_inspect", "read_pdf"}
 
 
 def test_validate_toolset_accepts_known_names_and_wildcards():

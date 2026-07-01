@@ -193,6 +193,7 @@ from openai import OpenAI  # noqa: F401
 from agent.accounting.usage_pricing import (
     estimate_cost_usd,  # noqa: F401
     has_known_pricing,  # noqa: F401
+    has_listed_pricing,  # noqa: F401
 )
 from agent.display.display import _detect_tool_failure  # noqa: F401
 from agent.display.display import build_tool_preview as _build_tool_preview  # noqa: F401
@@ -3883,8 +3884,10 @@ class AIAgent:
                                 f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}"
                             )
 
-                        # Log cache hit stats when prompt caching is active
-                        if self._use_prompt_caching:
+                        # Log cache hit stats when prompt caching is active, OR on the self-hosted
+                        # RCP route where vLLM automatic prefix caching populates cached_tokens even
+                        # though _use_prompt_caching is False — so the cache work is measurable.
+                        if self._use_prompt_caching or self._is_rcp_route():
                             if self.api_mode == "anthropic_messages":
                                 # Anthropic uses cache_read_input_tokens / cache_creation_input_tokens
                                 cached = getattr(response.usage, "cache_read_input_tokens", 0) or 0

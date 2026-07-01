@@ -30,6 +30,7 @@ from leanflow_cli.config import load_config
 from leanflow_cli.lean.lean_incremental import lean_incremental_check
 from leanflow_cli.lean.lean_services import (
     diagnostic_items,
+    lean_axioms,
     lean_inspect,
     lean_verify,
     probe_capabilities,
@@ -100,11 +101,25 @@ RUNNER_KEYBOARD_INTERRUPT = "[leanflow-native runner keyboard interrupt]"
 STARTUP_SKILL_CONTRACT_MAX_CHARS = 7000
 MANAGER_WARNING_RETRY_LIMIT = 1
 MANAGER_HARD_RETRY_LIMIT = 2
-MANAGER_POST_EDIT_HARD_RETRY_LIMIT = 40
-SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT = 3
-SEARCH_PROGRESS_TOTAL_NUDGE_LIMIT = 14
-FAILED_ATTEMPT_ESCALATION_NUDGE_LIMIT = 20
-FAILED_ATTEMPT_ESCALATION_NUDGE_INTERVAL = 8
+# Post-edit hard-blocker retries on a SINGLE declaration before the manager restores the
+# baseline `sorry` and records a failed attempt. Was 40 — far too high: one stuck theorem
+# could burn an enormous turn budget re-attempting the same proof shape. Lowered to 8 so the
+# loop escalates strategy (the failed-attempt nudge below fires well before this) or moves on.
+MANAGER_POST_EDIT_HARD_RETRY_LIMIT = 8
+# Search-only stalling guards. Lowered (was repeat=3 / total=14) so the route-progress nudge
+# fires before the worker burns a long lean_search spiral with no edit/check in between.
+SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT = 2
+SEARCH_PROGRESS_TOTAL_NUDGE_LIMIT = 6
+# Failed-attempt strategy-transition nudge. Lowered (was 20 / every 8) so the
+# "switch to decompose / reasoning-help" escalation lands at attempt 4 (and 7), i.e. before
+# the post-edit hard-retry exhaustion at 8 — turning exhaustion into a forced strategy change.
+FAILED_ATTEMPT_ESCALATION_NUDGE_LIMIT = 4
+FAILED_ATTEMPT_ESCALATION_NUDGE_INTERVAL = 3
+# Axioms a prover run may introduce/allow. The standard Lean/Mathlib axioms are permitted by
+# default; a run may extend this with LEANFLOW_NATIVE_ALLOWED_AXIOMS (set by the `--axioms` flag).
+# Declaring ANY other `axiom` in a proof file is rejected by the axiom guard, because declaring an
+# axiom assumes the goal instead of proving it.
+DEFAULT_ALLOWED_AXIOMS = ("propext", "Classical.choice", "Quot.sound")
 ACTIVE_AGENT_STATUSES = {"active"}
 LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
@@ -344,6 +359,8 @@ from leanflow_cli.workflows.project_prove_manager import (  # noqa: E402
     _project_prove_worked_example_count,  # noqa: F401
 )
 from leanflow_cli.workflows.queue_edit_guard import (  # noqa: E402
+    _axiom_declaration_names,  # noqa: F401
+    _introduced_forbidden_axioms,
     _queue_edit_assigned_statement_signature,
     _queue_edit_changed_protected_declarations,
     _queue_edit_guard_key,
@@ -506,6 +523,18 @@ def _swarm_enabled() -> bool:
 
 def _runner_lean_prompt_enabled() -> bool:
     raw = _read_text_env("LEANFLOW_RUNNER_LEAN_PROMPT", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _rcp_prefix_cache_enabled() -> bool:
+    """Whether to optimize the per-cycle prompt for server-side prefix caching (default off).
+
+    On the self-hosted vLLM/RCP route there is no client cache_control knob; the only lever is to
+    keep the byte prefix stable and stop re-sending static content inside the volatile per-cycle
+    user message. When enabled, continuation cycles stop re-appending the (static) supplemental
+    skill contract — it stays available via the system-prompt skills catalog and `skill_view`.
+    """
+    raw = _read_text_env("LEANFLOW_RCP_PREFIX_CACHE", "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -1910,7 +1939,21 @@ def _review_agent_final_report(
                 str(manager_check.get("output", "") or manager_check.get("error", "") or ""),
                 700,
             )
+    # Axiom dependency profile (opt-in): reject a Lean-clean proof that DEPENDS on a disallowed
+    # axiom (sorryAx / native_decide / a custom axiom) — the per-edit declaration guard can't see
+    # transitive axiom use. Runs only when the declaration otherwise passed.
+    axiom_blockers: list[str] = []
+    if bool(manager_check.get("ok")) and _axiom_profile_check_enabled():
+        axiom_blockers, axiom_output = _manager_axiom_profile_blocker(active_file, target_symbol)
+        if axiom_blockers:
+            manager_check["ok"] = False
+            manager_check["axiom_violation"] = axiom_blockers
+            manager_check["output"] = axiom_output
+            manager_check["diagnostics"] = _single_line(axiom_output, 700)
     feedback_kind = _manager_feedback_kind(active_file, target_symbol, manager_check)
+    if axiom_blockers and not feedback_kind:
+        # A disallowed axiom dependency is a hard blocker even when the file has no error/sorry.
+        feedback_kind = "error"
     if feedback_kind:
         manager_check["feedback_kind"] = feedback_kind
     retry_count = 0
@@ -2321,6 +2364,51 @@ def _note_non_search_tool_progress(agent: Any, function_name: str) -> None:
     autonomy_state["search_progress"] = tracker
 
 
+def _record_turn_prompt_fingerprint(
+    autonomy_state: Mapping[str, Any] | None,
+    user_message: str,
+    *,
+    phase: str,
+    cycle: int,
+) -> None:
+    """Record a fingerprint of the ACTUAL per-turn user message sent to the model.
+
+    The activity log's ``effective_prompt`` is the original CLI goal (empty for a bare
+    ``/prove <file>``), so it cannot reconstruct what the model was told each cycle. This emits a
+    ``turn-prompt`` event with a hash, size, preview, and a changed/unchanged + delta vs the
+    previous turn, making the loop auditable and prompt-size optimizations measurable.
+    """
+    text = str(user_message or "")
+    fingerprint = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+    char_count = len(text)
+    approx_tokens = char_count // 4
+    previous = {}
+    if isinstance(autonomy_state, dict):
+        previous = dict(autonomy_state.get("last_turn_prompt_fingerprint") or {})
+    prev_fingerprint = str(previous.get("fingerprint", "") or "")
+    changed = bool(prev_fingerprint) and prev_fingerprint != fingerprint or not prev_fingerprint
+    delta_chars = char_count - int(previous.get("char_count", 0) or 0)
+    preview = " ".join(text.split())[:200]
+    if isinstance(autonomy_state, dict):
+        autonomy_state["last_turn_prompt_fingerprint"] = {
+            "fingerprint": fingerprint,
+            "char_count": char_count,
+        }
+    _record_activity(
+        "turn-prompt",
+        f"{phase} turn prompt: {char_count} chars (~{approx_tokens} tok), "
+        f"{'changed' if changed else 'unchanged'} vs previous",
+        phase=phase,
+        cycle=cycle,
+        prompt_fingerprint=fingerprint,
+        prompt_char_count=char_count,
+        prompt_approx_tokens=approx_tokens,
+        prompt_changed=changed,
+        prompt_delta_chars=delta_chars,
+        prompt_preview=preview,
+    )
+
+
 def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: str) -> None:
     """Monitor lean_search tool usage per theorem and emit nudge if repetition or call-count thresholds hit. Updates autonomy state tracker with query, result count, and streak metrics; appends progress nudge to agent feedback if search-only stalling is detected."""
     autonomy_state = getattr(agent, "_managed_autonomy_state", None)
@@ -2395,6 +2483,39 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
         if int(used_tools.get("lean_proof_context", 0) or 0) > 0
         else "- if you still need context, call `lean_proof_context` once; if the proof needs intermediate invariants, use `lean_decompose_helpers`; otherwise draft and check a proof."
     )
+    # Be honest about search health: if the providers report degraded state (e.g. local Loogle
+    # disabled on a toolchain mismatch, or a malformed LeanExplore DB), telling the model "search
+    # providers are responding" sends it back into a useless lean_search spiral. Steer the worker
+    # off search instead. NOTE: lean_search seeds degraded_reasons from the FULL capability report
+    # (proof-context MCP, incremental verifier, etc.), so we require BOTH a search-provider term and
+    # a failure term — otherwise an unrelated capability outage would wrongly suppress search.
+    _SEARCH_TERMS = ("loogle", "leanexplore", "lean explore", "search", "semantic provider")
+    _FAILURE_TERMS = (
+        "disabled",
+        "malformed",
+        "unavailable",
+        "corrupt",
+        "failed",
+        "outage",
+        "error",
+    )
+    degraded_reasons = [
+        str(reason) for reason in (payload.get("degraded_reasons") or []) if str(reason).strip()
+    ]
+    degraded_hits = [
+        reason
+        for reason in degraded_reasons
+        if any(s in reason.lower() for s in _SEARCH_TERMS)
+        and any(f in reason.lower() for f in _FAILURE_TERMS)
+    ]
+    if degraded_hits:
+        health_line = (
+            f"- search is DEGRADED ({degraded_hits[0][:160]}); the local search backend is unhealthy, "
+            "so more `lean_search` calls will not help — switch now to `lean_proof_context`, "
+            "`lean_decompose_helpers`, or `lean_reasoning_help`, or draft and check a proof directly."
+        )
+    else:
+        health_line = "- search providers are responding; this is a route-progress nudge, not a search outage."
     _append_post_tool_result_message(
         agent,
         "\n".join(
@@ -2405,7 +2526,7 @@ def _track_search_progress(agent: Any, args: Mapping[str, Any] | None, result: s
                 f"- observed: {nudge_reason}",
                 f"- latest query: {query[:240] or '[unknown]'}",
                 f"- latest result count: {result_count}",
-                "- search providers are responding; this is a route-progress nudge, not a search outage.",
+                health_line,
                 "- do not call `lean_search` again in this turn unless the query strategy materially changes.",
                 context_hint,
                 "- next useful action should be a concrete proof edit, `lean_incremental_check(check_target)` on a draft, `lean_multi_attempt`, `lean_decompose_helpers` for a helper-lemma split, or `lean_reasoning_help`.",
@@ -2740,8 +2861,61 @@ def _queue_edit_protect_assigned_statement(
     return False
 
 
+def _allowed_axioms() -> set[str]:
+    """Axiom names a prover run may introduce: the standard defaults plus any from the
+    LEANFLOW_NATIVE_ALLOWED_AXIOMS env var (set by `--axioms`, comma/space separated)."""
+    allowed = set(DEFAULT_ALLOWED_AXIOMS)
+    raw = _read_native_env("ALLOWED_AXIOMS", "")
+    for token in re.split(r"[,\s]+", str(raw or "")):
+        token = token.strip()
+        if token:
+            allowed.add(token)
+    return allowed
+
+
+def _axiom_profile_check_enabled() -> bool:
+    """Whether to enforce the allowed-axiom set on the `#print axioms` profile at acceptance.
+
+    Default off: it adds a Lean (`lake env lean`) call per accepted declaration. When enabled,
+    a Lean-clean proof is still rejected if it DEPENDS on a disallowed axiom (e.g. `sorryAx`,
+    `Lean.ofReduceBool` from `native_decide`, or a user-declared axiom) — which the per-edit
+    declaration guard cannot detect. Opt in with LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK=1.
+    """
+    raw = _read_text_env("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _manager_axiom_profile_blocker(active_file: str, target_symbol: str) -> tuple[list[str], str]:
+    """Return (disallowed_axioms, message) for an accepted declaration's axiom dependency profile.
+
+    Runs `lean_axioms` (#print axioms) and flags any axiom the declaration depends on that is not in
+    the allowed set. Empty list means clean. Best-effort: a failed/empty axiom report does not block.
+    """
+    if not active_file or not target_symbol:
+        return [], ""
+    try:
+        report = lean_axioms(target_symbol, file_path=active_file)
+    except Exception:
+        return [], ""
+    axioms = list(getattr(report, "axioms", []) or [])
+    if not axioms and not getattr(report, "ok", True):
+        # Could not produce a profile (module/build issue) — do not block on a non-result.
+        return [], ""
+    allowed = _allowed_axioms()
+    disallowed = sorted(axiom for axiom in axioms if axiom not in allowed)
+    if not disallowed:
+        return [], ""
+    names = ", ".join(disallowed)
+    message = (
+        f"axiom guard: `{target_symbol}` verifies but DEPENDS on disallowed axiom(s): {names}. "
+        "A proof that relies on `sorryAx` or non-standard/user axioms is not accepted; remove the "
+        "axiom dependency (no `sorry`, `native_decide`, or custom axioms) or allowlist it via --axioms."
+    )
+    return disallowed, message
+
+
 def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
-    """Restore file to pre-edit state if a Lean edit removed the assigned theorem, changed its statement signature, or modified protected declarations outside assignment scope. Returns guard message summarizing what was restored; called post-edit to enforce queue boundaries."""
+    """Restore file to pre-edit state if a Lean edit removed the assigned theorem, changed its statement signature, introduced a forbidden axiom, or modified protected declarations outside assignment scope. Returns guard message summarizing what was restored; called post-edit to enforce queue boundaries."""
     if function_name not in {"patch", "write_file", "apply_verified_patch"}:
         return ""
     snapshot = dict(getattr(agent, "_managed_queue_edit_snapshot", {}) or {})
@@ -2765,6 +2939,28 @@ def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
         return ""
     if current_text == before_text:
         return ""
+    # Axiom guard: declaring a new axiom in a proof file assumes the goal instead of proving it.
+    forbidden_axioms = _introduced_forbidden_axioms(before_text, current_text, _allowed_axioms())
+    if forbidden_axioms:
+        try:
+            path.write_text(before_text, encoding="utf-8")
+        except Exception:
+            return ""
+        names = ", ".join(forbidden_axioms[:6])
+        _record_activity(
+            "axiom-guard",
+            f"Restored file after `{function_name}` introduced forbidden axiom(s): {names}",
+            active_file=active_file,
+            target_symbol=target_symbol,
+            axioms=list(forbidden_axioms),
+        )
+        return (
+            "[LEANFLOW-NATIVE AXIOM GUARD]\n"
+            f"The `{function_name}` edit introduced forbidden `axiom` declaration(s) ({names}) while "
+            f"solving `{target_symbol}`. Declaring an axiom assumes the goal instead of proving it, so "
+            "the manager restored the file to its pre-tool state. Prove the result (or a helper lemma) "
+            "directly; only axioms explicitly allowlisted for this run (via `--axioms`) are permitted."
+        )
     current_entry = _find_declaration_entry(active_file, target_symbol)
     if not current_entry:
         try:
@@ -6348,14 +6544,26 @@ def _build_live_proof_state_compat(
         return _build_live_proof_state(history, checkpoint_state)
 
 
-def _attach_live_proof_state(user_message: str, live_state: Mapping[str, Any]) -> str:
+def _attach_live_proof_state(
+    user_message: str,
+    live_state: Mapping[str, Any],
+    *,
+    include_skill_contracts: bool = True,
+) -> str:
+    """Append the live-proof-state block (and, optionally, supplemental skill contracts) to a turn.
+
+    ``include_skill_contracts=False`` is used by continuation cycles under the RCP prefix-cache
+    optimization to stop re-sending the static skill contract every turn (it remains available via
+    the system-prompt skills catalog and ``skill_view``).
+    """
     block = str(live_state.get("message", "") or "").strip()
-    supplemental = _startup_additional_skill_contracts(_effective_skill_name(live_state))
     parts = [str(user_message or "").strip()]
     if block:
         parts.append(block)
-    if supplemental:
-        parts.append(supplemental)
+    if include_skill_contracts:
+        supplemental = _startup_additional_skill_contracts(_effective_skill_name(live_state))
+        if supplemental:
+            parts.append(supplemental)
     return "\n\n".join(part for part in parts if part).strip()
 
 
@@ -7447,7 +7655,12 @@ def _write_workflow_checkpoint(
     active_files = _extract_active_files(combined_text + "\n" + summary_text)
     diagnostics_summary = _extract_diagnostics_summary(history)
     blocker_summary = _extract_blocker_summary(summary_text + "\n" + combined_text)
-    target_symbol = _extract_target_symbol(summary_text + "\n" + combined_text)
+    # Prefer the structured target from live_state; fall back to prose regex extraction only when
+    # it is unavailable. Scraping the summary/history for a target symbol is fragile and has
+    # produced garbage like target_symbol="was" on resume — the queue state is authoritative.
+    target_symbol = str(
+        (live_state or {}).get("target_symbol", "") or ""
+    ).strip() or _extract_target_symbol(summary_text + "\n" + combined_text)
     checkpoint_id = f"ckpt-{int(time.time() * 1000)}"
     snapshot_path = _workflow_state_root() / f"{checkpoint_id}.json"
     linked_hash = _latest_filesystem_checkpoint_hash(
@@ -8821,8 +9034,10 @@ def _autonomous_continuation_prompt(
             if command and not _runner_lean_prompt_enabled():
                 prompt += (
                     "\n\n"
-                    "For this assigned file-scoped queue item, use `lean_inspect` for iteration, "
-                    f"but only accept the theorem as solved after `{command}` succeeds. "
+                    "For this assigned file-scoped queue item, iterate with `lean_inspect` and accept "
+                    "the declaration with `lean_incremental_check(check_target)` — that is the queue-step "
+                    f"acceptance check. The manager owns the final `{command}` Lake sweep, so you do not "
+                    "need to run Lake yourself for this theorem. "
                     "Do not use `lake build`, `grep`, `head`, or truncated output as the acceptance check for this theorem."
                 )
     if _swarm_enabled():
@@ -8969,6 +9184,12 @@ def _drive_autonomous_followups(
         augmented_text = _attach_live_proof_state(
             _autonomous_continuation_prompt(live_state, cycle, autonomy_state),
             live_state,
+            # Under the RCP prefix-cache optimization, stop re-sending the static skill contract on
+            # every continuation cycle (the startup turn already established it; skill_view re-pulls).
+            include_skill_contracts=not _rcp_prefix_cache_enabled(),
+        )
+        _record_turn_prompt_fingerprint(
+            autonomy_state, augmented_text, phase="autonomous", cycle=cycle
         )
         _set_runtime_active_skill(_effective_skill_name(live_state))
         effective_reasoning = _apply_managed_reasoning_policy(agent, live_state, autonomy_state)
@@ -9117,6 +9338,7 @@ def main() -> int:
             ),
             live_state,
         )
+        _record_turn_prompt_fingerprint(autonomy_state, initial_message, phase="startup", cycle=0)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
         _record_queue_assignment(live_state, phase="startup")
         _prepare_queue_assignment_state(autonomy_state, live_state)

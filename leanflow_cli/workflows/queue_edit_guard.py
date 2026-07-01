@@ -47,7 +47,48 @@ __all__ = [
     "_queue_edit_changed_protected_declarations",
     "_restore_changed_protected_declarations",
     "_restore_assigned_declaration_against_before_text",
+    "_axiom_declaration_names",
+    "_introduced_forbidden_axioms",
 ]
+
+
+# Matches a top-level `axiom` declaration, tolerating modifiers/attributes
+# (`@[...] private noncomputable axiom foo : ...`). Comments/strings are stripped first.
+# The name group is deliberately broad so it catches every syntactically valid Lean axiom name —
+# ASCII (`foo`, `foo.bar`), Unicode (`α`, `f₁`), and guillemet-quoted (`«cheat ax»`) — rather than
+# only ASCII identifiers, which would let a cheating edit slip an axiom past the guard.
+_AXIOM_DECL_RE = re.compile(
+    r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*"
+    r"(?:private[ \t]+|protected[ \t]+|noncomputable[ \t]+|scoped[ \t]+|local[ \t]+|unsafe[ \t]+)*"
+    r"axiom[ \t]+(«[^»]+»|[^\s:({\[]+)",
+    re.MULTILINE,
+)
+
+
+def _axiom_declaration_names(text: str) -> set[str]:
+    """Return the names of top-level ``axiom`` declarations in Lean source.
+
+    Comments and string literals are stripped first so that the word "axiom" inside a comment or
+    string does not produce a false match.
+    """
+    stripped = _strip_lean_comments_and_strings(str(text or ""))
+    return {match.group(1) for match in _AXIOM_DECL_RE.finditer(stripped)}
+
+
+def _introduced_forbidden_axioms(
+    before_text: str,
+    after_text: str,
+    allowed: Sequence[str],
+) -> list[str]:
+    """Names of ``axiom`` declarations an edit NEWLY introduced that are not in the allowed set.
+
+    Declaring an axiom in a proof assumes the goal instead of proving it, so the prover must not do
+    it. ``allowed`` lets a run explicitly permit specific axiom names (e.g. via ``--axioms``); the
+    standard dependency axioms are included by the caller's default allowed set.
+    """
+    allowed_set = {str(name).strip() for name in (allowed or []) if str(name).strip()}
+    introduced = _axiom_declaration_names(after_text) - _axiom_declaration_names(before_text)
+    return sorted(name for name in introduced if name not in allowed_set)
 
 
 def _queue_edit_guard_key(target_symbol: str, active_file: str) -> str:

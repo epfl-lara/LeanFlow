@@ -7,7 +7,10 @@ web_tools import), so there is no cycle. web_search_tool stays in web_tools and 
 via the re-exported names (provider-tuple identity preserved for tests).
 """
 
+import html as _html
+import os
 import re
+import urllib.parse
 import xml.etree.ElementTree as ET
 from typing import Any
 from urllib.parse import urljoin
@@ -21,6 +24,13 @@ ARXIV_API_URL = "https://export.arxiv.org/api/query"
 SEMANTIC_SCHOLAR_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 CROSSREF_SEARCH_URL = "https://api.crossref.org/works"
 SOURCEGRAPH_GRAPHQL_URL = "https://sourcegraph.com/.api/graphql"
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+DUCKDUCKGO_HTML_URL = "https://html.duckduckgo.com/html/"
+# DuckDuckGo's HTML endpoint rejects obvious bot user-agents, so present a browser-like one.
+_GENERAL_WEB_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
 CODE_SEARCH_STOPWORDS = {
     "lean",
     "coq",
@@ -69,14 +79,36 @@ def _append_unique_result(
 
 
 def _research_headers() -> dict[str, str]:
-    return {"User-Agent": RESEARCH_SEARCH_USER_AGENT}
+    """Return shared HTTP headers for the free research providers.
+
+    Attaches a Semantic Scholar API key (``SEMANTIC_SCHOLAR_API_KEY`` / ``S2_API_KEY``) when set, so
+    S2 uses its authenticated quota instead of the heavily-throttled shared anonymous pool. Behavior
+    is unchanged when no key is configured.
+    """
+    headers = {"User-Agent": RESEARCH_SEARCH_USER_AGENT}
+    api_key = (os.getenv("SEMANTIC_SCHOLAR_API_KEY") or os.getenv("S2_API_KEY") or "").strip()
+    if api_key:
+        headers["x-api-key"] = api_key
+    return headers
 
 
 def _arxiv_search_query(query: str) -> str:
-    tokens = re.findall(r"[A-Za-z0-9_.+-]+", query)[:10]
+    """Build an arXiv ``search_query`` that favors relevance.
+
+    AND-ing every token across all fields (the previous behavior) is far too strict and surfaced
+    unrelated papers (e.g. "liquid tensor experiment" matched a nematic-liquid-crystals paper).
+    Instead, quote the full phrase against title/abstract and OR it with a token disjunction so a
+    strong phrase match ranks first while individual terms still match.
+    """
+    phrase = query.strip()
+    tokens = re.findall(r"[A-Za-z0-9_.+-]+", query)[:12]
     if not tokens:
-        return f'all:"{query}"'
-    return " AND ".join(f"all:{token}" for token in tokens)
+        return f'all:"{phrase}"' if phrase else "all:mathematics"
+    token_clause = " OR ".join(f"all:{token}" for token in tokens)
+    if len(tokens) > 1 and phrase:
+        safe_phrase = phrase.replace('"', "")
+        return f'(ti:"{safe_phrase}" OR abs:"{safe_phrase}" OR ({token_clause}))'
+    return token_clause
 
 
 def _search_arxiv(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
@@ -274,6 +306,129 @@ def _search_crossref(query: str, limit: int) -> tuple[list[dict[str, Any]], str]
     return results, ""
 
 
+def _strip_html(value: str) -> str:
+    """Reduce an HTML fragment to readable text (drop tags, unescape entities, collapse space)."""
+    text = re.sub(r"<[^>]+>", "", str(value or ""))
+    return _normalize_whitespace(_html.unescape(text))
+
+
+def _decode_duckduckgo_href(href: str) -> str:
+    """Resolve a DuckDuckGo HTML result href to its real target URL.
+
+    DDG wraps results in a redirect (`//duckduckgo.com/l/?uddg=<encoded-url>`); extract and decode
+    the `uddg` parameter, otherwise return the href if it is already an absolute http(s) URL.
+    """
+    href = (href or "").strip()
+    if href.startswith("//"):
+        href = "https:" + href
+    parsed = urllib.parse.urlparse(href)
+    # parse_qs already percent-decodes once; do NOT unquote again or a target URL that
+    # legitimately contains an encoded value (e.g. %252B) gets corrupted to %2B/+.
+    params = urllib.parse.parse_qs(parsed.query)
+    if "uddg" in params and params["uddg"]:
+        return params["uddg"][0]
+    return href if href.startswith("http") else ""
+
+
+def _parse_duckduckgo_html(html_text: str, limit: int) -> list[dict[str, Any]]:
+    """Parse general web results out of a DuckDuckGo HTML response into normalized records."""
+    anchor_re = re.compile(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
+    snippet_re = re.compile(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', re.DOTALL)
+    snippets = [_strip_html(snip) for snip in snippet_re.findall(html_text)]
+    results: list[dict[str, Any]] = []
+    for index, (href, title_html) in enumerate(anchor_re.findall(html_text)):
+        if len(results) >= limit:
+            break
+        url = _decode_duckduckgo_href(href)
+        title = _strip_html(title_html)
+        if not url or not title:
+            continue
+        results.append(
+            {
+                "provider": "duckduckgo",
+                "kind": "web",
+                "title": title,
+                "url": url,
+                "snippet": _truncate_text(snippets[index] if index < len(snippets) else ""),
+            }
+        )
+    return results
+
+
+def _search_tavily(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
+    """General web search via the Tavily API (used when TAVILY_API_KEY is configured)."""
+    api_key = (os.getenv("TAVILY_API_KEY") or "").strip()
+    if not api_key:
+        return [], "Tavily API key not configured"
+    try:
+        response = requests.post(
+            TAVILY_SEARCH_URL,
+            json={
+                "api_key": api_key,
+                "query": query,
+                "max_results": max(1, min(limit, 10)),
+                "search_depth": "basic",
+            },
+            headers={"User-Agent": RESEARCH_SEARCH_USER_AGENT},
+            timeout=RESEARCH_SEARCH_TIMEOUT_SECONDS,
+        )
+        if response.status_code == 429:
+            return [], "Tavily search throttled; retry later"
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return [], f"Tavily search unavailable: {exc}"
+
+    results: list[dict[str, Any]] = []
+    for item in (payload.get("results") or [])[:limit]:
+        if not isinstance(item, dict):
+            continue
+        title = _normalize_whitespace(item.get("title"))
+        url = _normalize_whitespace(item.get("url"))
+        if not (title or url):
+            continue
+        results.append(
+            {
+                "provider": "tavily",
+                "kind": "web",
+                "title": title,
+                "url": url,
+                "snippet": _truncate_text(_normalize_whitespace(item.get("content"))),
+            }
+        )
+    return results, ""
+
+
+def _search_duckduckgo_html(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
+    """General web search by scraping DuckDuckGo's HTML endpoint (no API key required)."""
+    try:
+        response = requests.get(
+            DUCKDUCKGO_HTML_URL,
+            params={"q": query},
+            headers={"User-Agent": _GENERAL_WEB_USER_AGENT},
+            timeout=RESEARCH_SEARCH_TIMEOUT_SECONDS,
+        )
+        if response.status_code == 429:
+            return [], "DuckDuckGo search throttled; retry later"
+        response.raise_for_status()
+    except Exception as exc:
+        return [], f"DuckDuckGo search unavailable: {exc}"
+    results = _parse_duckduckgo_html(response.text or "", limit)
+    if not results:
+        return [], "DuckDuckGo returned no parseable results"
+    return results, ""
+
+
+def _search_general_web(query: str, limit: int) -> tuple[list[dict[str, Any]], str]:
+    """General-purpose web search: Tavily when keyed (reliable), else DuckDuckGo HTML (free)."""
+    if (os.getenv("TAVILY_API_KEY") or "").strip():
+        results, err = _search_tavily(query, limit)
+        if results or not err:
+            return results, err
+        # Tavily is configured but failed this call — fall back to the free path.
+    return _search_duckduckgo_html(query, limit)
+
+
 def _web_search_provider_order(query: str) -> tuple:
     lowered = query.lower()
     has_code_signal = any(token in lowered for token in (".lean", " coq", " rocq", ".v", " code"))
@@ -293,11 +448,19 @@ def _web_search_provider_order(query: str) -> tuple:
             "formalisation",
         )
     )
+    # General web search is always appended so the model can research arbitrary topics (docs,
+    # installation, math background), not only papers/code. Specialists stay routed by signal.
     if has_code_signal and not has_paper_signal:
-        return (_search_sourcegraph_code,)
+        return (_search_sourcegraph_code, _search_general_web)
     if has_identifier and not has_paper_signal:
-        return (_search_sourcegraph_code,)
-    return (_search_arxiv, _search_semantic_scholar, _search_crossref, _search_sourcegraph_code)
+        return (_search_sourcegraph_code, _search_general_web)
+    return (
+        _search_arxiv,
+        _search_semantic_scholar,
+        _search_crossref,
+        _search_sourcegraph_code,
+        _search_general_web,
+    )
 
 
 def _sourcegraph_queries(query: str, limit: int) -> list[tuple[str, str, str]]:

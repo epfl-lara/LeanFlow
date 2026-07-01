@@ -51,6 +51,18 @@ def test_parse_workflow_command_extracts_provider_override():
     assert spec.provider_override == "codex"
 
 
+def test_parse_workflow_command_extracts_allowed_axioms():
+    spec = parse_workflow_command("/prove Main.lean --axioms my_ax,other_ax")
+
+    assert spec.workflow_args == "Main.lean"
+    assert spec.allowed_axioms == "my_ax,other_ax"
+    # The axiom list is not leaked into the workflow args / backend command.
+    assert "--axioms" not in spec.backend_command
+
+    default_spec = parse_workflow_command("/prove Main.lean")
+    assert default_spec.allowed_axioms == ""
+
+
 def test_parse_workflow_command_extracts_expert_provider_options():
     spec = parse_workflow_command(
         "/prove Main.lean --expert-provider codex --expert-command-template 'codex exec --sandbox read-only -'"
@@ -117,7 +129,7 @@ def test_resolve_workflow_request_uses_swarm_toolset_only_when_user_requests_age
     single = resolve_workflow_request("/autoprove Main.lean", active_cwd=tmp_path)
     swarm = resolve_workflow_request("/autoprove Main.lean --agents 3", active_cwd=tmp_path)
 
-    assert single.toolset_name == "leanflow-native"
+    assert single.toolset_name == "leanflow-prove-worker"
     assert single.child_env["LEANFLOW_NATIVE_USER_APPROVED_SWARM"] == "0"
     assert swarm.toolset_name == "leanflow-native-swarm"
     assert swarm.active_skill == "lean-autonomous-swarm"
@@ -306,7 +318,7 @@ def test_resolve_workflow_request_forces_single_agent_for_file_scoped_prove(monk
     plan = resolve_workflow_request("/autoprove Demo/Main.lean --agents 3", active_cwd=project)
 
     assert plan.workflow.parallel_agents == 1
-    assert plan.toolset_name == "leanflow-native"
+    assert plan.toolset_name == "leanflow-prove-worker"
     assert plan.active_skill == "lean-proof-loop"
     assert plan.child_env["LEANFLOW_NATIVE_USER_APPROVED_SWARM"] == "0"
 

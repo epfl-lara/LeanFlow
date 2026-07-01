@@ -134,6 +134,14 @@ class PatchResult:
     files_deleted: list[str] = field(default_factory=list)
     lint: dict[str, Any] | None = None
     error: str | None = None
+    # Observability (F2): which fuzzy strategy matched and how confidently.
+    # A low-similarity block_anchor/context_aware hit is then distinguishable
+    # from a clean exact match in results and logs.
+    matched_via: str | None = None
+    similarity: float | None = None
+    # Soft read-before-edit nudge (D2): set when the file was edited without
+    # having been read first. Non-fatal — the edit still applied.
+    freshness_warning: str | None = None
 
     def to_dict(self) -> dict:
         result = {"success": self.success}
@@ -147,6 +155,12 @@ class PatchResult:
             result["files_deleted"] = self.files_deleted
         if self.lint:
             result["lint"] = self.lint
+        if self.matched_via:
+            result["matched_via"] = self.matched_via
+        if self.similarity is not None:
+            result["similarity"] = self.similarity
+        if self.freshness_warning:
+            result["freshness_warning"] = self.freshness_warning
         if self.error:
             result["error"] = self.error
         return result
@@ -222,7 +236,7 @@ class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
 
     @abstractmethod
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """Read a file with pagination support."""
         ...
 
@@ -481,6 +495,18 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def read_raw(self, path: str) -> str | None:
+        """Return the raw, undecorated on-disk content, or None if unreadable.
+
+        Used by the read-before-edit freshness check, which must hash the file
+        exactly as it sits on disk — not the paginated, line-numbered view.
+        """
+        path = self._expand_path(path)
+        result = self._exec(f"cat {self._escape_shell_arg(path)} 2>/dev/null")
+        if result.exit_code != 0:
+            return None
+        return result.stdout
+
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
         """Generate unified diff between old and new content."""
         old_lines = old_content.splitlines(keepends=True)
@@ -525,7 +551,7 @@ class ShellFileOperations(FileOperations):
     # READ Implementation
     # =========================================================================
 
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
 
@@ -734,26 +760,26 @@ class ShellFileOperations(FileOperations):
 
         content = read_result.stdout
 
-        # Import and use fuzzy matching
-        from tools.utilities.fuzzy_match import fuzzy_find_and_replace
+        # Import and use fuzzy matching (observable variant: also tells us which
+        # strategy matched and how confidently, so a low-similarity fuzzy hit is
+        # distinguishable from a clean exact match in the result/logs).
+        from tools.utilities.fuzzy_match import fuzzy_find_and_replace_ex
 
-        new_content, match_count, error = fuzzy_find_and_replace(
-            content, old_string, new_string, replace_all
-        )
+        match = fuzzy_find_and_replace_ex(content, old_string, new_string, replace_all)
 
-        if error:
-            return PatchResult(error=error)
+        if match.error:
+            return PatchResult(error=match.error)
 
-        if match_count == 0:
+        if match.count == 0:
             return PatchResult(error=f"Could not find match for old_string in {path}")
 
         # Write back
-        write_result = self.write_file(path, new_content)
+        write_result = self.write_file(path, match.content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
 
         # Generate diff
-        diff = self._unified_diff(content, new_content, path)
+        diff = self._unified_diff(content, match.content, path)
 
         # Auto-lint
         lint_result = self._check_lint(path)
@@ -763,6 +789,8 @@ class ShellFileOperations(FileOperations):
             diff=diff,
             files_modified=[path],
             lint=lint_result.to_dict() if lint_result else None,
+            matched_via=match.strategy,
+            similarity=match.similarity,
         )
 
     def patch_v4a(self, patch_content: str) -> PatchResult:
