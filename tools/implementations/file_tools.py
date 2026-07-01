@@ -367,8 +367,13 @@ def patch_tool(
     patch: str = None,
     task_id: str = "default",
     owner_id: str = "",
+    strict: bool = False,
 ) -> str:
-    """Patch a file using replace mode or V4A patch format."""
+    """Patch a file using replace mode or V4A patch format.
+
+    `strict` makes the edit exact-or-fail (no fuzzy/whitespace relocation) — for
+    high-risk edits where applying to a merely-similar region would be wrong.
+    """
     try:
         file_ops = _get_file_ops(task_id)
         freshness_warning: str | None = None
@@ -387,7 +392,14 @@ def patch_tool(
                 _raw, freshness_warning = _freshness_guard(file_ops, path, task_id)
             except _FreshnessError as fe:
                 return dumps({"success": False, "error": str(fe), "path": path, "stale": True})
-            result = file_ops.patch_replace(path, old_string, new_string, replace_all)
+            # Only forward `strict` when set, so the default call shape (path, old, new,
+            # replace_all) — which callers and tests assert on — is unchanged.
+            if strict:
+                result = file_ops.patch_replace(
+                    path, old_string, new_string, replace_all, strict=True
+                )
+            else:
+                result = file_ops.patch_replace(path, old_string, new_string, replace_all)
             # Refresh the tracked hash to the just-written content so the agent's
             # own edit doesn't make a follow-up edit look stale.
             if getattr(result, "success", False):
@@ -420,7 +432,7 @@ def patch_tool(
                 return dumps({"success": False, "error": str(fe), "stale": True})
             if warnings and not freshness_warning:
                 freshness_warning = " ".join(warnings)
-            result = file_ops.patch_v4a(patch)
+            result = file_ops.patch_v4a(patch, strict=True) if strict else file_ops.patch_v4a(patch)
             # Refresh tracked hashes for the files this patch just wrote.
             if getattr(result, "success", False):
                 for update_path in update_paths:
@@ -627,6 +639,11 @@ PATCH_SCHEMA = {
                 "type": "string",
                 "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch",
             },
+            "strict": {
+                "type": "boolean",
+                "description": "Require an exact match — disable whitespace/fuzzy relocation. Use for high-risk edits where applying to a similar-but-wrong region would be damaging (default: false).",
+                "default": False,
+            },
         },
         "required": ["mode"],
     },
@@ -714,6 +731,7 @@ def _handle_patch(args, **kw):
         patch=args.get("patch"),
         task_id=tid,
         owner_id=owner,
+        strict=args.get("strict", False),
     )
 
 

@@ -8,6 +8,8 @@ agent-facing workflow contract.
 
 from __future__ import annotations
 
+import json
+import os
 import platform
 from pathlib import Path
 from typing import Any
@@ -137,12 +139,60 @@ def _leanflow_action(action: str) -> str:
     }.get(normalized, normalized)
 
 
+# Generous ceiling on a single `feedback` payload. Only bounds pathological tactic dumps that
+# would otherwise dominate the model's context (and be replayed each turn); typical feedback is
+# far smaller and untouched. Override with LEANFLOW_INCREMENTAL_FEEDBACK_MAX_CHARS.
+_DEFAULT_FEEDBACK_MAX_CHARS = 16000
+
+
+def _feedback_max_chars() -> int:
+    """Character ceiling for a feedback payload (env-overridable, positive int)."""
+    try:
+        value = int(os.getenv("LEANFLOW_INCREMENTAL_FEEDBACK_MAX_CHARS", "") or 0)
+    except (TypeError, ValueError):
+        value = 0
+    return value if value > 0 else _DEFAULT_FEEDBACK_MAX_CHARS
+
+
+def _bound_feedback_payload(result: dict[str, Any], max_chars: int) -> dict[str, Any]:
+    """Trim the per-tactic goal/proof-state list of an oversized feedback payload to fit a budget.
+
+    Keeps the head (where the first failure is) and drops trailing tactics until the serialized
+    payload fits; records what was dropped. Non-feedback or already-small payloads are returned as-is.
+    """
+    try:
+        if len(json.dumps(result, ensure_ascii=False)) <= max_chars:
+            return result
+    except (TypeError, ValueError):
+        return result
+    tactics = result.get("tactics")
+    if not isinstance(tactics, list) or len(tactics) <= 1:
+        return result
+    for keep in (40, 20, 10, 5, 2, 1):
+        if keep >= len(tactics):
+            continue
+        trimmed = dict(result)
+        trimmed["tactics"] = tactics[:keep]
+        trimmed["tactics_truncated"] = {"kept": keep, "total": len(tactics)}
+        try:
+            if len(json.dumps(trimmed, ensure_ascii=False)) <= max_chars:
+                return trimmed
+        except (TypeError, ValueError):
+            return result
+    trimmed = dict(result)
+    trimmed["tactics"] = tactics[:1]
+    trimmed["tactics_truncated"] = {"kept": 1, "total": len(tactics)}
+    return trimmed
+
+
 def _normalize_payload(payload: dict[str, Any], action: str) -> dict[str, Any]:
     result = dict(payload)
     result["action"] = action
     result.setdefault("backend", "lean_interact")
     result.setdefault("tool", "lean_probe")
     result["command"] = f"lean_probe {action}"
+    if action == "feedback":
+        result = _bound_feedback_payload(result, _feedback_max_chars())
     return result
 
 

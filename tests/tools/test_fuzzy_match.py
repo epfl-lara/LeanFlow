@@ -1,6 +1,8 @@
 """Tests for the fuzzy matching module."""
 
 from tools.utilities.fuzzy_match import (
+    STRICT_CONFIG,
+    FuzzyConfig,
     fuzzy_find_and_replace,
     fuzzy_find_and_replace_ex,
 )
@@ -119,3 +121,98 @@ class TestStrategyObservability:
         # The legacy 3-tuple API must keep working unchanged.
         new, count, err = fuzzy_find_and_replace("hello world", "hello", "hi")
         assert (new, count, err) == ("hi world", 1, None)
+
+
+# A 5-line block whose anchors (first/last) match but every middle line differs.
+# block_anchor middle similarity lands in the old 0.10..0.30 "accept" band while
+# context_aware sees only 2/5 similar lines — so the ONLY thing that ever matched this
+# was the dangerously-low block_anchor threshold.
+_FALSE_MATCH_CONTENT = (
+    "def anchor_top():\n"
+    "    alpha_value = 111\n"
+    "    beta_value = 222\n"
+    "    gamma_value = 333\n"
+    "    return None\n"
+)
+_FALSE_MATCH_PATTERN = "def anchor_top():\n    Q\n    W\n    E\n    return None"
+
+
+class TestRaisedThresholds:
+    """D3: the old 0.10 block_anchor / 0.5 context_aware thresholds were unsafe."""
+
+    def test_old_permissive_config_accepts_the_false_match(self):
+        # Reconstruct the historical thresholds and confirm they DID accept this block —
+        # so the test below is genuinely guarding against a real regression, not a strawman.
+        legacy = FuzzyConfig(
+            block_anchor_threshold=0.10,
+            context_aware_line_fraction=0.5,
+            context_aware_min_similarity=0.0,
+        )
+        result = fuzzy_find_and_replace_ex(
+            _FALSE_MATCH_CONTENT,
+            _FALSE_MATCH_PATTERN,
+            "def anchor_top():\n    return None",
+            config=legacy,
+        )
+        assert result.count == 1
+        assert result.strategy == "block_anchor"
+
+    def test_safe_defaults_reject_the_false_match(self):
+        # Same inputs, default (safe) config: no strategy should accept it.
+        result = fuzzy_find_and_replace_ex(
+            _FALSE_MATCH_CONTENT,
+            _FALSE_MATCH_PATTERN,
+            "def anchor_top():\n    return None",
+        )
+        assert result.count == 0
+        assert result.error is not None
+        assert result.strategy is None
+
+    def test_multi_candidate_anchor_needs_strong_middle(self):
+        # Two anchor candidates: an ambiguous anchor must not win on a weak middle.
+        content = "H\na b c\nT\nH\np q r\nT\n"
+        pattern = "H\nz z z z\nT"
+        result = fuzzy_find_and_replace_ex(content, pattern, "H\nX\nT")
+        # Weak middle across both candidates -> no confident block_anchor hit.
+        assert result.strategy != "block_anchor" or result.count == 0
+
+
+class TestStrictConfig:
+    """D3: strict = exact-or-fail (no fuzzy, no whitespace normalization)."""
+
+    def test_strict_rejects_whitespace_only_difference(self):
+        content = "def f():\n    return  1\n"  # double space
+        result = fuzzy_find_and_replace_ex(
+            content, "    return 1", "    return 2", config=STRICT_CONFIG
+        )
+        assert result.count == 0
+        assert result.error is not None
+
+    def test_strict_still_applies_exact_match(self):
+        result = fuzzy_find_and_replace_ex("abc def", "abc", "xyz", config=STRICT_CONFIG)
+        assert result.count == 1
+        assert result.strategy == "exact"
+        assert result.content == "xyz def"
+
+
+class TestNearMissSurfacing:
+    """D3: a failed match surfaces the closest region instead of a generic message."""
+
+    def test_failure_carries_near_miss_snippet(self):
+        content = "def compute_total(items):\n    return sum(items)\n"
+        # Close but not matchable: same shape, different identifier.
+        result = fuzzy_find_and_replace_ex(
+            content, "def compute_grand_total(rows):", "def x():", config=STRICT_CONFIG
+        )
+        assert result.count == 0
+        assert result.near_miss is not None
+        assert result.near_miss.similarity > 0.0
+        assert "compute_total" in result.near_miss.snippet
+        assert result.near_miss.line_number == 1
+        # The similarity + snippet are echoed into the human-readable error too.
+        assert "Closest region" in (result.error or "")
+
+    def test_no_near_miss_snippet_for_empty_file(self):
+        result = fuzzy_find_and_replace_ex("", "anything", "x")
+        assert result.count == 0
+        assert result.near_miss is None

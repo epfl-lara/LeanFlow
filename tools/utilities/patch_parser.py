@@ -224,13 +224,17 @@ def parse_v4a_patch(patch_content: str) -> tuple[list[PatchOperation], str | Non
     return operations, None
 
 
-def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> "PatchResult":
+def apply_v4a_operations(
+    operations: list[PatchOperation], file_ops: Any, *, strict: bool = False
+) -> "PatchResult":
     """
     Apply V4A patch operations using a file operations interface.
 
     Args:
         operations: List of PatchOperation from parse_v4a_patch
         file_ops: Object with read_file, write_file methods
+        strict: When True, UPDATE hunks are exact-or-fail (no fuzzy relocation) — for
+            high-risk edits that must never be applied to a merely-similar region.
 
     Returns:
         PatchResult with results of all operations
@@ -274,7 +278,7 @@ def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> "Pa
                     errors.append(f"Failed to move {op.file_path}: {result[1]}")
 
             elif op.operation == OperationType.UPDATE:
-                ok, diff_or_err, strategy, similarity = _apply_update(op, file_ops)
+                ok, diff_or_err, strategy, similarity = _apply_update(op, file_ops, strict=strict)
                 if ok:
                     files_modified.append(op.file_path)
                     all_diffs.append(diff_or_err)
@@ -434,13 +438,158 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
     return True, diff
 
 
-def _apply_update(op: PatchOperation, file_ops: Any) -> tuple[bool, str, str | None, float | None]:
-    """Apply an update file operation.
+# Anchors that scope where a hunk applies. `@@ hint @@` is the explicit V4A form; a
+# bare `def`/`class`/Lean-declaration line inside the hunk context acts as an implicit
+# enclosing-declaration anchor when no `@@` hint is given.
+_DECL_ANCHOR_RE = re.compile(
+    r"^\s*(?:async\s+def\b|def\b|class\b|theorem\b|lemma\b|example\b|structure\b|inductive\b|instance\b)"
+)
 
-    Returns (ok, diff_or_error, matched_via, similarity). The last two surface
-    the least-confident fuzzy strategy used across this file's hunks (F2 observability);
-    they are None when nothing matched fuzzily (e.g. a pure structural hit).
+
+def _hunk_search_replace(hunk: Hunk) -> tuple[str, str]:
+    """Return (search_pattern, replacement) for a hunk from its context/-/+ lines."""
+    search_lines: list[str] = []
+    replace_lines: list[str] = []
+    for line in hunk.lines:
+        if line.prefix == " ":
+            search_lines.append(line.content)
+            replace_lines.append(line.content)
+        elif line.prefix == "-":
+            search_lines.append(line.content)
+        elif line.prefix == "+":
+            replace_lines.append(line.content)
+    return "\n".join(search_lines), "\n".join(replace_lines)
+
+
+def _hunk_anchor(hunk: Hunk) -> str | None:
+    """Return the anchor line that scopes this hunk, or None.
+
+    Prefers the explicit `@@ hint @@`; otherwise falls back to the first
+    enclosing-declaration context line (a `def`/`class`/Lean statement) so a hunk
+    without a hint still gets located inside its own declaration rather than
+    whole-file. Anchors let two identical bodies in different declarations be told apart.
     """
+    if hunk.context_hint:
+        return hunk.context_hint
+    for line in hunk.lines:
+        if line.prefix == " " and _DECL_ANCHOR_RE.match(line.content):
+            return line.content.strip()
+    return None
+
+
+def _anchor_region(content: str, anchor: str) -> tuple[int, int] | None:
+    """Return a (start, end) window around the anchor, or None if not found.
+
+    The window runs from the anchor to just before the next declaration (or a bounded
+    span), so a search/replace within it cannot escape into an unrelated region that
+    happens to hold the same text.
+    """
+    lines = content.split("\n")
+    anchor_norm = anchor.strip()
+    anchor_line = None
+    for i, line in enumerate(lines):
+        if line.strip() == anchor_norm or (anchor_norm and anchor_norm in line):
+            anchor_line = i
+            break
+    if anchor_line is None:
+        return None
+
+    # Extend to the next top-level-ish declaration so the region is the anchor's block.
+    end_line = len(lines)
+    for j in range(anchor_line + 1, len(lines)):
+        if _DECL_ANCHOR_RE.match(lines[j]) and not lines[j][:1].isspace():
+            end_line = j
+            break
+
+    start = sum(len(line) + 1 for line in lines[:anchor_line])
+    end = sum(len(line) + 1 for line in lines[:end_line])
+    return start, min(end, len(content))
+
+
+def _apply_hunk(
+    content: str, hunk: Hunk, config: Any
+) -> tuple[str | None, str | None, str | None, float | None]:
+    """Apply one hunk to `content`, anchor-primary.
+
+    Resolution:
+      * If the hunk has a locatable anchor, that region is AUTHORITATIVE: resolve
+        exact-first then the fuzzy chain strictly inside it, and never edit outside it.
+      * Otherwise (no anchor), resolve against the whole file exact-first; a fuzzy hit is
+        never taken when an exact match exists, and multiple exact matches are refused.
+
+    Returns (new_content|None, error|None, strategy, similarity). new_content is None on
+    failure; error then carries a near-miss snippet when the chain produced one.
+    """
+    from tools.utilities.fuzzy_match import (
+        _strategy_exact,
+        fuzzy_find_and_replace_ex,
+    )
+
+    search_pattern, replacement = _hunk_search_replace(hunk)
+    if not search_pattern:
+        return content, None, None, None
+
+    anchor = _hunk_anchor(hunk)
+    region = _anchor_region(content, anchor) if anchor else None
+
+    # (A) ANCHORED: when the hunk carries a locatable `@@` / enclosing-declaration anchor, the
+    # anchor is AUTHORITATIVE — resolve the hunk (exact-first, then the fuzzy chain) strictly
+    # WITHIN the anchor region and NEVER fall back to the whole file. Otherwise a slightly-drifted
+    # anchored hunk could edit an unrelated region that happens to still contain the old text.
+    if region is not None:
+        r_start, r_end = region
+        window = content[r_start:r_end]
+        wm = fuzzy_find_and_replace_ex(window, search_pattern, replacement, config=config)
+        if wm.count > 0 and wm.error is None:
+            new_content = content[:r_start] + wm.content + content[r_end:]
+            return new_content, None, wm.strategy, wm.similarity
+        return (
+            None,
+            f"Could not apply hunk within its `@@` anchor region: {wm.error or 'no match'}",
+            None,
+            None,
+        )
+
+    # (B) UNANCHORED: resolve against the whole file, exact-first. A single exact match wins; a
+    # fuzzy hit is never taken when an exact match exists; multiple exact matches are ambiguous
+    # and refused rather than guessed.
+    exact_hits = _strategy_exact(content, search_pattern)
+    if len(exact_hits) == 1:
+        start, end = exact_hits[0]
+        return content[:start] + replacement + content[end:], None, "exact", 1.0
+    if len(exact_hits) > 1:
+        return (
+            None,
+            (
+                f"Found {len(exact_hits)} exact matches for the hunk; add a distinguishing "
+                "@@ anchor @@ or more context lines to make it unique."
+            ),
+            None,
+            None,
+        )
+    fm = fuzzy_find_and_replace_ex(content, search_pattern, replacement, config=config)
+    if fm.count > 0 and fm.error is None:
+        return fm.content, None, fm.strategy, fm.similarity
+
+    return None, f"Could not apply hunk: {fm.error}", None, None
+
+
+def _apply_update(
+    op: PatchOperation, file_ops: Any, *, strict: bool = False
+) -> tuple[bool, str, str | None, float | None]:
+    """Apply an update file operation, anchor-primary with a strictness ladder.
+
+    Each hunk is located FIRST inside its anchor region (explicit `@@` hint or enclosing
+    declaration) and applied there, with an exact whole-file pass ahead of any fuzzy
+    strategy; hunks apply top-down over the running content. `strict=True` forbids
+    fuzzy strategies (exact-or-fail) for high-risk edits.
+
+    Returns (ok, diff_or_error, matched_via, similarity). The last two surface the
+    least-confident strategy used across the file's hunks (F2 observability); they are
+    None when nothing matched fuzzily (e.g. a pure exact/structural hit).
+    """
+    from tools.utilities.fuzzy_match import DEFAULT_CONFIG, STRICT_CONFIG
+
     # Read current content RAW. The previous path read line-number-decorated content with a
     # 10000-line cap and then stripped "NNN|" prefixes — which silently lost data on files larger
     # than 10000 lines and corrupted any genuine source line shaped like "  12|x" (Lean tables,
@@ -450,75 +599,26 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> tuple[bool, str, str | N
     if current_content is None:
         return False, f"Cannot read file: {op.file_path}", None, None
 
-    # Apply each hunk
+    config = STRICT_CONFIG if strict else DEFAULT_CONFIG
+
+    # Apply hunks top-down over the running content (offsets fall out naturally because
+    # each hunk re-locates against the already-patched text).
     new_content = current_content
     matched_via: str | None = None
     worst_similarity: float | None = None
 
     for hunk in op.hunks:
-        # Build search pattern from context and removed lines
-        search_lines = []
-        replace_lines = []
+        patched, error, strategy, similarity = _apply_hunk(new_content, hunk, config)
+        if patched is None:
+            return False, error or "Could not apply hunk", None, None
+        new_content = patched
 
-        for line in hunk.lines:
-            if line.prefix == " ":
-                search_lines.append(line.content)
-                replace_lines.append(line.content)
-            elif line.prefix == "-":
-                search_lines.append(line.content)
-            elif line.prefix == "+":
-                replace_lines.append(line.content)
-
-        if search_lines:
-            search_pattern = "\n".join(search_lines)
-            replacement = "\n".join(replace_lines)
-
-            # Use fuzzy matching (observable variant: also reports the strategy).
-            from tools.utilities.fuzzy_match import fuzzy_find_and_replace_ex
-
-            match = fuzzy_find_and_replace_ex(
-                new_content, search_pattern, replacement, replace_all=False
-            )
-            new_content, count, error = match.content, match.count, match.error
-            strategy, similarity = match.strategy, match.similarity
-
-            if error and count == 0:
-                # Try with context hint if available
-                if hunk.context_hint:
-                    # Find the context hint location and search nearby
-                    hint_pos = new_content.find(hunk.context_hint)
-                    if hint_pos != -1:
-                        # Search in a window around the hint
-                        window_start = max(0, hint_pos - 500)
-                        window_end = min(len(new_content), hint_pos + 2000)
-                        window = new_content[window_start:window_end]
-
-                        window_match = fuzzy_find_and_replace_ex(
-                            window, search_pattern, replacement, replace_all=False
-                        )
-                        window_new, count, error = (
-                            window_match.content,
-                            window_match.count,
-                            window_match.error,
-                        )
-                        strategy, similarity = window_match.strategy, window_match.similarity
-
-                        if count > 0:
-                            new_content = (
-                                new_content[:window_start] + window_new + new_content[window_end:]
-                            )
-                            error = None
-
-                if error:
-                    return False, f"Could not apply hunk: {error}", None, None
-
-            # Track the least-confident matched strategy across hunks.
-            if strategy is not None and (
-                worst_similarity is None
-                or (similarity is not None and similarity < worst_similarity)
-            ):
-                matched_via = strategy
-                worst_similarity = similarity
+        # Track the least-confident matched strategy across hunks.
+        if strategy is not None and (
+            worst_similarity is None or (similarity is not None and similarity < worst_similarity)
+        ):
+            matched_via = strategy
+            worst_similarity = similarity
 
     # Write new content
     write_result = file_ops.write_file(op.file_path, new_content)

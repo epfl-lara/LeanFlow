@@ -169,6 +169,61 @@ def test_unreliable_automation_tools_are_not_model_facing():
     assert "lean_auto_try" not in tool_names
 
 
+def test_lean_lemma_suggest_tool_returns_ranked_candidates(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _fake_suggest(file_path, theorem_id, *, cwd=None, max_candidates=12):
+        captured.update(
+            {
+                "file_path": file_path,
+                "theorem_id": theorem_id,
+                "cwd": cwd,
+                "max_candidates": max_candidates,
+            }
+        )
+        return {
+            "success": True,
+            "file_path": file_path,
+            "theorem_id": theorem_id,
+            "queries": ["List.length ≤", "length"],
+            "candidates": [
+                {
+                    "name": "List.length_append",
+                    "signature": "List.length_append : ...",
+                    "provider": "leanexplore",
+                    "why_relevant": "shares goal symbols: List.length",
+                }
+            ],
+            "degraded_reasons": [],
+        }
+
+    monkeypatch.setattr(lean_tool, "lean_lemma_suggest", _fake_suggest)
+
+    payload = json.loads(
+        model_tools.handle_function_call(
+            "lean_lemma_suggest",
+            {"file_path": "Demo/Main.lean", "theorem_id": "demo", "max_candidates": 5},
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["queries"][0] == "List.length ≤"
+    assert payload["candidates"][0]["name"] == "List.length_append"
+    assert captured == {
+        "file_path": "Demo/Main.lean",
+        "theorem_id": "demo",
+        "cwd": None,
+        "max_candidates": 5,
+    }
+
+
+def test_lean_lemma_suggest_and_outline_are_registered():
+    tool_names = set(lean_tool.registry.get_all_tool_names())
+
+    assert "lean_lemma_suggest" in tool_names
+    assert "lean_outline" in tool_names
+
+
 def test_apply_verified_patch_tool_applies_patch_and_records_verified_status(tmp_path, monkeypatch):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     target = tmp_path / "Demo.lean"
