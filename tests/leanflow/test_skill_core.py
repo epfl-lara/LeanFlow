@@ -217,15 +217,18 @@ def test_build_skill_prompt_uses_project_override_source(monkeypatch, tmp_path):
     assert "Project Proof Loop" in prompt
 
 
-def test_builtin_search_skills_are_loadable(monkeypatch, tmp_path):
+def test_builtin_search_skill_is_loadable(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
 
-    mathlib_prompt = build_skill_prompt("lean-mathlib-search", tmp_path)
-    project_prompt = build_skill_prompt("lean-project-search", tmp_path)
+    # The merged lean-search skill must surface both former roles: local-project
+    # context and Mathlib/semantic discovery.
+    prompt = build_skill_prompt("lean-search", tmp_path)
 
-    assert "Mathlib" in mathlib_prompt
-    assert "local Lean project" in project_prompt
+    assert "Mathlib" in prompt
+    assert "local Lean project" in prompt
+    # search.md (kind: helper) links to lean-search, so the spec body must be inlined.
+    assert "[HELPER SPEC: search]".upper() in prompt.upper()
 
 
 def test_theorem_queue_worker_skill_is_loadable(monkeypatch, tmp_path):

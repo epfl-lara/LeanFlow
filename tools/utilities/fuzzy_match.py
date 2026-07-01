@@ -18,6 +18,9 @@ The 8-strategy matching chain (inspired by OpenCode), tried in order:
 
 (The `replace_all` flag is handled as a separate multi-occurrence path, not a chain strategy.)
 
+`fuzzy_find_and_replace_ex` additionally reports which strategy matched and a
+similarity score, so a low-confidence fuzzy hit is observable in tool results.
+
 Usage:
     from tools.utilities.fuzzy_match import fuzzy_find_and_replace
 
@@ -27,11 +30,51 @@ Usage:
         new_string="def bar():",
         replace_all=False
     )
+
+    # Observable variant — also returns the winning strategy + similarity:
+    from tools.utilities.fuzzy_match import fuzzy_find_and_replace_ex
+    result = fuzzy_find_and_replace_ex(content, old, new)
+    result.strategy    # e.g. "context_aware"
+    result.similarity  # e.g. 0.5
 """
 
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from difflib import SequenceMatcher
+
+# Strategies that match the text structurally (exact / whitespace / indentation),
+# i.e. with no similarity-threshold guessing. A hit from one of these is reported
+# as similarity 1.0 — it is, by construction, a faithful match. The two fuzzy
+# strategies (block_anchor, context_aware) report a real measured similarity so a
+# low-confidence hit is visible in results and logs rather than indistinguishable
+# from an exact match.
+_STRUCTURAL_STRATEGIES = frozenset(
+    {
+        "exact",
+        "line_trimmed",
+        "whitespace_normalized",
+        "indentation_flexible",
+        "escape_normalized",
+        "trimmed_boundary",
+    }
+)
+
+
+@dataclass
+class FuzzyMatchResult:
+    """Structured result of a fuzzy find-and-replace, carrying which strategy won.
+
+    strategy/similarity are populated only on a successful replacement; on error
+    or no-match they stay None so callers can branch on `error` exactly as before.
+    """
+
+    content: str
+    count: int
+    error: str | None = None
+    strategy: str | None = None
+    similarity: float | None = None
+
 
 UNICODE_MAP = {
     "\u201c": '"',
@@ -58,6 +101,10 @@ def fuzzy_find_and_replace(
     """
     Find and replace text using a chain of increasingly fuzzy matching strategies.
 
+    Thin 3-tuple wrapper over `fuzzy_find_and_replace_ex` for callers that only
+    need (content, count, error). New code that wants to know *which* strategy
+    matched (and how confidently) should call `fuzzy_find_and_replace_ex`.
+
     Args:
         content: The file content to search in
         old_string: The text to find
@@ -69,11 +116,27 @@ def fuzzy_find_and_replace(
         - If successful: (modified_content, number_of_replacements, None)
         - If failed: (original_content, 0, error_description)
     """
+    result = fuzzy_find_and_replace_ex(content, old_string, new_string, replace_all)
+    return result.content, result.count, result.error
+
+
+def fuzzy_find_and_replace_ex(
+    content: str, old_string: str, new_string: str, replace_all: bool = False
+) -> FuzzyMatchResult:
+    """
+    Find and replace text, also reporting which strategy matched and its similarity.
+
+    Same matching behavior as `fuzzy_find_and_replace` — this only adds observability:
+    on success the result carries the winning strategy name and a similarity score
+    (1.0 for structural strategies; the measured ratio for the two fuzzy strategies),
+    so a low-confidence block_anchor/context_aware hit is no longer indistinguishable
+    from a clean exact match in results and logs.
+    """
     if not old_string:
-        return content, 0, "old_string cannot be empty"
+        return FuzzyMatchResult(content, 0, "old_string cannot be empty")
 
     if old_string == new_string:
-        return content, 0, "old_string and new_string are identical"
+        return FuzzyMatchResult(content, 0, "old_string and new_string are identical")
 
     # Try each matching strategy in order
     strategies: list[tuple[str, Callable]] = [
@@ -93,7 +156,7 @@ def fuzzy_find_and_replace(
         if matches:
             # Found matches with this strategy
             if len(matches) > 1 and not replace_all:
-                return (
+                return FuzzyMatchResult(
                     content,
                     0,
                     (
@@ -104,10 +167,38 @@ def fuzzy_find_and_replace(
 
             # Perform replacement
             new_content = _apply_replacements(content, matches, new_string)
-            return new_content, len(matches), None
+            similarity = _match_similarity(content, old_string, matches, strategy_name)
+            return FuzzyMatchResult(
+                new_content,
+                len(matches),
+                None,
+                strategy=strategy_name,
+                similarity=similarity,
+            )
 
     # No strategy found a match
-    return content, 0, "Could not find a match for old_string in the file"
+    return FuzzyMatchResult(content, 0, "Could not find a match for old_string in the file")
+
+
+def _match_similarity(
+    content: str, pattern: str, matches: list[tuple[int, int]], strategy_name: str
+) -> float:
+    """Return a confidence score for the winning match.
+
+    Structural strategies are faithful by construction -> 1.0. The two fuzzy
+    strategies guess, so we report the worst (minimum) measured ratio across the
+    matched span(s): that is the number that should make a wrong-location hit
+    look suspicious in logs/results.
+    """
+    if strategy_name in _STRUCTURAL_STRATEGIES:
+        return 1.0
+
+    worst = 1.0
+    for start, end in matches:
+        ratio = SequenceMatcher(None, pattern.strip(), content[start:end].strip()).ratio()
+        worst = min(worst, ratio)
+    # Round so the surfaced value stays compact ("similarity": 0.5) in tool JSON.
+    return round(worst, 3)
 
 
 def _apply_replacements(content: str, matches: list[tuple[int, int]], new_string: str) -> str:

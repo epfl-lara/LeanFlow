@@ -55,11 +55,13 @@ from tools.implementations.web_research_providers import (  # noqa: F401
     ARXIV_API_URL,
     CODE_SEARCH_STOPWORDS,
     CROSSREF_SEARCH_URL,
+    DUCKDUCKGO_HTML_URL,
     RESEARCH_SEARCH_TIMEOUT_SECONDS,
     RESEARCH_SEARCH_USER_AGENT,
     SEMANTIC_SCHOLAR_SEARCH_URL,
     SOURCEGRAPH_GRAPHQL_URL,
     SOURCEGRAPH_SEARCH_TIMEOUT_SECONDS,
+    TAVILY_SEARCH_URL,
     _append_unique_result,
     _arxiv_search_query,
     _bounded_limit,
@@ -69,8 +71,11 @@ from tools.implementations.web_research_providers import (  # noqa: F401
     _research_headers,
     _search_arxiv,
     _search_crossref,
+    _search_duckduckgo_html,
+    _search_general_web,
     _search_semantic_scholar,
     _search_sourcegraph_code,
+    _search_tavily,
     _sourcegraph_code_terms,
     _sourcegraph_queries,
     _truncate_text,
@@ -573,6 +578,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             "data": {"web": provider_results},
             "degraded_reasons": degraded_reasons,
         }
+
+        # Surface degraded backends to the model: results may be incomplete, and
+        # web_fetch on a known URL is the reliable fallback for a thin result set.
+        if degraded_reasons:
+            response_data["degraded"] = (
+                "Some search backends were degraded ("
+                + "; ".join(degraded_reasons)
+                + "); results may be incomplete. Try rephrasing, or use web_fetch on a known URL."
+            )
 
         # Capture debug information
         debug_call_data["results_count"] = results_count
@@ -1291,11 +1305,13 @@ from tools.registry import registry
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
     "description": (
-        "Free external research search for papers, source references, docs, public Lean examples outside the "
-        "local project, Coq/Rocq examples, and mathematical context. Do not use this as the first tool for "
-        "theorem/proof lookup: prefer lean_search first for local project facts, mathlib declarations, theorem "
-        "names, type-pattern matching, proof hints, and local examples. Returns up to 5 normalized results with "
-        "provider, kind, title, URL, snippet, and optional paper/code metadata."
+        "General external web search across the open web (DuckDuckGo / Tavily), code (Sourcegraph), and "
+        "papers/related work (arXiv, Semantic Scholar, Crossref). Use it for anything outside the local "
+        "project: background, documentation, installation, similar results, prior formalizations, lemma "
+        "references, and source examples. Pair it with web_fetch to READ a result and web_download to save a "
+        "file (e.g. a PDF). Still prefer lean_search FIRST for local project facts, mathlib declarations, "
+        "theorem names, type-pattern matching, and proof hints. Returns normalized results with provider, kind "
+        "(web/paper/code), title, URL, snippet, and optional paper/code metadata."
     ),
     "parameters": {
         "type": "object",

@@ -30,6 +30,7 @@ from leanflow_cli.config import load_config
 from leanflow_cli.lean.lean_incremental import lean_incremental_check
 from leanflow_cli.lean.lean_services import (
     diagnostic_items,
+    lean_axioms,
     lean_inspect,
     lean_verify,
     probe_capabilities,
@@ -1938,7 +1939,21 @@ def _review_agent_final_report(
                 str(manager_check.get("output", "") or manager_check.get("error", "") or ""),
                 700,
             )
+    # Axiom dependency profile (opt-in): reject a Lean-clean proof that DEPENDS on a disallowed
+    # axiom (sorryAx / native_decide / a custom axiom) — the per-edit declaration guard can't see
+    # transitive axiom use. Runs only when the declaration otherwise passed.
+    axiom_blockers: list[str] = []
+    if bool(manager_check.get("ok")) and _axiom_profile_check_enabled():
+        axiom_blockers, axiom_output = _manager_axiom_profile_blocker(active_file, target_symbol)
+        if axiom_blockers:
+            manager_check["ok"] = False
+            manager_check["axiom_violation"] = axiom_blockers
+            manager_check["output"] = axiom_output
+            manager_check["diagnostics"] = _single_line(axiom_output, 700)
     feedback_kind = _manager_feedback_kind(active_file, target_symbol, manager_check)
+    if axiom_blockers and not feedback_kind:
+        # A disallowed axiom dependency is a hard blocker even when the file has no error/sorry.
+        feedback_kind = "error"
     if feedback_kind:
         manager_check["feedback_kind"] = feedback_kind
     retry_count = 0
@@ -2856,6 +2871,47 @@ def _allowed_axioms() -> set[str]:
         if token:
             allowed.add(token)
     return allowed
+
+
+def _axiom_profile_check_enabled() -> bool:
+    """Whether to enforce the allowed-axiom set on the `#print axioms` profile at acceptance.
+
+    Default off: it adds a Lean (`lake env lean`) call per accepted declaration. When enabled,
+    a Lean-clean proof is still rejected if it DEPENDS on a disallowed axiom (e.g. `sorryAx`,
+    `Lean.ofReduceBool` from `native_decide`, or a user-declared axiom) — which the per-edit
+    declaration guard cannot detect. Opt in with LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK=1.
+    """
+    raw = _read_text_env("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _manager_axiom_profile_blocker(active_file: str, target_symbol: str) -> tuple[list[str], str]:
+    """Return (disallowed_axioms, message) for an accepted declaration's axiom dependency profile.
+
+    Runs `lean_axioms` (#print axioms) and flags any axiom the declaration depends on that is not in
+    the allowed set. Empty list means clean. Best-effort: a failed/empty axiom report does not block.
+    """
+    if not active_file or not target_symbol:
+        return [], ""
+    try:
+        report = lean_axioms(target_symbol, file_path=active_file)
+    except Exception:
+        return [], ""
+    axioms = list(getattr(report, "axioms", []) or [])
+    if not axioms and not getattr(report, "ok", True):
+        # Could not produce a profile (module/build issue) — do not block on a non-result.
+        return [], ""
+    allowed = _allowed_axioms()
+    disallowed = sorted(axiom for axiom in axioms if axiom not in allowed)
+    if not disallowed:
+        return [], ""
+    names = ", ".join(disallowed)
+    message = (
+        f"axiom guard: `{target_symbol}` verifies but DEPENDS on disallowed axiom(s): {names}. "
+        "A proof that relies on `sorryAx` or non-standard/user axioms is not accepted; remove the "
+        "axiom dependency (no `sorry`, `native_decide`, or custom axioms) or allowlist it via --axioms."
+    )
+    return disallowed, message
 
 
 def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:

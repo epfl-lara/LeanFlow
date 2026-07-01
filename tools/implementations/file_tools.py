@@ -10,6 +10,12 @@ from agent.accounting.redact import redact_sensitive_text
 from leanflow_cli.runtime.file_locks import ensure_file_lock
 from tools.implementations.file_operations import ShellFileOperations
 from tools.response import dumps, error
+from tools.utilities.read_freshness import (
+    check_freshness,
+    clear_freshness,
+    note_write,
+    record_read,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +187,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             result.content = redact_sensitive_text(result.content)
         result_dict = result.to_dict()
 
+        # D2 read-before-edit freshness: record the hash of the raw on-disk file
+        # so a later patch can detect it editing stale content. We hash the full
+        # raw file (not the paginated view) and tolerate read_raw being absent or
+        # non-str (e.g. mocked) — freshness is best-effort, never blocks a read.
+        if not getattr(result, "error", None):
+            try:
+                raw = file_ops.read_raw(path)
+                if isinstance(raw, str):
+                    record_read(task_id, path, raw)
+            except Exception:
+                pass
+
         # Track reads to detect *consecutive* re-read loops.
         # The counter resets whenever any other tool is called in between,
         # so only truly back-to-back identical reads trigger warnings/blocks.
@@ -256,6 +274,8 @@ def clear_read_tracker(task_id: str = None):
             _read_tracker.pop(task_id, None)
         else:
             _read_tracker.clear()
+    # Keep freshness hashes in lockstep so neither outlives the session.
+    clear_freshness(task_id)
 
 
 def notify_other_tool_call(task_id: str = "default"):
@@ -294,13 +314,48 @@ def write_file_tool(path: str, content: str, task_id: str = "default", owner_id:
                 return dumps(conflict)
         file_ops = _get_file_ops(task_id)
         result = file_ops.write_file(path, content)
-        return dumps(result.to_dict())
+        result_dict = result.to_dict()
+        # Record the just-written content so a subsequent patch of this file isn't
+        # hard-rejected as "stale" against the agent's own write (D2 freshness).
+        if not result_dict.get("error"):
+            note_write(task_id, path, content)
+        return dumps(result_dict)
     except Exception as e:
         if _is_expected_write_exception(e):
             logger.debug("write_file expected denial: %s: %s", type(e).__name__, e)
         else:
             logger.error("write_file error: %s: %s", type(e).__name__, e, exc_info=True)
         return error(str(e))
+
+
+def _freshness_guard(file_ops, path: str, task_id: str) -> tuple[str | None, str | None]:
+    """Enforce the read-before-edit contract for a single-file edit.
+
+    Returns (current_raw, warning):
+      * Raises FreshnessError when the on-disk content changed since the agent
+        last read it — a hard reject, because the edit is based on stale content.
+      * Returns a soft warning string (not an error) when the file was never read.
+    Best-effort: if the raw content is unavailable (e.g. mocked or unreadable),
+    returns (None, None) and the edit proceeds unguarded, so existing flows that
+    legitimately patch without reading are never broken.
+    """
+    try:
+        raw = file_ops.read_raw(path)
+    except Exception:
+        return None, None
+    if not isinstance(raw, str):
+        return None, None
+
+    verdict = check_freshness(task_id, path, raw)
+    if verdict.status == "stale":
+        raise _FreshnessError(verdict.message)
+    if verdict.status == "never_read":
+        return raw, verdict.message
+    return raw, None
+
+
+class _FreshnessError(Exception):
+    """Raised when a patch would edit content that changed since the last read."""
 
 
 def patch_tool(
@@ -316,6 +371,7 @@ def patch_tool(
     """Patch a file using replace mode or V4A patch format."""
     try:
         file_ops = _get_file_ops(task_id)
+        freshness_warning: str | None = None
 
         if mode == "replace":
             if not path:
@@ -326,15 +382,61 @@ def patch_tool(
                 conflict = _guard_file_lock(path, owner_id, "patch")
                 if conflict:
                     return dumps(conflict)
+            # D2 read-before-edit: hard-reject a stale edit, soft-warn a never-read one.
+            try:
+                _raw, freshness_warning = _freshness_guard(file_ops, path, task_id)
+            except _FreshnessError as fe:
+                return dumps({"success": False, "error": str(fe), "path": path, "stale": True})
             result = file_ops.patch_replace(path, old_string, new_string, replace_all)
+            # Refresh the tracked hash to the just-written content so the agent's
+            # own edit doesn't make a follow-up edit look stale.
+            if getattr(result, "success", False):
+                try:
+                    new_raw = file_ops.read_raw(path)
+                    if isinstance(new_raw, str):
+                        note_write(task_id, path, new_raw)
+                except Exception:
+                    pass
         elif mode == "patch":
             if not patch:
                 return json.dumps({"error": "patch content required"})
+            # D2 read-before-edit for V4A: reject if any UPDATE target changed since last read,
+            # soft-warn for never-read targets — mirroring replace mode, which the schema promises.
+            from tools.utilities.patch_parser import OperationType, parse_v4a_patch
+
+            ops, _parse_err = parse_v4a_patch(patch)
+            update_paths = [
+                op.file_path
+                for op in (ops or [])
+                if op.operation in (OperationType.UPDATE, OperationType.MOVE)
+            ]
+            warnings: list[str] = []
+            try:
+                for update_path in update_paths:
+                    _raw, warning = _freshness_guard(file_ops, update_path, task_id)
+                    if warning:
+                        warnings.append(warning)
+            except _FreshnessError as fe:
+                return dumps({"success": False, "error": str(fe), "stale": True})
+            if warnings and not freshness_warning:
+                freshness_warning = " ".join(warnings)
             result = file_ops.patch_v4a(patch)
+            # Refresh tracked hashes for the files this patch just wrote.
+            if getattr(result, "success", False):
+                for update_path in update_paths:
+                    try:
+                        new_raw = file_ops.read_raw(update_path)
+                        if isinstance(new_raw, str):
+                            note_write(task_id, update_path, new_raw)
+                    except Exception:
+                        pass
         else:
             return json.dumps({"error": f"Unknown mode: {mode}"})
 
         result_dict = result.to_dict()
+        # Surface the never-read nudge without changing the edit outcome.
+        if freshness_warning and not result_dict.get("freshness_warning"):
+            result_dict["freshness_warning"] = freshness_warning
         result_json = dumps(result_dict)
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
@@ -494,7 +596,7 @@ WRITE_FILE_SCHEMA = {
 
 PATCH_SCHEMA = {
     "name": "patch",
-    "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (8 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nReplace mode (default): find a unique string and replace it.\nPatch mode: apply V4A multi-file patches for bulk changes.",
+    "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (8 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff and reports which strategy matched ('matched_via') and its confidence ('similarity'); a low similarity means the match was approximate, so verify the diff. Auto-runs syntax checks after editing. Editing a file whose on-disk content changed since you last read it is rejected — re-read first.\n\nReplace mode (default): find a unique string and replace it.\nPatch mode: apply V4A multi-file patches for bulk changes.",
     "parameters": {
         "type": "object",
         "properties": {

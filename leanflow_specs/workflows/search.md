@@ -3,7 +3,7 @@ id: search
 kind: helper
 title: Search
 summary: Unified Lean search helper that prefers MCP/LSP providers and falls back to native project and mathlib ripgrep search with provider provenance.
-skills: [lean-mathlib-search, lean-project-search]
+skills: [lean-search]
 tools: [lean_capabilities, lean_search]
 route_actions: [search]
 ---

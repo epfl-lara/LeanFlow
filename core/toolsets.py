@@ -4,7 +4,7 @@
 from typing import Any
 
 _FILE_TOOLS = ["read_file", "write_file", "patch", "search_files"]
-_WEB_TOOLS = ["web_search"]
+_WEB_TOOLS = ["web_search", "web_fetch", "web_download"]
 _TERMINAL_TOOLS = ["terminal"]
 _SKILL_TOOLS = ["skills_list", "skill_view"]
 _SESSION_TOOLS = ["session_search"]

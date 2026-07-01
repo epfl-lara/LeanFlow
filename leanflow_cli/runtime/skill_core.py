@@ -18,12 +18,9 @@ CURATED_BUILTIN_SKILLS = {
     "lean-formalization",
     "lean-refactor-golf",
     "lean-autonomous-swarm",
-    "lean-mathlib-search",
-    "lean-project-search",
+    "lean-search",
     "lean-reasoning-help",
     "lean-theorem-queue-worker",
-    "provider-fallback",
-    "long-session-resume",
 }
 
 PROJECT_SKILL_DIRNAME = ".leanflow"
