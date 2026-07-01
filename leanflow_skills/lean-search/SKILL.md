@@ -5,12 +5,9 @@ description: Native Lean search entry. Use the shared `lean_search` surface firs
 
 # Native Lean Search
 
-This skill is the single search entry for LeanFlow. It merges the former
-`lean-mathlib-search` and `lean-project-search` skills: both only wrapped the
-shared `lean_search` surface and both linked the same `search.md` spec, so they
-were genuinely redundant. The two former roles are now expressed as *modes* of
-one skill (local-project context vs. Mathlib/semantic discovery) rather than two
-near-identical entries.
+The single search entry for LeanFlow: use the shared `lean_search` surface across
+local-project and Mathlib/semantic modes, with provider-aware fallbacks and result
+provenance.
 
 Primary spec:
 
