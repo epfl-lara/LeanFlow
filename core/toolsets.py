@@ -22,6 +22,8 @@ _LEAN_TOOLS = [
     "lean_proof_context",
     "lean_multi_attempt",
     "lean_auto_search",
+    "lean_lemma_suggest",
+    "lean_outline",
     "apply_verified_patch",
     "lean_reasoning_help",
     "lean_decompose_helpers",

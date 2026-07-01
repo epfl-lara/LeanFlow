@@ -17,7 +17,6 @@ _MODULE_EXPORTS = {
     "tools.implementations.web_tools": (
         "web_search_tool",
         "web_extract_tool",
-        "web_crawl_tool",
         "check_firecrawl_api_key",
     ),
     "tools.implementations.terminal_tool": (

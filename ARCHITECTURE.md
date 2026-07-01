@@ -199,7 +199,12 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 ### From `lean_services.py`
 
 - `lean_diagnostics.py` — diagnostic/blocker/goal text parsers (incl. the backtracking-fixed `diagnostic_items`).
-- `lean_declarations.py` — pure path-based Lean declaration indexing / lookup helpers.
+- `lean_declarations.py` — pure path-based Lean declaration indexing / lookup helpers, plus the
+  token-cheap `declaration_outline` / `declaration_region` readers backing the `lean_outline` tool.
+- `lean_lemma_suggest.py` — goal->candidate-lemma retriever: reads the assigned declaration's
+  goal/hypotheses (via `lean_proof_context` / `lean_inspect`, resolved lazily off `lean_services`),
+  derives targeted queries, runs `lean_search` across modes, and dedupes/ranks candidates. Backs
+  the `lean_lemma_suggest` tool.
 - `lean_search_providers.py` — stateless Lean search-provider helpers.
 - `lean_automation.py` — pure Lean auto-prove normalization / parsing helpers.
 - `lean_attempt_helpers.py` — pure multi-attempt / path / comment text helpers.

@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+from leanflow_cli.lean.lean_declarations import declaration_outline, declaration_region
 from leanflow_cli.lean.lean_incremental import lean_incremental_check
+from leanflow_cli.lean.lean_lemma_suggest import lean_lemma_suggest
 from leanflow_cli.lean.lean_services import (
     LEAN_WORKER_DISPATCH_ENABLED,
     LeanWorkerRequest,
@@ -229,6 +232,56 @@ def lean_auto_search_tool(
     )
 
 
+def lean_lemma_suggest_tool(
+    file_path: str,
+    theorem_id: str,
+    *,
+    cwd: str = "",
+    max_candidates: int = 12,
+) -> str:
+    return json.dumps(
+        lean_lemma_suggest(
+            file_path,
+            theorem_id,
+            cwd=cwd or None,
+            max_candidates=max_candidates,
+        ),
+        ensure_ascii=False,
+    )
+
+
+def lean_outline_tool(file_path: str, *, symbol: str = "", cwd: str = "") -> str:
+    path = Path(str(file_path or "").strip()).expanduser()
+    if not path.is_absolute() and cwd:
+        path = (Path(cwd).expanduser() / path).resolve()
+    wanted = str(symbol or "").strip()
+    if wanted:
+        region = declaration_region(path, wanted)
+        return json.dumps(
+            {
+                "success": region is not None,
+                "file_path": str(path),
+                "symbol": wanted,
+                "declaration": region,
+                **({} if region is not None else {"error": f"declaration not found: {wanted}"}),
+            },
+            ensure_ascii=False,
+        )
+    outline = declaration_outline(path)
+    return json.dumps(
+        {
+            "success": True,
+            "file_path": str(path),
+            "count": len(outline),
+            "outline": [
+                f"{row['kind']} {row['name']} L{row['line']}-{row['end_line']}" for row in outline
+            ],
+            "declarations": outline,
+        },
+        ensure_ascii=False,
+    )
+
+
 LEAN_CAPABILITIES_SCHEMA = {
     "name": "lean_capabilities",
     "description": (
@@ -444,6 +497,56 @@ LEAN_AUTO_SEARCH_SCHEMA = {
             "cwd": {"type": "string", "description": "Optional working directory"},
         },
         "required": ["file_path", "theorem_id"],
+    },
+}
+
+LEAN_LEMMA_SUGGEST_SCHEMA = {
+    "name": "lean_lemma_suggest",
+    "description": (
+        "Given the assigned declaration, read its goal/hypotheses, derive a few targeted queries "
+        "(conclusion head symbol, key operators, hypothesis types), search semantic + type-pattern "
+        "modes, and return a ranked candidate-lemma list (name, signature, provider, why_relevant). "
+        "Use before hand-searching to find existing lemmas that likely close or advance the goal; "
+        "check `degraded_reasons` when candidates is empty."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Lean file containing the declaration"},
+            "theorem_id": {"type": "string", "description": "Assigned declaration name"},
+            "cwd": {"type": "string", "description": "Optional working directory"},
+            "max_candidates": {
+                "type": "integer",
+                "description": "Maximum ranked candidates to return",
+                "default": 12,
+            },
+        },
+        "required": ["file_path", "theorem_id"],
+    },
+}
+
+LEAN_OUTLINE_SCHEMA = {
+    "name": "lean_outline",
+    "description": (
+        "Return a token-cheap outline of a Lean file: one line per top-level declaration as "
+        "`kind name Lstart-Lend`. Pass `symbol` to instead return just that declaration's "
+        "kind/name/line range and full source text. Use to map a file or fetch one declaration "
+        "without reading the whole file."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Lean file to outline"},
+            "symbol": {
+                "type": "string",
+                "description": "Optional declaration name; returns just that declaration's source region",
+            },
+            "cwd": {
+                "type": "string",
+                "description": "Optional working directory for relative paths",
+            },
+        },
+        "required": ["file_path"],
     },
 }
 
@@ -735,6 +838,31 @@ registry.register(
     ),
     check_fn=check_lean_requirements,
     emoji="🛰️",
+)
+registry.register(
+    name="lean_lemma_suggest",
+    toolset="lean",
+    schema=LEAN_LEMMA_SUGGEST_SCHEMA,
+    handler=lambda args, **kw: lean_lemma_suggest_tool(
+        file_path=args.get("file_path", ""),
+        theorem_id=args.get("theorem_id", ""),
+        cwd=args.get("cwd", ""),
+        max_candidates=int(args.get("max_candidates", 12) or 12),
+    ),
+    check_fn=check_lean_requirements,
+    emoji="🧩",
+)
+registry.register(
+    name="lean_outline",
+    toolset="lean",
+    schema=LEAN_OUTLINE_SCHEMA,
+    handler=lambda args, **kw: lean_outline_tool(
+        file_path=args.get("file_path", ""),
+        symbol=args.get("symbol", ""),
+        cwd=args.get("cwd", ""),
+    ),
+    check_fn=check_lean_requirements,
+    emoji="🗂️",
 )
 registry.register(
     name="apply_verified_patch",

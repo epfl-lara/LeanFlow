@@ -9,7 +9,6 @@ only used for optional extraction/crawling when explicitly configured.
 Available tools:
 - web_search_tool: Search free public research providers
 - web_extract_tool: Extract content from specific web pages
-- web_crawl_tool: Crawl websites with specific instructions
 
 Backend compatibility:
 - arXiv API: https://info.arxiv.org/help/api/
@@ -27,7 +26,7 @@ Debug Mode:
 - Captures all tool calls, results, and compression metrics
 
 Usage:
-    from web_tools import web_search_tool, web_extract_tool, web_crawl_tool
+    from web_tools import web_search_tool, web_extract_tool
 
     # Search external research sources
     results = web_search_tool("prime number theorem formalization Lean", limit=3)
@@ -35,8 +34,6 @@ Usage:
     # Extract content from URLs
     content = web_extract_tool(["https://example.com"], format="markdown")
 
-    # Crawl a website
-    crawl_data = web_crawl_tool("example.com", "Find contact information")
 """
 
 # TODO: Search Capabilities over the scraped pages
@@ -171,7 +168,7 @@ async def process_content_with_llm(
         if content_len > MAX_CONTENT_SIZE:
             size_mb = content_len / 1_000_000
             logger.warning("Content too large (%.1fMB > 2MB limit). Refusing to process.", size_mb)
-            return f"[Content too large to process: {size_mb:.1f}MB. Try using web_crawl with specific extraction instructions, or search for a more focused source.]"
+            return f"[Content too large to process: {size_mb:.1f}MB. Search for a more focused source, or fetch a specific sub-page.]"
 
         # Skip processing if content is too short
         if content_len < min_length:
@@ -885,292 +882,6 @@ async def web_extract_tool(
         return error(error_msg)
 
 
-async def web_crawl_tool(
-    url: str,
-    instructions: str = None,
-    depth: str = "basic",
-    use_llm_processing: bool = True,
-    model: str = DEFAULT_SUMMARIZER_MODEL,
-    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
-) -> str:
-    """
-    Crawl a website with specific instructions using available crawling API backend.
-
-    This function provides a generic interface for web crawling that can work
-    with multiple backends. Currently uses Firecrawl.
-
-    Args:
-        url (str): The base URL to crawl (can include or exclude https://)
-        instructions (str): Instructions for what to crawl/extract using LLM intelligence (optional)
-        depth (str): Depth of extraction ("basic" or "advanced", default: "basic")
-        use_llm_processing (bool): Whether to process content with LLM for summarization (default: True)
-        model (str): The model to use for LLM processing (default: google/gemini-3-flash-preview)
-        min_length (int): Minimum content length to trigger LLM processing (default: 5000)
-
-    Returns:
-        str: JSON string containing crawled content. If LLM processing is enabled and successful,
-             the 'content' field will contain the processed markdown summary instead of raw content.
-             Each page is processed individually.
-
-    Raises:
-        Exception: If crawling fails or API key is not set
-    """
-    debug_call_data = {
-        "parameters": {
-            "url": url,
-            "instructions": instructions,
-            "depth": depth,
-            "use_llm_processing": use_llm_processing,
-            "model": model,
-            "min_length": min_length,
-        },
-        "error": None,
-        "pages_crawled": 0,
-        "pages_processed_with_llm": 0,
-        "original_response_size": 0,
-        "final_response_size": 0,
-        "compression_metrics": [],
-        "processing_applied": [],
-    }
-
-    try:
-        # Ensure URL has protocol
-        if not url.startswith(("http://", "https://")):
-            url = f"https://{url}"
-            logger.info("Added https:// prefix to URL: %s", url)
-
-        instructions_text = f" with instructions: '{instructions}'" if instructions else ""
-        logger.info("Crawling %s%s", url, instructions_text)
-
-        # Use Firecrawl's v2 crawl functionality
-        # Docs: https://docs.firecrawl.dev/features/crawl
-        # The crawl() method automatically waits for completion and returns all data
-
-        # Build crawl parameters - keep it simple
-        crawl_params = {
-            "limit": 20,  # Limit number of pages to crawl
-            "scrape_options": {"formats": ["markdown"]},  # Just markdown for simplicity
-        }
-
-        # Note: The 'prompt' parameter is not documented for crawl
-        # Instructions are typically used with the Extract endpoint, not Crawl
-        if instructions:
-            logger.info("Instructions parameter ignored (not supported in crawl API)")
-
-        from tools.utilities.interrupt import is_interrupted as _is_int
-
-        if _is_int():
-            return json.dumps({"error": "Interrupted", "success": False})
-
-        try:
-            crawl_result = _get_firecrawl_client().crawl(url=url, **crawl_params)
-        except Exception as e:
-            logger.debug("Crawl API call failed: %s", e)
-            raise
-
-        pages: list[dict[str, Any]] = []
-
-        # Process crawl results - the crawl method returns a CrawlJob object with data attribute
-        data_list = []
-
-        # The crawl_result is a CrawlJob object with a 'data' attribute containing list of Document objects
-        if hasattr(crawl_result, "data"):
-            data_list = crawl_result.data if crawl_result.data else []
-            logger.info("Status: %s", getattr(crawl_result, "status", "unknown"))
-            logger.info("Retrieved %d pages", len(data_list))
-
-            # Debug: Check other attributes if no data
-            if not data_list:
-                logger.debug(
-                    "CrawlJob attributes: %s",
-                    [attr for attr in dir(crawl_result) if not attr.startswith("_")],
-                )
-                logger.debug("Status: %s", getattr(crawl_result, "status", "N/A"))
-                logger.debug("Total: %s", getattr(crawl_result, "total", "N/A"))
-                logger.debug("Completed: %s", getattr(crawl_result, "completed", "N/A"))
-
-        elif isinstance(crawl_result, dict) and "data" in crawl_result:
-            data_list = crawl_result.get("data", [])
-        else:
-            logger.warning("Unexpected crawl result type")
-            logger.debug("Result type: %s", type(crawl_result))
-            if hasattr(crawl_result, "__dict__"):
-                logger.debug("Result attributes: %s", list(crawl_result.__dict__.keys()))
-
-        for item in data_list:
-            # Process each crawled page - properly handle object serialization
-            page_url = "Unknown URL"
-            title = ""
-            content_markdown = None
-            content_html = None
-            metadata = {}
-
-            # Extract data from the item
-            if hasattr(item, "model_dump"):
-                # Pydantic model - use model_dump to get dict
-                item_dict = item.model_dump()
-                content_markdown = item_dict.get("markdown")
-                content_html = item_dict.get("html")
-                metadata = item_dict.get("metadata", {})
-            elif hasattr(item, "__dict__"):
-                # Regular object with attributes
-                content_markdown = getattr(item, "markdown", None)
-                content_html = getattr(item, "html", None)
-
-                # Handle metadata - convert to dict if it's an object
-                metadata_obj = getattr(item, "metadata", {})
-                if hasattr(metadata_obj, "model_dump"):
-                    metadata = metadata_obj.model_dump()
-                elif hasattr(metadata_obj, "__dict__"):
-                    metadata = metadata_obj.__dict__
-                elif isinstance(metadata_obj, dict):
-                    metadata = metadata_obj
-                else:
-                    metadata = {}
-            elif isinstance(item, dict):
-                # Already a dictionary
-                content_markdown = item.get("markdown")
-                content_html = item.get("html")
-                metadata = item.get("metadata", {})
-
-            # Ensure metadata is a dict (not an object)
-            if not isinstance(metadata, dict):
-                if hasattr(metadata, "model_dump"):
-                    metadata = metadata.model_dump()
-                elif hasattr(metadata, "__dict__"):
-                    metadata = metadata.__dict__
-                else:
-                    metadata = {}
-
-            # Extract URL and title from metadata
-            page_url = metadata.get("sourceURL", metadata.get("url", "Unknown URL"))
-            title = metadata.get("title", "")
-
-            # Choose content (prefer markdown)
-            content = content_markdown or content_html or ""
-
-            pages.append(
-                {
-                    "url": page_url,
-                    "title": title,
-                    "content": content,
-                    "raw_content": content,
-                    "metadata": metadata,  # Now guaranteed to be a dict
-                }
-            )
-
-        response = {"results": pages}
-
-        pages_crawled = len(response.get("results", []))
-        logger.info("Crawled %d pages", pages_crawled)
-
-        debug_call_data["pages_crawled"] = pages_crawled
-        debug_call_data["original_response_size"] = len(json.dumps(response))
-
-        # Process each result with LLM if enabled
-        if use_llm_processing:
-            logger.info("Processing crawled content with LLM (parallel)...")
-            debug_call_data["processing_applied"].append("llm_processing")
-
-            # Prepare tasks for parallel processing
-            async def process_single_crawl_result(result):
-                """Process a single crawl result with LLM and return updated result with metrics."""
-                page_url = result.get("url", "Unknown URL")
-                title = result.get("title", "")
-                content = result.get("content", "")
-
-                if not content:
-                    return result, None, "no_content"
-
-                original_size = len(content)
-
-                # Process content with LLM
-                processed = await process_content_with_llm(
-                    content, page_url, title, model, min_length
-                )
-
-                if processed:
-                    processed_size = len(processed)
-                    compression_ratio = processed_size / original_size if original_size > 0 else 1.0
-
-                    # Update result with processed content
-                    result["raw_content"] = content
-                    result["content"] = processed
-
-                    metrics = {
-                        "url": page_url,
-                        "original_size": original_size,
-                        "processed_size": processed_size,
-                        "compression_ratio": compression_ratio,
-                        "model_used": model,
-                    }
-                    return result, metrics, "processed"
-                else:
-                    metrics = {
-                        "url": page_url,
-                        "original_size": original_size,
-                        "processed_size": original_size,
-                        "compression_ratio": 1.0,
-                        "model_used": None,
-                        "reason": "content_too_short",
-                    }
-                    return result, metrics, "too_short"
-
-            # Run all LLM processing in parallel
-            results_list = response.get("results", [])
-            tasks = [process_single_crawl_result(result) for result in results_list]
-            processed_results = await asyncio.gather(*tasks)
-
-            # Collect metrics and print results
-            for result, metrics, status in processed_results:
-                page_url = result.get("url", "Unknown URL")
-                if status == "processed":
-                    debug_call_data["compression_metrics"].append(metrics)
-                    debug_call_data["pages_processed_with_llm"] += 1
-                    logger.info("%s (processed)", page_url)
-                elif status == "too_short":
-                    debug_call_data["compression_metrics"].append(metrics)
-                    logger.info("%s (no processing - content too short)", page_url)
-                else:
-                    logger.warning("%s (no content to process)", page_url)
-        else:
-            # Print summary of crawled pages for debugging (original behavior)
-            for result in response.get("results", []):
-                page_url = result.get("url", "Unknown URL")
-                content_length = len(result.get("content", ""))
-                logger.info("%s (%d characters)", page_url, content_length)
-
-        # Trim output to minimal fields per entry: title, content, error
-        trimmed_results = [
-            {"title": r.get("title", ""), "content": r.get("content", ""), "error": r.get("error")}
-            for r in response.get("results", [])
-        ]
-        trimmed_response = {"results": trimmed_results}
-
-        result_json = dumps(trimmed_response, indent=2)
-        # Clean base64 images from crawled content
-        cleaned_result = clean_base64_images(result_json)
-
-        debug_call_data["final_response_size"] = len(cleaned_result)
-        debug_call_data["processing_applied"].append("base64_image_removal")
-
-        # Log debug information
-        _debug.log_call("web_crawl_tool", debug_call_data)
-        _debug.save()
-
-        return cleaned_result
-
-    except Exception as e:
-        error_msg = f"Error crawling website: {str(e)}"
-        logger.debug("%s", error_msg)
-
-        debug_call_data["error"] = error_msg
-        _debug.log_call("web_crawl_tool", debug_call_data)
-        _debug.save()
-
-        return error(error_msg)
-
-
 # Convenience function to check if API key is available
 def check_firecrawl_api_key() -> bool:
     """
@@ -1253,7 +964,7 @@ if __name__ == "__main__":
         print("🐛 Debug mode disabled (set WEB_TOOLS_DEBUG=true to enable)")
 
     print("\nBasic usage:")
-    print("  from web_tools import web_search_tool, web_extract_tool, web_crawl_tool")
+    print("  from web_tools import web_search_tool, web_extract_tool")
     print("  import asyncio")
     print("")
     print("  # Search (synchronous)")
@@ -1262,7 +973,6 @@ if __name__ == "__main__":
     print("  # Extract and crawl (asynchronous)")
     print("  async def main():")
     print("      content = await web_extract_tool(['https://example.com'])")
-    print("      crawl_data = await web_crawl_tool('example.com', 'Find docs')")
     print("  asyncio.run(main())")
 
     if nous_available:
@@ -1271,7 +981,6 @@ if __name__ == "__main__":
         print("  content = await web_extract_tool(['https://python.org/about/'])")
         print("")
         print("  # Customize processing parameters")
-        print("  crawl_data = await web_crawl_tool(")
         print("      'docs.python.org',")
         print("      'Find key concepts',")
         print("      model='google/gemini-3-flash-preview',")

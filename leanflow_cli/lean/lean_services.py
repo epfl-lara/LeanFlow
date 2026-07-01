@@ -66,6 +66,8 @@ from leanflow_cli.lean.lean_declarations import (  # noqa: E402
     _declaration_index,
     _find_declaration_entry,
     _find_symbol_line,
+    declaration_outline,  # noqa: F401
+    declaration_region,  # noqa: F401
 )
 
 # Phase 5: pure diagnostic / blocker / goal text parsers were extracted to lean_diagnostics.

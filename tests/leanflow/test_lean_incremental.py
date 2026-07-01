@@ -305,3 +305,28 @@ def test_capabilities_keep_leanflow_strict_local_repl_semantics(monkeypatch, tmp
         {"project_root": str(project.resolve()), "file": "Demo/Main.lean"}
     ]
     assert "local_repl_missing" in payload["degraded_codes"]
+
+
+def test_bound_feedback_payload_trims_oversized_tactics():
+    import json
+
+    big = [{"goals": "x" * 400, "proof_state": "y" * 400} for _ in range(200)]
+    bounded = li._bound_feedback_payload({"ok": False, "tactics": big}, max_chars=4000)
+    assert len(json.dumps(bounded, ensure_ascii=False)) <= 4000
+    assert bounded["tactics_truncated"]["total"] == 200
+    assert 0 < len(bounded["tactics"]) < 200
+
+
+def test_bound_feedback_payload_leaves_small_untouched():
+    small = {"ok": True, "tactics": [{"goals": "g"}]}
+    assert li._bound_feedback_payload(small, max_chars=16000) == small
+
+
+def test_normalize_payload_only_bounds_feedback(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_INCREMENTAL_FEEDBACK_MAX_CHARS", "3000")
+    big = [{"g": "x" * 400} for _ in range(50)]
+    feedback = li._normalize_payload({"ok": False, "tactics": list(big)}, "feedback")
+    assert "tactics_truncated" in feedback
+    # Non-feedback actions are never trimmed.
+    check = li._normalize_payload({"ok": False, "tactics": list(big)}, "check_target")
+    assert "tactics_truncated" not in check

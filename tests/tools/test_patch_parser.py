@@ -182,3 +182,176 @@ class TestApplyUpdate:
         assert file_ops.written == (
             'def run():\n    cmd = "echo a | sed s/a/b/"\n    result = 1\n    return result + 1'
         )
+
+
+class _FakeFileOps:
+    """Minimal file_ops stub: no _exec, so _apply_update uses the read_file branch."""
+
+    def __init__(self, content: str):
+        self._content = content
+        self.written: str | None = None
+
+    def read_file(self, path, offset=1, limit=500):
+        return SimpleNamespace(content=self._content, error=None)
+
+    def write_file(self, path, content):
+        self.written = content
+        return SimpleNamespace(error=None)
+
+
+class TestAnchorScopedApply:
+    """D3: a hunk is located inside its anchor region so duplicate text is disambiguated."""
+
+    def test_anchor_picks_the_right_of_two_identical_bodies(self):
+        # Both alpha() and beta() have the identical body `x = compute()\n    return x`.
+        # Only the @@ anchor distinguishes them; the hunk must land in beta().
+        content = (
+            "def alpha():\n"
+            "    x = compute()\n"
+            "    return x\n"
+            "\n"
+            "def beta():\n"
+            "    x = compute()\n"
+            "    return x\n"
+        )
+        patch = """\
+*** Begin Patch
+*** Update File: s.py
+@@ def beta @@
+     x = compute()
+-    return x
++    return x + 1
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _FakeFileOps(content)
+
+        result = apply_v4a_operations(ops, fo)
+
+        assert result.success is True
+        # Exactly one occurrence changed, and it is the one inside beta().
+        assert fo.written.count("return x + 1") == 1
+        assert "def alpha():\n    x = compute()\n    return x\n" in fo.written
+        assert "def beta():\n    x = compute()\n    return x + 1\n" in fo.written
+
+    def test_anchored_hunk_does_not_edit_unrelated_exact_match_elsewhere(self):
+        # target()'s body differs from the hunk by trailing whitespace (so only a fuzzy strategy
+        # matches it), while unrelated() contains the EXACT old text. The @@ anchor must keep the
+        # edit inside target(); a whole-file exact match must NOT hijack an anchored hunk.
+        content = (
+            "def target():\n"
+            "    y = compute()  \n"  # trailing spaces -> only line_trimmed fuzzy matches here
+            "    return y \n"
+            "\n"
+            "def unrelated():\n"
+            "    y = compute()\n"  # EXACT match for the hunk search text
+            "    return y\n"
+        )
+        patch = """\
+*** Begin Patch
+*** Update File: s.py
+@@ def target @@
+     y = compute()
+-    return y
++    return y + 1
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _FakeFileOps(content)
+
+        result = apply_v4a_operations(ops, fo)
+
+        assert result.success is True
+        # The edit landed in target(); the unrelated exact match is untouched.
+        assert "def unrelated():\n    y = compute()\n    return y\n" in fo.written
+        assert fo.written.count("return y + 1") == 1
+        assert "return y + 1" in fo.written.split("def unrelated():")[0]
+
+    def test_ambiguous_duplicate_without_anchor_is_refused(self):
+        # Same duplicate body, but the anchor does not disambiguate (points nowhere),
+        # so the exact-duplicate case must fail rather than silently edit one at random.
+        content = "def a():\n    return z\n\ndef b():\n    return z\n"
+        patch = """\
+*** Begin Patch
+*** Update File: s.py
+@@ nonexistent_anchor @@
+-    return z
++    return z2
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _FakeFileOps(content)
+
+        result = apply_v4a_operations(ops, fo)
+
+        assert result.success is False
+        assert fo.written is None
+        assert result.error is not None
+
+
+class TestStrictV4AApply:
+    """D3: strict=True makes UPDATE hunks exact-or-fail."""
+
+    def test_strict_rejects_whitespace_only_hunk(self):
+        content = "def f():\n    return  1\n"  # double space on disk
+        patch = """\
+*** Begin Patch
+*** Update File: s.py
+@@ def f @@
+-    return 1
++    return 2
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        # Non-strict tolerates the whitespace difference (structural match) ...
+        fo_ok = _FakeFileOps(content)
+        assert apply_v4a_operations(ops, fo_ok, strict=False).success is True
+
+        # ... strict refuses it.
+        fo_strict = _FakeFileOps(content)
+        result = apply_v4a_operations(ops, fo_strict, strict=True)
+        assert result.success is False
+        assert fo_strict.written is None
+
+    def test_strict_still_applies_exact_hunk(self):
+        content = "def f():\n    return 1\n"
+        patch = """\
+*** Begin Patch
+*** Update File: s.py
+@@ def f @@
+-    return 1
++    return 2
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _FakeFileOps(content)
+
+        result = apply_v4a_operations(ops, fo, strict=True)
+        assert result.success is True
+        assert "    return 2\n" in fo.written
+
+
+class TestNearMissOnFailure:
+    """D3: a hunk that can't be found surfaces the closest region."""
+
+    def test_failure_reports_near_miss_snippet(self):
+        content = "def compute_total(items):\n    return sum(items)\n"
+        patch = """\
+*** Begin Patch
+*** Update File: s.py
+@@ def compute_total @@
+-    return total(items)
++    return sum(items) + 1
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _FakeFileOps(content)
+
+        result = apply_v4a_operations(ops, fo, strict=True)
+
+        assert result.success is False
+        assert result.error is not None
+        # A concrete "did you mean" snippet, not a generic message.
+        assert "Closest region" in result.error
+        assert "return sum(items)" in result.error
