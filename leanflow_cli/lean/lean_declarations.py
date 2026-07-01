@@ -31,6 +31,8 @@ __all__ = [
     "_surrounding_declarations",
     "_split_declaration_statement_and_proof",
     "_declaration_text_from_location",
+    "declaration_outline",
+    "declaration_region",
 ]
 
 
@@ -117,6 +119,33 @@ def _split_declaration_statement_and_proof(text: str) -> tuple[str, str]:
     statement_line = snippet.splitlines()[0].strip()
     remainder = "\n".join(snippet.splitlines()[1:]).strip()
     return statement_line, remainder
+
+
+def declaration_outline(path: Path) -> list[dict[str, Any]]:
+    """Return one token-cheap row per top-level declaration: kind, name, line, end_line (no source)."""
+    return [
+        {
+            "kind": str(entry.get("kind", "") or ""),
+            "name": str(entry.get("name", "") or ""),
+            "line": int(entry.get("line", 0) or 0),
+            "end_line": int(entry.get("end_line", 0) or 0),
+        }
+        for entry in _declaration_index(path)
+    ]
+
+
+def declaration_region(path: Path, symbol: str) -> dict[str, Any] | None:
+    """Return the named declaration's kind/name/line/end_line plus its full source ``text``, or None."""
+    entry = _find_declaration_entry(path, symbol)
+    if not entry:
+        return None
+    return {
+        "kind": str(entry.get("kind", "") or ""),
+        "name": str(entry.get("name", "") or ""),
+        "line": int(entry.get("line", 0) or 0),
+        "end_line": int(entry.get("end_line", 0) or 0),
+        "text": str(entry.get("text", "") or ""),
+    }
 
 
 def _declaration_text_from_location(file_path: Path, location: Mapping[str, Any]) -> str:
