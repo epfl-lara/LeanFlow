@@ -14,9 +14,16 @@ The 8-strategy matching chain (inspired by OpenCode), tried in order:
 5. Escape normalized - Convert \\n literals to actual newlines
 6. Trimmed boundary - Trim first/last line whitespace only
 7. Block anchor - Match first+last lines, use similarity for middle
-8. Context-aware - 50% line similarity threshold
+8. Context-aware - line similarity fraction threshold
 
 (The `replace_all` flag is handled as a separate multi-occurrence path, not a chain strategy.)
+
+The two similarity-guessing strategies (block_anchor, context_aware) are gated by a
+`FuzzyConfig` knob. Their historical thresholds (block_anchor 0.10, context_aware 0.5
+line-fraction) were dangerously permissive — a 0.10 middle-similarity anchor hit accepts
+a block that shares almost nothing with the pattern. The defaults now sit at safe values
+(see `FuzzyConfig`); `strict=True` disables all fuzziness entirely (exact-or-fail) for
+high-risk edits. Structural strategies (exact/whitespace/indentation/...) are unaffected.
 
 `fuzzy_find_and_replace_ex` additionally reports which strategy matched and a
 similarity score, so a low-confidence fuzzy hit is observable in tool results.
@@ -67,6 +74,8 @@ class FuzzyMatchResult:
 
     strategy/similarity are populated only on a successful replacement; on error
     or no-match they stay None so callers can branch on `error` exactly as before.
+    `near_miss` carries the closest rejected region (snippet + similarity) so a
+    failure surfaces a concrete "did you mean" instead of a generic message.
     """
 
     content: str
@@ -74,6 +83,51 @@ class FuzzyMatchResult:
     error: str | None = None
     strategy: str | None = None
     similarity: float | None = None
+    near_miss: "NearMiss | None" = None
+
+
+@dataclass
+class NearMiss:
+    """Closest region that failed to match, for actionable failure messages."""
+
+    similarity: float
+    snippet: str
+    line_number: int  # 1-indexed start line of the snippet in the source
+
+
+@dataclass(frozen=True)
+class FuzzyConfig:
+    """Strictness knob for the two similarity-guessing strategies.
+
+    Structural strategies (exact/whitespace/indentation/escape/boundary) always run and
+    are unaffected by this config — they are faithful by construction. Only the two
+    guessing strategies (block_anchor, context_aware) are gated here.
+
+    - block_anchor_threshold: min middle-line similarity for a *unique* anchor candidate.
+      The historical 0.10 accepted blocks sharing ~nothing with the pattern; the safe
+      default is 0.5. (Multi-candidate anchors always use max(this, 0.6) to disambiguate.)
+    - context_aware_line_fraction: fraction of pattern lines that must be highly similar.
+      Historically 0.5 (half the lines could be wrong); default tightened to 0.66.
+    - context_aware_min_similarity: additional whole-span similarity floor for a
+      context_aware hit, so a block passing the per-line fraction still has to resemble
+      the pattern overall. 0.0 disables the floor.
+    - allow_fuzzy: when False, the two guessing strategies are dropped (structural
+      normalization still runs — a safe middle rung of the ladder).
+    - allow_structural: when False, ONLY byte-exact match runs (top rung: exact-or-fail).
+      Implies no fuzzy.
+    """
+
+    block_anchor_threshold: float = 0.5
+    context_aware_line_fraction: float = 0.66
+    context_aware_min_similarity: float = 0.4
+    allow_fuzzy: bool = True
+    allow_structural: bool = True
+
+
+# Backward-compatible defaults used when no config is threaded through.
+DEFAULT_CONFIG = FuzzyConfig()
+# Exact-or-fail: high-risk edits that must not be relocated OR reshaped by any normalization.
+STRICT_CONFIG = FuzzyConfig(allow_fuzzy=False, allow_structural=False)
 
 
 UNICODE_MAP = {
@@ -121,34 +175,50 @@ def fuzzy_find_and_replace(
 
 
 def fuzzy_find_and_replace_ex(
-    content: str, old_string: str, new_string: str, replace_all: bool = False
+    content: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+    config: FuzzyConfig | None = None,
 ) -> FuzzyMatchResult:
     """
     Find and replace text, also reporting which strategy matched and its similarity.
 
-    Same matching behavior as `fuzzy_find_and_replace` — this only adds observability:
-    on success the result carries the winning strategy name and a similarity score
-    (1.0 for structural strategies; the measured ratio for the two fuzzy strategies),
-    so a low-confidence block_anchor/context_aware hit is no longer indistinguishable
-    from a clean exact match in results and logs.
+    Adds observability over `fuzzy_find_and_replace`: on success the result carries the
+    winning strategy name and a similarity score (1.0 for structural strategies; the
+    measured ratio for the two fuzzy strategies). On failure it carries a `near_miss`
+    (closest rejected region + similarity) so the caller can surface a concrete snippet.
+
+    `config` tunes the two similarity-guessing strategies (default `DEFAULT_CONFIG`;
+    `STRICT_CONFIG` disables fuzziness for exact-or-fail edits). Structural strategies
+    always run regardless of config.
     """
+    cfg = config or DEFAULT_CONFIG
+
     if not old_string:
         return FuzzyMatchResult(content, 0, "old_string cannot be empty")
 
     if old_string == new_string:
         return FuzzyMatchResult(content, 0, "old_string and new_string are identical")
 
-    # Try each matching strategy in order
-    strategies: list[tuple[str, Callable]] = [
-        ("exact", _strategy_exact),
-        ("line_trimmed", _strategy_line_trimmed),
-        ("whitespace_normalized", _strategy_whitespace_normalized),
-        ("indentation_flexible", _strategy_indentation_flexible),
-        ("escape_normalized", _strategy_escape_normalized),
-        ("trimmed_boundary", _strategy_trimmed_boundary),
-        ("block_anchor", _strategy_block_anchor),
-        ("context_aware", _strategy_context_aware),
-    ]
+    # Strictness ladder. Byte-exact always runs. Structural normalizers (faithful by
+    # construction) run unless `allow_structural` is off (top rung: exact-or-fail). The
+    # two similarity-guessing strategies run only when `allow_fuzzy` is on. No separate
+    # code path — the chain is just trimmed per config.
+    strategies: list[tuple[str, Callable]] = [("exact", _strategy_exact)]
+    if cfg.allow_structural:
+        strategies += [
+            ("line_trimmed", _strategy_line_trimmed),
+            ("whitespace_normalized", _strategy_whitespace_normalized),
+            ("indentation_flexible", _strategy_indentation_flexible),
+            ("escape_normalized", _strategy_escape_normalized),
+            ("trimmed_boundary", _strategy_trimmed_boundary),
+        ]
+    if cfg.allow_fuzzy and cfg.allow_structural:
+        strategies += [
+            ("block_anchor", lambda c, p: _strategy_block_anchor(c, p, cfg)),
+            ("context_aware", lambda c, p: _strategy_context_aware(c, p, cfg)),
+        ]
 
     for strategy_name, strategy_fn in strategies:
         matches = strategy_fn(content, old_string)
@@ -176,8 +246,55 @@ def fuzzy_find_and_replace_ex(
                 similarity=similarity,
             )
 
-    # No strategy found a match
-    return FuzzyMatchResult(content, 0, "Could not find a match for old_string in the file")
+    # No strategy matched: surface the closest region so the failure is actionable.
+    near_miss = _closest_region(content, old_string)
+    suffix = ""
+    if near_miss is not None:
+        suffix = (
+            f" Closest region (similarity {near_miss.similarity}) at line "
+            f"{near_miss.line_number}:\n{near_miss.snippet}"
+        )
+    return FuzzyMatchResult(
+        content,
+        0,
+        f"Could not find a match for old_string in the file.{suffix}",
+        near_miss=near_miss,
+    )
+
+
+def _closest_region(content: str, pattern: str, max_snippet_lines: int = 12) -> NearMiss | None:
+    """Return the file window most similar to `pattern` (a "did you mean" hint).
+
+    Slides a pattern-sized line window across the file and keeps the best
+    SequenceMatcher ratio. Bounded snippet length keeps the surfaced error compact.
+    """
+    content_lines = content.split("\n")
+    pattern_lines = pattern.split("\n")
+    window = max(1, len(pattern_lines))
+    if not content_lines or not any(content_lines):
+        return None
+
+    pattern_norm = pattern.strip()
+    best_ratio = -1.0
+    best_start = 0
+    # When the pattern is longer than the file, still compare against the whole file.
+    last_start = max(0, len(content_lines) - window)
+    for i in range(last_start + 1):
+        block = "\n".join(content_lines[i : i + window])
+        ratio = SequenceMatcher(None, pattern_norm, block.strip()).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_start = i
+
+    snippet_lines = content_lines[best_start : best_start + min(window, max_snippet_lines)]
+    snippet = "\n".join(snippet_lines)
+    if len(snippet) > 800:  # hard cap so a huge single line can't bloat the message
+        snippet = snippet[:800] + " …"
+    return NearMiss(
+        similarity=round(max(best_ratio, 0.0), 3),
+        snippet=snippet,
+        line_number=best_start + 1,
+    )
 
 
 def _match_similarity(
@@ -367,11 +484,17 @@ def _strategy_trimmed_boundary(content: str, pattern: str) -> list[tuple[int, in
     return matches
 
 
-def _strategy_block_anchor(content: str, pattern: str) -> list[tuple[int, int]]:
+def _strategy_block_anchor(
+    content: str, pattern: str, config: FuzzyConfig | None = None
+) -> list[tuple[int, int]]:
     """
     Strategy 7: Match by anchoring on first and last lines.
-    Adjusted with permissive thresholds and unicode normalization.
+
+    Anchors on the first/last line, then gates the middle by measured similarity.
+    The threshold comes from `config` (default `DEFAULT_CONFIG`): the old hard-coded
+    0.10 accepted a block whose middle shared almost nothing with the pattern.
     """
+    cfg = config or DEFAULT_CONFIG
     # Normalize both strings for comparison while keeping original content for offset calculation
     norm_pattern = _unicode_normalize(pattern)
     norm_content = _unicode_normalize(content)
@@ -401,8 +524,12 @@ def _strategy_block_anchor(content: str, pattern: str) -> list[tuple[int, int]]:
     matches = []
     candidate_count = len(potential_matches)
 
-    # Thresholding logic: 0.10 for unique matches (max flexibility), 0.30 for multiple candidates
-    threshold = 0.10 if candidate_count == 1 else 0.30
+    # Thresholding: a unique anchor candidate uses the configured floor; multiple
+    # candidates raise it (>= 0.6) so an ambiguous anchor demands a strong middle.
+    # The old 0.10/0.30 pair let a near-empty-overlap block win a unique anchor.
+    threshold = (
+        cfg.block_anchor_threshold if candidate_count == 1 else max(cfg.block_anchor_threshold, 0.6)
+    )
 
     for i in potential_matches:
         if pattern_line_count <= 2:
@@ -424,12 +551,18 @@ def _strategy_block_anchor(content: str, pattern: str) -> list[tuple[int, int]]:
     return matches
 
 
-def _strategy_context_aware(content: str, pattern: str) -> list[tuple[int, int]]:
+def _strategy_context_aware(
+    content: str, pattern: str, config: FuzzyConfig | None = None
+) -> list[tuple[int, int]]:
     """
-    Strategy 8: Line-by-line similarity with 50% threshold.
+    Strategy 8: Line-by-line similarity with a configurable line fraction + span floor.
 
-    Finds blocks where at least 50% of lines have high similarity.
+    Accepts a block where at least `context_aware_line_fraction` of pattern lines are
+    highly similar AND (when set) the whole span resembles the pattern above
+    `context_aware_min_similarity`. The old fixed 0.5 fraction let half the lines be
+    wrong with no whole-span sanity check.
     """
+    cfg = config or DEFAULT_CONFIG
     pattern_lines = pattern.split("\n")
     content_lines = content.split("\n")
 
@@ -438,6 +571,7 @@ def _strategy_context_aware(content: str, pattern: str) -> list[tuple[int, int]]
 
     matches = []
     pattern_line_count = len(pattern_lines)
+    pattern_norm = pattern.strip()
 
     for i in range(len(content_lines) - pattern_line_count + 1):
         block_lines = content_lines[i : i + pattern_line_count]
@@ -449,13 +583,21 @@ def _strategy_context_aware(content: str, pattern: str) -> list[tuple[int, int]]
             if sim >= 0.80:
                 high_similarity_count += 1
 
-        # Need at least 50% of lines to have high similarity
-        if high_similarity_count >= len(pattern_lines) * 0.5:
-            start_pos = sum(len(line) + 1 for line in content_lines[:i])
-            end_pos = sum(len(line) + 1 for line in content_lines[: i + pattern_line_count]) - 1
-            if end_pos >= len(content):
-                end_pos = len(content)
-            matches.append((start_pos, end_pos))
+        if high_similarity_count < pattern_line_count * cfg.context_aware_line_fraction:
+            continue
+
+        # Whole-span floor: a block can clear the per-line fraction yet still be a poor
+        # overall match (e.g. matching lines interleaved with junk). Reject those.
+        if cfg.context_aware_min_similarity > 0.0:
+            span = "\n".join(block_lines).strip()
+            if SequenceMatcher(None, pattern_norm, span).ratio() < cfg.context_aware_min_similarity:
+                continue
+
+        start_pos = sum(len(line) + 1 for line in content_lines[:i])
+        end_pos = sum(len(line) + 1 for line in content_lines[: i + pattern_line_count]) - 1
+        if end_pos >= len(content):
+            end_pos = len(content)
+        matches.append((start_pos, end_pos))
 
     return matches
 

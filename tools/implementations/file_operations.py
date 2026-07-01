@@ -253,8 +253,8 @@ class FileOperations(ABC):
         ...
 
     @abstractmethod
-    def patch_v4a(self, patch_content: str) -> PatchResult:
-        """Apply a V4A format patch."""
+    def patch_v4a(self, patch_content: str, strict: bool = False) -> PatchResult:
+        """Apply a V4A format patch (strict=exact-or-fail for high-risk edits)."""
         ...
 
     @abstractmethod
@@ -728,7 +728,12 @@ class ShellFileOperations(FileOperations):
     # =========================================================================
 
     def patch_replace(
-        self, path: str, old_string: str, new_string: str, replace_all: bool = False
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+        strict: bool = False,
     ) -> PatchResult:
         """
         Replace text in a file using fuzzy matching.
@@ -738,6 +743,7 @@ class ShellFileOperations(FileOperations):
             old_string: Text to find (must be unique unless replace_all=True)
             new_string: Replacement text
             replace_all: If True, replace all occurrences
+            strict: When True, only exact/structural matches apply (no fuzzy relocation).
 
         Returns:
             PatchResult with diff and lint results
@@ -763,11 +769,22 @@ class ShellFileOperations(FileOperations):
         # Import and use fuzzy matching (observable variant: also tells us which
         # strategy matched and how confidently, so a low-similarity fuzzy hit is
         # distinguishable from a clean exact match in the result/logs).
-        from tools.utilities.fuzzy_match import fuzzy_find_and_replace_ex
+        from tools.utilities.fuzzy_match import (
+            STRICT_CONFIG,
+            fuzzy_find_and_replace_ex,
+        )
 
-        match = fuzzy_find_and_replace_ex(content, old_string, new_string, replace_all)
+        match = fuzzy_find_and_replace_ex(
+            content,
+            old_string,
+            new_string,
+            replace_all,
+            config=STRICT_CONFIG if strict else None,
+        )
 
         if match.error:
+            # `match.error` already embeds the near-miss snippet when the chain found a
+            # close-but-rejected region, so the failure is actionable, not generic.
             return PatchResult(error=match.error)
 
         if match.count == 0:
@@ -793,7 +810,7 @@ class ShellFileOperations(FileOperations):
             similarity=match.similarity,
         )
 
-    def patch_v4a(self, patch_content: str) -> PatchResult:
+    def patch_v4a(self, patch_content: str, strict: bool = False) -> PatchResult:
         """
         Apply a V4A format patch.
 
@@ -808,6 +825,7 @@ class ShellFileOperations(FileOperations):
 
         Args:
             patch_content: V4A format patch string
+            strict: When True, UPDATE hunks are exact-or-fail (no fuzzy relocation).
 
         Returns:
             PatchResult with changes made
@@ -820,7 +838,7 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
 
         # Apply operations
-        result = apply_v4a_operations(operations, self)
+        result = apply_v4a_operations(operations, self, strict=strict)
         return result
 
     def _check_lint(self, path: str) -> LintResult:

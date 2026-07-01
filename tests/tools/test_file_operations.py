@@ -361,6 +361,41 @@ class TestShellFileOpsWriteDenied:
         assert "denied" in result.error.lower()
 
 
+class TestPatchReplaceStrictAndNearMiss:
+    """D3: strict exact-or-fail + actionable near-miss on failure (non-Lean files)."""
+
+    def test_strict_rejects_whitespace_only_match(self, tmp_path):
+        path = tmp_path / "mod.py"
+        path.write_text("def f():\n    return  1\n", encoding="utf-8")  # double space
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        # Non-strict tolerates the whitespace difference.
+        loose = ops.patch_replace(str(path), "    return 1", "    return 2")
+        assert loose.success is True
+        path.write_text("def f():\n    return  1\n", encoding="utf-8")  # reset
+
+        # Strict refuses it and leaves the file untouched.
+        strict = ops.patch_replace(str(path), "    return 1", "    return 2", strict=True)
+        assert strict.success is False
+        assert strict.error is not None
+        assert path.read_text(encoding="utf-8") == "def f():\n    return  1\n"
+
+    def test_failure_surfaces_near_miss_snippet(self, tmp_path):
+        path = tmp_path / "mod.py"
+        path.write_text("def compute_total(items):\n    return sum(items)\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.patch_replace(
+            str(path), "def compute_grand_total(rows):", "def x():", strict=True
+        )
+
+        assert result.success is False
+        assert result.error is not None
+        # Concrete closest-region hint, not a generic "could not find".
+        assert "Closest region" in result.error
+        assert "compute_total" in result.error
+
+
 class TestLeanStatementGuardedWrites:
     def test_write_file_blocks_lean_statement_change(self, tmp_path, monkeypatch):
         monkeypatch.delenv(ALLOW_STATEMENT_EDITS_ENV, raising=False)
