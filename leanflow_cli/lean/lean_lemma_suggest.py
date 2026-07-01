@@ -130,12 +130,25 @@ def _hypothesis_text(hypotheses: Any) -> list[str]:
 
 
 def _conclusion_fragment(goal: str) -> str:
-    """Return the text after the last ``⊢``/``:``/``->`` so the head symbol comes from the target."""
+    """Return the target conclusion of a goal/statement so the head symbol comes from it.
+
+    Drops the proof body (``:=`` ...), then takes the text after ``⊢`` for a goal state, or after
+    the last top-level ``:`` for a ``theorem``/``lemma`` statement (so the declaration name and
+    binders don't get ranked as the head symbol), and finally narrows to the last ``→``/``->``
+    conclusion segment.
+    """
     snippet = str(goal or "").strip()
     if not snippet:
         return ""
+    # Drop the proof body so `:= by ...` never pollutes the conclusion.
+    if ":=" in snippet:
+        snippet = snippet.split(":=", 1)[0]
     if "⊢" in snippet:
         snippet = snippet.rsplit("⊢", 1)[-1]
+    elif ":" in snippet:
+        # A statement like `theorem foo (a : T) : Concl` — the conclusion is after the LAST colon,
+        # so the theorem name / binders aren't mistaken for the head symbol.
+        snippet = snippet.rsplit(":", 1)[-1]
     # Prefer the conclusion of the top-level arrow chain; the last `→`/`->` segment is the target.
     for arrow in ("→", "->"):
         if arrow in snippet:

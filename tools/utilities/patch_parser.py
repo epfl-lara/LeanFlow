@@ -511,13 +511,11 @@ def _apply_hunk(
 ) -> tuple[str | None, str | None, str | None, float | None]:
     """Apply one hunk to `content`, anchor-primary.
 
-    Order of resolution (safest first):
-      1. Exact whole-file match — if unique, apply there. Multiple exact matches are
-         disambiguated by the hunk anchor; a fuzzy hit is NEVER taken when an exact
-         match exists elsewhere.
-      2. Anchor-scoped chain — locate the hunk's region and run the fuzzy chain inside
-         it, so identical text in another declaration can't be picked.
-      3. Whole-file fuzzy chain (legacy behavior) as the last resort.
+    Resolution:
+      * If the hunk has a locatable anchor, that region is AUTHORITATIVE: resolve
+        exact-first then the fuzzy chain strictly inside it, and never edit outside it.
+      * Otherwise (no anchor), resolve against the whole file exact-first; a fuzzy hit is
+        never taken when an exact match exists, and multiple exact matches are refused.
 
     Returns (new_content|None, error|None, strategy, similarity). new_content is None on
     failure; error then carries a near-miss snippet when the chain produced one.
@@ -534,20 +532,32 @@ def _apply_hunk(
     anchor = _hunk_anchor(hunk)
     region = _anchor_region(content, anchor) if anchor else None
 
-    # (1) Exact match across the whole file takes precedence over any fuzzy strategy.
+    # (A) ANCHORED: when the hunk carries a locatable `@@` / enclosing-declaration anchor, the
+    # anchor is AUTHORITATIVE — resolve the hunk (exact-first, then the fuzzy chain) strictly
+    # WITHIN the anchor region and NEVER fall back to the whole file. Otherwise a slightly-drifted
+    # anchored hunk could edit an unrelated region that happens to still contain the old text.
+    if region is not None:
+        r_start, r_end = region
+        window = content[r_start:r_end]
+        wm = fuzzy_find_and_replace_ex(window, search_pattern, replacement, config=config)
+        if wm.count > 0 and wm.error is None:
+            new_content = content[:r_start] + wm.content + content[r_end:]
+            return new_content, None, wm.strategy, wm.similarity
+        return (
+            None,
+            f"Could not apply hunk within its `@@` anchor region: {wm.error or 'no match'}",
+            None,
+            None,
+        )
+
+    # (B) UNANCHORED: resolve against the whole file, exact-first. A single exact match wins; a
+    # fuzzy hit is never taken when an exact match exists; multiple exact matches are ambiguous
+    # and refused rather than guessed.
     exact_hits = _strategy_exact(content, search_pattern)
     if len(exact_hits) == 1:
         start, end = exact_hits[0]
         return content[:start] + replacement + content[end:], None, "exact", 1.0
     if len(exact_hits) > 1:
-        # Prefer the exact hit that falls inside the anchor region; otherwise the
-        # duplication is genuinely ambiguous and we refuse rather than guess.
-        if region is not None:
-            r_start, r_end = region
-            in_region = [(s, e) for s, e in exact_hits if r_start <= s < r_end]
-            if len(in_region) == 1:
-                s, e = in_region[0]
-                return content[:s] + replacement + content[e:], None, "exact", 1.0
         return (
             None,
             (
@@ -557,18 +567,6 @@ def _apply_hunk(
             None,
             None,
         )
-
-    # (2) Anchor-scoped fuzzy: confine the chain to the anchor's region so an identical
-    # body elsewhere can't be chosen.
-    if region is not None:
-        r_start, r_end = region
-        window = content[r_start:r_end]
-        wm = fuzzy_find_and_replace_ex(window, search_pattern, replacement, config=config)
-        if wm.count > 0 and wm.error is None:
-            new_content = content[:r_start] + wm.content + content[r_end:]
-            return new_content, None, wm.strategy, wm.similarity
-
-    # (3) Whole-file fuzzy fallback.
     fm = fuzzy_find_and_replace_ex(content, search_pattern, replacement, config=config)
     if fm.count > 0 and fm.error is None:
         return fm.content, None, fm.strategy, fm.similarity

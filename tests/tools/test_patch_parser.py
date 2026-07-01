@@ -234,6 +234,39 @@ class TestAnchorScopedApply:
         assert "def alpha():\n    x = compute()\n    return x\n" in fo.written
         assert "def beta():\n    x = compute()\n    return x + 1\n" in fo.written
 
+    def test_anchored_hunk_does_not_edit_unrelated_exact_match_elsewhere(self):
+        # target()'s body differs from the hunk by trailing whitespace (so only a fuzzy strategy
+        # matches it), while unrelated() contains the EXACT old text. The @@ anchor must keep the
+        # edit inside target(); a whole-file exact match must NOT hijack an anchored hunk.
+        content = (
+            "def target():\n"
+            "    y = compute()  \n"  # trailing spaces -> only line_trimmed fuzzy matches here
+            "    return y \n"
+            "\n"
+            "def unrelated():\n"
+            "    y = compute()\n"  # EXACT match for the hunk search text
+            "    return y\n"
+        )
+        patch = """\
+*** Begin Patch
+*** Update File: s.py
+@@ def target @@
+     y = compute()
+-    return y
++    return y + 1
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        fo = _FakeFileOps(content)
+
+        result = apply_v4a_operations(ops, fo)
+
+        assert result.success is True
+        # The edit landed in target(); the unrelated exact match is untouched.
+        assert "def unrelated():\n    y = compute()\n    return y\n" in fo.written
+        assert fo.written.count("return y + 1") == 1
+        assert "return y + 1" in fo.written.split("def unrelated():")[0]
+
     def test_ambiguous_duplicate_without_anchor_is_refused(self):
         # Same duplicate body, but the anchor does not disambiguate (points nowhere),
         # so the exact-duplicate case must fail rather than silently edit one at random.
