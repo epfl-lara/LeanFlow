@@ -9631,3 +9631,34 @@ def test_autonomous_stop_reason_blocker_prose_does_not_stop_while_state_advances
         }
         stuck.append(runner._autonomous_stop_reason(blocker_history, live_state, autonomy_state))
     assert "blocked" in stuck, f"genuinely stuck run never gave up: {stuck}"
+
+
+def test_continuation_prompt_prefix_cache_moves_cycle_number_last(monkeypatch):
+    monkeypatch.setattr(runner, "_runner_lean_prompt_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_document_formalization_requested", lambda: False)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "file")
+    monkeypatch.setattr(runner, "_queue_assignment_block", lambda *a, **k: "")
+    monkeypatch.setattr(runner, "_queue_needs_final_file_sweep", lambda *a, **k: False)
+    monkeypatch.setattr(runner, "_swarm_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner, "_document_formalization_organization_phase_active", lambda *a, **k: False
+    )
+    monkeypatch.setattr(
+        runner,
+        "route_workflow_step",
+        lambda *a, **k: type("R", (), {"to_dict": lambda self: {}})(),
+    )
+    live = {"route_decision": {}, "active_file": "M.lean", "declaration_scope": "file"}
+
+    # Default off: cycle number stays inline, no trailing marker (byte-identical wording).
+    monkeypatch.setattr(runner, "_rcp_prefix_cache_enabled", lambda: False)
+    off = runner._autonomous_continuation_prompt(live, 3, {})
+    assert "continuation cycle 3." in off
+    assert "[current turn: continuation cycle 3]" not in off
+
+    # Prefix-cache on: cycle number leaves the framing and moves to a trailing volatile marker.
+    monkeypatch.setattr(runner, "_rcp_prefix_cache_enabled", lambda: True)
+    on = runner._autonomous_continuation_prompt(live, 3, {})
+    assert "continuation cycle." in on
+    assert "continuation cycle 3." not in on
+    assert on.rstrip().endswith("[current turn: continuation cycle 3]")

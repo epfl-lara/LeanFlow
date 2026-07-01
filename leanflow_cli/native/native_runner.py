@@ -8935,6 +8935,11 @@ def _autonomous_continuation_prompt(
     document_handoff_blocked = _document_formalization_requested() and not bool(
         document_handoff.get("ok", True)
     )
+    # C3: under RCP prefix caching, keep the (volatile) cycle number OUT of the static framing so the
+    # prefix is byte-stable across cycles; the number moves to a trailing marker below. Default off
+    # leaves the wording byte-identical.
+    prefix_cache = _rcp_prefix_cache_enabled()
+    cycle_ref = "cycle" if prefix_cache else f"cycle {cycle_number}"
     if _runner_lean_prompt_enabled():
         if declaration_scope == "file":
             verification_gate = str(
@@ -8950,7 +8955,7 @@ def _autonomous_continuation_prompt(
             "Continue the autonomous workflow.\n\n"
             "Follow the loaded native workflow spec as the policy manual. "
             "Use the refreshed live proof state below as the current turn state.\n\n"
-            f"This is autonomous continuation cycle {cycle_number}.\n"
+            f"This is autonomous continuation {cycle_ref}.\n"
             f"Current verification gate: {verification_gate}\n"
             "Do not stop until that gate is satisfied or you have a concrete blocker to report."
         )
@@ -8994,7 +8999,7 @@ def _autonomous_continuation_prompt(
             "Use the refreshed live proof state below as the current turn state.\n\n"
             "Verification requires all of the following:\n"
             f"{verification_lines}"
-            f"This is autonomous continuation cycle {cycle_number}. Use the refreshed live proof state below, "
+            f"This is autonomous continuation {cycle_ref}. Use the refreshed live proof state below, "
             f"{conclusion}"
         )
         if document_handoff_blocked:
@@ -9045,6 +9050,9 @@ def _autonomous_continuation_prompt(
             "\n\nSwarm remains user-approved for this continuation. "
             "Delegate only if the next step splits cleanly across files or verifier/planner roles."
         )
+    if prefix_cache:
+        # Volatile cycle counter last, so everything above stays a byte-stable cacheable prefix.
+        prompt += f"\n\n[current turn: continuation cycle {cycle_number}]"
     return prompt
 
 
