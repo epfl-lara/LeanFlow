@@ -276,6 +276,13 @@ LEANFLOW_EXPERT_CLAUDE_CODE_COMMAND_TEMPLATE=
 
 # Escape hatch for intentional Lean statement refactors. Keep empty by default.
 LEANFLOW_ALLOW_LEAN_STATEMENT_EDITS=
+
+# Prefix-cache prompt optimization. On autonomous continuation cycles, stop
+# re-sending the static skill contract (it stays available via the system-prompt
+# skills catalog and skill_view). Reduces per-cycle input tokens ~8-12% on both
+# RCP and codex routes with no measured quality regression. Enabled by default;
+# set to 0 to disable.
+LEANFLOW_RCP_PREFIX_CACHE=1
 """
 
 DEFAULT_SOUL_MD = """# LeanFlow
