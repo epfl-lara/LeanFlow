@@ -1952,6 +1952,25 @@ def _review_agent_final_report(
             manager_check["axiom_violation"] = axiom_blockers
             manager_check["output"] = axiom_output
             manager_check["diagnostics"] = _single_line(axiom_output, 700)
+    # P0.4 shadow-compare: snapshot the pre-gate retry counters and the
+    # pre-mutation evidence (the exhausted path restores the file below, which
+    # would flip the declaration's sorry state under the evidence's feet).
+    # Shadow work never perturbs the gate: failures only disable the shadow.
+    shadow_state: dict[str, Any] | None = None
+    shadow_evidence: ManagerCheck | None = None
+    if _queue_decide_shadow_enabled() and isinstance(autonomy_state, dict):
+        try:
+            shadow_state = {
+                key: copy.deepcopy(autonomy_state[key])
+                for key in TheoremQueueManager.OWNED_AUTONOMY_KEYS
+                if key in autonomy_state
+            }
+            shadow_evidence = _manager_check_for_feedback_kind(
+                active_file, target_symbol, dict(manager_check)
+            )
+        except Exception:
+            logger.debug("queue-decide shadow snapshot failed", exc_info=True)
+            shadow_state = None
     feedback_kind = _manager_feedback_kind(active_file, target_symbol, manager_check)
     if axiom_blockers and not feedback_kind:
         # A disallowed axiom dependency is a hard blocker even when the file has no error/sorry.
@@ -2073,6 +2092,35 @@ def _review_agent_final_report(
             }
         )
         updated["messages"] = messages
+    if shadow_state is not None and shadow_evidence is not None:
+        try:
+            retry_exhausted = bool(manager_check.get("retry_exhausted"))
+            mismatch = _shadow_compare(
+                autonomy_state=shadow_state,
+                source=DecisionSource.FINAL_REPORT,
+                check=shadow_evidence,
+                axiom_blockers=tuple(axiom_blockers),
+                legacy=_shadow_legacy_outcome(
+                    action=(
+                        "restore_baseline"
+                        if retry_exhausted
+                        else "advance_queue" if ok else "continue_same_theorem"
+                    ),
+                    feedback_kind="" if ok else feedback_kind,
+                    retry_limit=retry_limit,
+                    restore_baseline=retry_exhausted,
+                ),
+            )
+            if mismatch is not None:
+                _record_activity(
+                    "queue-decide-shadow-mismatch",
+                    f"decide() diverged from the final-report gate for {target_symbol}",
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    **mismatch,
+                )
+        except Exception:
+            logger.debug("queue-decide shadow compare failed", exc_info=True)
     updated["manager_final_report_review"] = manager_check
     return updated
 
@@ -3454,6 +3502,26 @@ def _finish_queue_step_boundary(
         _request_step_boundary_interrupt(agent)
 
 
+def _shadow_live_evidence(
+    pending_file: str, pending_target: str, live_state: Mapping[str, Any] | None
+) -> ManagerCheck:
+    """Build the live-state ManagerCheck evidence used by shadow comparisons.
+
+    Drift D7, encoded not fixed: the legacy live-fallback derives the
+    sorry-vs-error kind from the DECLARATION entry, while the synthetic
+    evidence may carry a stale "contains sorry" queue-item reason. Keep the
+    hard classification but align the rendered kind with the entry.
+    """
+    evidence = _manager_check_for_feedback_kind(
+        pending_file, pending_target, _live_state_synthetic_blocker_check(live_state)
+    )
+    entry = _find_declaration_entry(pending_file, pending_target)
+    entry_has_sorry = bool(entry and entry.get("has_sorry"))
+    if evidence.has_assigned_sorry and not entry_has_sorry:
+        evidence = _dataclass_replace(evidence, has_assigned_sorry=False, has_assigned_error=True)
+    return evidence
+
+
 def _shadow_compare_step_boundary(
     *,
     shadow_state: dict[str, Any],
@@ -3488,19 +3556,7 @@ def _shadow_compare_step_boundary(
             pending_file, pending_target, dict(manager_check)
         )
     else:
-        evidence = _manager_check_for_feedback_kind(
-            pending_file, pending_target, _live_state_synthetic_blocker_check(live_state)
-        )
-        # Drift D7, encoded not fixed: the legacy live-fallback derives the
-        # sorry-vs-error kind from the DECLARATION entry, while the synthetic
-        # evidence may carry a stale "contains sorry" queue-item reason. Keep
-        # the hard classification but align the rendered kind with the entry.
-        entry = _find_declaration_entry(pending_file, pending_target)
-        entry_has_sorry = bool(entry and entry.get("has_sorry"))
-        if evidence.has_assigned_sorry and not entry_has_sorry:
-            evidence = _dataclass_replace(
-                evidence, has_assigned_sorry=False, has_assigned_error=True
-            )
+        evidence = _shadow_live_evidence(pending_file, pending_target, live_state)
     if hard_retry_exhausted:
         legacy_action = "restore_baseline"
     elif still_blocked or cleanup_feedback_reason:
@@ -6184,6 +6240,32 @@ def _handle_api_step_budget_exhaustion(
     assignment = dict(autonomy_state.get("current_queue_assignment") or {})
     target_symbol = str(assignment.get("target_symbol", "") or "").strip()
     active_file = str(assignment.get("active_file", "") or "").strip()
+    if _queue_decide_shadow_enabled():
+        # P0.4 shadow-compare, before this path mutates anything: the legacy
+        # branch restores + records unconditionally once blocked.
+        try:
+            evidence = _shadow_live_evidence(active_file, target_symbol, live_state)
+            mismatch = _shadow_compare(
+                autonomy_state=autonomy_state,
+                source=DecisionSource.BUDGET_EXHAUSTION,
+                check=evidence,
+                legacy=_shadow_legacy_outcome(
+                    action="restore_baseline",
+                    feedback_kind="sorry" if evidence.has_assigned_sorry else "error",
+                    record_failed_attempt=True,
+                    restore_baseline=True,
+                ),
+            )
+            if mismatch is not None:
+                _record_activity(
+                    "queue-decide-shadow-mismatch",
+                    f"decide() diverged from the budget-exhaustion gate for {target_symbol}",
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    **mismatch,
+                )
+        except Exception:
+            logger.debug("queue-decide shadow compare failed", exc_info=True)
     try:
         api_calls = int(result.get("api_calls", 0) or 0)
     except (TypeError, ValueError):
