@@ -736,6 +736,53 @@ def frontier_digest_block() -> str:
     return "\n".join(lines[:10])
 
 
+def resume_context_block() -> str:
+    """Return the '[LEANFLOW PLAN-STATE RESUME]' startup handoff block.
+
+    Documentation-driven resume (P1.5): the persisted artifacts — not
+    checkpoint prose — are the resume authority. Renders goal, counters,
+    frontier, open decision packets, and dead ends; '' when plan-state is
+    off or no graph exists yet (caller falls back to checkpoint replay).
+    """
+    if not plan_state_enabled():
+        return ""
+    bp = load_blueprint()
+    summary = load_summary()
+    if not bp.nodes and not bp.goal and not summary:
+        return ""
+    counts = _status_counts(bp)
+    lines = [
+        "[LEANFLOW PLAN-STATE RESUME]",
+        f"- goal: {bp.goal or str(summary.get('goal', '') or '') or '[not set]'}",
+        "- state: "
+        + (
+            " · ".join(f"{status}: {count}" for status, count in sorted(counts.items()))
+            or "empty graph"
+        ),
+    ]
+    for node in bp.frontier()[:8]:
+        lines.append(f"- frontier: `{node.name}` ({node.file})")
+    open_packets = [
+        dict(packet)
+        for packet in (summary.get("decision_packets") or [])
+        if isinstance(packet, Mapping) and not packet.get("decision")
+    ]
+    for packet in open_packets[-5:]:
+        options = ", ".join(str(option) for option in (packet.get("options") or []))
+        lines.append(
+            f"- open decision packet {packet.get('packet_id', '?')}: "
+            f"{packet.get('scope', '?')} `{packet.get('target_symbol', '?')}`"
+            + (f" (options: {options})" if options else "")
+        )
+    for node in [n for n in bp.nodes if n.status in {"false", "parked"}][:8]:
+        lines.append(f"- dead end: `{node.name}` [{node.status}]")
+    lines.append(
+        "- the plan artifacts are the resume authority; read plan.md and the "
+        "dependency graph before planning"
+    )
+    return "\n".join(lines)
+
+
 def artifact_context_block() -> str:
     """The single injection string for non-prefix-cached prompt surfaces."""
     if not plan_state_enabled():

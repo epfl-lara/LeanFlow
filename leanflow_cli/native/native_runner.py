@@ -272,8 +272,6 @@ from leanflow_cli.native.native_checkpoints import (  # noqa: E402,F401
     _load_current_checkpoint,
     _load_workflow_index,
     _read_json_file,
-    _resume_plan_from_checkpoint,
-    _rollback_to_checkpoint,
     _save_workflow_index,
     _workflow_replay_message,
     _workflow_state_current_path,
@@ -3971,9 +3969,6 @@ def _print_runner_help() -> None:
     print("  /goals                 Show current Lean goals for the active target")
     print("  /swarm [agent] [N]     List workflow agents or inspect one directly")
     print("  /history               List persisted workflow checkpoints")
-    print("  /checkpoint [note]     Save a manual workflow checkpoint")
-    print("  /resume-plan [N]       Reload the structured plan from checkpoint N")
-    print("  /rollback <N>          Restore files and workflow state from checkpoint N")
     print("  /compact               Force managed-session compaction now")
     print("  /exit                  Leave the managed session")
     print("  Ctrl+C                 Interrupt the active agent turn and return here")
@@ -3982,22 +3977,6 @@ def _print_runner_help() -> None:
 def _all_checkpoint_entries_latest_first() -> list[dict[str, Any]]:
     entries = _load_workflow_index()
     return list(reversed(entries))
-
-
-def _resolve_checkpoint_ref(ref: str) -> dict[str, Any] | None:
-    entries = _all_checkpoint_entries_latest_first()
-    if not ref:
-        return entries[0] if entries else None
-    if ref.isdigit():
-        idx = int(ref)
-        if 1 <= idx <= len(entries):
-            return entries[idx - 1]
-        return None
-    for entry in entries:
-        checkpoint_id = str(entry.get("checkpoint_id", "") or "")
-        if checkpoint_id.startswith(ref):
-            return entry
-    return None
 
 
 def _snapshot_metadata() -> dict[str, Any]:
@@ -8146,7 +8125,7 @@ def _print_header() -> None:
     print(f"Run log: {_workflow_state_root() / 'latest-run.log'}")
     print("")
     print(
-        "Commands: /help, /status, /status <agent> [N], /swarm [agent] [N], /proof-state, /diagnostics, /goals, /history, /checkpoint [note], /rollback <N>, /resume-plan [N], /compact, /exit, Ctrl+C"
+        "Commands: /help, /status, /status <agent> [N], /swarm [agent] [N], /proof-state, /diagnostics, /goals, /history, /compact, /exit, Ctrl+C"
     )
     print("Inspect later from the shell with /workflow activity or /workflow log 120.")
     print("")
@@ -9394,7 +9373,7 @@ def _collect_declaration_truth(
 def _maybe_sync_plan_state(
     autonomy_state: Mapping[str, Any] | None,
     live_state: Mapping[str, Any] | None,
-) -> None:
+) -> bool:
     """Per-cycle queue->graph sync + reconcile (Phase 1, dark).
 
     Derives graph state from queue events: the current assignment becomes a
@@ -9404,7 +9383,7 @@ def _maybe_sync_plan_state(
     sync failure is loud (activity event) but never fatal to the run.
     """
     if not plan_state_enabled():
-        return
+        return False
     try:
         loaded = plan_state.load_blueprint()
         bp = loaded
@@ -9511,6 +9490,7 @@ def _maybe_sync_plan_state(
             summary.setdefault("workflow_command", _read_native_env("WORKFLOW_COMMAND", ""))
             plan_state.save_summary(summary)
             plan_state.save_plan_md(bp, summary)
+        return True
     except Exception as exc:
         logger.debug("plan-state sync failed", exc_info=True)
         with contextlib.suppress(Exception):
@@ -9518,6 +9498,31 @@ def _maybe_sync_plan_state(
                 "plan-state-sync-error",
                 f"Plan-state sync failed: {str(exc)[:200]}",
             )
+        return False
+
+
+def _plan_state_resume_block(autonomy_state: Mapping[str, Any] | None) -> str:
+    """Resolve the documentation-driven resume handoff (P1.5).
+
+    When plan-state is on and a dependency graph exists, reconcile it against
+    the on-disk declarations FIRST (stale checkpoints must not outrank kernel
+    truth), then render the resume block. '' means the caller falls back to
+    checkpoint replay; failures degrade to the fallback rather than blocking
+    startup.
+    """
+    if not plan_state_enabled():
+        return ""
+    try:
+        if not plan_state_paths().blueprint_json.is_file():
+            return ""
+        if not _maybe_sync_plan_state(autonomy_state, None):
+            # An unreconciled graph must not present itself as the resume
+            # authority — fall back to checkpoint replay.
+            return ""
+        return plan_state.resume_context_block()
+    except Exception:
+        logger.debug("plan-state resume block failed", exc_info=True)
+        return ""
 
 
 def _budget_breakpoint_enabled() -> bool:
@@ -9950,7 +9955,15 @@ def main() -> int:
         autonomy_state: dict[str, Any] = {"blocked_runs": 0}
         checkpoint_state = _journal_status()
         resumed_checkpoint = checkpoint_state.get("current")
-        if resumed_checkpoint:
+        plan_resume_block = _plan_state_resume_block(autonomy_state)
+        if plan_resume_block and isinstance(checkpoint_state, dict):
+            # The plan artifacts are the resume authority: blank the stale
+            # checkpoint pointer so its file/target identity cannot leak into
+            # the startup live state, route decision, or queue prep.
+            checkpoint_state = {**checkpoint_state, "current": None}
+        if resumed_checkpoint and not plan_resume_block:
+            # Checkpoint replay is the fallback authority only when no
+            # plan-state artifacts exist (P1.5 documentation-driven resume).
             history = _checkpoint_replay_history(resumed_checkpoint)
         _ensure_project_prove_manager_started(autonomy_state, phase="startup")
         live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
@@ -9969,18 +9982,23 @@ def main() -> int:
         )
 
         _print_header()
-        if resumed_checkpoint:
+        if plan_resume_block:
+            print("Resuming from plan-state artifacts (dependency-graph authority).")
+            print("")
+        elif resumed_checkpoint:
             print(f"Loaded persisted checkpoint: {resumed_checkpoint.get('label', '[unknown]')}")
             print("")
 
         initial_message = _attach_live_proof_state(
             _startup_user_message(
-                resumed_checkpoint,
+                None if plan_resume_block else resumed_checkpoint,
                 live_state=live_state,
                 autonomy_state=autonomy_state,
             ),
             live_state,
         )
+        if plan_resume_block:
+            initial_message = f"{plan_resume_block}\n\n{initial_message}"
         _record_turn_prompt_fingerprint(autonomy_state, initial_message, phase="startup", cycle=0)
         _persist_live_status(history, compaction_state, checkpoint_state, live_state, phase="busy")
         _record_queue_assignment(live_state, phase="startup")
@@ -10240,87 +10258,6 @@ def main() -> int:
                 continue
             if text == "/history":
                 _print_history(_all_checkpoint_entries_latest_first())
-                continue
-            if text.startswith("/checkpoint"):
-                note = text[len("/checkpoint") :].strip()
-                live_state = _build_live_proof_state_compat(
-                    history, checkpoint_state, autonomy_state
-                )
-                live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
-                entry = _write_workflow_checkpoint(
-                    history,
-                    agent,
-                    label=note or "manual checkpoint",
-                    trigger="manual",
-                    note=note,
-                    force_filesystem_checkpoint=True,
-                    live_state=live_state,
-                )
-                checkpoint_state = _journal_status()
-                _persist_live_status(
-                    history, compaction_state, checkpoint_state, live_state, phase="checkpointed"
-                )
-                print(f"Saved workflow checkpoint {entry['checkpoint_id']} ({entry['label']}).")
-                continue
-            if text.startswith("/resume-plan"):
-                parts = text.split(maxsplit=1)
-                ref = parts[1].strip() if len(parts) > 1 else ""
-                entry = _resolve_checkpoint_ref(ref)
-                if entry is None:
-                    print("Checkpoint not found. Use /history to inspect available checkpoints.")
-                    continue
-                history = _resume_plan_from_checkpoint(entry)
-                checkpoint_state = _journal_status()
-                live_state = _build_live_proof_state_compat(
-                    history, checkpoint_state, autonomy_state
-                )
-                live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
-                _record_activity("resume", f"Loaded workflow plan from {entry['label']}")
-                _persist_live_status(
-                    history, compaction_state, checkpoint_state, live_state, phase="resumed"
-                )
-                print(f"Loaded workflow plan from checkpoint {entry['label']}.")
-                continue
-            if text.startswith("/rollback"):
-                parts = text.split(maxsplit=1)
-                ref = parts[1].strip() if len(parts) > 1 else ""
-                if not ref:
-                    print("Usage: /rollback <N>")
-                    continue
-                entry = _resolve_checkpoint_ref(ref)
-                if entry is None:
-                    print("Checkpoint not found. Use /history to inspect available checkpoints.")
-                    continue
-                history, message = _rollback_to_checkpoint(agent, entry)
-                live_state = _build_live_proof_state_compat(
-                    history, checkpoint_state, autonomy_state
-                )
-                live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
-                post = _write_workflow_checkpoint(
-                    history,
-                    agent,
-                    label="post-rollback checkpoint",
-                    trigger="rollback",
-                    note=f"Rolled back to {entry.get('label', entry.get('checkpoint_id', 'checkpoint'))}",
-                    force_filesystem_checkpoint=True,
-                    live_state=live_state,
-                )
-                checkpoint_state = _journal_status()
-                live_state = _build_live_proof_state_compat(
-                    history, checkpoint_state, autonomy_state
-                )
-                live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
-                _record_activity(
-                    "rollback",
-                    message,
-                    checkpoint_label=str(entry.get("label", "") or "checkpoint"),
-                )
-                _persist_live_status(
-                    history, compaction_state, checkpoint_state, live_state, phase="resumed"
-                )
-                print(message)
-                print(f"Recorded {post['label']} ({post['checkpoint_id']}).")
-                _print_interactive_mode_header(live_state)
                 continue
             if text == "/compact":
                 live_state = _build_live_proof_state_compat(

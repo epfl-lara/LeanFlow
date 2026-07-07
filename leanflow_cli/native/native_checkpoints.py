@@ -56,8 +56,6 @@ __all__ = [
     "_load_current_checkpoint",
     "_workflow_replay_message",
     "_checkpoint_replay_history",
-    "_resume_plan_from_checkpoint",
-    "_rollback_to_checkpoint",
     "_latest_filesystem_checkpoint_hash",
 ]
 
@@ -188,37 +186,6 @@ def _checkpoint_replay_history(entry: Mapping[str, Any]) -> list[dict[str, Any]]
     if not summary_text:
         return []
     return [_workflow_replay_message(summary_text)]
-
-
-def _resume_plan_from_checkpoint(entry: Mapping[str, Any]) -> list[dict[str, Any]]:
-    _write_current_checkpoint(entry)
-    return _checkpoint_replay_history(entry)
-
-
-def _rollback_to_checkpoint(
-    agent: AIAgent, entry: Mapping[str, Any]
-) -> tuple[list[dict[str, Any]], str]:
-    checkpoint_hash = str(entry.get("linked_filesystem_checkpoint", "") or "").strip()
-    if not checkpoint_hash:
-        return (
-            _checkpoint_replay_history(entry),
-            "Checkpoint has no linked filesystem snapshot; only plan state was resumed.",
-        )
-    checkpoint_mgr = getattr(agent, "_checkpoint_mgr", None)
-    if checkpoint_mgr is None or not getattr(checkpoint_mgr, "enabled", False):
-        return (
-            _checkpoint_replay_history(entry),
-            "Filesystem checkpoints are unavailable; only plan state was resumed.",
-        )
-    result = checkpoint_mgr.restore(_project_root(), checkpoint_hash)
-    if not result.get("success"):
-        error = str(result.get("error", "restore failed") or "restore failed")
-        return _checkpoint_replay_history(entry), f"Filesystem rollback failed: {error}"
-    message = (
-        f"Restored filesystem to {result.get('restored_to', checkpoint_hash[:8])} "
-        f"({result.get('reason', 'unknown')})."
-    )
-    return _checkpoint_replay_history(entry), message
 
 
 def _latest_filesystem_checkpoint_hash(
