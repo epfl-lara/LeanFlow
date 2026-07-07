@@ -29,6 +29,7 @@ from agent.providers.auxiliary_client import call_llm
 from agent.providers.model_metadata import estimate_messages_tokens_rough
 from leanflow_cli.config import load_config
 from leanflow_cli.lean.lean_incremental import lean_incremental_check
+from leanflow_cli.lean.lean_lemma_suggest import lean_lemma_suggest
 from leanflow_cli.lean.lean_services import (
     diagnostic_items,
     lean_axioms,
@@ -4549,7 +4550,80 @@ def _prepare_queue_assignment_state(
         prepare=prepare,
     )
     _flush_queue_manager(autonomy_state, mgr)
+    _inject_premise_hints(autonomy_state, target_symbol=label, active_file=active_file)
     _assert_queue_invariants(autonomy_state, live_state, event="prepare-assignment")
+
+
+def _premise_retrieval_enabled() -> bool:
+    raw = _read_text_env("LEANFLOW_PREMISE_RETRIEVAL", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _inject_premise_hints(
+    autonomy_state: Mapping[str, Any] | None,
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> list[str]:
+    """Premise retrieval at queue assignment (roadmap §4.6, flag-gated).
+
+    Runs `lean_lemma_suggest` ONCE per assignment (cached per theorem key in
+    the non-manager-owned 'premise_hints' autonomy key, so it survives queue
+    flushes and never hammers the rate-limited search providers) and returns
+    the formatted candidate lines the queue block renders. Failures cache an
+    empty list for the assignment; retrieval is advisory, never blocking.
+    """
+    if not _premise_retrieval_enabled() or not isinstance(autonomy_state, dict):
+        return []
+    if not target_symbol or not active_file:
+        return []
+    store = autonomy_state.setdefault("premise_hints", {})
+    storage_key = _queue_key(target_symbol, active_file).storage_key()
+    if storage_key in store:
+        return list(store[storage_key])
+    hints: list[str] = []
+    try:
+        payload = lean_lemma_suggest(active_file, target_symbol, cwd=_project_root())
+        for candidate in list(payload.get("candidates") or [])[:6]:
+            name = str(candidate.get("name", "") or "").strip()
+            if not name:
+                continue
+            signature = _single_line(str(candidate.get("signature", "") or ""), 160)
+            hints.append(f"{name}: {signature}" if signature else name)
+        _record_activity(
+            "premise-retrieval",
+            f"Premise retrieval for {target_symbol}: {len(hints)} candidates",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            candidates=len(hints),
+            degraded_reasons=list(payload.get("degraded_reasons") or []),
+        )
+    except Exception:
+        logger.debug("premise retrieval failed", exc_info=True)
+    store[storage_key] = list(hints)
+    return hints
+
+
+def _premise_hints_for(
+    autonomy_state: Mapping[str, Any] | None,
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> list[str]:
+    """Read-only view of the cached premise candidates for an assignment.
+
+    Gated on the flag too: a cache seeded before the flag was disabled must
+    not keep injecting candidates into the queue block.
+    """
+    if not _premise_retrieval_enabled():
+        return []
+    if not isinstance(autonomy_state, Mapping) or not target_symbol or not active_file:
+        return []
+    store = autonomy_state.get("premise_hints")
+    if not isinstance(store, Mapping):
+        return []
+    storage_key = _queue_key(target_symbol, active_file).storage_key()
+    return [str(hint) for hint in list(store.get(storage_key) or [])]
 
 
 def _queue_invariant_checks_enabled() -> bool:
@@ -4790,6 +4864,15 @@ def _queue_assignment_block(
         parts.extend(["", "Disabled this run:", f"- {', '.join(disabled_tools)}"])
     if search_hints:
         parts.extend(["", "Search hints:", f"- {', '.join(search_hints[:4])}"])
+    premise_hints = _premise_hints_for(autonomy_state, target_symbol=label, active_file=active_file)
+    if premise_hints:
+        parts.extend(
+            [
+                "",
+                "Premise candidates (auto-retrieved at assignment; verify before use):",
+                *[f"- {hint}" for hint in premise_hints[:6]],
+            ]
+        )
     if bool(live_state.get("search_exhausted")):
         parts.extend(
             [
@@ -9530,12 +9613,29 @@ def _budget_breakpoint_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _research_mode_enabled() -> bool:
+    """Research-profile flag (roadmap §4.7) — the Phase 1 skeleton.
+
+    Phase 1 semantics: the per-theorem budget ceiling defaults off (N5:
+    token cost is not the constraint; difficulty is a routing signal). The
+    full profile (unconditional orchestrator consultation, ceiling/stall as
+    invocations, thrift caps lifted, context-rich prompts) lands with
+    Phases 4-6; helpers gate on this flag as those phases arrive.
+    """
+    raw = _read_text_env("LEANFLOW_RESEARCH_MODE", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _theorem_budget_steps() -> int:
     """Per-theorem cumulative API-step budget; 0 disables the per-theorem cap.
 
-    Per N5 there is no efficiency ceiling for research runs — set
-    LEANFLOW_THEOREM_BUDGET_STEPS=0 and only the queue-level K-streak applies.
+    Per N5 there is no efficiency ceiling for research runs — under
+    LEANFLOW_RESEARCH_MODE an unset budget means uncapped (queue-level
+    K-streak still applies); an explicit value always wins.
     """
+    raw = _read_text_env("LEANFLOW_THEOREM_BUDGET_STEPS", "").strip()
+    if not raw and _research_mode_enabled():
+        return 0
     return _read_int_env("LEANFLOW_THEOREM_BUDGET_STEPS", 600, minimum=0)
 
 
