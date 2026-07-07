@@ -152,6 +152,7 @@ files = [
   "leanflow_cli/workflows/queue_models.py",
   "leanflow_cli/workflows/queue_manager_live.py",
   "leanflow_cli/workflows/queue_decide_shadow.py",
+  "leanflow_cli/workflows/plan_state.py",
   "leanflow_cli/workflows/queue_item_predicates.py",
   "leanflow_cli/formalization/formalization_document_runner.py",
   "leanflow_cli/formalization/formalization_generated_lean.py",

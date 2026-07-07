@@ -269,6 +269,11 @@ patch/monkeypatch surface tests rely on while moving the logic out.
   `LEANFLOW_QUEUE_DECIDE_SHADOW=1` the legacy verdict gates also evaluate the pure `decide()`
   policy on a throwaway hydration and log `queue-decide-shadow-mismatch` activity events on
   divergence; the legacy branches stay authoritative.
+- `plan_state.py` — Phase 1 living plan-state substrate behind `LEANFLOW_PLAN_STATE`
+  (default off): the dependency graph `blueprint.json` (frontier / OR-route / kernel-truth
+  status rules), `summary.json`, the `plan.md` render with a preserved Notes tail, the
+  append-only `journal.jsonl` lab notebook, the `reconcile()` anti-drift pass, decision-packet
+  persistence, and the artifact prompt blocks the runner injects.
 
 ### From `workflow_state.py`
 
