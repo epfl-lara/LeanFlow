@@ -1,0 +1,461 @@
+"""Characterization tests pinning `_finish_queue_step_boundary` (native_runner.py).
+
+Phase 0 of the /prove redesign (docs/prove-redesign-implementation-specs.md P0.5)
+unifies four drifting verdict paths behind `TheoremQueueManager.decide()`. This
+boundary path had no direct tests; these goldens pin its CURRENT behavior —
+including load-bearing quirks the unification must preserve byte-for-byte:
+
+- D2: post-edit triggers consume hard retries against the limit of 8;
+  verification-tool triggers (lean_verify etc.) consume NOTHING.
+- Signature idempotency: an identical manager check does not advance retries.
+- Warning-once: first warning grants one cleanup turn, the second is accepted.
+- Failed attempts are recorded on still-blocked continues, never on exhaustion.
+
+Only I/O seams are stubbed (live-state rebuild, activity sink, declaration
+lookup, diagnostic feedback reason); the verdict logic under test runs real.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from leanflow_cli.native import native_runner as runner
+
+
+class _StubAgent:
+    """Minimal AIAgent stand-in for direct `_finish_queue_step_boundary` calls."""
+
+    quiet_mode = True
+
+    def __init__(self, autonomy_state: dict[str, Any]):
+        self._managed_autonomy_state = autonomy_state
+        self._session_messages = [{"role": "assistant", "content": "partial"}]
+        self._managed_pending_theorem_feedback: dict[str, str] | None = {
+            "target_symbol": "demo",
+            "active_file": "Demo/Main.lean",
+        }
+        self.interrupt_messages: list[str | None] = []
+
+    def is_interrupted(self) -> bool:
+        return False
+
+    def interrupt(self, message: str | None = None) -> None:
+        self.interrupt_messages.append(message)
+
+    def set_tool_result_appendix(self, text: str) -> None:
+        text = (text or "").strip()
+        if text:
+            self._post_tool_result_appendix = text
+        elif hasattr(self, "_post_tool_result_appendix"):
+            del self._post_tool_result_appendix
+
+    def clear_tool_result_appendix(self) -> None:
+        if hasattr(self, "_post_tool_result_appendix"):
+            del self._post_tool_result_appendix
+
+
+def _autonomy_state() -> dict[str, Any]:
+    return {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": "Demo/Main.lean",
+            "slice": "theorem demo : True := by\n  sorry",
+        },
+        "current_cycle": 2,
+    }
+
+
+def _blocked_live_state() -> dict[str, Any]:
+    return {
+        "target_symbol": "demo",
+        "active_file": "Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "current_queue_item_slice": "theorem demo : True := by\n  sorry",
+        "diagnostics": "error: unsolved goals",
+        "goals": "⊢ False",
+        "build_status": "unknown",
+        "blocker_summary": "error: unsolved goals",
+    }
+
+
+def _clean_advanced_live_state() -> dict[str, Any]:
+    return {
+        "target_symbol": "next_demo",
+        "active_file": "Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+        "diagnostics": "warning: declaration uses sorry",
+        "goals": "no goals",
+        "build_status": "ok",
+    }
+
+
+def _wire(monkeypatch, live_state, *, cleanup_reason="", has_sorry=False):
+    """Stub the I/O seams around the boundary; return the captured activity events."""
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: dict(live_state),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        runner, "_declaration_diagnostic_feedback_reason", lambda *args, **kwargs: cleanup_reason
+    )
+    monkeypatch.setattr(
+        runner, "_find_declaration_entry", lambda file, label: {"has_sorry": has_sorry}
+    )
+    return events
+
+
+def _boundary_event(events):
+    boundary_types = {
+        "queue-theorem-feedback",
+        "queue-theorem-cleanup-feedback",
+        "queue-theorem-retry-exhausted",
+        "queue-step-boundary",
+    }
+    matches = [(args, kwargs) for args, kwargs in events if args[0] in boundary_types]
+    assert len(matches) == 1, f"expected exactly one boundary event, got {matches}"
+    # Pin the non-exception path: the broad except also yields with a
+    # queue-step-boundary event, distinguishable only by refresh_error.
+    assert matches[0][1]["refresh_error"] == ""
+    return matches[0]
+
+
+def _hard_retry_counts(autonomy_state):
+    return {
+        key: dict(entry)
+        for key, entry in dict(autonomy_state.get("manager_feedback_retries") or {}).items()
+    }
+
+
+def test_post_edit_hard_error_consumes_retry_records_attempt_and_continues(monkeypatch):
+    autonomy_state = _autonomy_state()
+    agent = _StubAgent(autonomy_state)
+    events = _wire(monkeypatch, _blocked_live_state())
+
+    manager_check = {
+        "ok": False,
+        "mode": "incremental_target",
+        "command": "lean_interact check_target",
+        "target": "demo",
+        "output": "error: unsolved goals",
+    }
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file="Demo/Main.lean",
+        verification_tool="patch+lean_incremental_check",
+        manager_verification=manager_check,
+    )
+
+    args, kwargs = _boundary_event(events)
+    assert args[0] == "queue-theorem-feedback"
+    review = kwargs["manager_verification"]
+    assert review["feedback_kind"] == "error"
+    assert review["feedback_retry_limit"] == runner.MANAGER_POST_EDIT_HARD_RETRY_LIMIT
+    assert kwargs["still_blocked"] is True
+    assert kwargs["hard_retry_exhausted"] is False
+
+    # One hard retry consumed for the assignment key.
+    counts = _hard_retry_counts(autonomy_state)
+    assert len(counts) == 1
+    assert next(iter(counts.values())) == {"hard": 1}
+
+    # Failed attempt recorded with the manager feedback as the reason.
+    attempts = autonomy_state["failed_attempts"]
+    assert attempts[-1]["target_symbol"] == "demo"
+    assert "error: unsolved goals" in attempts[-1]["reason"]
+    assert any(a[0] == "failed-attempt-recorded" for a, _k in events)
+
+    # Continue-same-turn: appendix set, no interrupt, attempt flagged, pending cleared.
+    assert "[LEANFLOW-NATIVE THEOREM FEEDBACK]" in agent._post_tool_result_appendix
+    assert "still blocked; continue the same theorem turn" in agent._post_tool_result_appendix
+    assert agent.interrupt_messages == []
+    assert agent._managed_step_boundary_recorded_attempt is True
+    assert agent._managed_pending_theorem_feedback is None
+    assert not getattr(agent, "_managed_step_boundary_closed", False)
+
+    # Signature idempotency: re-running the identical check does NOT advance retries.
+    agent._managed_pending_theorem_feedback = {
+        "target_symbol": "demo",
+        "active_file": "Demo/Main.lean",
+    }
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file="Demo/Main.lean",
+        verification_tool="patch+lean_incremental_check",
+        manager_verification=dict(manager_check),
+    )
+    counts = _hard_retry_counts(autonomy_state)
+    assert next(iter(counts.values())) == {"hard": 1}
+
+
+def test_post_edit_hard_error_below_limit_consumes_up_to_the_limit(monkeypatch):
+    """Exhaustion triggers only when the PRE-consumption count has reached 8."""
+    autonomy_state = _autonomy_state()
+    agent = _StubAgent(autonomy_state)
+    events = _wire(monkeypatch, _blocked_live_state())
+    monkeypatch.setattr(
+        runner,
+        "_restore_queue_assignment_to_baseline_sorry",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("restore must not run")),
+    )
+    for _ in range(runner.MANAGER_POST_EDIT_HARD_RETRY_LIMIT - 1):
+        runner._increment_manager_feedback_retry(
+            autonomy_state,
+            target_symbol="demo",
+            active_file="Demo/Main.lean",
+            kind="error",
+        )
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file="Demo/Main.lean",
+        verification_tool="patch+lean_incremental_check",
+        manager_verification={
+            "ok": False,
+            "command": "lean_interact check_target",
+            "target": "demo",
+            "output": "error: unsolved goals",
+        },
+    )
+
+    args, kwargs = _boundary_event(events)
+    assert args[0] == "queue-theorem-feedback"
+    assert kwargs["hard_retry_exhausted"] is False
+    counts = _hard_retry_counts(autonomy_state)
+    assert next(iter(counts.values())) == {"hard": runner.MANAGER_POST_EDIT_HARD_RETRY_LIMIT}
+    assert agent.interrupt_messages == []
+
+
+def test_post_edit_hard_error_at_limit_restores_baseline_and_yields(monkeypatch):
+    autonomy_state = _autonomy_state()
+    agent = _StubAgent(autonomy_state)
+    events = _wire(monkeypatch, _blocked_live_state())
+    restore_calls: list[tuple] = []
+    monkeypatch.setattr(
+        runner,
+        "_restore_queue_assignment_to_baseline_sorry",
+        lambda *args, **kwargs: (
+            restore_calls.append(args),
+            {"restored": True, "reason": "restored"},
+        )[1],
+    )
+    for _ in range(runner.MANAGER_POST_EDIT_HARD_RETRY_LIMIT):
+        runner._increment_manager_feedback_retry(
+            autonomy_state,
+            target_symbol="demo",
+            active_file="Demo/Main.lean",
+            kind="error",
+        )
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file="Demo/Main.lean",
+        verification_tool="patch+lean_incremental_check",
+        manager_verification={
+            "ok": False,
+            "command": "lean_interact check_target",
+            "target": "demo",
+            "output": "error: unsolved goals",
+        },
+    )
+
+    args, kwargs = _boundary_event(events)
+    assert args[0] == "queue-theorem-retry-exhausted"
+    assert kwargs["hard_retry_exhausted"] is True
+    assert kwargs["manager_verification"]["retry_exhausted"] is True
+    assert kwargs["manager_verification"]["restore"] == {
+        "restored": True,
+        "reason": "reverted current declaration to its baseline `sorry` slice "
+        "after manager retry exhaustion",
+    }
+    assert len(restore_calls) == 1
+
+    # Exhaustion yields: interrupt fired, boundary closed, no failed attempt recorded.
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_step_boundary_closed is True
+    assert agent._managed_step_boundary_recorded_attempt is False
+    assert "failed_attempts" not in autonomy_state
+    assert not hasattr(agent, "_post_tool_result_appendix")
+
+
+def test_verification_tool_hard_error_consumes_no_retry_but_records_attempt(monkeypatch):
+    """Pins drift D2: non-edit triggers never consume hard retries."""
+    autonomy_state = _autonomy_state()
+    agent = _StubAgent(autonomy_state)
+    events = _wire(monkeypatch, _blocked_live_state())
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file="Demo/Main.lean",
+        verification_tool="lean_verify",
+        manager_verification={
+            "ok": False,
+            "command": "lake env lean Demo/Main.lean",
+            "output": "error: unsolved goals",
+        },
+    )
+
+    args, kwargs = _boundary_event(events)
+    assert args[0] == "queue-theorem-feedback"
+    assert kwargs["still_blocked"] is True
+    assert "manager_feedback_retries" not in autonomy_state
+    assert "manager_feedback_retry_consumed_signatures" not in autonomy_state
+    assert autonomy_state["failed_attempts"][-1]["target_symbol"] == "demo"
+    assert agent.interrupt_messages == []
+    assert agent._managed_step_boundary_recorded_attempt is True
+
+
+def test_warning_cleanup_first_pass_grants_one_cleanup_turn(monkeypatch):
+    autonomy_state = _autonomy_state()
+    agent = _StubAgent(autonomy_state)
+    live_state = _blocked_live_state()
+    live_state.update(
+        {"diagnostics": "warning: unused variable `h`", "goals": "no goals", "build_status": "ok"}
+    )
+    events = _wire(monkeypatch, live_state, cleanup_reason="unused variable `h`")
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file="Demo/Main.lean",
+        verification_tool="patch+lean_incremental_check",
+        manager_verification={
+            "ok": True,
+            "mode": "incremental_target",
+            "command": "lean_interact check_target",
+            "target": "demo",
+            "output": "warning: unused variable `h`",
+        },
+    )
+
+    args, kwargs = _boundary_event(events)
+    assert args[0] == "queue-theorem-cleanup-feedback"
+    review = kwargs["manager_verification"]
+    assert review["feedback_kind"] == "warning"
+    assert review["feedback_retry_limit"] == runner.MANAGER_WARNING_RETRY_LIMIT
+    assert kwargs["warning_retry_accepted"] is False
+
+    counts = _hard_retry_counts(autonomy_state)
+    assert next(iter(counts.values())) == {"warning": 1}
+
+    # Cleanup continue: appendix carries the cleanup contract, no interrupt.
+    appendix = agent._post_tool_result_appendix
+    assert "[LEANFLOW-NATIVE THEOREM FEEDBACK]" in appendix
+    assert "local cleanup" in appendix
+    assert "bail clause" in appendix
+    assert agent.interrupt_messages == []
+    assert agent._managed_pending_theorem_feedback is None
+
+
+def test_warning_cleanup_second_pass_accepts_and_yields(monkeypatch):
+    autonomy_state = _autonomy_state()
+    agent = _StubAgent(autonomy_state)
+    live_state = _blocked_live_state()
+    live_state.update(
+        {"diagnostics": "warning: unused variable `h`", "goals": "no goals", "build_status": "ok"}
+    )
+    events = _wire(monkeypatch, live_state, cleanup_reason="unused variable `h`")
+    manager_check = {
+        "ok": True,
+        "mode": "incremental_target",
+        "command": "lean_interact check_target",
+        "target": "demo",
+        "output": "warning: unused variable `h`",
+    }
+
+    for _ in range(2):
+        agent._managed_pending_theorem_feedback = {
+            "target_symbol": "demo",
+            "active_file": "Demo/Main.lean",
+        }
+        runner._finish_queue_step_boundary(
+            agent,
+            pending_target="demo",
+            pending_file="Demo/Main.lean",
+            verification_tool="patch+lean_incremental_check",
+            manager_verification=dict(manager_check),
+        )
+
+    second_args, second_kwargs = [
+        (a, k)
+        for a, k in events
+        if a[0] in {"queue-step-boundary", "queue-theorem-cleanup-feedback"}
+    ][-1]
+    assert second_args[0] == "queue-step-boundary"
+    assert second_kwargs["warning_retry_accepted"] is True
+    assert second_kwargs["manager_verification"]["accepted_after_warning_retry_limit"] is True
+
+    # Acceptance clears the retry bookkeeping entirely and yields.
+    assert "manager_feedback_retries" not in autonomy_state
+    assert "manager_feedback_retry_consumed_signatures" not in autonomy_state
+    assert agent.interrupt_messages[-1] == runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT
+    assert agent._managed_step_boundary_closed is True
+
+
+def test_clean_advance_yields_with_step_boundary_interrupt(monkeypatch):
+    autonomy_state = _autonomy_state()
+    agent = _StubAgent(autonomy_state)
+    events = _wire(monkeypatch, _clean_advanced_live_state())
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file="Demo/Main.lean",
+        verification_tool="patch+lean_incremental_check",
+        manager_verification={
+            "ok": True,
+            "mode": "incremental_target",
+            "command": "lean_interact check_target",
+            "target": "demo",
+            "output": "",
+        },
+    )
+
+    args, kwargs = _boundary_event(events)
+    assert args[0] == "queue-step-boundary"
+    assert kwargs["still_blocked"] is False
+    assert kwargs["yielded"] is True
+    assert kwargs["queue_item"]["label"] == "next_demo"
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_step_boundary_closed is True
+    assert agent._managed_pending_theorem_feedback is None
+    assert "manager_feedback_retries" not in autonomy_state
+    assert "failed_attempts" not in autonomy_state
+    assert not hasattr(agent, "_post_tool_result_appendix")
+
+
+def test_failed_check_after_queue_advance_still_yields(monkeypatch):
+    """A failing file check does not hold the turn once the assignment moved on."""
+    autonomy_state = _autonomy_state()
+    agent = _StubAgent(autonomy_state)
+    events = _wire(monkeypatch, _clean_advanced_live_state())
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file="Demo/Main.lean",
+        verification_tool="lean_verify",
+        manager_verification={
+            "ok": False,
+            "command": "lake env lean Demo/Main.lean",
+            "output": "error: future declaration broken",
+        },
+    )
+
+    args, kwargs = _boundary_event(events)
+    assert args[0] == "queue-step-boundary"
+    assert kwargs["still_blocked"] is False
+    assert kwargs["queue_item"]["label"] == "next_demo"
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert "manager_feedback_retries" not in autonomy_state
