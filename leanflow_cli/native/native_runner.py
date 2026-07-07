@@ -42,7 +42,7 @@ from leanflow_cli.lean.lean_services import (
 from leanflow_cli.lean.lean_workflow_specs import specs_for_skill
 from leanflow_cli.runtime.file_locks import list_file_locks, release_all_file_locks
 from leanflow_cli.runtime.skill_core import load_skill
-from leanflow_cli.workflows import plan_state
+from leanflow_cli.workflows import manager_nudge, plan_state, struggle_signals
 from leanflow_cli.workflows.plan_state import (
     artifact_context_block,
     artifact_paths_block,
@@ -1896,6 +1896,132 @@ def _manager_retry_exhausted_message(
     return "\n".join(lines).strip()
 
 
+def _kernel_verified_helpers(target_symbol: str, active_file: str) -> list[str]:
+    """Proved graph nodes in the assignment's file, other than the assignment.
+
+    Partial-credit input (roadmap §4.10): kernel-verified helpers ARE
+    progress, and the manager feedback should say so instead of rendering a
+    binary reject. Empty when plan-state is off.
+    """
+    if not plan_state_enabled():
+        return []
+    try:
+        bp = plan_state.load_blueprint()
+        assignment_id = plan_state.node_id_for(target_symbol, active_file)
+        return [
+            node.name
+            for node in bp.nodes
+            if node.status == "proved"
+            and node.id != assignment_id
+            and node.name
+            and _same_active_file(node.file, active_file)
+        ][:6]
+    except Exception:
+        return []
+
+
+def _maybe_manager_nudge(
+    autonomy_state: Mapping[str, Any] | None,
+    manager_check: Mapping[str, Any],
+    *,
+    target_symbol: str,
+    active_file: str,
+    result: Mapping[str, Any] | None = None,
+) -> str:
+    """Struggle-triggered advisory nudge (Phase 2, specs §2.2).
+
+    Post-verdict only: the kernel gate has already judged the attempt and
+    nothing here can touch that verdict — the return value is a guidance
+    paragraph appended to the feedback message in live mode ('' in off/dark
+    modes and on every failure). Rate-limited to one LLM call per
+    (theorem, attempt); dark mode logs to summary.json.manager_nudges only.
+    """
+    mode = manager_nudge.nudge_mode()
+    if mode == "off" or not isinstance(autonomy_state, dict):
+        return ""
+    try:
+        mgr = _queue_manager_from_state(autonomy_state)
+        key = _queue_key(target_symbol, active_file)
+        attempt_count = mgr.attempt_count_for(key)
+        seen = autonomy_state.setdefault("manager_nudge_seen", [])
+        rate_key = f"{key.storage_key()}::{attempt_count}"
+        if rate_key in seen:
+            return ""
+        attempt_entries = [dict(entry) for entry in mgr.attempt_entries_for(key)]
+        # Repeated-error evidence comes from the failed-attempt REASONS: the
+        # retry-signature store is deduplicated (identical repeats stay at 1),
+        # so it cannot count occurrences.
+        reason_counts: dict[str, int] = {}
+        for entry in attempt_entries:
+            reason = _single_line(str(entry.get("reason", "") or ""), 200).lower()
+            if reason:
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        repeated = max(reason_counts.values(), default=0)
+        final_text = _message_text((result or {}).get("final_response"))
+        ctx = struggle_signals.StruggleContext(
+            attempt_count=attempt_count,
+            hard_retry_count=mgr.retry_count_for(key, "hard"),
+            repeated_signature_count=repeated,
+            search_progress=dict(autonomy_state.get("search_progress") or {}),
+            stable_cycles=int(autonomy_state.get("continuation_stable_cycles", 0) or 0),
+            blocked_runs=int(autonomy_state.get("continuation_blocked_runs", 0) or 0),
+            api_calls=int((result or {}).get("api_calls", 0) or 0),
+            max_iterations=_read_int_env("AGENT_MAX_TURNS", 0, minimum=0),
+            blocker_summary=_extract_blocker_summary(final_text) if final_text else "",
+        )
+        report = struggle_signals.evaluate(ctx)
+        if not report.fired():
+            return ""
+        seen.append(rate_key)
+        del seen[:-50]
+        proved_helpers = _kernel_verified_helpers(target_symbol, active_file)
+        probe_proposed = attempt_count >= 2  # deterministic proposal (§4.4)
+        packet = {
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+            "attempts": attempt_entries,
+            "feedback_kind": str(manager_check.get("feedback_kind", "") or ""),
+            "gate_output": str(
+                manager_check.get("output", "") or manager_check.get("error", "") or ""
+            ),
+            "api_calls": ctx.api_calls,
+            "max_iterations": ctx.max_iterations,
+            "proved_helpers": proved_helpers,
+            "feasibility_probe_proposed": probe_proposed,
+        }
+        # The packet is a copy by construction: the LLM path never sees (or
+        # mutates) the live manager_check.
+        nudge = manager_nudge.request_nudge(report, dict(packet))
+        applied = mode == "live" and nudge is not None
+        manager_nudge.record_nudge(
+            nudge,
+            report,
+            applied=applied,
+            mode=mode,
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
+        if not applied or nudge is None:
+            return ""
+        guidance = ["", "[MANAGER GUIDANCE — advisory]", nudge.message]
+        if proved_helpers:
+            names = ", ".join(f"`{name}`" for name in proved_helpers)
+            guidance.append(
+                f"Progress banked: kernel-verified helpers {names} — build on them; "
+                "they are permanent."
+            )
+        if probe_proposed:
+            guidance.append(
+                "A feasibility probe (negation check) for this statement has been "
+                "proposed deterministically after repeated failures; the orchestrator "
+                "will confirm it — keep proving in the meantime."
+            )
+        return "\n".join(guidance)
+    except Exception:
+        logger.debug("manager nudge failed", exc_info=True)
+        return ""
+
+
 def _review_agent_final_report(
     result: Mapping[str, Any],
     autonomy_state: Mapping[str, Any],
@@ -2015,19 +2141,24 @@ def _review_agent_final_report(
                     )
                 manager_check["retry_exhausted"] = True
                 manager_check["restore"] = restore_result
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": _manager_retry_exhausted_message(
-                            target_symbol=target_symbol,
-                            active_file=active_file,
-                            kind=feedback_kind,
-                            retry_limit=retry_limit,
-                            restore_result=restore_result,
-                            manager_check=manager_check,
-                        ),
-                    }
+                exhausted_text = _manager_retry_exhausted_message(
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    kind=feedback_kind,
+                    retry_limit=retry_limit,
+                    restore_result=restore_result,
+                    manager_check=manager_check,
                 )
+                exhausted_guidance = _maybe_manager_nudge(
+                    autonomy_state,
+                    manager_check,
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    result=updated,
+                )
+                if exhausted_guidance:
+                    exhausted_text = f"{exhausted_text}\n{exhausted_guidance}"
+                messages.append({"role": "user", "content": exhausted_text})
                 updated["messages"] = messages
                 updated["completed"] = False
                 updated["exit_reason"] = "manager_retry_exhausted"
@@ -2090,14 +2221,17 @@ def _review_agent_final_report(
             f"↻ Agent reported {target_symbol} as solved, but manager verification still failed; continuing this queue item."
         )
         _print_queue_step_separator(target_symbol, accepted=False)
-        messages.append(
-            {
-                "role": "user",
-                "content": _manager_final_report_feedback(
-                    target_symbol, active_file, manager_check
-                ),
-            }
+        feedback_text = _manager_final_report_feedback(target_symbol, active_file, manager_check)
+        nudge_guidance = _maybe_manager_nudge(
+            autonomy_state,
+            manager_check,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            result=updated,
         )
+        if nudge_guidance:
+            feedback_text = f"{feedback_text}\n{nudge_guidance}"
+        messages.append({"role": "user", "content": feedback_text})
         updated["messages"] = messages
     if shadow_state is not None and shadow_evidence is not None:
         try:
@@ -9721,7 +9855,9 @@ def _maybe_trigger_budget_breakpoint(
         "consecutive_exhausted": streak,
         "error_signatures": error_signatures,
         "last_verification": last_verification,
-        "negation_status": "not-attempted",
+        # Phase 2 (§4.4): >=2 genuine failures deterministically proposes a
+        # feasibility probe into the packet; the orchestrator confirms/vetoes.
+        "negation_status": "probe-proposed" if len(attempts) >= 2 else "not-attempted",
         "options": ["split", "plan", "negate", "park", "re-state", "abort"],
         "decision": None,
         "decided_by": None,
