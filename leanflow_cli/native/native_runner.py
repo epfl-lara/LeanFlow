@@ -41,6 +41,7 @@ from leanflow_cli.lean.lean_services import (
 from leanflow_cli.lean.lean_workflow_specs import specs_for_skill
 from leanflow_cli.runtime.file_locks import list_file_locks, release_all_file_locks
 from leanflow_cli.runtime.skill_core import load_skill
+from leanflow_cli.workflows import plan_state
 from leanflow_cli.workflows.plan_state import (
     artifact_context_block,
     artifact_paths_block,
@@ -9324,6 +9325,190 @@ def _autonomous_continuation_prompt(
     return prompt
 
 
+def _collect_declaration_truth(
+    files: Sequence[str],
+    live_state: Mapping[str, Any] | None = None,
+    expected: Sequence[tuple[str, str]] = (),
+) -> dict[tuple[str, str], plan_state.DeclTruth]:
+    """Build per-declaration truth for graph-referenced files (P1.2 I/O adapter).
+
+    Parses each file's declarations directly and reuses the live-state
+    diagnostics already fetched this cycle for the active file — zero extra
+    Lean processes on the happy path. Unreadable files are left unscanned so
+    reconcile() skips them instead of declaring everything vanished; an
+    ``expected`` (file, name) pair missing from a READABLE file gets an
+    explicit present=False entry so vanished declarations still downgrade.
+    """
+    current = dict(live_state or {})
+    active_file = str(current.get("active_file", "") or "")
+    diagnostics = str(current.get("diagnostics", "") or "")
+    error_items: list[Mapping[str, Any]] = []
+    if diagnostics:
+        try:
+            error_items = [
+                item
+                for item in diagnostic_items(diagnostics)
+                if str(item.get("severity", "") or "").lower() == "error"
+            ]
+        except Exception:
+            error_items = []
+    truth: dict[tuple[str, str], plan_state.DeclTruth] = {}
+    readable: set[str] = set()
+    for file in dict.fromkeys(str(f) for f in files if str(f)):
+        try:
+            content = Path(file).read_text(encoding="utf-8")
+            entries = _declaration_line_index_from_text(content)
+        except Exception:
+            continue
+        readable.add(file)
+        is_active = bool(active_file) and _same_active_file(file, active_file)
+        for entry in entries:
+            name = str(entry.get("name", "") or "")
+            if not name:
+                continue
+            has_error = bool(is_active and error_items) and any(
+                _line_in_declaration(entry, int(item.get("line", 0) or 0)) for item in error_items
+            )
+            truth[(file, name)] = plan_state.DeclTruth(
+                present=True,
+                has_sorry=bool(entry.get("has_sorry")),
+                has_error_diag=has_error,
+            )
+    for file, name in expected:
+        if file in readable and (file, name) not in truth:
+            truth[(file, name)] = plan_state.DeclTruth(present=False, has_sorry=False)
+    return truth
+
+
+def _maybe_sync_plan_state(
+    autonomy_state: Mapping[str, Any] | None,
+    live_state: Mapping[str, Any] | None,
+) -> None:
+    """Per-cycle queue->graph sync + reconcile (Phase 1, dark).
+
+    Derives graph state from queue events: the current assignment becomes a
+    ``proving`` node, gate-backed ``theorem_outcomes`` drive ``proved``
+    (via_gate) / ``blocked``, then reconcile() re-grounds everything against
+    the on-disk declarations. The graph feeds no verdicts in Phase 1, so a
+    sync failure is loud (activity event) but never fatal to the run.
+    """
+    if not plan_state_enabled():
+        return
+    try:
+        loaded = plan_state.load_blueprint()
+        bp = loaded
+        goal = _read_native_env(
+            "EFFECTIVE_PROMPT",
+            _read_native_env("USER_PROMPT", _read_native_env("EXPLICIT_GOAL", "")),
+        ) or _read_native_env("WORKFLOW_COMMAND", "")
+        if not bp.goal and goal:
+            bp = _dataclass_replace(bp, goal=goal)
+
+        def _outcome_entries() -> list[tuple[str, str, dict[str, Any]]]:
+            entries: list[tuple[str, str, dict[str, Any]]] = []
+            for storage_key, raw_outcome in dict(
+                (autonomy_state or {}).get("theorem_outcomes") or {}
+            ).items():
+                outcome = dict(raw_outcome or {})
+                symbol = str(outcome.get("target_symbol", "") or "").strip()
+                file = str(outcome.get("active_file", "") or "").strip()
+                if not symbol or not file:
+                    file_part, _sep, symbol_part = str(storage_key).rpartition("::")
+                    file = file or file_part
+                    symbol = symbol or symbol_part
+                if symbol and file:
+                    entries.append((symbol, file, outcome))
+            return entries
+
+        # Ensure every outcome has a node BEFORE truth collection so its file
+        # gets scanned and reconciled this cycle.
+        for symbol, file, _outcome in _outcome_entries():
+            if bp.node_by_id(plan_state.node_id_for(symbol, file)) is None:
+                bp, _node = plan_state.upsert_node_for_assignment(
+                    bp, target_symbol=symbol, active_file=file, statement=""
+                )
+        files = sorted({node.file for node in bp.nodes if node.file})
+        expected = tuple((node.file, node.name) for node in bp.nodes if node.file and node.name)
+        truth = _collect_declaration_truth(files, live_state, expected)
+        bp, changes = plan_state.reconcile(bp, truth)
+        for change in changes:
+            plan_state.append_journal_event(change)
+            _record_activity(
+                "plan-graph-reconcile",
+                f"{change['name']}: {change['from']} -> {change['to']}",
+                node_id=change["node_id"],
+                active_file=change["file"],
+                from_status=change["from"],
+                to_status=change["to"],
+            )
+            # A downgraded proved node means the kernel fact regressed on
+            # disk: retire the stale 'solved' outcome so it can never
+            # re-promote the node on a later sync (no flapping).
+            if change["from"] == "proved" and isinstance(autonomy_state, dict):
+                key = _queue_key(change["name"], change["file"])
+                mgr = _queue_manager_from_state(autonomy_state)
+                outcome = mgr.outcome_for(key)
+                if outcome is not None and outcome.status == "solved":
+                    mgr.record_outcome_for(
+                        key,
+                        status="reverted-to-sorry",
+                        note="plan-state reconcile: declaration regressed on disk",
+                    )
+                    _flush_queue_manager(autonomy_state, mgr)
+        for symbol, file, outcome in _outcome_entries():
+            node_id = plan_state.node_id_for(symbol, file)
+            node = bp.node_by_id(node_id)
+            if node is None:
+                continue
+            status = str(outcome.get("status", "") or "")
+            if status == "solved" and node.status != "proved":
+                decl = truth.get((file, symbol))
+                # Gate promotion on CURRENT truth: a stale solved outcome for
+                # a dirty or vanished declaration must not resurrect proved.
+                if decl is not None and decl.present and not decl.has_sorry:
+                    if not decl.has_error_diag:
+                        bp = plan_state.set_node_status(
+                            bp, node_id, "proved", via_gate=True, why="gate-accepted outcome"
+                        )
+            elif status == "blocked" and node.status not in {"proved", "false", "blocked"}:
+                bp = plan_state.set_node_status(bp, node_id, "blocked", why="queue outcome blocked")
+            elif status in {"reverted-to-sorry", "skipped"} and node.status == "proving":
+                # The manager moved on from this item; it is pending work
+                # again, not actively being proved.
+                bp = plan_state.set_node_status(
+                    bp, node_id, "stated", why=f"queue outcome {status}"
+                )
+        # The current assignment is upserted LAST so it always ends 'proving',
+        # even when an older outcome for the same theorem said otherwise.
+        assignment = dict((autonomy_state or {}).get("current_queue_assignment") or {})
+        target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+        active_file = str(assignment.get("active_file", "") or "").strip()
+        if target_symbol and active_file:
+            bp, _node = plan_state.upsert_node_for_assignment(
+                bp,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                statement=str(assignment.get("slice", "") or ""),
+            )
+        if bp != loaded:
+            bp = plan_state.save_blueprint(bp)
+            summary = plan_state.load_summary()
+            summary["counters"] = plan_state.status_counters(bp)
+            if not summary.get("goal") and (bp.goal or goal):
+                summary["goal"] = bp.goal or goal
+            summary.setdefault("workflow_kind", _workflow_kind())
+            summary.setdefault("workflow_command", _read_native_env("WORKFLOW_COMMAND", ""))
+            plan_state.save_summary(summary)
+            plan_state.save_plan_md(bp, summary)
+    except Exception as exc:
+        logger.debug("plan-state sync failed", exc_info=True)
+        with contextlib.suppress(Exception):
+            _record_activity(
+                "plan-state-sync-error",
+                f"Plan-state sync failed: {str(exc)[:200]}",
+            )
+
+
 def _drive_autonomous_followups(
     agent: AIAgent,
     system_prompt: str,
@@ -9423,6 +9608,7 @@ def _drive_autonomous_followups(
             )
             continue
         _maybe_announce_final_file_sweep_state(autonomy_state, live_state)
+        _maybe_sync_plan_state(autonomy_state, live_state)
         _persist_live_status(
             history, compaction_state, checkpoint_state, live_state, phase="verifying"
         )

@@ -587,6 +587,11 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def status_counters(bp: Blueprint) -> dict[str, int]:
+    """Public counters view for summary.json (only non-zero statuses)."""
+    return _status_counts(bp)
+
+
 def _status_counts(bp: Blueprint) -> dict[str, int]:
     counts = {status: 0 for status in NODE_STATUSES}
     for node in bp.nodes:
