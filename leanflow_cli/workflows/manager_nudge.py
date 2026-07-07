@@ -24,11 +24,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from core.utils import atomic_json_write
 from leanflow_cli.native.native_utils import _extract_json_payload, _single_line
 from leanflow_cli.workflows.struggle_signals import StruggleReport
 from leanflow_cli.workflows.verification_providers import run_model_verification_review
-from leanflow_cli.workflows.workflow_json_io import read_json_file
+from leanflow_cli.workflows.workflow_json_io import update_json_file
 from leanflow_cli.workflows.workflow_state import append_workflow_activity
 from leanflow_cli.workflows.workflow_state_paths import workflow_state_root
 
@@ -197,16 +196,17 @@ def record_nudge(
         "nudge": result.to_payload() if result is not None else None,
     }
     try:
-        summary_path = workflow_state_root() / "summary.json"
-        summary = read_json_file(summary_path)
-        nudges = [
-            dict(existing)
-            for existing in (summary.get("manager_nudges") or [])
-            if isinstance(existing, Mapping)
-        ]
-        nudges.append(entry)
-        summary["manager_nudges"] = nudges[-NUDGE_LOG_CAP:]
-        atomic_json_write(summary_path, summary, sort_keys=True)
+
+        def mutate(summary: dict[str, Any]) -> None:
+            nudges = [
+                dict(existing)
+                for existing in (summary.get("manager_nudges") or [])
+                if isinstance(existing, Mapping)
+            ]
+            nudges.append(entry)
+            summary["manager_nudges"] = nudges[-NUDGE_LOG_CAP:]
+
+        update_json_file(workflow_state_root() / "summary.json", mutate)
     except Exception:
         # The activity event below is the fallback record; never raise.
         pass

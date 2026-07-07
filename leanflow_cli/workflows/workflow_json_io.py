@@ -11,15 +11,56 @@ halt-and-alert, never silently reset to an empty run. Re-exported by
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
-from collections.abc import Mapping
+import threading
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
 from core.utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+try:  # POSIX advisory locking; degrades to in-process-only elsewhere
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX (Windows)
+    fcntl = None  # type: ignore[assignment]
+
+_WRITE_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def json_write_lock(path: Path) -> Iterator[None]:
+    """Serialize read-modify-write updates of ``path`` across processes.
+
+    One shared sidecar flock per JSON file: every cooperative writer of a
+    multi-key state file (plan-state summary, nudge log, dispatch ledger)
+    must update inside this lock or risk clobbering other writers' keys.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with _WRITE_LOCK, lock_path.open("a", encoding="utf-8") as handle:
+        if fcntl is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                logger.debug(
+                    "flock unavailable for %s; update not cross-process locked",
+                    lock_path,
+                    exc_info=True,
+                )
+        yield
+
+
+def update_json_file(path: Path, mutate: Callable[[dict[str, Any]], Any]) -> Any:
+    """Transactionally read, mutate (in place), and atomically write ``path``."""
+    with json_write_lock(path):
+        payload = read_json_file(path)
+        outcome = mutate(payload)
+        atomic_json_write(path, payload, sort_keys=True)
+    return outcome
 
 
 class WorkflowStateCorruptionError(RuntimeError):

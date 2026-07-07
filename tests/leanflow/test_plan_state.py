@@ -290,3 +290,25 @@ def test_node_id_is_stable_across_path_spellings(tmp_path):
     assert plan_state.node_id_for("demo", str(active)) == plan_state.node_id_for(
         "demo", str(spelled)
     )
+
+
+def test_save_summary_never_regresses_foreign_keys(enabled):
+    # Another writer's keys survive even a stale caller snapshot.
+    stale = plan_state.load_summary()
+    from leanflow_cli.workflows.workflow_json_io import update_json_file
+
+    update_json_file(
+        plan_state.plan_state_paths().summary_json,
+        lambda summary: summary.update(
+            {"manager_nudges": [{"mode": "dark"}], "dispatch_ledger": [{"state": "running"}]}
+        ),
+    )
+
+    stale["goal"] = "merged later"
+    stale["manager_nudges"] = []  # stale foreign copy must be ignored
+    plan_state.save_summary(stale)
+
+    current = plan_state.load_summary()
+    assert current["goal"] == "merged later"
+    assert current["manager_nudges"] == [{"mode": "dark"}]
+    assert current["dispatch_ledger"] == [{"state": "running"}]

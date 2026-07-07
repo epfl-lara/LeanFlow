@@ -581,6 +581,7 @@ def spawn_workflow(
     requested_provider: str | None = None,
     active_skill: str | None = None,
     interactive: bool = False,
+    extra_env: Mapping[str, str] | None = None,
 ) -> tuple[NativeLaunchPlan, subprocess.Popen[bytes]]:
     plan = resolve_workflow_request(
         command,
@@ -590,6 +591,10 @@ def spawn_workflow(
     )
     child_env = dict(plan.child_env)
     child_env["LEANFLOW_NATIVE_INTERACTIVE"] = "1" if interactive else "0"
+    if extra_env:
+        # Dispatch backends use this to give spawned jobs their own run id
+        # (LEANFLOW_WORKFLOW_RUN_ID=""), the parent-run edge, and job env.
+        child_env.update({str(key): str(value) for key, value in extra_env.items()})
     process = subprocess.Popen(
         plan.argv,
         cwd=str(plan.project.root),

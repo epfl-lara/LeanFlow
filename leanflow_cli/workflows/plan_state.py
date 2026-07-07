@@ -38,7 +38,7 @@ from typing import Any
 
 from core.utils import atomic_json_write
 from leanflow_cli.workflows.queue_models import TheoremKey
-from leanflow_cli.workflows.workflow_json_io import read_json_file
+from leanflow_cli.workflows.workflow_json_io import read_json_file, update_json_file
 from leanflow_cli.workflows.workflow_state import _locked_append
 from leanflow_cli.workflows.workflow_state_paths import workflow_state_root
 
@@ -59,6 +59,9 @@ EDGE_KINDS = ("depends_on", "split_of", "evidence", "alternative_of")
 # N1 terminal vocabulary — the only writable final-report statuses. The
 # render-only "in-progress" default is NOT writable: a run may not end there.
 FINAL_REPORT_STATUSES = ("proved", "disproved", "documented")
+
+# Keys owned by other cooperating summary writers — never written here.
+_FOREIGN_SUMMARY_KEYS = frozenset({"manager_nudges", "dispatch_ledger"})
 
 PLAN_MD_GENERATED_MARKER = "<!-- generated: do not edit above the Notes section -->"
 _NOTES_HEADING = "## Notes"
@@ -353,12 +356,24 @@ def load_summary() -> dict[str, Any]:
 
 
 def save_summary(payload: Mapping[str, Any]) -> None:
+    """Merge ``payload`` into summary.json under the shared write lock.
+
+    Foreign keys (the nudge log, the dispatch ledger) are stripped from the
+    payload entirely: their owners are the only writers, so even a stale
+    ``load_summary()`` snapshot in the caller can never regress them.
+    """
     if not plan_state_enabled():
         return
-    merged = dict(payload)
-    merged["version"] = 1
-    merged["updated_at"] = _now_iso()
-    atomic_json_write(plan_state_paths().summary_json, merged, sort_keys=True)
+
+    def mutate(summary: dict[str, Any]) -> None:
+        merged = {
+            key: value for key, value in dict(payload).items() if key not in _FOREIGN_SUMMARY_KEYS
+        }
+        summary.update(merged)
+        summary["version"] = 1
+        summary["updated_at"] = _now_iso()
+
+    update_json_file(plan_state_paths().summary_json, mutate)
 
 
 def append_journal_event(event: Mapping[str, Any]) -> None:

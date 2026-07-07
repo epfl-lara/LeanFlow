@@ -171,6 +171,7 @@ def _run_single_child(
     override_base_url: str | None = None,
     override_api_key: str | None = None,
     override_api_mode: str | None = None,
+    isolate_budget: bool = False,
 ) -> dict[str, Any]:
     """
     Spawn and run a single child agent. Called from within a thread.
@@ -205,9 +206,10 @@ def _run_single_child(
         # Build progress callback to relay tool calls to parent display
         child_progress_cb = _build_child_progress_callback(task_index, parent_agent, task_count)
 
-        # Share the parent's iteration budget so subagent tool calls
-        # count toward the session-wide limit.
-        shared_budget = getattr(parent_agent, "iteration_budget", None)
+        # Share the parent's iteration budget so subagent tool calls count
+        # toward the session-wide limit — unless the caller asked for an
+        # independent budget (dispatched jobs must never drain the prover's).
+        shared_budget = None if isolate_budget else getattr(parent_agent, "iteration_budget", None)
 
         # Resolve effective credentials: config override > parent inherit
         effective_model = model or parent_agent.model
@@ -395,6 +397,7 @@ def delegate_task(
     tasks: list[dict[str, Any]] | None = None,
     max_iterations: int | None = None,
     parent_agent=None,
+    isolate_budget: bool = False,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -474,6 +477,7 @@ def delegate_task(
             override_base_url=creds["base_url"],
             override_api_key=creds["api_key"],
             override_api_mode=creds["api_mode"],
+            isolate_budget=isolate_budget,
         )
         results.append(result)
     else:
@@ -503,6 +507,7 @@ def delegate_task(
                     override_base_url=creds["base_url"],
                     override_api_key=creds["api_key"],
                     override_api_mode=creds["api_mode"],
+                    isolate_budget=isolate_budget,
                 )
                 futures[future] = i
 
