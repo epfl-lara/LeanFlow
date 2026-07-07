@@ -265,6 +265,10 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 - `queue_manager_live.py` — Phase 0 of the /prove redesign: one live `TheoremQueueManager` per
   `autonomy_state` dict (fingerprint-guarded get-or-create keyed by `id()`), replacing per-helper
   reconstruction; the flush keeps writing the exact legacy `OWNED_AUTONOMY_KEYS` dict shape.
+- `queue_decide_shadow.py` — Phase 0 P0.4 shadow-compare harness: under
+  `LEANFLOW_QUEUE_DECIDE_SHADOW=1` the legacy verdict gates also evaluate the pure `decide()`
+  policy on a throwaway hydration and log `queue-decide-shadow-mismatch` activity events on
+  divergence; the legacy branches stay authoritative.
 
 ### From `workflow_state.py`
 

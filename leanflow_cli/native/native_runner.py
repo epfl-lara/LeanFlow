@@ -13,6 +13,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from dataclasses import replace as _dataclass_replace
 from difflib import unified_diff
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,15 @@ from leanflow_cli.lean.lean_services import (
 from leanflow_cli.lean.lean_workflow_specs import specs_for_skill
 from leanflow_cli.runtime.file_locks import list_file_locks, release_all_file_locks
 from leanflow_cli.runtime.skill_core import load_skill
+from leanflow_cli.workflows.queue_decide_shadow import (
+    legacy_outcome as _shadow_legacy_outcome,
+)
+from leanflow_cli.workflows.queue_decide_shadow import (
+    shadow_compare as _shadow_compare,
+)
+from leanflow_cli.workflows.queue_decide_shadow import (
+    shadow_enabled as _queue_decide_shadow_enabled,
+)
 from leanflow_cli.workflows.queue_item_predicates import (  # noqa: E402,F401
     _attempt_proof_shape,
     _current_queue_item,
@@ -50,6 +60,7 @@ from leanflow_cli.workflows.queue_item_predicates import (  # noqa: E402,F401
 )
 from leanflow_cli.workflows.queue_manager import (
     Classification,
+    DecisionSource,
     ManagerCheck,
     PrepareState,
     QueueItem,
@@ -160,6 +171,7 @@ _FINAL_SWEEP_AUTONOMY_KEYS = frozenset(
 # helpers (discover/read/inspect the generated .lean files for a /formalize run, plus the
 # blueprint-inventory fidelity checks and the PROOF_/CONSTRUCTION_DECLARATION_KINDS sets).
 import contextlib
+import copy
 import subprocess  # noqa: F401
 
 from leanflow_cli.formalization.formalization_document_runner import (  # noqa: E402
@@ -3044,6 +3056,9 @@ def _finish_queue_step_boundary(
     attempt_number = 0
     restore_result: dict[str, Any] = {}
     manager_feedback_reason = ""
+    same_assignment = False
+    shadow_state: dict[str, Any] | None = None
+    shadow_cleanup_reason = ""
     verification_base_tool = str(verification_tool or "").split("+", 1)[0]
     post_edit_verification = verification_base_tool in {
         "patch",
@@ -3052,6 +3067,20 @@ def _finish_queue_step_boundary(
     }
     try:
         autonomy_state = getattr(agent, "_managed_autonomy_state", None)
+        # P0.4 shadow-compare: decide() models the PRE-gate retry counters, so
+        # snapshot the manager-owned keys before this gate consumes/clears
+        # anything. Shadow work must never perturb the authoritative gate, so
+        # a snapshot failure just disables the shadow for this call.
+        if _queue_decide_shadow_enabled() and isinstance(autonomy_state, dict):
+            try:
+                shadow_state = {
+                    key: copy.deepcopy(autonomy_state[key])
+                    for key in TheoremQueueManager.OWNED_AUTONOMY_KEYS
+                    if key in autonomy_state
+                }
+            except Exception:
+                logger.debug("queue-decide shadow snapshot failed", exc_info=True)
+                shadow_state = None
         if manager_check:
             verification_record = _record_manager_verification(
                 autonomy_state if isinstance(autonomy_state, dict) else None,
@@ -3097,6 +3126,7 @@ def _finish_queue_step_boundary(
             str(manager_check.get("error", "") or ""),
             structured_items=manager_check.get("messages") or (),
         )
+        shadow_cleanup_reason = cleanup_feedback_reason
         if cleanup_feedback_reason:
             feedback_kind = _manager_feedback_kind(
                 pending_file,
@@ -3222,6 +3252,27 @@ def _finish_queue_step_boundary(
         should_yield = bool(refresh_error or not continue_same_turn)
         with contextlib.suppress(Exception):
             agent._managed_step_boundary_recorded_attempt = attempt_recorded
+        if shadow_state is not None and not refresh_error and same_assignment:
+            try:
+                _shadow_compare_step_boundary(
+                    shadow_state=shadow_state,
+                    live_state=live_state,
+                    pending_target=pending_target,
+                    pending_file=pending_file,
+                    verification_tool=verification_tool,
+                    post_edit_verification=post_edit_verification,
+                    manager_check=manager_check,
+                    shadow_cleanup_reason=shadow_cleanup_reason,
+                    still_blocked=still_blocked,
+                    cleanup_feedback_reason=cleanup_feedback_reason,
+                    feedback_kind=feedback_kind,
+                    warning_retry_accepted=warning_retry_accepted,
+                    hard_retry_exhausted=hard_retry_exhausted,
+                    hard_retry_limit=hard_retry_limit,
+                    attempt_recorded=attempt_recorded,
+                )
+            except Exception:
+                logger.debug("queue-decide shadow compare failed", exc_info=True)
         _record_activity(
             (
                 "queue-theorem-feedback"
@@ -3401,6 +3452,87 @@ def _finish_queue_step_boundary(
         with contextlib.suppress(Exception):
             agent._managed_step_boundary_closed = True
         _request_step_boundary_interrupt(agent)
+
+
+def _shadow_compare_step_boundary(
+    *,
+    shadow_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+    pending_target: str,
+    pending_file: str,
+    verification_tool: str,
+    post_edit_verification: bool,
+    manager_check: Mapping[str, Any],
+    shadow_cleanup_reason: str,
+    still_blocked: bool,
+    cleanup_feedback_reason: str,
+    feedback_kind: str,
+    warning_retry_accepted: bool,
+    hard_retry_exhausted: bool,
+    hard_retry_limit: int,
+    attempt_recorded: bool,
+) -> None:
+    """Shadow-compare the boundary verdict against decide() (P0.4).
+
+    The legacy branch stays authoritative; this only logs a
+    queue-decide-shadow-mismatch activity event on divergence. Evidence
+    mirrors the legacy D7 order: a local cleanup reason classifies the
+    manager check, otherwise the live-state synthetic evidence decides —
+    both sides of the comparison always see the same evidence.
+    """
+    source = (
+        DecisionSource.POST_EDIT if post_edit_verification else DecisionSource.VERIFICATION_RESULT
+    )
+    if shadow_cleanup_reason:
+        evidence = _manager_check_for_feedback_kind(
+            pending_file, pending_target, dict(manager_check)
+        )
+    else:
+        evidence = _manager_check_for_feedback_kind(
+            pending_file, pending_target, _live_state_synthetic_blocker_check(live_state)
+        )
+        # Drift D7, encoded not fixed: the legacy live-fallback derives the
+        # sorry-vs-error kind from the DECLARATION entry, while the synthetic
+        # evidence may carry a stale "contains sorry" queue-item reason. Keep
+        # the hard classification but align the rendered kind with the entry.
+        entry = _find_declaration_entry(pending_file, pending_target)
+        entry_has_sorry = bool(entry and entry.get("has_sorry"))
+        if evidence.has_assigned_sorry and not entry_has_sorry:
+            evidence = _dataclass_replace(
+                evidence, has_assigned_sorry=False, has_assigned_error=True
+            )
+    if hard_retry_exhausted:
+        legacy_action = "restore_baseline"
+    elif still_blocked or cleanup_feedback_reason:
+        legacy_action = "continue_same_theorem"
+    else:
+        legacy_action = "advance_queue"
+    if warning_retry_accepted or (cleanup_feedback_reason and feedback_kind == "warning"):
+        legacy_limit = MANAGER_WARNING_RETRY_LIMIT
+    else:
+        legacy_limit = hard_retry_limit
+    mismatch = _shadow_compare(
+        autonomy_state=shadow_state,
+        source=source,
+        check=evidence,
+        cleanup_reason=shadow_cleanup_reason,
+        legacy=_shadow_legacy_outcome(
+            action=legacy_action,
+            feedback_kind=feedback_kind,
+            retry_limit=legacy_limit,
+            record_failed_attempt=attempt_recorded,
+            restore_baseline=hard_retry_exhausted,
+        ),
+    )
+    if mismatch is not None:
+        _record_activity(
+            "queue-decide-shadow-mismatch",
+            f"decide() diverged from the step-boundary gate for {pending_target}",
+            target_symbol=pending_target,
+            active_file=pending_file,
+            verification_tool=verification_tool,
+            **mismatch,
+        )
 
 
 def _handle_managed_tool_result(
@@ -5824,27 +5956,61 @@ def _same_queue_assignment_still_blocked(
     if baseline_target != current_target or not _same_active_file(baseline_file, current_file):
         return False
     blocker_summary = str(current.get("blocker_summary", "") or "").strip()
-    diagnostics = str(current.get("diagnostics", "") or "")
     goals = str(current.get("goals", "") or "")
     build_status = str(current.get("build_status", "") or "")
     entry = _find_declaration_entry(current_file, current_target)
+    check = _live_state_synthetic_blocker_check(live_state)
+    feedback_kind = _manager_feedback_kind(current_file, current_target, check)
+    blocked = bool(
+        feedback_kind in {"error", "sorry"}
+        or (entry and entry.get("has_sorry"))
+        or _goals_still_open(goals)
+    )
+    if _queue_decide_shadow_enabled():
+        try:
+            mismatch = _shadow_compare(
+                autonomy_state=autonomy_state,
+                source=DecisionSource.LIVE_STATE,
+                check=_manager_check_for_feedback_kind(current_file, current_target, check),
+                legacy=_shadow_legacy_outcome(
+                    action="continue_same_theorem" if blocked else "advance_queue",
+                    feedback_kind=feedback_kind,
+                ),
+            )
+            if mismatch is not None:
+                _record_activity(
+                    "queue-decide-shadow-mismatch",
+                    f"decide() diverged from the live-state blocker probe for {current_target}",
+                    target_symbol=current_target,
+                    active_file=current_file,
+                    **mismatch,
+                )
+        except Exception:
+            logger.debug("queue-decide shadow compare failed", exc_info=True)
+    return blocked
+
+
+def _live_state_synthetic_blocker_check(live_state: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Build the live-state synthetic manager check (Path C evidence, drift D1).
+
+    Shared by the blocker predicate and the shadow-compare harness so both
+    sides of a comparison always see identical evidence.
+    """
+    current = dict(live_state or {})
+    item = dict(current.get("current_queue_item") or {})
+    diagnostics = str(current.get("diagnostics", "") or "")
+    goals = str(current.get("goals", "") or "")
     item_reasons = " ".join(str(reason or "") for reason in item.get("reasons", []) or [])
     local_cleanup_reason = ""
     if "contains sorry" in item_reasons.lower():
         local_cleanup_reason = "contains sorry"
-    check = {
+    return {
         "ok": not _goals_still_open(goals),
         "file_check_ok": False,
         "output": diagnostics,
         "goals": goals,
         "local_cleanup_reason": local_cleanup_reason,
     }
-    feedback_kind = _manager_feedback_kind(current_file, current_target, check)
-    return bool(
-        feedback_kind in {"error", "sorry"}
-        or (entry and entry.get("has_sorry"))
-        or _goals_still_open(goals)
-    )
 
 
 def _result_exhausted_api_steps(result: Mapping[str, Any], agent: Any | None = None) -> bool:
