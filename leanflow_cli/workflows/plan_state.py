@@ -115,13 +115,20 @@ class PlanStatePaths:
     journal_jsonl: Path
 
 
-def plan_state_paths() -> PlanStatePaths:
+def plan_state_paths(state_root: Path | None = None) -> PlanStatePaths:
     """Resolve the artifact paths under the workflow-state root.
 
-    ``LEANFLOW_PLAN_STATE_DIR`` overrides the root (test convenience).
+    Precedence: the ``LEANFLOW_PLAN_STATE_DIR`` override (test convenience),
+    then an explicit ``state_root`` (used when the caller already knows the
+    target project — e.g. building a child env before spawn), then discovery.
     """
     override = str(os.getenv("LEANFLOW_PLAN_STATE_DIR", "") or "").strip()
-    root = Path(override).expanduser() if override else workflow_state_root()
+    if override:
+        root = Path(override).expanduser()
+    elif state_root is not None:
+        root = state_root
+    else:
+        root = workflow_state_root()
     return PlanStatePaths(
         plan_md=root / "plan.md",
         summary_json=root / "summary.json",

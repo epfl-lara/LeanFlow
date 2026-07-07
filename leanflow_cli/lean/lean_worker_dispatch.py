@@ -3,7 +3,8 @@
 Leaf module: builds a worker prompt from the workflow spec and either returns a plan or
 delegates the task (with optional file lock), recording the outcome. Extracted verbatim from
 lean_services.py and re-exported there; imports only the file_locks / lean_models /
-lean_workflow_specs / workflow_state leaves (delegate_tool stays a lazy import), so no cycle.
+lean_workflow_specs / plan_state / workflow_state leaves (delegate_tool stays a lazy import),
+so no cycle.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from typing import Any
 from leanflow_cli.lean.lean_models import LeanWorkerRequest, LeanWorkerResult
 from leanflow_cli.lean.lean_workflow_specs import get_lean_spec
 from leanflow_cli.runtime.file_locks import acquire_file_lock as _acquire_file_lock
+from leanflow_cli.workflows.plan_state import artifact_context_block
 from leanflow_cli.workflows.workflow_state import append_workflow_outcome
 
 
@@ -41,6 +43,11 @@ def _worker_prompt(worker: str, request: LeanWorkerRequest) -> str:
                 f"- tools: {', '.join(record.tools) or '[none]'}",
             ]
         )
+    # P1.3: the worker prompt is also the delegate context, so this one block
+    # covers both dispatched workers and delegate_task children.
+    plan_context = artifact_context_block()
+    if plan_context:
+        parts.extend(["", "Plan artifacts:", plan_context])
     return "\n".join(parts).strip()
 
 

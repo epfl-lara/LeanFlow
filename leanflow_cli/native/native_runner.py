@@ -41,6 +41,13 @@ from leanflow_cli.lean.lean_services import (
 from leanflow_cli.lean.lean_workflow_specs import specs_for_skill
 from leanflow_cli.runtime.file_locks import list_file_locks, release_all_file_locks
 from leanflow_cli.runtime.skill_core import load_skill
+from leanflow_cli.workflows.plan_state import (
+    artifact_context_block,
+    artifact_paths_block,
+    frontier_digest_block,
+    plan_state_enabled,
+    plan_state_paths,
+)
 from leanflow_cli.workflows.queue_decide_shadow import (
     legacy_outcome as _shadow_legacy_outcome,
 )
@@ -8838,6 +8845,10 @@ def _startup_user_message(
         organization_block = (
             f"\n\n{_document_formalization_organization_prompt(dict(live_state or {}))}"
         )
+    plan_block = ""
+    plan_context = artifact_context_block()
+    if plan_context:
+        plan_block = f"\n\n{plan_context}"
     swarm_block = ""
     if _swarm_enabled():
         swarm_block = (
@@ -8852,15 +8863,15 @@ def _startup_user_message(
         label = str(resumed_checkpoint.get("label", "") or "checkpoint")
         resume_text = f"Resume this managed workflow from persisted {label} and continue carefully from the checkpoint handoff."
         if startup_prompt:
-            return f"{resume_text}\n\n{startup_prompt}{goal_block}{route_block}{queue_block}{organization_block}{swarm_block}{skill_block}"
+            return f"{resume_text}\n\n{startup_prompt}{goal_block}{route_block}{queue_block}{organization_block}{plan_block}{swarm_block}{skill_block}"
         if workflow_command:
-            return f"{resume_text}\n\n{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{route_block}{queue_block}{organization_block}{swarm_block}{skill_block}"
-        return f"{resume_text}{skill_block}"
+            return f"{resume_text}\n\n{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{route_block}{queue_block}{organization_block}{plan_block}{swarm_block}{skill_block}"
+        return f"{resume_text}{plan_block}{skill_block}"
     if startup_prompt:
-        return f"{startup_prompt}{goal_block}{route_block}{queue_block}{organization_block}{swarm_block}{skill_block}"
+        return f"{startup_prompt}{goal_block}{route_block}{queue_block}{organization_block}{plan_block}{swarm_block}{skill_block}"
     if workflow_command:
-        return f"{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{route_block}{queue_block}{organization_block}{swarm_block}{skill_block}"
-    return f"Begin the requested managed Lean workflow now.{skill_block}"
+        return f"{_workflow_startup_guidance(workflow_kind, workflow_command)}{goal_block}{route_block}{queue_block}{organization_block}{plan_block}{swarm_block}{skill_block}"
+    return f"Begin the requested managed Lean workflow now.{plan_block}{skill_block}"
 
 
 def _managed_system_prompt() -> str:
@@ -8893,6 +8904,13 @@ def _managed_system_prompt() -> str:
             "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff instead of reconstructing the full transcript from memory.",
             "Do not use multi-agent delegation unless the user explicitly enabled swarm mode for this workflow.",
         ]
+    if plan_state_enabled():
+        paths = plan_state_paths()
+        sections.append(
+            "Living plan artifacts (read before planning; the dependency graph blueprint.json "
+            f"is machine authority): plan={paths.plan_md} graph={paths.blueprint_json} "
+            f"summary={paths.summary_json}"
+        )
     if _swarm_enabled():
         sections.extend(
             [
@@ -9292,9 +9310,17 @@ def _autonomous_continuation_prompt(
             "\n\nSwarm remains user-approved for this continuation. "
             "Delegate only if the next step splits cleanly across files or verifier/planner roles."
         )
+    # P1.3: static artifact paths stay in the byte-stable prefix; the volatile
+    # frontier digest goes after the cycle marker (RCP prefix-cache design).
+    plan_paths_text = artifact_paths_block()
+    if plan_paths_text:
+        prompt += f"\n\n{plan_paths_text}"
     if prefix_cache:
         # Volatile cycle counter last, so everything above stays a byte-stable cacheable prefix.
         prompt += f"\n\n[current turn: continuation cycle {cycle_number}]"
+    plan_digest = frontier_digest_block()
+    if plan_digest:
+        prompt += f"\n\n{plan_digest}"
     return prompt
 
 

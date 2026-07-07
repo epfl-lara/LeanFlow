@@ -23,6 +23,7 @@ from leanflow_cli.formalization.formalization_documents import (
 )
 from leanflow_cli.runtime.runtime_provider import resolve_runtime_provider
 from leanflow_cli.runtime.skill_core import default_workflow_skill
+from leanflow_cli.workflows.plan_state import plan_state_enabled, plan_state_paths
 from leanflow_cli.workflows.project import (
     LeanFlowProject,
     discover_leanflow_project,
@@ -499,6 +500,18 @@ def resolve_workflow_request(
     )
     if workflow.allowed_axioms:
         child_env["LEANFLOW_NATIVE_ALLOWED_AXIOMS"] = workflow.allowed_axioms
+    if plan_state_enabled():
+        # Phase 1 (P1.3): every deployed agent can discover the living plan
+        # artifacts via env, independent of any prompt injection. Paths are
+        # anchored to the resolved project (not the parent's discovery).
+        artifact_paths = plan_state_paths(project.root / ".leanflow" / "workflow-state")
+        child_env.update(
+            {
+                "LEANFLOW_PLAN_MD": str(artifact_paths.plan_md),
+                "LEANFLOW_BLUEPRINT_JSON": str(artifact_paths.blueprint_json),
+                "LEANFLOW_PLAN_SUMMARY_JSON": str(artifact_paths.summary_json),
+            }
+        )
     if workflow.expert_provider:
         child_env["AUXILIARY_LEAN_REASONING_PROVIDER"] = workflow.expert_provider
     if workflow.expert_command_template:
