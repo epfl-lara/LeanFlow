@@ -238,11 +238,15 @@ class Blueprint:
         return replace(self, nodes=nodes)
 
     def frontier(self) -> tuple[GraphNode, ...]:
-        """Stated nodes whose depends_on targets are all proved."""
+        """Ready nodes (stated or audited) whose depends_on targets are all proved.
+
+        ``audited`` is stated-plus-fidelity-pass — auditing a node must never
+        remove it from the frontier the planner and resume views work from.
+        """
         by_id = {node.id: node for node in self.nodes}
         out: list[GraphNode] = []
         for node in self.nodes:
-            if node.status != "stated":
+            if node.status not in {"stated", "audited"}:
                 continue
             deps = [
                 by_id.get(edge.target)

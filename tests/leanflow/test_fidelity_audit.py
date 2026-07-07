@@ -1,0 +1,187 @@
+"""Phase 4 (4/6) tests: the statement-fidelity audit (roadmap §4.11)."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from leanflow_cli.native import native_runner as runner
+from leanflow_cli.workflows import plan_state
+
+
+class _Result:
+    def __init__(self, response: str):
+        self.response = response
+
+
+@pytest.fixture()
+def audit_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_FIDELITY_AUDIT", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_EFFECTIVE_PROMPT", "prove the abs inequality")
+
+
+def _wire(monkeypatch, decision: str, response: str = "verdict text"):
+    calls: list[dict[str, Any]] = []
+
+    def fake_review(**kwargs):
+        calls.append(kwargs)
+        return _Result(response)
+
+    monkeypatch.setattr(runner, "run_model_verification_review", fake_review)
+    monkeypatch.setattr(runner, "_verification_review_decision", lambda result: decision)
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    return calls, events
+
+
+def _autonomy_state() -> dict[str, Any]:
+    return {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": "Demo/Main.lean",
+            "slice": "theorem demo : True := by\n  sorry",
+        }
+    }
+
+
+def test_flag_off_never_calls_the_reviewer(monkeypatch):
+    monkeypatch.delenv("LEANFLOW_FIDELITY_AUDIT", raising=False)
+    calls, events = _wire(monkeypatch, "PASS")
+
+    assert runner._maybe_statement_fidelity_audit(_autonomy_state(), {}) == ""
+    assert calls == []
+    assert events == []
+
+
+def test_pass_verdict_marks_node_audited(audit_enabled, monkeypatch):
+    calls, events = _wire(monkeypatch, "PASS")
+    # A stated node for the assignment already exists in the graph.
+    node_id = plan_state.node_id_for("demo", "Demo/Main.lean")
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=node_id, name="demo", file="Demo/Main.lean", status="stated"
+                ),
+            )
+        )
+    )
+    autonomy_state = _autonomy_state()
+
+    verdict = runner._maybe_statement_fidelity_audit(autonomy_state, {})
+
+    assert verdict == "pass"
+    assert calls[0]["task"] == "statement_fidelity"
+    assert "prove the abs inequality" in calls[0]["prompt"]
+    node = plan_state.load_blueprint().node_by_id(node_id)
+    assert node.status == "audited"
+    assert "fidelity: audited" in node.notes
+    assert any(args[0] == "statement-fidelity-audit" for args, _k in events)
+
+
+def test_block_verdict_records_suspect_without_touching_status(audit_enabled, monkeypatch):
+    _wire(monkeypatch, "BLOCK", response="BLOCK\nquantifier order is inverted")
+    node_id = plan_state.node_id_for("demo", "Demo/Main.lean")
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=node_id, name="demo", file="Demo/Main.lean", status="proving"
+                ),
+            )
+        )
+    )
+    autonomy_state = _autonomy_state()
+
+    verdict = runner._maybe_statement_fidelity_audit(autonomy_state, {})
+
+    assert verdict == "suspect"
+    node = plan_state.load_blueprint().node_by_id(node_id)
+    assert node.status == "proving"  # advisory: no status change on suspect
+    assert "fidelity: suspect" in node.notes
+
+
+def test_audit_runs_once_per_statement_and_reaudits_on_restate(audit_enabled, monkeypatch):
+    calls, _events = _wire(monkeypatch, "PASS")
+    autonomy_state = _autonomy_state()
+
+    first = runner._maybe_statement_fidelity_audit(autonomy_state, {})
+    second = runner._maybe_statement_fidelity_audit(autonomy_state, {})
+    assert (first, second) == ("pass", "pass")
+    assert len(calls) == 1  # cached per (theorem, statement)
+
+    # A re-state changes the statement hash: the audit must re-run.
+    autonomy_state["current_queue_assignment"]["slice"] = "theorem demo : 1 = 1 := by\n  sorry"
+    third = runner._maybe_statement_fidelity_audit(autonomy_state, {})
+    assert third == "pass"
+    assert len(calls) == 2
+
+
+def test_real_parser_chain_handles_the_review_dataclass(audit_enabled, monkeypatch):
+    """No monkeypatched parsers: the raw review result must flow through the
+    real payload converter + decision parser (a dataclass passed straight to
+    the mapping-based parser would silently disable the audit)."""
+
+    class _RealShape:
+        status = "ok"
+        mode = "model"
+        response = "PASS\nThe statement matches the informal claim."
+
+    monkeypatch.setattr(runner, "run_model_verification_review", lambda **kwargs: _RealShape())
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    verdict = runner._maybe_statement_fidelity_audit(_autonomy_state(), {})
+
+    assert verdict == "pass"
+    assert any(args[0] == "statement-fidelity-audit" for args, _k in events)
+
+
+def test_notes_deduplicate_fidelity_marker_across_restates(audit_enabled, monkeypatch):
+    _wire(monkeypatch, "PASS")
+    node_id = plan_state.node_id_for("demo", "Demo/Main.lean")
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=node_id,
+                    name="demo",
+                    file="Demo/Main.lean",
+                    status="stated",
+                    notes="fidelity: suspect; human note",
+                ),
+            )
+        )
+    )
+
+    runner._maybe_statement_fidelity_audit(_autonomy_state(), {})
+
+    node = plan_state.load_blueprint().node_by_id(node_id)
+    assert node.notes.count("fidelity:") == 1
+    assert "fidelity: audited" in node.notes
+    assert "human note" in node.notes
+    # Audited nodes stay on the frontier.
+    assert node.status == "audited"
+    assert any(n.name == "demo" for n in plan_state.load_blueprint().frontier())
+
+
+def test_unavailable_reviewer_skips_without_caching(audit_enabled, monkeypatch):
+    calls, events = _wire(monkeypatch, "UNAVAILABLE")
+    autonomy_state = _autonomy_state()
+
+    assert runner._maybe_statement_fidelity_audit(autonomy_state, {}) == ""
+    # Not cached: a later call retries once the provider is back.
+    monkeypatch.setattr(runner, "_verification_review_decision", lambda result: "PASS")
+    assert runner._maybe_statement_fidelity_audit(autonomy_state, {}) == "pass"
+    assert len(calls) == 2
+    assert not any(
+        args[0] == "statement-fidelity-audit" and kwargs.get("verdict") == "suspect"
+        for args, kwargs in events
+    )
