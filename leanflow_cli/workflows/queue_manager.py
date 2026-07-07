@@ -104,6 +104,7 @@ class TheoremQueueManager:
             "failed_attempts",
             "manager_feedback_retries",
             "manager_feedback_retry_consumed_signatures",
+            "theorem_api_steps",
             "theorem_outcomes",
             "last_verification",
             "disabled_tools_this_run",
@@ -129,6 +130,7 @@ class TheoremQueueManager:
         self._warning_retries: dict[TheoremKey, int] = {}
         self._hard_retries: dict[TheoremKey, int] = {}
         self._retry_signatures: dict[tuple[TheoremKey, str], list[str]] = {}
+        self._api_steps: dict[TheoremKey, int] = {}  # cumulative, never pruned
         self._outcomes: dict[TheoremKey, TheoremOutcome] = {}
         self._last_verification: VerificationRecord | None = None
         self._disabled_tool_reasons: dict[str, str] = {}
@@ -394,6 +396,32 @@ class TheoremQueueManager:
         if normalized == "hard":
             return self.hard_retries_for(key)
         return 0
+
+    def add_api_steps_for(self, key: TheoremKey, steps: int) -> int:
+        """Accumulate spent API steps for a theorem across turns; return the total.
+
+        Cumulative and never ring-pruned — the failed-attempt history caps at
+        10 entries per key, which makes it unusable as a budget; this counter
+        is the Phase 1 budget-breakpoint accounting.
+        """
+        if not key.is_valid() or steps <= 0:
+            return self.api_steps_for(key)
+        total = self._api_steps.get(key, 0) + int(steps)
+        self._api_steps[key] = total
+        return total
+
+    def api_steps_for(self, key: TheoremKey) -> int:
+        return self._api_steps.get(key, 0) if key.is_valid() else 0
+
+    def retry_signatures_for(self, key: TheoremKey) -> dict[str, list[str]]:
+        """Return the consumed retry signatures per bucket (decision-packet input)."""
+        if not key.is_valid():
+            return {}
+        return {
+            bucket: list(signatures)
+            for (stored_key, bucket), signatures in self._retry_signatures.items()
+            if stored_key == key and signatures
+        }
 
     def consume_warning_retry(self) -> int:
         """Increment the warning-cleanup counter for the current assignment.
@@ -830,6 +858,18 @@ class TheoremQueueManager:
                 )
             )
 
+        # Cumulative per-theorem API-step totals (Phase 1 budget breakpoint):
+        # keyed f"{file}::{target}" -> int, never ring-pruned.
+        api_steps = autonomy_state.get("theorem_api_steps") or {}
+        if isinstance(api_steps, Mapping):
+            for storage_key, raw_total in api_steps.items():
+                file_part, _, target_part = str(storage_key).partition("::")
+                key = TheoremKey.make(target_part, file_part)
+                total = int(raw_total or 0)
+                if key.is_valid() and total > 0:
+                    mgr._remember_display_file(key, file_part)
+                    mgr._api_steps[key] = total
+
         # Legacy store keyed retries by f"{file}::{target}" string with kind
         # buckets {"warning": N, "hard": M}.
         retries = autonomy_state.get("manager_feedback_retries") or {}
@@ -966,6 +1006,12 @@ class TheoremQueueManager:
                 f"{key.storage_key()}::{kind}": list(signatures[-20:])
                 for (key, kind), signatures in self._retry_signatures.items()
                 if key.is_valid() and signatures
+            }
+        if self._api_steps:
+            out["theorem_api_steps"] = {
+                key.storage_key(): total
+                for key, total in self._api_steps.items()
+                if key.is_valid() and total > 0
             }
 
         if self._outcomes:

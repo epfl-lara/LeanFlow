@@ -8582,13 +8582,20 @@ def _run_background_control_loop(
                     history, checkpoint_state, autonomy_state
                 )
                 live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
-                history, live_state, _ = _handle_api_step_budget_exhaustion(
+                history, live_state, exhaustion_recorded = _handle_api_step_budget_exhaustion(
                     agent,
                     result,
                     history,
                     autonomy_state,
                     live_state,
                     phase="background",
+                )
+                _maybe_trigger_budget_breakpoint(
+                    result,
+                    autonomy_state,
+                    live_state,
+                    phase="background",
+                    exhausted=exhaustion_recorded,
                 )
                 checkpoint_state = _journal_status()
                 _record_turn_activity(previous_history, history, phase="interactive")
@@ -9065,6 +9072,10 @@ def _autonomous_stop_reason(
     autonomy_state: dict[str, Any],
 ) -> str:
     """Determine whether the autonomous loop should continue, block (awaiting external input), transition phases (formalization to prover), or stop (verified/stalled/blocked). Tracks stable state signatures to detect loops and manages document-formalization handoff gates."""
+    if _budget_breakpoint_enabled() and autonomy_state.get("budget_breakpoint"):
+        # P1.4: an armed breakpoint is a real stop with a persisted decision
+        # packet — first priority so nothing keeps grinding past it.
+        return "budget-breakpoint"
     if _document_formalization_ready_for_prover_handoff(live_state):
         if _document_formalization_organization_phase_needed(live_state, autonomy_state):
             autonomy_state["document_formalization_organization_turn_started"] = True
@@ -9509,6 +9520,168 @@ def _maybe_sync_plan_state(
             )
 
 
+def _budget_breakpoint_enabled() -> bool:
+    raw = _read_text_env("LEANFLOW_BUDGET_BREAKPOINT", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _theorem_budget_steps() -> int:
+    """Per-theorem cumulative API-step budget; 0 disables the per-theorem cap.
+
+    Per N5 there is no efficiency ceiling for research runs — set
+    LEANFLOW_THEOREM_BUDGET_STEPS=0 and only the queue-level K-streak applies.
+    """
+    return _read_int_env("LEANFLOW_THEOREM_BUDGET_STEPS", 600, minimum=0)
+
+
+def _queue_breakpoint_consecutive() -> int:
+    return _read_int_env("LEANFLOW_QUEUE_BREAKPOINT_CONSECUTIVE", 3, minimum=1)
+
+
+def _maybe_trigger_budget_breakpoint(
+    result: Mapping[str, Any] | None,
+    autonomy_state: Mapping[str, Any] | None,
+    live_state: Mapping[str, Any] | None,
+    *,
+    cycle: int = 0,
+    phase: str,
+    exhausted: bool = False,
+) -> bool:
+    """Phase 1 mechanical budget breakpoint (specs P1.4), flag-gated.
+
+    Runs AFTER the legacy exhaustion handling at every post-turn site, so
+    flag-off behavior is byte-identical. Accumulates the turn's api_calls
+    against the current assignment; when the per-theorem total reaches
+    LEANFLOW_THEOREM_BUDGET_STEPS or the consecutive-exhausted streak reaches
+    LEANFLOW_QUEUE_BREAKPOINT_CONSECUTIVE, it persists a decision packet
+    (the N1 artifact), marks the graph node blocked, writes the documented
+    final report, and arms the "budget-breakpoint" stop reason.
+
+    Phase 1 streak boundary: only D-path exhaustion (the ``exhausted`` flag)
+    and gate ``manager_retry_exhausted`` exits count; boundary hard-retry
+    exhaustion inside a turn does not. Phase 4's decider replaces this.
+    """
+    if not _budget_breakpoint_enabled() or not isinstance(autonomy_state, dict):
+        return False
+    if autonomy_state.get("budget_breakpoint"):
+        # Already armed: the run is stopping. No further accounting or
+        # packet writes — repeated post-turn calls must not double-count.
+        return True
+    review = dict((result or {}).get("manager_final_report_review") or {})
+    if bool(review.get("ok")):
+        autonomy_state["consecutive_exhausted_assignments"] = 0
+    turn_exhausted = bool(exhausted) or (
+        str((result or {}).get("exit_reason", "") or "") == "manager_retry_exhausted"
+    )
+    if turn_exhausted:
+        autonomy_state["consecutive_exhausted_assignments"] = (
+            int(autonomy_state.get("consecutive_exhausted_assignments", 0) or 0) + 1
+        )
+    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+    target_symbol = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    total = 0
+    attempts: list[dict[str, Any]] = []
+    error_signatures: dict[str, list[str]] = {}
+    last_verification: dict[str, Any] = {}
+    if target_symbol and active_file:
+        api_calls = int((result or {}).get("api_calls", 0) or 0)
+        mgr = _queue_manager_from_state(autonomy_state)
+        key = _queue_key(target_symbol, active_file)
+        total = mgr.add_api_steps_for(key, api_calls)
+        _flush_queue_manager(autonomy_state, mgr)
+        attempts = [dict(entry) for entry in mgr.attempt_entries_for(key)]
+        error_signatures = mgr.retry_signatures_for(key)
+        last_verification = verification_to_mapping(mgr.last_verification)
+    budget = _theorem_budget_steps()
+    theorem_over = bool(target_symbol) and budget > 0 and total >= budget
+    streak = int(autonomy_state.get("consecutive_exhausted_assignments", 0) or 0)
+    queue_over = streak >= _queue_breakpoint_consecutive()
+    if not theorem_over and not queue_over:
+        return False
+    scope = "theorem" if theorem_over else "queue"
+    packet_id = f"bp-{int(time.time() * 1000)}"
+    node_id = plan_state.node_id_for(target_symbol, active_file) if target_symbol else ""
+    packet: dict[str, Any] = {
+        "packet_id": packet_id,
+        "created_at": _utc_now_isoformat(),
+        "scope": scope,
+        "node_id": node_id,
+        "target_symbol": target_symbol,
+        "active_file": active_file,
+        "statement": str(assignment.get("slice", "") or ""),
+        "attempts": attempts,
+        "api_steps_used": total,
+        "budget": budget,
+        "consecutive_exhausted": streak,
+        "error_signatures": error_signatures,
+        "last_verification": last_verification,
+        "negation_status": "not-attempted",
+        "options": ["split", "plan", "negate", "park", "re-state", "abort"],
+        "decision": None,
+        "decided_by": None,
+    }
+    # N1 artifact chain FIRST, arming last. The activity event carries the
+    # FULL packet, so a rigorous account exists even when plan-state is off
+    # or its writes fail — the stop must never outrun its documentation.
+    _record_activity(
+        "budget-breakpoint",
+        f"Budget breakpoint ({scope}) for {target_symbol or 'queue'}: "
+        f"{total} steps used / budget {budget}, {streak} consecutive exhaustions",
+        packet_id=packet_id,
+        scope=scope,
+        target_symbol=target_symbol,
+        active_file=active_file,
+        api_steps_used=total,
+        budget=budget,
+        consecutive_exhausted=streak,
+        packet=packet,
+    )
+    try:
+        # Node first (so the packet cross-link below finds it), then packet,
+        # then the documented report.
+        if plan_state.plan_state_enabled() and node_id:
+            bp = plan_state.load_blueprint()
+            node = bp.node_by_id(node_id)
+            if node is None:
+                bp, node = plan_state.upsert_node_for_assignment(
+                    bp,
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    statement=str(assignment.get("slice", "") or ""),
+                )
+            if node.status not in {"proved", "false", "blocked"}:
+                bp = plan_state.set_node_status(bp, node_id, "blocked", why="budget breakpoint")
+            plan_state.save_blueprint(bp)
+        plan_state.record_decision_packet(packet)
+        plan_state.write_final_report(
+            "documented",
+            detail={
+                "summary": (
+                    f"budget breakpoint ({scope}) at {target_symbol or 'queue level'}; "
+                    "run stopped with a persisted decision packet"
+                ),
+                "evidence": [f"packet:{packet_id}"],
+            },
+        )
+    except Exception as exc:
+        logger.debug("budget-breakpoint artifact writes failed", exc_info=True)
+        with contextlib.suppress(Exception):
+            _record_activity(
+                "budget-breakpoint-artifact-error",
+                f"Budget-breakpoint artifacts failed to persist: {str(exc)[:200]} "
+                "(full packet preserved in the budget-breakpoint activity event)",
+                packet_id=packet_id,
+            )
+    autonomy_state["budget_breakpoint"] = {
+        "packet_id": packet_id,
+        "scope": scope,
+        "cycle": cycle,
+        "phase": phase,
+    }
+    return True
+
+
 def _drive_autonomous_followups(
     agent: AIAgent,
     system_prompt: str,
@@ -9700,6 +9873,14 @@ def _drive_autonomous_followups(
             cycle=cycle,
             phase="autonomous",
         )
+        _maybe_trigger_budget_breakpoint(
+            result,
+            autonomy_state,
+            live_state,
+            cycle=cycle,
+            phase="autonomous",
+            exhausted=budget_recorded_attempt,
+        )
         checkpoint_state = _journal_status()
         boundary_recorded_attempt = bool(
             getattr(agent, "_managed_step_boundary_recorded_attempt", False)
@@ -9845,13 +10026,20 @@ def main() -> int:
         checkpoint_state = _journal_status()
         live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
         live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
-        history, live_state, _ = _handle_api_step_budget_exhaustion(
+        history, live_state, exhaustion_recorded = _handle_api_step_budget_exhaustion(
             agent,
             result,
             history,
             autonomy_state,
             live_state,
             phase="startup",
+        )
+        _maybe_trigger_budget_breakpoint(
+            result,
+            autonomy_state,
+            live_state,
+            phase="startup",
+            exhausted=exhaustion_recorded,
         )
         checkpoint_state = _journal_status()
         _record_turn_activity(previous_history, history, phase="startup")
@@ -10202,13 +10390,20 @@ def main() -> int:
             history = result["messages"]
             live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
             live_state = _promote_live_state_to_verified_compat(live_state, autonomy_state)
-            history, live_state, _ = _handle_api_step_budget_exhaustion(
+            history, live_state, exhaustion_recorded = _handle_api_step_budget_exhaustion(
                 agent,
                 result,
                 history,
                 autonomy_state,
                 live_state,
                 phase="interactive",
+            )
+            _maybe_trigger_budget_breakpoint(
+                result,
+                autonomy_state,
+                live_state,
+                phase="interactive",
+                exhausted=exhaustion_recorded,
             )
             checkpoint_state = _journal_status()
             _record_turn_activity(previous_history, history, phase="interactive")
