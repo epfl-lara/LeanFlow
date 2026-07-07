@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from core.home import leanflow_home
+from core.utils import atomic_json_write
 
 PROJECT_STATE_DIRNAME = ".leanflow"
 
@@ -63,6 +64,9 @@ def _resolve_path(path: str) -> str:
 
 
 def _read_payload() -> dict[str, Any]:
+    # Deliberately tolerant read: locks are advisory and TTL-bounded, so a reset
+    # on corruption self-heals (a brief double-work window, never lost results).
+    # Writes below are crash-atomic, so corruption here means external tampering.
     path = _lock_file()
     if not path.is_file():
         return {"version": 1, "locks": {}}
@@ -80,9 +84,8 @@ def _read_payload() -> dict[str, Any]:
 
 
 def _write_payload(payload: dict[str, Any]) -> None:
-    path = _lock_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    # Crash-atomic so a crash mid-write never truncates the shared lock registry.
+    atomic_json_write(_lock_file(), payload, sort_keys=True)
 
 
 def _cleanup_expired(payload: dict[str, Any]) -> dict[str, Any]:

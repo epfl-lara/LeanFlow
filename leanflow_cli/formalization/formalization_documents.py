@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from core.utils import atomic_json_write
 
 # The text/LaTeX/PDF extraction layer lives in leanflow_cli.formalization.document_extraction. It is
 # re-exported here so every caller and test keeps resolving these names as
@@ -281,10 +282,8 @@ def _json_default(value: Any) -> Any:
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, default=_json_default), encoding="utf-8"
-    )
+    # Crash-atomic so a crash mid-write never truncates extraction state.
+    atomic_json_write(path, payload, sort_keys=True, default=_json_default)
 
 
 def _initial_blueprint(

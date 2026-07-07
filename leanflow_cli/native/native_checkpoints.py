@@ -22,12 +22,12 @@ resolving them as ``native_runner.<name>``.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from core.utils import atomic_json_write
 from leanflow_cli.native.native_config import (
     _managed_home,
     _project_root,
@@ -35,6 +35,7 @@ from leanflow_cli.native.native_config import (
     _workflow_kind,
 )
 from leanflow_cli.native.native_utils import _message_text
+from leanflow_cli.workflows.workflow_json_io import read_json_file
 from run_agent import AIAgent
 
 logger = logging.getLogger(__name__)
@@ -90,23 +91,15 @@ def _ensure_workflow_state_root() -> Path:
 
 
 def _read_json_file(path: Path) -> dict[str, Any]:
-    try:
-        if path.is_file():
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(payload, dict):
-                return payload
-    except KeyboardInterrupt:
-        raise
-    except Exception:
-        # Best-effort journal read: keep swallowing any failure (incl. UnicodeDecodeError on a
-        # corrupt file) and return {}, but log at DEBUG so corruption is visible.
-        logger.debug("Failed to read JSON journal file %s", path, exc_info=True)
-    return {}
+    # Shared loud-on-corruption reader: missing/empty files are tolerated ({}),
+    # but a corrupt non-empty checkpoint file raises WorkflowStateCorruptionError
+    # instead of silently dropping resume state.
+    return read_json_file(path)
 
 
 def _write_json_file(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    # Crash-atomic: checkpoint/journal state must never be truncated mid-write.
+    atomic_json_write(path, payload, sort_keys=True)
 
 
 def _load_workflow_index() -> list[dict[str, Any]]:

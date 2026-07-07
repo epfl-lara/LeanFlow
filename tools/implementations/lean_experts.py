@@ -698,9 +698,11 @@ def lean_decompose_helpers_tool(
             **normalized,
             "skeleton_validation": validation,
             "next_step": (
-                "Use ready_to_insert helper skeletons as a decomposition proposal only. "
-                "Patch helpers deliberately, prove them without lingering `sorry`, and verify "
-                "the assigned queue declaration with lean_incremental_check(check_target)."
+                "Insert the ready_to_insert helper skeletons now, prove each helper, then "
+                "assemble the assigned queue declaration from them. A helper's `sorry` is "
+                "normal work-in-progress during the turn; final acceptance requires the "
+                "assigned declaration to verify sorry-free via "
+                "lean_incremental_check(check_target)."
             ),
         },
         ensure_ascii=False,

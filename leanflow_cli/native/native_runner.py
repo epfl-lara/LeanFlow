@@ -4588,11 +4588,11 @@ def _queue_assignment_block(
         "",
         "Focus:",
         f"- solve `{label}`",
-        "- local helper lemmas or intermediate facts are allowed if they directly help this theorem",
+        "- helper decomposition is a standard strategy: state helper lemmas scoped to this theorem, prove each, and assemble; a new helper's `sorry` is normal work-in-progress during the turn",
         "- do not start solving unrelated future queue items",
         "- future queued `sorry` warnings are queue state only; do not edit those declarations in this turn",
         "- if the assigned declaration verifies and only unrelated queued declarations remain, stop and let the manager hand off the next item",
-        "- after a meaningful edit, stop and let the manager re-check the queue",
+        "- after a meaningful edit, stop and let the manager re-check the queue (a decompose-and-insert helper batch counts as one meaningful edit)",
         "- for this file-scoped theorem turn, use `lean_incremental_check(check_target)` as the fast queue-step acceptance check; `lean_verify(mode=file_exact)` is reserved for final Lake sweeps, fallback, or explicit canonical verification",
         "- use Lean tools for normal verification so the manager can classify the assigned declaration; terminal-based Lake checks are emergency/manual fallback only",
     ]
@@ -4819,7 +4819,11 @@ def _recent_failed_attempts_summary(
     previous_attempts = scoped[:-1]
     if not previous_attempts:
         return ""
-    lines = ["PREVIOUS ATTEMPTS:"]
+    lines = [
+        "PREVIOUS ATTEMPTS:",
+        "(escalation signal: after ~2 failed direct attempts, decomposition via "
+        "`lean_decompose_helpers` is the expected next move, not another direct rewrite)",
+    ]
     for item in previous_attempts[-_failed_attempt_history_limit() :]:
         lines.append(f"- attempt: {item.get('attempt', '?')}")
         lines.append(f"  proof shape: {item.get('proof_shape', '[no proof shape recorded]')}")

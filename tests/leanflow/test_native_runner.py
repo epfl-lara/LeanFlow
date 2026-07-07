@@ -4901,7 +4901,7 @@ def test_queue_assignment_block_mentions_only_assigned_theorem():
     assert "declaration: absLipschitz1" in text
     assert "current status: blocked" in text
     assert "current blocker: type mismatch in `simpa using h`" in text
-    assert "local helper lemmas or intermediate facts are allowed" in text
+    assert "helper decomposition is a standard strategy" in text
     assert "do not start solving unrelated future queue items" in text
     assert "Verification for this queue item:" in text
     assert "`lake env lean ProveDemo/RealTheorems-homework.lean`" in text
