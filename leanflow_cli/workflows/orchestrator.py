@@ -13,9 +13,9 @@ floor's first row is a byte-identical no-op passthrough (``direct-prove``)
 and no extra model call ever happens.
 
 Route vocabulary note: the Part III function-level enum is the seven values
-below minus ``ask-human``; ``ask-human`` is the roadmap-v3 addition wired in
-a later Phase-4 sub-step. It is included in :data:`ROUTES` now so the
-vocabulary does not churn, but no deterministic row emits it yet.
+below minus ``ask-human``; ``ask-human`` is the roadmap-v3 addition (§0.16).
+The floor emits it deterministically for one case: a fidelity-suspect MAIN
+goal — non-blocking (park the node, continue elsewhere on the frontier).
 """
 
 from __future__ import annotations
@@ -92,6 +92,7 @@ class RouteContext:
     target_node_status: str = ""
     target_node_found: bool = False  # the graph positively knows this node
     target_is_sublemma: bool = False
+    fidelity_suspect: bool = False  # statement-fidelity audit said BLOCK
     negation_status: str = ""  # summary probe verdict, packet status as fallback
     negation_proved: bool = False  # promoted-quality scratch verdict exists
     plan_md_exists: bool = False
@@ -178,6 +179,7 @@ def build_route_context(
     target_node_status = ""
     target_node_found = False
     target_is_sublemma = False
+    fidelity_suspect = False
     frontier: tuple[str, ...] = ()
     blocked: tuple[str, ...] = ()
     if blueprint is not None:
@@ -189,6 +191,7 @@ def build_route_context(
                 if node is not None:
                     target_node_found = True
                     target_node_status = node.status
+                    fidelity_suspect = "fidelity: suspect" in str(node.notes or "")
                     target_is_sublemma = any(
                         edge.kind == "split_of" and edge.source == node.id
                         for edge in blueprint.edges
@@ -243,6 +246,7 @@ def build_route_context(
         target_node_status=target_node_status,
         target_node_found=target_node_found,
         target_is_sublemma=target_is_sublemma,
+        fidelity_suspect=fidelity_suspect,
         negation_status=negation_status,
         negation_proved=negation_proved,
         plan_md_exists=plan_md_exists,
@@ -346,6 +350,22 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
                 "negation kernel-proved but the dependency graph cannot confirm whether "
                 "this is the main goal; parked for review"
             ),
+            target={"target_symbol": ctx.target_symbol, "active_file": ctx.active_file},
+        )
+
+    # ask-human (roadmap v3, §0.16): the statement-fidelity audit marked the
+    # MAIN goal suspect — burning budget on a possibly-wrong statement is the
+    # one failure the kernel cannot catch. Non-blocking: park and continue.
+    if (
+        ctx.fidelity_suspect
+        and ctx.target_node_found
+        and not ctx.target_is_sublemma
+        and ctx.trigger in {"scope-entry", "event"}
+        and ctx.has_queue_item()
+    ):
+        return OrchestratorRoute(
+            route="ask-human",
+            reason="statement fidelity is suspect on the main goal; human review requested",
             target={"target_symbol": ctx.target_symbol, "active_file": ctx.active_file},
         )
 

@@ -339,10 +339,16 @@ class Transition:
 # ---------------------------------------------------------------------------
 
 
+#: Precedence rank at or above which an item is avoided while any
+#: better-ranked candidate exists (graph dependency false/blocked/parked).
+PRECEDENCE_AVOID = 2
+
+
 def select_next_item(
     queue: Sequence[QueueItem],
     *,
     is_present_in_file: Callable[[str], bool],
+    precedence: Callable[[str], int] | None = None,
 ) -> QueueItem | None:
     """Spec rule (line 519 of product-reference): error diagnostics first,
     then ``sorry`` placeholders, then nothing else.
@@ -353,16 +359,57 @@ def select_next_item(
     diagnostics or sorry — that path could select a clean declaration and
     silently violate the spec. If neither bucket matches, return None and let
     the caller treat the queue as empty so the final-sweep path runs.
+
+    Phase 4 graph-frontier option: ``precedence`` maps an item label to a
+    rank — 0 = frontier-ready (dependencies proved), 1 = unknown (including
+    project-scope file-path labels), >=2 = avoid (a dependency is
+    false/blocked/parked). Ranks order candidates stably WITHIN each bucket
+    (the diagnostic-first bucket rule is about unblocking compilation and
+    stays authoritative); avoid-ranked items are excluded only while a
+    better-ranked candidate exists somewhere, so a queue of only avoided
+    items still proves rather than falsely final-sweeping. ``None`` is the
+    byte-identical legacy path.
     """
     if not queue:
         return None
-    for item in queue:
-        if item.label and is_present_in_file(item.label) and item.has_diagnostic_reason():
-            return item
-    for item in queue:
-        if item.label and is_present_in_file(item.label) and item.has_sorry_reason():
-            return item
-    return None
+    if precedence is None:
+        for item in queue:
+            if item.label and is_present_in_file(item.label) and item.has_diagnostic_reason():
+                return item
+        for item in queue:
+            if item.label and is_present_in_file(item.label) and item.has_sorry_reason():
+                return item
+        return None
+
+    def _rank(item: QueueItem) -> int:
+        try:
+            return int(precedence(item.label))
+        except Exception:
+            return 1
+
+    diagnostic = [
+        item
+        for item in queue
+        if item.label and is_present_in_file(item.label) and item.has_diagnostic_reason()
+    ]
+    sorry = [
+        item
+        for item in queue
+        if item.label and is_present_in_file(item.label) and item.has_sorry_reason()
+    ]
+    ranks = {id(item): _rank(item) for item in (*diagnostic, *sorry)}
+
+    def _pick(bucket: list[QueueItem]) -> QueueItem | None:
+        # Avoid-exclusion is PER BUCKET: the diagnostic-first rule stays
+        # authoritative, so a rank-2 diagnostic still outranks any sorry
+        # item and is only skipped for a better diagnostic candidate.
+        if not bucket:
+            return None
+        if any(ranks[id(item)] < PRECEDENCE_AVOID for item in bucket):
+            bucket = [item for item in bucket if ranks[id(item)] < PRECEDENCE_AVOID]
+        return sorted(bucket, key=lambda item: ranks[id(item)])[0]
+
+    return _pick(diagnostic) or _pick(sorry)
 
 
 def classify_check(check: ManagerCheck) -> Classification:

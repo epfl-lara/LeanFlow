@@ -8,7 +8,7 @@ native_utils / queue_manager leaves, so it introduces no import cycle.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from leanflow_cli.lean.lean_diagnostic_feedback import _declaration_slice_text
@@ -56,14 +56,19 @@ def _inspection_queue_item_is_queue_blocker(
     )
 
 
-def _current_queue_item(queue: list[dict[str, Any]], active_file: str) -> dict[str, Any] | None:
+def _current_queue_item(
+    queue: list[dict[str, Any]],
+    active_file: str,
+    precedence: Callable[[str], int] | None = None,
+) -> dict[str, Any] | None:
     if not queue or not active_file:
         return None
     mgr = TheoremQueueManager()
     mgr.set_active_file(active_file)
     mgr.replace_queue(queue)
     selected = mgr.select_next(
-        is_present_in_file=lambda label: bool(_find_declaration_entry(active_file, label))
+        is_present_in_file=lambda label: bool(_find_declaration_entry(active_file, label)),
+        precedence=precedence,
     )
     if selected is None:
         return None

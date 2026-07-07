@@ -183,8 +183,15 @@ class TheoremQueueManager:
 
     # ----- assignment / transition --------------------------------------
 
-    def select_next(self, *, is_present_in_file: Callable[[str], bool]) -> QueueItem | None:
-        return select_next_item(self._queue, is_present_in_file=is_present_in_file)
+    def select_next(
+        self,
+        *,
+        is_present_in_file: Callable[[str], bool],
+        precedence: Callable[[str], int] | None = None,
+    ) -> QueueItem | None:
+        return select_next_item(
+            self._queue, is_present_in_file=is_present_in_file, precedence=precedence
+        )
 
     def assign(
         self,

@@ -6677,7 +6677,9 @@ def _build_live_proof_state(
     )
     if document_handoff_blocked:
         declaration_queue = []
-    current_queue_item = _current_queue_item(declaration_queue, active_file)
+    current_queue_item = _current_queue_item(
+        declaration_queue, active_file, precedence=_graph_frontier_precedence()
+    )
     current_queue_label = str((current_queue_item or {}).get("label", "") or "").strip()
     queue_needs_final_file_sweep = (
         declaration_scope == "file"
@@ -9835,6 +9837,67 @@ def _maybe_generate_final_report(
         logger.debug("final-report generation failed", exc_info=True)
 
 
+def _graph_frontier_selection_enabled() -> bool:
+    raw = _read_text_env("LEANFLOW_GRAPH_FRONTIER_SELECTION", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _graph_frontier_precedence() -> Callable[[str], int] | None:
+    """Graph-frontier precedence for queue selection (Phase 4, flag-gated).
+
+    Rank 0 = frontier-ready (all depends_on proved), 1 = unknown (no node —
+    including project-scope file-path labels), 2 = avoid (the node or one of
+    its dependencies is false/blocked/parked). None disables the option and
+    keeps selection byte-identical file order.
+    """
+    frontier_on = _graph_frontier_selection_enabled()
+    if not plan_state_enabled():
+        return None
+    if not frontier_on and not orchestrator_floor.orchestrator_enabled():
+        return None
+    try:
+        bp = plan_state.load_blueprint()
+    except Exception:
+        logger.debug("frontier precedence unavailable", exc_info=True)
+        return None
+    if not bp.nodes:
+        return None
+    if not frontier_on:
+        # Orchestrator-only mode: no frontier ORDERING, but ask-human's
+        # non-blocking contract still needs parked/false nodes skipped —
+        # otherwise the parked item is simply re-selected next cycle.
+        avoid = {node.name for node in bp.nodes if node.name and node.status in {"parked", "false"}}
+        if not avoid:
+            return None
+        return lambda label: 2 if str(label) in avoid else 1
+    by_id = {node.id: node for node in bp.nodes}
+    dependencies: dict[str, list[str]] = {}
+    for edge in bp.edges:
+        if edge.kind == "depends_on":
+            dependencies.setdefault(edge.source, []).append(edge.target)
+    rank_by_name: dict[str, int] = {}
+    for node in bp.nodes:
+        if not node.name:
+            continue
+        if node.status in {"parked", "false", "blocked"}:
+            rank = 2
+        else:
+            dep_nodes = [by_id.get(dep) for dep in dependencies.get(node.id, [])]
+            if any(
+                dep is not None and dep.status in {"false", "blocked", "parked"}
+                for dep in dep_nodes
+            ):
+                rank = 2
+            elif not dep_nodes or all(
+                dep is not None and dep.status == "proved" for dep in dep_nodes
+            ):
+                rank = 0
+            else:
+                rank = 1
+        rank_by_name[node.name] = rank
+    return lambda label: rank_by_name.get(str(label), 1)
+
+
 def _fidelity_audit_enabled() -> bool:
     raw = _read_text_env("LEANFLOW_FIDELITY_AUDIT", "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
@@ -10130,6 +10193,80 @@ def _orchestrator_apply_route(
                 _maybe_negation_probe(
                     autonomy_state, target_symbol=target_symbol, active_file=active_file
                 )
+        _resume_after_breakpoint()
+        return "continue"
+    if route.route == "re-state" and target_symbol and active_file:
+        # Main-statement changes require human ACK (roadmap §0.16/§4.5):
+        # ONLY a graph-confirmed sub-lemma may re-state autonomously. A
+        # missing or unreadable graph fails CLOSED — unknown scope converts
+        # to ask-human rather than risking an autonomous main re-statement.
+        confirmed_sublemma = False
+        with contextlib.suppress(Exception):
+            bp = plan_state.load_blueprint()
+            node = bp.node_by_id(plan_state.node_id_for(target_symbol, active_file))
+            if node is not None:
+                confirmed_sublemma = any(
+                    edge.kind == "split_of" and edge.source == node.id for edge in bp.edges
+                )
+        if not confirmed_sublemma:
+            route = orchestrator_floor.OrchestratorRoute(
+                route="ask-human",
+                reason="main-statement re-state requires human ACK",
+                target=dict(route.target),
+                source=route.source,
+            )
+    if route.route == "ask-human":
+        _decide_packet("park")
+        question = (
+            f"[LEANFLOW ASK-HUMAN] Review requested for `{target_symbol}` "
+            f"({active_file}): {route.reason}. The item is parked and the queue "
+            "continues elsewhere; reply via the agent inbox "
+            "(enqueue_workflow_agent_message) or edit the statement directly."
+        )
+        _record_activity(
+            "ask-human",
+            question,
+            target_symbol=target_symbol,
+            active_file=active_file,
+            reason=route.reason,
+            packet_id=packet_id,
+        )
+        with contextlib.suppress(Exception):
+            plan_state.append_journal_event(
+                {
+                    "event": "ask-human",
+                    "name": target_symbol,
+                    "file": active_file,
+                    "question": question,
+                }
+            )
+            summary = plan_state.load_summary()
+            questions = [
+                dict(entry)
+                for entry in (summary.get("human_questions") or [])
+                if isinstance(entry, Mapping)
+            ]
+            questions.append(
+                {
+                    "target_symbol": target_symbol,
+                    "active_file": active_file,
+                    "question": question,
+                    "packet_id": packet_id,
+                    "asked_at": _utc_now_isoformat(),
+                }
+            )
+            summary["human_questions"] = questions[-20:]
+            plan_state.save_summary(summary)
+            bp = plan_state.load_blueprint()
+            node = bp.node_by_id(plan_state.node_id_for(target_symbol, active_file))
+            if node is not None and node.status not in {"proved", "false", "parked"}:
+                bp = plan_state.set_node_status(
+                    bp,
+                    node.id,
+                    "parked",
+                    why="ask-human: awaiting review",
+                )
+                plan_state.save_blueprint(bp)
         _resume_after_breakpoint()
         return "continue"
     if route.route in {"decompose", "plan", "re-state"}:
