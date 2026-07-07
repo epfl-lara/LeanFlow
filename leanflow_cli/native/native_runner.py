@@ -59,6 +59,10 @@ from leanflow_cli.workflows.queue_manager import (
     verification_from_mapping,
     verification_to_mapping,
 )
+from leanflow_cli.workflows.queue_manager_live import (
+    flush_live_queue_manager,
+    live_queue_manager,
+)
 from leanflow_cli.workflows.verification_providers import (
     AUTOFORMALIZER_VERIFICATION_TASK,
     BLUEPRINT_VERIFICATION_TASK,
@@ -123,7 +127,6 @@ DEFAULT_ALLOWED_AXIOMS = ("propext", "Classical.choice", "Quot.sound")
 ACTIVE_AGENT_STATUSES = {"active"}
 LIVE_AGENT_STATUSES = {"active", "blocked", "paused", "queued"}
 DEAD_AGENT_STATUSES = {"dead"}
-_QUEUE_MANAGER_STATE_KEYS = TheoremQueueManager.OWNED_AUTONOMY_KEYS
 
 # Final-sweep warning-cleanup state. Lives directly on autonomy_state because
 # it is workflow-loop scoped, not per-theorem. The flag persists across
@@ -870,30 +873,16 @@ def _queue_manager_from_state(
     autonomy_state: Mapping[str, Any] | None,
     live_state: Mapping[str, Any] | None = None,
 ) -> TheoremQueueManager:
-    mgr = TheoremQueueManager.from_autonomy_state(dict(autonomy_state or {}))
-    current = dict(live_state or {})
-    active_file = str(
-        current.get("active_file", "") or current.get("active_file_label", "") or ""
-    ).strip()
-    if active_file:
-        mgr.set_active_file(active_file)
-    queue_items = _queue_item_mappings_from_live_state(live_state)
-    if queue_items:
-        mgr.replace_queue(queue_items)
-    return mgr
+    # Live-authority bridge (Phase 0): one cached instance per autonomy_state
+    # dict instead of a fresh reconstruction per helper call. The legacy dict
+    # stays the compat serialization via _flush_queue_manager.
+    return live_queue_manager(autonomy_state, live_state)
 
 
 def _flush_queue_manager(
     autonomy_state: Mapping[str, Any] | None, mgr: TheoremQueueManager
 ) -> None:
-    if not isinstance(autonomy_state, dict):
-        return
-    serialized = mgr.to_autonomy_state()
-    for key in _QUEUE_MANAGER_STATE_KEYS:
-        autonomy_state.pop(key, None)
-    autonomy_state.update(serialized)
-    if _queue_invariant_checks_enabled():
-        mgr.check_invariants()
+    flush_live_queue_manager(autonomy_state, mgr)
 
 
 def _queue_key(target_symbol: str, active_file: str) -> TheoremKey:
@@ -999,12 +988,13 @@ def _record_managed_reasoning_policy(
 ) -> None:
     """Record applied reasoning effort policy and escalate to high-effort if failed-attempt threshold reached. Logs policy phase, target theorem, attempt count relative to threshold; escalates and prints confirmation if high-effort has not been previously attempted."""
     current = dict(live_state or {})
-    autonomy = dict(autonomy_state or {})
     target_symbol, active_file = _queue_assignment_identity(current)
     failed_attempt_count = 0
     if target_symbol and active_file:
+        # Pass the real autonomy_state (not a copy) so the read-only lookup
+        # hits the cached live queue manager instead of hydrating a throwaway.
         failed_attempt_count = _failed_attempt_count_for_theorem(
-            autonomy,
+            autonomy_state or {},
             target_symbol=target_symbol,
             active_file=active_file,
         )
@@ -4617,7 +4607,7 @@ def _queue_assignment_block(
     slice_text = str(live_state.get("current_queue_item_slice", "") or "").strip()
     if slice_text and not prefix_text:
         parts.extend(["", slice_text])
-    failed = _recent_failed_attempts_summary(dict(autonomy_state or {}), live_state)
+    failed = _recent_failed_attempts_summary(autonomy_state or {}, live_state)
     if failed:
         parts.extend(["", failed])
     disabled_tools = _disabled_tools_summary(autonomy_state)

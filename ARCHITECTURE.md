@@ -262,6 +262,9 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 ### From `queue_manager.py`
 
 - `queue_models.py` — the `TheoremQueueManager` queue dataclasses + legacy dict<->typed mapping (verbatim move).
+- `queue_manager_live.py` — Phase 0 of the /prove redesign: one live `TheoremQueueManager` per
+  `autonomy_state` dict (fingerprint-guarded get-or-create keyed by `id()`), replacing per-helper
+  reconstruction; the flush keeps writing the exact legacy `OWNED_AUTONOMY_KEYS` dict shape.
 
 ### From `workflow_state.py`
 
