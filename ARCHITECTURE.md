@@ -269,6 +269,10 @@ patch/monkeypatch surface tests rely on while moving the logic out.
   `LEANFLOW_QUEUE_DECIDE_SHADOW=1` the legacy verdict gates also evaluate the pure `decide()`
   policy on a throwaway hydration and log `queue-decide-shadow-mismatch` activity events on
   divergence; the legacy branches stay authoritative.
+- `orchestrator.py` — Phase 4 §4.1 deterministic orchestrator floor (pure): `RouteContext`
+  snapshot + the ordered route table that turns stalls/breakpoints/retry exhaustion into
+  routes (`direct-prove`/`decompose`/`plan`/`negate`/`park`/`re-state`/`escalate`); the
+  LLM routing layer stays off until Phase 6.
 - `plan_state.py` — Phase 1 living plan-state substrate behind `LEANFLOW_PLAN_STATE`
   (default off): the dependency graph `blueprint.json` (frontier / OR-route / kernel-truth
   status rules), `summary.json`, the `plan.md` render with a preserved Notes tail, the
