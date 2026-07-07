@@ -230,6 +230,19 @@ def test_delta_journals_events(enabled):
     assert "node-created" in journal and '"generated_by": "planner"' in journal
 
 
+def test_delta_journal_deferral(enabled):
+    """journal=False defers the notebook writes to journal_delta_changes —
+    the conflicted-save-then-retry path journals only the persisted set."""
+    _bp, changes = plan_state.apply_delta(
+        plan_state.Blueprint(), {"nodes": [{"name": "j", "file": "D.lean"}]}, journal=False
+    )
+
+    assert not plan_state.plan_state_paths().journal_jsonl.exists()
+    plan_state.journal_delta_changes(changes, generated_by="planner")
+    journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    assert "node-created" in journal
+
+
 def test_delta_flag_off_never_writes_journal(monkeypatch, tmp_path):
     monkeypatch.delenv("LEANFLOW_PLAN_STATE", raising=False)
     monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "ps"))

@@ -287,6 +287,13 @@ patch/monkeypatch surface tests rely on while moving the logic out.
   off, provider down, unparseable) keeps the deterministic floor authoritative. Provider routing
   comes from `auxiliary.orchestration` (default: the strong main-agent model, no fallback
   inheritance).
+- `planner_phase.py` — Phase 5 §5.5 planner phase (dark behind `LEANFLOW_PLANNER_ENABLED`):
+  the `plan` route's mechanical arm — ≤3 research lanes (web/mathlib/empirical) fan out via
+  one `delegate_task` batch with isolated budgets, a `planner_synthesis` model turn merges
+  the JSON deliverables, the graph delta lands through `plan_state.apply_delta` only, and
+  target-file stubs are stated through `decomposer.place_helpers` (every Phase 4 guard
+  applies). N1: every lane is recorded in the outcome + journal, parse failures included;
+  any failure falls back to the prompt-level directive.
 - `plan_state.py` — Phase 1 living plan-state substrate behind `LEANFLOW_PLAN_STATE`
   (default off): the dependency graph `blueprint.json` (frontier / OR-route / kernel-truth
   status rules), `summary.json`, the `plan.md` render with a preserved Notes tail, the

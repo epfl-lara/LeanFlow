@@ -157,6 +157,7 @@ files = [
   "leanflow_cli/workflows/orchestrator.py",
   "leanflow_cli/workflows/decomposer.py",
   "leanflow_cli/workflows/orchestrator_llm.py",
+  "leanflow_cli/workflows/planner_phase.py",
   "leanflow_cli/workflows/struggle_signals.py",
   "leanflow_cli/workflows/manager_nudge.py",
   "leanflow_cli/workflows/dispatch_models.py",

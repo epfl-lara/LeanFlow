@@ -552,13 +552,16 @@ def _delta_ref(entry: Any, default_file: str) -> tuple[str, str]:
 
 
 def apply_delta(
-    bp: Blueprint, delta: Mapping[str, Any], *, generated_by: str = "planner"
+    bp: Blueprint, delta: Mapping[str, Any], *, generated_by: str = "planner", journal: bool = True
 ) -> tuple[Blueprint, list[dict[str, Any]]]:
     """Merge a planner/synthesizer graph delta; returns (blueprint, changes).
 
     Pure with respect to persistence (caller saves via ``save_blueprint``,
-    keeping the single-writer revision machinery intact); journal events are
-    appended here like every other graph mutation.
+    keeping the single-writer revision machinery intact). ``journal=False``
+    defers the journal writes to the caller — pass it when the save may hit
+    a revision conflict and be re-applied, then journal the FINAL change
+    set once after the save succeeds (replay consistency: the notebook must
+    describe the graph that was actually persisted).
 
     Kernel-truth rules: a delta node's status is DERIVED from its payload —
     statement present => ``stated``, otherwise ``conjectured`` — and any
@@ -656,9 +659,15 @@ def apply_delta(
         bp = replace(bp, edges=(*bp.edges, *added))
         changes.append({"event": "plan-delta-edges", "added": len(added)})
 
-    for change in changes:
-        append_journal_event({**change, "generated_by": generated_by})
+    if journal:
+        journal_delta_changes(changes, generated_by=generated_by)
     return bp, changes
+
+
+def journal_delta_changes(changes: Sequence[Mapping[str, Any]], *, generated_by: str) -> None:
+    """Journal an apply_delta change set (used after a deferred-journal save)."""
+    for change in changes:
+        append_journal_event({**dict(change), "generated_by": generated_by})
 
 
 #: Bounds for the prose summary keys the planner merge owns.

@@ -49,6 +49,7 @@ from leanflow_cli.workflows import (
     manager_nudge,
     orchestrator_llm,
     plan_state,
+    planner_phase,
     struggle_signals,
 )
 from leanflow_cli.workflows import (
@@ -9605,6 +9606,18 @@ def _collect_declaration_truth(
     return truth
 
 
+def _planner_goal_text() -> str:
+    """Goal for the planner phase: graph goal, else the run's prompt env."""
+    with contextlib.suppress(Exception):
+        goal = plan_state.load_blueprint().goal
+        if goal:
+            return goal
+    return _read_native_env(
+        "EFFECTIVE_PROMPT",
+        _read_native_env("USER_PROMPT", _read_native_env("EXPLICIT_GOAL", "")),
+    ) or _read_native_env("WORKFLOW_COMMAND", "")
+
+
 def _maybe_sync_plan_state(
     autonomy_state: Mapping[str, Any] | None,
     live_state: Mapping[str, Any] | None,
@@ -10330,6 +10343,49 @@ def _orchestrator_apply_route(
                     mechanical_placed = outcome.placed
             except Exception:
                 logger.debug("mechanical decomposer failed", exc_info=True)
+        planner_banner = ""
+        if route.route == "plan" and planner_phase.planner_enabled():
+            # Phase 5 (3/6): research fan-out + synthesis; any failure falls
+            # back to the prompt-level directive exactly like decompose.
+            try:
+                plan_outcome = planner_phase.run_planner_phase(
+                    goal=_planner_goal_text(),
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    agent=agent,
+                    cwd=_project_root(),
+                    allowed_axioms=sorted(_allowed_axioms()),
+                    lane_keys=[
+                        str(dict(probe).get("archetype", "") or "")
+                        for probe in (dict(route.target or {}).get("probes") or [])
+                        if isinstance(probe, Mapping)
+                    ],
+                )
+                _record_activity(
+                    "planner",
+                    f"Planner phase for {target_symbol or '[scope]'}: "
+                    + (plan_outcome.reason or ("ok" if plan_outcome.ok else "failed")),
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    **plan_outcome.to_payload(),
+                )
+                if plan_outcome.ok:
+                    planner_banner = "\n".join(
+                        [
+                            "[LEANFLOW ORCHESTRATOR ROUTE: plan]",
+                            f"- planner phase ran: {plan_outcome.nodes_added} graph node(s) "
+                            f"added, {len(plan_outcome.stubs_placed)} stub(s) stated"
+                            + (
+                                f" ({', '.join(plan_outcome.stubs_placed)})"
+                                if plan_outcome.stubs_placed
+                                else ""
+                            ),
+                            "- read plan.md (Strategy + Grounding are fresh) and attack "
+                            "the frontier in order.",
+                        ]
+                    )
+            except Exception:
+                logger.debug("planner phase failed", exc_info=True)
         if mechanical_placed:
             history.append(
                 {
@@ -10345,6 +10401,8 @@ def _orchestrator_apply_route(
                     ),
                 }
             )
+        elif planner_banner:
+            history.append({"role": "user", "content": planner_banner})
         else:
             directive = ""
             with contextlib.suppress(Exception):
