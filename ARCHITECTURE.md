@@ -269,6 +269,10 @@ patch/monkeypatch surface tests rely on while moving the logic out.
   `LEANFLOW_QUEUE_DECIDE_SHADOW=1` the legacy verdict gates also evaluate the pure `decide()`
   policy on a throwaway hydration and log `queue-decide-shadow-mismatch` activity events on
   divergence; the legacy branches stay authoritative.
+- `decomposer.py` — Phase 4 §4.2 mechanical decomposer: guards (stub shape, forbidden-axiom
+  scan, anti-sorry-offloading), between-turn stub placement with in-place LeanProbe
+  validation and all-or-nothing revert, dependency-graph split recording, and the prover
+  guard-cache refresh.
 - `orchestrator.py` — Phase 4 §4.1 deterministic orchestrator floor (pure): `RouteContext`
   snapshot + the ordered route table that turns stalls/breakpoints/retry exhaustion into
   routes (`direct-prove`/`decompose`/`plan`/`negate`/`park`/`re-state`/`escalate`); the

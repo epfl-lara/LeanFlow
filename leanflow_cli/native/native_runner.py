@@ -44,6 +44,7 @@ from leanflow_cli.lean.lean_workflow_specs import specs_for_skill
 from leanflow_cli.runtime.file_locks import list_file_locks, release_all_file_locks
 from leanflow_cli.runtime.skill_core import load_skill
 from leanflow_cli.workflows import (
+    decomposer,
     final_report,
     manager_nudge,
     plan_state,
@@ -9953,13 +9954,16 @@ def _orchestrator_apply_route(
     history: list[dict[str, Any]],
     autonomy_state: dict[str, Any],
     live_state: Mapping[str, Any] | None,
+    *,
+    agent: Any = None,
 ) -> str:
     """Execute a routing decision; return 'continue', 'stop:<reason>' or 'noop'.
 
-    Mechanical routes act directly (negate runs the feasibility probe; park
-    and escalate end the scope CONCRETELY — packet decided, report written).
-    Strategy routes (decompose/plan/re-state) execute prompt-level as
-    directives until the mechanical decomposer lands (decider-lite).
+    Mechanical routes act directly (negate runs the feasibility probe;
+    decompose states validated stubs via the mechanical decomposer, falling
+    back to a prompt directive; park and escalate end the scope CONCRETELY —
+    packet decided, report written). plan/re-state execute prompt-level as
+    directives (decider-lite).
     """
     context = dict(autonomy_state.get("_orchestrator_last_ctx") or {})
     target_symbol = str(context.get("target_symbol", "") or "")
@@ -10010,14 +10014,66 @@ def _orchestrator_apply_route(
         return "continue"
     if route.route in {"decompose", "plan", "re-state"}:
         _decide_packet("split" if route.route == "decompose" else route.route)
-        directive = ""
-        with contextlib.suppress(Exception):
-            ctx_for_text = orchestrator_floor.RouteContext(
-                trigger="event", target_symbol=target_symbol, active_file=active_file
+        mechanical_placed: tuple[str, ...] = ()
+        if route.route == "decompose" and target_symbol and active_file:
+            # Phase 4 (3/6): state validated helper stubs between turns; any
+            # failure falls back to the prompt-level directive.
+            try:
+                assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+                current = dict(live_state or {})
+                outcome = decomposer.run_decomposer(
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    statement=str(assignment.get("slice", "") or ""),
+                    diagnostics=str(current.get("diagnostics", "") or ""),
+                    goals=str(current.get("goals", "") or ""),
+                    failed_attempts_text=_recent_failed_attempts_summary(
+                        autonomy_state, live_state
+                    ),
+                    allowed_axioms=sorted(_allowed_axioms()),
+                    cwd=_project_root(),
+                    agent=agent,
+                )
+                _record_activity(
+                    "decomposer",
+                    f"Mechanical decomposition for {target_symbol}: "
+                    + (
+                        f"placed {', '.join(outcome.placed)}"
+                        if outcome.ok
+                        else f"fell back ({outcome.reason})"
+                    ),
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    **outcome.to_payload(),
+                )
+                if outcome.ok:
+                    mechanical_placed = outcome.placed
+            except Exception:
+                logger.debug("mechanical decomposer failed", exc_info=True)
+        if mechanical_placed:
+            history.append(
+                {
+                    "role": "user",
+                    "content": "\n".join(
+                        [
+                            "[LEANFLOW ORCHESTRATOR ROUTE: decompose]",
+                            f"- inserted validated helper stubs: {', '.join(mechanical_placed)}",
+                            f"- prove each helper first, then assemble `{target_symbol}` "
+                            "from them. The stubs precede the target in the file and are "
+                            "the next queue assignments.",
+                        ]
+                    ),
+                }
             )
-            directive = orchestrator_floor.strategy_directive(route, ctx_for_text)
-        if directive:
-            history.append({"role": "user", "content": directive})
+        else:
+            directive = ""
+            with contextlib.suppress(Exception):
+                ctx_for_text = orchestrator_floor.RouteContext(
+                    trigger="event", target_symbol=target_symbol, active_file=active_file
+                )
+                directive = orchestrator_floor.strategy_directive(route, ctx_for_text)
+            if directive:
+                history.append({"role": "user", "content": directive})
         _resume_after_breakpoint()
         return "continue"
     if route.route == "park":
@@ -10350,7 +10406,9 @@ def _drive_autonomous_followups(
             if entry_trigger:
                 route = _orchestrator_consult(entry_trigger, autonomy_state, live_state)
                 if route is not None:
-                    action = _orchestrator_apply_route(route, history, autonomy_state, live_state)
+                    action = _orchestrator_apply_route(
+                        route, history, autonomy_state, live_state, agent=agent
+                    )
                     if action == "continue":
                         # A strategy directive was queued: give the prover a
                         # fresh stability window to act on it before the
@@ -10385,7 +10443,9 @@ def _drive_autonomous_followups(
                 trigger = "budget-breakpoint" if stop_reason == "budget-breakpoint" else "stall"
                 route = _orchestrator_consult(trigger, autonomy_state, live_state)
                 if route is not None:
-                    action = _orchestrator_apply_route(route, history, autonomy_state, live_state)
+                    action = _orchestrator_apply_route(
+                        route, history, autonomy_state, live_state, agent=agent
+                    )
                     if action == "continue":
                         autonomy_state["continuation_stable_cycles"] = 0
                         autonomy_state["continuation_blocked_runs"] = 0
