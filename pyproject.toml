@@ -157,6 +157,7 @@ files = [
   "leanflow_cli/workflows/manager_nudge.py",
   "leanflow_cli/workflows/dispatch_models.py",
   "leanflow_cli/workflows/dispatch_service.py",
+  "leanflow_cli/workflows/final_report.py",
   "leanflow_cli/lean/negation_probe.py",
   "evals/harness.py",
   "leanflow_cli/workflows/queue_item_predicates.py",

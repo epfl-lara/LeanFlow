@@ -43,7 +43,7 @@ from leanflow_cli.lean.lean_services import (
 from leanflow_cli.lean.lean_workflow_specs import specs_for_skill
 from leanflow_cli.runtime.file_locks import list_file_locks, release_all_file_locks
 from leanflow_cli.runtime.skill_core import load_skill
-from leanflow_cli.workflows import manager_nudge, plan_state, struggle_signals
+from leanflow_cli.workflows import final_report, manager_nudge, plan_state, struggle_signals
 from leanflow_cli.workflows.plan_state import (
     artifact_context_block,
     artifact_paths_block,
@@ -9780,6 +9780,41 @@ def _maybe_negation_probe(
         logger.debug("negation probe failed", exc_info=True)
 
 
+def _maybe_generate_final_report(
+    stop_reason: str,
+    autonomy_state: Mapping[str, Any] | None,
+    live_state: Mapping[str, Any] | None,
+) -> None:
+    """N1 instrumentation (specs Part II section 6): every TERMINAL
+    non-verified exit leaves the machine-written account. A pause/interrupt
+    is deliberately NOT a scope end — the run resumes and N1 applies when it
+    actually terminates. Idempotent per run, fail-open — the generator can
+    never turn a clean stop into a crash."""
+    if stop_reason not in {"stalled", "blocked", "budget-breakpoint", "failed"}:
+        return
+    if not final_report.final_report_enabled() or not isinstance(autonomy_state, dict):
+        return
+    if autonomy_state.get("final_report_written"):
+        return
+    try:
+        path = final_report.generate_final_report(
+            stop_reason=stop_reason,
+            autonomy_state=autonomy_state,
+            live_state=live_state,
+            run_id=_read_text_env("LEANFLOW_WORKFLOW_RUN_ID", "") or "run",
+        )
+        autonomy_state["final_report_written"] = True
+        _record_activity(
+            "final-report",
+            f"Final report written ({stop_reason})",
+            stop_reason=stop_reason,
+            path=str(path),
+        )
+        print(f"Final report: {path}")
+    except Exception:
+        logger.debug("final-report generation failed", exc_info=True)
+
+
 def _budget_breakpoint_enabled() -> bool:
     raw = _read_text_env("LEANFLOW_BUDGET_BREAKPOINT", "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
@@ -9991,6 +10026,7 @@ def _drive_autonomous_followups(
                 cycle=cycle,
             )
             ceiling_phase = "verified" if _live_state_is_verified(live_state) else "stalled"
+            _maybe_generate_final_report(ceiling_phase, autonomy_state, live_state)
             _persist_live_status(
                 history, compaction_state, checkpoint_state, live_state, phase=ceiling_phase
             )
@@ -10069,6 +10105,7 @@ def _drive_autonomous_followups(
             _record_activity(
                 "autonomy-stop", f"Autonomous workflow stop reason: {stop_reason}", cycle=cycle
             )
+            _maybe_generate_final_report(stop_reason, autonomy_state, live_state)
             _persist_live_status(
                 history, compaction_state, checkpoint_state, live_state, phase=stop_reason
             )
@@ -10134,6 +10171,7 @@ def _drive_autonomous_followups(
             checkpoint_state = _journal_status()
             live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
             _record_managed_conversation_failure(result, phase=f"autonomous continuation #{cycle}")
+            _maybe_generate_final_report("failed", autonomy_state, live_state)
             _persist_live_status(
                 history, compaction_state, checkpoint_state, live_state, phase="failed"
             )
