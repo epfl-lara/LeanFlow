@@ -252,6 +252,50 @@ def build_route_context(
     )
 
 
+def strategy_directive(route: OrchestratorRoute, ctx: RouteContext) -> str:
+    """Render the prompt-level strategy directive for a routing decision.
+
+    Until the mechanical decomposer lands, decompose/plan/re-state execute as
+    explicit prover-facing directives (the roadmap's breakpoint-decider-lite:
+    a strategy CHANGE, never a silent restart). Mechanical routes
+    (negate/park/escalate/direct-prove) return '' — the runner acts directly.
+    """
+    if route.route == "decompose":
+        return "\n".join(
+            [
+                "[LEANFLOW ORCHESTRATOR ROUTE: decompose]",
+                f"- reason: {route.reason}",
+                f"- directive: stop direct attempts on `{ctx.target_symbol}`. Call "
+                "`lean_decompose_helpers` now, insert the ready helpers, prove each, "
+                "then assemble the target from them.",
+                "- a helper's `sorry` is normal work-in-progress during the turn.",
+            ]
+        )
+    if route.route == "plan":
+        return "\n".join(
+            [
+                "[LEANFLOW ORCHESTRATOR ROUTE: plan]",
+                f"- reason: {route.reason}",
+                "- directive: before more proof attempts, write/refresh the plan: read "
+                "the plan artifacts, inventory the remaining `sorry` declarations, state "
+                "the helper lemmas the hardest ones need, and record the order of attack "
+                "in plan.md's Notes section.",
+            ]
+        )
+    if route.route == "re-state":
+        return "\n".join(
+            [
+                "[LEANFLOW ORCHESTRATOR ROUTE: re-state]",
+                f"- reason: {route.reason}",
+                f"- directive: `{ctx.target_symbol}` is refuted as stated — the "
+                "decomposition that produced it was wrong. Do NOT keep proving it. "
+                "Re-examine the parent statement and propose a corrected split; a "
+                "kernel-verified counterexample outranks any proof attempt.",
+            ]
+        )
+    return ""
+
+
 def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> OrchestratorRoute:
     """The Phase-4 deterministic route table (specs §4.1, eight ordered rows).
 
@@ -305,8 +349,14 @@ def orchestrator_route(ctx: RouteContext, *, max_routes: int | None = None) -> O
             target={"target_symbol": ctx.target_symbol, "active_file": ctx.active_file},
         )
 
-    # Row 1 — happy path: live queue item, few attempts, no breakpoint.
-    if ctx.has_queue_item() and ctx.attempt_count < HARD_RETRY_LIMIT and not breakpoint_trigger:
+    # Row 1 — happy path: live queue item, few attempts, and neither a
+    # breakpoint nor a stall (a stall consult exists precisely to reroute).
+    if (
+        ctx.has_queue_item()
+        and ctx.attempt_count < HARD_RETRY_LIMIT
+        and not breakpoint_trigger
+        and ctx.trigger != "stall"
+    ):
         return OrchestratorRoute(
             route="direct-prove",
             reason="queue item active with attempts below the hard-retry limit; passthrough",

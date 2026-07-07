@@ -43,7 +43,15 @@ from leanflow_cli.lean.lean_services import (
 from leanflow_cli.lean.lean_workflow_specs import specs_for_skill
 from leanflow_cli.runtime.file_locks import list_file_locks, release_all_file_locks
 from leanflow_cli.runtime.skill_core import load_skill
-from leanflow_cli.workflows import final_report, manager_nudge, plan_state, struggle_signals
+from leanflow_cli.workflows import (
+    final_report,
+    manager_nudge,
+    plan_state,
+    struggle_signals,
+)
+from leanflow_cli.workflows import (
+    orchestrator as orchestrator_floor,
+)
 from leanflow_cli.workflows.plan_state import (
     artifact_context_block,
     artifact_paths_block,
@@ -4650,6 +4658,10 @@ def _prepare_queue_assignment_state(
         and _same_active_file(previous.key.active_file, active_file)
     )
     if not same_assignment:
+        # Phase 4: the orchestrator's route budget and scope-entry consult
+        # are per theorem SCOPE — a new assignment opens a fresh scope.
+        autonomy_state.pop("orchestrator_routes_used", None)
+        autonomy_state.pop("orchestrator_scope_entered", None)
         _record_activity(
             "queue-manager-assigned",
             f"Queue manager assigned {label}",
@@ -9790,7 +9802,14 @@ def _maybe_generate_final_report(
     is deliberately NOT a scope end — the run resumes and N1 applies when it
     actually terminates. Idempotent per run, fail-open — the generator can
     never turn a clean stop into a crash."""
-    if stop_reason not in {"stalled", "blocked", "budget-breakpoint", "failed"}:
+    if stop_reason not in {
+        "stalled",
+        "blocked",
+        "budget-breakpoint",
+        "failed",
+        "parked",
+        "disproved",
+    }:
         return
     if not final_report.final_report_enabled() or not isinstance(autonomy_state, dict):
         return
@@ -9813,6 +9832,219 @@ def _maybe_generate_final_report(
         print(f"Final report: {path}")
     except Exception:
         logger.debug("final-report generation failed", exc_info=True)
+
+
+def _orchestrator_research_cadence() -> int:
+    """Research-mode reflection cadence in cycles (roadmap §4.4); 0 = off."""
+    return _read_int_env("LEANFLOW_ORCHESTRATOR_CADENCE_CYCLES", 8, minimum=0)
+
+
+def _orchestrator_event_due(autonomy_state: dict[str, Any], cycle: int) -> str:
+    """Mechanical per-cycle event-trigger checks (roadmap §4.4) — cheap dict
+    reads; returns the trigger name or ''. Fingerprints live in
+    autonomy_state so nothing fires twice for the same evidence."""
+    try:
+        summary = plan_state.load_summary()
+        ledger_done = sorted(
+            str(entry.get("spec", {}).get("job_id", "") or "")
+            for entry in summary.get("dispatch_ledger") or []
+            if isinstance(entry, Mapping)
+            and str(entry.get("state", "")) == "done"
+            and not entry.get("consumed")
+        )
+        if ledger_done:
+            # Seen-set, not a whole-set fingerprint: consuming job A must not
+            # re-fire job B.
+            seen = set(autonomy_state.get("orchestrator_jobs_seen") or [])
+            fresh = [job_id for job_id in ledger_done if job_id and job_id not in seen]
+            if fresh:
+                autonomy_state["orchestrator_jobs_seen"] = sorted(seen | set(fresh))
+                return "event"
+        bp = plan_state.load_blueprint()
+        dependents = {edge.target for edge in bp.edges if edge.kind == "depends_on"}
+        flipped = sorted(
+            f"{node.id}:{node.status}"
+            for node in bp.nodes
+            if node.status in {"false", "proved"} and node.id in dependents
+        )
+        if flipped:
+            fingerprint = "|".join(flipped)
+            if autonomy_state.get("orchestrator_frontier_fp") != fingerprint:
+                autonomy_state["orchestrator_frontier_fp"] = fingerprint
+                return "event"
+    except Exception:
+        logger.debug("orchestrator event check failed", exc_info=True)
+    cadence = _orchestrator_research_cadence()
+    if _research_mode_enabled() and cadence and cycle > 0 and cycle % cadence == 0:
+        if autonomy_state.get("orchestrator_cadence_cycle") != cycle:
+            autonomy_state["orchestrator_cadence_cycle"] = cycle
+            return "event"
+    return ""
+
+
+def _orchestrator_consult(
+    trigger: str,
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+    *,
+    decision_packet: Mapping[str, Any] | None = None,
+) -> orchestrator_floor.OrchestratorRoute | None:
+    """Consult the deterministic floor; None when disabled or on any failure.
+
+    Records an `orchestrator-route` activity event for every consult and
+    charges the per-scope route budget for non-passthrough routes.
+    """
+    if not orchestrator_floor.orchestrator_enabled() or not isinstance(autonomy_state, dict):
+        return None
+    try:
+        blueprint = plan_state.load_blueprint() if plan_state_enabled() else None
+        summary = plan_state.load_summary() if plan_state_enabled() else None
+        packet = dict(decision_packet or {})
+        if not packet:
+            armed = dict(autonomy_state.get("budget_breakpoint") or {})
+            packet_id = str(armed.get("packet_id", "") or "")
+            if packet_id and summary:
+                for candidate in summary.get("decision_packets") or []:
+                    if (
+                        isinstance(candidate, Mapping)
+                        and str(candidate.get("packet_id", "")) == packet_id
+                    ):
+                        packet = dict(candidate)
+                        break
+        ctx = orchestrator_floor.build_route_context(
+            trigger=trigger,
+            live_state=live_state,
+            autonomy_state=autonomy_state,
+            mgr=_queue_manager_from_state(autonomy_state, live_state),
+            blueprint=blueprint,
+            summary=summary,
+            decision_packet=packet,
+            plan_md_exists=(plan_state_enabled() and plan_state_paths().plan_md.is_file()),
+            research_mode=_research_mode_enabled(),
+        )
+        route = orchestrator_floor.orchestrator_route(ctx)
+        if route.route != "direct-prove":
+            autonomy_state["orchestrator_routes_used"] = (
+                int(autonomy_state.get("orchestrator_routes_used", 0) or 0) + 1
+            )
+        _record_activity(
+            "orchestrator-route",
+            f"Orchestrator ({trigger}) routed {route.route}: {route.reason}",
+            trigger=trigger,
+            route=route.route,
+            reason=route.reason,
+            source=route.source,
+            target_symbol=ctx.target_symbol,
+            active_file=ctx.active_file,
+            routes_used=int(autonomy_state.get("orchestrator_routes_used", 0) or 0),
+        )
+        autonomy_state["_orchestrator_last_ctx"] = {
+            "target_symbol": ctx.target_symbol,
+            "active_file": ctx.active_file,
+        }
+        return route
+    except Exception:
+        logger.debug("orchestrator consult failed", exc_info=True)
+        return None
+
+
+def _orchestrator_apply_route(
+    route: orchestrator_floor.OrchestratorRoute,
+    history: list[dict[str, Any]],
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+) -> str:
+    """Execute a routing decision; return 'continue', 'stop:<reason>' or 'noop'.
+
+    Mechanical routes act directly (negate runs the feasibility probe; park
+    and escalate end the scope CONCRETELY — packet decided, report written).
+    Strategy routes (decompose/plan/re-state) execute prompt-level as
+    directives until the mechanical decomposer lands (decider-lite).
+    """
+    context = dict(autonomy_state.get("_orchestrator_last_ctx") or {})
+    target_symbol = str(context.get("target_symbol", "") or "")
+    active_file = str(context.get("active_file", "") or "")
+    armed = dict(autonomy_state.get("budget_breakpoint") or {})
+    packet_id = str(armed.get("packet_id", "") or "")
+
+    def _decide_packet(decision: str) -> None:
+        if not packet_id:
+            return
+        with contextlib.suppress(Exception):
+            summary = plan_state.load_summary()
+            for candidate in summary.get("decision_packets") or []:
+                if (
+                    isinstance(candidate, Mapping)
+                    and str(candidate.get("packet_id", "")) == packet_id
+                ):
+                    decided = {
+                        **dict(candidate),
+                        "decision": decision,
+                        "decided_by": "orchestrator-floor",
+                    }
+                    plan_state.record_decision_packet(decided)
+                    break
+
+    def _resume_after_breakpoint() -> None:
+        # The route granted a strategy change: disarm the breakpoint, reset
+        # the exhaustion streak, and grant a fresh per-theorem tranche so the
+        # same trip does not re-fire before the new strategy runs.
+        autonomy_state.pop("budget_breakpoint", None)
+        autonomy_state["consecutive_exhausted_assignments"] = 0
+        if target_symbol and active_file:
+            with contextlib.suppress(Exception):
+                mgr = _queue_manager_from_state(autonomy_state)
+                mgr.reset_api_steps_for(_queue_key(target_symbol, active_file))
+                _flush_queue_manager(autonomy_state, mgr)
+
+    if route.route == "direct-prove":
+        return "noop"
+    if route.route == "negate":
+        _decide_packet("negate")
+        if target_symbol and active_file:
+            with contextlib.suppress(Exception):
+                _maybe_negation_probe(
+                    autonomy_state, target_symbol=target_symbol, active_file=active_file
+                )
+        _resume_after_breakpoint()
+        return "continue"
+    if route.route in {"decompose", "plan", "re-state"}:
+        _decide_packet("split" if route.route == "decompose" else route.route)
+        directive = ""
+        with contextlib.suppress(Exception):
+            ctx_for_text = orchestrator_floor.RouteContext(
+                trigger="event", target_symbol=target_symbol, active_file=active_file
+            )
+            directive = orchestrator_floor.strategy_directive(route, ctx_for_text)
+        if directive:
+            history.append({"role": "user", "content": directive})
+        _resume_after_breakpoint()
+        return "continue"
+    if route.route == "park":
+        _decide_packet("park")
+        with contextlib.suppress(Exception):
+            plan_state.write_final_report(
+                "documented",
+                detail={
+                    "summary": f"orchestrator parked the scope: {route.reason}",
+                    "evidence": [f"packet:{packet_id}"] if packet_id else [],
+                },
+            )
+        return "stop:parked"
+    if route.route == "escalate":
+        _decide_packet("abort")
+        with contextlib.suppress(Exception):
+            plan_state.write_final_report(
+                "disproved",
+                detail={
+                    "summary": (
+                        f"kernel-verified negation of {target_symbol or 'the main goal'}; "
+                        "scope resolves as disproved"
+                    ),
+                },
+            )
+        return "stop:disproved"
+    return "noop"
 
 
 def _budget_breakpoint_enabled() -> bool:
@@ -9968,16 +10200,22 @@ def _maybe_trigger_budget_breakpoint(
                 bp = plan_state.set_node_status(bp, node_id, "blocked", why="budget breakpoint")
             plan_state.save_blueprint(bp)
         plan_state.record_decision_packet(packet)
-        plan_state.write_final_report(
-            "documented",
-            detail={
-                "summary": (
-                    f"budget breakpoint ({scope}) at {target_symbol or 'queue level'}; "
-                    "run stopped with a persisted decision packet"
-                ),
-                "evidence": [f"packet:{packet_id}"],
-            },
-        )
+        if not orchestrator_floor.orchestrator_enabled():
+            # Phase 1 mechanical stop: the breakpoint IS the scope end, so
+            # the documented report writes now. With the orchestrator on,
+            # the route decides the ending — a resumed scope must not carry
+            # a terminal 'documented' report (park/escalate write their own,
+            # and a failed consult still reports via the stop path).
+            plan_state.write_final_report(
+                "documented",
+                detail={
+                    "summary": (
+                        f"budget breakpoint ({scope}) at {target_symbol or 'queue level'}; "
+                        "run stopped with a persisted decision packet"
+                    ),
+                    "evidence": [f"packet:{packet_id}"],
+                },
+            )
     except Exception as exc:
         logger.debug("budget-breakpoint artifact writes failed", exc_info=True)
         with contextlib.suppress(Exception):
@@ -10097,21 +10335,82 @@ def _drive_autonomous_followups(
             continue
         _maybe_announce_final_file_sweep_state(autonomy_state, live_state)
         _maybe_sync_plan_state(autonomy_state, live_state)
+        if orchestrator_floor.orchestrator_enabled():
+            # Phase 4: scope-entry consult on the first cycle, then the
+            # mechanical event triggers (job findings / frontier flips /
+            # research cadence) — near-zero cost when nothing changed.
+            entry_trigger = ""
+            if not autonomy_state.get("orchestrator_scope_entered"):
+                # Once per theorem scope: the flag is cleared on assignment
+                # transitions, so every new scope gets its entry consult.
+                autonomy_state["orchestrator_scope_entered"] = True
+                entry_trigger = "scope-entry"
+            else:
+                entry_trigger = _orchestrator_event_due(autonomy_state, cycle)
+            if entry_trigger:
+                route = _orchestrator_consult(entry_trigger, autonomy_state, live_state)
+                if route is not None:
+                    action = _orchestrator_apply_route(route, history, autonomy_state, live_state)
+                    if action == "continue":
+                        # A strategy directive was queued: give the prover a
+                        # fresh stability window to act on it before the
+                        # stall machinery can re-route the same cycle.
+                        autonomy_state["continuation_stable_cycles"] = 0
+                        autonomy_state["continuation_blocked_runs"] = 0
+                    if action.startswith("stop:"):
+                        entry_stop = action.split(":", 1)[1]
+                        _record_activity(
+                            "autonomy-stop",
+                            f"Autonomous workflow stop reason: {entry_stop}",
+                            cycle=cycle,
+                        )
+                        _maybe_generate_final_report(entry_stop, autonomy_state, live_state)
+                        _persist_live_status(
+                            history,
+                            compaction_state,
+                            checkpoint_state,
+                            live_state,
+                            phase=entry_stop,
+                        )
+                        return history, compaction_state, checkpoint_state, live_state
         _persist_live_status(
             history, compaction_state, checkpoint_state, live_state, phase="verifying"
         )
         stop_reason = _autonomous_stop_reason(history, live_state, autonomy_state)
         if stop_reason != "continue":
-            _record_activity(
-                "autonomy-stop", f"Autonomous workflow stop reason: {stop_reason}", cycle=cycle
-            )
-            _maybe_generate_final_report(stop_reason, autonomy_state, live_state)
-            _persist_live_status(
-                history, compaction_state, checkpoint_state, live_state, phase=stop_reason
-            )
-            if stop_reason == "formalization-prover-handoff-ready":
-                _record_formalization_manual_prove_handoff(live_state, autonomy_state)
-            return history, compaction_state, checkpoint_state, live_state
+            # Phase 4: the orchestrator floor converts routable stops
+            # (stall / blocked / budget breakpoint) into strategy changes.
+            resumed_by_route = False
+            if stop_reason in {"stalled", "blocked", "budget-breakpoint"}:
+                trigger = "budget-breakpoint" if stop_reason == "budget-breakpoint" else "stall"
+                route = _orchestrator_consult(trigger, autonomy_state, live_state)
+                if route is not None:
+                    action = _orchestrator_apply_route(route, history, autonomy_state, live_state)
+                    if action == "continue":
+                        autonomy_state["continuation_stable_cycles"] = 0
+                        autonomy_state["continuation_blocked_runs"] = 0
+                        resumed_by_route = True
+                        _record_activity(
+                            "orchestrator-resume",
+                            f"Orchestrator converted stop '{stop_reason}' into route "
+                            f"{route.route}",
+                            stop_reason=stop_reason,
+                            route=route.route,
+                            cycle=cycle,
+                        )
+                    elif action.startswith("stop:"):
+                        stop_reason = action.split(":", 1)[1]
+            if not resumed_by_route:
+                _record_activity(
+                    "autonomy-stop", f"Autonomous workflow stop reason: {stop_reason}", cycle=cycle
+                )
+                _maybe_generate_final_report(stop_reason, autonomy_state, live_state)
+                _persist_live_status(
+                    history, compaction_state, checkpoint_state, live_state, phase=stop_reason
+                )
+                if stop_reason == "formalization-prover-handoff-ready":
+                    _record_formalization_manual_prove_handoff(live_state, autonomy_state)
+                return history, compaction_state, checkpoint_state, live_state
 
         _maybe_checkpoint_before_compaction(history, agent, live_state=live_state)
         history, compaction_state = _auto_compact_history(history, agent)

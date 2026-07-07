@@ -413,6 +413,11 @@ class TheoremQueueManager:
     def api_steps_for(self, key: TheoremKey) -> int:
         return self._api_steps.get(key, 0) if key.is_valid() else 0
 
+    def reset_api_steps_for(self, key: TheoremKey) -> None:
+        """Grant a fresh budget tranche (orchestrator route resumed the theorem)."""
+        if key.is_valid():
+            self._api_steps.pop(key, None)
+
     def retry_signatures_for(self, key: TheoremKey) -> dict[str, list[str]]:
         """Return the consumed retry signatures per bucket (decision-packet input)."""
         if not key.is_valid():
