@@ -75,6 +75,7 @@ def _discover_tools():
     _modules = [
         "tools.implementations.web_tools",
         "tools.implementations.web_fetch",
+        "tools.implementations.repo_clone",
         "tools.implementations.file_tools",
         "tools.implementations.file_lock_tool",
         "tools.implementations.terminal_tool",

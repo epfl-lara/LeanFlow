@@ -129,6 +129,7 @@ files = [
   "tools/response.py",
   "tools/implementations/lean_experts.py",
   "tools/implementations/lean_patch.py",
+  "tools/implementations/repo_clone.py",
   "agent/runtime/managed_run.py",
   "leanflow_cli/native/native_config.py",
   "leanflow_cli/native/native_lean_files.py",

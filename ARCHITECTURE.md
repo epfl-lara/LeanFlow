@@ -319,6 +319,14 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 - `tools/lean_experts.py` — auxiliary LLM-advisor Lean tools.
 - `tools/lean_patch.py` — verified-patch application tool.
 
+### New tools (prove-redesign)
+
+- `tools/implementations/repo_clone.py` — Phase 5 §5.6 repository acquisition: shallow
+  single-branch `git clone` into `.leanflow/workspace/repos/` with the `web_download`
+  sandbox contract (sanitized dir name, symlink-escape refusal, post-clone size cap with
+  cleanup, `cached: true` idempotency). Rides the `web` toolset (registry + `_WEB_TOOLS` +
+  the `_discover_tools` module list — all three are required for reachability).
+
 ### From `tools/mcp_tool.py`
 
 - `tools/mcp_transport.py` — stdio/HTTP transport plumbing for MCP servers.
