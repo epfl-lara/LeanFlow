@@ -101,6 +101,27 @@ def _probe() -> Any:
     return _PROBE
 
 
+def lean_scratch_check(code: str, *, cwd: str = "", timeout_s: int = 90) -> dict[str, Any]:
+    """Run a standalone Lean snippet through the warm LeanProbe REPL.
+
+    The scratch surface for probes/experiments (roadmap: "LeanProbe is the
+    guy"): returns the probe's normalized payload (``success`` = the tool
+    ran; ``ok`` = elaborated with no errors and no sorry; ``messages``).
+    Never touches the project tree; never an acceptance authority.
+    """
+    try:
+        probe = _probe()
+        payload = probe.check_code(code, cwd=cwd or None, timeout_s=timeout_s)
+        return dict(payload or {})
+    except Exception as exc:
+        return {
+            "success": False,
+            "ok": False,
+            "error": str(exc)[:500],
+            "messages": [],
+        }
+
+
 def _error_payload(
     *,
     action: str,

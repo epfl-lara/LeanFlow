@@ -274,6 +274,17 @@ patch/monkeypatch surface tests rely on while moving the logic out.
   status rules), `summary.json`, the `plan.md` render with a preserved Notes tail, the
   append-only `journal.jsonl` lab notebook, the `reconcile()` anti-drift pass, decision-packet
   persistence, and the artifact prompt blocks the runner injects.
+- `struggle_signals.py` + `manager_nudge.py` — Phase 2: the pure struggle-signal classifier
+  and the advisory, struggle-triggered LLM-manager (modes off/dark/live via
+  `LEANFLOW_MANAGER_LLM_MODE`; dark-launch log in `summary.json.manager_nudges`).
+- `dispatch_models.py` + `dispatch_service.py` — Phase 3: tracked, lineage-addressed job
+  dispatch (`summary.json.dispatch_ledger`, transactional under the shared
+  `workflow_json_io.json_write_lock`; independent job budgets; ancestor-gated kill;
+  agent-evidence reconciliation). Deploy gated on `LEANFLOW_DISPATCH_ENABLED`.
+- `leanflow_cli/lean/negation_probe.py` — Phase 3: the negation feasibility probe
+  (mechanical ¬P construction, `plausible` pre-probe, cheap tactic ladder over LeanProbe
+  scratch with a standard-axioms check; budgeted via `summary.json.negation_probes`;
+  verdicts are routing evidence only — `false` requires gate promotion).
 
 ### From `workflow_state.py`
 

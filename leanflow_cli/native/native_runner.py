@@ -28,6 +28,7 @@ from agent.compression.context_compressor import ContextCompressor
 from agent.providers.auxiliary_client import call_llm
 from agent.providers.model_metadata import estimate_messages_tokens_rough
 from leanflow_cli.config import load_config
+from leanflow_cli.lean import negation_probe
 from leanflow_cli.lean.lean_incremental import lean_incremental_check
 from leanflow_cli.lean.lean_lemma_suggest import lean_lemma_suggest
 from leanflow_cli.lean.lean_services import (
@@ -6491,6 +6492,7 @@ def _handle_api_step_budget_exhaustion(
         _flush_queue_manager(autonomy_state, mgr)
     _remember_failed_attempt(autonomy_state, live_state, cycle_number=cycle, refresh_baseline=False)
     restore_result = _restore_queue_assignment_to_baseline_sorry(autonomy_state, live_state)
+    _maybe_negation_probe(autonomy_state, target_symbol=target_symbol, active_file=active_file)
     if restore_result.get("restored"):
         manager_check = _manager_verify_queue_file(active_file)
         restore_result = dict(restore_result)
@@ -9740,6 +9742,42 @@ def _plan_state_resume_block(autonomy_state: Mapping[str, Any] | None) -> str:
     except Exception:
         logger.debug("plan-state resume block failed", exc_info=True)
         return ""
+
+
+def _maybe_negation_probe(
+    autonomy_state: Mapping[str, Any] | None,
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> None:
+    """Deterministic feasibility trigger (specs 5d): probe ¬P after repeated
+    genuine failures at the budget-exhaustion path. Flag-gated, budgeted per
+    theorem inside the probe, and fully fenced — scratch-only, never a
+    verdict authority, never fatal to the run."""
+    if not negation_probe.negation_probe_enabled():
+        return
+    if not target_symbol or not active_file or not isinstance(autonomy_state, dict):
+        return
+    try:
+        failures = _failed_attempt_count_for_theorem(
+            autonomy_state, target_symbol=target_symbol, active_file=active_file
+        )
+        if failures < negation_probe.probe_after_failures():
+            return
+        outcome = negation_probe.run_negation_probe(
+            active_file, target_symbol, cwd=_project_root(), trigger="budget-exhaustion"
+        )
+        _record_activity(
+            "negation-probe",
+            f"Negation probe for {target_symbol}: {outcome.get('verdict', 'unknown')}",
+            target_symbol=target_symbol,
+            active_file=active_file,
+            verdict=str(outcome.get("verdict", "") or ""),
+            plausible=dict(outcome.get("plausible") or {}),
+            plan_delta=list(outcome.get("plan_delta") or []),
+        )
+    except Exception:
+        logger.debug("negation probe failed", exc_info=True)
 
 
 def _budget_breakpoint_enabled() -> bool:
