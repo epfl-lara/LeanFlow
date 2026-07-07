@@ -12,7 +12,7 @@ resolving ``leanflow_cli.workflows.queue_manager.<name>``.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -25,6 +25,9 @@ DEFAULT_FAILED_ATTEMPT_HISTORY = 10
 DEFAULT_REASONING_ESCALATION_THRESHOLD = 5
 DEFAULT_WARNING_RETRY_LIMIT = 1
 DEFAULT_HARD_RETRY_LIMIT = 2
+# Post-edit gates are cheap inner-loop checks, so they get a much longer leash
+# than final-report gates (native_runner.MANAGER_POST_EDIT_HARD_RETRY_LIMIT).
+DEFAULT_POST_EDIT_HARD_RETRY_LIMIT = 8
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +275,34 @@ class ManagerCheck:
     raw_messages: tuple[str, ...] = ()  # unstructured fallback (lake stderr etc.)
 
 
+class DecisionSource(str, Enum):
+    """Which production gate is asking for a verdict.
+
+    The retry policy is deliberately source-dependent (final-report retries are
+    full turns, post-edit retries are cheap inner-loop checks, verification-tool
+    results consume nothing) — encoding the source keeps ``decide()`` able to
+    reproduce every legacy branch byte-for-byte.
+    """
+
+    FINAL_REPORT = "final_report"
+    POST_EDIT = "post_edit"  # patch / write_file / apply_verified_patch trigger
+    VERIFICATION_RESULT = "verification_result"  # lean_verify / incremental / terminal
+    LIVE_STATE = "live_state"  # synthetic evidence from the live-state probe
+    BUDGET_EXHAUSTION = "budget_exhaustion"
+
+
+@dataclass(frozen=True)
+class DecisionContext:
+    """Everything one manager gate knows, source-tagged for ``decide()``."""
+
+    source: DecisionSource
+    check: ManagerCheck
+    signature: str = ""  # retry-idempotency signature ("" = consume unconditionally)
+    cleanup_reason: str = ""  # local warning-cleanup reason ("" = none)
+    axiom_blockers: tuple[str, ...] = ()  # forbidden-axiom dependencies (vetoes accept)
+    claims_success: bool = True  # final-report success-claim regex gate result
+
+
 @dataclass(frozen=True)
 class FailedAttempt:
     key: TheoremKey
@@ -367,3 +398,22 @@ def classify_check(check: ManagerCheck) -> Classification:
         # other declarations; spec calls this FUTURE_ONLY.
         return Classification.FUTURE_ONLY
     return Classification.ACCEPT
+
+
+def _fold_cleanup_reason(check: ManagerCheck, cleanup_reason: str) -> ManagerCheck:
+    """OR a local-cleanup reason into the check's evidence flags.
+
+    Mirrors the legacy ``local_cleanup_reason`` routing inside
+    ``_manager_check_for_feedback_kind`` (sorry-wording -> assigned sorry;
+    error-wording -> assigned error; anything else -> assigned warning).
+    OR-idempotent, so it is safe whether or not the caller already encoded
+    the reason into the check.
+    """
+    lowered = str(cleanup_reason or "").strip().lower()
+    if not lowered:
+        return check
+    if "sorry" in lowered:
+        return replace(check, has_assigned_sorry=True)
+    if any(token in lowered for token in ("error", "unsolved", "failed")):
+        return replace(check, has_assigned_error=True)
+    return replace(check, has_assigned_warning=True)

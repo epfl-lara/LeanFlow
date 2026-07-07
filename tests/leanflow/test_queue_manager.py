@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from leanflow_cli.workflows.queue_manager import (
     Classification,
+    DecisionContext,
+    DecisionSource,
     ManagerCheck,
     PrepareState,
     QueueInvariantError,
@@ -50,14 +52,27 @@ def test_warning_cleanup_is_consumed_once_per_assignment(tmp_path) -> None:
     mgr = TheoremQueueManager(warning_retry_limit=1)
     mgr.assign(QueueItem(label="demo", reasons=("contains sorry",)), active_file=str(active))
 
-    first = mgr.decide(ManagerCheck(has_assigned_warning=True))
-    second = mgr.decide(ManagerCheck(has_assigned_warning=True))
+    first_ctx = DecisionContext(
+        source=DecisionSource.FINAL_REPORT, check=ManagerCheck(has_assigned_warning=True)
+    )
+    first = mgr.apply_decision(first_ctx, mgr.decide(first_ctx))
+    second_ctx = DecisionContext(
+        source=DecisionSource.FINAL_REPORT, check=ManagerCheck(has_assigned_warning=True)
+    )
+    second = mgr.decide(second_ctx)
 
     assert first.action == "continue_same_theorem"
     assert first.classification is Classification.WARNING_ONCE
+    assert first.feedback_kind == "warning"
+    assert first.retry_count == 1
     assert second.action == "advance_queue"
     assert second.classification is Classification.ACCEPT
+    assert second.accepted_after_warning_limit is True
     assert mgr.warning_retries_for_current() == 1
+
+    # Committing the accept clears the retry bookkeeping (legacy runner behavior).
+    mgr.apply_decision(second_ctx, second)
+    assert mgr.warning_retries_for_current() == 0
 
 
 def test_retry_signatures_are_idempotent_and_serialized(tmp_path) -> None:

@@ -39,7 +39,7 @@ class only owns the *bookkeeping* and the invariant checks.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
 # ---------------------------------------------------------------------------
@@ -50,9 +50,12 @@ from typing import Any, ClassVar
 from leanflow_cli.workflows.queue_models import (  # noqa: E402
     DEFAULT_FAILED_ATTEMPT_HISTORY,
     DEFAULT_HARD_RETRY_LIMIT,
+    DEFAULT_POST_EDIT_HARD_RETRY_LIMIT,
     DEFAULT_REASONING_ESCALATION_THRESHOLD,
     DEFAULT_WARNING_RETRY_LIMIT,
     Classification,
+    DecisionContext,
+    DecisionSource,
     FailedAttempt,
     ManagerCheck,
     PrepareState,
@@ -63,6 +66,7 @@ from leanflow_cli.workflows.queue_models import (  # noqa: E402
     Transition,
     VerificationRecord,
     VerificationScope,  # noqa: F401
+    _fold_cleanup_reason,
     _normalize_path,
     classify_check,
     select_next_item,
@@ -114,6 +118,7 @@ class TheoremQueueManager:
         *,
         warning_retry_limit: int = DEFAULT_WARNING_RETRY_LIMIT,
         hard_retry_limit: int = DEFAULT_HARD_RETRY_LIMIT,
+        post_edit_hard_retry_limit: int = DEFAULT_POST_EDIT_HARD_RETRY_LIMIT,
         failed_attempt_history: int = DEFAULT_FAILED_ATTEMPT_HISTORY,
         reasoning_escalation_threshold: int = DEFAULT_REASONING_ESCALATION_THRESHOLD,
     ) -> None:
@@ -132,6 +137,7 @@ class TheoremQueueManager:
 
         self._warning_retry_limit = warning_retry_limit
         self._hard_retry_limit = hard_retry_limit
+        self._post_edit_hard_retry_limit = post_edit_hard_retry_limit
         self._failed_attempt_history = failed_attempt_history
         self._reasoning_escalation_threshold = reasoning_escalation_threshold
 
@@ -481,41 +487,128 @@ class TheoremQueueManager:
     def classify(self, check: ManagerCheck) -> Classification:
         return classify_check(check)
 
-    def decide(self, check: ManagerCheck) -> Decision:
-        """High-level branch policy for one manager gate.
+    def _hard_retry_limit_for(self, source: DecisionSource) -> int:
+        """Source-dependent hard-retry limits — legacy drift D2, kept as data.
+
+        Final-report retries are full turns (limit 2); post-edit retries are
+        cheap inner-loop checks (limit 8); verification-tool results consume
+        nothing (0 = no consumption, no exhaustion). Harmonizing these is an
+        owner-approved follow-up, not Phase 0.
+        """
+        if source is DecisionSource.FINAL_REPORT:
+            return self._hard_retry_limit
+        if source is DecisionSource.POST_EDIT:
+            return self._post_edit_hard_retry_limit
+        return 0
+
+    def _signature_already_consumed(self, key: TheoremKey, bucket: str, signature: str) -> bool:
+        return bool(signature) and signature in self._retry_signatures.get((key, bucket), [])
+
+    def decide(self, ctx: DecisionContext) -> Decision:
+        """Pure verdict policy for one manager gate — reads, never mutates.
 
         This is where the spec's step 7 ("Branch on the classification")
-        lives in one place. The runner just calls ``decide(...)`` and follows
-        the returned action; today this logic is open-coded across
-        ``_review_agent_final_report``, ``_manager_gate_for_queue_verification``,
-        and the budget-exhaustion path, which is why they can disagree.
+        lives in one place. The runner calls ``decide(...)``, renders the
+        returned plan (messages, prints, activity), and commits its retry
+        side effects via :meth:`apply_decision`; file restores and attempt
+        recording stay runner-owned I/O, driven by the Decision fields.
+        Purity makes shadow-compare safe: evaluating a legacy gate in shadow
+        must never corrupt production retry counters.
         """
+        check = _fold_cleanup_reason(ctx.check, ctx.cleanup_reason)
         cls = self.classify(check)
+        if ctx.axiom_blockers:
+            # Axiom-dependency veto (legacy Path A): a kernel-accepted proof
+            # leaning on forbidden axioms is a hard blocker, never an accept.
+            # (In production the veto only fires on otherwise-clean checks.)
+            cls = Classification.HARD_BLOCKER
+        key = self._current.key if self._current is not None else None
+
         if cls is Classification.HARD_BLOCKER:
-            count = self.consume_hard_retry()
-            if count >= self._hard_retry_limit:
+            feedback_kind = "sorry" if check.has_assigned_sorry else "error"
+            if ctx.source is DecisionSource.BUDGET_EXHAUSTION:
+                return Decision(
+                    action="restore_baseline",
+                    classification=cls,
+                    reason="api step budget exhausted while blocked; restore baseline sorry",
+                    feedback_kind=feedback_kind,
+                    record_failed_attempt=True,
+                    restore_baseline=True,
+                )
+            if ctx.source is DecisionSource.LIVE_STATE:
+                return Decision(
+                    action="continue_same_theorem",
+                    classification=cls,
+                    reason="assignment still blocked per live state",
+                    feedback_kind=feedback_kind,
+                )
+            limit = self._hard_retry_limit_for(ctx.source)
+            count = self.retry_count_for(key, "hard") if key is not None else 0
+            if limit and count >= limit:
+                # Exhaustion is judged on the PRE-consumption count (pinned by
+                # the boundary characterization tests).
                 return Decision(
                     action="restore_baseline",
                     classification=cls,
                     reason="hard retry limit reached; restore baseline sorry and continue",
+                    feedback_kind=feedback_kind,
+                    retry_count=count,
+                    retry_limit=limit,
+                    restore_baseline=True,
                 )
+            consume = "hard" if limit else ""
+            after = count
+            if consume and key is not None:
+                if not self._signature_already_consumed(key, "hard", ctx.signature):
+                    after = count + 1
             return Decision(
                 action="continue_same_theorem",
                 classification=cls,
                 reason="hard blocker; record failed attempt and feed manager note",
+                feedback_kind=feedback_kind,
+                consume_retry=consume,
+                retry_count=after,
+                retry_limit=limit,
+                record_failed_attempt=ctx.source
+                in (DecisionSource.POST_EDIT, DecisionSource.VERIFICATION_RESULT),
             )
         if cls is Classification.WARNING_ONCE:
-            if self.warning_retry_exhausted():
+            if ctx.source in (DecisionSource.LIVE_STATE, DecisionSource.BUDGET_EXHAUSTION):
+                # Predicate-only sources: warning evidence never blocked the
+                # legacy live-state probe and never triggers a budget restore;
+                # they neither own nor consume the warning-cleanup window.
+                return Decision(
+                    action="advance_queue",
+                    classification=cls,
+                    reason="warning-only evidence; assignment not blocked",
+                    feedback_kind="warning",
+                )
+            limit = self._warning_retry_limit
+            count = self.retry_count_for(key, "warning") if key is not None else 0
+            if count >= limit:
+                # Opportunity already spent: accept (exhaustion is judged
+                # BEFORE consuming — the inverse of the hard-blocker order).
                 return Decision(
                     action="advance_queue",
                     classification=Classification.ACCEPT,
                     reason="warning-cleanup opportunity already spent; accept",
+                    retry_count=count,
+                    retry_limit=limit,
+                    accepted_after_warning_limit=True,
                 )
-            self.consume_warning_retry()
+            after = count
+            if key is not None and not self._signature_already_consumed(
+                key, "warning", ctx.signature
+            ):
+                after = count + 1
             return Decision(
                 action="continue_same_theorem",
                 classification=cls,
                 reason="grant the one focused warning-cleanup opportunity",
+                feedback_kind="warning",
+                consume_retry="warning",
+                retry_count=after,
+                retry_limit=limit,
             )
         if cls is Classification.FUTURE_ONLY:
             return Decision(
@@ -529,6 +622,27 @@ class TheoremQueueManager:
             classification=cls,
             reason="assigned declaration clean and no warnings",
         )
+
+    def apply_decision(self, ctx: DecisionContext, decision: Decision) -> Decision:
+        """Commit a decision's retry side effects to this manager.
+
+        Consumes the planned retry idempotently by ``ctx.signature`` and
+        clears retry bookkeeping when the queue advances (accept). File
+        restores and failed-attempt recording stay runner-owned (I/O).
+        Returns the decision with ``retry_count`` reflecting the committed
+        counter value.
+        """
+        if self._current is None:
+            return decision
+        key = self._current.key
+        if decision.consume_retry:
+            count = self.consume_retry_once_for(
+                key, kind=decision.consume_retry, signature=ctx.signature
+            )
+            decision = replace(decision, retry_count=count)
+        if decision.action == "advance_queue":
+            self.clear_retries_for(key)
+        return decision
 
     # ----- verification record -----------------------------------------
 
@@ -880,11 +994,25 @@ class TheoremQueueManager:
 
 @dataclass(frozen=True)
 class Decision:
-    """Result of :meth:`TheoremQueueManager.decide`."""
+    """Result of :meth:`TheoremQueueManager.decide` — the action plus the
+    side-effect plan (retry to consume, attempt to record, restore to run).
 
-    action: str  # "continue_same_theorem" | "advance_queue" | "restore_baseline"
+    ``decide()`` is pure; :meth:`TheoremQueueManager.apply_decision` commits
+    the retry plan, and the runner performs the I/O the flags call for.
+    """
+
+    # "continue_same_theorem" | "advance_queue" | "restore_baseline" |
+    # "budget_breakpoint" (Phase 1 flag-gated hook; unused while flags are off)
+    action: str
     classification: Classification
     reason: str
+    feedback_kind: str = ""  # legacy adapter string: "sorry" | "error" | "warning" | ""
+    consume_retry: str = ""  # "" | "warning" | "hard" — what apply_decision() consumes
+    retry_count: int = 0  # count AFTER the pending consumption (for prompt rendering)
+    retry_limit: int = 0  # source-dependent limit (drift D2 encoded as data)
+    record_failed_attempt: bool = False  # runner records via _remember_failed_attempt
+    accepted_after_warning_limit: bool = False  # legacy wording preserved
+    restore_baseline: bool = False  # runner restores the baseline `sorry` slice
 
     def advances_queue(self) -> bool:
         return self.action == "advance_queue"
