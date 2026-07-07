@@ -47,6 +47,7 @@ from leanflow_cli.workflows import (
     decomposer,
     final_report,
     manager_nudge,
+    orchestrator_llm,
     plan_state,
     struggle_signals,
 )
@@ -10107,6 +10108,15 @@ def _orchestrator_consult(
             research_mode=_research_mode_enabled(),
         )
         route = orchestrator_floor.orchestrator_route(ctx)
+        llm_note = ""
+        if orchestrator_llm.orchestrator_llm_enabled():
+            plan_md_text = ""
+            if ctx.research_mode and plan_state_enabled():
+                with contextlib.suppress(Exception):
+                    plan_md_text = plan_state.plan_state_paths().plan_md.read_text(encoding="utf-8")
+            upgraded, llm_note = orchestrator_llm.llm_route(ctx, route, plan_md_text=plan_md_text)
+            if upgraded is not None:
+                route = upgraded
         if route.route != "direct-prove":
             autonomy_state["orchestrator_routes_used"] = (
                 int(autonomy_state.get("orchestrator_routes_used", 0) or 0) + 1
@@ -10118,10 +10128,23 @@ def _orchestrator_consult(
             route=route.route,
             reason=route.reason,
             source=route.source,
+            llm_note=llm_note,
             target_symbol=ctx.target_symbol,
             active_file=ctx.active_file,
             routes_used=int(autonomy_state.get("orchestrator_routes_used", 0) or 0),
         )
+        with contextlib.suppress(Exception):
+            # Route history in the lab notebook (feeds the scope-exit report).
+            plan_state.append_journal_event(
+                {
+                    "event": "orchestrator-route",
+                    "trigger": trigger,
+                    "route": route.route,
+                    "reason": route.reason,
+                    "source": route.source,
+                    "name": ctx.target_symbol,
+                }
+            )
         autonomy_state["_orchestrator_last_ctx"] = {
             "target_symbol": ctx.target_symbol,
             "active_file": ctx.active_file,

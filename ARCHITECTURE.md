@@ -277,6 +277,16 @@ patch/monkeypatch surface tests rely on while moving the logic out.
   snapshot + the ordered route table that turns stalls/breakpoints/retry exhaustion into
   routes (`direct-prove`/`decompose`/`plan`/`negate`/`park`/`re-state`/`escalate`); the
   LLM routing layer stays off until Phase 6.
+- `orchestrator_llm.py` — Phase 4 §4.4 LLM routing layer PLUMBING (dark until Phase 6,
+  `LEANFLOW_ORCHESTRATOR_LLM_ENABLED`): prompt composition over `RouteContext` + the floor's
+  proposal (full `plan.md` rides along only in research mode), a fence-tolerant strict-vocabulary
+  decision parser (LLM vocabulary excludes `ask-human` — that is the runtime's own conversion),
+  and `llm_route()` with the upgrade-only rule — the LLM may refine the floor's route but a
+  park/escalate answer against a non-terminal floor is rejected, and a protected floor
+  (park/escalate/ask-human) is LLM-immutable: the consult is skipped outright. Every failure mode (flag
+  off, provider down, unparseable) keeps the deterministic floor authoritative. Provider routing
+  comes from `auxiliary.orchestration` (default: the strong main-agent model, no fallback
+  inheritance).
 - `plan_state.py` — Phase 1 living plan-state substrate behind `LEANFLOW_PLAN_STATE`
   (default off): the dependency graph `blueprint.json` (frontier / OR-route / kernel-truth
   status rules), `summary.json`, the `plan.md` render with a preserved Notes tail, the

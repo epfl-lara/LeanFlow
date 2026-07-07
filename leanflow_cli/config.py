@@ -75,6 +75,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "codex_command_template": "",
             "claude_code_command_template": "",
         },
+        "orchestration": {
+            "provider": "main",
+            "model": "",
+            "reasoning_effort": "",
+            "base_url": "",
+            "api_key": "",
+            "command_template": "",
+            "codex_command_template": "",
+            "claude_code_command_template": "",
+        },
         "blueprint_verification": {
             "provider": "main",
             "model": "",
@@ -164,6 +174,13 @@ DEFAULT_CONFIG_HEADER = """# LeanFlow configuration
 #   when the useful next step is splitting a hard theorem into helper lemmas.
 #   Empty values inherit auxiliary.lean_reasoning, so you can leave this blank
 #   until you want a separate decomposition-planner model/provider.
+#
+# Orchestrator routing turn:
+#   auxiliary.orchestration is used by the LLM routing layer over the
+#   deterministic orchestrator floor (dark until LEANFLOW_ORCHESTRATOR_LLM_ENABLED
+#   flips). The default (`provider: main`, empty model) means the strong
+#   main-agent model decides routing; set auxiliary.orchestration.model to
+#   pin a different one.
 #
 # Formalization verifiers:
 #   auxiliary.blueprint_verification controls the independent statement/source

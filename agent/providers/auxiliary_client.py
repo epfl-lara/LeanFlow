@@ -69,6 +69,9 @@ NOUS_EXTRA_BODY = {"tags": ["product=leanflow-agent"]}
 # Set at resolve time — True if the auxiliary client points to Nous Portal
 auxiliary_is_nous: bool = False
 
+# NOTE: no fallback for "orchestration" — its D1 default is the STRONG
+# main-agent model (provider "main", model ""), and a lean_reasoning
+# fallback would silently inherit the advisor model into that slot.
 _AUXILIARY_TASK_FALLBACKS: dict[str, str] = {
     "lean_decompose_helpers": "lean_reasoning",
 }

@@ -14,6 +14,7 @@ it can never turn a clean stop into a crash.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -122,6 +123,74 @@ def _theorem_ledger_lines(autonomy_state: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _graph_sections() -> tuple[list[str], list[str]]:
+    """(graph inventory, ranked open subgoals) from the dependency graph.
+
+    Ranked = frontier-ready first (stated/audited, dependencies proved),
+    then waiting-on-dependencies, then blocked/parked with their notes —
+    the §4.12 'open subgoals ranked · recommended next attack' input.
+    Empty lists when plan-state is off or the graph is empty.
+    """
+    from leanflow_cli.workflows import plan_state
+
+    if not plan_state.plan_state_enabled():
+        return [], []
+    try:
+        bp = plan_state.load_blueprint()
+    except Exception:
+        return [], []
+    if not bp.nodes:
+        return [], []
+    inventory: list[str] = []
+    for status in ("proved", "false", "parked"):
+        names = [f"`{n.name}` ({n.file})" for n in bp.nodes if n.status == status and n.name]
+        if names:
+            inventory.append(f"- {status}: " + ", ".join(names))
+    frontier_ids = {node.id for node in bp.frontier()}
+    ranked: list[tuple[int, str]] = []
+    for node in bp.nodes:
+        if not node.name:
+            continue
+        if node.id in frontier_ids:
+            ranked.append((0, f"- READY `{node.name}` ({node.file})"))
+        elif node.status in {"stated", "audited", "conjectured", "proving"}:
+            ranked.append((1, f"- waiting `{node.name}` [{node.status}] ({node.file})"))
+        elif node.status in {"blocked", "parked"}:
+            note = f" — {node.notes}" if node.notes else ""
+            ranked.append((2, f"- {node.status} `{node.name}` ({node.file}){note}"))
+    ranked.sort(key=lambda pair: pair[0])
+    return inventory, [line for _rank, line in ranked[:25]]
+
+
+def _route_history_lines(limit: int = 20) -> list[str]:
+    """Orchestrator route history from journal.jsonl (the lab notebook)."""
+    from leanflow_cli.workflows import plan_state
+
+    if not plan_state.plan_state_enabled():
+        return []
+    try:
+        journal = plan_state.plan_state_paths().journal_jsonl
+        if not journal.is_file():
+            return []
+        entries: list[str] = []
+        for line in journal.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event") == "orchestrator-route":
+                entries.append(
+                    f"- {event.get('ts', '?')} [{event.get('trigger', '?')}] "
+                    f"{event.get('route', '?')} ({event.get('source', '?')}): "
+                    f"{_cell(event.get('reason', ''), 140)}"
+                )
+        return entries[-limit:]
+    except Exception:
+        return []
+
+
 def generate_final_report(
     *,
     stop_reason: str,
@@ -206,6 +275,16 @@ def generate_final_report(
         )
     else:
         lines.append("- none — every dispatched job reached a terminal state")
+    # §4.12 scope-exit additions (Phase 4): graph inventory, route history
+    # from the lab notebook, and the RANKED open-subgoal frontier.
+    graph_lines, subgoal_lines = _graph_sections()
+    if graph_lines:
+        lines.extend(["", "## Graph inventory", "", *graph_lines])
+    route_lines = _route_history_lines()
+    if route_lines:
+        lines.extend(["", "## Route history", "", *route_lines])
+    if subgoal_lines:
+        lines.extend(["", "## Open subgoals (ranked)", "", *subgoal_lines])
     lines.extend(["", "## Recommended next actions", ""])
     recommendations = []
     if counts["blocked"]:

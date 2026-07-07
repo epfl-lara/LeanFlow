@@ -186,3 +186,78 @@ def test_generation_failure_never_crashes_the_stop(state_root, monkeypatch):
     runner._maybe_generate_final_report("stalled", state, {})
 
     assert "final_report_written" not in state  # retryable on the next exit
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 §4.12: graph inventory + route history + ranked open subgoals
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def plan_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+
+
+def test_report_renders_graph_route_and_subgoal_sections(state_root, plan_dir):
+    from leanflow_cli.workflows import plan_state
+
+    file = "Demo.lean"
+
+    def node(name: str, status: str, notes: str = "") -> plan_state.GraphNode:
+        return plan_state.GraphNode(
+            id=plan_state.node_id_for(name, file), name=name, file=file, status=status, notes=notes
+        )
+
+    ready, done = node("ready_one", "stated"), node("done_one", "proved")
+    waiting, dep = node("waiting_one", "audited"), node("dep_one", "blocked")
+    parked = node("parked_one", "parked", notes="awaiting human")
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(ready, done, waiting, dep, parked, node("refuted_one", "false")),
+            edges=(plan_state.GraphEdge(source=waiting.id, target=dep.id, kind="depends_on"),),
+        )
+    )
+    plan_state.append_journal_event(
+        {
+            "event": "orchestrator-route",
+            "trigger": "stall",
+            "route": "decompose",
+            "reason": "search exhausted | on `hard`",
+            "source": "floor",
+            "name": "hard",
+        }
+    )
+    plan_state.append_journal_event({"event": "node-status", "id": ready.id})  # must not render
+
+    text = fr.generate_final_report(
+        stop_reason="stalled", autonomy_state=_autonomy_state(), live_state={}, run_id="prove-t2"
+    ).read_text(encoding="utf-8")
+
+    assert "## Graph inventory" in text
+    assert "- proved: `done_one` (Demo.lean)" in text
+    assert "- false: `refuted_one` (Demo.lean)" in text
+    assert "- parked: `parked_one` (Demo.lean)" in text
+
+    assert "## Route history" in text
+    assert "[stall] decompose (floor): search exhausted / on `hard`" in text
+    assert "node-status" not in text
+
+    assert "## Open subgoals (ranked)" in text
+    ready_pos = text.index("READY `ready_one`")
+    waiting_pos = text.index("waiting `waiting_one` [audited]")
+    parked_pos = text.index("parked `parked_one` (Demo.lean) — awaiting human")
+    assert ready_pos < waiting_pos < parked_pos
+    assert "blocked `dep_one`" in text
+    assert "`done_one`" not in text[text.index("## Open subgoals") :]
+
+
+def test_report_sections_absent_when_plan_state_off(state_root, monkeypatch):
+    monkeypatch.delenv("LEANFLOW_PLAN_STATE", raising=False)
+
+    text = fr.generate_final_report(
+        stop_reason="stalled", autonomy_state=_autonomy_state(), live_state={}, run_id="prove-t3"
+    ).read_text(encoding="utf-8")
+
+    for heading in ("## Graph inventory", "## Route history", "## Open subgoals (ranked)"):
+        assert heading not in text
