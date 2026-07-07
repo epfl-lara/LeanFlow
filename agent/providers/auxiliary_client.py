@@ -72,8 +72,12 @@ auxiliary_is_nous: bool = False
 # NOTE: no fallback for "orchestration" — its D1 default is the STRONG
 # main-agent model (provider "main", model ""), and a lean_reasoning
 # fallback would silently inherit the advisor model into that slot.
+# planner_synthesis -> orchestration is consistent with that rule: the
+# synthesizer inherits the strong-model default, never the advisor.
+# Keep in sync with TASK_FALLBACKS in leanflow_cli/cli/expert_help.py.
 _AUXILIARY_TASK_FALLBACKS: dict[str, str] = {
     "lean_decompose_helpers": "lean_reasoning",
+    "planner_synthesis": "orchestration",
 }
 
 # Default auxiliary models per provider

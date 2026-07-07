@@ -85,6 +85,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "codex_command_template": "",
             "claude_code_command_template": "",
         },
+        "planner_synthesis": {
+            "provider": "",
+            "model": "",
+            "reasoning_effort": "",
+            "base_url": "",
+            "api_key": "",
+            "command_template": "",
+            "codex_command_template": "",
+            "claude_code_command_template": "",
+        },
         "blueprint_verification": {
             "provider": "main",
             "model": "",
@@ -181,6 +191,9 @@ DEFAULT_CONFIG_HEADER = """# LeanFlow configuration
 #   flips). The default (`provider: main`, empty model) means the strong
 #   main-agent model decides routing; set auxiliary.orchestration.model to
 #   pin a different one.
+#   auxiliary.planner_synthesis is the planner-phase synthesizer turn
+#   (Phase 5, dark until LEANFLOW_PLANNER_ENABLED). Empty values inherit
+#   auxiliary.orchestration — i.e. the strong main-agent model by default.
 #
 # Formalization verifiers:
 #   auxiliary.blueprint_verification controls the independent statement/source

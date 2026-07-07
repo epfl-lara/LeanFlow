@@ -28,9 +28,10 @@ import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -533,6 +534,167 @@ def record_decision_packet(packet: Mapping[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Planner delta merge (Phase 5 §5.5)
+# ---------------------------------------------------------------------------
+
+#: Ceiling on nodes accepted from one delta — bounds runaway synthesizer output.
+DELTA_MAX_NODES = 24
+
+
+def _delta_ref(entry: Any, default_file: str) -> tuple[str, str]:
+    """Normalize a node reference: 'name' or {'name','file'} -> (name, file)."""
+    if isinstance(entry, Mapping):
+        return (
+            str(entry.get("name", "") or "").strip(),
+            str(entry.get("file", "") or "").strip() or default_file,
+        )
+    return str(entry or "").strip(), default_file
+
+
+def apply_delta(
+    bp: Blueprint, delta: Mapping[str, Any], *, generated_by: str = "planner"
+) -> tuple[Blueprint, list[dict[str, Any]]]:
+    """Merge a planner/synthesizer graph delta; returns (blueprint, changes).
+
+    Pure with respect to persistence (caller saves via ``save_blueprint``,
+    keeping the single-writer revision machinery intact); journal events are
+    appended here like every other graph mutation.
+
+    Kernel-truth rules: a delta node's status is DERIVED from its payload —
+    statement present => ``stated``, otherwise ``conjectured`` — and any
+    status the delta claims is ignored outright; an existing node NEVER
+    changes status through this path and keeps a non-empty statement — the
+    planner may only fill blanks. Edges are deduped, self-edges and
+    references to nodes outside the merged graph are dropped (reported in
+    changes).
+    """
+    changes: list[dict[str, Any]] = []
+    raw_nodes = [entry for entry in (delta.get("nodes") or []) if isinstance(entry, Mapping)]
+    if len(raw_nodes) > DELTA_MAX_NODES:
+        changes.append(
+            {"event": "plan-delta-truncated", "dropped_nodes": len(raw_nodes) - DELTA_MAX_NODES}
+        )
+        raw_nodes = raw_nodes[:DELTA_MAX_NODES]
+
+    goal = str(delta.get("goal", "") or "").strip()
+    if goal and not bp.goal:
+        bp = replace(bp, goal=goal)
+        changes.append({"event": "plan-delta-goal", "goal": goal[:200]})
+
+    pending_edges: list[tuple[str, str, str]] = []  # (source_id, target_id, kind)
+    for entry in raw_nodes:
+        name = str(entry.get("name", "") or "").strip()
+        file = str(entry.get("file", "") or "").strip()
+        if not name or not file:
+            changes.append({"event": "plan-delta-node-skipped", "reason": "missing name/file"})
+            continue
+        statement = str(entry.get("statement", "") or "").strip()
+        node_id = node_id_for(name, file)
+        existing = bp.node_by_id(node_id)
+        if existing is None:
+            # Status is DERIVED, never trusted: 'stated' is a claim that a
+            # formal statement exists (it makes the node frontier-eligible),
+            # so only an actual statement earns it.
+            status = "stated" if statement else "conjectured"
+            node = GraphNode(
+                id=node_id,
+                kind=str(entry.get("kind", "") or "").strip() or "lemma",
+                name=name,
+                file=file,
+                statement=statement,
+                status=status,
+                notes=str(entry.get("notes", "") or "").strip(),
+                generated_by=generated_by,
+            )
+            bp = bp.replace_node(node)
+            changes.append(
+                {"event": "node-created", "node_id": node_id, "name": name, "file": file}
+            )
+        else:
+            # Fill blanks only; status and non-empty statements are immutable here.
+            updated = replace(
+                existing,
+                statement=existing.statement or statement,
+                notes=existing.notes or str(entry.get("notes", "") or "").strip(),
+            )
+            if updated != existing:
+                bp = bp.replace_node(updated)
+                changes.append({"event": "plan-delta-node-filled", "node_id": node_id})
+        for dep in entry.get("depends_on") or []:
+            dep_name, dep_file = _delta_ref(dep, file)
+            if dep_name:
+                pending_edges.append((node_id, node_id_for(dep_name, dep_file), "depends_on"))
+        parent_name, parent_file = _delta_ref(entry.get("split_of"), file)
+        if parent_name:
+            pending_edges.append((node_id, node_id_for(parent_name, parent_file), "split_of"))
+
+    for entry in delta.get("edges") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        src_name, src_file = _delta_ref(entry.get("source") or entry.get("from"), "")
+        dst_name, dst_file = _delta_ref(entry.get("target") or entry.get("to"), "")
+        kind = str(entry.get("kind", "") or "").strip()
+        if src_name and src_file and dst_name and dst_file and kind in EDGE_KINDS:
+            pending_edges.append(
+                (node_id_for(src_name, src_file), node_id_for(dst_name, dst_file), kind)
+            )
+        else:
+            changes.append({"event": "plan-delta-edge-skipped", "reason": "unresolvable"})
+
+    known = {node.id for node in bp.nodes}
+    have = {(edge.source, edge.target, edge.kind) for edge in bp.edges}
+    added: list[GraphEdge] = []
+    for source_id, target_id, kind in pending_edges:
+        if source_id == target_id or (source_id, target_id, kind) in have:
+            continue
+        if source_id not in known or target_id not in known:
+            changes.append({"event": "plan-delta-edge-skipped", "reason": "unknown node"})
+            continue
+        added.append(GraphEdge(source=source_id, target=target_id, kind=kind))
+        have.add((source_id, target_id, kind))
+    if added:
+        bp = replace(bp, edges=(*bp.edges, *added))
+        changes.append({"event": "plan-delta-edges", "added": len(added)})
+
+    for change in changes:
+        append_journal_event({**change, "generated_by": generated_by})
+    return bp, changes
+
+
+#: Bounds for the prose summary keys the planner merge owns.
+_GROUNDING_CAP = 40
+_STRATEGY_CAP = 20
+
+
+def merge_planner_findings(
+    summary: Mapping[str, Any],
+    *,
+    grounding: Sequence[str] = (),
+    strategy: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Pure merge of synthesizer prose into the summary mapping.
+
+    Appends deduplicated one-liners to ``grounding_findings`` /
+    ``strategy_notes`` under hard caps (oldest kept — grounding is an
+    append-only lab record, not a rolling window).
+    """
+    merged = dict(summary)
+    for key, incoming, cap in (
+        ("grounding_findings", grounding, _GROUNDING_CAP),
+        ("strategy_notes", strategy, _STRATEGY_CAP),
+    ):
+        current = [str(item) for item in (merged.get(key) or [])]
+        seen = set(current)
+        for item in incoming:
+            text = " ".join(str(item or "").split())
+            if text and text not in seen:
+                current.append(text)
+                seen.add(text)
+        merged[key] = current[:cap]
+    return merged
+
+
+# ---------------------------------------------------------------------------
 # Reconciliation (P1.2, pure part)
 # ---------------------------------------------------------------------------
 
@@ -618,6 +780,16 @@ def _status_counts(bp: Blueprint) -> dict[str, int]:
     return {status: count for status, count in counts.items() if count}
 
 
+def _line(text: Any) -> str:
+    """One physical line: collapse ALL whitespace (incl. newlines).
+
+    Every caller-controlled string is rendered through this, so no goal /
+    note / packet field / report summary can fabricate a heading line and
+    hijack the '## Notes' tail anchor.
+    """
+    return " ".join(str(text or "").split())
+
+
 def render_plan_md(bp: Blueprint, summary: Mapping[str, Any]) -> str:
     """One-way render of the machine state (JSON is authority)."""
     counts = _status_counts(bp)
@@ -628,7 +800,7 @@ def render_plan_md(bp: Blueprint, summary: Mapping[str, Any]) -> str:
         "",
         "## Goal",
         "",
-        bp.goal or str(summary.get("goal", "") or "") or "[not set]",
+        _line(bp.goal) or _line(summary.get("goal", "")) or "[not set]",
         "",
         "## Current state",
         "",
@@ -637,18 +809,24 @@ def render_plan_md(bp: Blueprint, summary: Mapping[str, Any]) -> str:
             or "empty graph"
         ),
         "",
-        "## Frontier",
+        "## Strategy",
         "",
     ]
+    strategy = list(summary.get("strategy_notes") or [])
+    if strategy:
+        lines.extend(f"- {_line(note)}" for note in strategy[:20])
+    else:
+        lines.append("- [none yet]")
+    lines.extend(["", "## Frontier", ""])
     frontier = bp.frontier()
     if frontier:
-        lines.extend(f"- `{node.name}` ({node.file})" for node in frontier[:20])
+        lines.extend(f"- `{_line(node.name)}` ({_line(node.file)})" for node in frontier[:20])
     else:
         lines.append("- [empty]")
     lines.extend(["", "## Grounding", ""])
     findings = list(summary.get("grounding_findings") or [])
     if findings:
-        lines.extend(f"- {finding}" for finding in findings[:20])
+        lines.extend(f"- {_line(finding)}" for finding in findings[:20])
     else:
         lines.append("- [none yet]")
     lines.extend(["", "## Decision log", ""])
@@ -656,41 +834,51 @@ def render_plan_md(bp: Blueprint, summary: Mapping[str, Any]) -> str:
     if packets:
         for packet in packets[-10:]:
             lines.append(
-                f"- {packet.get('packet_id', '?')}: {packet.get('scope', '?')} "
-                f"`{packet.get('target_symbol', '?')}` -> "
-                f"{packet.get('decision') or 'undecided'}"
+                f"- {_line(packet.get('packet_id', '?'))}: {_line(packet.get('scope', '?'))} "
+                f"`{_line(packet.get('target_symbol', '?'))}` -> "
+                f"{_line(packet.get('decision')) or 'undecided'}"
             )
     else:
         lines.append("- [none]")
     lines.extend(["", "## Dead ends & proven false", ""])
     dead = [node for node in bp.nodes if node.status in {"false", "parked"}]
     if dead:
-        lines.extend(f"- `{node.name}` [{node.status}] ({node.file})" for node in dead)
+        lines.extend(
+            f"- `{_line(node.name)}` [{node.status}] ({_line(node.file)})" for node in dead
+        )
     else:
         lines.append("- [none]")
     lines.extend(["", "## Final report", ""])
     final_report = dict(summary.get("final_report") or {})
     if final_report:
-        lines.append(f"- status: {final_report.get('status', 'in-progress')}")
+        lines.append(f"- status: {_line(final_report.get('status', 'in-progress'))}")
         if final_report.get("summary"):
-            lines.append(f"- summary: {final_report['summary']}")
+            lines.append(f"- summary: {_line(final_report['summary'])}")
     else:
         lines.append("- status: in-progress")
     lines.append("")
     return "\n".join(lines)
 
 
+_NOTES_HEADING_RE = re.compile(r"(?m)^## Notes[ \t]*$")
+
+
 def save_plan_md(bp: Blueprint, summary: Mapping[str, Any]) -> None:
-    """Regenerate plan.md, preserving the free-form '## Notes' tail verbatim."""
+    """Regenerate plan.md, preserving the free-form '## Notes' tail verbatim.
+
+    The tail anchor is a line-start heading match — '## Notes' appearing
+    INSIDE rendered prose (every prose line renders with a '- ' prefix) can
+    never hijack the tail boundary.
+    """
     if not plan_state_enabled():
         return
     path = plan_state_paths().plan_md
     notes_tail = f"{_NOTES_HEADING}\n\n[free-form notes below survive regeneration]\n"
     if path.is_file():
         existing = path.read_text(encoding="utf-8")
-        marker_index = existing.find(_NOTES_HEADING)
-        if marker_index >= 0:
-            notes_tail = existing[marker_index:]
+        match = _NOTES_HEADING_RE.search(existing)
+        if match:
+            notes_tail = existing[match.start() :]
     _atomic_write_text(path, render_plan_md(bp, summary) + "\n" + notes_tail)
 
 

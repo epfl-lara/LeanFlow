@@ -31,8 +31,10 @@ DEFAULT_COMMAND_TEMPLATES = {
     "claude-code": "claude --print --permission-mode plan --tools '' --no-session-persistence",
 }
 
+# Keep in sync with _AUXILIARY_TASK_FALLBACKS in agent/providers/auxiliary_client.py.
 TASK_FALLBACKS = {
     "lean_decompose_helpers": "lean_reasoning",
+    "planner_synthesis": "orchestration",
 }
 
 

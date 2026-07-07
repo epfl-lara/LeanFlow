@@ -291,7 +291,11 @@ patch/monkeypatch surface tests rely on while moving the logic out.
   (default off): the dependency graph `blueprint.json` (frontier / OR-route / kernel-truth
   status rules), `summary.json`, the `plan.md` render with a preserved Notes tail, the
   append-only `journal.jsonl` lab notebook, the `reconcile()` anti-drift pass, decision-packet
-  persistence, and the artifact prompt blocks the runner injects.
+  persistence, and the artifact prompt blocks the runner injects. Phase 5 adds `apply_delta`
+  (the planner's ONLY door into the graph: nodes enter conjectured/stated only, existing
+  statuses/statements immutable, edges validated + deduped, pure w.r.t. persistence) and
+  `merge_planner_findings` (capped deduped `grounding_findings`/`strategy_notes` prose keys;
+  `## Strategy` joins the plan.md render).
 - `struggle_signals.py` + `manager_nudge.py` — Phase 2: the pure struggle-signal classifier
   and the advisory, struggle-triggered LLM-manager (modes off/dark/live via
   `LEANFLOW_MANAGER_LLM_MODE`; dark-launch log in `summary.json.manager_nudges`).
