@@ -314,6 +314,17 @@ patch/monkeypatch surface tests rely on while moving the logic out.
   child's lifetime, a synchronous wall-clock wait with SIGINT→terminate→kill escalation, and
   the PARENT's own kernel gate (`decl_verdicts`: present + sorry-free + zero-error
   `lean_incremental_check`) as the only source of `proved` on the graph.
+- `learnings.py` — Phase 5 cross-run knowledge (dark behind `LEANFLOW_LEARNINGS`): every
+  terminal scope exit — verified included, independent of the final-report flag — appends one
+  compact sanitized entry (outcomes, THIS run's route history from its activity stream, top
+  blockers) to a rolling `learnings.md` (locked, atomic), and the next run's scope entry gets
+  the newest entries as priors. The priors READER enforces structure (only `## `/`- ` lines
+  pass, capped) so hostile or hand-edited content cannot fabricate prompt structure — prompt
+  fuel only, never a verdict source. Companion: `LEANFLOW_CURRICULUM_ORDERING` (easy→hard
+  tie-break within a frontier rank via statement length — the all-or-nothing `order_key`
+  option on `select_next_item`, which can never override the diagnostic-first bucket or the
+  frontier ranks). Fire-and-continue deep-search deliberately waits for Phase 6: the delegate
+  backend's stdout redirection is not thread-safe yet, and dispatch has no production driver.
 - `multi_direction.py` — Phase 5 §5.8 multi-direction proving (N4): rival attack directions
   from direction-tagged `statements_to_state` become sibling stub FILES (goal-file import
   header + shape-guarded stubs, all-or-nothing validation, never clobbered), each discharged

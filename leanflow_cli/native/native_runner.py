@@ -46,6 +46,7 @@ from leanflow_cli.runtime.skill_core import load_skill
 from leanflow_cli.workflows import (
     decomposer,
     final_report,
+    learnings,
     manager_nudge,
     multi_direction,
     orchestrator_llm,
@@ -6681,7 +6682,10 @@ def _build_live_proof_state(
     if document_handoff_blocked:
         declaration_queue = []
     current_queue_item = _current_queue_item(
-        declaration_queue, active_file, precedence=_graph_frontier_precedence()
+        declaration_queue,
+        active_file,
+        precedence=_graph_frontier_precedence(),
+        order_key=_curriculum_order_key(),
     )
     current_queue_label = str((current_queue_item or {}).get("label", "") or "").strip()
     queue_needs_final_file_sweep = (
@@ -8843,6 +8847,7 @@ def _run_background_control_loop(
                         )
                     )
                     if _live_state_is_verified(live_state):
+                        _maybe_record_learnings("verified", autonomy_state)
                         _terminate_descendant_agents(agent)
                         _terminate_other_agents(agent)
                         _persist_live_status(
@@ -9073,6 +9078,10 @@ def _startup_user_message(
     plan_context = artifact_context_block()
     if plan_context:
         plan_block = f"\n\n{plan_context}"
+    with contextlib.suppress(Exception):
+        priors = learnings.scope_entry_priors_block()
+        if priors:
+            plan_block += f"\n\n{priors}"
     swarm_block = ""
     if _swarm_enabled():
         swarm_block = (
@@ -9810,6 +9819,35 @@ def _maybe_negation_probe(
         logger.debug("negation probe failed", exc_info=True)
 
 
+def _maybe_record_learnings(stop_reason: str, autonomy_state: Any) -> None:
+    """Cross-run learnings for EVERY terminal exit (Phase 5, dark).
+
+    Independent of the final-report flag/outcome: disabling reports must
+    not silently disable learnings, and verified exits contribute too.
+    Idempotent per run; fail-open.
+    """
+    if stop_reason not in {
+        "stalled",
+        "blocked",
+        "budget-breakpoint",
+        "failed",
+        "parked",
+        "disproved",
+        "verified",
+        "formalization-prover-handoff-ready",
+    }:
+        return
+    if not isinstance(autonomy_state, dict) or autonomy_state.get("learnings_written"):
+        return
+    with contextlib.suppress(Exception):
+        learnings.record_scope_learnings(
+            run_id=_read_text_env("LEANFLOW_WORKFLOW_RUN_ID", "") or "run",
+            stop_reason=stop_reason,
+            autonomy_state=autonomy_state,
+        )
+        autonomy_state["learnings_written"] = True
+
+
 def _maybe_generate_final_report(
     stop_reason: str,
     autonomy_state: Mapping[str, Any] | None,
@@ -9820,6 +9858,7 @@ def _maybe_generate_final_report(
     is deliberately NOT a scope end — the run resumes and N1 applies when it
     actually terminates. Idempotent per run, fail-open — the generator can
     never turn a clean stop into a crash."""
+    _maybe_record_learnings(stop_reason, autonomy_state)
     if stop_reason not in {
         "stalled",
         "blocked",
@@ -9855,6 +9894,32 @@ def _maybe_generate_final_report(
 def _graph_frontier_selection_enabled() -> bool:
     raw = _read_text_env("LEANFLOW_GRAPH_FRONTIER_SELECTION", "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _curriculum_order_key() -> Callable[[str], Any] | None:
+    """Easy->hard tie-break within a frontier rank (Phase 5, dark).
+
+    Behind LEANFLOW_CURRICULUM_ORDERING (default off): shorter stated
+    statements first — the cheap difficulty proxy the LeanAgent/AlphaProof
+    evidence supports — with unknown labels sorting last. Never overrides
+    the diagnostic-first bucket rule or the frontier ranks.
+    """
+    raw = _read_text_env("LEANFLOW_CURRICULUM_ORDERING", "0").strip().lower()
+    if raw not in {"1", "true", "yes", "on"} or not plan_state_enabled():
+        return None
+    try:
+        lengths = {
+            node.name: len(node.statement) if node.statement else 1_000_000
+            for node in plan_state.load_blueprint().nodes
+            if node.name
+        }
+    except Exception:
+        return None
+
+    def order_key(label: str) -> int:
+        return lengths.get(str(label), 1_000_000)
+
+    return order_key
 
 
 def _graph_frontier_precedence() -> Callable[[str], int] | None:
@@ -11086,6 +11151,7 @@ def main() -> int:
             checkpoint_state = _journal_status()
             live_state = _build_live_proof_state_compat(history, checkpoint_state, autonomy_state)
             _record_managed_conversation_failure(result, phase="startup")
+            _maybe_record_learnings("failed", autonomy_state)
             _persist_live_status(
                 history, compaction_state, checkpoint_state, live_state, phase="failed"
             )
@@ -11132,6 +11198,7 @@ def main() -> int:
                 autonomy_state,
             )
         if _verified_workflow_should_exit_without_prompt(live_state):
+            _maybe_record_learnings("verified", autonomy_state)
             _terminate_descendant_agents(agent)
             _terminate_other_agents(agent)
             _persist_live_status(
@@ -11145,6 +11212,7 @@ def main() -> int:
             return 0
         if not _native_interactive_enabled():
             if _live_state_is_verified(live_state):
+                _maybe_record_learnings("verified", autonomy_state)
                 _terminate_descendant_agents(agent)
                 _terminate_other_agents(agent)
                 _persist_live_status(

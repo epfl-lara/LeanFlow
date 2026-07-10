@@ -349,6 +349,7 @@ def select_next_item(
     *,
     is_present_in_file: Callable[[str], bool],
     precedence: Callable[[str], int] | None = None,
+    order_key: Callable[[str], Any] | None = None,
 ) -> QueueItem | None:
     """Spec rule (line 519 of product-reference): error diagnostics first,
     then ``sorry`` placeholders, then nothing else.
@@ -369,10 +370,15 @@ def select_next_item(
     better-ranked candidate exists somewhere, so a queue of only avoided
     items still proves rather than falsely final-sweeping. ``None`` is the
     byte-identical legacy path.
+
+    Phase 5 curriculum option: ``order_key`` breaks ties WITHIN the best
+    precedence rank of a bucket (easy->hard ordering — smaller keys first);
+    it can never override the bucket rule or the precedence ranks, and
+    ``None`` keeps the stable file-order tie-break.
     """
     if not queue:
         return None
-    if precedence is None:
+    if precedence is None and order_key is None:
         for item in queue:
             if item.label and is_present_in_file(item.label) and item.has_diagnostic_reason():
                 return item
@@ -380,10 +386,13 @@ def select_next_item(
             if item.label and is_present_in_file(item.label) and item.has_sorry_reason():
                 return item
         return None
+    rank_fn = precedence
 
     def _rank(item: QueueItem) -> int:
+        if rank_fn is None:
+            return 1  # uniform rank; order_key decides the ties
         try:
-            return int(precedence(item.label))
+            return int(rank_fn(item.label))
         except Exception:
             return 1
 
@@ -399,6 +408,24 @@ def select_next_item(
     ]
     ranks = {id(item): _rank(item) for item in (*diagnostic, *sorry)}
 
+    order = {id(item): index for index, item in enumerate(queue)}
+
+    def _curriculum_pick(contenders: list[QueueItem]) -> QueueItem:
+        # All-or-nothing: if ANY key fails to compute or the keys do not
+        # compare, the WHOLE pick falls back to file order — a partial
+        # failure must never invert the ordering between items.
+        in_file_order = min(contenders, key=lambda item: order[id(item)])
+        if order_key is None:
+            return in_file_order
+        try:
+            keyed = sorted(
+                ((order_key(item.label), order[id(item)], item) for item in contenders),
+                key=lambda triple: (triple[0], triple[1]),
+            )
+            return keyed[0][2]
+        except Exception:
+            return in_file_order
+
     def _pick(bucket: list[QueueItem]) -> QueueItem | None:
         # Avoid-exclusion is PER BUCKET: the diagnostic-first rule stays
         # authoritative, so a rank-2 diagnostic still outranks any sorry
@@ -407,7 +434,8 @@ def select_next_item(
             return None
         if any(ranks[id(item)] < PRECEDENCE_AVOID for item in bucket):
             bucket = [item for item in bucket if ranks[id(item)] < PRECEDENCE_AVOID]
-        return sorted(bucket, key=lambda item: ranks[id(item)])[0]
+        best = min(ranks[id(item)] for item in bucket)
+        return _curriculum_pick([item for item in bucket if ranks[id(item)] == best])
 
     return _pick(diagnostic) or _pick(sorry)
 

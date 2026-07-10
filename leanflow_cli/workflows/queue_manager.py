@@ -188,9 +188,13 @@ class TheoremQueueManager:
         *,
         is_present_in_file: Callable[[str], bool],
         precedence: Callable[[str], int] | None = None,
+        order_key: Callable[[str], Any] | None = None,
     ) -> QueueItem | None:
         return select_next_item(
-            self._queue, is_present_in_file=is_present_in_file, precedence=precedence
+            self._queue,
+            is_present_in_file=is_present_in_file,
+            precedence=precedence,
+            order_key=order_key,
         )
 
     def assign(

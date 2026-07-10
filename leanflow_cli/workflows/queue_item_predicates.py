@@ -60,6 +60,7 @@ def _current_queue_item(
     queue: list[dict[str, Any]],
     active_file: str,
     precedence: Callable[[str], int] | None = None,
+    order_key: Callable[[str], Any] | None = None,
 ) -> dict[str, Any] | None:
     if not queue or not active_file:
         return None
@@ -69,6 +70,7 @@ def _current_queue_item(
     selected = mgr.select_next(
         is_present_in_file=lambda label: bool(_find_declaration_entry(active_file, label)),
         precedence=precedence,
+        order_key=order_key,
     )
     if selected is None:
         return None
