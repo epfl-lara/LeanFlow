@@ -23,6 +23,14 @@ SHIPPED_WORKFLOW_SPECS = {
 
 SHIPPED_HELPER_SPECS = {"search"}
 
+SHIPPED_PHASE_SPECS = {
+    "phase-search",
+    "phase-draft",
+    "phase-review",
+    "phase-negation",
+    "phase-planning",
+}
+
 SHIPPED_WORKER_SPECS = {
     "proof-repair",
     "proof-golfer",
@@ -87,19 +95,23 @@ def test_list_specs_without_filter_returns_all_shipped_entries():
     assert ids >= SHIPPED_WORKFLOW_SPECS
     assert ids >= SHIPPED_WORKER_SPECS
     assert ids >= SHIPPED_HELPER_SPECS
+    assert ids >= SHIPPED_PHASE_SPECS
 
 
 def test_list_specs_filters_workflows_and_workers_disjointly():
     workflows = {record.spec_id for record in list_specs("workflow")}
     workers = {record.spec_id for record in list_specs("worker")}
     helpers = {record.spec_id for record in list_specs("helper")}
+    phases = {record.spec_id for record in list_specs("phase")}
 
     assert workflows >= SHIPPED_WORKFLOW_SPECS
     assert workers >= SHIPPED_WORKER_SPECS
     assert helpers >= SHIPPED_HELPER_SPECS
+    assert phases >= SHIPPED_PHASE_SPECS
     assert workflows.isdisjoint(workers)
     assert workflows.isdisjoint(helpers)
     assert workers.isdisjoint(helpers)
+    assert phases.isdisjoint(workflows | workers | helpers)
 
 
 def test_list_specs_unknown_kind_returns_empty():
@@ -140,3 +152,95 @@ def test_spec_content_does_not_leak_frontmatter_fence():
 def test_specs_for_skill_empty_or_missing_returns_empty_list():
     assert specs_for_skill("") == []
     assert specs_for_skill("no-such-skill-xyz") == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 §6.9: phase fragments
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("spec_id", sorted(SHIPPED_PHASE_SPECS))
+def test_every_shipped_phase_fragment_resolves_with_contract(spec_id):
+    record = get_lean_spec(spec_id)
+    assert record is not None, f"phase fragment {spec_id!r} missing"
+    assert record.kind == "phase"
+    assert record.summary
+    assert record.consumed_by, f"{spec_id!r} declares no consumers"
+    assert record.deliverable_schema, f"{spec_id!r} declares no deliverable schema"
+    # The schema is machine-consumable YAML describing a mapping.
+    import yaml
+
+    parsed = yaml.safe_load(record.deliverable_schema)
+    assert isinstance(parsed, dict)
+    assert record.content.strip(), f"{spec_id!r} has no body"
+
+
+def test_phase_fragments_never_reach_skill_prompts():
+    """Fragments embed via get_lean_spec by their consumers, never via the
+    skill-prompt path — no fragment may declare skills."""
+    for record in list_specs("phase"):
+        assert record.skills == (), f"{record.spec_id} leaks into skill prompts"
+
+
+def test_phase_review_vocabulary_matches_orchestrator_routes():
+    """§6.9: ONE action vocabulary, aligned to the route enum."""
+    from leanflow_cli.workflows.orchestrator import ROUTES
+
+    record = get_lean_spec("phase-review")
+    assert record is not None
+    import yaml
+
+    schema = yaml.safe_load(record.deliverable_schema)
+    actions = {a.strip() for a in str(schema["action"]).split("|")}
+    # `continue` is the reviewer's word for the direct-prove route (§6.9).
+    assert actions - {"continue"} <= set(ROUTES)
+    assert "continue" in actions
+    for retired in ("deep", "repair", "redraft", "golf", "replan", "falsify"):
+        assert retired not in actions
+
+
+def test_validator_flags_broken_phase_fragments(tmp_path, monkeypatch):
+    import leanflow_cli.lean.lean_workflow_specs as specs_mod
+
+    phases = tmp_path / "phases"
+    phases.mkdir()
+    (phases / "bad.md").write_text(
+        "---\nid: phase-bad\nkind: phase\ntitle: Bad\nsummary: s\n"
+        "consumed_by: [martian]\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    (phases / "empty.md").write_text(
+        "---\nid: phase-empty\nkind: phase\ntitle: Empty\nsummary: s\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(specs_mod, "SPEC_ROOT", tmp_path)
+    specs_mod.load_lean_specs.cache_clear()
+    try:
+        errors = "\n".join(specs_mod.validate_lean_specs())
+        assert "unknown phase consumer 'martian'" in errors
+        assert "phase-bad: phase fragment declares no deliverable_schema" in errors
+        assert "phase-empty: phase fragment declares no consumed_by" in errors
+    finally:
+        specs_mod.load_lean_specs.cache_clear()
+
+
+def test_duplicate_spec_ids_are_refused_loudly(tmp_path, monkeypatch):
+    """A later file must never silently shadow an earlier spec id."""
+    import leanflow_cli.lean.lean_workflow_specs as specs_mod
+
+    (tmp_path / "workflows").mkdir()
+    (tmp_path / "phases").mkdir()
+    for where in ("workflows", "phases"):
+        (tmp_path / where / "search.md").write_text(
+            "---\nid: search\nkind: "
+            + ("workflow" if where == "workflows" else "phase")
+            + "\ntitle: S\nsummary: s\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(specs_mod, "SPEC_ROOT", tmp_path)
+    specs_mod.load_lean_specs.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="Duplicate Lean spec id 'search'"):
+            specs_mod.load_lean_specs()
+    finally:
+        specs_mod.load_lean_specs.cache_clear()

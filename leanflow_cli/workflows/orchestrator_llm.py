@@ -90,6 +90,19 @@ def build_llm_prompt(
         lines += ["", "Decision packet:", json.dumps(packet, ensure_ascii=False, sort_keys=True)]
     if plan_md_text and ctx.research_mode:
         lines += ["", "plan.md (full, research mode):", plan_md_text]
+    embedded_any = False
+    for fragment_id in ("phase-review", "phase-negation"):
+        fragment = _phase_fragment(fragment_id, include_schema=False)
+        if fragment:
+            lines += ["", fragment]
+            embedded_any = True
+    if embedded_any:
+        lines += [
+            "",
+            "The phase specs above are POLICY for the phases you may route",
+            "to; their deliverable contracts bind THOSE phases, not this",
+            "reply. Your reply contract is ONLY the route JSON below.",
+        ]
     lines += [
         "",
         "Decide the route. Reply with ONE JSON object only:",
@@ -102,6 +115,17 @@ def build_llm_prompt(
         "prefer a strategy CHANGE over repeating the failed approach.",
     ]
     return _SYSTEM_PROMPT, "\n".join(lines)
+
+
+def _phase_fragment(spec_id: str, *, include_schema: bool = True) -> str:
+    """Phase-fragment text via the shared spec helper; fail-open ''."""
+    try:
+        from leanflow_cli.lean.lean_workflow_specs import phase_fragment_text
+
+        return phase_fragment_text(spec_id, include_schema=include_schema)
+    except Exception:
+        logger.debug("phase fragment %s unavailable", spec_id, exc_info=True)
+        return ""
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)

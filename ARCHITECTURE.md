@@ -314,6 +314,17 @@ patch/monkeypatch surface tests rely on while moving the logic out.
   child's lifetime, a synchronous wall-clock wait with SIGINT→terminate→kill escalation, and
   the PARENT's own kernel gate (`decl_verdicts`: present + sorry-free + zero-error
   `lean_incremental_check`) as the only source of `proved` on the graph.
+- `leanflow_specs/phases/` — Phase 6 §6.9 phase fragments (`kind: phase`): the shared
+  search/draft/review/negation/planning contracts, embedded into consumer prompts via
+  `lean_workflow_specs.phase_fragment_text` (schema included where the fragment IS the reply
+  contract, body-only POLICY where it is not). Wired consumers today: the planner (lanes +
+  synthesis) and the orchestrator-LLM routing turn; the prover and decomposer surfaces adopt
+  fragments in the later Phase 6 waves (golf/refactor overhaul, research-pusher pass). Each
+  fragment declares
+  `consumed_by` (validated against `KNOWN_PHASE_CONSUMERS`) and a machine-readable
+  `deliverable_schema` (validated YAML mapping); fragment ids are `phase-`-prefixed and the
+  loader now refuses duplicate spec ids loudly instead of letting a later file shadow an
+  earlier one. Fragments carry no `skills:` — they never reach skill prompts.
 - `learnings.py` — Phase 5 cross-run knowledge (dark behind `LEANFLOW_LEARNINGS`): every
   terminal scope exit — verified included, independent of the final-report flag — appends one
   compact sanitized entry (outcomes, THIS run's route history from its activity stream, top

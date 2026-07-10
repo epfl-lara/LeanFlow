@@ -5,7 +5,7 @@ title: Review
 summary: Read-only Lean review workflow for correctness, blockers, style risks, and readiness for the next proving cycle.
 skills: [lean-diagnostics]
 tools: [lean_capabilities, lean_inspect, lean_search, lean_axioms]
-review_actions: [continue, deep, repair, redraft, golf, stop]
+review_actions: [continue, decompose, plan, negate, re-state, park]
 stop_conditions: [review-complete]
 route_actions: [diagnostics]
 ---
@@ -65,22 +65,27 @@ Prioritize:
 
 ## Next-Action Vocabulary
 
-Use one of these `next_action` labels in the review output:
+One list, aligned to the orchestrator's routes (see the `phase-review`
+fragment — it is the canonical contract). Use one of these `next_action`
+labels in the review output:
 
 - `continue`
-  - current proving path still looks viable
-- `deep`
-  - bounded deeper restructuring is justified
-- `repair`
-  - compiler-guided repair is the right next move
-- `redraft`
-  - the statement/declaration shape is the blocker
-- `golf`
-  - the proof is correct and the remaining work is simplification/cleanup
-- `stop`
-  - no credible next path from the current scope without user intervention
+  - current proving path still looks viable (the `direct-prove` route)
+- `decompose`
+  - the goal needs stated helper lemmas before more attempts
+- `plan`
+  - the scope needs research/strategy before more prover budget
+- `negate`
+  - the statement smells false; a feasibility probe is due
+- `re-state`
+  - the declaration shape is the blocker (sub-lemmas only; main-statement
+    changes need a human ACK)
+- `park`
+  - no credible next path; park with a complete decision packet
 
-Do not invent alternate action labels. The review vocabulary should stay stable across sessions.
+Do not invent alternate action labels — `deep`, `repair`, `redraft`,
+`golf`, `replan`, `falsify`, and `stop` are retired vocabulary. Actions
+are suggestions the router consumes; the kernel gate stays the authority.
 
 ## Stop Conditions
 

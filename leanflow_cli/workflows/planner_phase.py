@@ -109,7 +109,9 @@ _LANES: tuple[_Lane, ...] = (
         ),
         deliverable_hint=(
             '{"findings": [{"claim": "...", "source": "url or path", '
-            '"relevance": "...", "candidate_lemmas": ["..."]}]}'
+            '"relevance": "...", "candidate_lemmas": ["..."]}], '
+            '"providers_tried": ["web_search", "unavailable:lean_search"], '
+            '"exhausted": false}'
         ),
     ),
     _Lane(
@@ -121,8 +123,11 @@ _LANES: tuple[_Lane, ...] = (
             "Use lean_search / lean_lemma_suggest / lean_proof_context."
         ),
         deliverable_hint=(
-            '{"candidates": [{"name": "...", "statement": "...", "module": "...", '
-            '"how_it_helps": "..."}], "gaps": ["missing lemma descriptions"]}'
+            '{"findings": [{"claim": "what the lemma gives you", '
+            '"source": "Mathlib.Module.Path", "relevance": "...", '
+            '"candidate_lemmas": ["Fully.Qualified.Name"]}], '
+            '"providers_tried": ["lean_search:local", "lean_search:semantic"], '
+            '"exhausted": false}'
         ),
     ),
     _Lane(
@@ -175,13 +180,32 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _phase_fragment(spec_id: str, *, include_schema: bool = True) -> str:
+    """Phase-fragment text via the shared spec helper; fail-open ''."""
+    try:
+        from leanflow_cli.lean.lean_workflow_specs import phase_fragment_text
+
+        return phase_fragment_text(spec_id, include_schema=include_schema)
+    except Exception:
+        logger.debug("phase fragment %s unavailable", spec_id, exc_info=True)
+        return ""
+
+
 def _lane_prompt(lane: _Lane, goal: str) -> str:
-    return (
-        lane.goal_template.format(goal=goal)
-        + "\n\nYour final response must be ONLY one JSON object shaped like:\n"
-        + lane.deliverable_hint
-        + "\nNo prose around it. Findings you cannot support, omit."
-    )
+    parts = [
+        lane.goal_template.format(goal=goal),
+        "",
+        "Your final response must be ONLY one JSON object shaped like:",
+        lane.deliverable_hint,
+        "No prose around it. Findings you cannot support, omit.",
+    ]
+    # The empirical lane hunts plausibility evidence only — the kernel
+    # negation probe (phase-negation) is the orchestrator's business.
+    if lane.key in {"web", "mathlib"}:
+        fragment = _phase_fragment("phase-search")
+        if fragment:
+            parts += ["", fragment]
+    return "\n".join(parts)
 
 
 def _run_lanes(
@@ -272,7 +296,88 @@ def _synthesis_prompt(
         "lemma/theorem declarations; never restate the target as a helper;",
         "never claim proved/false status for anything.",
     ]
+    # phase-planning's schema IS this reply's contract (grounding/strategy/
+    # nodes); phase-draft rides as POLICY only — its stubs deliverable binds
+    # drafting actors, and a second schema here would compete with the
+    # nodes JSON above.
+    planning = _phase_fragment("phase-planning")
+    if planning:
+        lines += ["", planning]
+    draft = _phase_fragment("phase-draft", include_schema=False)
+    if draft:
+        lines += [
+            "",
+            draft,
+            "",
+            "The draft-phase spec above is POLICY for the statements you",
+            "emit; your reply contract is ONLY the nodes JSON above.",
+        ]
     return "\n".join(lines)
+
+
+def _validated_nodes(nodes: Sequence[Any], *, active_file: str) -> list[dict[str, Any]]:
+    """Draft-phase validation BEFORE the graph merge.
+
+    A statement that fails the stub-shape guard is stripped (the node
+    enters as a conjecture — the idea survives, N1 — but never becomes a
+    frontier-eligible ``stated`` node for a declaration that can never be
+    placed). The same deferral applies to statements aimed at any file
+    OTHER than the active one: this phase only places into the active
+    file (sibling files belong to multi-direction), so an unplaceable
+    statement must not mint a stated node. The parsed declaration name is
+    the name of record: a mismatched claim drops the node whole (it must
+    reach neither the graph nor placement); a node without a claimed name
+    adopts the parsed one so placed stubs are always graph-tracked. All
+    rejections are journaled.
+    """
+    clean: list[dict[str, Any]] = []
+    for entry in nodes:
+        if not isinstance(entry, Mapping):
+            continue
+        node = dict(entry)
+        statement = decomposer.normalize_statement(str(node.get("statement", "") or ""))
+        if statement and str(node.get("file", "") or "").strip() != (active_file or ""):
+            # Adopt the parsed name first — a nameless sibling stub must
+            # still survive as a NAMED conjecture (the graph door drops
+            # nameless nodes).
+            if not str(node.get("name", "") or "").strip():
+                node["name"] = decomposer._helper_name(statement) or ""
+            plan_state.append_journal_event(
+                {
+                    "event": "planner-stub-deferred",
+                    "name": str(node.get("name", "") or ""),
+                    "file": str(node.get("file", "") or ""),
+                }
+            )
+            node["statement"] = ""  # conjecture: nothing places sibling files here
+            clean.append(node)
+            continue
+        if statement:
+            if not decomposer.stub_shape_ok(statement):
+                plan_state.append_journal_event(
+                    {
+                        "event": "planner-stub-shape-rejected",
+                        "name": str(node.get("name", "") or ""),
+                    }
+                )
+                node["statement"] = ""  # conjecture, not a phantom stated node
+                clean.append(node)
+                continue
+            parsed = decomposer._helper_name(statement)
+            claimed = str(node.get("name", "") or "").strip()
+            if parsed:
+                if claimed and claimed != parsed:
+                    plan_state.append_journal_event(
+                        {
+                            "event": "planner-stub-name-mismatch",
+                            "claimed": claimed,
+                            "parsed": parsed,
+                        }
+                    )
+                    continue
+                node["name"] = parsed
+        clean.append(node)
+    return clean
 
 
 def run_planner_phase(
@@ -348,35 +453,64 @@ def run_planner_phase(
 
         grounding = [str(item) for item in (synthesis.get("grounding") or []) if str(item).strip()]
         strategy = [str(item) for item in (synthesis.get("strategy") or []) if str(item).strip()]
-        delta = {"goal": goal, "nodes": synthesis.get("nodes") or []}
+        # Tolerate the draft-phase field name: a compliant `stubs` reply is
+        # the same payload under the fragment's key.
+        raw_nodes = synthesis.get("nodes") or synthesis.get("stubs") or []
+        nodes = _validated_nodes(raw_nodes, active_file=active_file)
+        delta = {"goal": goal, "nodes": nodes}
         # Journal AFTER the save succeeds: the notebook must describe the
         # graph that was actually persisted, not a conflicted first attempt.
         merged, changes = plan_state.apply_delta(bp, delta, generated_by="planner", journal=False)
         try:
-            saved = plan_state.save_blueprint(merged)
+            plan_state.save_blueprint(merged)
         except plan_state.PlanStateRevisionConflict:
             # Single retry against the fresh disk state (another writer won).
             merged, changes = plan_state.apply_delta(
                 plan_state.load_blueprint(), delta, generated_by="planner", journal=False
             )
-            saved = plan_state.save_blueprint(merged)
+            plan_state.save_blueprint(merged)
         plan_state.journal_delta_changes(changes, generated_by="planner")
+        created_node_ids = frozenset(
+            str(change.get("node_id", "") or "")
+            for change in changes
+            if change.get("event") == "node-created"
+        )
         summary = plan_state.merge_planner_findings(
             plan_state.load_summary(), grounding=grounding, strategy=strategy
         )
         plan_state.save_summary(summary)
-        plan_state.save_plan_md(saved, plan_state.load_summary())
 
         stubs_placed: tuple[str, ...] = ()
         if target_symbol and active_file:
             stubs_placed = _place_planner_stubs(
-                synthesis.get("nodes") or [],
+                nodes,
                 target_symbol=target_symbol,
                 active_file=active_file,
                 allowed_axioms=allowed_axioms,
                 cwd=cwd,
                 agent=agent,
             )
+        # A stated node whose stub did NOT land on disk (placement failed,
+        # or fell past the per-batch cap) must not stay frontier-eligible:
+        # demote it back to a conjecture, journaled after the save.
+        if not _demote_unplaced_stubs(
+            nodes,
+            placed=stubs_placed,
+            active_file=active_file,
+            created_node_ids=created_node_ids,
+        ):
+            # The graph may hold stated nodes with no declaration on disk
+            # and we could not fix it — fail LOUDLY (N1), do not render a
+            # frontier that lies.
+            return PlannerOutcome(
+                ok=False,
+                reason="unplaced-stub demotion failed; graph may be ahead of disk",
+                lanes=tuple(lane_records),
+                stubs_placed=stubs_placed,
+            )
+        # Render plan.md LAST: routing must never consume a frontier view
+        # that still lists stubs which failed placement.
+        plan_state.save_plan_md(plan_state.load_blueprint(), plan_state.load_summary())
 
         nodes_added = sum(1 for change in changes if change.get("event") == "node-created")
         return PlannerOutcome(
@@ -395,6 +529,72 @@ def run_planner_phase(
         return PlannerOutcome(
             ok=False, reason=f"{type(exc).__name__}: {exc}", lanes=tuple(lane_records)
         )
+
+
+def _demote_unplaced_stubs(
+    nodes: Sequence[Mapping[str, Any]],
+    *,
+    placed: tuple[str, ...],
+    active_file: str,
+    created_node_ids: frozenset[str],
+) -> bool:
+    """stated => conjectured for active-file stubs that never reached disk.
+
+    Restricted to nodes CREATED by this run's merge: a re-stated duplicate
+    of a declaration that already lives on disk must never be demoted just
+    because its (redundant) placement was rejected. Journal-after-save
+    discipline; never raises. Nodes for other files were already deferred
+    to conjectures before the merge.
+    """
+    if not plan_state.plan_state_enabled() or not active_file:
+        return True
+    placed_set = set(placed)
+    unplaced = [
+        str(node.get("name", "") or "")
+        for node in nodes
+        if str(node.get("statement", "") or "").strip()
+        and str(node.get("file", "") or "").strip() == active_file
+        and str(node.get("name", "") or "") not in placed_set
+        and plan_state.node_id_for(str(node.get("name", "") or ""), active_file) in created_node_ids
+    ]
+    if not unplaced:
+        return True
+    why = "planner stub not placed (placement failed or over the batch cap)"
+
+    def _apply(bp: Any) -> tuple[Any, list[dict[str, str]]]:
+        events: list[dict[str, str]] = []
+        for name in unplaced:
+            node = bp.node_by_id(plan_state.node_id_for(name, active_file))
+            if node is None or node.status != "stated":
+                continue
+            events.append({"node_id": node.id, "name": node.name})
+            bp = plan_state.set_node_status(bp, node.id, "conjectured", why=why, journal=False)
+        return bp, events
+
+    try:
+        bp, events = _apply(plan_state.load_blueprint())
+        if not events:
+            return True
+        try:
+            plan_state.save_blueprint(bp)
+        except plan_state.PlanStateRevisionConflict:
+            bp, events = _apply(plan_state.load_blueprint())
+            if not events:
+                return True
+            plan_state.save_blueprint(bp)
+        for event in events:
+            plan_state.journal_node_status(
+                node_id=event["node_id"],
+                name=event["name"],
+                from_status="stated",
+                to_status="conjectured",
+                via_gate=False,
+                why=why,
+            )
+        return True
+    except Exception:
+        logger.debug("unplaced-stub demotion failed", exc_info=True)
+        return False
 
 
 def _place_planner_stubs(
@@ -416,6 +616,8 @@ def _place_planner_stubs(
         skeleton = decomposer.normalize_statement(str(entry.get("statement", "") or ""))
         if not skeleton or not decomposer.stub_shape_ok(skeleton):
             continue
+        # Name binding already ran in _validated_nodes (before the graph
+        # merge) — every skeleton here is graph-tracked under its parsed name.
         skeletons.append(skeleton)
     if not skeletons:
         return ()

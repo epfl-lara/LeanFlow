@@ -211,6 +211,21 @@ def test_provider_failure_status_is_unavailable_not_parse_failure(llm_on, monkey
 # ---------------------------------------------------------------------------
 
 
+def test_prompt_embeds_phase_fragments_as_policy_only():
+    """§6.9 composition: fragments ride the routing turn as POLICY — body
+    only, no competing JSON contract, and the reply contract is restated
+    as the route JSON."""
+    _system, user = oll.build_llm_prompt(_ctx(), FLOOR)
+    assert "[PHASE SPEC: phase-review]" in user
+    assert "[PHASE SPEC: phase-negation]" in user
+    assert "retired vocabulary" in user
+    # No second JSON contract competes with the route reply schema.
+    assert "Deliverable schema (YAML):" not in user
+    assert "Your reply contract is ONLY the route JSON below." in user
+    # The route schema itself still closes the prompt.
+    assert '"route": "direct-prove|decompose|plan|negate|park|re-state|escalate"' in user
+
+
 def test_prompt_includes_plan_md_only_in_research_mode():
     plan_text = "## Frontier\n- demo_left"
     _system, easy = oll.build_llm_prompt(_ctx(), FLOOR, plan_md_text=plan_text)

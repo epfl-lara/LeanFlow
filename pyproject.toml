@@ -59,7 +59,10 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "core", "core.*", "leanflow_cli", "leanflow_cli.*", "tools", "tools.*"]
+include = ["agent", "agent.*", "core", "core.*", "leanflow_cli", "leanflow_cli.*", "tools", "tools.*", "leanflow_specs"]
+
+[tool.setuptools.package-data]
+leanflow_specs = ["**/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

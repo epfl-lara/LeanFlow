@@ -264,6 +264,276 @@ def test_synthesizer_garbage_fails_soft_with_lanes_kept(enabled, monkeypatch):
     assert len(outcome.lanes) == 3  # N1: lane work still reported
 
 
+def test_stub_name_mismatch_is_skipped_and_journaled(enabled, monkeypatch):
+    """Draft-phase name binding: the parsed declaration name is the name of
+    record — a mismatched claim must never reach placement."""
+    synthesis = json.dumps(
+        {
+            "grounding": [],
+            "strategy": [],
+            "nodes": [
+                {
+                    "name": "claimed_name",
+                    "file": "Demo.lean",
+                    "statement": "lemma real_name : True := by sorry",
+                }
+            ],
+        }
+    )
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch, response=synthesis)
+    place_calls = _fake_place(monkeypatch)
+
+    outcome = planner_phase.run_planner_phase(
+        goal="g", target_symbol="demo", active_file="Demo.lean", agent=object()
+    )
+
+    assert outcome.ok and outcome.stubs_placed == ()
+    assert place_calls == []  # nothing reached the guarded door
+    journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    assert "planner-stub-name-mismatch" in journal
+    # The node was dropped BEFORE the graph merge: no phantom under either name.
+    bp = plan_state.load_blueprint()
+    assert bp.node_by_id(plan_state.node_id_for("claimed_name", "Demo.lean")) is None
+    assert bp.node_by_id(plan_state.node_id_for("real_name", "Demo.lean")) is None
+
+
+def test_nameless_stub_adopts_parsed_name_and_stays_tracked(enabled, monkeypatch):
+    """A statement without a claimed name adopts the parsed declaration
+    name — placed stubs are always graph-tracked."""
+    synthesis = json.dumps(
+        {
+            "grounding": [],
+            "strategy": [],
+            "nodes": [{"file": "Demo.lean", "statement": "lemma adopted : True := by sorry"}],
+        }
+    )
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch, response=synthesis)
+    _fake_place(monkeypatch)
+
+    outcome = planner_phase.run_planner_phase(
+        goal="g", target_symbol="demo", active_file="Demo.lean", agent=object()
+    )
+
+    assert outcome.ok and outcome.stubs_placed == ("adopted",)
+    node = plan_state.load_blueprint().node_by_id(plan_state.node_id_for("adopted", "Demo.lean"))
+    assert node is not None and node.status == "stated"
+
+
+def test_lane_and_synthesis_prompts_embed_phase_fragments(enabled, monkeypatch):
+    """§6.9 composition: the planner is a wired fragment consumer."""
+    delegate_calls = _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    synth_calls = _fake_synth(monkeypatch)
+    _fake_place(monkeypatch)
+
+    planner_phase.run_planner_phase(goal="g", agent=object())
+
+    web_goal = delegate_calls[0]["tasks"][0]["goal"]
+    assert "[PHASE SPEC: phase-search]" in web_goal
+    assert "Deliverable schema (YAML):" in web_goal  # schema rides with the body
+    empirical_goal = delegate_calls[0]["tasks"][2]["goal"]
+    assert "[PHASE SPEC" not in empirical_goal  # plausibility lane, not the kernel probe
+    synth_prompt = synth_calls[0]["prompt"]
+    assert "[PHASE SPEC: phase-planning]" in synth_prompt
+    assert "[PHASE SPEC: phase-draft]" in synth_prompt
+
+
+def test_sibling_file_statements_defer_to_conjectures(enabled, monkeypatch):
+    """This phase places only into the active file — a statement aimed at a
+    sibling file must not mint a frontier-eligible stated node."""
+    synthesis = json.dumps(
+        {
+            "grounding": [],
+            "strategy": [],
+            "nodes": [{"file": "Other.lean", "statement": "lemma elsewhere : True := by sorry"}],
+        }
+    )
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch, response=synthesis)
+    place_calls = _fake_place(monkeypatch)
+
+    outcome = planner_phase.run_planner_phase(
+        goal="g", target_symbol="demo", active_file="Demo.lean", agent=object()
+    )
+
+    assert outcome.ok and outcome.stubs_placed == ()
+    assert place_calls == []
+    node = plan_state.load_blueprint().node_by_id(plan_state.node_id_for("elsewhere", "Other.lean"))
+    # The idea survives as a NAMED conjecture: the parsed declaration name
+    # is adopted before the deferral strips the statement.
+    assert node is not None and node.status == "conjectured" and node.statement == ""
+    journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    assert "planner-stub-deferred" in journal
+
+
+def test_malformed_statement_enters_as_conjecture_never_stated(enabled, monkeypatch):
+    """A statement failing the stub-shape guard is stripped: the idea
+    survives as a conjecture, never as a phantom frontier-eligible node."""
+    synthesis = json.dumps(
+        {
+            "grounding": [],
+            "strategy": [],
+            "nodes": [
+                {"name": "bad_shape", "file": "Demo.lean", "statement": "lemma bad_shape : True"}
+            ],
+        }
+    )
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch, response=synthesis)
+    place_calls = _fake_place(monkeypatch)
+
+    outcome = planner_phase.run_planner_phase(
+        goal="g", target_symbol="demo", active_file="Demo.lean", agent=object()
+    )
+
+    assert outcome.ok and outcome.stubs_placed == ()
+    assert place_calls == []
+    node = plan_state.load_blueprint().node_by_id(plan_state.node_id_for("bad_shape", "Demo.lean"))
+    assert node is not None and node.status == "conjectured" and node.statement == ""
+    journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    assert "planner-stub-shape-rejected" in journal
+
+
+def test_placement_failure_demotes_stated_nodes(enabled, monkeypatch):
+    """A stated node whose stub never landed on disk must not stay
+    frontier-eligible — it demotes back to a conjecture, journaled."""
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch)  # states demo_helper for Demo.lean
+    _fake_place(monkeypatch, ok=False)  # the guarded door rejects the batch
+
+    outcome = planner_phase.run_planner_phase(
+        goal="g", target_symbol="demo", active_file="Demo.lean", agent=object()
+    )
+
+    assert outcome.ok and outcome.stubs_placed == ()
+    node = plan_state.load_blueprint().node_by_id(
+        plan_state.node_id_for("demo_helper", "Demo.lean")
+    )
+    assert node is not None and node.status == "conjectured"
+    journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    assert "planner stub not placed" in journal
+
+
+def test_over_cap_stubs_are_demoted_not_phantom(enabled, monkeypatch):
+    """Stubs past the per-batch placement cap demote to conjectures."""
+    names = [f"h{i}" for i in range(6)]
+    synthesis = json.dumps(
+        {
+            "grounding": [],
+            "strategy": [],
+            "nodes": [
+                {
+                    "name": name,
+                    "file": "Demo.lean",
+                    "statement": f"lemma {name} : True := by sorry",
+                }
+                for name in names
+            ],
+        }
+    )
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch, response=synthesis)
+    _fake_place(monkeypatch)  # places whatever reaches it (the capped batch)
+
+    outcome = planner_phase.run_planner_phase(
+        goal="g", target_symbol="demo", active_file="Demo.lean", agent=object()
+    )
+
+    assert outcome.ok and len(outcome.stubs_placed) == 4  # the batch cap
+    bp = plan_state.load_blueprint()
+    statuses = {
+        name: bp.node_by_id(plan_state.node_id_for(name, "Demo.lean")).status for name in names
+    }
+    assert sum(1 for s in statuses.values() if s == "stated") == 4
+    assert sum(1 for s in statuses.values() if s == "conjectured") == 2
+
+
+def test_duplicate_restatement_never_demotes_existing_node(enabled, monkeypatch):
+    """A re-stated duplicate of an ALREADY-stated node must keep its status
+    even when its (redundant) placement is rejected."""
+    node_id = plan_state.node_id_for("demo_helper", "Demo.lean")
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=node_id,
+                    name="demo_helper",
+                    file="Demo.lean",
+                    statement="lemma demo_helper : True := by sorry",
+                    status="stated",
+                ),
+            )
+        )
+    )
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch)  # re-states demo_helper
+    _fake_place(monkeypatch, ok=False)  # duplicate placement rejected
+
+    outcome = planner_phase.run_planner_phase(
+        goal="g", target_symbol="demo", active_file="Demo.lean", agent=object()
+    )
+
+    assert outcome.ok
+    assert plan_state.load_blueprint().node_by_id(node_id).status == "stated"
+
+
+def test_plan_md_renders_after_demotion(enabled, monkeypatch):
+    """Routing must never consume a frontier that lists failed stubs."""
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch)  # states demo_helper
+    _fake_place(monkeypatch, ok=False)  # placement fails => demotion
+
+    planner_phase.run_planner_phase(
+        goal="g", target_symbol="demo", active_file="Demo.lean", agent=object()
+    )
+
+    plan_md = plan_state.plan_state_paths().plan_md.read_text(encoding="utf-8")
+    frontier = plan_md[plan_md.index("## Frontier") : plan_md.index("## Grounding")]
+    assert "demo_helper" not in frontier  # demoted before the render
+
+
+def test_synthesis_stubs_key_is_accepted_as_nodes(enabled, monkeypatch):
+    """The draft-phase field name is tolerated: `stubs` == `nodes`."""
+    synthesis = json.dumps(
+        {
+            "grounding": [],
+            "strategy": [],
+            "stubs": [
+                {
+                    "name": "via_alias",
+                    "file": "Demo.lean",
+                    "statement": "lemma via_alias : True := by sorry",
+                }
+            ],
+        }
+    )
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch, response=synthesis)
+    _fake_place(monkeypatch)
+
+    outcome = planner_phase.run_planner_phase(
+        goal="g", target_symbol="demo", active_file="Demo.lean", agent=object()
+    )
+
+    assert outcome.ok and outcome.stubs_placed == ("via_alias",)
+
+
+def test_synthesis_prompt_draft_fragment_is_policy_only(enabled, monkeypatch):
+    """phase-draft rides the synthesis prompt WITHOUT its stubs schema —
+    the reply contract stays the nodes JSON."""
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    synth_calls = _fake_synth(monkeypatch)
+    _fake_place(monkeypatch)
+
+    planner_phase.run_planner_phase(goal="g", agent=object())
+
+    prompt = synth_calls[0]["prompt"]
+    draft_at = prompt.index("[PHASE SPEC: phase-draft]")
+    assert "Deliverable schema (YAML):" not in prompt[draft_at:]
+    assert "your reply contract is ONLY the nodes JSON above" in prompt
+
+
 def test_rejected_stub_placement_is_journaled(enabled, monkeypatch):
     _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
     _fake_synth(monkeypatch)

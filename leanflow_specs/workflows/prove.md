@@ -7,7 +7,7 @@ aliases: [autoprove]
 skills: [lean-proof-loop, lean-theorem-queue-worker]
 tools: [lean_capabilities, lean_inspect, lean_search, lean_proof_context, lean_auto_search, lean_multi_attempt, lean_decompose_helpers, lean_reasoning_help, lean_verify, lean_sorries, lean_axioms, web_search, web_fetch, web_download]
 workers: []
-review_actions: [continue, replan, redraft, falsify, stop]
+review_actions: [continue, decompose, plan, negate, re-state, park]
 stop_conditions: [verified, blocked, interrupted, stalled]
 route_actions: [queue-worker, final-sweep]
 ---
