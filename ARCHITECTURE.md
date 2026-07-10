@@ -306,6 +306,14 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 - `struggle_signals.py` + `manager_nudge.py` — Phase 2: the pure struggle-signal classifier
   and the advisory, struggle-triggered LLM-manager (modes off/dark/live via
   `LEANFLOW_MANAGER_LLM_MODE`; dark-launch log in `summary.json.manager_nudges`).
+- `prover_jobs.py` — Phase 5 §5.7 shape-A prover jobs: the dispatch spawn backend. A stub
+  file is discharged by a nested file-scoped `/prove` subprocess (`spawn_workflow`) with a
+  hygienic child env (fresh run id, `LEANFLOW_WORKFLOW_PARENT_RUN_ID` lineage edge,
+  `LEANFLOW_DISPATCH_JOB_ID`/`LEANFLOW_JOB_LINEAGE`, budget as `AGENT_MAX_TURNS`, blanked
+  runner-owner + `LEANFLOW_FORMALIZATION_*`), a `dispatch:{job_id}` stub-file lock for the
+  child's lifetime, a synchronous wall-clock wait with SIGINT→terminate→kill escalation, and
+  the PARENT's own kernel gate (`decl_verdicts`: present + sorry-free + zero-error
+  `lean_incremental_check`) as the only source of `proved` on the graph.
 - `dispatch_models.py` + `dispatch_service.py` — Phase 3: tracked, lineage-addressed job
   dispatch (`summary.json.dispatch_ledger`, transactional under the shared
   `workflow_json_io.json_write_lock`; independent job budgets; ancestor-gated kill;

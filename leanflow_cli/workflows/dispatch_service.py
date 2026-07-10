@@ -494,13 +494,12 @@ class DispatchService:
                     logger.debug("dispatch lock release failed", exc_info=True)
 
     def _run_spawn_job(self, spec: JobSpec) -> dict[str, Any]:
-        """Prover shape A (spawned /prove over a stub file) — Phase 5 wiring.
+        """Prover shape A: a nested file-scoped /prove (Phase 5 §5.7).
 
-        The env contract is ready (spawn_workflow extra_env: fresh
-        LEANFLOW_WORKFLOW_RUN_ID, parent-run edge, LEANFLOW_DISPATCH_JOB_ID,
-        AGENT_MAX_TURNS from the job budget); the monitor loop lands with the
-        Phase 5 parallel-frontier work.
+        prover_jobs owns the whole contract — hygienic child env, stub-file
+        lock, synchronous wall-clock wait with kill escalation, and the
+        parent-side kernel gate over the stub declarations.
         """
-        raise NotImplementedError(
-            "prover shape-A spawn jobs land in Phase 5 (parallel frontier discharge)"
-        )
+        from leanflow_cli.workflows import prover_jobs  # lazy: pulls workflow.py
+
+        return prover_jobs.launch_stub_prove_job(spec)
