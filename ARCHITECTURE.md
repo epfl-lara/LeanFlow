@@ -314,6 +314,14 @@ patch/monkeypatch surface tests rely on while moving the logic out.
   child's lifetime, a synchronous wall-clock wait with SIGINT→terminate→kill escalation, and
   the PARENT's own kernel gate (`decl_verdicts`: present + sorry-free + zero-error
   `lean_incremental_check`) as the only source of `proved` on the graph.
+- `multi_direction.py` — Phase 5 §5.8 multi-direction proving (N4): rival attack directions
+  from direction-tagged `statements_to_state` become sibling stub FILES (goal-file import
+  header + shape-guarded stubs, all-or-nothing validation, never clobbered), each discharged
+  sequentially as a shape-A job. Merge protocol is graph-only: the first direction whose full
+  set passes the parent gate wins — goal `depends_on` rewires to the winning stubs, losing
+  directions' unproved nodes are `parked` (files kept, N1), the choice lands in the decision
+  log; all-exhausted leaves one packet per direction. Dark by construction (LLM-only tags +
+  `LEANFLOW_DISPATCH_ENABLED`).
 - `dispatch_models.py` + `dispatch_service.py` — Phase 3: tracked, lineage-addressed job
   dispatch (`summary.json.dispatch_ledger`, transactional under the shared
   `workflow_json_io.json_write_lock`; independent job budgets; ancestor-gated kill;

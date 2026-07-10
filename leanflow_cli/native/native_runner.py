@@ -47,6 +47,7 @@ from leanflow_cli.workflows import (
     decomposer,
     final_report,
     manager_nudge,
+    multi_direction,
     orchestrator_llm,
     plan_state,
     planner_phase,
@@ -10308,6 +10309,50 @@ def _orchestrator_apply_route(
     if route.route in {"decompose", "plan", "re-state"}:
         _decide_packet("split" if route.route == "decompose" else route.route)
         mechanical_placed: tuple[str, ...] = ()
+        route_statements = list(dict(route.target or {}).get("statements_to_state") or [])
+        if (
+            route.route in {"decompose", "plan"}
+            and target_symbol
+            and active_file
+            and multi_direction.directions_from_statements(route_statements)
+        ):
+            # Phase 5 (5/6): rival direction files discharged as shape-A
+            # jobs. Dark by construction — direction tags only come from the
+            # (Phase 6) LLM decision and jobs need LEANFLOW_DISPATCH_ENABLED.
+            try:
+                md_outcome = multi_direction.run_multi_direction(
+                    goal_symbol=target_symbol,
+                    goal_file=active_file,
+                    statements_to_state=route_statements,
+                    cwd=_project_root(),
+                )
+                _record_activity(
+                    "multi-direction",
+                    f"Multi-direction discharge for {target_symbol}: "
+                    + (md_outcome.reason or ("ok" if md_outcome.ok else "failed")),
+                    target_symbol=target_symbol,
+                    active_file=active_file,
+                    **md_outcome.to_payload(),
+                )
+                if md_outcome.ok:
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": "\n".join(
+                                [
+                                    f"[LEANFLOW ORCHESTRATOR ROUTE: {route.route}]",
+                                    f"- direction {md_outcome.winner!r} fully proved via "
+                                    "dispatched jobs; the goal's dependencies now point at "
+                                    "the winning stubs.",
+                                    f"- assemble `{target_symbol}` from the proved helpers.",
+                                ]
+                            ),
+                        }
+                    )
+                    _resume_after_breakpoint()
+                    return "continue"
+            except Exception:
+                logger.debug("multi-direction discharge failed", exc_info=True)
         if route.route == "decompose" and target_symbol and active_file:
             # Phase 4 (3/6): state validated helper stubs between turns; any
             # failure falls back to the prompt-level directive.

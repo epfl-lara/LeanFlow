@@ -184,37 +184,46 @@ def reconcile_job_graph(verdicts: Mapping[str, str], *, stub_file: str, job_id: 
     """
     if not plan_state.plan_state_enabled():
         return 0
-    try:
-        bp = plan_state.load_blueprint()
-        flipped = 0
-        for name, verdict in verdicts.items():
-            if verdict != "proved":
-                continue
+    proved_names = sorted(n for n, v in verdicts.items() if v == "proved")
+    if not proved_names:
+        return 0
+    why = f"dispatch job {job_id} gate"
+
+    def _apply(bp: Any) -> tuple[Any, list[dict[str, str]]]:
+        events: list[dict[str, str]] = []
+        for name in proved_names:
             node_id = plan_state.node_id_for(name, stub_file)
             node = bp.node_by_id(node_id)
             if node is None or node.status == "proved":
                 continue
+            events.append({"node_id": node_id, "name": node.name, "from_status": node.status})
             bp = plan_state.set_node_status(
-                bp, node_id, "proved", via_gate=True, why=f"dispatch job {job_id} gate"
+                bp, node_id, "proved", via_gate=True, why=why, journal=False
             )
-            flipped += 1
-        if flipped:
-            try:
-                plan_state.save_blueprint(bp)
-            except plan_state.PlanStateRevisionConflict:
-                # Re-apply on the fresh disk state (another writer won).
-                bp = plan_state.load_blueprint()
-                for name, verdict in verdicts.items():
-                    if verdict != "proved":
-                        continue
-                    node_id = plan_state.node_id_for(name, stub_file)
-                    node = bp.node_by_id(node_id)
-                    if node is not None and node.status != "proved":
-                        bp = plan_state.set_node_status(
-                            bp, node_id, "proved", via_gate=True, why=f"dispatch job {job_id} gate"
-                        )
-                plan_state.save_blueprint(bp)
-        return flipped
+        return bp, events
+
+    try:
+        # Journal AFTER the save: the notebook describes the persisted graph.
+        bp, events = _apply(plan_state.load_blueprint())
+        if not events:
+            return 0
+        try:
+            plan_state.save_blueprint(bp)
+        except plan_state.PlanStateRevisionConflict:
+            bp, events = _apply(plan_state.load_blueprint())
+            if not events:
+                return 0
+            plan_state.save_blueprint(bp)
+        for event in events:
+            plan_state.journal_node_status(
+                node_id=event["node_id"],
+                name=event["name"],
+                from_status=event["from_status"],
+                to_status="proved",
+                via_gate=True,
+                why=why,
+            )
+        return len(events)
     except Exception:
         logger.debug("job graph reconcile failed", exc_info=True)
         return 0

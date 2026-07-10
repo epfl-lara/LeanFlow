@@ -398,13 +398,22 @@ def append_journal_event(event: Mapping[str, Any]) -> None:
 
 
 def set_node_status(
-    bp: Blueprint, node_id: str, status: str, *, via_gate: bool = False, why: str = ""
+    bp: Blueprint,
+    node_id: str,
+    status: str,
+    *,
+    via_gate: bool = False,
+    why: str = "",
+    journal: bool = True,
 ) -> Blueprint:
     """Set a node's status under the kernel-truth rules.
 
     ``proved`` requires ``via_gate=True`` (the deterministic gate-accept sync
     is the only prover of proved-ness); a ``proved`` node is immutable to
     ordinary actors; ``false`` is reserved for negation promotion (Phase 3).
+    ``journal=False`` defers the notebook write to the caller (the
+    conflicted-save-then-retry discipline: journal only what was persisted,
+    via :func:`journal_node_status`).
     """
     if status not in NODE_STATUSES:
         raise ValueError(f"unknown node status {status!r}")
@@ -421,18 +430,33 @@ def set_node_status(
         # via_gate only proves; downgrades belong exclusively to reconcile().
         raise ValueError("proved nodes are immutable outside the kernel-truth paths")
     updated = bp.replace_node(replace(node, status=status))
+    if journal:
+        journal_node_status(
+            node_id=node_id,
+            name=node.name,
+            from_status=node.status,
+            to_status=status,
+            via_gate=via_gate,
+            why=why,
+        )
+    return updated
+
+
+def journal_node_status(
+    *, node_id: str, name: str, from_status: str, to_status: str, via_gate: bool, why: str
+) -> None:
+    """Journal one node-status change (deferred-journal companion)."""
     append_journal_event(
         {
             "event": "node-status",
             "node_id": node_id,
-            "name": node.name,
-            "from": node.status,
-            "to": status,
+            "name": name,
+            "from": from_status,
+            "to": to_status,
             "via_gate": via_gate,
             "why": why,
         }
     )
-    return updated
 
 
 def upsert_node_for_assignment(
