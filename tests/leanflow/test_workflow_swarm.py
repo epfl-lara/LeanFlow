@@ -341,8 +341,6 @@ def test_resolve_workflow_request_forces_single_agent_for_file_scoped_prove(monk
         ("draft Main.lean", "draft"),
         ("/review Main.lean", "review"),
         ("review Main.lean", "review"),
-        ("/checkpoint Main.lean", "checkpoint"),
-        ("checkpoint Main.lean", "checkpoint"),
         ("/refactor Main.lean", "refactor"),
         ("refactor Main.lean", "refactor"),
         ("/golf Main.lean", "golf"),
@@ -365,7 +363,6 @@ def test_parse_workflow_command_maps_all_aliases_to_correct_kind(command, expect
         ("/autoformalize", "/formalize"),
         ("/draft", "/draft"),
         ("/review", "/review"),
-        ("/checkpoint", "/checkpoint"),
         ("/refactor", "/refactor"),
         ("/golf", "/golf"),
     ],
@@ -387,7 +384,6 @@ def test_parse_workflow_command_sets_correct_backend_command(command, expected_b
         ('formalize "x"', '/formalize "x"'),
         ("draft Main.lean", "/draft Main.lean"),
         ("review Main.lean", "/review Main.lean"),
-        ("checkpoint Main.lean", "/checkpoint Main.lean"),
         ("refactor Main.lean", "/refactor Main.lean"),
         ("golf Main.lean", "/golf Main.lean"),
     ],
@@ -646,6 +642,6 @@ def test_resolve_workflow_request_accepts_directory_for_autoformalize(monkeypatc
 
 
 def test_all_workflow_aliases_are_covered_by_alias_map():
-    forgiving_kinds = {"prove", "formalize", "draft", "review", "checkpoint", "refactor", "golf"}
+    forgiving_kinds = {"prove", "formalize", "draft", "review", "refactor", "golf"}
     mapped_kinds = {v[0] for v in WORKFLOW_ALIAS_MAP.values()}
     assert forgiving_kinds == mapped_kinds

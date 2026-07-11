@@ -14,7 +14,6 @@ LeanFlow normalizes the public Lean workflow commands to these internal workflow
   - `/autoformalize`
 - `draft`
 - `review`
-- `checkpoint`
 - `refactor`
 - `golf`
 
@@ -37,7 +36,6 @@ Workflow specs currently shipped:
 - `review`
 - `refactor`
 - `golf`
-- `checkpoint`
 - `doctor`
 - `search`
 

@@ -38,6 +38,7 @@ class LeanSpecRecord:
     route_actions: tuple[str, ...] = ()
     consumed_by: tuple[str, ...] = ()
     deliverable_schema: str = ""
+    phases: tuple[str, ...] = ()
     path: Path = field(default_factory=Path)
     content: str = ""
 
@@ -56,6 +57,7 @@ class LeanSpecRecord:
             "route_actions": list(self.route_actions),
             "consumed_by": list(self.consumed_by),
             "deliverable_schema": self.deliverable_schema,
+            "phases": list(self.phases),
             "path": str(self.path),
         }
 
@@ -136,6 +138,7 @@ def _load_spec(path: Path) -> LeanSpecRecord:
         route_actions=_normalize_many(meta.get("route_actions")),
         consumed_by=_normalize_many(meta.get("consumed_by")),
         deliverable_schema=_normalize_schema(meta.get("deliverable_schema")),
+        phases=_normalize_many(meta.get("phases")),
         path=path,
         content=body,
     )
@@ -220,6 +223,10 @@ def validate_lean_specs() -> list[str]:
             for worker in record.workers:
                 if worker not in worker_ids:
                     errors.append(f"{record.spec_id}: unknown worker {worker!r}")
+        for phase_id in record.phases:
+            linked = specs.get(phase_id)
+            if linked is None or linked.kind != "phase":
+                errors.append(f"{record.spec_id}: unknown phase fragment {phase_id!r}")
         if record.kind == "phase":
             if not record.consumed_by:
                 errors.append(f"{record.spec_id}: phase fragment declares no consumed_by")

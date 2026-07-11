@@ -22,7 +22,6 @@ DEFAULT_CONTAINERFILE = "containers/leanflow-sandbox.Containerfile"
 WORKFLOW_ALIASES = {
     "draft",
     "review",
-    "checkpoint",
     "refactor",
     "golf",
     "prove",

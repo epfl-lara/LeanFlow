@@ -123,6 +123,25 @@ def test_build_job_env_hygiene(monkeypatch):
     assert env["LEANFLOW_FORMALIZATION_BLUEPRINT"] == ""
 
 
+def test_prover_light_tier_overrides_job_model(monkeypatch):
+    """models.prover_light routes stub grinding to the light tier; empty
+    (the default) leaves the parent's model untouched."""
+    monkeypatch.setattr(prover_jobs, "_prover_light_model", lambda: "small/fast-prover")
+    env = prover_jobs.build_job_env(_spec())
+    assert env["LEANFLOW_NATIVE_MODEL"] == "small/fast-prover"
+
+    monkeypatch.setattr(prover_jobs, "_prover_light_model", lambda: "")
+    env = prover_jobs.build_job_env(_spec())
+    assert "LEANFLOW_NATIVE_MODEL" not in env
+
+
+def test_research_mode_doubles_job_turns(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    assert prover_jobs.build_job_env(_spec())["AGENT_MAX_TURNS"] == "80"
+    monkeypatch.delenv("LEANFLOW_RESEARCH_MODE", raising=False)
+    assert prover_jobs.build_job_env(_spec())["AGENT_MAX_TURNS"] == "40"
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle: happy path, crash, timeout, lock discipline
 # ---------------------------------------------------------------------------

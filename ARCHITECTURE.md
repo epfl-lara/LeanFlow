@@ -317,14 +317,31 @@ patch/monkeypatch surface tests rely on while moving the logic out.
 - `leanflow_specs/phases/` — Phase 6 §6.9 phase fragments (`kind: phase`): the shared
   search/draft/review/negation/planning contracts, embedded into consumer prompts via
   `lean_workflow_specs.phase_fragment_text` (schema included where the fragment IS the reply
-  contract, body-only POLICY where it is not). Wired consumers today: the planner (lanes +
-  synthesis) and the orchestrator-LLM routing turn; the prover and decomposer surfaces adopt
-  fragments in the later Phase 6 waves (golf/refactor overhaul, research-pusher pass). Each
-  fragment declares
+  contract, body-only POLICY where it is not). Wired consumers: the planner (lanes +
+  synthesis) and the orchestrator-LLM routing turn consume fragments directly by id, and the
+  prover/formalization skill prompts embed them through the `phases` field on the
+  `prove`/`search`/`draft`/`review` specs (`build_skill_prompt` dedupes so a fragment shared
+  by two specs appears once). Each fragment declares
   `consumed_by` (validated against `KNOWN_PHASE_CONSUMERS`) and a machine-readable
   `deliverable_schema` (validated YAML mapping); fragment ids are `phase-`-prefixed and the
   loader now refuses duplicate spec ids loudly instead of letting a later file shadow an
-  earlier one. Fragments carry no `skills:` — they never reach skill prompts.
+  earlier one. Fragments carry no `skills:` of their own — they reach a skill prompt only when
+  a consuming workflow's `phases` field pulls them in, never as standalone specs.
+- `research_mode.py` — Phase 6 §6.10 research-semantics profile (`LEANFLOW_RESEARCH_MODE`):
+  stalled/blocked stops are SUPPRESSED (orchestrator required; nudge injected; counters reset)
+  instead of terminal, the hard cycle ceiling multiplies ×4 but stays finite, prover-job turns
+  and planner-lane iterations ×2, budget-pressure messages ask for a checkpointed decision
+  packet + route request, and research park packets carry `next_candidate_route`. The N1
+  closed set survives: {verified, kernel-false, interrupt, park-with-packet, raised ceiling}.
+- `golf_mode.py` — Phase 6 §6.9 managed-golf SUBSTRATE (runtime wiring deferred to a
+  dedicated follow-on: review established it needs drain-to-done queue lifecycle, baseline
+  capture at assignment, and metrics on classified acceptance — so NO flag and NO metrics
+  recorder ship, only the flag-free substrate the follow-on composes from): the golf queue
+  builder (declared sorry-free theorems/lemmas — a structural read, not an elaboration;
+  block-comment phantoms and `sorry`-bodied decls excluded; `golf candidate` reason), the
+  `declaration_chars` size primitive, and the `golf candidate` selection bucket strictly
+  after diagnostics and sorries (prove selection byte-identical) — all tested, none
+  reachable from the runner yet. The compile filter itself is deferred to the runtime.
 - `learnings.py` — Phase 5 cross-run knowledge (dark behind `LEANFLOW_LEARNINGS`): every
   terminal scope exit — verified included, independent of the final-report flag — appends one
   compact sanitized entry (outcomes, THIS run's route history from its activity stream, top

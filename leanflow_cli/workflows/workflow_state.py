@@ -73,7 +73,6 @@ WORKFLOW_TASK_LABELS = {
     "formalize": "formalize",
     "draft": "draft",
     "review": "review",
-    "checkpoint": "checkpoint",
     "refactor": "refactor",
     "golf": "golf",
 }

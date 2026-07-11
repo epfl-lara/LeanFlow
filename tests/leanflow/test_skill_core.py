@@ -145,7 +145,6 @@ def test_load_skill_accepts_direct_skill_path(monkeypatch, tmp_path):
         ("formalize", "lean-formalization"),
         ("draft", "lean-formalization"),
         ("review", "lean-diagnostics"),
-        ("checkpoint", "lean-diagnostics"),
         ("refactor", "lean-refactor-golf"),
         ("golf", "lean-refactor-golf"),
         ("unknown-kind", "lean-proof-loop"),

@@ -44,7 +44,7 @@ Built-in skills:
   - single-declaration worker used during file-scoped autonomous proving when the runner has assigned a concrete theorem/lemma queue item
   - emphasizes: stay on the assigned target, use target-scoped failed-attempt history, and hand control back after the declaration is solved or concretely blocked
 - `lean-diagnostics`
-  - focused diagnostic mode for `review` and `checkpoint`
+  - focused diagnostic mode for `review`
   - emphasizes: current blockers, open goals, verification state, and project-wide remaining `sorry`
 - `lean-formalization`
   - formalization and declaration-building skill for `formalize` and `draft`
@@ -66,7 +66,7 @@ There are three ways a skill gets into the agent:
 1. Automatic workflow assignment
    - `prove`, `autoprove` -> `lean-proof-loop`
    - `formalize`, `autoformalize`, `draft` -> `lean-formalization`
-   - `review`, `checkpoint` -> `lean-diagnostics`
+   - `review` -> `lean-diagnostics`
    - `refactor`, `golf` -> `lean-refactor-golf`
    - `--agents N` on autonomous workflows switches to `lean-autonomous-swarm`
    - for file-scoped autonomous proving with an assigned declaration queue item, the runner temporarily switches from `lean-proof-loop` to `lean-theorem-queue-worker`
@@ -141,7 +141,6 @@ Workflow specs shipped in the repo:
 - `review`
 - `refactor`
 - `golf`
-- `checkpoint`
 - `doctor`
 - `search`
 
@@ -171,7 +170,6 @@ For a developer-oriented summary of the native workflow/tool surface, see [nativ
 - Lean workflows:
   - `/draft`
   - `/review`
-  - `/checkpoint`
   - `/refactor`
   - `/golf`
   - `/prove`
@@ -496,7 +494,6 @@ Those events sit alongside the existing theorem-level and runner-level events:
 - `tool-start`
 - `tool-result`
 - `autonomous-followup`
-- `checkpoint`
 - `runner-start` / `runner-exit`
 
 The structured activity feed is the right source for programmatic inspection and training-data curation because it preserves event types and details as JSON. The raw workflow log is the right source when a human needs the chronological transcript, provider previews, tool output head/tail, token usage, and cost estimates. Preview sizes are bounded and configurable through `logging.preview_lines`, `logging.preview_chars`, `logging.tool_output_head_lines`, `logging.tool_output_tail_lines`, and `logging.activity_preview_chars`.

@@ -53,6 +53,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "provider": "auto",
         "base_url": "",
         "api_key": "",
+        # Light tier for dispatched stub-grinding prover jobs (Phase 6,
+        # DeepSeek-V2 pattern); empty = jobs use the run's main model.
+        "prover_light": "",
     },
     "auxiliary": {
         "lean_reasoning": {

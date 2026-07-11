@@ -30,7 +30,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from leanflow_cli.workflows import decomposer, plan_state
+from leanflow_cli.workflows import decomposer, plan_state, research_mode
 from leanflow_cli.workflows.verification_providers import run_model_verification_review
 from tools.implementations.delegate_tool import delegate_task
 
@@ -223,7 +223,7 @@ def _run_lanes(
         raw = delegate_task(
             tasks=tasks,
             parent_agent=agent,
-            max_iterations=LANE_MAX_ITERATIONS,
+            max_iterations=research_mode.scaled_lane_iterations(LANE_MAX_ITERATIONS),
             isolate_budget=True,  # research lanes never drain the prover budget
         )
         payload = json.loads(raw)

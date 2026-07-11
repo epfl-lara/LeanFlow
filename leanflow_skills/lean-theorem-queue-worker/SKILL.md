@@ -22,7 +22,7 @@ Primary specs:
 
 ## Worker Contract
 
-1. Focus only on solving the assigned declaration until it is solved or a concrete blocker is proven.
+1. Focus only on solving the assigned declaration until it is solved or a blocker is proven — and a blocker report always carries a requested route (`decompose` | `negate` | `plan`) plus the evidence for it.
 2. Do not jump to later theorems in the file, even if they also contain `sorry`.
 3. Treat previous failed attempts as negative guidance:
    - do not blindly repeat the same proof shape
@@ -44,7 +44,7 @@ Primary specs:
 2. Preserve the earlier declaration's current proof work before unblocking the file: comment the broken proof state or failed attempt in place, then close that earlier declaration's active proof body with a minimal `sorry` so the current assigned declaration can be inspected.
 3. Never change, weaken, rename, move, or delete the earlier declaration statement while doing this. Only edit the proof body.
 4. Treat this as a temporary queue-unblocking move, not success. Mention the preserved commented attempt and the inserted `sorry` in the handoff or failed-attempt summary so a later queue pass can resume from it.
-5. Do not use this pattern to finish the assigned declaration. If the assigned declaration still needs `sorry`, report a blocker instead of claiming success.
+5. Do not use this pattern to finish the assigned declaration. If the assigned declaration still needs `sorry`, report a blocker (with its requested route) instead of claiming success.
 
 ## Search Strategy
 
@@ -75,7 +75,7 @@ The assigned declaration is successful only when:
 
 ## Failure Condition
 
-Stop and report a blocker when:
+Stop and report a blocker — with a requested route and the evidence — when:
 
 - the same proof approach keeps failing for a known reason
 - the declaration appears to require a missing lemma or changed statement

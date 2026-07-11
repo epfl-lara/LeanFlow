@@ -34,10 +34,10 @@ Do not use this workflow for:
 - one-off informal theorem strings with no source document
 - proof-only repair where the statement shape is already stable
 - read-only review
-- save-point/checkpoint work
+- save-point work (persisted checkpoints are automatic in managed runs)
 - pure tactic shortening after the declarations already compile
 
-Use `prove`, `review`, `checkpoint`, or `golf` for those cases. Use `draft` when the task is limited to declaration skeletons or signatures with no expectation of completing the proving loop.
+Use `prove`, `review`, or `golf` for those cases. Use `draft` when the task is limited to declaration skeletons or signatures with no expectation of completing the proving loop.
 
 ## Document Input Contract
 

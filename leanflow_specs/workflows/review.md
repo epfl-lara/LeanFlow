@@ -8,6 +8,7 @@ tools: [lean_capabilities, lean_inspect, lean_search, lean_axioms]
 review_actions: [continue, decompose, plan, negate, re-state, park]
 stop_conditions: [review-complete]
 route_actions: [diagnostics]
+phases: [phase-review]
 ---
 
 # Native Review Spec

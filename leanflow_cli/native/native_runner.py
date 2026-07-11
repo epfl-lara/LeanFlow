@@ -52,6 +52,7 @@ from leanflow_cli.workflows import (
     orchestrator_llm,
     plan_state,
     planner_phase,
+    research_mode,
     struggle_signals,
 )
 from leanflow_cli.workflows import (
@@ -601,9 +602,12 @@ def _autonomous_max_cycles() -> int:
     """
     raw = _read_native_env("AUTONOMOUS_MAX_CYCLES", "120")
     try:
-        return max(8, int(raw))
+        base = max(8, int(raw))
     except ValueError:
-        return 120
+        base = 120
+    # Research mode raises the ceiling (x4) but keeps it finite — the
+    # backstop survives every suppression path.
+    return research_mode.scaled_max_cycles(base)
 
 
 def _active_skill() -> str:
@@ -1715,7 +1719,7 @@ def _manager_final_report_feedback(
     elif blocker_kind == "sorry":
         lines.append(
             "- next step: continue the same theorem; the assigned declaration still contains `sorry`, "
-            "so solve it or report a concrete blocker."
+            "so solve it or report a blocker with a requested route (`decompose` | `negate` | `plan`) and the evidence."
         )
     elif blocker_kind == "error":
         lines.append(
@@ -4023,11 +4027,7 @@ def _workflow_startup_guidance(workflow_kind: str, workflow_command: str) -> str
         ),
         "review": (
             "proof review session",
-            "Use the native review/checkpoint contract from the active skill/spec and the live Lean state below.",
-        ),
-        "checkpoint": (
-            "proof checkpoint session",
-            "Use the native review/checkpoint contract from the active skill/spec and the live Lean state below.",
+            "Use the native review contract from the active skill/spec and the live Lean state below.",
         ),
         "refactor": (
             "proof refactor session",
@@ -5032,7 +5032,7 @@ def _queue_assignment_block(
                 "Search exhaustion:",
                 "- repeated search attempts have already failed for this theorem",
                 "- do not call `lean_search` again in this turn unless you are changing the query strategy materially",
-                "- your next move should be an edit, `lean_verify`, or a concrete blocker report",
+                "- your next move should be an edit, `lean_verify`, or a blocker report with a requested route (`decompose` | `negate` | `plan`) and the evidence",
             ]
         )
     parts.extend(["", "Task:", f"Repair `{label}` from its current state."])
@@ -9120,7 +9120,7 @@ def _managed_system_prompt() -> str:
         sections = [
             "You are the leanflow-native managed Lean workflow backend.",
             "Work inside the active Lean project only.",
-            "Treat `/prove`, `/formalize`, `/review`, `/checkpoint`, `/refactor`, and `/golf` as native workflow labels and instructions, not shell commands.",
+            "Treat `/prove`, `/formalize`, `/review`, `/refactor`, and `/golf` as native workflow labels and instructions, not shell commands.",
             "The loaded workflow and worker specs are the policy manuals; runner-injected blocks below are turn-local state only.",
             "Use `lean_capabilities` and `lean_inspect` to refresh state first, then follow the active spec.",
             "When a persisted workflow checkpoint exists, treat it as the canonical resume handoff.",
@@ -9130,7 +9130,7 @@ def _managed_system_prompt() -> str:
         sections = [
             "You are the leanflow-native managed Lean workflow backend.",
             "Work inside the active Lean project only.",
-            "Treat `/prove`, `/formalize`, `/review`, `/checkpoint`, `/refactor`, and `/golf` as native workflow labels and instructions, not shell commands.",
+            "Treat `/prove`, `/formalize`, `/review`, `/refactor`, and `/golf` as native workflow labels and instructions, not shell commands.",
             "The loaded workflow and worker specs are the policy manuals for tool order, verification ladders, escalation rules, and stop conditions.",
             "Runner-injected blocks below are turn-local state only: queue assignment, route decision, attempt history, blockers, and verification hints.",
             "Use `lean_capabilities` and `lean_inspect` to refresh state first, then follow the active spec rather than inventing a parallel process.",
@@ -9454,7 +9454,7 @@ def _autonomous_continuation_prompt(
             "Use the refreshed live proof state below as the current turn state.\n\n"
             f"This is autonomous continuation {cycle_ref}.\n"
             f"Current verification gate: {verification_gate}\n"
-            "Do not stop until that gate is satisfied or you have a concrete blocker to report."
+            "Do not stop until that gate is satisfied or you report a blocker with a requested route (`decompose` | `negate` | `plan`) and the evidence."
         )
         if document_handoff_blocked:
             prompt += (
@@ -9491,7 +9491,7 @@ def _autonomous_continuation_prompt(
             )
         prompt = (
             "Continue the autonomous workflow. Do not stop yet unless the workflow is truly verified or "
-            "you have a concrete blocker that still remains after another attempt.\n\n"
+            "you have a blocker that survives another attempt — report it with a requested route (`decompose` | `negate` | `plan`) and the evidence.\n\n"
             "Follow the loaded native workflow spec as the policy manual. "
             "Use the refreshed live proof state below as the current turn state.\n\n"
             "Verification requires all of the following:\n"
@@ -10418,7 +10418,77 @@ def _orchestrator_apply_route(
                     return "continue"
             except Exception:
                 logger.debug("multi-direction discharge failed", exc_info=True)
-        if route.route == "decompose" and target_symbol and active_file:
+        if (
+            route.route == "decompose"
+            and route.source == "llm"
+            and target_symbol
+            and active_file
+            and route_statements
+        ):
+            # Phase 6: an LLM decompose decision carries its OWN statements
+            # (§4.4 acceptance: a rigged stall + LLM decompose answer states
+            # stubs end-to-end). They enter through the same guarded door as
+            # every other stub — shape check, axiom scan, in-place
+            # validation, all-or-nothing revert; name binding applies.
+            try:
+                parent_statement = decomposer.normalize_statement(
+                    str(dict(autonomy_state.get("current_queue_assignment") or {}).get("slice", ""))
+                )
+                skeletons: list[str] = []
+                for entry in route_statements:
+                    if not isinstance(entry, Mapping):
+                        continue
+                    skeleton = decomposer.normalize_statement(str(entry.get("statement", "") or ""))
+                    if not skeleton or not decomposer.stub_shape_ok(skeleton):
+                        continue
+                    claimed = str(entry.get("name", "") or "").strip()
+                    parsed = decomposer._helper_name(skeleton)
+                    if claimed and parsed and claimed != parsed:
+                        continue  # the parsed name is the name of record
+                    if parent_statement and decomposer.sorry_offloading_suspect(
+                        parent_statement, skeleton
+                    ):
+                        continue  # a renamed copy of the goal is not a split
+                    skeletons.append(skeleton)
+                if skeletons:
+                    llm_outcome = decomposer.place_helpers(
+                        active_file=active_file,
+                        target_symbol=target_symbol,
+                        skeletons=skeletons[:4],
+                        allowed_axioms=sorted(_allowed_axioms()),
+                        cwd=_project_root(),
+                    )
+                    _record_activity(
+                        "decomposer",
+                        f"LLM-decision stubs for {target_symbol}: "
+                        + (
+                            f"placed {', '.join(llm_outcome.placed)}"
+                            if llm_outcome.ok
+                            else f"rejected ({llm_outcome.reason})"
+                        ),
+                        target_symbol=target_symbol,
+                        active_file=active_file,
+                        **llm_outcome.to_payload(),
+                    )
+                    if llm_outcome.ok:
+                        mechanical_placed = llm_outcome.placed
+                        with contextlib.suppress(Exception):
+                            # Same graph door the mechanical decomposer uses:
+                            # stated helper nodes + split_of/depends_on edges.
+                            decomposer._record_split_in_graph(
+                                target_symbol=target_symbol,
+                                active_file=active_file,
+                                placed=llm_outcome.placed,
+                                skeletons={
+                                    name: skeleton
+                                    for skeleton in skeletons
+                                    if (name := decomposer._helper_name(skeleton))
+                                },
+                            )
+                        decomposer.refresh_queue_edit_guard(agent)
+            except Exception:
+                logger.debug("llm-decision stub placement failed", exc_info=True)
+        if not mechanical_placed and route.route == "decompose" and target_symbol and active_file:
             # Phase 4 (3/6): state validated helper stubs between turns; any
             # failure falls back to the prompt-level directive.
             try:
@@ -10525,13 +10595,78 @@ def _orchestrator_apply_route(
         _resume_after_breakpoint()
         return "continue"
     if route.route == "park":
+        next_candidate = (
+            str(dict(route.target or {}).get("next_candidate_route", "plan"))
+            if research_mode.research_mode_enabled()
+            else ""
+        )
+        # park-with-packet invariant (N1 closed set): a park ALWAYS
+        # terminates carrying a decision packet. A budget breakpoint arms
+        # one, but a park proposed on a stall or via the max-routes
+        # pressure valve may not — mint one here so `stop:parked` never
+        # outruns its documentation.
+        if not packet_id and plan_state.plan_state_enabled():
+            # Assign the id BEFORE the write: record_decision_packet persists
+            # the summary first, then cross-links the graph/journal — a raise
+            # in that tail must still leave packet_id set so _decide_packet
+            # resolves it and the report evidence is non-empty.
+            packet_id = f"park-{int(time.time() * 1000)}"
+            with contextlib.suppress(Exception):
+                plan_state.record_decision_packet(
+                    {
+                        "packet_id": packet_id,
+                        "created_at": _utc_now_isoformat(),
+                        "scope": "theorem" if target_symbol else "queue",
+                        "node_id": (
+                            plan_state.node_id_for(target_symbol, active_file)
+                            if target_symbol
+                            else ""
+                        ),
+                        "target_symbol": target_symbol,
+                        "active_file": active_file,
+                        "statement": str(
+                            dict(autonomy_state.get("current_queue_assignment") or {}).get(
+                                "slice", ""
+                            )
+                            or ""
+                        ),
+                        "options": ["split", "plan", "negate", "park", "re-state", "abort"],
+                        "decision": None,
+                        "decided_by": None,
+                    }
+                )
+        if next_candidate and packet_id:
+            # A research park is only rigorous with a named next candidate —
+            # record it on the packet (minted or breakpoint-armed).
+            with contextlib.suppress(Exception):
+                summary = plan_state.load_summary()
+                for packet in summary.get("decision_packets") or []:
+                    if packet.get("packet_id") == packet_id:
+                        plan_state.record_decision_packet(
+                            {**packet, "next_candidate_route": next_candidate}
+                        )
+                        break
         _decide_packet("park")
+        # Cite the packet ONLY once it is verifiably persisted AND decided:
+        # if plan-state is off, or any mint/decide write was suppressed
+        # before it landed, the report must not carry dangling evidence.
+        packet_decided = False
+        if packet_id:
+            with contextlib.suppress(Exception):
+                for candidate in plan_state.load_summary().get("decision_packets") or []:
+                    if (
+                        isinstance(candidate, Mapping)
+                        and str(candidate.get("packet_id", "")) == packet_id
+                        and candidate.get("decision") == "park"
+                    ):
+                        packet_decided = True
+                        break
         with contextlib.suppress(Exception):
             plan_state.write_final_report(
                 "documented",
                 detail={
                     "summary": f"orchestrator parked the scope: {route.reason}",
-                    "evidence": [f"packet:{packet_id}"] if packet_id else [],
+                    "evidence": [f"packet:{packet_id}"] if packet_decided else [],
                 },
             )
         return "stop:parked"
@@ -10565,8 +10700,7 @@ def _research_mode_enabled() -> bool:
     invocations, thrift caps lifted, context-rich prompts) lands with
     Phases 4-6; helpers gate on this flag as those phases arrive.
     """
-    raw = _read_text_env("LEANFLOW_RESEARCH_MODE", "0").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    return research_mode.research_mode_enabled()
 
 
 def _theorem_budget_steps() -> int:
@@ -10909,6 +11043,26 @@ def _drive_autonomous_followups(
                         )
                     elif action.startswith("stop:"):
                         stop_reason = action.split(":", 1)[1]
+            if not resumed_by_route and research_mode.suppress_terminal_stop(
+                stop_reason, orchestrator_on=orchestrator_floor.orchestrator_enabled()
+            ):
+                # Research mode: routable stops are never terminal. The
+                # consult already had its chance; suppress, nudge, continue.
+                autonomy_state["continuation_stable_cycles"] = 0
+                autonomy_state["continuation_blocked_runs"] = 0
+                _record_activity(
+                    "research-stop-suppressed",
+                    f"Research mode suppressed terminal stop '{stop_reason}'",
+                    stop_reason=stop_reason,
+                    cycle=cycle,
+                )
+                history.append(
+                    {
+                        "role": "user",
+                        "content": research_mode.suppressed_stop_nudge(stop_reason),
+                    }
+                )
+                resumed_by_route = True
             if not resumed_by_route:
                 _record_activity(
                     "autonomy-stop", f"Autonomous workflow stop reason: {stop_reason}", cycle=cycle

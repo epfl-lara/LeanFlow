@@ -34,9 +34,6 @@ class WorkflowCommandSpec:
 COMMAND_REGISTRY: tuple[WorkflowCommandSpec, ...] = (
     WorkflowCommandSpec("/draft", "draft", "/draft", "Run the Lean draft workflow"),
     WorkflowCommandSpec("/review", "review", "/review", "Run the Lean review workflow"),
-    WorkflowCommandSpec(
-        "/checkpoint", "checkpoint", "/checkpoint", "Run the Lean checkpoint workflow"
-    ),
     WorkflowCommandSpec("/refactor", "refactor", "/refactor", "Run the Lean refactor workflow"),
     WorkflowCommandSpec("/golf", "golf", "/golf", "Run the Lean proof golfing workflow"),
     WorkflowCommandSpec(

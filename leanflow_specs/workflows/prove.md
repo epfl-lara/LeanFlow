@@ -10,6 +10,7 @@ workers: []
 review_actions: [continue, decompose, plan, negate, re-state, park]
 stop_conditions: [verified, blocked, interrupted, stalled]
 route_actions: [queue-worker, final-sweep]
+phases: [phase-search, phase-draft]
 ---
 
 # Native Prove Spec
@@ -32,11 +33,11 @@ Typical inputs:
 Do not use this workflow for:
 
 - pure review-only work with no intent to change proofs
-- checkpoint/save-point work
+- save-point work (persisted checkpoints are automatic in managed runs)
 - declaration drafting with no proving intent
 - post-compilation simplification where the theorem already compiles cleanly
 
-Use `review`, `checkpoint`, `draft`, `refactor`, or `golf` for those cases.
+Use `review`, `draft`, `refactor`, or `golf` for those cases.
 
 ## Tool Order
 
@@ -53,7 +54,7 @@ Use `review`, `checkpoint`, `draft`, `refactor`, or `golf` for those cases.
      - `semantic` or `natural-language` for library discovery
      - `type-pattern` when the goal shape matters most
    - do not loop on compiler failures caused by missing lemmas before searching
-   - if 3 search attempts in a row return no usable result, stop searching and either make the best concrete proof/edit attempt you have or escalate the blocker
+- the empty-search budget and provider order are the `phase-search` contract: if 3 search attempts in a row return no usable result, stop searching and either make the best concrete proof/edit attempt you have or report a blocker with a requested route
    - treat `repeated empty search loop detected` in `degraded_reasons` as a hard signal to stop searching in this turn
 4. `lean_proof_context`
    - use when theorem-local search is exhausted, attempt history is nonzero, or the blocker looks automation-suited
@@ -162,22 +163,42 @@ When repeated local attempts fail, keep escalation inside the active tool surfac
 1. request richer local feedback with `lean_incremental_check(action=feedback, include_tactics=true)`
 2. use `lean_decompose_helpers` when the proof needs intermediate invariants or helper lemmas
 3. use `lean_reasoning_help` when the blocker is conceptual or library-navigation oriented
-4. report a concrete blocker if another edit would only repeat failed proof shapes
+4. report a blocker with a requested route (`decompose` | `negate` | `plan`) if another edit would only repeat failed proof shapes
 
 ## Stop Conditions
 
 Stop only when one of these is true:
 
 - the requested scope is verified
-- a concrete hard blocker has been recorded and another focused attempt is not justified
+- a hard blocker has been recorded WITH its requested route and another focused attempt is not justified
 - the workflow was interrupted
-- progress is stalled and the next step is a clear handoff, not another speculative edit
+- progress is stalled and the next step is a clear handoff CARRYING a requested route, not another speculative edit
 
 Do not stop merely because:
 
 - one theorem was fixed
 - `sorry` text disappeared in one location
 - the current file looks cleaner but the verification gate has not been satisfied
+
+## Orchestration
+
+The run is supervised. Artifacts and routes exist — use them instead of
+improvising strategy:
+
+- `plan.md`, `blueprint.json` (the dependency graph), and `summary.json`
+  live in the workflow state; decision packets record every budget
+  breakpoint. Read `plan.md` when it is injected — Strategy and Grounding
+  are written by the planner phase.
+- Under the orchestrator, stalls, retry exhaustion, and budget
+  breakpoints are ROUTED (decompose, plan, negate, re-state, park);
+  classic runs still stop on them — either way the handoff carries a
+  requested route. A blocker report must carry
+  a requested route and the evidence for it — the orchestrator consumes
+  the request as a suggestion.
+- Helper stubs stated above your target are the next queue assignments;
+  prove them first, then assemble the target.
+- The kernel gate remains the only acceptance authority; orchestration
+  never overrides it.
 
 ## Handoff Format
 

@@ -3712,7 +3712,7 @@ def test_autonomous_continuation_prompt_snapshot_with_runner_lean_prompt(monkeyp
         "Use the refreshed live proof state below as the current turn state.\n\n"
         "This is autonomous continuation cycle 3.\n"
         "Current verification gate: `lean_inspect` on Main.lean, then `lake env lean Main.lean`\n"
-        "Do not stop until that gate is satisfied or you have a concrete blocker to report.\n\n"
+        "Do not stop until that gate is satisfied or you report a blocker with a requested route (`decompose` | `negate` | `plan`) and the evidence.\n\n"
         "Route decision:\n"
         "- skill: lean-theorem-queue-worker\n"
         "- action: queue-worker\n"

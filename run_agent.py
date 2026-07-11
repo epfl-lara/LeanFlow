@@ -2846,13 +2846,34 @@ class AIAgent:
             return None
         progress = api_call_count / self.max_iterations
         remaining = self.max_iterations - api_call_count
+        # Research runs (LEANFLOW_RESEARCH_MODE) swap the wrap-up tone for a
+        # route-request checkpoint — message text only, budget math unchanged.
+        research = str(os.environ.get("LEANFLOW_RESEARCH_MODE", "") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         if progress >= self._budget_warning_threshold:
+            if research:
+                return (
+                    f"[BUDGET WARNING: Iteration {api_call_count}/{self.max_iterations}. "
+                    f"Only {remaining} iteration(s) left. Checkpoint your findings into "
+                    "the decision packet NOW, then continue or escalate a route request "
+                    "(`decompose` | `negate` | `plan`).]"
+                )
             return (
                 f"[BUDGET WARNING: Iteration {api_call_count}/{self.max_iterations}. "
                 f"Only {remaining} iteration(s) left. "
                 "Provide your final response NOW. No more tool calls unless absolutely critical.]"
             )
         if progress >= self._budget_caution_threshold:
+            if research:
+                return (
+                    f"[BUDGET: Iteration {api_call_count}/{self.max_iterations}. "
+                    f"{remaining} iterations left. Consolidate findings into the decision "
+                    "packet and prefer route-able progress over open-ended exploration.]"
+                )
             return (
                 f"[BUDGET: Iteration {api_call_count}/{self.max_iterations}. "
                 f"{remaining} iterations left. Start consolidating your work.]"

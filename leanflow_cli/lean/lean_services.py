@@ -2041,7 +2041,7 @@ def route_workflow_step(
     skill_name = configured_skill.strip() or "lean-proof-loop"
     reason = "default autonomous workflow path"
 
-    if normalized_workflow in {"review", "checkpoint"}:
+    if normalized_workflow == "review":
         return WorkflowRouteDecision(
             workflow_kind=normalized_workflow,
             skill_name="lean-diagnostics",
@@ -2049,7 +2049,7 @@ def route_workflow_step(
             blocker_kind=blocker_kind,
             recommended_worker="",
             search_exhausted=search_exhausted,
-            reason="review/checkpoint use the diagnostics skill",
+            reason="review uses the diagnostics skill",
         )
     if normalized_workflow in {"refactor", "golf"}:
         return WorkflowRouteDecision(

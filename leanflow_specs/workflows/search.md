@@ -6,6 +6,7 @@ summary: Unified Lean search helper that prefers MCP/LSP providers and falls bac
 skills: [lean-search]
 tools: [lean_capabilities, lean_search]
 route_actions: [search]
+phases: [phase-search]
 ---
 
 # Native Search Spec
@@ -23,28 +24,13 @@ Use search when the blocker is missing knowledge, not missing syntax:
 
 ## Tool Usage
 
-1. `lean_capabilities`
-   - check whether semantic providers are available before assuming LSP-backed or MCP-backed search exists
-2. `lean_search(mode=local)`
-   - first choice when the answer may already be in the current project, imports, or nearby files
-3. `lean_search(mode=semantic)`
-   - use for library-level discovery by meaning; this prefers local LeanExplore when its index is available, then hosted LeanExplore when `LEANEXPLORE_API_KEY` is set, then other semantic providers
-4. `lean_search(mode=type-pattern)`
-   - use when the goal shape matters more than words
-5. `lean_search(mode=natural-language)`
-   - broad fallback for theorem discovery when the exact shape is unclear
-
-## What Not To Do
-
-- do not guess theorem names repeatedly when search can settle it faster
-- do not treat search as proof verification
-- do not ignore `degraded_reasons`; when semantic providers are unavailable, expect weaker `rg`-style fallback results
+The provider order, the empty-search budget, and the findings deliverable
+are the `phase-search` fragment's contract (`leanflow_specs/phases/search.md`)
+— one contract for this helper, the prover pre-step, and deep-search jobs.
+Follow it exactly; do not ignore `degraded_reasons`.
 
 ## Handoff
 
-When search does not resolve the blocker, record:
-
-- modes already tried
-- providers attempted
-- top candidate lemmas or declarations
-- whether search is now exhausted for router purposes
+Report per the `phase-search` deliverable schema: findings with sources,
+`providers_tried` in order, and whether search is now `exhausted` for
+routing purposes.

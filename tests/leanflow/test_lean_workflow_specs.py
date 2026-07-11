@@ -17,7 +17,6 @@ SHIPPED_WORKFLOW_SPECS = {
     "review",
     "refactor",
     "golf",
-    "checkpoint",
     "doctor",
 }
 
@@ -197,6 +196,47 @@ def test_phase_review_vocabulary_matches_orchestrator_routes():
     assert "continue" in actions
     for retired in ("deep", "repair", "redraft", "golf", "replan", "falsify"):
         assert retired not in actions
+
+
+def test_deferring_specs_deliver_their_fragments():
+    """A spec that defers to a fragment must carry it into the prompt: the
+    prover/search/draft/review skill prompts embed the fragments their
+    specs point at (finding: pointing at an invisible contract is worse
+    than inlining it)."""
+    from leanflow_cli.runtime.skill_core import build_skill_prompt
+
+    for spec_id, phase_id in (
+        ("prove", "phase-search"),
+        ("prove", "phase-draft"),
+        ("search", "phase-search"),
+        ("draft", "phase-draft"),
+        ("review", "phase-review"),
+    ):
+        record = get_lean_spec(spec_id)
+        assert record is not None and phase_id in record.phases, (spec_id, phase_id)
+
+    prompt = build_skill_prompt("lean-proof-loop")
+    assert "[PHASE SPEC: phase-search]" in prompt
+    assert "[PHASE SPEC: phase-draft]" in prompt
+    # Deduped: prove and formalize share the skill; fragments appear once.
+    assert prompt.count("[PHASE SPEC: phase-search]") == 1
+
+
+def test_phases_field_validates_against_known_fragments(tmp_path, monkeypatch):
+    import leanflow_cli.lean.lean_workflow_specs as specs_mod
+
+    (tmp_path / "workflows").mkdir()
+    (tmp_path / "workflows" / "w.md").write_text(
+        "---\nid: w\nkind: workflow\ntitle: W\nsummary: s\nphases: [phase-ghost]\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(specs_mod, "SPEC_ROOT", tmp_path)
+    specs_mod.load_lean_specs.cache_clear()
+    try:
+        errors = "\n".join(specs_mod.validate_lean_specs())
+        assert "w: unknown phase fragment 'phase-ghost'" in errors
+    finally:
+        specs_mod.load_lean_specs.cache_clear()
 
 
 def test_validator_flags_broken_phase_fragments(tmp_path, monkeypatch):

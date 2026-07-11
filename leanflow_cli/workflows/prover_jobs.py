@@ -41,7 +41,7 @@ from leanflow_cli.lean.lean_parsing import (
     _strip_lean_comments_and_strings,
 )
 from leanflow_cli.runtime.file_locks import acquire_file_lock, release_file_lock
-from leanflow_cli.workflows import plan_state
+from leanflow_cli.workflows import plan_state, research_mode
 from leanflow_cli.workflows.dispatch_models import JobSpec
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,19 @@ def prover_job_wall_clock_s() -> int:
     return max(60, value)
 
 
+def _prover_light_model() -> str:
+    """``model.prover_light`` config tier ('' = use the main model)."""
+    try:
+        from leanflow_cli.config import load_config
+
+        model_cfg = load_config().get("model")
+        if isinstance(model_cfg, Mapping):
+            return str(model_cfg.get("prover_light", "") or "").strip()
+    except Exception:
+        logger.debug("prover_light tier read failed", exc_info=True)
+    return ""
+
+
 def build_job_env(spec: JobSpec) -> dict[str, str]:
     """The hygienic ``extra_env`` for ``spawn_workflow`` (merged last, wins)."""
     env = {
@@ -78,11 +91,18 @@ def build_job_env(spec: JobSpec) -> dict[str, str]:
         "LEANFLOW_WORKFLOW_PARENT_RUN_ID": os.getenv("LEANFLOW_WORKFLOW_RUN_ID", ""),
         "LEANFLOW_DISPATCH_JOB_ID": spec.job_id,
         "LEANFLOW_JOB_LINEAGE": spec.job_id,
-        "AGENT_MAX_TURNS": str(max(1, spec.budget.api_steps)),
+        "AGENT_MAX_TURNS": str(
+            research_mode.scaled_prover_job_turns(max(1, spec.budget.api_steps))
+        ),
         # The child's exit path releases locks by owner id — the parent's
         # owner must not leak or the child exit frees the parent's locks.
         "LEANFLOW_NATIVE_RUNNER_OWNER": "",
     }
+    light_model = _prover_light_model()
+    if light_model:
+        # Stub grinding rides the light tier (models.prover_light); the
+        # extra_env merge is last, so this wins over the parent's model.
+        env["LEANFLOW_NATIVE_MODEL"] = light_model
     for key in os.environ:
         if key.startswith(_SCRUBBED_ENV_PREFIXES):
             env[key] = ""  # _read_text_env treats blank as unset

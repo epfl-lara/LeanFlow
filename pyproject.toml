@@ -164,6 +164,8 @@ files = [
   "leanflow_cli/workflows/prover_jobs.py",
   "leanflow_cli/workflows/multi_direction.py",
   "leanflow_cli/workflows/learnings.py",
+  "leanflow_cli/workflows/research_mode.py",
+  "leanflow_cli/workflows/golf_mode.py",
   "leanflow_cli/workflows/struggle_signals.py",
   "leanflow_cli/workflows/manager_nudge.py",
   "leanflow_cli/workflows/dispatch_models.py",

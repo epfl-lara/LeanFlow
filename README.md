@@ -92,7 +92,6 @@ The deeper mechanics (LaTeX preflight, the blueprint/verifier handoff, the proje
 - `formalize` — turn a LaTeX/PDF source document or TeX project into statement-verified Lean declarations; `/prove` then fills the resulting `sorry`s.
 - `draft` — create Lean declarations and proof skeletons.
 - `review` — inspect blockers, diagnostics, goals, and remaining `sorry`.
-- `checkpoint` — summarize workflow state for resume or handoff.
 - `refactor` / `golf` — simplify existing Lean code without breaking verification.
 
 `autoprove` and `autoformalize` are compatibility aliases of `prove` and `formalize`.
