@@ -41,6 +41,25 @@ def shadow_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def authority_enabled() -> bool:
+    """The promotion companion to shadow: make ``decide()`` authoritative.
+
+    When set, the four production gates take their VERDICT from ``decide()``
+    instead of the legacy open-coded classification (which stays in place as
+    the flag-off path — flag-off is byte-identical to today). ``decide()`` is
+    the verdict oracle only: the retry side effects still run through the
+    proven legacy helpers (``_increment``/``_clear``, keyed by explicit
+    target/file), never ``apply_decision``. The promotion criterion is zero
+    ``queue-decide-shadow-mismatch`` events over the demo corpus and a real
+    multi-theorem run; on the exercised (source × classification) cells the
+    two are equal, so the flip preserves behavior there. A few cells the
+    shadow never exercised (e.g. FINAL_REPORT + FUTURE_ONLY) adopt decide()'s
+    canonical golden-grid verdict, which is the intended policy.
+    """
+    raw = str(os.getenv("LEANFLOW_QUEUE_DECIDE_AUTHORITY", "") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def legacy_outcome(
     *,
     action: str,

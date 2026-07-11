@@ -66,6 +66,9 @@ from leanflow_cli.workflows.plan_state import (
     plan_state_paths,
 )
 from leanflow_cli.workflows.queue_decide_shadow import (
+    authority_enabled as _queue_decide_authority_enabled,
+)
+from leanflow_cli.workflows.queue_decide_shadow import (
     legacy_outcome as _shadow_legacy_outcome,
 )
 from leanflow_cli.workflows.queue_decide_shadow import (
@@ -84,6 +87,7 @@ from leanflow_cli.workflows.queue_item_predicates import (  # noqa: E402,F401
 )
 from leanflow_cli.workflows.queue_manager import (
     Classification,
+    DecisionContext,
     DecisionSource,
     ManagerCheck,
     PrepareState,
@@ -2109,19 +2113,26 @@ def _review_agent_final_report(
     # Shadow work never perturbs the gate: failures only disable the shadow.
     shadow_state: dict[str, Any] | None = None
     shadow_evidence: ManagerCheck | None = None
-    if _queue_decide_shadow_enabled() and isinstance(autonomy_state, dict):
+    # The decide() evidence is needed by the shadow AND by the authority flip
+    # (which may run without the shadow). Capture it here, before the exhausted
+    # path restores the file underneath it. The retry snapshot is shadow-only.
+    if (_queue_decide_shadow_enabled() or _queue_decide_authority_enabled()) and isinstance(
+        autonomy_state, dict
+    ):
         try:
-            shadow_state = {
-                key: copy.deepcopy(autonomy_state[key])
-                for key in TheoremQueueManager.OWNED_AUTONOMY_KEYS
-                if key in autonomy_state
-            }
             shadow_evidence = _manager_check_for_feedback_kind(
                 active_file, target_symbol, dict(manager_check)
             )
+            if _queue_decide_shadow_enabled():
+                shadow_state = {
+                    key: copy.deepcopy(autonomy_state[key])
+                    for key in TheoremQueueManager.OWNED_AUTONOMY_KEYS
+                    if key in autonomy_state
+                }
         except Exception:
-            logger.debug("queue-decide shadow snapshot failed", exc_info=True)
+            logger.debug("queue-decide evidence snapshot failed", exc_info=True)
             shadow_state = None
+            shadow_evidence = None
     feedback_kind = _manager_feedback_kind(active_file, target_symbol, manager_check)
     if axiom_blockers and not feedback_kind:
         # A disallowed axiom dependency is a hard blocker even when the file has no error/sorry.
@@ -2130,7 +2141,84 @@ def _review_agent_final_report(
         manager_check["feedback_kind"] = feedback_kind
     retry_count = 0
     retry_limit = 0
-    if not bool(manager_check.get("ok")):
+    authority_decision = None
+    if _queue_decide_authority_enabled() and shadow_evidence is not None:
+        # Authority flip: decide() owns the FINAL_REPORT verdict. decide() is
+        # pure, so a failure here falls back to the legacy engine below with
+        # no half-applied mutation.
+        try:
+            authority_ctx = DecisionContext(
+                source=DecisionSource.FINAL_REPORT,
+                check=shadow_evidence,
+                signature=_manager_feedback_retry_signature(feedback_kind, manager_check),
+                axiom_blockers=tuple(axiom_blockers),
+            )
+            authority_mgr = _queue_manager_from_state(autonomy_state)
+            authority_decision = authority_mgr.decide(authority_ctx)
+        except Exception:
+            logger.debug(
+                "queue-decide authority (final-report) failed; using legacy", exc_info=True
+            )
+            authority_decision = None
+    if authority_decision is not None:
+        # Drive the SAME locals + manager_check keys the shared render block
+        # reads, but from the Decision. The retry count is read PRE-consume
+        # (matching the legacy read-before-increment) so rendering is identical;
+        # the shared render block below performs the actual consume/clear.
+        retry_limit = authority_decision.retry_limit
+        if retry_limit:
+            retry_count = _manager_feedback_retry_count(
+                autonomy_state,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                kind=feedback_kind,
+            )
+            manager_check["feedback_retry_count"] = retry_count
+            manager_check["feedback_retry_limit"] = retry_limit
+        manager_check["ok"] = authority_decision.action == "advance_queue"
+        if authority_decision.accepted_after_warning_limit:
+            manager_check["accepted_after_warning_retry_limit"] = True
+            manager_check["acceptance_note"] = (
+                "accepted after one warning-only cleanup opportunity; remaining warnings are not allowed to stall the queue"
+            )
+        elif authority_decision.restore_baseline:
+            restore_result = _restore_queue_assignment_to_baseline_sorry(autonomy_state, {})
+            if restore_result.get("restored"):
+                restore_result = dict(restore_result)
+                restore_result["reason"] = (
+                    "reverted current declaration to its baseline `sorry` slice after manager retry exhaustion"
+                )
+            manager_check["retry_exhausted"] = True
+            manager_check["restore"] = restore_result
+            exhausted_text = _manager_retry_exhausted_message(
+                target_symbol=target_symbol,
+                active_file=active_file,
+                kind=feedback_kind,
+                retry_limit=retry_limit,
+                restore_result=restore_result,
+                manager_check=manager_check,
+            )
+            exhausted_guidance = _maybe_manager_nudge(
+                autonomy_state,
+                manager_check,
+                target_symbol=target_symbol,
+                active_file=active_file,
+                result=updated,
+            )
+            if exhausted_guidance:
+                exhausted_text = f"{exhausted_text}\n{exhausted_guidance}"
+            messages.append({"role": "user", "content": exhausted_text})
+            updated["messages"] = messages
+            updated["completed"] = False
+            updated["exit_reason"] = "manager_retry_exhausted"
+            updated["error"] = "Manager retry limit reached for unresolved theorem feedback"
+        # NOTE: the retry side effects stay on the proven legacy helpers keyed
+        # by explicit target/file — the shared render block below consumes via
+        # _increment on the reject path and clears via _clear when ok. decide()
+        # is the VERDICT oracle only; apply_decision (which keys off the
+        # manager's _current and clears on every advance) is intentionally not
+        # used, so the counters advance exactly as legacy.
+    elif not bool(manager_check.get("ok")):
         if feedback_kind == "warning":
             retry_limit = MANAGER_WARNING_RETRY_LIMIT
         elif feedback_kind in {"error", "sorry"}:
@@ -3334,38 +3422,98 @@ def _finish_queue_step_boundary(
             structured_items=manager_check.get("messages") or (),
         )
         shadow_cleanup_reason = cleanup_feedback_reason
-        if cleanup_feedback_reason:
-            feedback_kind = _manager_feedback_kind(
-                pending_file,
-                pending_target,
-                {**manager_check, "local_cleanup_reason": cleanup_feedback_reason},
+        _a_decision = None
+        if (
+            _queue_decide_authority_enabled()
+            and isinstance(autonomy_state, dict)
+            and same_assignment
+        ):
+            # Authority flip: decide() owns the step-boundary verdict. Gated on
+            # same_assignment — the shadow's validated domain (~line 3543). Runs
+            # in its own try so a decide() failure falls back to the legacy
+            # verdict below rather than escaping to the outer refresh_error path.
+            try:
+                _a_source = (
+                    DecisionSource.POST_EDIT
+                    if post_edit_verification
+                    else DecisionSource.VERIFICATION_RESULT
+                )
+                if shadow_cleanup_reason:
+                    _a_check = _manager_check_for_feedback_kind(
+                        pending_file, pending_target, dict(manager_check)
+                    )
+                else:
+                    _a_check = _shadow_live_evidence(pending_file, pending_target, live_state)
+                    # Legacy's no-cleanup path is the HARD-BLOCKER-ONLY live
+                    # probe: a warning-only live check advances and never grants
+                    # a cleanup turn (warnings only matter with a TARGETED
+                    # cleanup reason). Drop the warning bit so decide() matches.
+                    if _a_check.has_assigned_warning:
+                        _a_check = _dataclass_replace(_a_check, has_assigned_warning=False)
+                _a_decision = _queue_manager_from_state(autonomy_state).decide(
+                    DecisionContext(
+                        source=_a_source, check=_a_check, cleanup_reason=shadow_cleanup_reason
+                    )
+                )
+            except Exception:
+                logger.debug(
+                    "queue-decide authority (step-boundary) failed; using legacy", exc_info=True
+                )
+                _a_decision = None
+        if _a_decision is not None:
+            # Derive the SAME locals the shared finally block reifies, and
+            # perform the runner-owned restore + failed-attempt recording.
+            feedback_kind = _a_decision.feedback_kind
+            # The warning-acceptance verdict is classification ACCEPT, so
+            # decide() zeroes feedback_kind — but the BUCKET is still 'warning'
+            # and legacy stamps manager_check['feedback_kind']='warning' plus the
+            # pre-consume warning count. Recover the bucket for the stamps (the
+            # local feedback_kind stays decide()'s value, cleared below).
+            _a_kind = feedback_kind or (
+                "warning" if _a_decision.accepted_after_warning_limit else ""
             )
-        if not feedback_kind and same_assignment:
-            still_blocked = _same_queue_assignment_still_blocked(
-                {
-                    "current_queue_assignment": {
-                        "target_symbol": pending_target,
-                        "active_file": pending_file,
-                    }
-                },
-                live_state,
-            )
-            if still_blocked:
-                entry = _find_declaration_entry(pending_file, pending_target)
-                feedback_kind = "sorry" if entry and entry.get("has_sorry") else "error"
-        elif feedback_kind in {"error", "sorry"}:
-            still_blocked = True
-        elif feedback_kind == "warning":
-            retry_count = _manager_feedback_retry_count(
-                getattr(agent, "_managed_autonomy_state", {}) or {},
-                target_symbol=pending_target,
-                active_file=pending_file,
-                kind=feedback_kind,
-            )
-            manager_check["feedback_kind"] = feedback_kind
-            manager_check["feedback_retry_count"] = retry_count
-            manager_check["feedback_retry_limit"] = MANAGER_WARNING_RETRY_LIMIT
-            if retry_count >= MANAGER_WARNING_RETRY_LIMIT:
+            # Legacy stamps manager_check['feedback_kind'] ONLY for warnings (any
+            # source, the cleanup branch) and for POST_EDIT hard blockers (the
+            # post-edit hard-retry branch) — NOT for a verification-result hard
+            # continue (its hard branch is post_edit-gated). Match exactly.
+            if _a_kind == "warning" or (_a_kind and post_edit_verification):
+                manager_check["feedback_kind"] = _a_kind
+            # Retry side effects stay on the legacy helpers (explicit
+            # target/file, no manager _current dependency; _clear only on
+            # warning-acceptance, never on a clean advance). decide() is the
+            # VERDICT oracle only. The pre-consume count matches legacy's
+            # read-before-increment for the warning/exhaustion stamps; the
+            # hard-continue branch stamps the committed post-consume count.
+            _a_pre_count = 0
+            if _a_decision.retry_limit and _a_kind:
+                _a_pre_count = _manager_feedback_retry_count(
+                    autonomy_state,
+                    target_symbol=pending_target,
+                    active_file=pending_file,
+                    kind=_a_kind,
+                )
+            _a_signature = _manager_feedback_retry_signature(feedback_kind, manager_check)
+            if _a_decision.restore_baseline:
+                hard_retry_limit = _a_decision.retry_limit
+                hard_retry_count = _a_pre_count
+                manager_check["feedback_retry_count"] = _a_pre_count
+                manager_check["feedback_retry_limit"] = _a_decision.retry_limit
+                restore_result = _restore_queue_assignment_to_baseline_sorry(
+                    autonomy_state, live_state
+                )
+                if restore_result.get("restored"):
+                    restore_result = dict(restore_result)
+                    restore_result["reason"] = (
+                        "reverted current declaration to its baseline `sorry` slice after manager retry exhaustion"
+                    )
+                manager_check["retry_exhausted"] = True
+                manager_check["restore"] = restore_result
+                hard_retry_exhausted = True
+                still_blocked = False
+                cleanup_feedback_reason = ""
+            elif _a_decision.accepted_after_warning_limit:
+                manager_check["feedback_retry_count"] = _a_pre_count
+                manager_check["feedback_retry_limit"] = _a_decision.retry_limit
                 warning_retry_accepted = True
                 manager_check["accepted_after_warning_retry_limit"] = True
                 manager_check["acceptance_note"] = (
@@ -3373,72 +3521,51 @@ def _finish_queue_step_boundary(
                 )
                 cleanup_feedback_reason = ""
                 feedback_kind = ""
-                if isinstance(autonomy_state, dict):
-                    _clear_manager_feedback_retries(
-                        autonomy_state,
-                        target_symbol=pending_target,
-                        active_file=pending_file,
-                    )
-            else:
-                if isinstance(autonomy_state, dict):
-                    _increment_manager_feedback_retry(
-                        autonomy_state,
-                        target_symbol=pending_target,
-                        active_file=pending_file,
-                        kind=feedback_kind,
-                        signature=_manager_feedback_retry_signature(feedback_kind, manager_check),
-                    )
-        if still_blocked:
-            cleanup_feedback_reason = ""
-        if still_blocked:
-            if (
-                feedback_kind in {"error", "sorry"}
-                and post_edit_verification
-                and isinstance(autonomy_state, dict)
-            ):
-                hard_retry_limit = MANAGER_POST_EDIT_HARD_RETRY_LIMIT
-                hard_retry_count = _manager_feedback_retry_count(
+                _clear_manager_feedback_retries(
+                    autonomy_state,
+                    target_symbol=pending_target,
+                    active_file=pending_file,
+                )
+            elif _a_decision.action == "continue_same_theorem" and feedback_kind == "warning":
+                # First warning-cleanup pass: keep the cleanup turn, consume one
+                # warning retry (legacy path).
+                manager_check["feedback_retry_count"] = _a_pre_count
+                manager_check["feedback_retry_limit"] = _a_decision.retry_limit
+                _increment_manager_feedback_retry(
                     autonomy_state,
                     target_symbol=pending_target,
                     active_file=pending_file,
                     kind=feedback_kind,
+                    signature=_a_signature,
                 )
-                manager_check["feedback_kind"] = feedback_kind
-                manager_check["feedback_retry_count"] = hard_retry_count
-                manager_check["feedback_retry_limit"] = hard_retry_limit
-                if hard_retry_count >= hard_retry_limit:
-                    restore_result = _restore_queue_assignment_to_baseline_sorry(
-                        autonomy_state, live_state
-                    )
-                    if restore_result.get("restored"):
-                        restore_result = dict(restore_result)
-                        restore_result["reason"] = (
-                            "reverted current declaration to its baseline `sorry` slice after manager retry exhaustion"
-                        )
-                    manager_check["retry_exhausted"] = True
-                    manager_check["restore"] = restore_result
-                    hard_retry_exhausted = True
-                    still_blocked = False
-                else:
+            elif _a_decision.action == "continue_same_theorem":
+                # Hard blocker, not exhausted.
+                still_blocked = True
+                cleanup_feedback_reason = ""
+                if post_edit_verification and _a_decision.consume_retry:
+                    hard_retry_limit = _a_decision.retry_limit
                     hard_retry_count = _increment_manager_feedback_retry(
                         autonomy_state,
                         target_symbol=pending_target,
                         active_file=pending_file,
                         kind=feedback_kind,
-                        signature=_manager_feedback_retry_signature(feedback_kind, manager_check),
+                        signature=_a_signature,
                     )
                     manager_check["feedback_retry_count"] = hard_retry_count
-            if hard_retry_exhausted:
+                    manager_check["feedback_retry_limit"] = hard_retry_limit
+            else:
+                # advance_queue on a clean/future check: no blocker locals, and
+                # (unlike apply_decision) no retry clearing — matches legacy.
                 cleanup_feedback_reason = ""
-        if still_blocked:
-            if isinstance(autonomy_state, dict):
+                feedback_kind = ""
+            attempt_recorded = bool(_a_decision.record_failed_attempt)
+            if attempt_recorded:
                 _remember_failed_attempt(
                     autonomy_state,
                     live_state,
                     cycle_number=int(autonomy_state.get("current_cycle", 0) or 0),
                     reason=manager_feedback_reason,
                 )
-                attempt_recorded = True
                 attempt_number = _failed_attempt_count_for_theorem(
                     autonomy_state,
                     target_symbol=pending_target,
@@ -3452,6 +3579,129 @@ def _finish_queue_step_boundary(
                     attempt=attempt_number,
                     verification_tool=verification_tool,
                 )
+        else:
+            if cleanup_feedback_reason:
+                feedback_kind = _manager_feedback_kind(
+                    pending_file,
+                    pending_target,
+                    {**manager_check, "local_cleanup_reason": cleanup_feedback_reason},
+                )
+            if not feedback_kind and same_assignment:
+                still_blocked = _same_queue_assignment_still_blocked(
+                    {
+                        "current_queue_assignment": {
+                            "target_symbol": pending_target,
+                            "active_file": pending_file,
+                        }
+                    },
+                    live_state,
+                )
+                if still_blocked:
+                    entry = _find_declaration_entry(pending_file, pending_target)
+                    feedback_kind = "sorry" if entry and entry.get("has_sorry") else "error"
+            elif feedback_kind in {"error", "sorry"}:
+                still_blocked = True
+            elif feedback_kind == "warning":
+                retry_count = _manager_feedback_retry_count(
+                    getattr(agent, "_managed_autonomy_state", {}) or {},
+                    target_symbol=pending_target,
+                    active_file=pending_file,
+                    kind=feedback_kind,
+                )
+                manager_check["feedback_kind"] = feedback_kind
+                manager_check["feedback_retry_count"] = retry_count
+                manager_check["feedback_retry_limit"] = MANAGER_WARNING_RETRY_LIMIT
+                if retry_count >= MANAGER_WARNING_RETRY_LIMIT:
+                    warning_retry_accepted = True
+                    manager_check["accepted_after_warning_retry_limit"] = True
+                    manager_check["acceptance_note"] = (
+                        "accepted after one warning-only cleanup opportunity; unrelated warnings cannot stall the theorem queue"
+                    )
+                    cleanup_feedback_reason = ""
+                    feedback_kind = ""
+                    if isinstance(autonomy_state, dict):
+                        _clear_manager_feedback_retries(
+                            autonomy_state,
+                            target_symbol=pending_target,
+                            active_file=pending_file,
+                        )
+                else:
+                    if isinstance(autonomy_state, dict):
+                        _increment_manager_feedback_retry(
+                            autonomy_state,
+                            target_symbol=pending_target,
+                            active_file=pending_file,
+                            kind=feedback_kind,
+                            signature=_manager_feedback_retry_signature(
+                                feedback_kind, manager_check
+                            ),
+                        )
+            if still_blocked:
+                cleanup_feedback_reason = ""
+            if still_blocked:
+                if (
+                    feedback_kind in {"error", "sorry"}
+                    and post_edit_verification
+                    and isinstance(autonomy_state, dict)
+                ):
+                    hard_retry_limit = MANAGER_POST_EDIT_HARD_RETRY_LIMIT
+                    hard_retry_count = _manager_feedback_retry_count(
+                        autonomy_state,
+                        target_symbol=pending_target,
+                        active_file=pending_file,
+                        kind=feedback_kind,
+                    )
+                    manager_check["feedback_kind"] = feedback_kind
+                    manager_check["feedback_retry_count"] = hard_retry_count
+                    manager_check["feedback_retry_limit"] = hard_retry_limit
+                    if hard_retry_count >= hard_retry_limit:
+                        restore_result = _restore_queue_assignment_to_baseline_sorry(
+                            autonomy_state, live_state
+                        )
+                        if restore_result.get("restored"):
+                            restore_result = dict(restore_result)
+                            restore_result["reason"] = (
+                                "reverted current declaration to its baseline `sorry` slice after manager retry exhaustion"
+                            )
+                        manager_check["retry_exhausted"] = True
+                        manager_check["restore"] = restore_result
+                        hard_retry_exhausted = True
+                        still_blocked = False
+                    else:
+                        hard_retry_count = _increment_manager_feedback_retry(
+                            autonomy_state,
+                            target_symbol=pending_target,
+                            active_file=pending_file,
+                            kind=feedback_kind,
+                            signature=_manager_feedback_retry_signature(
+                                feedback_kind, manager_check
+                            ),
+                        )
+                        manager_check["feedback_retry_count"] = hard_retry_count
+                if hard_retry_exhausted:
+                    cleanup_feedback_reason = ""
+            if still_blocked:
+                if isinstance(autonomy_state, dict):
+                    _remember_failed_attempt(
+                        autonomy_state,
+                        live_state,
+                        cycle_number=int(autonomy_state.get("current_cycle", 0) or 0),
+                        reason=manager_feedback_reason,
+                    )
+                    attempt_recorded = True
+                    attempt_number = _failed_attempt_count_for_theorem(
+                        autonomy_state,
+                        target_symbol=pending_target,
+                        active_file=pending_file,
+                    )
+                    _record_activity(
+                        "failed-attempt-recorded",
+                        f"Recorded failed theorem attempt #{attempt_number} for {pending_target}",
+                        target_symbol=pending_target,
+                        active_file=pending_file,
+                        attempt=attempt_number,
+                        verification_tool=verification_tool,
+                    )
     except Exception as exc:
         refresh_error = str(exc)[:500]
     finally:
@@ -3715,7 +3965,12 @@ def _shadow_compare_step_boundary(
             pending_file, pending_target, dict(manager_check)
         )
     else:
+        # Match the authority gate: the no-cleanup live probe is hard-only, so
+        # strip the warning bit before decide() — otherwise a warning-only live
+        # check reads as a false mismatch (legacy advances, raw decide() warns).
         evidence = _shadow_live_evidence(pending_file, pending_target, live_state)
+        if evidence.has_assigned_warning:
+            evidence = _dataclass_replace(evidence, has_assigned_warning=False)
     if hard_retry_exhausted:
         legacy_action = "restore_baseline"
     elif still_blocked or cleanup_feedback_reason:
@@ -6265,6 +6520,22 @@ def _same_queue_assignment_still_blocked(
                 )
         except Exception:
             logger.debug("queue-decide shadow compare failed", exc_info=True)
+    if _queue_decide_authority_enabled():
+        # Authority flip: decide() owns the LIVE_STATE verdict. This gate is a
+        # pure predicate — decide() consumes no retry and does no restore for
+        # LIVE_STATE, so no apply_decision is needed. The same-assignment
+        # guards above stay runner-owned (decide() has no such short-circuit).
+        try:
+            mgr = TheoremQueueManager.from_autonomy_state(dict(autonomy_state or {}))
+            decision = mgr.decide(
+                DecisionContext(
+                    source=DecisionSource.LIVE_STATE,
+                    check=_manager_check_for_feedback_kind(current_file, current_target, check),
+                )
+            )
+            return decision.action == "continue_same_theorem"
+        except Exception:
+            logger.debug("queue-decide authority (live-state) failed; using legacy", exc_info=True)
     return blocked
 
 
@@ -6488,6 +6759,22 @@ def _handle_api_step_budget_exhaustion(
                 )
         except Exception:
             logger.debug("queue-decide shadow compare failed", exc_info=True)
+    if _queue_decide_authority_enabled():
+        # Authority flip: decide() owns whether budget-exhaustion restores.
+        # Legacy restores + records unconditionally once past the two guards;
+        # decide() restores only on a HARD_BLOCKER classification and instead
+        # advances (no-op) on WARNING/FUTURE/ACCEPT evidence — adopt that.
+        # apply_decision is unnecessary here: BUDGET_EXHAUSTION consumes no
+        # retry and clears none, so the verdict is the only side effect.
+        try:
+            evidence = _shadow_live_evidence(active_file, target_symbol, live_state)
+            decision = _queue_manager_from_state(autonomy_state).decide(
+                DecisionContext(source=DecisionSource.BUDGET_EXHAUSTION, check=evidence)
+            )
+            if decision.action != "restore_baseline":
+                return history, dict(live_state or {}), False
+        except Exception:
+            logger.debug("queue-decide authority (budget) failed; using legacy", exc_info=True)
     try:
         api_calls = int(result.get("api_calls", 0) or 0)
     except (TypeError, ValueError):

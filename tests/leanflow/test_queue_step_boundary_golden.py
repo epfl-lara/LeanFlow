@@ -19,7 +19,24 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from leanflow_cli.native import native_runner as runner
+
+
+@pytest.fixture(autouse=True, params=[False, True], ids=["legacy", "authority"])
+def _decide_authority(request, monkeypatch):
+    """Run every boundary golden under BOTH verdict sources.
+
+    Phase 0 rollout: these goldens pin the LEGACY behavior; the
+    decide()-authoritative flip (LEANFLOW_QUEUE_DECIDE_AUTHORITY) must
+    reproduce every one of them byte-for-byte on the same_assignment domain.
+    Parametrizing here makes the parity a permanent CI invariant.
+    """
+    if request.param:
+        monkeypatch.setenv("LEANFLOW_QUEUE_DECIDE_AUTHORITY", "1")
+    else:
+        monkeypatch.delenv("LEANFLOW_QUEUE_DECIDE_AUTHORITY", raising=False)
 
 
 class _StubAgent:
@@ -76,6 +93,21 @@ def _blocked_live_state() -> dict[str, Any]:
         "goals": "⊢ False",
         "build_status": "unknown",
         "blocker_summary": "error: unsolved goals",
+    }
+
+
+def _warning_only_live_state() -> dict[str, Any]:
+    """Same assignment, closed goals, no sorry — only a warning ON the assigned
+    declaration's lines (a `file:line:col:` diagnostic, which is what makes the
+    live evidence classify WARNING_ONCE rather than ACCEPT)."""
+    return {
+        "target_symbol": "demo",
+        "active_file": "Demo/Main.lean",
+        "active_file_label": "Demo/Main.lean",
+        "current_queue_item": {"label": "demo", "reasons": []},
+        "diagnostics": "Demo/Main.lean:2:4: warning: unused variable `h`\n",
+        "goals": "no goals",
+        "build_status": "ok",
     }
 
 
@@ -311,6 +343,9 @@ def test_verification_tool_hard_error_consumes_no_retry_but_records_attempt(monk
     assert kwargs["still_blocked"] is True
     assert "manager_feedback_retries" not in autonomy_state
     assert "manager_feedback_retry_consumed_signatures" not in autonomy_state
+    # A non-edit hard continue does NOT stamp manager_verification.feedback_kind
+    # (the hard-retry branch is post-edit-gated) — pins the authority parity.
+    assert "feedback_kind" not in kwargs["manager_verification"]
     assert autonomy_state["failed_attempts"][-1]["target_symbol"] == "demo"
     assert agent.interrupt_messages == []
     assert agent._managed_step_boundary_recorded_attempt is True
@@ -433,6 +468,45 @@ def test_clean_advance_yields_with_step_boundary_interrupt(monkeypatch):
     assert "manager_feedback_retries" not in autonomy_state
     assert "failed_attempts" not in autonomy_state
     assert not hasattr(agent, "_post_tool_result_appendix")
+
+
+def test_live_warning_without_cleanup_advances(monkeypatch):
+    """No TARGETED cleanup reason + a warning-only live state must advance —
+    the legacy live probe is hard-blocker-only, and the authority flip strips
+    the warning bit so decide() matches (never grants a stray cleanup turn).
+    Runs under BOTH flag states via the autouse fixture."""
+    autonomy_state = _autonomy_state()
+    agent = _StubAgent(autonomy_state)
+    events = _wire(monkeypatch, _warning_only_live_state(), cleanup_reason="", has_sorry=False)
+    # The warning must fall ON the assigned declaration's lines to classify
+    # WARNING_ONCE (otherwise the test is vacuous); give the entry a range.
+    monkeypatch.setattr(
+        runner,
+        "_find_declaration_entry",
+        lambda file, label: {"has_sorry": False, "line": 1, "end_line": 3, "name": "demo"},
+    )
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file="Demo/Main.lean",
+        verification_tool="patch+lean_incremental_check",
+        manager_verification={
+            "ok": True,
+            "mode": "incremental_target",
+            "command": "lean_interact check_target",
+            "target": "demo",
+            "output": "",
+        },
+    )
+
+    args, kwargs = _boundary_event(events)
+    assert args[0] == "queue-step-boundary"
+    assert kwargs["still_blocked"] is False
+    # No warning retry may be consumed — warnings only matter with a targeted
+    # cleanup reason (the authority flip strips the live-warning bit to match).
+    assert "manager_feedback_retries" not in autonomy_state
+    assert "failed_attempts" not in autonomy_state
 
 
 def test_failed_check_after_queue_advance_still_yields(monkeypatch):
