@@ -214,6 +214,167 @@ def test_clean_declaration_is_never_promoted_without_gate(plan_enabled, monkeypa
     assert node.status == "proving"
 
 
+# ---------------------------------------------------------------------------
+# Queue-drain outcome for the LAST theorem (the transition path never fires for
+# it — nothing follows it — so its gate-backed 'solved' outcome is recorded on
+# drain, then the ORDINARY gate-accept sync promotes it).
+# ---------------------------------------------------------------------------
+
+
+def _drained_verified_live_state(active) -> dict[str, Any]:
+    # No current_queue_item => the queue has drained.
+    return {"active_file": str(active), "goals": "no goals", "build_status": "ok"}
+
+
+def test_drain_records_gate_backed_outcome_and_sync_promotes_last_theorem(
+    plan_enabled, monkeypatch, tmp_path
+):
+    """The last theorem: no transition fires, so a per-cycle sync leaves it
+    'proving'. On drain its 'solved' outcome is recorded and the ordinary sync
+    promotes it via the SAME gate-accept path (present + sorry-free + error-free
+    disk check) — not a bypass. via_gate=True is journaled."""
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda ls: True)
+    _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem last_thm : True := by\n  trivial\n", encoding="utf-8")
+    autonomy_state: dict[str, Any] = {
+        "current_queue_assignment": {
+            "target_symbol": "last_thm",
+            "active_file": str(active),
+            "slice": "theorem last_thm : True := by\n  trivial",
+        }
+    }
+    runner._maybe_sync_plan_state(autonomy_state, {"active_file": str(active)})
+    node_id = plan_state.node_id_for("last_thm", str(active))
+    assert plan_state.load_blueprint().node_by_id(node_id).status == "proving"
+
+    live = _drained_verified_live_state(active)
+    assert runner._maybe_record_drain_theorem_outcome(autonomy_state, live, []) is True
+    runner._maybe_sync_plan_state(autonomy_state, live)
+    assert plan_state.load_blueprint().node_by_id(node_id).status == "proved"
+
+    events = [
+        line
+        for line in (plan_enabled / "journal.jsonl").read_text().splitlines()
+        if '"node-status"' in line and '"to": "proved"' in line
+    ]
+    assert events and all('"via_gate": true' in line for line in events)
+
+    # Idempotent: a second drain call records nothing more.
+    assert runner._maybe_record_drain_theorem_outcome(autonomy_state, live, []) is False
+
+
+def test_drain_overwrites_a_stale_non_solved_outcome(plan_enabled, monkeypatch, tmp_path):
+    """A revisited theorem carrying a stale 'blocked' outcome that solves on the
+    final drain must be OVERWRITTEN to 'solved' (matching the transition path),
+    not skipped by the idempotency guard."""
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda ls: True)
+    _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem last_thm : True := by\n  trivial\n", encoding="utf-8")
+    autonomy_state: dict[str, Any] = {
+        "current_queue_assignment": {"target_symbol": "last_thm", "active_file": str(active)}
+    }
+    runner._record_theorem_outcome(
+        autonomy_state,
+        {"target_symbol": "last_thm", "active_file": str(active), "status": "blocked"},
+    )
+
+    assert (
+        runner._maybe_record_drain_theorem_outcome(
+            autonomy_state, _drained_verified_live_state(active), []
+        )
+        is True
+    )
+    mgr = runner._queue_manager_from_state(autonomy_state)
+    assert mgr.outcome_for(runner._queue_key("last_thm", str(active))).status == "solved"
+
+
+def test_solved_outcome_never_resurrects_a_false_node(plan_enabled, monkeypatch, tmp_path):
+    """Kernel-truth: a stale 'solved' outcome never overrides a kernel-`false`
+    node (negation promotion wins)."""
+    _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    node_id = plan_state.node_id_for("demo", str(active))
+    bp = plan_state.load_blueprint().replace_node(
+        plan_state.GraphNode(id=node_id, name="demo", file=str(active), status="false")
+    )
+    plan_state.save_blueprint(bp)
+    autonomy_state: dict[str, Any] = {
+        "theorem_outcomes": {
+            f"{active}::demo": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "status": "solved",
+            }
+        }
+    }
+
+    runner._maybe_sync_plan_state(autonomy_state, {"active_file": str(active)})
+    assert plan_state.load_blueprint().node_by_id(node_id).status == "false"
+
+
+def test_drive_followups_wrapper_promotes_last_theorem_on_any_exit(
+    plan_enabled, monkeypatch, tmp_path
+):
+    """Integration: _drive_autonomous_followups wraps the loop so that HOWEVER
+    it exits (verified stop, ceiling, stall), a drained+verified last theorem is
+    recorded and synced. Stubbing the inner loop to return a verified-drained
+    state exercises the wrapper end-to-end."""
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda ls: True)
+    _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem last_thm : True := by\n  trivial\n", encoding="utf-8")
+    autonomy_state: dict[str, Any] = {
+        "current_queue_assignment": {"target_symbol": "last_thm", "active_file": str(active)}
+    }
+    runner._maybe_sync_plan_state(autonomy_state, {"active_file": str(active)})
+    node_id = plan_state.node_id_for("last_thm", str(active))
+    assert plan_state.load_blueprint().node_by_id(node_id).status == "proving"
+
+    live = _drained_verified_live_state(active)  # no current item => drained
+    monkeypatch.setattr(
+        runner, "_drive_autonomous_followups_inner", lambda *a, **k: ([], {}, {}, live)
+    )
+    runner._drive_autonomous_followups(None, "", [], {}, {}, autonomy_state)
+
+    assert plan_state.load_blueprint().node_by_id(node_id).status == "proved"
+
+
+def test_drain_does_not_record_when_not_verified(plan_enabled, monkeypatch, tmp_path):
+    """Guarded on a fresh verified live state: an unverified drain records no
+    outcome (so nothing can promote)."""
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda ls: False)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem last_thm : True := by\n  trivial\n", encoding="utf-8")
+    autonomy_state: dict[str, Any] = {
+        "current_queue_assignment": {"target_symbol": "last_thm", "active_file": str(active)}
+    }
+    assert (
+        runner._maybe_record_drain_theorem_outcome(
+            autonomy_state, _drained_verified_live_state(active), []
+        )
+        is False
+    )
+
+
+def test_drain_skips_when_queue_not_drained(plan_enabled, monkeypatch, tmp_path):
+    """A live 'current' item means the ordinary per-transition path still owns
+    the outcome — the drain recorder must not fire."""
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda ls: True)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem last_thm : True := by\n  trivial\n", encoding="utf-8")
+    autonomy_state: dict[str, Any] = {
+        "current_queue_assignment": {"target_symbol": "last_thm", "active_file": str(active)}
+    }
+    live = {
+        "active_file": str(active),
+        "current_queue_item": {"label": "last_thm"},  # not drained
+    }
+    assert runner._maybe_record_drain_theorem_outcome(autonomy_state, live, []) is False
+
+
 def test_unchanged_graph_skips_rewrites(plan_enabled, monkeypatch, tmp_path):
     _events(monkeypatch)
     active = tmp_path / "Demo.lean"

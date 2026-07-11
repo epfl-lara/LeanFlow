@@ -5518,10 +5518,16 @@ def _summarize_theorem_transition_outcome(
     autonomy_state: Mapping[str, Any],
     live_state: Mapping[str, Any] | None,
     history: list[dict[str, Any]],
+    *,
+    previous_target: str = "",
+    previous_file: str = "",
 ) -> dict[str, str]:
+    # The queue-drain path passes the completed theorem explicitly (no
+    # previous->current transition exists once the queue is empty); the normal
+    # per-transition callers derive it from the assignment transition.
     transition = _queue_assignment_transition(autonomy_state, live_state) or {}
-    previous_target = str(transition.get("previous_target", "") or "").strip()
-    previous_file = str(transition.get("previous_file", "") or "").strip()
+    previous_target = previous_target or str(transition.get("previous_target", "") or "").strip()
+    previous_file = previous_file or str(transition.get("previous_file", "") or "").strip()
     recent_text = _collect_message_text(history[-12:])
     lowered = recent_text.lower()
     latest_failed_attempt = _latest_failed_attempt_for_theorem(
@@ -5784,6 +5790,63 @@ def _rebuild_history_for_theorem_transition(
     autonomy_state["continuation_stable_cycles"] = 0
     autonomy_state["continuation_live_state_signature"] = None
     return rebuilt_history, transition
+
+
+def _maybe_record_drain_theorem_outcome(
+    autonomy_state: dict[str, Any],
+    live_state: Mapping[str, Any] | None,
+    history: list[dict[str, Any]],
+) -> bool:
+    """Record the LAST theorem's gate-backed outcome once the queue has DRAINED.
+
+    The per-transition recorder (``_rebuild_history_for_theorem_transition``)
+    fires only on a previous->current assignment transition. A queue that
+    empties after its final theorem has no ``current``, so that theorem never
+    receives its ``solved`` outcome — leaving its plan-state graph node stuck at
+    ``proving`` though it is proved. This records the SAME outcome the transition
+    path would, via ``_summarize_theorem_transition_outcome``, so the ordinary
+    gate-accept sync promotes it exactly like every other theorem (the sync's own
+    present + sorry-free + error-free disk check is the promotion gate — this
+    only supplies the missing outcome). Returns True iff it recorded.
+
+    Guarded on a VERIFIED live state (freshly rebuilt by the caller this cycle,
+    so not stale): a queue only drains cleanly to a verified file when its last
+    theorem is genuinely proved, so ``not pending -> solved`` is sound here.
+    Idempotent: skips only when the theorem is already ``solved``; a STALE
+    non-solved outcome (blocked/skipped/reverted from an earlier attempt) is
+    overwritten to ``solved``, matching the transition path.
+    """
+    if not isinstance(autonomy_state, dict):
+        return False
+    if not _live_state_is_verified(live_state):
+        return False
+    baseline = dict(autonomy_state.get("current_queue_assignment") or {})
+    target = str(baseline.get("target_symbol", "") or "").strip()
+    file = str(baseline.get("active_file", "") or "").strip()
+    if not target or not file:
+        return False
+    # Only once the queue has DRAINED: a live 'current' item means the ordinary
+    # per-transition path still owns the outcome.
+    current_target, _current_file = _queue_assignment_identity(live_state)
+    if current_target:
+        return False
+    mgr = _queue_manager_from_state(autonomy_state)
+    existing = mgr.outcome_for(_queue_key(target, file))
+    if (
+        existing is not None
+        and str(getattr(existing, "status", "") or "").strip().lower() == "solved"
+    ):
+        # Already solved — idempotent, no re-record / re-sync. A STALE non-solved
+        # outcome (blocked/skipped/reverted from an earlier attempt) is NOT
+        # skipped: like the transition path, a later solve overwrites it.
+        return False
+    outcome = _summarize_theorem_transition_outcome(
+        autonomy_state, live_state, history, previous_target=target, previous_file=file
+    )
+    _record_theorem_outcome(autonomy_state, outcome)
+    if str(outcome.get("status", "") or "").strip().lower() == "solved":
+        _clear_failed_attempts_for_theorem(autonomy_state, target_symbol=target, active_file=file)
+    return True
 
 
 def _transition_handoff_from_history(history: list[dict[str, Any]]) -> str:
@@ -9996,10 +10059,11 @@ def _maybe_sync_plan_state(
             if node is None:
                 continue
             status = str(outcome.get("status", "") or "")
-            if status == "solved" and node.status != "proved":
+            if status == "solved" and node.status not in {"proved", "false"}:
                 decl = truth.get((file, symbol))
-                # Gate promotion on CURRENT truth: a stale solved outcome for
-                # a dirty or vanished declaration must not resurrect proved.
+                # Gate promotion on CURRENT truth: a stale solved outcome for a
+                # dirty or vanished declaration must not resurrect proved, and
+                # never over a kernel-`false` node (negation promotion wins).
                 if decl is not None and decl.present and not decl.has_sorry:
                     if not decl.has_error_diag:
                         bp = plan_state.set_node_status(
@@ -11160,6 +11224,37 @@ def _maybe_trigger_budget_breakpoint(
 
 
 def _drive_autonomous_followups(
+    agent: AIAgent,
+    system_prompt: str,
+    history: list[dict[str, Any]],
+    compaction_state: dict[str, Any],
+    checkpoint_state: dict[str, Any],
+    autonomy_state: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Drive the autonomous loop, then record the FINAL theorem's outcome.
+
+    Wraps the loop so that WHICHEVER way it exits (verified stop, cycle
+    ceiling, stall/block/fail, interrupt), if the queue drained to a verified
+    file the last theorem — which never gets a transition-driven ``solved``
+    outcome, since nothing follows it — has that gate-backed outcome recorded
+    and the plan-state graph synced through the ordinary gate-accept path. The
+    returned ``live_state`` is freshly built at the loop's exit (not stale);
+    the recorder self-gates on verified + drained and is plan_state-scoped, so
+    flag-off is byte-identical.
+    """
+    result = _drive_autonomous_followups_inner(
+        agent, system_prompt, history, compaction_state, checkpoint_state, autonomy_state
+    )
+    with contextlib.suppress(Exception):
+        exit_live_state = result[3]
+        if plan_state_enabled() and _maybe_record_drain_theorem_outcome(
+            autonomy_state, exit_live_state, result[0]
+        ):
+            _maybe_sync_plan_state(autonomy_state, exit_live_state)
+    return result
+
+
+def _drive_autonomous_followups_inner(
     agent: AIAgent,
     system_prompt: str,
     history: list[dict[str, Any]],
