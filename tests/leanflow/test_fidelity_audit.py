@@ -78,6 +78,10 @@ def test_pass_verdict_marks_node_audited(audit_enabled, monkeypatch):
     assert verdict == "pass"
     assert calls[0]["task"] == "statement_fidelity"
     assert "prove the abs inequality" in calls[0]["prompt"]
+    assert "theorem demo : True" in calls[0]["prompt"]
+    assert "sorry" not in calls[0]["prompt"]
+    assert "(a / n : ℚ)" in calls[0]["prompt"]
+    assert "mathematical difficulty is not a fidelity defect" in calls[0]["prompt"]
     node = plan_state.load_blueprint().node_by_id(node_id)
     assert node.status == "audited"
     assert "fidelity: audited" in node.notes
@@ -115,11 +119,51 @@ def test_audit_runs_once_per_statement_and_reaudits_on_restate(audit_enabled, mo
     assert (first, second) == ("pass", "pass")
     assert len(calls) == 1  # cached per (theorem, statement)
 
+    # Editing only the proof body does not change statement fidelity.
+    autonomy_state["current_queue_assignment"][
+        "slice"
+    ] = "theorem demo : True := by\n  exact True.intro"
+    assert runner._maybe_statement_fidelity_audit(autonomy_state, {}) == "pass"
+    assert len(calls) == 1
+
     # A re-state changes the statement hash: the audit must re-run.
     autonomy_state["current_queue_assignment"]["slice"] = "theorem demo : 1 = 1 := by\n  sorry"
     third = runner._maybe_statement_fidelity_audit(autonomy_state, {})
     assert third == "pass"
     assert len(calls) == 2
+
+
+def test_prompt_version_reaudits_legacy_cached_verdict(audit_enabled, monkeypatch):
+    calls, _events = _wire(monkeypatch, "PASS")
+    autonomy_state = _autonomy_state()
+    statement = runner._statement_signature_text(
+        autonomy_state["current_queue_assignment"]["slice"]
+    )
+    statement_hash = runner.hashlib.sha1(statement.encode("utf-8")).hexdigest()[:12]
+    node_id = plan_state.node_id_for("demo", "Demo/Main.lean")
+    autonomy_state["fidelity_audits_seen"] = {f"{node_id}::{statement_hash}": "suspect"}
+
+    assert runner._maybe_statement_fidelity_audit(autonomy_state, {}) == "pass"
+    assert len(calls) == 1
+
+
+def test_bare_prove_file_goal_treats_existing_lean_statement_as_authority(
+    audit_enabled, monkeypatch
+):
+    monkeypatch.setenv("LEANFLOW_NATIVE_EFFECTIVE_PROMPT", "/prove Demo/Main.lean")
+    calls, events = _wire(monkeypatch, "BLOCK", response="BLOCK\ninvented objection")
+    autonomy_state = _autonomy_state()
+
+    verdict = runner._maybe_statement_fidelity_audit(autonomy_state, {})
+
+    assert verdict == "pass"
+    assert calls == []
+    assert any(
+        args[0] == "statement-fidelity-audit"
+        and kwargs.get("verdict") == "pass"
+        and "authoritative statement" in kwargs.get("detail", "")
+        for args, kwargs in events
+    )
 
 
 def test_real_parser_chain_handles_the_review_dataclass(audit_enabled, monkeypatch):

@@ -121,6 +121,12 @@ class _CodexCompletionsAdapter:
             "input": input_msgs or [{"role": "user", "content": ""}],
             "store": False,
         }
+        timeout = kwargs.get("timeout")
+        if timeout is not None:
+            # Auxiliary callers rely on a bounded read timeout. Dropping this
+            # value here can otherwise pin the entire foreground planner while
+            # a Responses stream waits indefinitely for its first event.
+            resp_kwargs["timeout"] = timeout
 
         # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
         # support max_output_tokens or temperature — omit to avoid 400 errors.
@@ -151,7 +157,15 @@ class _CodexCompletionsAdapter:
         usage = None
 
         try:
-            with self._client.responses.stream(**resp_kwargs) as stream:
+            request_client = self._client
+            with_options = getattr(request_client, "with_options", None)
+            if timeout is not None and callable(with_options):
+                # The summarizer/coach layer owns any retry policy. Letting the
+                # SDK retry each timed-out stream multiplies one nominal
+                # 30-second attempt into roughly 90 seconds before the caller's
+                # own retries even begin.
+                request_client = with_options(max_retries=0)
+            with request_client.responses.stream(**resp_kwargs) as stream:
                 for _event in stream:
                     pass
                 final = stream.get_final_response()
@@ -257,11 +271,18 @@ class AsyncCodexAuxiliaryClient:
     """Async-compatible wrapper matching AsyncOpenAI.chat.completions.create()."""
 
     def __init__(self, sync_wrapper: "CodexAuxiliaryClient"):
+        self._sync_wrapper = sync_wrapper
         sync_adapter = sync_wrapper.chat.completions
         async_adapter = _AsyncCodexCompletionsAdapter(sync_adapter)
         self.chat = _AsyncCodexChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+
+    async def close(self) -> None:
+        """Close the wrapped synchronous client without blocking the event loop."""
+        import asyncio
+
+        await asyncio.to_thread(self._sync_wrapper.close)
 
 
 class _AnthropicCompletionsAdapter:
@@ -372,8 +393,15 @@ class _AsyncAnthropicChatShim:
 
 class AsyncAnthropicAuxiliaryClient:
     def __init__(self, sync_wrapper: "AnthropicAuxiliaryClient"):
+        self._sync_wrapper = sync_wrapper
         sync_adapter = sync_wrapper.chat.completions
         async_adapter = _AsyncAnthropicCompletionsAdapter(sync_adapter)
         self.chat = _AsyncAnthropicChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
         self.base_url = sync_wrapper.base_url
+
+    async def close(self) -> None:
+        """Close the wrapped synchronous client without blocking the event loop."""
+        import asyncio
+
+        await asyncio.to_thread(self._sync_wrapper.close)

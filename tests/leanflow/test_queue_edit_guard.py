@@ -45,6 +45,38 @@ def test_assigned_statement_signature_drops_proof_body():
     assert "trivial" not in sig
 
 
+def test_assigned_preamble_tracks_doc_comment_and_multiline_attributes():
+    source = (
+        "theorem earlier : True := by\n"
+        "  trivial\n\n"
+        "/-- Documentation owned by the assigned theorem. -/\n"
+        "@[category research open,\n"
+        "  simp]\n"
+        "theorem assigned_thm : True := by\n"
+        "  sorry\n"
+    )
+
+    assert queue_edit_guard._queue_edit_assigned_preamble(source, "assigned_thm") == (
+        "/-- Documentation owned by the assigned theorem. -/\n"
+        "@[category research open,\n"
+        "  simp]\n"
+    )
+    assert queue_edit_guard._queue_edit_assigned_preamble(source, "earlier") == ""
+    assert queue_edit_guard._queue_edit_assigned_preamble(source, "missing") is None
+
+
+def test_doc_comment_guard_allows_atomic_move_but_rejects_delete_or_edit():
+    doc = "/-- Documentation owned by demo. -/"
+    before = f"{doc}\ntheorem demo : True := by\n  trivial\n"
+    moved = f"private lemma helper : True := by trivial\n\n{doc}\ntheorem demo : True := by\n  trivial\n"
+    deleted = "theorem demo : True := by\n  trivial\n"
+    edited = before.replace("owned by demo", "silently changed")
+
+    assert queue_edit_guard._queue_edit_preserves_doc_comments(before, moved) is True
+    assert queue_edit_guard._queue_edit_preserves_doc_comments(before, deleted) is False
+    assert queue_edit_guard._queue_edit_preserves_doc_comments(before, edited) is False
+
+
 def test_protected_declarations_exclude_the_assigned_target():
     protected = queue_edit_guard._queue_edit_protected_declarations(FILE, "assigned_thm")
     names = {p["name"] for p in protected}

@@ -169,6 +169,11 @@ def test_post_edit_hard_error_consumes_retry_records_attempt_and_continues(monke
     autonomy_state = _autonomy_state()
     agent = _StubAgent(autonomy_state)
     events = _wire(monkeypatch, _blocked_live_state())
+    scope = runner._queue_key("demo", "Demo/Main.lean").storage_key()
+    assert runner.orchestrator_event_watermark.arm_foreground_grace(
+        autonomy_state,
+        scope=scope,
+    )
 
     manager_check = {
         "ok": False,
@@ -197,7 +202,6 @@ def test_post_edit_hard_error_consumes_retry_records_attempt_and_continues(monke
     counts = _hard_retry_counts(autonomy_state)
     assert len(counts) == 1
     assert next(iter(counts.values())) == {"hard": 1}
-
     # Failed attempt recorded with the manager feedback as the reason.
     attempts = autonomy_state["failed_attempts"]
     assert attempts[-1]["target_symbol"] == "demo"
@@ -211,6 +215,10 @@ def test_post_edit_hard_error_consumes_retry_records_attempt_and_continues(monke
     assert agent._managed_step_boundary_recorded_attempt is True
     assert agent._managed_pending_theorem_feedback is None
     assert not getattr(agent, "_managed_step_boundary_closed", False)
+    assert runner.orchestrator_event_watermark.foreground_grace_active(
+        autonomy_state,
+        scope=scope,
+    )
 
     # Signature idempotency: re-running the identical check does NOT advance retries.
     agent._managed_pending_theorem_feedback = {
@@ -226,6 +234,46 @@ def test_post_edit_hard_error_consumes_retry_records_attempt_and_continues(monke
     )
     counts = _hard_retry_counts(autonomy_state)
     assert next(iter(counts.values())) == {"hard": 1}
+
+
+def test_rejection_stages_coached_feedback_before_portfolio_maintenance(monkeypatch):
+    """Slow research refill must not sit ahead of rejection feedback staging."""
+    autonomy_state = _autonomy_state()
+    agent = _StubAgent(autonomy_state)
+    _wire(monkeypatch, _blocked_live_state())
+    order: list[str] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_maybe_manager_nudge",
+        lambda *args, **kwargs: order.append("coach") or "[PERSISTENCE COACH]\n- continue",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *args, **kwargs: order.append("portfolio"),
+    )
+
+    def stage_feedback(text: str) -> None:
+        order.append("feedback")
+        agent._post_tool_result_appendix = text
+
+    agent.set_tool_result_appendix = stage_feedback
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file="Demo/Main.lean",
+        verification_tool="lean_verify",
+        manager_verification={
+            "ok": False,
+            "command": "lake env lean Demo/Main.lean",
+            "output": "error: unsolved goals",
+        },
+    )
+
+    assert order == ["coach", "feedback", "portfolio"]
+    assert "[PERSISTENCE COACH]" in agent._post_tool_result_appendix
 
 
 def test_post_edit_hard_error_below_limit_consumes_up_to_the_limit(monkeypatch):
@@ -308,8 +356,9 @@ def test_post_edit_hard_error_at_limit_restores_baseline_and_yields(monkeypatch)
     assert kwargs["manager_verification"]["restore"] == {
         "restored": True,
         "reason": "reverted current declaration to its baseline `sorry` slice "
-        "after manager retry exhaustion",
+        "after the local feedback window completed",
     }
+    assert args[1] == "Local feedback window complete for demo; route change requested"
     assert len(restore_calls) == 1
 
     # Exhaustion yields: interrupt fired, boundary closed, no failed attempt recorded.
@@ -442,6 +491,11 @@ def test_clean_advance_yields_with_step_boundary_interrupt(monkeypatch):
     autonomy_state = _autonomy_state()
     agent = _StubAgent(autonomy_state)
     events = _wire(monkeypatch, _clean_advanced_live_state())
+    scope = runner._queue_key("demo", "Demo/Main.lean").storage_key()
+    assert runner.orchestrator_event_watermark.arm_foreground_grace(
+        autonomy_state,
+        scope=scope,
+    )
 
     runner._finish_queue_step_boundary(
         agent,
@@ -468,6 +522,10 @@ def test_clean_advance_yields_with_step_boundary_interrupt(monkeypatch):
     assert "manager_feedback_retries" not in autonomy_state
     assert "failed_attempts" not in autonomy_state
     assert not hasattr(agent, "_post_tool_result_appendix")
+    assert not runner.orchestrator_event_watermark.foreground_grace_active(
+        autonomy_state,
+        scope=scope,
+    )
 
 
 def test_live_warning_without_cleanup_advances(monkeypatch):

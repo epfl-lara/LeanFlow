@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import shlex
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from core.process_identity import PROCESS_TOKEN_ENV
 from leanflow_cli.cli.commands import (
     build_forgiving_workflow_alias_map,
     build_workflow_alias_map,
@@ -57,6 +59,9 @@ class NativeWorkflowSpec:
     autoformalizer_verifier_command_template: str = ""
     additional_skills: tuple[str, ...] = ()
     allowed_axioms: str = ""
+    research_mode: bool = False
+    research_workers: int = 0
+    no_parallel: bool = False
 
 
 @dataclass(frozen=True)
@@ -265,6 +270,8 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
     autoformalizer_verifier_command_template = ""
     additional_skills: list[str] = []
     allowed_axioms = ""
+    research_mode = False
+    research_workers: int | None = None
     workflow_tokens: list[str] = []
     idx = 0
     while idx < len(remaining):
@@ -272,6 +279,22 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         if token in {"--no-parallel", "-no-parallel"}:
             no_parallel = True
             idx += 1
+            continue
+        if token == "--research":
+            research_mode = True
+            idx += 1
+            continue
+        if token == "--research-workers":
+            if idx + 1 >= len(remaining):
+                raise ValueError("--research-workers requires a value")
+            try:
+                research_workers = int(remaining[idx + 1])
+            except ValueError as exc:
+                raise ValueError("--research-workers must be an integer") from exc
+            if research_workers < 0:
+                raise ValueError("--research-workers must be non-negative")
+            research_mode = True
+            idx += 2
             continue
         if token == "--agents":
             if idx + 1 >= len(remaining):
@@ -354,6 +377,13 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         parallel_agents = 1
     workflow_args = " ".join(workflow_tokens).strip()
     workflow_kind, canonical_command, backend_command = WORKFLOW_ALIAS_MAP[command_name]
+    if research_mode and workflow_kind != "prove":
+        raise ValueError("--research is supported only for prove/autoprove workflows")
+    effective_research_workers = 0
+    if research_mode:
+        effective_research_workers = (
+            0 if no_parallel else (2 if research_workers is None else research_workers)
+        )
     return NativeWorkflowSpec(
         workflow_kind=workflow_kind,
         frontend_command=command_name,
@@ -363,6 +393,7 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         ),
         workflow_args=workflow_args.strip(),
         parallel_agents=parallel_agents,
+        no_parallel=no_parallel,
         explicit_goal=explicit_goal,
         provider_override=provider_override,
         expert_provider=expert_provider,
@@ -373,6 +404,8 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         autoformalizer_verifier_command_template=autoformalizer_verifier_command_template,
         additional_skills=tuple(additional_skills),
         allowed_axioms=allowed_axioms,
+        research_mode=research_mode,
+        research_workers=effective_research_workers,
     )
 
 
@@ -401,18 +434,33 @@ def resolve_workflow_request(
 ) -> NativeLaunchPlan:
     """Resolve a raw workflow command into a complete NativeLaunchPlan by discovering the project, resolving runtime, normalizing file paths, preparing formalization context if needed, selecting skills, and populating the environment for the native runner subprocess."""
     workflow = parse_workflow_command(command)
+    explicit_research_profile = workflow.research_mode
+    from leanflow_cli.workflows.research_mode import (
+        apply_research_profile_env,
+        research_local_loogle_enabled,
+        research_mode_enabled,
+        research_worker_count,
+    )
+
+    if workflow.workflow_kind == "prove" and not workflow.research_mode and research_mode_enabled():
+        workflow = replace(
+            workflow,
+            research_mode=True,
+            research_workers=(0 if workflow.no_parallel else research_worker_count()),
+        )
     cwd = Path(active_cwd or os.getcwd()).expanduser().resolve()
     project = discover_leanflow_project(cwd)
-    # Make local Loogle work by default: lean-lsp-mcp builds Loogle with Loogle's own
-    # pinned toolchain, which rarely matches the project's, so local Loogle would stay
-    # "incompatible" and silently fall back to remote. Trigger a detached rebuild against
-    # the project's toolchain when needed (no-op once built; never blocks the launch).
-    try:
-        from leanflow_cli.cli.loogle_local import ensure_local_loogle_for_project_async
+    # Make local Loogle work by default outside research mode: lean-lsp-mcp
+    # otherwise builds it with a pinned toolchain that may not match the
+    # project. Full research campaigns retain foreground lean-lsp but skip the
+    # additional resident index unless explicitly memory-provisioned.
+    if research_local_loogle_enabled(research=workflow.research_mode):
+        try:
+            from leanflow_cli.cli.loogle_local import ensure_local_loogle_for_project_async
 
-        ensure_local_loogle_for_project_async(project.root)
-    except Exception:
-        pass
+            ensure_local_loogle_for_project_async(project.root)
+        except Exception:
+            pass
     runtime = resolve_runtime_provider(
         requested=requested_provider or workflow.provider_override or None
     )
@@ -475,6 +523,12 @@ def resolve_workflow_request(
     agent_max_turns = load_agent_max_turns()
 
     child_env = dict(os.environ)
+    if workflow.workflow_kind != "prove":
+        # The environment-compatible research profile has the same prove-only
+        # boundary as ``--research``. Keep independently configured feature
+        # flags intact, but do not let the profile identity activate research
+        # runtime semantics inside review/formalization workflows.
+        child_env["LEANFLOW_RESEARCH_MODE"] = "0"
     child_env.setdefault("AGENT_MAX_TURNS", agent_max_turns)
     child_env.update(
         {
@@ -498,9 +552,16 @@ def resolve_workflow_request(
             "LEANFLOW_NATIVE_ACTIVE_FILE": normalized_active_file,
         }
     )
+    if workflow.research_mode:
+        child_env["LEANFLOW_RESEARCH_MODE"] = "1"
+        apply_research_profile_env(
+            child_env,
+            workers=workflow.research_workers,
+            explicit_cli=explicit_research_profile,
+        )
     if workflow.allowed_axioms:
         child_env["LEANFLOW_NATIVE_ALLOWED_AXIOMS"] = workflow.allowed_axioms
-    if plan_state_enabled():
+    if workflow.research_mode or plan_state_enabled():
         # Phase 1 (P1.3): every deployed agent can discover the living plan
         # artifacts via env, independent of any prompt injection. Paths are
         # anchored to the resolved project (not the parent's discovery).
@@ -595,6 +656,10 @@ def spawn_workflow(
         # Dispatch backends use this to give spawned jobs their own run id
         # (LEANFLOW_WORKFLOW_RUN_ID=""), the parent-run edge, and job env.
         child_env.update({str(key): str(value) for key, value in extra_env.items()})
+    # A fresh opaque token makes the persisted PID safe to revalidate before
+    # later status/cleanup code signals it. Set this last so nested workflows
+    # cannot accidentally inherit the parent runner's ownership identity.
+    child_env[PROCESS_TOKEN_ENV] = secrets.token_urlsafe(32)
     process = subprocess.Popen(
         plan.argv,
         cwd=str(plan.project.root),
@@ -604,7 +669,7 @@ def spawn_workflow(
         stderr=subprocess.DEVNULL if not interactive else None,
         start_new_session=not interactive,
     )
-    return plan, process
+    return replace(plan, child_env=child_env), process
 
 
 def run_workflow(
@@ -614,7 +679,14 @@ def run_workflow(
     requested_provider: str | None = None,
     active_skill: str | None = None,
 ) -> int:
-    """Execute a workflow command synchronously as a subprocess in the project root, waiting for completion and handling KeyboardInterrupt gracefully with escalating termination (terminate → kill), returning the process exit code."""
+    """Execute an interactive workflow and return the native runner's exit code.
+
+    The parent and child share a terminal, so both receive ``Ctrl+C``. The
+    native runner owns that signal and returns to its managed prompt; the
+    wrapper must keep waiting while the user chooses ``/exit`` or resumes.
+    Killing the child on a parent-side ``KeyboardInterrupt`` bypasses campaign
+    checkpoints and background-worker cleanup.
+    """
     plan, process = spawn_workflow(
         command,
         active_cwd=active_cwd,
@@ -622,17 +694,11 @@ def run_workflow(
         active_skill=active_skill,
         interactive=True,
     )
-    try:
-        process.wait()
-    except KeyboardInterrupt:
+    while True:
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-        return process.returncode if process.returncode is not None else 130
-    return process.returncode
+            process.wait()
+            return process.returncode
+        except KeyboardInterrupt:
+            # The child received the same terminal signal and decides whether
+            # it means pause, prompt, or exit. Keep the wrapper transparent.
+            continue

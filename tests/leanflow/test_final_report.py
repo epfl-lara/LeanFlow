@@ -9,6 +9,7 @@ import pytest
 
 from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import final_report as fr
+from leanflow_cli.workflows import negation_promotion, plan_state
 
 
 @pytest.fixture()
@@ -90,7 +91,110 @@ def test_generate_final_report_sections_and_mirror(state_root):
     assert mirror["open_jobs"][0]["job_id"] == "run.planner.np-001"
 
 
-def test_classify_disproved_requires_kernel_standard_probe(state_root):
+def _revalidated_disproof_state(state_root):
+    """Build a sealed root plus the exact payload produced by native revalidation."""
+    from leanflow_cli.workflows.queue_models import TheoremKey
+
+    source = state_root.parent.parent / "Demo.lean"
+    key = TheoremKey.make("hard", "Demo.lean").storage_key()
+    node_id = plan_state.node_id_for("hard", "Demo.lean")
+    root = negation_promotion._seal_campaign_root_entry(
+        {
+            "campaign_id": "campaign-test",
+            "theorem": "hard",
+            "operation_path": str(source),
+            "node_id": node_id,
+            "graph_node_name": "hard",
+            "graph_node_file": "Demo.lean",
+            "declaration_signature_sha256": "1" * 64,
+            "initial_source_revision_sha256": "2" * 64,
+        }
+    )
+    summary = {
+        "campaign": {
+            "campaign_id": "campaign-test",
+            "provider_turn_nonce": 1,
+            negation_promotion._CAMPAIGN_ROOT_REGISTRATION_OPEN_FIELD: False,
+            negation_promotion._CAMPAIGN_ROOTS_FIELD: {
+                "version": 1,
+                "campaign_id": "campaign-test",
+                "roots": [root],
+                "registry_sha256": negation_promotion._campaign_root_registry_sha256([root]),
+            },
+        }
+    }
+    graph_payload = {
+        "theorem": "hard",
+        "operation_path": str(source),
+        "node_id": node_id,
+        "graph_node_name": "hard",
+        "graph_node_file": "Demo.lean",
+        "is_main_goal": True,
+    }
+    evidence = {
+        "key": key,
+        **graph_payload,
+        "file": str(source),
+        "canonical_file": str(source),
+        "source_revision_sha256": "2" * 64,
+        "declaration_signature_sha256": "1" * 64,
+        "negation_name": "not_hard",
+        "negation_prop": "¬ True",
+        "proof_tactic": "decide",
+        "promotion_kind": "scratch_negation",
+        "axioms": [],
+        "promoted_at": "2026-07-17T00:00:00+00:00",
+        "classification_basis": "requested_scope_manifest",
+        "scope_root_campaign_id": "campaign-test",
+        "scope_root_identity_sha256": root["root_identity_sha256"],
+        "scope_root_theorem": "hard",
+        "scope_root_file": "Demo.lean",
+        "scope_root_node_id": node_id,
+        "graph_before_statuses": {node_id: "proving"},
+        "graph_after_statuses": {node_id: "false"},
+        "graph_changed_node_identities": {node_id: {"name": "hard", "file": "Demo.lean"}},
+        "graph_before_revision": 1,
+        "graph_expected_revision": 2,
+    }
+    evidence["graph_identity_sha256"] = negation_promotion._graph_identity_sha256(graph_payload)
+    evidence["classification_identity_sha256"] = negation_promotion._graph_identity_sha256(
+        {
+            **graph_payload,
+            "classification_basis": "requested_scope_manifest",
+            "scope_root_campaign_id": "campaign-test",
+            "scope_root_identity_sha256": root["root_identity_sha256"],
+            "scope_root_theorem": "hard",
+            "scope_root_file": "Demo.lean",
+            "scope_root_node_id": node_id,
+        }
+    )
+    evidence = negation_promotion._canonicalize_promotion_record(
+        negation_promotion._seal_rollback_plan(evidence),
+        state_root.parent.parent,
+    )
+    summary["negation_promotions"] = [evidence]
+    summary["negation_promotion_transactions"] = [
+        {
+            "transaction_id": evidence["promotion_id"],
+            "state": "committed",
+            "prepared_at": "2026-07-17T00:00:00+00:00",
+            "committed_at": "2026-07-17T00:01:00+00:00",
+            "promotion": evidence,
+        }
+    ]
+    autonomy = {
+        **_autonomy_state(),
+        "terminal_outcome": "disproved",
+        "negation_promotion": {
+            "ok": True,
+            "is_main_goal": True,
+            "evidence": evidence,
+        },
+    }
+    return autonomy, summary
+
+
+def test_classify_disproved_rejects_raw_or_stale_promotion_rows(state_root):
     from leanflow_cli.workflows.queue_models import TheoremKey
 
     key = TheoremKey.make("hard", "Demo.lean").storage_key()
@@ -103,24 +207,76 @@ def test_classify_disproved_requires_kernel_standard_probe(state_root):
             }
         ]
     }
-    outcome = fr.classify_scope_outcome(_autonomy_state(), {}, summary)
-    assert outcome.kind == "disproved"
+    assert fr.classify_scope_outcome(_autonomy_state(), {}, summary).kind == "report"
 
-    tainted = {
-        "negation_probes": [
-            {"key": key, "negation": {"verdict": "negation_proved", "axioms_ok": False}}
-        ]
-    }
-    assert fr.classify_scope_outcome(_autonomy_state(), {}, tainted).kind == "report"
+    promoted = {"negation_promotions": [{"key": key, "node_id": "n-hard", "is_main_goal": True}]}
+    assert fr.classify_scope_outcome(_autonomy_state(), {}, promoted).kind == "report"
+    sublemma = {"negation_promotions": [{"key": key, "node_id": "n-hard", "is_main_goal": False}]}
+    assert fr.classify_scope_outcome(_autonomy_state(), {}, sublemma).kind == "report"
     # Same theorem NAME in a different file never classifies this scope
     # disproved (exact key match required).
     other_key = TheoremKey.make("hard", "Other.lean").storage_key()
     other = {
-        "negation_probes": [
-            {"key": other_key, "negation": {"verdict": "negation_proved", "axioms_ok": True}}
-        ]
+        "negation_promotions": [{"key": other_key, "node_id": "n-other", "is_main_goal": True}]
     }
     assert fr.classify_scope_outcome(_autonomy_state(), {}, other).kind == "report"
+
+
+def test_classify_disproved_accepts_this_runs_revalidated_root_payload(state_root):
+    autonomy, summary = _revalidated_disproof_state(state_root)
+
+    outcome = fr.classify_scope_outcome(autonomy, {}, summary)
+
+    assert outcome.kind == "disproved"
+    assert "hard" in outcome.detail
+
+
+def test_classify_disproved_rejects_reconciliation_ambiguity(state_root):
+    autonomy, summary = _revalidated_disproof_state(state_root)
+    autonomy["negation_promotion_pending"] = 1
+
+    assert fr.classify_scope_outcome(autonomy, {}, summary).kind == "report"
+
+
+@pytest.mark.parametrize("transaction_change", ["removed", "duplicated", "pending", "tampered"])
+def test_classify_disproved_requires_one_exact_committed_transaction(
+    state_root, transaction_change
+):
+    """Runtime evidence cannot bypass the durable promotion commit boundary."""
+    autonomy, summary = _revalidated_disproof_state(state_root)
+    transaction = json.loads(json.dumps(summary["negation_promotion_transactions"][0]))
+    if transaction_change == "removed":
+        summary["negation_promotion_transactions"] = []
+    elif transaction_change == "duplicated":
+        summary["negation_promotion_transactions"] = [transaction, dict(transaction)]
+    elif transaction_change == "pending":
+        transaction["state"] = "pending"
+        transaction.pop("committed_at")
+        summary["negation_promotion_transactions"] = [transaction]
+    else:
+        transaction["promotion"]["proof_tactic"] = "exact forged"
+        summary["negation_promotion_transactions"] = [transaction]
+
+    assert fr.classify_scope_outcome(autonomy, {}, summary).kind == "report"
+
+
+@pytest.mark.parametrize("ledger_change", ["removed", "duplicated", "tampered", "replaced"])
+def test_classify_disproved_requires_one_exact_current_promotion_row(state_root, ledger_change):
+    """Cached runtime evidence cannot outlive or diverge from its durable row."""
+    autonomy, summary = _revalidated_disproof_state(state_root)
+    original = json.loads(json.dumps(summary["negation_promotions"][0]))
+    if ledger_change == "removed":
+        summary["negation_promotions"] = []
+    elif ledger_change == "duplicated":
+        summary["negation_promotions"] = [original, dict(original)]
+    elif ledger_change == "tampered":
+        original["proof_tactic"] = "exact forged"
+        summary["negation_promotions"] = [original]
+    else:
+        original["promotion_id"] = "replacement-promotion"
+        summary["negation_promotions"] = [original]
+
+    assert fr.classify_scope_outcome(autonomy, {}, summary).kind == "report"
 
 
 def test_pause_is_not_a_scope_end(state_root, monkeypatch):

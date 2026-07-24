@@ -48,11 +48,37 @@ def test_declaration_index_recognizes_preamble_and_boundaries(tmp_path):
     # The decorated `noncomputable def` is recognized through its attribute/modifier preamble.
     assert entries[0]["kind"] == "def"
     assert entries[0]["line"] == 4
-    # The first declaration's region ends just before the next declaration's preamble line.
-    assert entries[0]["end_line"] == 7
+    # The first declaration's region excludes separator whitespace and the next declaration's docs.
+    assert entries[0]["end_line"] == 5
     assert "sorry" in entries[0]["text"]
     assert entries[1]["kind"] == "theorem"
     assert entries[1]["line"] == 8
+
+
+def test_declaration_index_target_range_ends_on_last_proof_line(tmp_path):
+    """Keep exact declaration ranges off the blank line after a tactic proof."""
+    target = tmp_path / "Demo.lean"
+    target.write_text(
+        "\n".join(
+            [
+                "theorem target : True := by",
+                "  sorry",
+                "",
+                "/-- documentation for the next declaration -/",
+                "@[category research open, AMS 11,",
+                'formal_proof using lean4 at "https://example.test/proof"]',
+                "theorem next_target : True := by",
+                "  trivial",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entries = ld._declaration_index(target)
+
+    assert entries[0]["end_line"] == 2
+    assert entries[0]["text"] == "theorem target : True := by\n  sorry"
 
 
 def test_declaration_index_missing_file_returns_empty(tmp_path):
@@ -97,8 +123,9 @@ def test_surrounding_declarations_window(tmp_path):
         encoding="utf-8",
     )
 
-    # window=1 around the middle declaration yields its immediate neighbours, excluding itself.
-    assert ld._surrounding_declarations(target, "t3", window=1) == ["t2", "t4"]
+    # Proof context may expose only preceding declarations; later neighbours
+    # are not in scope while Lean elaborates the target.
+    assert ld._surrounding_declarations(target, "t3", window=1) == ["t2"]
     assert ld._surrounding_declarations(target, "absent") == []
 
 

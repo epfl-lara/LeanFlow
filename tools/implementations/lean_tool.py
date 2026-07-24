@@ -9,6 +9,7 @@ from pathlib import Path
 from leanflow_cli.lean.lean_declarations import declaration_outline, declaration_region
 from leanflow_cli.lean.lean_incremental import lean_incremental_check
 from leanflow_cli.lean.lean_lemma_suggest import lean_lemma_suggest
+from leanflow_cli.lean.lean_search_horizon import partition_source_order_results
 from leanflow_cli.lean.lean_services import (
     LEAN_WORKER_DISPATCH_ENABLED,
     LeanWorkerRequest,
@@ -25,12 +26,15 @@ from leanflow_cli.lean.lean_services import (
 )
 from tools.implementations.lean_experts import (  # noqa: E402
     LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S,
+    LEAN_DECOMPOSE_HELPERS_MIN_TIMEOUT_S,
     LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S,
+    LEAN_REASONING_HELP_MIN_TIMEOUT_S,
     lean_decompose_helpers_tool,
     lean_reasoning_help_tool,
 )
 from tools.implementations.lean_patch import apply_verified_patch_tool  # noqa: E402
 from tools.registry import registry
+from tools.utilities.lean_inspection_projection import project_exact_symbol_inspection
 
 
 def check_lean_requirements() -> bool:
@@ -47,11 +51,82 @@ def lean_capabilities(cwd: str = "") -> str:
     )
 
 
-def lean_inspect_tool(target: str, cwd: str = "", line: int | None = None, symbol: str = "") -> str:
+def _existing_lean_file(value: str, *, cwd: str = "") -> Path | None:
+    """Return the resolved existing Lean file named by a tool argument."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute() and cwd:
+        candidate = Path(cwd).expanduser() / candidate
+    candidate = candidate.resolve()
+    if candidate.suffix != ".lean" or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _lean_inspect_target(target: str, *, file_path: str = "", cwd: str = "") -> str:
+    """Select an unambiguous file argument for ``lean_inspect``.
+
+    The historical ``target`` parameter remains authoritative when it names a
+    file. A valid explicit ``file_path`` recovers calls that use ``target`` as
+    a declaration alias, while two different real files are rejected.
+    """
+    explicit = str(file_path or "").strip()
+    if not explicit:
+        return target
+
+    explicit_file = _existing_lean_file(explicit, cwd=cwd)
+    target_file = _existing_lean_file(target, cwd=cwd)
+    if explicit_file is None:
+        if target_file is not None:
+            return target
+        raise ValueError(
+            "lean_inspect file_path must name an existing .lean file when target is not a file: "
+            f"{explicit}"
+        )
+    if target_file is not None and target_file != explicit_file:
+        raise ValueError(
+            "lean_inspect received conflicting Lean file paths: "
+            f"target={target_file}, file_path={explicit_file}"
+        )
+    return str(explicit_file)
+
+
+def lean_inspect_tool(
+    target: str,
+    cwd: str = "",
+    line: int | None = None,
+    symbol: str = "",
+    file_path: str = "",
+) -> str:
+    """Return full file state or a bounded model-facing exact-symbol projection."""
+    inspection_target = _lean_inspect_target(target, file_path=file_path, cwd=cwd)
+    inspection = lean_inspect(
+        inspection_target,
+        cwd=cwd or None,
+        line=line,
+        symbol=symbol or None,
+    ).to_dict()
+    wanted = str(symbol or "").strip()
+    if wanted:
+        inspection_path = Path(str(inspection.get("target", "") or inspection_target)).expanduser()
+        if not inspection_path.is_absolute() and cwd:
+            inspection_path = Path(cwd).expanduser() / inspection_path
+        region = declaration_region(inspection_path.resolve(), wanted)
+        if region is not None:
+            inspection = (
+                project_exact_symbol_inspection(
+                    inspection,
+                    symbol=wanted,
+                    declaration=region,
+                )
+                or inspection
+            )
     return json.dumps(
         {
             "success": True,
-            **lean_inspect(target, cwd=cwd or None, line=line, symbol=symbol or None).to_dict(),
+            **inspection,
         },
         ensure_ascii=False,
     )
@@ -75,6 +150,7 @@ def lean_incremental_check_tool(
     cwd: str = "",
     replacement: str = "",
     include_tactics: bool = False,
+    include_axiom_profile: bool = False,
     timeout_s: int = 60,
 ) -> str:
     return json.dumps(
@@ -87,6 +163,7 @@ def lean_incremental_check_tool(
                 cwd=cwd,
                 replacement=replacement,
                 include_tactics=include_tactics,
+                include_axiom_profile=include_axiom_profile,
                 timeout_s=timeout_s,
             ),
         },
@@ -95,13 +172,26 @@ def lean_incremental_check_tool(
 
 
 def lean_search_tool(
-    query: str, cwd: str = "", mode: str = "auto", limit: int = 10, file_path: str = ""
+    query: str,
+    cwd: str = "",
+    mode: str = "auto",
+    limit: int = 10,
+    file_path: str = "",
+    *,
+    _leanflow_source_horizon_file: str = "",
+    _leanflow_source_horizon_target: str = "",
 ) -> str:
+    """Search Lean declarations and hide confirmed future same-file results."""
     result = lean_search(query, cwd=cwd or None, mode=mode, limit=limit, file_path=file_path)
-    payload = {
-        "success": True,
-        **result.to_dict(),
-    }
+    payload = partition_source_order_results(
+        {
+            "success": True,
+            **result.to_dict(),
+        },
+        active_file=_leanflow_source_horizon_file,
+        target_symbol=_leanflow_source_horizon_target,
+        cwd=cwd,
+    )
     if (
         not result.results
         and "repeated empty search loop detected; stop searching and change tactic"
@@ -135,10 +225,11 @@ def lean_sorries_tool(scope: str = "project", target: str = "", cwd: str = "") -
 
 
 def lean_axioms_tool(target: str, cwd: str = "", file_path: str = "") -> str:
+    report = lean_axioms(target, cwd=cwd or None, file_path=file_path)
     return json.dumps(
         {
-            "success": True,
-            **lean_axioms(target, cwd=cwd or None, file_path=file_path).to_dict(),
+            "success": report.inspection_succeeded,
+            **report.to_dict(),
         },
         ensure_ascii=False,
     )
@@ -300,16 +391,37 @@ LEAN_CAPABILITIES_SCHEMA = {
 
 LEAN_INSPECT_SCHEMA = {
     "name": "lean_inspect",
-    "description": "Return structured Lean state for a target file: diagnostics, goals, sorry counts, blocker kind, queue candidates, and capability snapshot.",
+    "description": (
+        "Return structured Lean state for a target file: diagnostics, goals, sorry counts, "
+        "blocker kind, queue candidates, and capability snapshot. With an exact symbol, the "
+        "model-facing response retains every file error but limits other diagnostics and queue "
+        "items to that declaration, with explicit aggregate and omitted counts."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
-            "target": {"type": "string", "description": "Lean file path to inspect"},
+            "target": {
+                "type": "string",
+                "description": (
+                    "Lean file path to inspect. When file_path is also supplied, a non-file "
+                    "target is treated as a declaration alias; use symbol for exact scope."
+                ),
+            },
+            "file_path": {
+                "type": "string",
+                "description": (
+                    "Optional explicit existing Lean file path. It wins when target is not a "
+                    "file; conflicting real file paths are rejected."
+                ),
+            },
             "cwd": {"type": "string", "description": "Optional working directory"},
             "line": {"type": "integer", "description": "Optional target line for goals lookup"},
             "symbol": {
                 "type": "string",
-                "description": "Optional declaration name for goals lookup",
+                "description": (
+                    "Optional exact declaration name for goals lookup and a bounded response. "
+                    "If the declaration cannot be resolved, full-file output is returned."
+                ),
             },
         },
         "required": ["target"],
@@ -344,6 +456,9 @@ LEAN_INCREMENTAL_CHECK_SCHEMA = {
         "declaration or replacement chunk. Use this for inner-loop proof feedback and optional "
         "tactic/proof-state annotations; use lean_verify for explicit final Lake sweeps. "
         "Normal queue use is action=check_target with file_path and theorem_id. Use "
+        "action=check_helper with theorem_id set to the existing assigned declaration and "
+        "replacement set to a complete new helper declaration; this validates the helper "
+        "against the exact pre-target environment without counting as target acceptance. Use "
         "action=prepare_file to warm imports before a run. Use action=feedback or "
         "include_tactics=true when the proof is blocked and you need intermediate tactic "
         "ranges, goals, proof_state, feedback_lean comments, and file-global diagnostic locations."
@@ -356,21 +471,39 @@ LEAN_INCREMENTAL_CHECK_SCHEMA = {
             "cwd": {"type": "string", "description": "Optional project working directory"},
             "action": {
                 "type": "string",
-                "description": "`prepare_file` warms header/imports and prior envs; `check_target` validates the assigned declaration; `feedback` is a rich diagnostic check with tactic/proof-state output.",
+                "enum": ["prepare_file", "check_target", "check_helper", "feedback"],
+                "description": "`prepare_file` warms header/imports and prior envs; `check_target` validates the assigned declaration; `check_helper` validates a complete new helper supplied in replacement, anchored immediately before the existing theorem_id; `feedback` is a rich diagnostic check with tactic/proof-state output.",
                 "default": "check_target",
             },
             "replacement": {
                 "type": "string",
-                "description": "Optional full replacement declaration chunk to check instead of current file text",
+                "description": "Optional full replacement declaration chunk. For check_helper, pass only complete, sorry-free helper declarations and use theorem_id as the existing assigned anchor.",
             },
             "include_tactics": {
                 "type": "boolean",
                 "description": "Include tactic ranges, tactic text, goals, proof_state, and feedback_lean annotations. Leave false for speed on likely-success checks; set true when asking the model to repair a stuck proof. Failures auto-rerun with tactics when possible.",
                 "default": False,
             },
+            "include_axiom_profile": {
+                "type": "boolean",
+                "description": (
+                    "For `check_target`, embed marker-bound `#print axioms` evidence in the "
+                    "exact target check. For `check_helper`, select the one-shot exact-project "
+                    "helper harness, require a complete allowed-axiom profile, and fail closed "
+                    "when that profile is unavailable. Managed assigned-target replacements "
+                    "enable target profiling automatically. Do not use this option with "
+                    "`prepare_file` or `feedback`."
+                ),
+                "default": False,
+            },
             "timeout_s": {
                 "type": "integer",
-                "description": "LeanInteract request timeout",
+                "description": (
+                    "LeanInteract request timeout in seconds. Process-isolated research "
+                    "workers enforce a 300-second cold-start floor so a large-file check "
+                    "does not repeatedly kill and restart its Lean server."
+                ),
+                "minimum": 1,
                 "default": 60,
             },
         },
@@ -467,7 +600,13 @@ LEAN_MULTI_ATTEMPT_SCHEMA = {
         "type": "object",
         "properties": {
             "file_path": {"type": "string", "description": "Lean file path"},
-            "line": {"type": "integer", "description": "Target line number"},
+            "line": {
+                "type": "integer",
+                "description": (
+                    "Target tactic line number; safe line-only requests resolve an immediate "
+                    "post-proof blank or an inline `:= by` tactic body"
+                ),
+            },
             "column": {"type": "integer", "description": "Optional target column"},
             "attempts": {
                 "type": "array",
@@ -649,6 +788,7 @@ LEAN_REASONING_HELP_SCHEMA = {
                 "type": "integer",
                 "description": "Advisor request timeout in seconds",
                 "default": LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S,
+                "minimum": LEAN_REASONING_HELP_MIN_TIMEOUT_S,
             },
         },
         "required": ["theorem_id", "file_path"],
@@ -701,8 +841,12 @@ LEAN_DECOMPOSE_HELPERS_SCHEMA = {
             },
             "timeout_s": {
                 "type": "integer",
-                "description": "Advisor request timeout in seconds",
+                "description": (
+                    "Whole decomposition request timeout in seconds, shared by the "
+                    "advisor and every subsequent Lean skeleton validation"
+                ),
                 "default": LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S,
+                "minimum": LEAN_DECOMPOSE_HELPERS_MIN_TIMEOUT_S,
             },
         },
         "required": ["theorem_id", "file_path"],
@@ -727,6 +871,7 @@ registry.register(
         cwd=args.get("cwd", ""),
         line=args.get("line"),
         symbol=args.get("symbol", ""),
+        file_path=args.get("file_path", ""),
     ),
     check_fn=check_lean_requirements,
     emoji="🔬",
@@ -754,6 +899,7 @@ registry.register(
         cwd=args.get("cwd", ""),
         replacement=args.get("replacement", ""),
         include_tactics=bool(args.get("include_tactics", False)),
+        include_axiom_profile=bool(args.get("include_axiom_profile", False)),
         timeout_s=int(args.get("timeout_s", 60) or 60),
     ),
     check_fn=check_lean_requirements,
@@ -769,6 +915,8 @@ registry.register(
         mode=args.get("mode", "auto"),
         limit=args.get("limit", 10),
         file_path=args.get("file_path", ""),
+        _leanflow_source_horizon_file=args.get("_leanflow_source_horizon_file", ""),
+        _leanflow_source_horizon_target=args.get("_leanflow_source_horizon_target", ""),
     ),
     check_fn=check_lean_requirements,
     emoji="🔎",
@@ -913,10 +1061,7 @@ registry.register(
         recent_failed_attempts=args.get("recent_failed_attempts", ""),
         question=args.get("question", ""),
         cwd=args.get("cwd", ""),
-        timeout_s=int(
-            args.get("timeout_s", LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S)
-            or LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S
-        ),
+        timeout_s=int(args.get("timeout_s", LEAN_REASONING_HELP_DEFAULT_TIMEOUT_S)),
     ),
     check_fn=check_lean_requirements,
     emoji="💡",
@@ -936,10 +1081,7 @@ registry.register(
         question=args.get("question", ""),
         cwd=args.get("cwd", ""),
         max_helper_count=int(args.get("max_helper_count", 6) or 6),
-        timeout_s=int(
-            args.get("timeout_s", LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S)
-            or LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S
-        ),
+        timeout_s=int(args.get("timeout_s", LEAN_DECOMPOSE_HELPERS_DEFAULT_TIMEOUT_S)),
     ),
     check_fn=check_lean_requirements,
     emoji="🪜",

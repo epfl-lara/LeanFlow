@@ -1,9 +1,150 @@
 # LeanFlow /prove Redesign — Implementation Specs (companion to prove-redesign-roadmap.md)
 
-Implementation-ready, code-verified specs for every phase, produced by four deep-grounding agents
-(2026-07-02) and assembled here. Every seam cited as file:line was re-read in this tree; citation
-corrections vs the roadmap are collected in Part I §0.3. Parts: I = Phases 0–1, II = Phases 2–3 +
-lineage + concrete-result mechanics, III = Phases 4–6, IV = existing-assets reuse inventory.
+Implementation record for the redesign. The original function-level design was produced on
+2026-07-02; the promoted implementation delta below is current as of 2026-07-18. Historical seam
+inventories and superseded schemas remain in Parts I–IV to explain the rollout, but current module
+docstrings and the delta below are authoritative when they disagree with an earlier proposal.
+
+## Promoted implementation delta (2026-07-18)
+
+- `manager_nudge.py` is now a persistence coach, not a manager or strategist. Its model schema
+  contains only `message` and `commitment`; `progress_acknowledged` is populated separately from
+  deterministic parent state. It runs after every rejected proof turn. `off`, `dark`, malformed,
+  surrendering, and unavailable outputs all apply and record a deterministic positive fallback;
+  `prove`/`autoprove` default to live model coaching. The model
+  may acknowledge effort and failure-as-information, but any Lean/kernel/source-status assertion,
+  proof-progress claim, or route selection makes its reply unusable. Verified helper names are
+  attached only by deterministic parent code, and a zero-helper turn cannot call an unchanged
+  `sorry` compiled progress.
+- `workflow.py` exposes `--research` and `--research-workers N`; the profile enables the full
+  planning, retrieval, orchestration, fidelity, dispatch, negation, reporting, learning, and
+  coaching stack. `--research` defaults to two background subprocess workers. Explicit CLI
+  activation overwrites inherited feature-disable switches; environment-only activation keeps
+  intentional per-feature overrides but cannot make routable difficulty a terminal stop.
+- `campaign_epoch.py` turns 120 cycles, four no-progress routes, and context pressure into durable
+  epoch rollovers. It preserves graph/plan/job/findings/attempt evidence and starts a fresh model
+  context under the same campaign instead of returning a mathematical stop. The spent route
+  portfolio is durable, and the fresh epoch must start a distinct non-direct route before another
+  direct proof attempt is allowed. Route completion is token- and epoch-bound and is recorded only
+  after observable managed work; a failed consult, stale route, signal, or provider pause cannot
+  consume the obligation. The pending selection is persisted with its exact target and file, so an
+  infrastructure resume reuses it without re-running route selection or incrementing the no-progress
+  route streak; a genuinely later stall/event decision still increments the streak normally. A
+  versioned migration also repairs older checkpoints only when durable activity shows the repeated
+  same-scope route was another `scope-entry` after an exit-2 provider failure and before route start;
+  it refuses ambiguous histories or route streaks changed by later graph progress.
+- `research_portfolio.py`, `dispatch_service.py`, and `native/dispatch_worker.py` provide
+  process-isolated fire-and-continue research jobs. The parent consumes structured deliverables
+  once and remains the only writer of shared plan/graph state. Epoch rollover harvests completed
+  jobs, retires open old-epoch workers, and refills distinct routes on the next tick. The rollover
+  preserves semantic-cooldown evidence, but if ordinary uncooled selection cannot fill configured
+  capacity, the refill may relax only cooldowns produced in an older epoch and must still select a
+  history-distinct objective/signature. A cooldown produced in the current epoch is never relaxed.
+  Exact evidence-to-helper follow-ups reserve their source finding from foreground delivery while
+  active. After termination, only an actionable, schema-valid exact helper or replacement remains a
+  reservation. Materialized actionable candidates lead the batch and couple their source receipt,
+  preventing foreground/background duplicate synthesis.
+  Staging a canonical checked helper additionally persists one exact-assignment parent-action
+  record. Research-prompt acknowledgement never clears it. The next safe outer boundary reruns the
+  exact helper and allowed-axiom profile before any orchestrator consultation; an accepted helper
+  fences one foreground insertion opportunity until the ordinary edit/helper gate banks it. Source
+  drift returns the record to recheck, mathematical rejection retires it, and operational failure
+  remains resumable. Managed search likewise projects confirmed later same-file declarations out of
+  the usable result list using the current disk index, preventing source-order-invalid tactic work.
+  The rollover transaction persists a worker-refresh token before process cleanup;
+  startup/maintenance replays
+  an interrupted refresh, preserves any result that won the cancellation race, and clears the token
+  only after no matching pre-refresh worker remains open. A capacity-deferred planner persists a
+  versioned campaign/epoch/target/file reservation before yielding. Resumed and live parent polls
+  continue harvesting and consuming findings with refill disabled until that route runs. If a
+  refill was already in flight when the plan route became pending, the parent retires only the
+  replacement launches from that transaction; older active research is not preempted. A completed
+  job whose slot cannot be refilled in the same maintenance pass now creates one versioned,
+  exact-assignment `research_portfolio_pending_replacement` intent containing attempt/worker/slot
+  counts and bounded triggering job ids. Repeated heartbeats are write/event deduplicated, normal
+  refill clears the intent only after configured capacity is filled, and epoch refresh honors the
+  intent immediately after old-worker reconciliation by launching distinct fresh-epoch routes.
+  The dispatch ledger remains the lossless finding authority. Its prompt cache keeps a 32-result
+  active-target safety cap but reserves only one three-result batch for split-ancestor evidence;
+  exact-target findings are materialized and delivered first. Deferred results emit explicit
+  archive activity, and ancestor paging cannot suppress the required scope-entry child workers.
+  Scratch dispatch uses explicit, nonempty archetype allowlists and fails closed instead of
+  inheriting parent/default tools. Workers receive no terminal or shared-file writer; empirical
+  jobs get only bounded deterministic computation plus Lean checks, while other research workers
+  cannot call the nested `lean_reasoning_help`/`lean_decompose_helpers` model advisors. The advisor
+  handlers enforce the same boundary before provider resolution.
+- `core/provider_capacity.py` makes `--research-workers N` a cross-process live-actor cap shared by
+  dispatch jobs and planner delegates. Actors acquire before agent construction; copied tool
+  contexts and nested auxiliary calls retain the lease. Foreground control calls stay ungated, and
+  a saturated planner records `capacity-deferred` for next-boundary retry after a bounded wait.
+- `orchestrator_event_watermark.py` closes the consultation-cadence gap during long foreground
+  turns. Parent maintenance publishes job completions to a theorem-scoped monotonic watermark;
+  safe read/search callbacks yield to the outer loop, while edit and verification callbacks never
+  route inside their commit. One consultation acknowledges exactly its captured prefix, so
+  concurrent later events and failed consultations remain pending without duplicate publication.
+- Startup and target rotation now avoid duplicate Lean discovery work. `_build_live_proof_state`
+  reuses `lean_inspect`'s capability report and probes only when inspection yields none; a rotated
+  queue target calls the goals-only `lean_goals` service with that report instead of repeating
+  diagnostics, project `sorry` scans, or capability discovery. Startup emits paired proof-state
+  refresh events with wall/phase timing. The post-tool callback runs structural queue-edit
+  finalization only for an exact supported source edit with a valid matching snapshot; read-only,
+  malformed, and support-file callbacks still run ordinary result handling without consuming stale
+  edit state or emitting an `[unknown]` finalization event.
+- Foreground research-mode and dispatch-worker `lean_incremental_check` calls apply a 300-second
+  cold-start timeout floor. A model-requested 60-second deadline can no longer repeatedly kill a
+  freshly reclaimed Lean service before Mathlib startup finishes; checks still return immediately
+  when Lean finishes early, and caller deadlines above 300 seconds are unchanged. Results expose
+  requested/effective timeout telemetry and the selected timeout policy.
+- Final-report review has a rejection-only deterministic source gate. When a non-success response's
+  exact assigned declaration still contains a literal comment/string-stripped `sorry` or `admit`,
+  the manager records a target-scoped `source_placeholder_gate` failure without opening a Lean
+  transaction. A placeholder-free declaration, missing identity, or explicit success claim still
+  goes through the ordinary incremental/canonical kernel gate; source scanning can never accept a
+  proof.
+- Planner synthesis now passes every grounding, strategy, and node assertion independently through
+  the conservative arithmetic preflight before any summary/graph merge or stub write. A plainly
+  false affine identity or divisibility claim rejects the whole synthesis with journaled normalized
+  counterevidence; unsupported nonlinear claims remain fail-open for ordinary Lean validation.
+- Research-result classification preserves mathematical content that accompanies an operational
+  failure. A result is operational-only only when it has neither semantic fingerprints nor managed
+  boundary evidence, so a nested timeout cannot erase an already-derived obstruction or proof shape;
+  versioned novelty/substance migration recovers older archived findings under the same rule.
+- `negation_promotion.py` requires matching declaration/signature/source revisions, fresh Lean
+  elaboration, no `sorry`, and the standard-axiom allowlist. Scratch probes alone are never
+  authoritative; only promoted main-goal negation produces `disproved`. Its pending-to-committed
+  transaction persists complete evidence before graph falsity, replays or rolls back interrupted
+  commits, and startup revalidates the exact promoted evidence before any provider is constructed.
+- Promoted false sublemmas trigger a source-first versioned cleanup transaction. The transaction
+  restores the exact pre-decomposition parent and seals every same-revision unresolved decomposer
+  declaration transitively depending on the false node before removing it from source and graph.
+  Unrelated verified declarations are never deleted; verified, externally owned, evidence-bearing,
+  or source-drifted dependents quarantine cleanup. Queue replay retires all deleted identities before
+  graph synchronization, preventing a stale solved outcome from recreating an invalid obligation.
+  A committed version-1 cleanup is upgraded only when its exact archive twin, canonical source,
+  false decomposer tombstone, graph identities, and unresolved dependent declarations still agree.
+  The version-3 replacement is persisted before source CAS and carries its predecessor transaction
+  id. Its transitive closure admits only current-full-source unresolved decomposer declarations and
+  source-less unresolved planner/decomposer artifacts assigned to the same parent. Source CAS deletes
+  only the declaration-backed records; graph replay retires both record kinds, removes their structural
+  edges, reopens the parent, and preserves unrelated proved helpers. Interruption replays idempotently,
+  while any external source authority, verified/evidence edge, or source/graph drift creates a
+  resumable quarantine. The migration-only evidence check permits graph reconciliation to have
+  advanced the source hash on the exact named proof and later proved `prover-edit` obstruction
+  declarations; it still requires unique stable identities, exact current-source text, no placeholder,
+  and the authenticated committed-v1/archive pair. Discovery first checks for structural migration
+  work: an evidence-only committed-v1 tombstone is an idempotent read-only no-op, even if its old audit
+  evidence no longer matches current promotion-era metadata. The exact obsolete no-work evidence
+  quarantine is auto-resolved from its authenticated transaction/archive identity; no other reason is
+  forgiven. Fresh promotion cleanup does not use this allowance.
+- Headless outcomes are truthful: `0=verified`, `3=authoritatively disproved`, `2=unresolved but
+  checkpointed/resumable`, `1=configuration/runtime failure before a valid campaign`, and
+  `130=signal interruption`.
+- `evals/corpus_manifest.json` freezes 40 T2 cases, ten T3 campaigns, and four adversarial cases;
+  `evals/harness.py` reports give-up, false-success, coach coverage, diversity, dispatch, graph,
+  and epoch metrics.
+
+Parts: I = Phases 0–1, II = Phases 2–3 + lineage + concrete-result mechanics, III = Phases 4–6,
+IV = existing-assets reuse inventory.
 
 ---
 
@@ -68,13 +209,13 @@ Verified against branch `docs/prove-redesign-roadmap` @ `/Users/lmilikic/Desktop
 
 - **Trigger**: after every `_run_managed_conversation` (4 sites: `:8329,:9235,:9388,:9747`). Gates: `_single_queue_item_turn_enabled()` (`:449` — autonomous + `LEANFLOW_NATIVE_ACTIVE_FILE` set), `completed and not interrupted` (`:1898`), a valid `autonomy_state["current_queue_assignment"]` (`:1900-1904`), and the final text matching the success-claim regexes `_final_report_claims_queue_success` (`:1621`).
 - **Inputs**: `result` mapping (`messages`, `final_response`, `completed`, `interrupted`), `autonomy_state` dict.
-- **Pipeline**: fresh kernel check `_manager_check_queue_item` (`:1912`) → record verification `_record_manager_verification` (`:1917`, writes `last_verification` into autonomy_state via `_store_last_verification` `:1449`) → if ok, *cleanup denial*: `_declaration_diagnostic_feedback_reason` (`leanflow_cli/lean/lean_diagnostic_feedback.py:162`) may flip `ok=False` with `local_cleanup_reason` (`:1928-1941`) → if still ok and `LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK`, axiom-dependency veto (`:1946-1956`, forces `feedback_kind="error"`) → `_manager_feedback_kind` (`:1953`) → retry accounting: warning limit 1 / hard limit 2 (`:1962-1965`), count via `_manager_feedback_retry_count` (`:1709`, reconstructs a manager) — warning exhausted ⇒ **accept** with `accepted_after_warning_retry_limit` (`:1975-1980`); hard exhausted ⇒ baseline-sorry restore (`:1982`), append `[LEANFLOW-NATIVE MANAGER RETRY LIMIT REACHED]` user message, `completed=False`, `exit_reason="manager_retry_exhausted"` (`:1988-2006`).
+- **Pipeline**: fresh kernel check `_manager_check_queue_item` (`:1912`) → record verification `_record_manager_verification` (`:1917`, writes `last_verification` into autonomy_state via `_store_last_verification` `:1449`) → if ok, *cleanup denial*: `_declaration_diagnostic_feedback_reason` (`leanflow_cli/lean/lean_diagnostic_feedback.py:162`) may flip `ok=False` with `local_cleanup_reason` (`:1928-1941`) → if still ok and `LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK`, axiom-dependency veto (`:1946-1956`, forces `feedback_kind="error"`) → `_manager_feedback_kind` (`:1953`) → retry accounting: warning limit 1 / hard limit 2 (`:1962-1965`), count via `_manager_feedback_retry_count` (`:1709`, reconstructs a manager) — warning exhausted ⇒ **accept** with `accepted_after_warning_retry_limit` (`:1975-1980`); a completed hard-feedback window ⇒ baseline-sorry restore (`:1982`), append `[LEANFLOW-NATIVE LOCAL FEEDBACK WINDOW COMPLETE]` user message, `completed=False`, and retain the compatibility `exit_reason="manager_retry_exhausted"` while the campaign changes route (`:1988-2006`).
 - **Outputs/side effects**: mutated `result` (`manager_final_report_review`, messages, completed, exit_reason); on ok clears retries (`:2009`); on not-ok increments retry *idempotently by signature* `_manager_feedback_retry_signature` (`:2054-2060`, sig def `:1752`) and appends `_manager_final_report_feedback` (`:1642`); activity `manager-final-report-review` (`:2015`); stdout; possible file write (restore).
 
 ### Path B — `_finish_queue_step_boundary` (`native_runner.py:3032-3413`)
 
-- **Trigger**: `_handle_managed_tool_result` (`:3416`) — (i) successful `patch`/`write_file` on the assignment: runs `_manager_check_queue_item` immediately and calls the boundary with `verification_tool="{tool}+{manager_tool}"` (`:3524-3534`); (ii) `apply_verified_patch` arms `agent._managed_pending_theorem_feedback` (`:3494-3498`); (iii) results of `lean_incremental_check(check_target|feedback)`, `lean_verify`, or lake-flavored `terminal` commands (`_tool_result_counts_as_theorem_feedback` `:1057-1068`) close the pending turn (`:3568`).
-- **Pipeline**: records the verification (`:3066-3076`) → rebuilds live state (`:3080`) → cleanup reason FIRST (`:3103-3115`, sets `feedback_kind` from a synthetic check) → else, if same assignment, Path C decides `still_blocked` and infers kind from `entry.has_sorry` (`:3116-3128`) → warning branch consumes/accepts at limit inline (`:3131-3163`) → hard blockers consume retries **only when the trigger was an edit tool** (`post_edit_verification`, `:3057-3062`) against `MANAGER_POST_EDIT_HARD_RETRY_LIMIT = 8` (`:3172`), restoring baseline at limit (`:3182-3194`) → if still blocked, records failed attempt `_remember_failed_attempt` (`:3208`, def `:4642`) and continues same turn via `agent.set_tool_result_appendix` (`:3344`) with an escalation nudge after N attempts (`:3324-3342`); otherwise yields via `_request_step_boundary_interrupt` (`:3413`, def `:1094`).
+- **Trigger**: `_handle_managed_tool_result` (`:3416`) — (i) successful `patch`/`write_file` on the assignment: runs `_manager_check_queue_item` immediately and calls the boundary with `verification_tool="{tool}+{manager_tool}"` (`:3524-3534`); (ii) `apply_verified_patch` arms `agent._managed_pending_theorem_feedback` (`:3494-3498`); (iii) results of `lean_incremental_check(check_target)`, `lean_verify`, or lake-flavored `terminal` commands (`_tool_result_counts_as_theorem_feedback` `:1057-1068`) close the pending turn (`:3568`). `lean_incremental_check(feedback)` is diagnostic-only and never reaches the queue-step boundary, so inspecting an unchanged `sorry` cannot fabricate an additional failed attempt or attempt-based coach/reroute signal.
+- **Pipeline**: records the verification (`:3066-3076`) → rebuilds live state (`:3080`) → cleanup reason FIRST (`:3103-3115`, sets `feedback_kind` from a synthetic check) → else, if same assignment, Path C decides `still_blocked` and infers kind from `entry.has_sorry` (`:3116-3128`) → warning branch consumes/accepts at limit inline (`:3131-3163`) → hard blockers consume retries **only when the trigger was an edit tool** (`post_edit_verification`, `:3057-3062`) against `MANAGER_POST_EDIT_HARD_RETRY_LIMIT = 8` (`:3172`), restoring baseline at limit (`:3182-3194`) → if still blocked, records failed attempt `_remember_failed_attempt` (`:3208`, def `:4642`) and continues same turn via `agent.set_tool_result_appendix` (`:3344`) with an escalation nudge after N attempts (`:3324-3342`); otherwise yields via `_request_step_boundary_interrupt` (`:3413`, def `:1094`). Attempt identity is the exact theorem, declaration SHA-256, normalized gate verdict, and provider-turn key (campaign + epoch + cycle + campaign-wide monotonic turn nonce), so diff/full-check presentations of one unchanged rejection cannot inflate attempts, while a new epoch/process turn cannot be collapsed into an old same-numbered cycle.
 - **Side effects**: `agent._managed_step_boundary_recorded_attempt` (`:3234`, consumed by the loop at `:9250-9255`), activity events `queue-theorem-feedback`/`queue-theorem-cleanup-feedback`/`queue-theorem-retry-exhausted`/`queue-step-boundary` (`:3235-3278`), tool-result appendix, interrupt request.
 
 ### Path C — `_same_queue_assignment_still_blocked` (`native_runner.py:5815-5853`)
@@ -328,7 +469,7 @@ Status transitions are code-enforced: `proved` is writable **only** by the gate-
 ```
 `final_report` is the N1 contract: `documented` is the *worst allowed* terminal state — a stop with neither `proved` nor `disproved` must carry the packets/graph/notes that constitute the rigorous account; the runner's stop paths enforce writing it (§P1.5), so silent give-up is structurally impossible when the flag is on.
 
-`plan.md`: human render; regenerated sections marked `<!-- generated: do not edit above the Notes section -->`; `## Notes` preserved verbatim across writes.
+`plan.md`: human render; regenerated sections marked `<!-- generated: do not edit above the Notes section -->`; `## Notes` preserved verbatim across writes. Strategy exposes the campaign's current orchestrator route and Decision log includes recent route events read from a bounded journal tail. Notes remain historical user context: current queue inventory, Lean source/diagnostics, and the kernel gate outrank copied sorry counts or declaration bodies there.
 
 **Concurrency/atomicity**: Phase 1 invariant — **single writer = the native runner process**; children (Phase 3+) read-only. Writes are `atomic_json_write` (crash-safe); the `revision` check turns any accidental second writer into a loud activity event instead of a lost update. (Multi-process locking exists if later needed: the flock pattern of `_locked_append`, `workflow_state.py:54-66`.)
 
@@ -370,7 +511,7 @@ Today-equivalents (verified):
 1. **Runner child env**: `resolve_workflow_request` sets `LEANFLOW_NATIVE_*`/`LEANFLOW_PROJECT_ROOT` (`workflow.py:476-499`; spawn at `:564`). **Add** `LEANFLOW_PLAN_MD`, `LEANFLOW_BLUEPRINT_JSON`, `LEANFLOW_PLAN_SUMMARY_JSON` (absolute paths — resolvable because `LEANFLOW_PROJECT_ROOT` is fixed at `:480`). Env-contract rule §0.2 honored (`LEANFLOW_`-prefixed).
 2. **Startup prompt**: `_startup_user_message` (`native_runner.py:8541`) — insert a `plan_block = plan_state.artifact_context_block()` next to `queue_block` (`:8579-8593`) in every return branch (`:8613-8621`).
 3. **Continuation prompt**: `_autonomous_continuation_prompt` (`:8927`) — static artifact paths go in the byte-stable prefix; the volatile frontier digest goes after the cycle marker (respecting the RCP prefix-cache design, comment `:8938-8941` and marker `:9053-9055`).
-4. **System prompt**: `_managed_system_prompt` (`:8624`) — one static line: "Living plan artifacts (read before planning; the dependency graph blueprint.json is machine authority): <paths>".
+4. **System/prompt authority**: `_managed_system_prompt` and the injected artifact block identify the living artifacts. The generated graph statuses are authoritative, but stored declaration bodies and the verbatim Notes tail are snapshots; current queue assignment plus Lean source/diagnostics and the kernel gate outrank them. Research orchestrator calls receive the bounded generated-only view. Model-facing `read_file(plan.md)` calls receive an 8,000-character, current-state-first projection of the generated prefix with source hash/count omission telemetry; the canonical `## Notes` heading and historical Notes body remain hidden and non-first-page pagination is rejected, so a foreground prover cannot re-ingest stale history or reasonably create a duplicate heading. Raw model-facing `summary.json` and `blueprint.json` reads are also rejected because their machine ledgers can be very large and stale; bounded graph/finding digests are supplied instead. `LEANFLOW_DIAGNOSTIC_FILE_ACCESS=1` remains an operator-only raw-inspection escape hatch.
 5. **Dispatched workers**: `_worker_prompt` (`lean_worker_dispatch.py:19-44`) — append a `Plan artifacts:` section from `artifact_context_block()` (module already imports `workflow_state`; adding the `plan_state` import keeps it a leaf).
 6. **`delegate_task` children**: children get context only through `_build_child_system_prompt(goal, context)` (`delegate_tool.py:197`) — `tools/` must not import `leanflow_cli/` (layering §0.2), so the injection is **caller-side**: every LeanFlow call site that builds a `context` (today `dispatch_worker` `lean_worker_dispatch.py:87-95`) includes the artifact block. Children spawned in-process also inherit `os.environ`, so the env vars from (1) are a second, prompt-independent discovery channel.
 
@@ -583,8 +724,14 @@ Pure-unit style copied from `tests/leanflow/test_queue_manager.py` (plain functi
 
 ## 2. Phase 2.2 — LLM-manager (`manager_nudge`)
 
+> **Promoted behavior supersedes the proposal below.** The implementation has no action vocabulary
+> and no `stop`. It is invoked for every rejected turn, not only after a struggle threshold. The
+> live schema is `{message, progress_acknowledged, commitment}`; deterministic fallback gives
+> complete coverage in every model mode. The remainder of this section is retained as design
+> history for provider routing and the post-verdict authority boundary.
+
 ### 2.1 Reuse first
-- LLM call: `run_model_verification_review(provider=…, task="manager_nudge", prompt=…, system_prompt=…, timeout_s=…, max_tokens=…)` (`verification_providers.py:160`) — already handles messages, telemetry (`verification-review-request/result` activity events `:176,:226`), `RuntimeError` = unavailable, `status ∈ {ok,no_answer,unavailable,error}`.
+- LLM call: `run_model_verification_review(provider=…, task="manager_nudge", prompt=…, system_prompt=…, timeout_s=…, max_tokens=…)` (`verification_providers.py:160`) — handles messages, telemetry (`verification-review-request/result` activity events `:176,:226`), `RuntimeError` = unavailable, and `status ∈ {ok,no_answer,timeout,unavailable,error}`. Synchronous model work runs in `agent/providers/isolated_auxiliary.py`; the parent enforces `timeout_s` against elapsed wall-clock time and kills/reaps the isolated process group before returning `timeout`.
 - Provider/model routing: **exists with zero new code** — `call_llm(task="manager_nudge")` resolves `auxiliary.manager_nudge.{provider,model,base_url,api_key,reasoning_effort}` from `config.yaml` (`auxiliary_client.py:764,:220-225,:957-981`) and env `AUXILIARY_MANAGER_NUDGE_{PROVIDER,MODEL,BASE_URL,API_KEY,REASONING_EFFORT}` (`:205-213`). Small/fast default comes free: the auto chain's auxiliary defaults are cheap models (`:49-55,:77-78`).
 - JSON parsing: `_extract_json_payload` (`native_utils.py:121`, already imported by native_runner `:301`).
 - System-prompt precedent: `_verification_review_system_prompt` (`manager_verification.py:116`).
@@ -667,6 +814,23 @@ Every entry also mirrors as an `append_workflow_activity("manager-nudge", …)` 
 
 ## 3. Phase 3.3 — Dispatch substrate: WHAT EXISTS vs WHAT IS MISSING
 
+> **Promoted behavior:** the previously missing async seam now ships as process-isolated
+> `deploy_async` plus `native/dispatch_worker.py`, polled by `research_portfolio.py`. Thread-based
+> output redirection is not used. Children return structured deliverables; the parent owns shared
+> plan/graph writes and refills completed/failed/stuck portfolio slots while the goal is unresolved.
+> Launch itself is transactional: the ledger persists a nonce-bearing, capacity-counted `deployed`
+> reservation before any spec write or `Popen`; `running` is committed only with the exact worker
+> identity. Nonce-bound parent/child identity receipts recover the `Popen`-before-commit window,
+> restart reconciliation retries incomplete handshakes with compare-and-swap nonce rotation, and
+> a per-job thread/POSIX sidecar lock spans reservation/rotation through spec write, `Popen`, and
+> running CAS. A stale launcher rechecks the ledger nonce under that lock. The atomically replaced
+> job-global spec is the current-nonce fence read twice by workers, with the final read under the
+> same sidecar together with an expected-parent liveness check. Cross-parent recovery waits for the
+> exact old process boundary to disappear after bounded TERM/KILL escalation before replacement;
+> ambiguous permission or identity lookup failures fail closed. Retry rotation writes that fence before committing its new ledger nonce, making the
+> crash gap reject-only. Identity/result files use nonce-digest names, so delayed old output cannot
+> overwrite or complete a newer attempt.
+
 **Exists (reuse as-is):**
 1. **Child execution** — `delegate_task` (`delegate_tool.py:391`): sync-blocking; 1 task inline (`:461-478`) or ≤ 3 parallel via `ThreadPoolExecutor` (`:489`); per-child result dict with `status/summary/api_calls/duration_seconds/exit_reason/tokens/tool_trace` (`:338-355`); depth-2 recursion guard (`:412`); credential override via `delegation.*` config (`:568`); children emit `conversation-start/end` activity with `agent_session_id` + `parent_agent_session_id` + `process_id` (`run_agent.py:3274,:5101` → `workflow_events.py:31-46`), so they appear in `summarize_workflow_agents` (`workflow_state.py:651`).
 2. **Interrupts** — parent interrupt propagates to registered children (`delegate_tool.py:258-261`); spawned processes killable mid-flight via `terminate_workflow_agent` (SIGINT to pgid, `workflow_state.py:949-980`) and **recursively** via `terminate_workflow_agent_descendants` (`:983`).
@@ -699,7 +863,7 @@ Every entry also mirrors as an `append_workflow_activity("manager-nudge", …)` 
 
 ### (b) Data schemas (`dispatch_models.py`)
 ```python
-ARCHETYPES = ("prover", "empirical", "deep_search", "negation_probe")
+ARCHETYPES = ("prover", "empirical", "deep_search", "negation_probe", "decomposition")
 STATES = ("proposed", "deployed", "running", "done", "failed", "stuck", "killed")
 DISPATCH_ROLES = ("orchestrator", "planner", "decomposer", "human")   # N2: manager/prover NOT here
 
@@ -717,7 +881,7 @@ class JobSpec:
     inputs: dict            # {"node_ids": [...], "files": [...], "plan_pointer": "plan.md#..."}
     toolsets: tuple[str, ...]
     budget: JobBudget
-    deliverable: str        # schema id: "findings_report" | "probe_verdict" | "prove_outcome" | "experiment_result"
+    deliverable: str        # + "decomposition_report" for source-backed proposal-only splits
     scope: dict             # {"file_locks": [...], "scratch_only": bool}
     parent_job_id: str
     report_to: str          # plan-state section name
@@ -728,7 +892,13 @@ class LedgerEntry:
     state: str
     agent_session_ids: list[str]   # reconciled from activity/agents
     run_id: str                    # spawn backend only
+    launch_nonce: str              # async launch transaction/fencing identity
+    launch_started_at: str         # capacity-counted deployed handshake start
+    launch_attempt: int            # monotonic retry generation
     process_id: int                # spawn backend only
+    process_group_id: int          # exact async process ownership
+    process_session_id: int        # exact async process ownership
+    process_token_sha256: str      # hash only; raw token stays in worker env
     created_at: str; started_at: str; finished_at: str
     result: dict                   # {"status", "deliverable": {...}, "artifact_paths": [...]}
     consumed: bool
@@ -736,7 +906,7 @@ class LedgerEntry:
 ```
 
 ### (c) Lineage ids (N3)
-- Grammar: `<root>.<role-path>.<archetype-tag>-<seq>` — e.g. `prove-20260702T101500Z.orchestrator.planner.ds-042`. Root = the run id already minted by `_workflow_run_id()` (`workflow_state.py:276-290`), truncated to the `<task>-<timestamp>` stem. Tags: `pv` (prover), `em` (empirical), `ds` (deep-search), `np` (negation).
+- Grammar: `<root>.<role-path>.<archetype-tag>-<seq>` — e.g. `prove-20260702T101500Z.orchestrator.planner.ds-042`. Root = the run id already minted by `_workflow_run_id()` (`workflow_state.py:276-290`), truncated to the `<task>-<timestamp>` stem. Tags: `pv` (prover), `em` (empirical), `ds` (deep-search), `np` (negation), `dc` (decomposition).
 - `next_job_id(ledger, parent_job_id, archetype) -> str` — seq = 1 + count of ledger ids with prefix `parent_job_id.`; zero-padded 3 digits.
 - `ancestors(job_id) -> tuple[str, ...]` — dotted prefixes; `is_ancestor(a, b) = b.startswith(a + ".")`.
 - `descendants(ledger, job_id)` — prefix scan. **Kill rights (N3): `kill(job_id, requester_job_id)` requires `is_ancestor(requester, job)` or requester == root/human.** Process-level enforcement rides the existing `parent_agent_session_id` edges (`workflow_state.py:983`) for spawned trees.
@@ -745,7 +915,11 @@ class LedgerEntry:
 ### (d) Ledger persistence
 - Authority: `summary.json` key `dispatch_ledger` (per roadmap §4.2), read via `read_json_file` (`workflow_json_io.py:20`), written via `core.utils.atomic_json_write` (`core/utils.py:13`) under `runtime/file_locks.acquire_file_lock(summary.json, owner_id=<runner owner>, purpose="dispatch-ledger", ttl_seconds=60)` to serialize multi-process writers.
 - Every state transition also emits `append_workflow_activity("dispatch-job", …, job_id=…, state=…, agent_session_id=…)` (`workflow_state.py:309`) — giving a free per-agent journal in `activity/agents/*.jsonl` for reconciliation.
-- `reconcile(ledger) -> ledger`: for each `running` entry, cross-check `summarize_workflow_agents()` (`:651`) status + `_process_seems_alive` (`:511`); dead/terminal agent with no result ⇒ `failed` (note "agent died"); missing agent ⇒ `stuck`. Run at every `poll()` and at scope exit (**"a job can never be silently lost"** — final-report generator, §6, prints any non-terminal entries).
+- `reconcile(ledger) -> ledger`: first recover every nonce-bearing `deployed` entry by adopting its
+  exact identity receipt or rotating/retrying a stale handshake; then cross-check each `running`
+  entry against exact process identity or `summarize_workflow_agents()` evidence. Run at every
+  `poll()` and portfolio tick (**"a job can never be silently lost"** — final-report generation
+  still prints any non-terminal entries).
 
 ### (e) API (`dispatch_service.py`)
 ```python
@@ -758,14 +932,17 @@ class DispatchService:
     def deploy(self, job_id: str) -> LedgerEntry:
         """Sync v1: run the job to completion via the archetype backend; cap 3 concurrently-running entries."""
 
+    def deploy_async(self, job_id: str) -> LedgerEntry:
+        """Reserve durably, launch one process worker, and commit only its exact identity as running."""
+
     def poll(self, job_id: str) -> dict:
         """Reconciled status snapshot: state, agent statuses, last activity age, budget spent."""
 
     def join(self, job_id: str, timeout_s: int | None = None) -> LedgerEntry:
-        """v1 trivial (deploy is blocking); the seam async lands behind later."""
+        """Wait for async launch recovery/result harvest up to the optional timeout."""
 
     def kill(self, job_id: str, *, requester_job_id: str) -> dict:
-        """Ancestor-gated: terminate_workflow_agent_descendants + terminate_workflow_agent for spawned jobs; interrupt event for in-process children; state='killed'."""
+        """Ancestor-gated; persist killed only after exact process exit is proven."""
 
     def consume(self, job_id: str) -> dict:
         """One-way result hand-off: return {'deliverable', 'artifact_paths', 'plan_delta'}; mark consumed; NEVER raw transcript."""
@@ -774,12 +951,12 @@ class DispatchService:
 ```
 
 **Backends** (private):
-- `_run_delegate_job(spec)` — shapes B/empirical/deep-search/negation: `delegate_task(goal=spec.objective, context=<rendered JobSpec + artifact paths>, toolsets=list(spec.toolsets), max_iterations=spec.budget.api_steps, parent_agent=…, isolate_budget=True)`; file locks per `spec.scope["file_locks"]` acquired/released around the call (pattern: `lean_worker_dispatch.py:56-63`, ttl = `wall_clock_s`).
+- `_run_delegate_job(spec)` — empirical/deep-search/negation/decomposition research: `delegate_task(goal=spec.objective, context=<rendered JobSpec + artifact paths>, toolsets=<explicit archetype allowlist>, max_iterations=spec.budget.api_steps, parent_agent=…, isolate_budget=True)`; file locks per `spec.scope["file_locks"]` acquired/released around the call (pattern: `lean_worker_dispatch.py:56-63`, ttl = `wall_clock_s`). Scratch jobs resolve `web`/`lean` through focused read-only `web-research`/`lean-research` toolsets, so download, clone, terminal, shared-file patch, and nested LLM-advisor tools are not callable. Missing toolsets receive a non-empty archetype-safe surface; a wholly disallowed request fails before provider invocation rather than inheriting parent/default tools. Decomposition accepts only a bounded structured `decomposition_report`: source kinds come from the exact documented allowlist, every retained subgoal cites a source, reaches the requested target under the kind-aware dependency graph, and supplies nonempty strict-difficulty evidence. Malformed or structurally unusable output is `incomplete_unverified` and cannot finish as a successful decomposition job. It always returns an empty `plan_delta`; only the parent may materialize it.
 - `_run_spawn_job(spec)` — prover shape A: `spawn_workflow(f"/prove {stub_file}", extra_env={run-id triplet, LEANFLOW_DISPATCH_JOB_ID, AGENT_MAX_TURNS=str(spec.budget.api_steps)})`; then a monitor loop: `process.poll()` + run-activity mtime + patience policy; on completion read the child's `outcomes.jsonl` tail and per-declaration state via `lean_incremental_check(action="check_target")` (`lean_incremental.py:245`) for the deliverable. **v1 constraint (documented):** the child overwrites `live_status.json`; the monitor therefore never reads `live_status.json` and relies on run-scoped streams only. Restoring the parent's live-status is a Phase 1/4 concern.
 
 **Patience policy** (from declared budgets, per roadmap): a job is `stuck` (and then killed) only when **both** hold — `now > started_at + 1.5 × wall_clock_s` **and** last activity-event age `> max(600 s, 0.25 × wall_clock_s)`. The second clause is what protects a long Lake build (its `tool-call`/`api-request` events keep the stream fresh) while killing a truly wedged agent.
 
-**Result consumption (one-way):** deliverables are (i) verified disk edits — for prover jobs the acceptance evidence is re-checked by the **parent's own** deterministic checker (`_manager_check_queue_item`, `native_runner.py:1210`) before the graph/plan delta is applied, never trusted from the child's claim; (ii) a bounded JSON deliverable per schema id; (iii) `plan_delta` — a list of graph-node status proposals `{node_id, status, evidence}` that Phase 1's plan-state module applies.
+**Result consumption (one-way):** deliverables are (i) verified disk edits — for prover jobs the acceptance evidence is re-checked by the **parent's own** deterministic checker (`_manager_check_queue_item`, `native_runner.py:1210`) before the graph/plan delta is applied, never trusted from the child's claim; (ii) a bounded JSON deliverable per schema id; (iii) parent-produced graph updates. Research children, including decomposition, cannot emit an authoritative plan delta.
 
 ### (f) Flags
 - `LEANFLOW_DISPATCH_ENABLED=1` (default off) gates every `deploy`; `propose` always works (dark-plannable).
@@ -857,6 +1034,10 @@ def run_negation_probe(file_path, theorem_id, *, dispatch: DispatchService | Non
 ### (d) Budgets / flags / trigger
 - `LEANFLOW_NEGATION_PROBE_BUDGET` (default 1 probe per `TheoremKey.storage_key()`, tracked in `summary.json.negation_probes`).
 - `LEANFLOW_NEGATION_PROBE_AFTER_FAILURES` (default 2), `LEANFLOW_NEGATION_PROBE_TIMEOUT_S` (default 120).
+- Authoritative whole-source negation promotion uses a separate cold-start floor:
+  `LEANFLOW_NEGATION_SOURCE_PROMOTION_TIMEOUT_S` (default and minimum 300 seconds). The override
+  may raise but cannot lower the full-module kernel budget; an exhausted timeout remains a
+  checkpointed, retryable infrastructure pause and never grants mathematical authority.
 - Trigger sites: (1) LLM-manager `action=="falsify"` suggestion (§2 — suggestion only; the deterministic caller enforces budget/threshold); (2) direct threshold — `attempts_for_current() >= 2` at the budget-exhaustion path (`native_runner.py:6008`); (3) later, orchestrator risk-flag.
 - Dispatched as archetype `negation_probe` through the DispatchService (jobs `…np-001`), delegate backend, `toolsets=("lean","file")`, `scope={"scratch_only": true}` (no file locks needed — scratch never touches the tree).
 
@@ -1110,7 +1291,7 @@ def refresh_queue_edit_guard(agent: Any) -> None:
 
 **Exact precedent for the reset**: `_run_document_formalization_review_agent` already zeroes both caches when constructing the reviewer (native_runner.py:5687–5688). `refresh_queue_edit_guard` does the same on the *parent* agent after decomposer writes. The assigned-statement guard keeps enforcing statement immutability for the prover afterward (`_queue_edit_assigned_statement_signature`, queue_edit_guard.py:131).
 
-**Validation**: each placed stub re-checked in-place via `lean_incremental_check(action="check_target", file_path=stub_file, theorem_id=helper_name)` (`leanflow_cli/lean/lean_incremental.py:245`) — LeanProbe-backed, warm; `skeleton_validation.allows_sorry_warnings=True` semantics preserved (sorry warnings OK, errors reject; on reject the write is reverted).
+**Validation**: the final declaration in each contiguous placed batch is re-checked in-place via `lean_incremental_check(action="check_target", file_path=stub_file, theorem_id=tail_helper_name)`. LeanProbe elaborates every preceding segment while constructing the tail's environment, so this single gate covers the entire inserted batch without rebuilding successively longer prefixes. `skeleton_validation.allows_sorry_warnings=True` semantics remain preserved (sorry warnings OK, errors reject; on reject the whole write is reverted and the bounded Lean diagnostic is journaled).
 
 **Graph**: each stated helper → node `{kind:"lemma", status:"stated", file, statement}` + edge `{from: helper, to: target, kind:"split_of"}` + `depends_on` edges from the helper's declared `dependencies`. Queue seeding: `mgr.replace_queue([...stubs as QueueItem mappings...])` (queue_manager.py:140) then the existing selection path assigns via `assign` (:181); `_flush_queue_manager` (native_runner.py:886) persists.
 
@@ -1139,16 +1320,29 @@ Serialization round-trip: `TheoremQueueManager.from_autonomy_state` (queue_manag
 - Decision parsing: reuse/extract `_extract_json_object` (`tools/implementations/lean_experts.py:292–309` — fence-tolerant) into a small shared leaf (e.g. `core/json_extract.py`) imported by both.
 - Provider defaulting precedent: `blueprint_verification` defaults to `"main"` (config.py:78–87; `default_verification_provider`, verification_providers.py:64–67) — exactly the "strong model = main agent model" default D1 wants.
 
+**Implemented latency/context contract:** the research profile shapes the advisory into a
+target-scoped prompt capped at 12,000 characters. The exact assigned declaration, priority error
+diagnostics, deterministic floor, and reply schema reserve space first. Graph facts, failed routes,
+research findings, generated plan state, and phase policy each have explicit local caps; every
+shortened or omitted history contributes its full-source SHA-256 plus character/item counts to the
+prompt and `orchestrator-prompt-shaped` activity telemetry. The isolated synchronous consult then
+has a twenty-second foreground ceiling; `LEANFLOW_ORCHESTRATOR_LLM_TIMEOUT_S` may lower but cannot
+raise that research ceiling. One timeout persists a two-minute project-local circuit; subsequent
+consult ticks keep the deterministic route floor without making a provider call, and a successful
+half-open call resets the circuit. Non-research calls retain their separately bounded configurable
+timeout. The circuit changes latency only, never route or verification authority.
+
 ### New
 **Config plumbing (verified mechanism, corrected key names)**: add to `DEFAULT_CONFIG["auxiliary"]` (config.py:57): `"orchestration": {"provider": "main", "model": "", ...}`, `"planner": {...}`, `"manager_nudge": {"provider": "", "model": "", ...}`; add fallbacks `{"orchestration": "lean_reasoning", "planner": "orchestration", "manager_nudge": "lean_reasoning"}` to `_AUXILIARY_TASK_FALLBACKS` (auxiliary_client.py:72). Env overrides come free: `AUXILIARY_ORCHESTRATION_PROVIDER/_MODEL/_BASE_URL/_API_KEY` (:190–214). Update `DEFAULT_CONFIG_HEADER` docs (config.py:149+).
 
-**Context assembly** (`orchestrator_llm.py`, new leaf; N5 — context-RICH for research runs, no aggressive compression):
-- goal (`LEANFLOW_NATIVE_EXPLICIT_GOAL` via `_read_native_env("EXPLICIT_GOAL")`, native_config.py:34);
-- full RouteContext rendered;
-- graph frontier + `blocked`/`false` nodes **with full statements and notes** (not truncated) — the graph keeps this bounded structurally, not by chopping text;
-- the decision packet verbatim (statement, all `FailedAttempt` entries via `attempt_entries_for`, queue_manager.py:332 — up to `DEFAULT_FAILED_ATTEMPT_HISTORY=10`, error signatures from `consume_retry_once_for` signatures, search history from `autonomy_state["search_progress"]` tracker, native_runner.py:2412–2479, negation status);
-- `plan.md` excerpt: full `## Grounding` and `## Frontier` sections; only long transcript-ish sections elided. In `LEANFLOW_RESEARCH_MODE` the *entire* plan.md is included (N5: token cost is not the constraint for research runs);
-- the deterministic floor's proposed route + reason.
+**Context assembly** (`orchestrator_llm.py` + `orchestrator_prompt_budget.py`):
+- exact current target identity and a bounded head/tail declaration view;
+- error-bearing diagnostic lines ahead of bounded general diagnostic context;
+- deterministic floor route/reason and campaign/negation/fidelity counters;
+- target dependency frontier separately from a compact campaign-global scheduling inventory;
+- bounded decision-packet, verified-graph, failed-signature, completed-finding, generated-plan, and
+  phase-policy sections, each carrying a digest/count record for its complete pre-projection source;
+- historical user `plan.md` Notes are excluded entirely.
 
 **Decision JSON schema** (the model must return exactly this; floor-fallback on parse failure):
 ```json
@@ -1159,11 +1353,19 @@ Serialization round-trip: `TheoremQueueManager.from_autonomy_state` (queue_manag
   "statements_to_state": [{"name": "...", "file": "Project/Generated/Bounds.lean",
                             "statement": "lemma ... : ... := by\n  sorry", "visibility": "private|public",
                             "depends_on": ["n17"], "notes": "why this split"}],
-  "probes": [{"archetype": "negation|empirical|deep-search", "objective": "...", "budget_api_steps": 40}],
+  "probes": [{"archetype": "negation|empirical|deep-search|decomposition", "objective": "...", "budget_api_steps": 40}],
   "park": {"until": "condition", "packet_note": "..."} 
 }
 ```
 Upgrade-only rule enforced in code: if the floor said anything other than `park/escalate`, an LLM `park/escalate` answer is logged and ignored (`decision_source="llm-downgrade-rejected"`); the kernel gate is untouched by construction (the LLM output never reaches `_manager_check_queue_item`).
+
+**Shipped arithmetic preflight**: before a parsed LLM decision becomes route authority,
+`orchestrator_arithmetic_preflight.py` checks only a conservative affine fragment. It expands
+plain affine aliases, compares asserted affine identities, and modularly counterchecks claims
+`d ∣ (a*t+b)` under a stated residue class. A supported contradiction rejects the LLM decision,
+records the exact claim plus counterevidence in activity/campaign failed-route state, and retains
+the deterministic floor route. Nonlinear, conditional, speculative, or otherwise ambiguous math
+fails open; passing this preflight never certifies correctness and does not weaken the Lean gate.
 
 **Prompt draft (system)** — embodies research-pusher + N1:
 > You are the orchestrator of a Lean 4 proving harness attacking research-grade problems. The Lean kernel is the only authority on truth; you decide *strategy*. Difficulty is a routing signal, never a terminal state: when a goal resists, you split it into stated sub-lemmas, order a negation probe, commission an empirical experiment, or send a deep-search job into the literature — you do not lower ambition and you never conclude "too hard" without a concrete next artifact. Every scope you manage must end in exactly one of: a kernel-verified proof; a kernel-verified refutation (negation proved); or a parked state whose decision packet records precisely what was tried, what was learned, and the cheapest promising continuation. Silent surrender is a protocol violation. You may run multiple proving directions when the graph shows genuinely independent routes, but prefer probing and evidence-gathering before committing prover budget. Answer with the decision JSON only.
@@ -1194,11 +1396,20 @@ Fan-out via `delegate_task(tasks=[...], parent_agent=agent, toolsets=...)` (dele
 |---|---|---|
 | web/literature | `["web"]` (`web_search`/`web_fetch`/`web_download`, :45–49) + `repo_clone` (§5.6) | `{"findings":[{"claim","source_url_or_path","relevance","candidate_lemmas":[...]}], "downloads":[paths], "repos":[paths]}` |
 | mathlib | `["lean"]` (`lean_search`, `lean_lemma_suggest`, `lean_proof_context`; :85–89) | `{"candidates":[{"name","statement","module","how_it_helps"}], "gaps":[...]}` |
-| empirical | `["terminal","lean"]` (python via `terminal`, Lean via `lean_incremental_check`/`lean_multi_attempt`) | `{"hypothesis","method","result":"supports|refutes|inconclusive","evidence","counterexample":null\|{...}}` |
+| empirical | `["terminal","lean"]` (python via `terminal`, Lean via `lean_incremental_check`/`lean_multi_attempt`); bounded pilot of at most 12 selected cases and two non-background terminal calls, each hard-clamped to 20 seconds | `{"hypothesis","method","result":"supports|refutes|inconclusive","evidence","counterexample":null\|{...}}` |
 | draft | `["file","lean"]` | `{"stubs":[{"name","file","statement","depends_on"}]}` — statements must pass `lean_incremental_check`; prompt derived from current `draft.md`'s exit criteria (rewritten, §6.9) |
 | negation | `["lean"]` scratch-only (LeanProbe) | `{"target","plausible_result","negation_attempted","negation_proved":bool,"proof_or_obstruction"}` |
 
 **Synthesizer**: one `run_model_verification_review(task="planner_synthesis", provider=resolve auxiliary.planner)` turn over the ≤5 deliverables + goal; output = a plan.md patch (`## Grounding`, `## Strategy`, `## Frontier`) + graph delta (nodes/edges JSON). Merge: `plan_state.apply_delta` (atomic `write_json_file` path, workflow_state.py:305 pattern); queue seeding through the decomposer's `state_helpers_into_file` + `mgr.replace_queue` (§4.2) so *all* stub-stating flows through one code path. Premise-retrieval pre-step (roadmap Phase 5): prepend `lean_lemma_suggest` output (`leanflow_cli/lean/lean_lemma_suggest.py:324`, registered lean_tool.py:843) to each seeded item's `search_hints` (`QueueItem.search_hints`, queue_models.py:85).
+
+The synchronous planner is supervised by `native/parent_maintenance.py`: planner work executes in a worker while the native runner's process-owning thread keeps polling the background research portfolio. This prevents completed dispatch children from holding capacity until planner synthesis returns.
+
+The table's empirical terminal budget describes the synchronous planner pilot. Production
+background empirical JobSpecs may retain legacy `terminal` in their persisted request, but dispatch
+filters it out and delegates only `lean-research` plus `empirical-compute`. `empirical_compute` accepts only
+an AST-restricted integer/Fraction subset in a fresh process with a 1–8 second hard timeout and
+source/output/memory limits. `LEANFLOW_DISPATCH_ARCHETYPE=empirical` plus the scratch-worker flags is
+required both for schema exposure and handler execution; no other archetype can invoke it.
 
 **Flags**: `LEANFLOW_PLANNER_ENABLED`, `LEANFLOW_PLANNER_MAX_SUBAGENTS` (default 3). **Tests**: fake `delegate_task` returning canned deliverables (pattern: `tests/tools/test_delegate.py`, 864 lines, has mock-agent fixtures); synthesizer fake via monkeypatched `run_model_verification_review`. **Acceptance**: a `plan` route on a bare goal yields plan.md with all three sections, ≥1 stated stub, queue non-empty. **Risks**: sub-agent transcript ingestion bloat — forbidden: parent consumes only the JSON deliverable (`summary` field of delegate result, delegate_tool.py:338–351); deliverable-parse failure → that lane contributes an empty result and is recorded in the ledger as `failed`, never lost (N1).
 
@@ -1284,6 +1495,13 @@ Per-spec rewrite outline:
 **Tests**: `tests/leanflow/test_lean_workflow_specs.py` (142 lines) extended: `kind: phase` load/validation, alias-collision, `consumed_by` validation; golden test that every phase fragment parses and every `deliverable_schema` is valid YAML. **Acceptance**: `validate_lean_specs()` returns `[]`; the shipped golf substrate is covered by `tests/leanflow/test_golf_mode.py`. (The `/golf` per-declaration metrics artifact and never-breaks-the-build restore path are DEFERRED with the managed-golf runtime — see the golf/refactor descope note above.) **Risks**: `_load_spec` kind inference from parent dir (`path.parent.name.rstrip("s")` :91) makes `leanflow_specs/phases/` infer `"phase"` automatically — but any stray `.md` under `leanflow_specs/` with an unknown dir now raises (:92–93); add explicit `kind:` frontmatter to all fragments.
 
 ## 6.10 Research-pusher pass + `LEANFLOW_RESEARCH_MODE`
+
+> **Promoted behavior supersedes the finite-stop design below.** Research is a public CLI profile,
+> not a manually assembled flag set. The per-context 120-cycle count is an epoch boundary. Route
+> exhaustion and context pressure also roll epochs. Difficulty cannot park or terminate; parking
+> is limited to fidelity/human-approval pauses. The mathematical terminal states are verified or
+> authoritatively disproved, with explicit cancellation and infrastructure pauses recorded as
+> process lifecycle states rather than mathematical conclusions.
 
 ### Grep results — every site that can terminate without a concrete result, or that injects give-up vocabulary (verified):
 
@@ -1460,7 +1678,7 @@ All in `leanflow_cli/workflows/queue_manager.py` (893 lines) and `leanflow_cli/w
 | Reasoning-effort memory | `reasoning_effort_for_current` `:629`, `remember_reasoning_effort_for` `:636`; escalation wiring `native_runner.py:1027-1044`; threshold env `LEANFLOW_NATIVE_FAILED_ATTEMPT_REASONING_THRESHOLD` | per-theorem effort escalation to "high" after repeated failures | budget-breakpoint packet field + orchestrator routing input. As-is. |
 | Persistence round-trip | `from_autonomy_state` `:681` / `to_autonomy_state` `:820` | full manager state serializes into `autonomy_state` | resume + decision packets. As-is. Pinned: `test_queue_manager.py:174`. |
 | `record_outcome/outcomes` | `:556-604` | per-theorem `TheoremOutcome{status, note, build_status, verification}` | graph reconciliation input (`proved`/`unresolved`). As-is. |
-| `select_next_item` | `queue_models.py:311` | pure next-item policy (diagnostic/sorry only) | frontier selection stays as-is; graph-frontier ordering (Phase 4+) wraps it, never replaces it. Pinned: `test_queue_manager.py:18`. |
+| `select_next_item` | `queue_models.py:311` | pure next-item policy (diagnostic/sorry only) | graph-frontier ordering (Phase 4+) wraps it, never replaces it; the ready current assignment is sticky, then ready members of its file-scoped dependency family outrank unrelated nodes. After source/kernel completion, one `split_of` level hands back to ready siblings or the parent without opening older ancestors. Transitive invalid dependencies exclude a node, cycles cool it down, and an unresolved all-excluded queue clears the stale assignment and replans. Pinned: `test_queue_manager.py:18`, `test_ask_human_and_frontier.py`, and the runner-level excluded-frontier transition test. |
 
 **Phase 0 verdict-copy correction (roadmap `:1890/1834/5815`):** the three drifting verdict sites verified today are `_review_agent_final_report` (`native_runner.py:1890`, open-coded retry policy at `:1953-2033`), the legacy adapter `_manager_feedback_kind` (`:1834`, over `_manager_check_for_feedback_kind` `:1767` + `classify_check`), and the budget-exhaustion path `_handle_api_step_budget_exhaustion` (`:6008`). The function name `_manager_gate_for_queue_verification` in `decide()`'s docstring **no longer exists** — treat `:5815` (`_same_queue_assignment_still_blocked`) as assignment-blocked detection, not a verdict copy; Phase 0's consolidation targets are the three named above.
 
@@ -1509,9 +1727,9 @@ All in `leanflow_cli/workflows/queue_manager.py` (893 lines) and `leanflow_cli/w
 
 ### 5.2 `run_model_verification_review` — the one-shot advisory-LLM pattern (nudger + orchestrator floor)
 
-- **Asset:** `run_model_verification_review(*, provider, task, prompt, system_prompt="", timeout_s=1200, max_tokens=12000) -> VerificationReviewResult` — `verification_providers.py:160`; provider resolution `resolve_verification_provider` — `:70`; command-provider variant (Codex CLI/Claude Code) `run_command_verification_review` — `:97`; result dataclass `:37` (`status ∈ {ok, no_answer, unavailable, error}` — degraded-safe); telemetry via `_record_verification_activity` `:90`; task-specific system prompts `_verification_review_system_prompt` — `manager_verification.py:116`.
+- **Asset:** `run_model_verification_review(*, provider, task, prompt, system_prompt="", timeout_s=1200, max_tokens=12000) -> VerificationReviewResult` — `verification_providers.py:160`; provider resolution `resolve_verification_provider` — `:70`; command-provider variant (Codex CLI/Claude Code) `run_command_verification_review` — `:97`; result dataclass `:37` (`status ∈ {ok, no_answer, timeout, unavailable, error}` — degraded-safe); telemetry via `_record_verification_activity` `:90`; task-specific system prompts `_verification_review_system_prompt` — `manager_verification.py:116`. Model calls cross the text-only `isolated_auxiliary` subprocess boundary: SDK timeouts remain transport hints, while the parent-owned deadline kills/reaps the worker group and deterministically reports `timeout`.
 - **Reused by:** Phase 2 LLM-manager (`task="manager_nudge"` — exactly the roadmap call shape) and the Phase 6 orchestrator LLM layer (`task="orchestration"`).
-- **How:** as-is — the nudger is `run_model_verification_review` invoked *by the deterministic manager only on struggle signal*, its `response` used as message text only. The `unavailable/error` statuses give the dark-launch fail-open behavior for free (no nudge, loop continues).
+- **How:** as-is — the nudger is `run_model_verification_review` invoked *by the deterministic manager only on struggle signal*, its `response` used as message text only. The `timeout/unavailable/error` statuses give the dark-launch fail-open behavior for free (no nudge, loop continues).
 - **Gotcha:** it records prompt+response into activity streams (`:176-183`) — good for N1 auditability, but nudge prompts must not embed secrets. Pinned by `tests/leanflow/test_manager_verification.py`, formalization-review tests in `test_native_runner.py`.
 
 ### 5.3 Reasoning advisor / decomposition advisor (existing "expert" LLM calls)

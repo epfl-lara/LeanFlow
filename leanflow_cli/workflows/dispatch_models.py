@@ -19,17 +19,35 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-ARCHETYPES = ("prover", "empirical", "deep_search", "negation_probe")
+from core.process_identity import ProcessIdentity
+
+ARCHETYPES = (
+    "prover",
+    "empirical",
+    "deep_search",
+    "negation_probe",
+    "decomposition",
+)
 STATES = ("proposed", "deployed", "running", "done", "failed", "stuck", "killed")
 TERMINAL_STATES = frozenset({"done", "failed", "stuck", "killed"})
 DISPATCH_ROLES = ("orchestrator", "planner", "decomposer", "human")  # N2
-DELIVERABLES = ("findings_report", "probe_verdict", "prove_outcome", "experiment_result")
+DELIVERABLES = (
+    "findings_report",
+    "probe_verdict",
+    "prove_outcome",
+    "experiment_result",
+    "decomposition_report",
+)
+SCRATCH_ISOLATION_VERSION = 2
+ASSIGNMENT_REVISION_INPUT_KEY = "assignment_statement_sha256"
+MATHEMATICAL_DELTA_SIGNATURE_INPUT_KEY = "mathematical_delta_signature"
 
 _ARCHETYPE_TAGS = {
     "prover": "pv",
     "empirical": "em",
     "deep_search": "ds",
     "negation_probe": "np",
+    "decomposition": "dc",
 }
 
 # Legal ledger state machine (STATES x next).
@@ -101,6 +119,19 @@ class JobSpec:
             problems.append("budget must declare positive api_steps and wall_clock_s")
         if self.deliverable not in DELIVERABLES:
             problems.append(f"unknown deliverable schema {self.deliverable!r}")
+        if self.archetype == "decomposition":
+            if self.deliverable != "decomposition_report":
+                problems.append("decomposition jobs require decomposition_report deliverables")
+            if self.scope.get("scratch_only") is not True:
+                problems.append("decomposition jobs must be scratch_only parent-write proposals")
+        elif self.deliverable == "decomposition_report":
+            problems.append("decomposition_report is reserved for decomposition jobs")
+        route_anchor_job_id = str(self.inputs.get("route_anchor_job_id", "") or "").strip()
+        if route_anchor_job_id:
+            provenance = self.inputs.get("route_anchor_provenance")
+            finding_summary = str(self.inputs.get("route_anchor_finding_summary", "") or "").strip()
+            if not isinstance(provenance, Mapping) or not finding_summary:
+                problems.append("evidence-derived job lacks its source finding payload")
         return problems
 
     @classmethod
@@ -142,7 +173,19 @@ class LedgerEntry:
     state: str = "proposed"
     agent_session_ids: tuple[str, ...] = ()  # reconciled from activity/agents
     run_id: str = ""  # spawn backend only
+    launch_nonce: str = ""  # async launch transaction identity
+    launch_started_at: str = ""  # deployed/launching reservation time
+    launch_attempt: int = 0  # monotonic per job, including crash recovery
     process_id: int = 0  # spawn backend only
+    process_group_id: int = 0  # spawn backend only
+    process_session_id: int = 0  # spawn backend only
+    process_token_sha256: str = ""  # spawn backend only
+    process_released_at: str = ""  # durable proof that terminal capacity is free
+    process_release_reason: str = ""  # bounded release-evidence classifier
+    process_release_evidence_sha256: str = ""  # canonical non-secret evidence digest
+    process_release_observed_started_at: str = ""  # diagnostic only, never authority
+    process_release_report_key: str = ""  # deterministic activity idempotency key
+    process_release_reported_at: str = ""  # durable diagnostic acknowledgement
     created_at: str = ""
     started_at: str = ""
     finished_at: str = ""
@@ -158,6 +201,15 @@ class LedgerEntry:
             raise ValueError(f"illegal ledger transition {self.state} -> {state}")
         return replace(self, state=state, **changes)
 
+    def process_identity(self) -> ProcessIdentity:
+        """Return the exact persisted ownership identity for this worker."""
+        return ProcessIdentity(
+            pid=self.process_id,
+            process_group_id=self.process_group_id,
+            session_id=self.process_session_id,
+            token_sha256=self.process_token_sha256,
+        )
+
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> LedgerEntry:
         data = dict(raw or {})
@@ -169,7 +221,23 @@ class LedgerEntry:
                 str(sid) for sid in (data.get("agent_session_ids") or []) if str(sid)
             ),
             run_id=str(data.get("run_id", "") or ""),
+            launch_nonce=str(data.get("launch_nonce", "") or ""),
+            launch_started_at=str(data.get("launch_started_at", "") or ""),
+            launch_attempt=max(0, int(data.get("launch_attempt", 0) or 0)),
             process_id=int(data.get("process_id", 0) or 0),
+            process_group_id=int(data.get("process_group_id", 0) or 0),
+            process_session_id=int(data.get("process_session_id", 0) or 0),
+            process_token_sha256=str(data.get("process_token_sha256", "") or ""),
+            process_released_at=str(data.get("process_released_at", "") or ""),
+            process_release_reason=str(data.get("process_release_reason", "") or ""),
+            process_release_evidence_sha256=str(
+                data.get("process_release_evidence_sha256", "") or ""
+            ),
+            process_release_observed_started_at=str(
+                data.get("process_release_observed_started_at", "") or ""
+            ),
+            process_release_report_key=str(data.get("process_release_report_key", "") or ""),
+            process_release_reported_at=str(data.get("process_release_reported_at", "") or ""),
             created_at=str(data.get("created_at", "") or ""),
             started_at=str(data.get("started_at", "") or ""),
             finished_at=str(data.get("finished_at", "") or ""),
@@ -184,7 +252,19 @@ class LedgerEntry:
             "state": self.state,
             "agent_session_ids": list(self.agent_session_ids),
             "run_id": self.run_id,
+            "launch_nonce": self.launch_nonce,
+            "launch_started_at": self.launch_started_at,
+            "launch_attempt": self.launch_attempt,
             "process_id": self.process_id,
+            "process_group_id": self.process_group_id,
+            "process_session_id": self.process_session_id,
+            "process_token_sha256": self.process_token_sha256,
+            "process_released_at": self.process_released_at,
+            "process_release_reason": self.process_release_reason,
+            "process_release_evidence_sha256": self.process_release_evidence_sha256,
+            "process_release_observed_started_at": self.process_release_observed_started_at,
+            "process_release_report_key": self.process_release_report_key,
+            "process_release_reported_at": self.process_release_reported_at,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,

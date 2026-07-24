@@ -3,7 +3,7 @@
 import os
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -19,6 +19,7 @@ from tools.implementations.file_operations import (
     WriteResult,
     _is_write_denied,
 )
+from tools.utilities.workflow_artifact_guard import WORKFLOW_DIAGNOSTIC_FILE_ACCESS_ENV
 
 # =========================================================================
 # Write deny list
@@ -348,6 +349,105 @@ class TestSearchPathValidation:
         assert result.error is not None
         assert "search failed" in result.error.lower() or "Search error" in result.error
 
+    def test_search_context_preserves_hyphenated_numeric_path(self, tmp_path):
+        """Keep context paths intact when checkout names contain ``-<digits>-`` segments."""
+        checkout = tmp_path / "leanflow-acceptance-20260714-imomath3"
+        checkout.mkdir()
+        source = checkout / "Example.lean"
+        source.write_text("before\nneedle\nafter\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.search("needle", path=str(checkout), context=1)
+
+        assert result.error is None
+        assert [(match.path, match.line_number) for match in result.matches] == [
+            (str(source), 1),
+            (str(source), 2),
+            (str(source), 3),
+        ]
+
+    def test_repository_content_search_excludes_workflow_state(self, tmp_path, monkeypatch):
+        """Do not return a live transcript match from an otherwise broad source search."""
+        monkeypatch.delenv(WORKFLOW_DIAGNOSTIC_FILE_ACCESS_ENV, raising=False)
+        source = tmp_path / "Source.lean"
+        source.write_text("recursive-marker\n", encoding="utf-8")
+        state = tmp_path / ".leanflow" / "workflow-state"
+        state.mkdir(parents=True)
+        (state / "latest-run.log").write_text("recursive-marker\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.search("recursive-marker", path=".")
+
+        assert result.error is None
+        assert [Path(match.path).name for match in result.matches] == ["Source.lean"]
+
+    def test_repository_file_search_excludes_workflow_state(self, tmp_path, monkeypatch):
+        """Prune .leanflow when the agent uses search_files as a recursive file listing."""
+        monkeypatch.delenv(WORKFLOW_DIAGNOSTIC_FILE_ACCESS_ENV, raising=False)
+        (tmp_path / "ordinary.log").write_text("source log\n", encoding="utf-8")
+        state = tmp_path / ".leanflow" / "workflow-state"
+        state.mkdir(parents=True)
+        (state / "latest-run.log").write_text("agent transcript\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.search("*.log", path=".", target="files")
+
+        assert result.error is None
+        assert [Path(path).name for path in result.files] == ["ordinary.log"]
+
+    def test_explicit_workflow_state_search_is_blocked(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(WORKFLOW_DIAGNOSTIC_FILE_ACCESS_ENV, raising=False)
+        state = tmp_path / ".leanflow" / "workflow-state"
+        state.mkdir(parents=True)
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.search("proof", path=str(state))
+
+        assert result.error is not None
+        assert "cannot search managed workflow-state" in result.error
+
+    def test_explicit_diagnostic_mode_can_search_workflow_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(WORKFLOW_DIAGNOSTIC_FILE_ACCESS_ENV, "1")
+        state = tmp_path / ".leanflow" / "workflow-state"
+        state.mkdir(parents=True)
+        log = state / "latest-run.log"
+        log.write_text("diagnostic-marker\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.search("diagnostic-marker", path=str(state))
+
+        assert result.error is None
+        assert [Path(match.path).name for match in result.matches] == ["latest-run.log"]
+
+
+class TestWorkflowTranscriptReadGuard:
+    def test_direct_log_read_is_blocked(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(WORKFLOW_DIAGNOSTIC_FILE_ACCESS_ENV, raising=False)
+        state = tmp_path / ".leanflow" / "workflow-state"
+        state.mkdir(parents=True)
+        log = state / "latest-run.log"
+        log.write_text("do not ingest me\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.read_file(str(log))
+
+        assert result.error is not None
+        assert "own prior output" in result.error
+        assert result.content == ""
+
+    def test_explicit_diagnostic_mode_can_read_log(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(WORKFLOW_DIAGNOSTIC_FILE_ACCESS_ENV, "true")
+        state = tmp_path / ".leanflow" / "workflow-state"
+        state.mkdir(parents=True)
+        log = state / "latest-run.log"
+        log.write_text("operator diagnostic\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(tmp_path), cwd=str(tmp_path))
+
+        result = ops.read_file(str(log))
+
+        assert result.error is None
+        assert "operator diagnostic" in result.content
+
 
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):
@@ -359,6 +459,127 @@ class TestShellFileOpsWriteDenied:
         result = file_ops.patch_replace("~/.ssh/authorized_keys", "old", "new")
         assert result.error is not None
         assert "denied" in result.error.lower()
+
+
+class TestAtomicLocalWrites:
+    """Exercise the LocalEnvironment old-or-new write capability."""
+
+    def test_interrupt_before_replace_preserves_old_bytes(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        path = tmp_path / "state.md"
+        old = b"old managed bytes\n"
+        path.write_bytes(old)
+        env = LocalEnvironment(cwd=str(tmp_path))
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+
+        with patch(
+            "tools.environments.local.is_interrupted",
+            side_effect=[False, True],
+        ):
+            result = ops.write_file(str(path), "new staged bytes\n")
+
+        assert result.error is not None
+        assert "interrupted" in result.error.lower()
+        assert path.read_bytes() == old
+        assert list(tmp_path.glob(".*.leanflow-tmp")) == []
+
+    def test_transactional_write_commits_complete_bytes_during_interrupt(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        path = tmp_path / "state.md"
+        path.write_text("transient edit\n", encoding="utf-8")
+        intended = "restored café\n"
+        env = LocalEnvironment(cwd=str(tmp_path))
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+
+        with patch("tools.environments.local.is_interrupted", return_value=True):
+            result = ops.write_file_transactional(str(path), intended)
+
+        assert result.error is None
+        assert result.bytes_written == len(intended.encode("utf-8"))
+        assert path.read_bytes() == intended.encode("utf-8")
+        assert list(tmp_path.glob(".*.leanflow-tmp")) == []
+
+    def test_new_file_mode_honors_process_umask(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        reference = tmp_path / "reference.txt"
+        reference_fd = os.open(reference, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        os.close(reference_fd)
+        path = tmp_path / "created.txt"
+        env = LocalEnvironment(cwd=str(tmp_path))
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+
+        result = ops.write_file(str(path), "new bytes\n")
+
+        assert result.error is None
+        assert path.stat().st_mode & 0o777 == reference.stat().st_mode & 0o777
+
+    def test_existing_executable_mode_is_preserved(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        path = tmp_path / "script.sh"
+        path.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        path.chmod(0o751)
+        env = LocalEnvironment(cwd=str(tmp_path))
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+
+        result = ops.write_file(str(path), "#!/bin/sh\nexit 0\n")
+
+        assert result.error is None
+        assert path.stat().st_mode & 0o777 == 0o751
+
+    def test_read_only_target_is_not_replaced_via_directory_permission(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        path = tmp_path / "read-only.txt"
+        original = b"protected bytes\n"
+        path.write_bytes(original)
+        path.chmod(0o444)
+        env = LocalEnvironment(cwd=str(tmp_path))
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+
+        result = ops.write_file(str(path), "replacement\n")
+
+        assert result.error is not None
+        assert "permission denied" in result.error.lower()
+        assert path.read_bytes() == original
+        assert path.stat().st_mode & 0o777 == 0o444
+        assert list(tmp_path.glob(".*.leanflow-tmp")) == []
+
+    def test_relative_path_uses_file_operations_cwd(self, tmp_path, monkeypatch):
+        from tools.environments.local import LocalEnvironment
+
+        process_cwd = tmp_path / "process-cwd"
+        operation_cwd = tmp_path / "operation-cwd"
+        process_cwd.mkdir()
+        operation_cwd.mkdir()
+        monkeypatch.chdir(process_cwd)
+        env = LocalEnvironment(cwd=str(operation_cwd))
+        ops = ShellFileOperations(env, cwd=str(operation_cwd))
+
+        result = ops.write_file("relative.txt", "cwd-owned\n")
+
+        assert result.error is None
+        assert (operation_cwd / "relative.txt").read_text(encoding="utf-8") == "cwd-owned\n"
+        assert not (process_cwd / "relative.txt").exists()
+
+    def test_symlink_path_keeps_link_and_replaces_its_target(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        target = tmp_path / "target.txt"
+        target.write_text("old\n", encoding="utf-8")
+        link = tmp_path / "link.txt"
+        link.symlink_to(target.name)
+        env = LocalEnvironment(cwd=str(tmp_path))
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+
+        result = ops.write_file(str(link), "new\n")
+
+        assert result.error is None
+        assert link.is_symlink()
+        assert target.read_text(encoding="utf-8") == "new\n"
 
 
 class TestPatchReplaceStrictAndNearMiss:

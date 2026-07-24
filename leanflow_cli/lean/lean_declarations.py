@@ -38,7 +38,10 @@ __all__ = [
 
 # Single source of truth for the declaration-preamble pattern lives in lean_parsing; import (and
 # re-export, via __all__) it here rather than duplicating the literal, to avoid future drift.
-from leanflow_cli.lean.lean_parsing import LEAN_DECLARATION_PREAMBLE_RE
+from leanflow_cli.lean.lean_parsing import (
+    LEAN_DECLARATION_PREAMBLE_RE,
+    _trim_declaration_region_end,
+)
 
 
 def _declaration_index(path: Path) -> list[dict[str, Any]]:
@@ -58,7 +61,8 @@ def _declaration_index(path: Path) -> list[dict[str, Any]]:
         entries.append({"kind": match.group(1), "name": name, "line": line_number})
     for idx, entry in enumerate(entries):
         start = entry["line"]
-        end = entries[idx + 1]["line"] - 1 if idx + 1 < len(entries) else len(lines)
+        next_start = entries[idx + 1]["line"] if idx + 1 < len(entries) else None
+        end = _trim_declaration_region_end(lines, start=start, next_start=next_start)
         entry["end_line"] = end
         entry["text"] = "\n".join(lines[start - 1 : end]).strip()
     return entries
@@ -87,6 +91,12 @@ def _find_declaration_entry(path: Path, theorem_id: str) -> dict[str, Any] | Non
 
 
 def _surrounding_declarations(path: Path, theorem_id: str, *, window: int = 3) -> list[str]:
+    """Return nearby declarations that precede the requested declaration.
+
+    Later declarations in the same file are not in scope while Lean elaborates
+    the requested declaration.  Keep this helper source-order safe because its
+    result is exposed to proof agents as usable local context.
+    """
     entries = _declaration_index(path)
     if not entries:
         return []
@@ -97,12 +107,10 @@ def _surrounding_declarations(path: Path, theorem_id: str, *, window: int = 3) -
         if name not in {wanted, short_name}:
             continue
         start = max(0, idx - window)
-        end = min(len(entries), idx + window + 1)
         return [
             str(item.get("name", "") or "").strip()
-            for item in entries[start:end]
+            for item in entries[start:idx]
             if str(item.get("name", "") or "").strip()
-            and str(item.get("name", "") or "").strip() != name
         ]
     return []
 

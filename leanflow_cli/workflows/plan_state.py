@@ -38,10 +38,12 @@ from pathlib import Path
 from typing import Any
 
 from core.utils import atomic_json_write
-from leanflow_cli.workflows.queue_models import TheoremKey
+from leanflow_cli.workflows import planner_candidate_admission, planner_graph_identity
+from leanflow_cli.workflows.queue_models import DEFAULT_FAILED_ATTEMPT_HISTORY, TheoremKey
 from leanflow_cli.workflows.workflow_json_io import read_json_file, update_json_file
 from leanflow_cli.workflows.workflow_state import _locked_append
 from leanflow_cli.workflows.workflow_state_paths import workflow_state_root
+from tools.utilities.workflow_artifact_guard import generated_plan_view
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +64,42 @@ EDGE_KINDS = ("depends_on", "split_of", "evidence", "alternative_of")
 FINAL_REPORT_STATUSES = ("proved", "disproved", "documented")
 
 # Keys owned by other cooperating summary writers — never written here.
-_FOREIGN_SUMMARY_KEYS = frozenset({"manager_nudges", "dispatch_ledger"})
+_FOREIGN_SUMMARY_KEYS = frozenset(
+    {
+        "campaign",
+        "campaign_metrics",
+        "advisor_route_facts",
+        "decomposition_provenance",
+        "dispatch_ledger",
+        "false_decomposition_cleanup_quarantine",
+        "false_decomposition_cleanup_transactions",
+        "false_decomposition_cleanups",
+        "manager_nudges",
+        "negation_probes",
+        "negation_promotion_quarantine",
+        "negation_promotion_transactions",
+        "negation_promotions",
+        "planner_arithmetic_reconciliation",
+        "queue_manager_state",
+        "research_delivery_state",
+        "research_delivery_backpressure",
+        "research_finding_migration",
+        "research_findings",
+        "pending_research_helper_candidate",
+        "resolved_research_helper_candidates",
+        "research_portfolio_failure_backoff",
+        "resume_gate_axiom_policy_rejections",
+        "source_negation_candidate_scans",
+        "verification_candidate_replays",
+    }
+)
 
 PLAN_MD_GENERATED_MARKER = "<!-- generated: do not edit above the Notes section -->"
 _NOTES_HEADING = "## Notes"
+_NOTES_HEADING_RE = re.compile(r"(?m)^## Notes[ \t]*$")
+PLAN_PROMPT_VIEW_MAX_CHARS = 8_000
+_RECENT_ROUTE_LIMIT = 8
+_JOURNAL_TAIL_MAX_BYTES = 1024 * 1024
 
 
 class PlanStateRevisionConflict(RuntimeError):
@@ -77,7 +111,17 @@ try:  # POSIX advisory locking (same degradation policy as workflow_state._locke
 except ImportError:  # pragma: no cover - non-POSIX (Windows)
     fcntl = None  # type: ignore[assignment]
 
-_WRITE_LOCK = threading.Lock()
+_WRITE_LOCK = threading.RLock()
+_BLUEPRINT_LOCK_LOCAL = threading.local()
+
+
+def _blueprint_lock_entries() -> dict[str, tuple[int, Any]]:
+    """Return re-entrant blueprint-lock entries for the current thread."""
+    entries = getattr(_BLUEPRINT_LOCK_LOCAL, "entries", None)
+    if not isinstance(entries, dict):
+        entries = {}
+        _BLUEPRINT_LOCK_LOCAL.entries = entries
+    return entries
 
 
 @contextlib.contextmanager
@@ -89,17 +133,41 @@ def _blueprint_write_lock(path: Path) -> Iterator[None]:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(".lock")
-    with _WRITE_LOCK, lock_path.open("a", encoding="utf-8") as handle:
-        if fcntl is not None:
+    key = str(lock_path.absolute())
+    with _WRITE_LOCK:
+        entries = _blueprint_lock_entries()
+        existing = entries.get(key)
+        if existing is not None:
+            depth, handle = existing
+            entries[key] = (depth + 1, handle)
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            except OSError:
-                logger.debug(
-                    "flock unavailable for %s; write not cross-process locked",
-                    lock_path,
-                    exc_info=True,
-                )
-        yield
+                yield
+            finally:
+                current_depth, current_handle = entries[key]
+                if current_depth <= 1:
+                    entries.pop(key, None)
+                else:
+                    entries[key] = (current_depth - 1, current_handle)
+            return
+
+        with lock_path.open("a", encoding="utf-8") as handle:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                except OSError:
+                    logger.debug(
+                        "flock unavailable for %s; write not cross-process locked",
+                        lock_path,
+                        exc_info=True,
+                    )
+            entries[key] = (1, handle)
+            try:
+                yield
+            finally:
+                entries.pop(key, None)
+                if fcntl is not None:
+                    with contextlib.suppress(OSError):
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def plan_state_enabled() -> bool:
@@ -154,6 +222,7 @@ class GraphNode:
     name: str = ""
     file: str = ""
     statement: str = ""
+    source_sha256: str = ""
     status: str = "stated"
     attempts: int = 0
     api_steps: int = 0
@@ -171,6 +240,7 @@ class GraphNode:
             name=str(raw.get("name", "") or ""),
             file=str(raw.get("file", "") or ""),
             statement=str(raw.get("statement", "") or ""),
+            source_sha256=str(raw.get("source_sha256", "") or ""),
             status=status if status in NODE_STATUSES else "stated",
             attempts=int(raw.get("attempts", 0) or 0),
             api_steps=int(raw.get("api_steps", 0) or 0),
@@ -187,6 +257,7 @@ class GraphNode:
             "name": self.name,
             "file": self.file,
             "statement": self.statement,
+            "source_sha256": self.source_sha256,
             "status": self.status,
             "attempts": self.attempts,
             "api_steps": self.api_steps,
@@ -258,13 +329,35 @@ class Blueprint:
                 out.append(node)
         return tuple(out)
 
+    def has_invalid_dependency(self, node_id: str) -> bool:
+        """Return whether a transitive dependency is false or human-paused."""
+        by_id = {node.id: node for node in self.nodes}
+        dependencies: dict[str, list[str]] = {}
+        for edge in self.edges:
+            if edge.kind == "depends_on":
+                dependencies.setdefault(edge.source, []).append(edge.target)
+        pending = list(dependencies.get(node_id, ()))
+        seen: set[str] = set()
+        while pending:
+            dependency_id = pending.pop()
+            if dependency_id in seen:
+                continue
+            seen.add(dependency_id)
+            dependency = by_id.get(dependency_id)
+            if dependency is not None and dependency.status in {"false", "parked"}:
+                return True
+            pending.extend(dependencies.get(dependency_id, ()))
+        return False
+
     def invalidate_false_subtree(self, node_id: str) -> Blueprint:
-        """Mark ``node_id`` false and poison its split_of ancestors to conjectured.
+        """Mark ``node_id`` false and poison its invalid decomposition ancestors.
 
         A kernel-proved negation of a sub-lemma means the decomposition that
         stated it was wrong: every ancestor along split_of edges drops back to
-        ``conjectured`` — except ``proved`` ancestors, which are immutable
-        kernel facts and keep their status.
+        ``conjectured``. A proved ancestor normally remains an immutable kernel
+        fact, but an explicit ``depends_on`` edge to the newly-false child
+        proves that its recorded acceptance came through the invalid route;
+        reopen it so the corrected axiom-aware gate can verify another proof.
         """
         bp = self
         node = bp.node_by_id(node_id)
@@ -273,12 +366,19 @@ class Blueprint:
         bp = bp.replace_node(replace(node, status="false"))
         parents_of = {edge.source: edge.target for edge in bp.edges if edge.kind == "split_of"}
         seen: set[str] = set()
+        invalid_child = node_id
         cursor = parents_of.get(node_id)
         while cursor and cursor not in seen:
             seen.add(cursor)
             ancestor = bp.node_by_id(cursor)
-            if ancestor is not None and ancestor.status not in {"proved", "false"}:
-                bp = bp.replace_node(replace(ancestor, status="conjectured"))
+            explicitly_depends_on_invalid_child = any(
+                edge.kind == "depends_on" and edge.source == cursor and edge.target == invalid_child
+                for edge in bp.edges
+            )
+            if ancestor is not None and ancestor.status != "false":
+                if ancestor.status != "proved" or explicitly_depends_on_invalid_child:
+                    bp = bp.replace_node(replace(ancestor, status="conjectured"))
+            invalid_child = cursor
             cursor = parents_of.get(cursor)
         return bp
 
@@ -320,7 +420,24 @@ def load_blueprint() -> Blueprint:
     """Tolerant read: empty graph on a missing file (corruption raises loudly)."""
     if not plan_state_enabled():
         return Blueprint()
+    _reconcile_persisted_planner_arithmetic()
     return Blueprint.from_mapping(read_json_file(plan_state_paths().blueprint_json))
+
+
+@contextlib.contextmanager
+def blueprint_commit_guard() -> Iterator[None]:
+    """Hold the cooperative graph-writer lease across a cross-artifact commit.
+
+    Callers may read, validate, and save the blueprint while this guard is
+    held. Nested use by the same thread retains one underlying file lease, so
+    a cross-artifact terminal transaction can call existing reconciliation
+    code without reopening a graph race or self-deadlocking.
+    """
+    if not plan_state_enabled():
+        yield
+        return
+    with _blueprint_write_lock(plan_state_paths().blueprint_json):
+        yield
 
 
 def save_blueprint(bp: Blueprint) -> Blueprint:
@@ -357,15 +474,23 @@ def save_blueprint(bp: Blueprint) -> Blueprint:
 def load_summary() -> dict[str, Any]:
     if not plan_state_enabled():
         return {}
+    _reconcile_persisted_planner_arithmetic()
     return read_json_file(plan_state_paths().summary_json)
+
+
+def _reconcile_persisted_planner_arithmetic() -> None:
+    """Run the lazy versioned planner migration before persisted state reuse."""
+    from leanflow_cli.workflows import planner_arithmetic_reconciliation
+
+    planner_arithmetic_reconciliation.reconcile_persisted_planner_arithmetic()
 
 
 def save_summary(payload: Mapping[str, Any]) -> None:
     """Merge ``payload`` into summary.json under the shared write lock.
 
-    Foreign keys (the nudge log, the dispatch ledger) are stripped from the
-    payload entirely: their owners are the only writers, so even a stale
-    ``load_summary()`` snapshot in the caller can never regress them.
+    Foreign keys (nudges, dispatch, and research delivery/archive state) are
+    stripped from the payload entirely: their owners are the only writers, so
+    even a stale ``load_summary()`` snapshot in the caller can never regress them.
     """
     if not plan_state_enabled():
         return
@@ -381,6 +506,72 @@ def save_summary(payload: Mapping[str, Any]) -> None:
     update_json_file(plan_state_paths().summary_json, mutate)
 
 
+def save_queue_manager_state(payload: Mapping[str, Any]) -> None:
+    """Persist the deterministic manager's durable campaign state."""
+    if not plan_state_enabled():
+        return
+
+    def mutate(summary: dict[str, Any]) -> None:
+        summary["queue_manager_state"] = dict(payload)
+        summary["version"] = 1
+        summary["updated_at"] = _now_iso()
+
+    update_json_file(plan_state_paths().summary_json, mutate)
+
+
+def _failed_attempts_from_journal() -> list[dict[str, Any]]:
+    """Rebuild bounded failed-attempt history for pre-snapshot campaigns."""
+    path = plan_state_paths().journal_jsonl
+    if not path.is_file():
+        return []
+    counts: dict[str, int] = {}
+    attempts: dict[str, list[dict[str, Any]]] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(event, Mapping) or event.get("event") != "proof-attempt-rejected":
+            continue
+        target_symbol = str(event.get("name", "") or "").strip()
+        active_file = str(event.get("file", "") or "").strip()
+        reason = str(event.get("reason", "") or "").strip()
+        key = TheoremKey.make(target_symbol, active_file)
+        if not key.is_valid() or not reason:
+            continue
+        storage_key = key.storage_key()
+        counts[storage_key] = counts.get(storage_key, 0) + 1
+        bucket = attempts.setdefault(storage_key, [])
+        bucket.append(
+            {
+                "target_symbol": target_symbol,
+                "active_file": active_file,
+                "attempt": counts[storage_key],
+                "cycle": int(event.get("cycle", 0) or 0),
+                "proof_shape": str(event.get("proof_shape", "") or ""),
+                "reason": reason,
+            }
+        )
+        del bucket[:-DEFAULT_FAILED_ATTEMPT_HISTORY]
+    return [attempt for bucket in attempts.values() for attempt in bucket]
+
+
+def load_queue_manager_state() -> dict[str, Any]:
+    """Load durable manager state, rebuilding old campaigns from the journal."""
+    if not plan_state_enabled():
+        return {}
+    summary = load_summary()
+    if "queue_manager_state" in summary:
+        payload = summary.get("queue_manager_state")
+        return dict(payload) if isinstance(payload, Mapping) else {}
+    attempts = _failed_attempts_from_journal()
+    return {"failed_attempts": attempts} if attempts else {}
+
+
 def append_journal_event(event: Mapping[str, Any]) -> None:
     """Append one event to the lab notebook (flock-serialized, append-only)."""
     if not plan_state_enabled():
@@ -390,6 +581,43 @@ def append_journal_event(event: Mapping[str, Any]) -> None:
         plan_state_paths().journal_jsonl,
         json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n",
     )
+
+
+def recent_orchestrator_routes(limit: int = _RECENT_ROUTE_LIMIT) -> tuple[dict[str, Any], ...]:
+    """Return recent route decisions from a bounded journal tail.
+
+    The journal is an append-only lab record and can grow for days during a
+    research campaign. Read at most one MiB from its tail so rendering a small
+    plan or resume prompt never hydrates the campaign history into RAM.
+    """
+    if not plan_state_enabled() or limit <= 0:
+        return ()
+    path = plan_state_paths().journal_jsonl
+    try:
+        size = path.stat().st_size
+        start = max(0, size - _JOURNAL_TAIL_MAX_BYTES)
+        with path.open("rb") as handle:
+            handle.seek(start)
+            payload = handle.read(_JOURNAL_TAIL_MAX_BYTES)
+    except OSError:
+        return ()
+    if start:
+        _partial, separator, payload = payload.partition(b"\n")
+        if not separator:
+            return ()
+    routes: list[dict[str, Any]] = []
+    for raw_line in reversed(payload.splitlines()):
+        try:
+            event = json.loads(raw_line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(event, Mapping) or event.get("event") != "orchestrator-route":
+            continue
+        routes.append(dict(event))
+        if len(routes) >= limit:
+            break
+    routes.reverse()
+    return tuple(routes)
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +657,12 @@ def set_node_status(
     if node.status == "proved":
         # via_gate only proves; downgrades belong exclusively to reconcile().
         raise ValueError("proved nodes are immutable outside the kernel-truth paths")
-    updated = bp.replace_node(replace(node, status=status))
+    # ``owner`` is an in-progress lease, not historical provenance. A
+    # gate-backed terminal node must never retain the runner that previously
+    # owned its ``proving`` assignment.
+    updated = bp.replace_node(
+        replace(node, status=status, owner="" if status == "proved" else node.owner)
+    )
     if journal:
         journal_node_status(
             node_id=node_id,
@@ -439,6 +672,34 @@ def set_node_status(
             via_gate=via_gate,
             why=why,
         )
+    return updated
+
+
+def revoke_gate_acceptance(bp: Blueprint, node_id: str, *, why: str) -> Blueprint:
+    """Revoke a proved status after its deterministic acceptance evidence becomes invalid.
+
+    This is the gate-side counterpart to ``set_node_status(..., via_gate=True)``.
+    Preserve a prior statement-fidelity pass when one is recorded; otherwise
+    return the declaration to ordinary stated work. The revocation is always
+    journaled so a resumed campaign can explain why kernel-clean surface truth
+    was no longer sufficient.
+    """
+    node = bp.node_by_id(node_id)
+    if node is None or node.status != "proved":
+        return bp
+    fidelity_audited = "fidelity: audited" in {
+        part.strip() for part in str(node.notes or "").split(";")
+    }
+    status = "audited" if fidelity_audited else "stated"
+    updated = bp.replace_node(replace(node, status=status))
+    journal_node_status(
+        node_id=node_id,
+        name=node.name,
+        from_status="proved",
+        to_status=status,
+        via_gate=True,
+        why=why,
+    )
     return updated
 
 
@@ -460,7 +721,12 @@ def journal_node_status(
 
 
 def upsert_node_for_assignment(
-    bp: Blueprint, *, target_symbol: str, active_file: str, statement: str
+    bp: Blueprint,
+    *,
+    target_symbol: str,
+    active_file: str,
+    statement: str,
+    source_sha256: str = "",
 ) -> tuple[Blueprint, GraphNode]:
     """Get-or-create the graph node for a queue assignment; mark it proving."""
     node_id = node_id_for(target_symbol, active_file)
@@ -472,6 +738,7 @@ def upsert_node_for_assignment(
             name=target_symbol,
             file=active_file,
             statement=statement,
+            source_sha256=source_sha256,
             status="proving",
             owner=owner,
             generated_by="queue-sync",
@@ -488,6 +755,7 @@ def upsert_node_for_assignment(
     updated = replace(
         existing,
         statement=statement or existing.statement,
+        source_sha256=source_sha256 or existing.source_sha256,
         status="proving" if existing.status not in {"proved", "false"} else existing.status,
         owner=owner or existing.owner,
     )
@@ -504,6 +772,19 @@ def upsert_node_for_assignment(
             }
         )
     return bp.replace_node(updated), updated
+
+
+def update_node_effort(bp: Blueprint, node_id: str, *, attempts: int, api_steps: int) -> Blueprint:
+    """Raise one graph node's observed foreground attempt and API-step totals."""
+    node = bp.node_by_id(node_id)
+    if node is None:
+        return bp
+    updated = replace(
+        node,
+        attempts=max(node.attempts, max(0, int(attempts))),
+        api_steps=max(node.api_steps, max(0, int(api_steps))),
+    )
+    return bp if updated == node else bp.replace_node(updated)
 
 
 def record_decision_packet(packet: Mapping[str, Any]) -> None:
@@ -591,7 +872,9 @@ def apply_delta(
     statement present => ``stated``, otherwise ``conjectured`` — and any
     status the delta claims is ignored outright; an existing node NEVER
     changes status through this path and keeps a non-empty statement — the
-    planner may only fill blanks. Edges are deduped, self-edges and
+    planner may only fill blanks. Reused textual identities must carry the
+    same proof-insensitive declaration signature before they can inherit an
+    existing node or receive edges. Edges are deduped, self-edges and
     references to nodes outside the merged graph are dropped (reported in
     changes).
     """
@@ -608,6 +891,77 @@ def apply_delta(
         bp = replace(bp, goal=goal)
         changes.append({"event": "plan-delta-goal", "goal": goal[:200]})
 
+    # Resolve declaration identity before mutating the graph. A private Lean
+    # declaration may reuse a textual name with a different signature, while
+    # node_id_for intentionally remains stable on (name, file). Such a delta
+    # must fail closed instead of borrowing an existing kernel-proved status.
+    signatures_by_node_id: dict[str, str] = {
+        node.id: signature
+        for node in bp.nodes
+        if planner_graph_identity.is_full_declaration_signature(node.statement)
+        and (signature := planner_graph_identity.declaration_signature(node.statement))
+    }
+    existing_nodes_by_id = {node.id: node for node in bp.nodes}
+    unauthenticated_kernel_node_ids = {
+        node.id
+        for node in bp.nodes
+        if node.status in {"proved", "false"} and node.id not in signatures_by_node_id
+    }
+    signature_conflicts: dict[str, tuple[str, str]] = {}
+    legacy_core_migrations: dict[str, str] = {}
+    for entry in raw_nodes:
+        name = str(entry.get("name", "") or "").strip()
+        file = str(entry.get("file", "") or "").strip()
+        statement = str(entry.get("statement", "") or "").strip()
+        if not name or not file or not statement:
+            continue
+        node_id = node_id_for(name, file)
+        proposed_signature = planner_graph_identity.declaration_signature(statement)
+        if not proposed_signature:
+            continue
+        known_signature = signatures_by_node_id.get(node_id, "")
+        if known_signature and known_signature != proposed_signature:
+            signature_conflicts.setdefault(
+                node_id,
+                (known_signature, proposed_signature),
+            )
+            continue
+        existing_node = existing_nodes_by_id.get(node_id)
+        existing_statement = (
+            str(existing_node.statement or "").strip() if existing_node is not None else ""
+        )
+        if not known_signature and existing_node is not None and existing_statement:
+            if planner_graph_identity.legacy_core_matches_declaration(
+                existing_statement,
+                statement,
+                generated_by=existing_node.generated_by,
+            ):
+                # Store a proof-insensitive full head: the planner's `by sorry`
+                # body cannot replace the source proof behind a proved node.
+                legacy_core_migrations[node_id] = proposed_signature
+                signatures_by_node_id[node_id] = proposed_signature
+                unauthenticated_kernel_node_ids.discard(node_id)
+                continue
+            signature_conflicts.setdefault(
+                node_id,
+                (
+                    planner_graph_identity.declaration_signature(existing_statement),
+                    proposed_signature,
+                ),
+            )
+            continue
+        if (
+            not known_signature
+            and existing_node is not None
+            and existing_node.status in {"proved", "false"}
+        ):
+            # Legacy snapshots can carry kernel truth without the statement
+            # bytes needed to authenticate it. Never attach a new formal
+            # declaration to that truth on textual name alone.
+            signature_conflicts.setdefault(node_id, ("", proposed_signature))
+            continue
+        signatures_by_node_id[node_id] = proposed_signature
+
     pending_edges: list[tuple[str, str, str]] = []  # (source_id, target_id, kind)
     for entry in raw_nodes:
         name = str(entry.get("name", "") or "").strip()
@@ -618,6 +972,34 @@ def apply_delta(
         statement = str(entry.get("statement", "") or "").strip()
         node_id = node_id_for(name, file)
         existing = bp.node_by_id(node_id)
+        conflict = signature_conflicts.get(node_id)
+        if conflict is not None:
+            existing_signature, proposed_signature = conflict
+            changes.append(
+                {
+                    "event": "plan-delta-node-signature-conflict",
+                    "node_id": node_id,
+                    "name": name,
+                    "file": file,
+                    "existing_signature_sha256": planner_graph_identity.signature_sha256(
+                        existing_signature
+                    ),
+                    "proposed_signature_sha256": planner_graph_identity.signature_sha256(
+                        proposed_signature
+                    ),
+                }
+            )
+            # Preserve the historical notes-only fill behavior without
+            # accepting the conflicting declaration or any of its edges.
+            if existing is not None:
+                updated = replace(
+                    existing,
+                    notes=existing.notes or str(entry.get("notes", "") or "").strip(),
+                )
+                if updated != existing:
+                    bp = bp.replace_node(updated)
+                    changes.append({"event": "plan-delta-node-filled", "node_id": node_id})
+            continue
         if existing is None:
             # Status is DERIVED, never trusted: 'stated' is a claim that a
             # formal statement exists (it makes the node frontier-eligible),
@@ -639,14 +1021,27 @@ def apply_delta(
             )
         else:
             # Fill blanks only; status and non-empty statements are immutable here.
+            migrated_statement = legacy_core_migrations.pop(node_id, "")
             updated = replace(
                 existing,
-                statement=existing.statement or statement,
+                statement=migrated_statement or existing.statement or statement,
                 notes=existing.notes or str(entry.get("notes", "") or "").strip(),
             )
             if updated != existing:
                 bp = bp.replace_node(updated)
                 changes.append({"event": "plan-delta-node-filled", "node_id": node_id})
+            if migrated_statement:
+                changes.append(
+                    {
+                        "event": "plan-delta-node-signature-migrated",
+                        "node_id": node_id,
+                        "name": name,
+                        "file": file,
+                        "signature_sha256": planner_graph_identity.signature_sha256(
+                            migrated_statement
+                        ),
+                    }
+                )
         for dep in entry.get("depends_on") or []:
             dep_name, dep_file = _delta_ref(dep, file)
             if dep_name:
@@ -672,6 +1067,25 @@ def apply_delta(
     have = {(edge.source, edge.target, edge.kind) for edge in bp.edges}
     added: list[GraphEdge] = []
     for source_id, target_id, kind in pending_edges:
+        if source_id in signature_conflicts or target_id in signature_conflicts:
+            changes.append(
+                {
+                    "event": "plan-delta-edge-skipped",
+                    "reason": "declaration signature conflict",
+                }
+            )
+            continue
+        if (
+            source_id in unauthenticated_kernel_node_ids
+            or target_id in unauthenticated_kernel_node_ids
+        ):
+            changes.append(
+                {
+                    "event": "plan-delta-edge-skipped",
+                    "reason": "unauthenticated kernel declaration",
+                }
+            )
+            continue
         if source_id == target_id or (source_id, target_id, kind) in have:
             continue
         if source_id not in known or target_id not in known:
@@ -697,6 +1111,39 @@ def journal_delta_changes(changes: Sequence[Mapping[str, Any]], *, generated_by:
 #: Bounds for the prose summary keys the planner merge owns.
 _GROUNDING_CAP = 40
 _STRATEGY_CAP = 20
+_STRATEGY_SCOPE_KEY = "strategy_notes_scope"
+
+
+def _normalized_strategy_scope(value: Any) -> dict[str, str]:
+    """Return one complete assignment identity for actionable strategy prose."""
+    if not isinstance(value, Mapping):
+        return {}
+    target_symbol = str(value.get("target_symbol", "") or "").strip()
+    active_file = str(value.get("active_file", "") or "").strip()
+    if not target_symbol or not active_file:
+        return {}
+    return {"target_symbol": target_symbol, "active_file": active_file}
+
+
+def _strategy_scope_matches(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> bool:
+    """Return whether two strategy scopes name the same declaration assignment."""
+    left_scope = _normalized_strategy_scope(left)
+    right_scope = _normalized_strategy_scope(right)
+    if not left_scope or not right_scope:
+        return False
+    if left_scope["target_symbol"] != right_scope["target_symbol"]:
+        return False
+    left_file = left_scope["active_file"]
+    right_file = right_scope["active_file"]
+    if left_file == right_file:
+        return True
+    try:
+        return Path(left_file).resolve(strict=False) == Path(right_file).resolve(strict=False)
+    except OSError:
+        return False
 
 
 def merge_planner_findings(
@@ -704,18 +1151,22 @@ def merge_planner_findings(
     *,
     grounding: Sequence[str] = (),
     strategy: Sequence[str] = (),
+    target_symbol: str = "",
+    active_file: str = "",
 ) -> dict[str, Any]:
     """Pure merge of synthesizer prose into the summary mapping.
 
     Appends deduplicated one-liners to ``grounding_findings`` /
     ``strategy_notes`` under hard caps (oldest kept — grounding is an
-    append-only lab record, not a rolling window).
+    append-only lab record, not a rolling window). Actionable strategy prose
+    is reset and re-scoped when synthesis moves to another assignment; callers
+    that omit scope retain the legacy merge behavior.
     """
     merged = dict(summary)
-    for key, incoming, cap in (
-        ("grounding_findings", grounding, _GROUNDING_CAP),
-        ("strategy_notes", strategy, _STRATEGY_CAP),
-    ):
+    incoming_scope = _normalized_strategy_scope(
+        {"target_symbol": target_symbol, "active_file": active_file}
+    )
+    for key, incoming, cap in (("grounding_findings", grounding, _GROUNDING_CAP),):
         current = [str(item) for item in (merged.get(key) or [])]
         seen = set(current)
         for item in incoming:
@@ -724,6 +1175,19 @@ def merge_planner_findings(
                 current.append(text)
                 seen.add(text)
         merged[key] = current[:cap]
+    current_strategy = [str(item) for item in (merged.get("strategy_notes") or [])]
+    if strategy and incoming_scope:
+        existing_scope = _normalized_strategy_scope(merged.get(_STRATEGY_SCOPE_KEY))
+        if not _strategy_scope_matches(existing_scope, incoming_scope):
+            current_strategy = []
+        merged[_STRATEGY_SCOPE_KEY] = incoming_scope
+    seen_strategy = set(current_strategy)
+    for item in strategy:
+        text = " ".join(str(item or "").split())
+        if text and text not in seen_strategy:
+            current_strategy.append(text)
+            seen_strategy.add(text)
+    merged["strategy_notes"] = current_strategy[:_STRATEGY_CAP]
     return merged
 
 
@@ -737,6 +1201,8 @@ class DeclTruth:
     present: bool
     has_sorry: bool
     has_error_diag: bool = False
+    declaration_text: str = ""
+    source_sha256: str = ""
 
 
 def reconcile(
@@ -745,10 +1211,13 @@ def reconcile(
     """Anti-drift pass against on-disk declaration truth.
 
     Downgrades ``proved`` back to ``stated`` when the declaration reappears
-    with a sorry/errors or vanishes; promotes ``conjectured`` to ``stated``
-    when a named stub now exists on disk; NEVER promotes to ``proved``
-    (kernel-gate-only). Returns the new graph plus change events; only files
-    present in ``truth`` are judged (absent files were not scanned).
+    with a sorry/errors, to ``conjectured`` when it vanishes or transitively
+    depends on a false/parked node; promotes ``conjectured`` to ``stated`` when
+    a named stub now exists on disk, except for planner/decomposer candidates
+    whose own metadata explicitly says they still need validation; NEVER
+    promotes to ``proved`` (kernel-gate-only). Returns the new graph plus change
+    events; only files present in ``truth`` are judged (absent files were not
+    scanned).
     """
     events: list[dict[str, Any]] = []
     scanned_files = {file for file, _symbol in truth}
@@ -760,12 +1229,32 @@ def reconcile(
         present = bool(decl and decl.present)
         dirty = bool(decl and (decl.has_sorry or decl.has_error_diag))
         new_status = node.status
-        if node.status == "proved" and (not present or dirty):
+        explicitly_uncertain_advisory = node.generated_by.strip().lower() in {
+            "planner",
+            "decomposer",
+        } and bool(planner_candidate_admission.candidate_uncertainty_evidence(node.to_mapping()))
+        if node.status == "proved" and updated.has_invalid_dependency(node.id):
+            new_status = "conjectured"
+        elif node.status == "proved" and (not present or dirty):
             new_status = "stated" if present else "conjectured"
-        elif node.status == "conjectured" and present:
+        elif node.status == "conjectured" and present and not explicitly_uncertain_advisory:
             new_status = "stated"
+        refreshed_statement = (
+            str(decl.declaration_text or "") if present and decl is not None else node.statement
+        )
+        refreshed_source = (
+            str(decl.source_sha256 or "") if present and decl is not None else node.source_sha256
+        )
+        refreshed = replace(
+            node,
+            statement=refreshed_statement or node.statement,
+            source_sha256=refreshed_source or node.source_sha256,
+            status=new_status,
+            owner="" if new_status == "proved" else node.owner,
+        )
+        if refreshed != node:
+            updated = updated.replace_node(refreshed)
         if new_status != node.status:
-            updated = updated.replace_node(replace(node, status=new_status))
             events.append(
                 {
                     "event": "plan-graph-reconcile",
@@ -776,6 +1265,48 @@ def reconcile(
                     "to": new_status,
                 }
             )
+    return updated, events
+
+
+def retire_inactive_proving_nodes(
+    bp: Blueprint,
+    truth: Mapping[tuple[str, str], DeclTruth],
+    *,
+    active_node_id: str = "",
+) -> tuple[Blueprint, list[dict[str, Any]]]:
+    """Retire process-local ``proving`` states outside the active assignment.
+
+    Queue assignments can change without first producing a theorem outcome,
+    especially across a restart or deterministic route change. ``proving`` is
+    an ownership marker for the one live assignment, so every other node must
+    return to non-kernel work state. Preserve a recorded fidelity audit, and
+    use explicit declaration absence only when the file scan proved it.
+    """
+    updated = bp
+    events: list[dict[str, Any]] = []
+    for node in bp.nodes:
+        if node.status != "proving" or node.id == active_node_id:
+            continue
+        decl = truth.get((node.file, node.name))
+        if decl is not None and not decl.present:
+            status = "conjectured"
+        else:
+            fidelity_audited = "fidelity: audited" in {
+                part.strip() for part in str(node.notes or "").split(";")
+            }
+            status = "audited" if fidelity_audited else "stated"
+        updated = updated.replace_node(replace(node, status=status))
+        events.append(
+            {
+                "event": "plan-graph-assignment-retired",
+                "node_id": node.id,
+                "name": node.name,
+                "file": node.file,
+                "from": "proving",
+                "to": status,
+                "why": "inactive queue assignment",
+            }
+        )
     return updated, events
 
 
@@ -823,9 +1354,156 @@ def _line(text: Any) -> str:
     return " ".join(str(text or "").split())
 
 
-def render_plan_md(bp: Blueprint, summary: Mapping[str, Any]) -> str:
+def _bounded_line(text: Any, limit: int = 500) -> str:
+    """Return one normalized line within the prompt-facing prose ceiling."""
+    normalized = _line(text)
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: max(0, limit - 16)].rstrip() + " ...[truncated]"
+
+
+def _current_route_decision(
+    summary: Mapping[str, Any], recent_routes: Sequence[Mapping[str, Any]] = ()
+) -> dict[str, Any]:
+    """Return the campaign's current route, falling back to journal history."""
+    campaign = summary.get("campaign")
+    if isinstance(campaign, Mapping):
+        current = campaign.get("last_route_decision")
+        if isinstance(current, Mapping) and str(current.get("route", "") or "").strip():
+            payload = dict(current)
+            if recent_routes:
+                latest = dict(recent_routes[-1])
+                latest_target = str(latest.get("target_symbol") or latest.get("name") or "").strip()
+                current_target = str(payload.get("target_symbol", "") or "").strip()
+                if str(latest.get("route", "") or "") == str(payload.get("route", "") or "") and (
+                    not latest_target or not current_target or latest_target == current_target
+                ):
+                    payload = {**latest, **payload}
+            return payload
+    return dict(recent_routes[-1]) if recent_routes else {}
+
+
+def _current_queue_assignment(summary: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the durable queue assignment identity without its stale body slice."""
+    manager = summary.get("queue_manager_state")
+    if not isinstance(manager, Mapping):
+        return {}
+    assignment = manager.get("current_queue_assignment")
+    return _normalized_queue_assignment(assignment)
+
+
+def _current_strategy_notes(
+    summary: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+) -> list[str]:
+    """Return actionable strategy prose only for its exact live assignment.
+
+    Legacy unscoped notes remain available when no queue assignment exists,
+    but are suppressed under an active assignment because their theorem scope
+    cannot be proven and stale steps can direct edits at the wrong target.
+    """
+    notes = [str(item) for item in (summary.get("strategy_notes") or [])]
+    if not notes or not assignment:
+        return notes
+    scope = _normalized_strategy_scope(summary.get(_STRATEGY_SCOPE_KEY))
+    return notes if _strategy_scope_matches(scope, assignment) else []
+
+
+def _normalized_queue_assignment(assignment: Any) -> dict[str, Any]:
+    """Return a validated queue assignment identity from a runtime or snapshot value."""
+    if not isinstance(assignment, Mapping):
+        return {}
+    target = str(assignment.get("target_symbol", "") or "").strip()
+    active_file = str(assignment.get("active_file", "") or "").strip()
+    if not target or not active_file:
+        return {}
+    return {"target_symbol": target, "active_file": active_file}
+
+
+def _route_summary(route: Mapping[str, Any]) -> str:
+    """Render bounded operational route identity without advisory rationale.
+
+    Route reasons may originate in an LLM decision and can contain unchecked
+    mathematical claims. The append-only journal retains that prose for audit,
+    but prompt-facing plan and resume views expose only route-diversity
+    metadata that cannot masquerade as kernel-verified knowledge.
+    """
+    name = _bounded_line(route.get("target_symbol") or route.get("name") or "")
+    active_file = _bounded_line(route.get("active_file") or route.get("file") or "")
+    target = f" for `{name}`" if name else ""
+    if active_file:
+        target += f" ({active_file})"
+    metadata: list[str] = []
+    for key in ("trigger", "source", "epoch", "routes_used"):
+        value = _bounded_line(route.get(key, ""), 80)
+        if value:
+            metadata.append(f"{key}={value}")
+    boundary = " [routing metadata only"
+    if metadata:
+        boundary += "; " + "; ".join(metadata)
+    boundary += "]"
+    return f"`{_bounded_line(route.get('route', 'unknown'), 80)}`{target}{boundary}"
+
+
+def _route_matches_assignment(route: Mapping[str, Any], assignment: Mapping[str, Any]) -> bool:
+    """Return whether a route belongs to the deterministic queue assignment.
+
+    A campaign route remains useful historical evidence after queue rotation,
+    but it must not be presented as the current route for a different theorem.
+    Declaration identity is authoritative; when both records include a file,
+    require those paths to identify the same file as well.
+    """
+    route_target = str(route.get("target_symbol") or route.get("name") or "").strip()
+    assignment_target = str(assignment.get("target_symbol", "") or "").strip()
+    if not route_target or route_target != assignment_target:
+        return False
+    route_file = str(route.get("active_file") or route.get("file") or "").strip()
+    assignment_file = str(assignment.get("active_file", "") or "").strip()
+    if not route_file or not assignment_file:
+        return True
+    if route_file == assignment_file:
+        return True
+    try:
+        return Path(route_file).resolve(strict=False) == Path(assignment_file).resolve(strict=False)
+    except OSError:
+        return False
+
+
+def _assignment_dependency_frontier(
+    bp: Blueprint,
+    assignment: Mapping[str, Any],
+) -> tuple[GraphNode, ...]:
+    """Return ready direct dependencies for the exact queue assignment.
+
+    A global frontier is scheduling inventory, not the current theorem's proof
+    plan. Once the deterministic queue owns an assignment, generated views
+    expose only its direct dependency/split family beneath that assignment.
+    """
+    normalized = _normalized_queue_assignment(assignment)
+    if not normalized:
+        return bp.frontier()
+    target_id = node_id_for(normalized["target_symbol"], normalized["active_file"])
+    direct_dependency_ids = {
+        edge.target for edge in bp.edges if edge.kind == "depends_on" and edge.source == target_id
+    } | {edge.source for edge in bp.edges if edge.kind == "split_of" and edge.target == target_id}
+    return tuple(node for node in bp.frontier() if node.id in direct_dependency_ids)
+
+
+def render_plan_md(
+    bp: Blueprint,
+    summary: Mapping[str, Any],
+    *,
+    recent_routes: Sequence[Mapping[str, Any]] = (),
+) -> str:
     """One-way render of the machine state (JSON is authority)."""
     counts = _status_counts(bp)
+    current_route = _current_route_decision(summary, recent_routes)
+    assignment = _current_queue_assignment(summary)
+    if current_route and assignment and not _route_matches_assignment(current_route, assignment):
+        # Queue rotation retires theorem-local strategy immediately. Keep the
+        # old decision in the historical log, but never label it as current
+        # while the next scope-entry consultation is still in flight.
+        current_route = {}
     lines = [
         "# Proving Plan",
         "",
@@ -841,18 +1519,46 @@ def render_plan_md(bp: Blueprint, summary: Mapping[str, Any]) -> str:
             " · ".join(f"{status}: {count}" for status, count in sorted(counts.items()))
             or "empty graph"
         ),
+        "- freshness: graph statuses are kernel-reconciled; current Lean source and queue "
+        "assignment outrank stored declaration bodies",
         "",
         "## Strategy",
         "",
     ]
-    strategy = list(summary.get("strategy_notes") or [])
+    strategy = _current_strategy_notes(summary, assignment)
+    if assignment:
+        lines.append(
+            f"- current deterministic assignment: `{_bounded_line(assignment['target_symbol'], 160)}` "
+            f"({_bounded_line(assignment['active_file'], 240)})"
+        )
+    if current_route:
+        lines.append(f"- current orchestrator route: {_route_summary(current_route)}")
+        lines.append(
+            "- route rationales are omitted from generated views because they are advisory, "
+            "not kernel-verified mathematical facts"
+        )
     if strategy:
-        lines.extend(f"- {_line(note)}" for note in strategy[:20])
-    else:
+        lines.extend(f"- {_bounded_line(note)}" for note in strategy[:20])
+    if not assignment and not current_route and not strategy:
         lines.append("- [none yet]")
     lines.extend(["", "## Frontier", ""])
-    frontier = bp.frontier()
-    if frontier:
+    frontier = _assignment_dependency_frontier(bp, assignment)
+    if assignment:
+        target_node = bp.node_by_id(
+            node_id_for(assignment["target_symbol"], assignment["active_file"])
+        )
+        target_status = f" [{target_node.status}]" if target_node is not None else ""
+        lines.append(
+            f"- current assignment: `{_line(assignment['target_symbol'])}` "
+            f"({_line(assignment['active_file'])}){target_status}"
+        )
+        lines.extend(
+            f"- dependency frontier: `{_line(node.name)}` ({_line(node.file)})"
+            for node in frontier[:19]
+        )
+        if not frontier:
+            lines.append("- dependency frontier: [empty]")
+    elif frontier:
         lines.extend(f"- `{_line(node.name)}` ({_line(node.file)})" for node in frontier[:20])
     else:
         lines.append("- [empty]")
@@ -871,7 +1577,11 @@ def render_plan_md(bp: Blueprint, summary: Mapping[str, Any]) -> str:
                 f"`{_line(packet.get('target_symbol', '?'))}` -> "
                 f"{_line(packet.get('decision')) or 'undecided'}"
             )
-    else:
+    for route in recent_routes[-_RECENT_ROUTE_LIMIT:]:
+        timestamp = _bounded_line(route.get("ts", "?"), 80) or "?"
+        trigger = _bounded_line(route.get("trigger", "?"), 80) or "?"
+        lines.append(f"- {timestamp} [{trigger}] route {_route_summary(route)}")
+    if not packets and not recent_routes:
         lines.append("- [none]")
     lines.extend(["", "## Dead ends & proven false", ""])
     dead = [node for node in bp.nodes if node.status in {"false", "parked"}]
@@ -893,7 +1603,40 @@ def render_plan_md(bp: Blueprint, summary: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-_NOTES_HEADING_RE = re.compile(r"(?m)^## Notes[ \t]*$")
+def generated_plan_prompt_view(
+    plan_md_text: str, *, max_chars: int = PLAN_PROMPT_VIEW_MAX_CHARS
+) -> str:
+    """Return a bounded generated-only plan view for model prompts.
+
+    ``## Notes`` is intentionally excluded: it is a verbatim user-owned lab
+    tail whose inventories and copied theorem bodies can become stale. Preserve
+    the current-state-heavy start and the end of an oversized generated render
+    so the goal/strategy/frontier and recent decision/final-report sections both
+    remain visible, with explicit source-hash/count omission telemetry.
+    """
+    return generated_plan_view(plan_md_text, max_chars=max_chars)
+
+
+def read_generated_plan_prompt_view(*, max_chars: int = PLAN_PROMPT_VIEW_MAX_CHARS) -> str:
+    """Read only plan.md's generated prefix and return its bounded prompt view.
+
+    Stop at the canonical Notes boundary while streaming the file so long
+    user-owned history never enters orchestrator memory merely to be stripped
+    afterward. Missing or unreadable plans yield an empty view.
+    """
+    if not plan_state_enabled():
+        return ""
+    _reconcile_persisted_planner_arithmetic()
+    try:
+        with plan_state_paths().plan_md.open("r", encoding="utf-8") as handle:
+            generated_lines: list[str] = []
+            for line in handle:
+                if line.strip() == _NOTES_HEADING:
+                    break
+                generated_lines.append(line)
+    except OSError:
+        return ""
+    return generated_plan_prompt_view("".join(generated_lines), max_chars=max_chars)
 
 
 def save_plan_md(bp: Blueprint, summary: Mapping[str, Any]) -> None:
@@ -912,7 +1655,10 @@ def save_plan_md(bp: Blueprint, summary: Mapping[str, Any]) -> None:
         match = _NOTES_HEADING_RE.search(existing)
         if match:
             notes_tail = existing[match.start() :]
-    _atomic_write_text(path, render_plan_md(bp, summary) + "\n" + notes_tail)
+    _atomic_write_text(
+        path,
+        render_plan_md(bp, summary, recent_routes=recent_orchestrator_routes()) + "\n" + notes_tail,
+    )
 
 
 def write_final_report(status: str, *, detail: Mapping[str, Any] | None = None) -> None:
@@ -948,11 +1694,13 @@ def artifact_paths_block() -> str:
     paths = plan_state_paths()
     return "\n".join(
         [
-            "Living plan artifacts (read before planning; the dependency graph "
-            "blueprint.json is machine authority):",
+            "Living plan artifacts (managed plan reads expose bounded, read-only generated "
+            "sections; never edit or paginate the historical user-owned Notes body):",
+            "- authority order: current queue assignment + Lean source/kernel diagnostics > "
+            "generated graph view > preserved historical Notes",
             f"- plan: {paths.plan_md}",
-            f"- dependency graph: {paths.blueprint_json}",
-            f"- summary: {paths.summary_json}",
+            f"- dependency graph machine snapshot (do not read directly): {paths.blueprint_json}",
+            f"- summary machine snapshot (do not read directly): {paths.summary_json}",
             f"- journal: {paths.journal_jsonl}",
         ]
     )
@@ -965,24 +1713,37 @@ def frontier_digest_block() -> str:
     bp = load_blueprint()
     if not bp.nodes:
         return ""
+    summary = load_summary()
     counts = _status_counts(bp)
     lines = [
         "Dependency graph digest:",
         "- " + " · ".join(f"{status}: {count}" for status, count in sorted(counts.items())),
     ]
-    frontier = bp.frontier()
+    assignment = _current_queue_assignment(summary)
+    if assignment:
+        lines.append(
+            f"- deterministic assignment: `{_bounded_line(assignment['target_symbol'], 160)}` "
+            f"({_bounded_line(assignment['active_file'], 240)})"
+        )
+    route = _current_route_decision(summary, recent_orchestrator_routes(limit=1))
+    if route and (not assignment or _route_matches_assignment(route, assignment)):
+        lines.append(f"- current route: {_route_summary(route)}")
+    frontier = _assignment_dependency_frontier(bp, assignment)
     for node in frontier[:8]:
-        lines.append(f"- frontier: `{node.name}` ({node.file})")
+        label = "dependency frontier" if assignment else "frontier"
+        lines.append(f"- {label}: `{node.name}` ({node.file})")
     return "\n".join(lines[:10])
 
 
-def resume_context_block() -> str:
+def resume_context_block(*, current_queue_assignment: Mapping[str, Any] | None = None) -> str:
     """Return the '[LEANFLOW PLAN-STATE RESUME]' startup handoff block.
 
     Documentation-driven resume (P1.5): the persisted artifacts — not
     checkpoint prose — are the resume authority. Renders goal, counters,
     frontier, open decision packets, and dead ends; '' when plan-state is
     off or no graph exists yet (caller falls back to checkpoint replay).
+    ``current_queue_assignment`` lets the runner override the durable identity
+    after deterministic startup selection rotates the queue.
     """
     if not plan_state_enabled():
         return ""
@@ -991,17 +1752,52 @@ def resume_context_block() -> str:
     if not bp.nodes and not bp.goal and not summary:
         return ""
     counts = _status_counts(bp)
+    recent_routes = recent_orchestrator_routes(limit=4)
     lines = [
         "[LEANFLOW PLAN-STATE RESUME]",
-        f"- goal: {bp.goal or str(summary.get('goal', '') or '') or '[not set]'}",
+        f"- goal: {_bounded_line(bp.goal or str(summary.get('goal', '') or ''), 1000) or '[not set]'}",
         "- state: "
         + (
             " · ".join(f"{status}: {count}" for status, count in sorted(counts.items()))
             or "empty graph"
         ),
     ]
-    for node in bp.frontier()[:8]:
-        lines.append(f"- frontier: `{node.name}` ({node.file})")
+    assignment = (
+        _current_queue_assignment(summary)
+        if current_queue_assignment is None
+        else _normalized_queue_assignment(current_queue_assignment)
+    )
+    if assignment:
+        lines.append(
+            f"- current deterministic assignment: `{_bounded_line(assignment['target_symbol'], 160)}` "
+            f"({_bounded_line(assignment['active_file'], 240)})"
+        )
+    campaign = summary.get("campaign")
+    if isinstance(campaign, Mapping):
+        epoch = _bounded_line(campaign.get("epoch", ""), 40)
+        streak = _bounded_line(campaign.get("no_progress_route_streak", ""), 40)
+        route_limit = _bounded_line(campaign.get("no_progress_route_limit", ""), 40)
+        if epoch:
+            route_state = f"- campaign epoch: {epoch}"
+            if streak:
+                route_state += f" · route streak: {streak}"
+                if route_limit:
+                    route_state += f"/{route_limit}"
+            lines.append(route_state)
+    route = _current_route_decision(summary, recent_routes)
+    if route and (not assignment or _route_matches_assignment(route, assignment)):
+        lines.append(f"- current orchestrator route: {_route_summary(route)}")
+    for recent in recent_routes[-3:]:
+        lines.append(f"- recent route decision: {_route_summary(recent)}")
+    if route or recent_routes:
+        lines.append(
+            "- routing metadata boundary: route identities, triggers, sources, epochs, and "
+            "diversity streaks are operational only; advisory route rationales are omitted "
+            "because they are not kernel-verified mathematical facts"
+        )
+    for node in _assignment_dependency_frontier(bp, assignment)[:8]:
+        label = "dependency frontier" if assignment else "frontier"
+        lines.append(f"- {label}: `{node.name}` ({node.file})")
     open_packets = [
         dict(packet)
         for packet in (summary.get("decision_packets") or [])
@@ -1017,8 +1813,13 @@ def resume_context_block() -> str:
     for node in [n for n in bp.nodes if n.status in {"false", "parked"}][:8]:
         lines.append(f"- dead end: `{node.name}` [{node.status}]")
     lines.append(
-        "- the plan artifacts are the resume authority; read plan.md and the "
-        "dependency graph before planning"
+        "- resume authority: generated graph status plus deterministic queue inventory; current "
+        "Lean source and queue assignment outrank stored graph statements; refresh "
+        "source/diagnostics before using any stored declaration body"
+    )
+    lines.append(
+        "- plan.md Notes are preserved historical context, not inventory or declaration truth; "
+        "recompute sorry counts from the deterministic queue and Lean source"
     )
     return "\n".join(lines)
 

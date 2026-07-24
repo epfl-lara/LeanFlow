@@ -345,6 +345,7 @@ class TestSkillView:
                     "kind": "workflow",
                     "summary": "autonomous formalization",
                     "path": Path("/tmp/formalize.md"),
+                    "content": "# Formalize workflow\nThis body should remain lazy.",
                 },
             )()
             monkeypatch.setattr(
@@ -355,7 +356,34 @@ class TestSkillView:
             raw = skill_view("my-skill")
         result = json.loads(raw)
         assert result["workflow_specs"][0]["id"] == "formalize"
+        assert "content" not in result["workflow_specs"][0]
         assert "/tmp/formalize.md" in result["linked_files"]["workflow_specs"][0]
+
+    def test_view_loads_advertised_workflow_spec_path(self, tmp_path, monkeypatch):
+        with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "lean-proof-loop")
+            fake_record = type(
+                "FakeSpec",
+                (),
+                {
+                    "spec_id": "prove",
+                    "kind": "workflow",
+                    "summary": "autonomous proving",
+                    "path": Path("/repo/leanflow_specs/workflows/prove.md"),
+                    "content": "# Prove workflow\nKeep proving.",
+                },
+            )()
+            monkeypatch.setattr(
+                skills_tool_module,
+                "specs_for_skill",
+                lambda name: [fake_record] if name == "lean-proof-loop" else [],
+            )
+            raw = skill_view("lean-proof-loop", file_path="leanflow_specs/workflows/prove.md")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["file"] == "/repo/leanflow_specs/workflows/prove.md"
+        assert "Keep proving" in result["content"]
 
     def test_view_nonexistent_skill(self, tmp_path):
         with patch("tools.implementations.skills_tool.SKILLS_DIR", tmp_path):

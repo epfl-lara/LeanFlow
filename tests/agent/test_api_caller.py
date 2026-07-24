@@ -7,13 +7,20 @@ timeout resolution, ``build_api_kwargs`` mode branching, and the interrupt/
 timeout abort paths of the background-thread request runner.
 """
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import run_agent
-from agent.providers.api_caller import ApiCaller
+from agent.providers.api_caller import (
+    TRANSIENT_PROVIDER_MAX_ATTEMPTS,
+    TRANSIENT_PROVIDER_RETRY_DELAYS_S,
+    ApiCaller,
+    TransientProviderRetriesExhausted,
+    transient_provider_retry_delay_s,
+)
 from run_agent import AIAgent, _resolve_api_caller
 
 
@@ -116,6 +123,30 @@ def test_timeout_falls_back_to_env(agent, monkeypatch):
     assert agent._provider_request_timeout_seconds({}) == 55.0
 
 
+def test_transient_provider_retry_policy_is_exactly_three_managed_retries():
+    """Expose the 5/15/45 contract independently of real sleeping."""
+    assert TRANSIENT_PROVIDER_RETRY_DELAYS_S == (5.0, 15.0, 45.0)
+    assert TRANSIENT_PROVIDER_MAX_ATTEMPTS == 4
+    assert [transient_provider_retry_delay_s(attempt) for attempt in range(1, 5)] == [
+        5.0,
+        15.0,
+        45.0,
+        None,
+    ]
+
+
+def test_transient_provider_exhaustion_marker_redacts_persisted_message():
+    secret = "sk-testprovidersecret1234567890"
+    error = RuntimeError(f"rate limited Authorization: Bearer {secret}")
+
+    exhausted = TransientProviderRetriesExhausted(error)
+
+    assert exhausted.provider_retries_exhausted is True
+    assert exhausted.original_error_type == "RuntimeError"
+    assert "rate limited" in str(exhausted)
+    assert secret not in str(exhausted)
+
+
 # ── build_api_kwargs mode branching ─────────────────────────────────────────
 
 
@@ -154,6 +185,39 @@ def test_interruptible_api_call_returns_response(agent):
     ):
         out = agent._interruptible_api_call({"model": "m", "messages": []})
     assert out == "the-response"
+
+
+@pytest.mark.parametrize(
+    ("delegate_depth", "dispatch_worker", "expected_enabled"),
+    [(0, "", False), (1, "", True), (0, "1", True)],
+)
+def test_only_background_agents_enter_capacity_gate(
+    agent, monkeypatch, delegate_depth, dispatch_worker, expected_enabled
+):
+    agent.api_mode = "chat_completions"
+    agent._delegate_depth = delegate_depth
+    if dispatch_worker:
+        monkeypatch.setenv("LEANFLOW_DISPATCH_WORKER", dispatch_worker)
+    else:
+        monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
+        monkeypatch.delenv("LEANFLOW_DISPATCH_JOB_ID", raising=False)
+    req_client = MagicMock()
+    req_client.chat.completions.create.return_value = "response"
+    gate_calls: list[bool] = []
+
+    @contextmanager
+    def fake_gate(*, enabled, cancelled):
+        gate_calls.append(enabled)
+        yield None
+
+    with (
+        patch("agent.providers.api_caller.background_provider_lease", fake_gate),
+        patch.object(agent, "_create_request_openai_client", return_value=req_client),
+        patch.object(agent, "_close_request_openai_client"),
+    ):
+        assert agent._interruptible_api_call({"model": "m", "messages": []}) == "response"
+
+    assert gate_calls == [expected_enabled]
 
 
 def test_interruptible_api_call_raises_on_interrupt(agent):

@@ -4,8 +4,10 @@ Run with: python -m pytest tests/test_interrupt.py -v
 """
 
 import queue
+import shlex
 import threading
 import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -54,6 +56,22 @@ class TestInterruptModule:
 
         set_interrupt(False)
 
+    def test_raise_if_interrupted_uses_non_recoverable_cooperative_signal(self):
+        from tools.utilities.interrupt import (
+            CooperativeInterrupt,
+            raise_if_interrupted,
+            set_interrupt,
+        )
+
+        set_interrupt(False)
+        raise_if_interrupted()
+        set_interrupt(True)
+        try:
+            with pytest.raises(CooperativeInterrupt, match="planner cancelled"):
+                raise_if_interrupted("planner cancelled")
+        finally:
+            set_interrupt(False)
+
 
 # ---------------------------------------------------------------------------
 # Unit tests: pre-tool interrupt check
@@ -65,8 +83,6 @@ class TestPreToolCheck:
 
     def test_all_tools_skipped_when_interrupted(self):
         """Mock an interrupted agent and verify no tools execute."""
-        from unittest.mock import MagicMock
-
         # Build a fake assistant_message with 3 tool calls
         tc1 = MagicMock()
         tc1.id = "tc_1"
@@ -171,6 +187,134 @@ class TestMessageCombining:
 # ---------------------------------------------------------------------------
 # Integration tests (require local terminal)
 # ---------------------------------------------------------------------------
+
+
+class TestLocalInterruptedOutput:
+    """Pin the oneshot fence protocol at the interrupt boundary."""
+
+    def test_completed_fenced_command_keeps_real_returncode(self):
+        """Do not rewrite a completed command to 130 during an interrupt race."""
+        from tools.environments.local import _OUTPUT_FENCE, LocalEnvironment
+
+        drained = threading.Event()
+
+        class FenceStream:
+            def __iter__(self):
+                yield f"{_OUTPUT_FENCE}completed output\n{_OUTPUT_FENCE}logout\n"
+                drained.set()
+
+            def close(self):
+                return None
+
+        class CompletedFenceProcess:
+            def __init__(self):
+                self.stdout = FenceStream()
+                self.returncode = None
+
+            def poll(self):
+                drained.wait(timeout=1)
+                return self.returncode
+
+            def wait(self, timeout=None):
+                self.returncode = 7
+                return self.returncode
+
+        env = LocalEnvironment(cwd="/tmp", timeout=30)
+        proc = CompletedFenceProcess()
+
+        with (
+            patch("tools.environments.local.is_interrupted", return_value=True),
+            patch.object(env, "_terminate_process") as terminate,
+        ):
+            result = env._wait_for_oneshot_process(
+                proc,
+                effective_stdin=None,
+                effective_timeout=30,
+            )
+
+        assert result == {"output": "completed output\n", "returncode": 7}
+        terminate.assert_not_called()
+
+    def test_completion_race_before_termination_keeps_real_returncode(self):
+        """A process that exits at the final kill boundary is never reported as interrupted."""
+        from tools.environments.local import LocalEnvironment
+
+        class PartialStream:
+            def __iter__(self):
+                yield "partial output\n"
+
+            def close(self):
+                return None
+
+        class RacingProcess:
+            def __init__(self):
+                self.stdout = PartialStream()
+                self.returncode = None
+                self.poll_count = 0
+
+            def poll(self):
+                self.poll_count += 1
+                if self.poll_count <= 2:
+                    return None
+                self.returncode = 9
+                return self.returncode
+
+        env = LocalEnvironment(cwd="/tmp", timeout=30)
+        proc = RacingProcess()
+
+        with (
+            patch("tools.environments.local.is_interrupted", return_value=True),
+            patch("tools.environments.local.terminate_process_tree") as terminate_tree,
+        ):
+            result = env._wait_for_oneshot_process(
+                proc,
+                effective_stdin=None,
+                effective_timeout=30,
+            )
+
+        assert result == {"output": "partial output\n", "returncode": 9}
+        terminate_tree.assert_not_called()
+
+    @pytest.mark.skipif(not __import__("shutil").which("bash"), reason="Requires bash")
+    def test_interrupted_output_hides_fence_and_logout(self, tmp_path):
+        """Return useful partial output without exposing login-shell protocol text."""
+        from tools.environments.local import _OUTPUT_FENCE, LocalEnvironment
+        from tools.utilities.interrupt import set_interrupt
+
+        set_interrupt(False)
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
+        ready = tmp_path / "command-ready"
+        result_holder = {"value": None}
+
+        def _run():
+            result_holder["value"] = env.execute(
+                f"printf 'partial-output\\n'; touch {shlex.quote(str(ready))}; sleep 60",
+                timeout=30,
+            )
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert ready.exists()
+
+            set_interrupt(True)
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+        finally:
+            set_interrupt(False)
+            env.cleanup()
+            thread.join(timeout=1)
+
+        result = result_holder["value"]
+        assert result is not None
+        assert result["returncode"] == 130
+        assert "partial-output" in result["output"]
+        assert "interrupted" in result["output"].lower()
+        assert _OUTPUT_FENCE not in result["output"]
+        assert "logout" not in result["output"].lower()
 
 
 class TestSIGKILLEscalation:

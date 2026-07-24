@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import threading
+import time
+from dataclasses import replace
 from itertools import chain, repeat
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from leanflow_cli.native import native_runner as runner
-from leanflow_cli.workflows.workflow_state import read_workflow_activity
+from leanflow_cli.workflows.workflow_state import (
+    load_workflow_live_status,
+    read_workflow_activity,
+    save_workflow_live_status,
+)
 
 
 class _FakeCompressor:
@@ -31,7 +41,7 @@ class _FakeCheckpointManager:
     def __init__(self):
         self.enabled = True
 
-    def ensure_checkpoint(self, working_dir, reason):
+    def ensure_checkpoint(self, working_dir, reason, *, force=False):
         return True
 
     def list_checkpoints(self, working_dir):
@@ -77,6 +87,31 @@ class _FakeAgent(_ManagedRunAgentStub):
         self._checkpoint_mgr = _FakeCheckpointManager()
 
 
+def test_workflow_log_tee_reports_slow_owner_log_append(monkeypatch):
+    writes = []
+    events = []
+
+    class _Stream:
+        def write(self, data):
+            writes.append(data)
+            return len(data)
+
+    ticks = iter((10.0, 12.5))
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(runner, "append_workflow_run_log", lambda data: None)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    written = runner._WorkflowLogTee(_Stream()).write("manager verification\n")
+
+    assert written == len("manager verification\n")
+    assert writes == ["manager verification\n"]
+    slow = next(kwargs for args, kwargs in events if args[0] == "workflow-log-append-slow")
+    assert slow["elapsed_s"] == 2.5
+    assert slow["text_chars"] == len("manager verification\n")
+
+
 def test_verified_workflow_exits_without_prompt_when_stdin_is_not_interactive(monkeypatch):
     class _Stdin:
         def isatty(self):
@@ -86,6 +121,27 @@ def test_verified_workflow_exits_without_prompt_when_stdin_is_not_interactive(mo
     monkeypatch.setattr(runner, "_live_state_is_verified", lambda live_state: True)
 
     assert runner._verified_workflow_should_exit_without_prompt({"phase": "verified"}) is True
+
+
+def test_interrupted_unverified_turn_is_not_a_failed_proof_attempt() -> None:
+    assert (
+        runner._should_record_unverified_turn_attempt(
+            {"interrupted": True},
+            boundary_recorded_attempt=False,
+            budget_recorded_attempt=False,
+            assignment_still_blocked=True,
+        )
+        is False
+    )
+    assert (
+        runner._should_record_unverified_turn_attempt(
+            {"interrupted": False},
+            boundary_recorded_attempt=False,
+            budget_recorded_attempt=False,
+            assignment_still_blocked=True,
+        )
+        is True
+    )
 
 
 def test_verified_workflow_exits_without_prompt_when_stdin_is_tty(monkeypatch):
@@ -147,6 +203,3920 @@ def test_interactive_prompt_loop_allowed_when_stdin_is_tty(monkeypatch):
     assert runner._interactive_prompt_loop_allowed() is True
 
 
+@pytest.mark.parametrize(
+    "interrupt",
+    [KeyboardInterrupt(), runner.NativeTerminationSignal(1)],
+    ids=["sigint", "sighup"],
+)
+def test_main_maps_startup_signal_to_130(monkeypatch, interrupt):
+    cleanup_calls: list[object] = []
+    persisted: list[tuple[str, dict[str, object]]] = []
+    activity: list[tuple[str, str, dict[str, object]]] = []
+    outcomes: list[tuple[int, str]] = []
+    campaign_statuses: list[tuple[str, str]] = []
+    startup_order: list[str] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(
+        runner,
+        "mark_workflow_live_status_startup",
+        lambda *, phase, metadata: startup_order.append(phase),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_stale_workflow_file_locks",
+        lambda: startup_order.append("lock-reconciliation") or 0,
+    )
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda state: startup_order.append("campaign-reconciliation") or {},
+    )
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_plan_state_resume_block", lambda state: "")
+    monkeypatch.setattr(
+        runner, "_ensure_project_prove_manager_started", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: {
+            "active_file": "/tmp/project/Main.lean",
+            "sorry_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, phase="", **kwargs: persisted.append(
+            (str(phase), dict(args[3] if len(args) > 3 else {}))
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: activity.append((event_type, message, details)),
+    )
+    monkeypatch.setattr(runner, "_print_header", lambda: None)
+    monkeypatch.setattr(runner, "_build_agent", lambda: (_ for _ in ()).throw(interrupt))
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_status",
+        lambda _state, status, *, reason="": campaign_statuses.append((status, reason)),
+    )
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda code, *args, reason="", **kwargs: outcomes.append((code, reason)) or code,
+    )
+    monkeypatch.setattr(
+        runner,
+        "shutdown_native_runtime_services",
+        lambda agent: cleanup_calls.append(agent),
+    )
+
+    assert runner.main() == runner.EXIT_INTERRUPTED
+    assert cleanup_calls == [None]
+    assert persisted[-1][0] == "exited"
+    assert persisted[-1][1]["interrupt_source"] == "signal"
+    assert [entry[0] for entry in activity].count("runner-exit") == 1
+    assert [entry[0] for entry in activity].count("startup-proof-state-refresh-started") == 1
+    finished = next(
+        entry for entry in activity if entry[0] == "startup-proof-state-refresh-finished"
+    )
+    assert finished[2]["ok"] is True
+    assert finished[2]["used_source_only_snapshot"] is False
+    assert finished[2]["elapsed_s"] >= 0
+    assert outcomes == [(runner.EXIT_INTERRUPTED, "signal interrupt")]
+    assert campaign_statuses == [("paused", "signal interrupt")]
+    assert startup_order[:4] == [
+        "starting",
+        "lock-reconciliation",
+        "reconciling",
+        "campaign-reconciliation",
+    ]
+
+
+@pytest.mark.parametrize(
+    "campaign_started,expected_exit",
+    [(False, runner.EXIT_RUNTIME_FAILURE), (True, runner.EXIT_PAUSED)],
+)
+def test_main_normalizes_system_exit_zero_without_unresolved_success(
+    monkeypatch,
+    campaign_started,
+    expected_exit,
+):
+    """A dependency's SystemExit(0) cannot bypass native outcome authority."""
+    outcomes: list[tuple[int, str]] = []
+    checkpoints: list[str] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "install_native_termination_handlers", lambda: {})
+    monkeypatch.setattr(runner, "restore_native_termination_handlers", lambda _handlers: None)
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda _agent: None)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_write_infrastructure_pause_checkpoint",
+        lambda *args, **kwargs: checkpoints.append("infrastructure") or {},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda code, *args, reason="", **kwargs: outcomes.append((code, reason)) or code,
+    )
+
+    if campaign_started:
+        monkeypatch.setattr(runner, "_persist_startup_live_status", lambda *args, **kwargs: None)
+        monkeypatch.setattr(runner, "_reconcile_stale_workflow_file_locks", lambda: 0)
+
+        def exit_after_campaign_start(state):
+            state["campaign_id"] = "campaign-system-exit"
+            raise SystemExit(0)
+
+        monkeypatch.setattr(runner.campaign_epoch, "ensure_campaign", exit_after_campaign_start)
+    else:
+        monkeypatch.setattr(
+            runner,
+            "_persist_startup_live_status",
+            lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit(0)),
+        )
+
+    assert runner.main() == expected_exit
+    assert outcomes == [(expected_exit, "normalized SystemExit request: 0")]
+    assert checkpoints == (["infrastructure"] if campaign_started else [])
+
+
+def test_signal_during_plan_resume_preserves_restored_queue_target(monkeypatch, tmp_path):
+    """An interrupted expensive resume gate must not regress status to unknown."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem active_target : True := by\n  sorry\n", encoding="utf-8")
+    startup_metadata: list[dict[str, object]] = []
+    exited_live_states: list[dict[str, object]] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner, "install_native_termination_handlers", lambda: {})
+    monkeypatch.setattr(runner, "restore_native_termination_handlers", lambda _handlers: None)
+    monkeypatch.setattr(runner, "defer_repeated_sigint", lambda: None)
+    monkeypatch.setattr(runner, "restore_sigint", lambda _handler: None)
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(runner, "_reconcile_stale_workflow_file_locks", lambda: 0)
+    monkeypatch.setattr(
+        runner,
+        "mark_workflow_live_status_startup",
+        lambda *, phase, metadata: startup_metadata.append(dict(metadata)),
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "ensure_campaign", lambda _state: {})
+    monkeypatch.setattr(runner, "_cleanup_scratch_artifacts_on_startup", lambda _state: {})
+    monkeypatch.setattr(runner.environment_memory, "hydrate", lambda _state: {})
+    monkeypatch.setattr(runner, "_migrate_negation_promotions_on_startup", lambda: {})
+    monkeypatch.setattr(runner.research_findings, "hydrate_delivery_markers", lambda _state: None)
+    monkeypatch.setattr(
+        runner.plan_state,
+        "load_summary",
+        lambda: {
+            "campaign": {
+                "last_route_decision": {
+                    "route": "decompose",
+                    "target_symbol": "active_target",
+                    "active_file": str(active),
+                }
+            }
+        },
+    )
+
+    def restore_assignment(state):
+        state["current_queue_assignment"] = {
+            "active_file": str(active),
+            "target_symbol": "active_target",
+            "slice": "theorem active_target : True := by\n  sorry",
+        }
+        return True
+
+    monkeypatch.setattr(runner, "_restore_queue_manager_state", restore_assignment)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_plan_state_resume_block",
+        lambda _state: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda _agent: None)
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, **_kwargs: exited_live_states.append(dict(args[3])),
+    )
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+
+    assert runner.main() == runner.EXIT_INTERRUPTED
+
+    assert startup_metadata[-1]["target_symbol"] == "active_target"
+    assert startup_metadata[-1]["active_file"] == str(active)
+    assert startup_metadata[-1]["declaration_scope"] == "project"
+    assert startup_metadata[-1]["declaration_queue_total"] == 1
+    assert "active_target" in startup_metadata[-1]["declaration_queue_summary"]
+    assert startup_metadata[-1]["route_decision"]["route_action"] == "decompose"
+    assert startup_metadata[-1]["sorry_count"] == 1
+    assert startup_metadata[-1]["proof_solved"] is False
+    assert startup_metadata[-1]["verification_ok"] is False
+    assert startup_metadata[-1]["last_verification"] == {}
+    assert exited_live_states[-1]["target_symbol"] == "active_target"
+    assert exited_live_states[-1]["current_queue_item"]["label"] == "active_target"
+
+
+def test_main_fails_loudly_when_startup_status_claim_fails(monkeypatch):
+    finalized: list[str] = []
+    startup_phases: list[str] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "install_native_termination_handlers", lambda: {})
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+
+    def reject_startup_status(*, phase, metadata):
+        startup_phases.append(phase)
+        raise RuntimeError("live status unavailable")
+
+    monkeypatch.setattr(runner, "mark_workflow_live_status_startup", reject_startup_status)
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_stale_workflow_file_locks",
+        lambda: pytest.fail("startup continued after its ownership claim failed"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_stop_native_owned_work",
+        lambda *args, **kwargs: finalized.append("owned-work"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_release_native_runner_locks",
+        lambda _agent: finalized.append("locks"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, **kwargs: finalized.append("live-status"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: finalized.append("runner-exit"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda *args, **kwargs: finalized.append("outcome"),
+    )
+
+    with pytest.raises(RuntimeError, match="live status unavailable"):
+        runner.main()
+
+    assert startup_phases == ["starting"]
+    assert finalized == ["owned-work", "live-status", "runner-exit", "outcome", "locks"]
+
+
+def test_main_early_signal_clears_real_live_status_without_rebuilding_lean(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path / "project"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_PROCESS_TOKEN", "early-signal-token")
+    (tmp_path / "project").mkdir()
+    startup_snapshots: list[dict[str, object]] = []
+    monkeypatch.setattr(runner, "install_native_termination_handlers", lambda: {})
+    monkeypatch.setattr(runner, "restore_native_termination_handlers", lambda _handlers: None)
+    monkeypatch.setattr(runner, "defer_repeated_sigint", lambda: None)
+    monkeypatch.setattr(runner, "restore_sigint", lambda _handler: None)
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(runner, "_reconcile_stale_workflow_file_locks", lambda: 0)
+
+    def interrupt_during_campaign_startup(_state):
+        startup_snapshots.append(load_workflow_live_status())
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(runner.campaign_epoch, "ensure_campaign", interrupt_during_campaign_startup)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda *args, **kwargs: pytest.fail("early signal cleanup rebuilt Lean proof state"),
+    )
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda _agent: None)
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+
+    assert runner.main() == runner.EXIT_INTERRUPTED
+
+    assert len(startup_snapshots) == 1
+    startup = startup_snapshots[0]
+    assert startup["phase"] == "reconciling"
+    assert startup["process_id"] == os.getpid()
+    assert startup["startup_reconciliation_pending"] is True
+    assert startup["runtime_heartbeat_at"] == startup["updated_at"]
+    exited = load_workflow_live_status()
+    assert exited["phase"] == "exited"
+    assert exited["process_id"] == 0
+    assert exited["held_locks"] == 0
+    assert exited["interrupt_source"] == "signal"
+    assert "startup_reconciliation_pending" not in exited
+
+
+def test_outer_signal_after_agent_start_finalizes_owned_state_once(monkeypatch):
+    class _Agent(_ManagedRunAgentStub):
+        session_id = "agent-session"
+        _parent_session_id = ""
+        _delegate_depth = 0
+
+    stopped: list[str] = []
+    released: list[str] = []
+    persisted: list[str] = []
+    activity: list[str] = []
+    outcomes: list[int] = []
+    checkpoints: list[dict[str, object]] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_RUNNER_OWNER", "runner-owner")
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(runner.campaign_epoch, "ensure_campaign", lambda state: {})
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_plan_state_resume_block", lambda state: "")
+    monkeypatch.setattr(
+        runner, "_ensure_project_prove_manager_started", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: {
+            "active_file": "/tmp/project/Main.lean",
+            "sorry_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, phase="", **kwargs: persisted.append(str(phase)),
+    )
+    monkeypatch.setattr(runner, "_print_header", lambda: None)
+    monkeypatch.setattr(runner, "_build_agent", _Agent)
+    monkeypatch.setattr(
+        runner,
+        "_managed_system_prompt",
+        lambda: (_ for _ in ()).throw(runner.NativeTerminationSignal(15)),
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_write_workflow_checkpoint",
+        lambda *args, **kwargs: checkpoints.append(dict(kwargs)) or {},
+    )
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "_terminate_descendant_agents",
+        lambda _agent: stopped.append("descendants"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_terminate_other_agents",
+        lambda _agent: stopped.append("project-agents"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "shutdown_native_runtime_services",
+        lambda _agent: stopped.append("runtime"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "release_all_file_locks",
+        lambda *, owner_id, **kwargs: released.append(owner_id) or {"success": True},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, *args, **kwargs: activity.append(event_type),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda code, *args, **kwargs: outcomes.append(code) or code,
+    )
+
+    assert runner.main() == runner.EXIT_INTERRUPTED
+    assert stopped == ["descendants", "project-agents", "runtime"]
+    assert sorted(released) == ["agent-session", "runner-owner"]
+    assert persisted[-1] == "exited"
+    assert activity.count("runner-exit") == 1
+    assert outcomes == [runner.EXIT_INTERRUPTED]
+    assert len(checkpoints) == 1
+    assert checkpoints[0]["label"] == "signal-interrupt checkpoint"
+    assert checkpoints[0]["trigger"] == "signal-interrupt"
+    assert checkpoints[0]["force_filesystem_checkpoint"] is True
+    assert checkpoints[0]["deterministic_summary"] is True
+
+
+def test_signal_finalization_checkpoints_after_quiescing_before_releasing_locks(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "_stop_native_owned_work",
+        lambda *args, **kwargs: calls.append("stop"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_write_signal_interruption_checkpoint",
+        lambda *args, **kwargs: calls.append("checkpoint"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_release_native_runner_locks",
+        lambda *args, **kwargs: calls.append("locks"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, **kwargs: calls.append("status"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: calls.append("activity"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda *args, **kwargs: calls.append("outcome"),
+    )
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        runner.EXIT_INTERRUPTED,
+        agent=object(),
+        history=[{"role": "assistant", "content": "verified helper added"}],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state={},
+        live_state={"target_symbol": "remaining_goal", "sorry_count": 1},
+        reason="signal interrupt",
+    )
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert calls == ["stop", "checkpoint", "status", "activity", "outcome", "locks"]
+
+
+def test_signal_finalization_refreshes_assignment_and_source_counts_after_quiescence(
+    monkeypatch, tmp_path
+):
+    """A signal checkpoint describes the quiescent source, not a stale prior turn."""
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "Main.lean"
+    source.write_text(
+        "private lemma child_target : True := by\n  sorry\n\n"
+        "theorem later_target : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    checkpoint_states: list[dict[str, object]] = []
+    persisted_states: list[dict[str, object]] = []
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_write_signal_interruption_checkpoint",
+        lambda _history, _agent, state: checkpoint_states.append(dict(state or {})) or {},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda _history, _compaction, _checkpoint, state, **_kwargs: persisted_states.append(
+            dict(state)
+        ),
+    )
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        runner.EXIT_INTERRUPTED,
+        agent=object(),
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state={
+            "current_queue_assignment": {
+                "target_symbol": "child_target",
+                "active_file": str(source),
+            }
+        },
+        live_state={
+            "target_symbol": "stale_parent_target",
+            "active_file": str(source),
+            "sorry_count": 0,
+            "project_sorry_count": 0,
+            "proof_solved": True,
+            "verification_ok": True,
+            "last_verification": {"ok": True},
+            "blocker_summary": "stale parent blocker",
+            "diagnostics": "stale parent diagnostics",
+            "goals": "stale parent goals",
+            "build_status": "stale successful build",
+            "current_queue_item_slice": "stale parent source",
+        },
+        reason="signal interrupt",
+    )
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert checkpoint_states[-1]["target_symbol"] == "child_target"
+    assert checkpoint_states[-1]["sorry_count"] == 2
+    assert checkpoint_states[-1]["project_sorry_count"] == 2
+    assert checkpoint_states[-1]["declaration_queue_total"] == 2
+    assert len(checkpoint_states[-1]["declaration_queue_preview"]) == 2
+    assert checkpoint_states[-1]["proof_solved"] is False
+    assert checkpoint_states[-1]["verification_ok"] is False
+    assert checkpoint_states[-1]["last_verification"] == {}
+    assert checkpoint_states[-1]["blocker_summary"] != "stale parent blocker"
+    assert checkpoint_states[-1]["diagnostics"] != "stale parent diagnostics"
+    assert checkpoint_states[-1]["goals"] != "stale parent goals"
+    assert checkpoint_states[-1]["build_status"] != "stale successful build"
+    assert "private lemma child_target" in checkpoint_states[-1]["current_queue_item_slice"]
+    assert persisted_states[-1]["target_symbol"] == "child_target"
+    assert persisted_states[-1]["sorry_count"] == 2
+
+
+def test_signal_source_refresh_fails_closed_when_active_file_is_missing(monkeypatch, tmp_path):
+    """An unreadable signal target cannot retain stale verified metadata."""
+    project = tmp_path / "project"
+    project.mkdir()
+    missing = project / "Missing.lean"
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+
+    refreshed = runner._refresh_interrupted_live_state_after_quiescence(
+        {
+            "target_symbol": "stale_parent",
+            "active_file": str(missing),
+            "sorry_count": 0,
+            "project_sorry_count": 0,
+            "proof_solved": True,
+            "verification_ok": True,
+            "last_verification": {"ok": True, "scope": "project", "tool": "lean_verify"},
+            "current_queue_item": {"label": "stale_parent"},
+        },
+        {
+            "current_queue_assignment": {
+                "target_symbol": "child_target",
+                "active_file": str(missing),
+            }
+        },
+    )
+
+    assert refreshed["target_symbol"] == "child_target"
+    assert refreshed["source_reconciliation_pending"] is True
+    assert refreshed["source_reconciled_after_quiescence"] is False
+    assert refreshed["proof_solved"] is False
+    assert refreshed["verification_ok"] is False
+    assert refreshed["last_verification"] == {}
+    assert refreshed["current_queue_item"] == {}
+    assert "sorry_count" not in refreshed
+    assert runner._live_state_is_verified(refreshed) is False
+
+
+def test_signal_source_refresh_fails_closed_when_queue_target_disappeared(monkeypatch, tmp_path):
+    """A stale durable target remains resumable but is never reported as reconciled."""
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "Main.lean"
+    source.write_text("theorem another_target : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+
+    refreshed = runner._refresh_interrupted_live_state_after_quiescence(
+        {
+            "active_file": str(source),
+            "proof_solved": True,
+            "verification_ok": True,
+            "last_verification": {"ok": True},
+            "current_queue_item": {"label": "stale_parent"},
+            "current_queue_item_slice": "stale source",
+        },
+        {
+            "current_queue_assignment": {
+                "target_symbol": "missing_child_target",
+                "active_file": str(source),
+            }
+        },
+    )
+
+    assert refreshed["target_symbol"] == "missing_child_target"
+    assert refreshed["sorry_count"] == 1
+    assert refreshed["source_reconciliation_pending"] is True
+    assert refreshed["source_reconciled_after_quiescence"] is False
+    assert refreshed["proof_solved"] is False
+    assert refreshed["verification_ok"] is False
+    assert refreshed["current_queue_item"] == {}
+    assert refreshed["current_queue_item_slice"] == ""
+    assert "was not found" in refreshed["current_blocker"]
+    assert runner._live_state_is_verified(refreshed) is False
+
+
+def test_fallback_checkpoint_summary_prefers_structured_live_state(tmp_path, monkeypatch):
+    """Deterministic checkpoints cannot inherit an obsolete target from prose."""
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "Main.lean"
+    source.write_text("private lemma child_target : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+
+    summary = runner._fallback_checkpoint_summary(
+        [
+            {
+                "role": "user",
+                "content": "Continue stale_parent_target in Old.lean",
+            }
+        ],
+        label="signal-interrupt checkpoint",
+        trigger="signal-interrupt",
+        live_state={
+            "target_symbol": "child_target",
+            "active_file": str(source),
+            "sorry_count": 1,
+        },
+    )
+
+    assert "Target: child_target" in summary
+    assert "Main.lean" in summary
+    assert "Old.lean" not in summary
+    assert "1 unresolved `sorry`" in summary
+
+
+def test_signal_checkpoint_summary_treats_blocker_as_in_progress_evidence(tmp_path, monkeypatch):
+    """Keep summary prose aligned with the signal checkpoint's resumable status."""
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "Main.lean"
+    source.write_text("theorem child_target : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+
+    summary = runner._fallback_checkpoint_summary(
+        [],
+        label="signal-interrupt checkpoint",
+        trigger="signal-interrupt",
+        live_state={
+            "exit_code": runner.EXIT_INTERRUPTED,
+            "interrupt_source": "signal",
+            "target_symbol": "child_target",
+            "active_file": str(source),
+            "sorry_count": 1,
+            "blocker_summary": "`child_target` remains unresolved at the signal checkpoint.",
+        },
+    )
+
+    assert "Success state: in-progress" in summary
+    assert "Success state: blocked" not in summary
+    assert "remains unresolved" in summary
+
+
+def test_signal_finalization_does_not_retry_mixed_writer_and_runtime_failures(monkeypatch):
+    release_worker = threading.Event()
+    worker = threading.Thread(
+        target=release_worker.wait,
+        name="mixed-failure-foreground",
+        daemon=True,
+    )
+    agent = type("Agent", (), {})()
+    agent._managed_foreground_worker = worker
+    agent.interrupt = lambda _reason: None
+    checkpoints: list[bool] = []
+    stopped: list[str] = []
+    worker.start()
+    monkeypatch.setattr(runner, "_native_writer_join_timeout_s", lambda: 0.01)
+    monkeypatch.setattr(
+        runner,
+        "drain_managed_foreground_worker",
+        lambda *_args, **_kwargs: pytest.fail("mixed cleanup failure entered foreground drain"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_terminate_descendant_agents",
+        lambda *_args, **_kwargs: stopped.append("descendants"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_terminate_other_agents",
+        lambda *_args, **_kwargs: stopped.append("project-agents"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_shutdown_campaign_research",
+        lambda *_args, **_kwargs: stopped.append("research"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "shutdown_native_runtime_services",
+        lambda *_args, **_kwargs: stopped.append("runtime") or ("MCP servers",),
+    )
+    monkeypatch.setattr(runner, "_mark_finalization_pause", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_write_signal_interruption_checkpoint",
+        lambda *args, **kwargs: checkpoints.append(True),
+    )
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda *args, **kwargs: None)
+
+    try:
+        result = runner._finalize_native_run(
+            runner.NativeRunFinalizer(),
+            runner.EXIT_INTERRUPTED,
+            agent=agent,
+            history=[],
+            compaction_state={},
+            checkpoint_state={},
+            autonomy_state={},
+            live_state={"sorry_count": 1},
+            reason="signal interrupt",
+        )
+    finally:
+        release_worker.set()
+        worker.join(timeout=1.0)
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert checkpoints == []
+    assert stopped == ["descendants", "project-agents", "research", "runtime"]
+
+
+def test_signal_finalization_runtime_sweep_drains_active_expert_before_checkpoint(
+    monkeypatch, tmp_path
+):
+    """A command advisor cannot outlive the foreground writer checkpoint gate."""
+    from leanflow_cli.cli import expert_help
+    from tools.utilities.interrupt import set_interrupt
+
+    errors: list[BaseException] = []
+    checkpoints: list[bool] = []
+    activity: list[str] = []
+
+    def run_expert() -> None:
+        try:
+            expert_help._run_isolated_expert_command(
+                [runner.sys.executable, "-c", "import time; time.sleep(30)"],
+                input="advisor prompt",
+                cwd=str(tmp_path),
+                timeout=30,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    set_interrupt(False)
+    worker = threading.Thread(
+        target=run_expert,
+        name="expert-foreground",
+        daemon=True,
+    )
+    agent = type("Agent", (), {})()
+    agent._managed_foreground_worker = worker
+    agent.interrupt = lambda _reason: None
+    worker.start()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        with expert_help._ACTIVE_EXPERT_COMMANDS_LOCK:
+            if expert_help._ACTIVE_EXPERT_COMMANDS:
+                break
+        time.sleep(0.01)
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_native_writer_join_timeout_s", lambda: 0.01)
+    monkeypatch.setattr(runner, "_terminate_descendant_agents", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_terminate_other_agents", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_shutdown_campaign_research", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "shutdown_native_runtime_services",
+        lambda _agent: (
+            ()
+            if not expert_help.shutdown_active_expert_commands(timeout_s=3)
+            else ("expert commands",)
+        ),
+    )
+    monkeypatch.setattr(runner, "_mark_finalization_pause", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+
+    def checkpoint(*_args, **_kwargs):
+        assert not worker.is_alive()
+        checkpoints.append(True)
+        return {}
+
+    monkeypatch.setattr(runner, "_write_signal_interruption_checkpoint", checkpoint)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda _agent, event_type, *_args, **_kwargs: activity.append(event_type),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+
+    try:
+        result = runner._finalize_native_run(
+            runner.NativeRunFinalizer(),
+            runner.EXIT_INTERRUPTED,
+            agent=agent,
+            history=[],
+            compaction_state={},
+            checkpoint_state={},
+            autonomy_state={},
+            live_state={"sorry_count": 1},
+            reason="signal interrupt",
+        )
+    finally:
+        set_interrupt(False)
+        expert_help.shutdown_active_expert_commands(timeout_s=3)
+        worker.join(timeout=2)
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert checkpoints == [True]
+    assert len(errors) == 1
+    assert isinstance(errors[0], InterruptedError)
+    assert "checkpoint-failure" not in activity
+
+
+def test_signal_finalization_drains_writer_before_refreshing_source_checkpoint(
+    monkeypatch, tmp_path
+):
+    """Checkpoint the final source bytes written during bounded foreground drainage."""
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "Main.lean"
+    source.write_text("theorem remaining_goal : True := by\n  sorry\n", encoding="utf-8")
+    release_writer = threading.Event()
+    source_written = threading.Event()
+    stop_steps: list[str] = []
+    interrupt_reasons: list[str] = []
+    checkpoints: list[dict[str, object]] = []
+    checkpoint_sources: list[str] = []
+    persisted_checkpoint_states: list[dict[str, object]] = []
+    activity: list[str] = []
+
+    def write_final_source() -> None:
+        release_writer.wait()
+        source.write_text("theorem remaining_goal : True := by\n  trivial\n", encoding="utf-8")
+        source_written.set()
+
+    worker = threading.Thread(
+        target=write_final_source,
+        name="source-finishing-foreground",
+        daemon=True,
+    )
+    agent = type("Agent", (), {})()
+    agent._managed_foreground_worker = worker
+
+    def interrupt(reason: str) -> None:
+        interrupt_reasons.append(reason)
+        if reason == "native runner post-shutdown foreground drain":
+            release_writer.set()
+
+    agent.interrupt = interrupt
+    worker.start()
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_native_writer_join_timeout_s", lambda: 0.01)
+    monkeypatch.setattr(
+        runner,
+        "_terminate_descendant_agents",
+        lambda *_args, **_kwargs: stop_steps.append("descendants"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_terminate_other_agents",
+        lambda *_args, **_kwargs: stop_steps.append("project-agents"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_shutdown_campaign_research",
+        lambda *_args, **_kwargs: stop_steps.append("research"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "shutdown_native_runtime_services",
+        lambda *_args, **_kwargs: stop_steps.append("runtime") or (),
+    )
+    monkeypatch.setattr(runner, "_mark_finalization_pause", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+
+    def checkpoint(_history, _agent, state):
+        assert source_written.is_set()
+        assert worker.is_alive() is False
+        checkpoints.append(dict(state or {}))
+        checkpoint_sources.append(source.read_text(encoding="utf-8"))
+        return {"checkpoint_id": "ckpt-fresh"}
+
+    monkeypatch.setattr(
+        runner,
+        "_write_signal_interruption_checkpoint",
+        checkpoint,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_journal_status",
+        lambda: {"current": {"checkpoint_id": "ckpt-fresh"}},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda _history, _compaction, checkpoint, _state, **_kwargs: (
+            persisted_checkpoint_states.append(dict(checkpoint or {}))
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda _agent, event_type, *_args, **_kwargs: activity.append(event_type),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+
+    try:
+        result = runner._finalize_native_run(
+            runner.NativeRunFinalizer(),
+            runner.EXIT_INTERRUPTED,
+            agent=agent,
+            history=[],
+            compaction_state={},
+            checkpoint_state={"current": {"checkpoint_id": "ckpt-old"}},
+            autonomy_state={
+                "current_queue_assignment": {
+                    "target_symbol": "remaining_goal",
+                    "active_file": str(source),
+                }
+            },
+            live_state={
+                "target_symbol": "remaining_goal",
+                "active_file": str(source),
+                "sorry_count": 1,
+            },
+            reason="signal interrupt",
+        )
+    finally:
+        release_writer.set()
+        worker.join(timeout=1.0)
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert stop_steps == ["descendants", "project-agents", "research", "runtime"]
+    assert interrupt_reasons.count("native runner post-shutdown foreground drain") == 1
+    assert len(checkpoints) == 1
+    assert checkpoints[0]["target_symbol"] == "remaining_goal"
+    assert checkpoints[0]["sorry_count"] == 0
+    assert checkpoints[0]["project_sorry_count"] == 0
+    assert "trivial" in str(checkpoints[0]["current_queue_item_slice"])
+    assert checkpoint_sources == ["theorem remaining_goal : True := by\n  trivial\n"]
+    assert persisted_checkpoint_states[-1]["current"]["checkpoint_id"] == "ckpt-fresh"
+    assert "checkpoint-failure" not in activity
+
+
+def test_signal_finalization_preserves_replacement_writer_and_skips_checkpoint(
+    monkeypatch,
+):
+    """A newer foreground registration remains authoritative and blocks checkpointing."""
+    release_captured = threading.Event()
+    release_replacement = threading.Event()
+    captured = threading.Thread(
+        target=release_captured.wait,
+        name="captured-foreground",
+        daemon=True,
+    )
+    replacement = threading.Thread(
+        target=release_replacement.wait,
+        name="replacement-foreground",
+        daemon=True,
+    )
+    agent = type("Agent", (), {})()
+    agent._managed_foreground_worker = captured
+    replacement_started = False
+    stop_steps: list[str] = []
+    checkpoints: list[bool] = []
+    activity: list[tuple[str, dict[str, object]]] = []
+    persisted_states: list[dict[str, object]] = []
+
+    def interrupt(reason: str) -> None:
+        nonlocal replacement_started
+        if reason != "native runner post-shutdown foreground drain":
+            return
+        if not replacement_started:
+            replacement.start()
+            replacement_started = True
+        agent._managed_foreground_worker = replacement
+        release_captured.set()
+
+    agent.interrupt = interrupt
+    captured.start()
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_FOREGROUND_DRAIN_TIMEOUT_S", "0.2")
+    monkeypatch.setattr(runner, "_native_writer_join_timeout_s", lambda: 0.01)
+    monkeypatch.setattr(
+        runner,
+        "_terminate_descendant_agents",
+        lambda *_args, **_kwargs: stop_steps.append("descendants"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_terminate_other_agents",
+        lambda *_args, **_kwargs: stop_steps.append("project-agents"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_shutdown_campaign_research",
+        lambda *_args, **_kwargs: stop_steps.append("research"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "shutdown_native_runtime_services",
+        lambda *_args, **_kwargs: stop_steps.append("runtime") or (),
+    )
+    monkeypatch.setattr(runner, "_mark_finalization_pause", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_write_signal_interruption_checkpoint",
+        lambda *args, **kwargs: checkpoints.append(True),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda _history, _compaction, _checkpoint, state, **_kwargs: persisted_states.append(
+            dict(state)
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda _agent, event_type, *_args, **kwargs: activity.append((event_type, kwargs)),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+
+    try:
+        result = runner._finalize_native_run(
+            runner.NativeRunFinalizer(),
+            runner.EXIT_INTERRUPTED,
+            agent=agent,
+            history=[],
+            compaction_state={},
+            checkpoint_state={},
+            autonomy_state={},
+            live_state={"target_symbol": "remaining_goal", "sorry_count": 1},
+            reason="signal interrupt",
+        )
+    finally:
+        release_captured.set()
+        release_replacement.set()
+        captured.join(timeout=1.0)
+        if replacement_started:
+            replacement.join(timeout=1.0)
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert stop_steps == ["descendants", "project-agents", "research", "runtime"]
+    assert agent._managed_foreground_worker is replacement
+    assert checkpoints == []
+    failures = [details for event, details in activity if event == "checkpoint-failure"]
+    assert len(failures) == 1
+    assert failures[0]["trigger"] == "signal-interrupt"
+    assert failures[0]["checkpoint_written"] is False
+    assert failures[0]["quiescence_errors"]
+    assert persisted_states[-1]["checkpoint_failure"] == failures[0]
+
+
+def test_signal_finalization_parent_writer_failure_never_enters_foreground_drain(
+    monkeypatch,
+):
+    """A real parent-maintained writer is not misclassified as foreground-only."""
+    from leanflow_cli.native import parent_maintenance
+
+    release_parent = threading.Event()
+    parent_worker = threading.Thread(
+        target=release_parent.wait,
+        name="tracked-parent-writer",
+        daemon=True,
+    )
+    agent = type("Agent", (), {"interrupt": lambda self, _reason: None})()
+    checkpoints: list[bool] = []
+    stop_steps: list[str] = []
+    activity: list[str] = []
+
+    parent_maintenance._track_worker(parent_worker)
+    parent_worker.start()
+    monkeypatch.setattr(runner, "_native_writer_join_timeout_s", lambda: 0.01)
+    monkeypatch.setattr(
+        runner,
+        "drain_managed_foreground_worker",
+        lambda *_args, **_kwargs: pytest.fail("parent writer entered foreground drain"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_terminate_descendant_agents",
+        lambda *_args, **_kwargs: stop_steps.append("descendants"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_terminate_other_agents",
+        lambda *_args, **_kwargs: stop_steps.append("project-agents"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_shutdown_campaign_research",
+        lambda *_args, **_kwargs: stop_steps.append("research"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "shutdown_native_runtime_services",
+        lambda *_args, **_kwargs: stop_steps.append("runtime") or (),
+    )
+    monkeypatch.setattr(runner, "_mark_finalization_pause", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_write_signal_interruption_checkpoint",
+        lambda *args, **kwargs: checkpoints.append(True),
+    )
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda _agent, event_type, *_args, **_kwargs: activity.append(event_type),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+
+    try:
+        result = runner._finalize_native_run(
+            runner.NativeRunFinalizer(),
+            runner.EXIT_INTERRUPTED,
+            agent=agent,
+            history=[],
+            compaction_state={},
+            checkpoint_state={},
+            autonomy_state={},
+            live_state={"target_symbol": "remaining_goal", "sorry_count": 1},
+            reason="signal interrupt",
+        )
+    finally:
+        release_parent.set()
+        parent_worker.join(timeout=1.0)
+        parent_maintenance.quiesce_parent_maintained_actions(timeout_s=1.0)
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert stop_steps == ["descendants", "project-agents", "research", "runtime"]
+    assert checkpoints == []
+    assert activity.count("checkpoint-failure") == 1
+
+
+def test_signal_finalization_cancels_parent_planner_verifier_before_checkpoint(
+    monkeypatch, tmp_path
+):
+    """Ctrl-C must reap the isolated synthesis call and close its planner action."""
+    from agent.providers import isolated_auxiliary
+    from leanflow_cli.native import parent_maintenance
+    from leanflow_cli.workflows import verification_providers
+    from tools.utilities.interrupt import set_interrupt
+
+    worker_pid_file = tmp_path / "planner-verifier.pid"
+    worker_script = tmp_path / "planner_verifier.py"
+    worker_script.write_text(
+        """
+import os
+import pathlib
+import sys
+import time
+
+sys.stdin.read()
+pathlib.Path(sys.argv[1]).write_text(str(os.getpid()), encoding="utf-8")
+time.sleep(30)
+""",
+        encoding="utf-8",
+    )
+    original_isolated_call = isolated_auxiliary.run_isolated_auxiliary_text
+
+    def isolated_call(**kwargs):
+        return original_isolated_call(
+            **kwargs,
+            _worker_command=[runner.sys.executable, str(worker_script), str(worker_pid_file)],
+        )
+
+    monkeypatch.setattr(
+        verification_providers,
+        "run_isolated_auxiliary_text",
+        isolated_call,
+    )
+
+    class _Agent:
+        _managed_autonomy_state: dict[str, object] = {}
+
+        def interrupt(self, _reason):
+            set_interrupt(True)
+
+    agent = _Agent()
+    controller_errors: list[BaseException] = []
+
+    def planner(**_kwargs):
+        return verification_providers.run_model_verification_review(
+            provider="main",
+            task="planner_synthesis",
+            prompt="synthesize the completed lanes",
+            timeout_s=30,
+        )
+
+    def run_planner_route() -> None:
+        try:
+            runner._run_planner_phase_with_parent_maintenance(agent, goal="hard theorem")
+        except BaseException as exc:
+            controller_errors.append(exc)
+
+    monkeypatch.setattr(runner.planner_phase, "run_planner_phase", planner)
+    monkeypatch.setattr(
+        runner,
+        "_build_research_portfolio_parent_poll",
+        lambda *_args, **_kwargs: (lambda: None),
+    )
+    monkeypatch.setattr(runner, "_research_portfolio_parent_poll_interval_s", lambda: 0.01)
+    set_interrupt(False)
+    controller = threading.Thread(target=run_planner_route, daemon=True)
+    controller.start()
+    deadline = time.monotonic() + 3
+    while not worker_pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert worker_pid_file.exists()
+    worker_pid = int(worker_pid_file.read_text(encoding="utf-8"))
+
+    checkpoints: list[bool] = []
+    activity: list[str] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_native_writer_join_timeout_s", lambda: 1.0)
+    monkeypatch.setattr(runner, "_terminate_descendant_agents", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_terminate_other_agents", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_shutdown_campaign_research", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "shutdown_native_runtime_services", lambda *_args: ())
+    monkeypatch.setattr(runner, "_mark_finalization_pause", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+
+    def checkpoint(*_args, **_kwargs):
+        assert parent_maintenance.quiesce_parent_maintained_actions(timeout_s=0.01) == ()
+        checkpoints.append(True)
+        return {}
+
+    monkeypatch.setattr(runner, "_write_signal_interruption_checkpoint", checkpoint)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda _agent, event_type, *_args, **_kwargs: activity.append(event_type),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+
+    try:
+        result = runner._finalize_native_run(
+            runner.NativeRunFinalizer(),
+            runner.EXIT_INTERRUPTED,
+            agent=agent,
+            history=[],
+            compaction_state={},
+            checkpoint_state={},
+            autonomy_state=agent._managed_autonomy_state,
+            live_state={"target_symbol": "remaining_goal", "sorry_count": 1},
+            reason="signal interrupt",
+        )
+        controller.join(timeout=2)
+    finally:
+        set_interrupt(True)
+        controller.join(timeout=2)
+        set_interrupt(False)
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert not controller.is_alive()
+    assert checkpoints == [True]
+    assert controller_errors
+    assert "checkpoint-failure" not in activity
+    with pytest.raises(ProcessLookupError):
+        runner.os.kill(worker_pid, 0)
+
+
+def test_signal_finalization_rechecks_parent_writer_after_runtime_service_shutdown(
+    monkeypatch,
+):
+    """Lean-service cancellation may close a planner writer after its first join."""
+    from leanflow_cli.native import parent_maintenance
+
+    action_started = threading.Event()
+    release_action = threading.Event()
+    action_finished = threading.Event()
+    controller_errors: list[BaseException] = []
+
+    def planner_validation() -> None:
+        action_started.set()
+        release_action.wait(timeout=3)
+        action_finished.set()
+
+    def controller_target() -> None:
+        try:
+            parent_maintenance.run_with_parent_maintenance(
+                planner_validation,
+                maintenance=lambda: None,
+                cancel=lambda: None,
+                interval_s=0.01,
+                cancellation_join_timeout_s=0.01,
+            )
+        except BaseException as exc:
+            controller_errors.append(exc)
+
+    controller = threading.Thread(target=controller_target, daemon=True)
+    controller.start()
+    assert action_started.wait(timeout=2)
+    agent = type("Agent", (), {"interrupt": lambda self, _reason: None})()
+    checkpoints: list[bool] = []
+    activity: list[str] = []
+    runtime_calls: list[bool] = []
+
+    def shutdown_runtime(_agent):
+        runtime_calls.append(True)
+        release_action.set()
+        assert action_finished.wait(timeout=1)
+        return ()
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_native_writer_join_timeout_s", lambda: 0.01)
+    monkeypatch.setattr(
+        runner,
+        "drain_managed_foreground_worker",
+        lambda *_args, **_kwargs: pytest.fail("parent writer was treated as foreground"),
+    )
+    monkeypatch.setattr(runner, "_terminate_descendant_agents", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_terminate_other_agents", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_shutdown_campaign_research", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "shutdown_native_runtime_services", shutdown_runtime)
+    monkeypatch.setattr(runner, "_mark_finalization_pause", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_write_signal_interruption_checkpoint",
+        lambda *args, **kwargs: checkpoints.append(True) or {},
+    )
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda _agent, event_type, *_args, **_kwargs: activity.append(event_type),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+
+    try:
+        result = runner._finalize_native_run(
+            runner.NativeRunFinalizer(),
+            runner.EXIT_INTERRUPTED,
+            agent=agent,
+            history=[],
+            compaction_state={},
+            checkpoint_state={},
+            autonomy_state={},
+            live_state={"target_symbol": "remaining_goal", "sorry_count": 1},
+            reason="signal interrupt",
+        )
+        controller.join(timeout=2)
+    finally:
+        release_action.set()
+        controller.join(timeout=2)
+        parent_maintenance.quiesce_parent_maintained_actions(timeout_s=1)
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert runtime_calls == [True]
+    assert controller_errors == []
+    assert checkpoints == [True]
+    assert "checkpoint-failure" not in activity
+
+
+def test_stop_phase_signal_replaces_cached_math_exit_before_terminal_authority(monkeypatch):
+    """A first signal during quiescence commits interruption, never cached success."""
+    cleanup: list[str] = []
+    persisted: list[dict[str, object]] = []
+    outcomes: list[tuple[int, str]] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "_quiesce_native_writer_threads",
+        lambda _agent: cleanup.append("foreground")
+        or (_ for _ in ()).throw(runner.NativeTerminationSignal(15)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_shutdown_campaign_research",
+        lambda *args, **kwargs: cleanup.append("research"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "shutdown_native_runtime_services",
+        lambda _agent: cleanup.append("runtime") or (),
+    )
+    monkeypatch.setattr(
+        runner.terminal_authority,
+        "terminal_authority_guard",
+        lambda *args, **kwargs: pytest.fail("stop-phase signal entered mathematical authority"),
+    )
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_mark_finalization_pause", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, **kwargs: persisted.append(dict(args[3])),
+    )
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda code, *args, **kwargs: outcomes.append((code, str(kwargs.get("reason", ""))))
+        or code,
+    )
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        0,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state={},
+        live_state={
+            "verified": True,
+            "interrupt_source": "runner-keyboard-interrupt",
+        },
+        reason="cached verified scope",
+    )
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert cleanup == ["foreground", "research", "runtime"]
+    assert persisted[-1]["exit_code"] == runner.EXIT_INTERRUPTED
+    assert persisted[-1]["reason"] == "signal interrupt"
+    assert persisted[-1]["interrupt_source"] == "signal"
+    assert outcomes == [(runner.EXIT_INTERRUPTED, "signal interrupt")]
+
+
+@pytest.mark.parametrize(
+    "signal_stage, requested_exit",
+    [
+        ("verified-revalidation", 0),
+        ("disproof-reconciliation", runner.EXIT_DISPROVED),
+        ("terminal-lease", 0),
+    ],
+)
+def test_math_finalization_preserves_signal_from_authority_stage(
+    monkeypatch,
+    tmp_path,
+    signal_stage,
+    requested_exit,
+):
+    """Termination during any math-authority stage commits exit 130."""
+    source = tmp_path / "Demo.lean"
+    source.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    state: dict[str, object] = {}
+    if requested_exit == runner.EXIT_DISPROVED:
+        state.update(
+            {
+                "terminal_outcome": "disproved",
+                "negation_promotion": {
+                    "ok": True,
+                    "is_main_goal": True,
+                    "evidence": {"operation_path": str(source)},
+                },
+            }
+        )
+    statuses: list[dict[str, object]] = []
+    outcomes: list[tuple[int, str]] = []
+    authority_entries: list[str] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner,
+        "_revalidate_verified_scope_after_quiescence",
+        lambda *args, **kwargs: (
+            (_ for _ in ()).throw(runner.NativeTerminationSignal(15))
+            if signal_stage == "verified-revalidation"
+            else {
+                "active_file": str(source),
+                "declaration_scope": "file",
+                "verified": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_revalidate_disproof_after_quiescence",
+        lambda _state: (
+            (_ for _ in ()).throw(runner.NativeTerminationSignal(15))
+            if signal_stage == "disproof-reconciliation"
+            else runner.negation_promotion.PromotionReconciliation(terminal_disproof=True)
+        ),
+    )
+
+    @contextlib.contextmanager
+    def authority(*_args, **_kwargs):
+        authority_entries.append("entered")
+        yield runner.terminal_authority.TerminalAuthoritySnapshot(
+            operations=(),
+            source_bytes={},
+            blueprint_revision=0,
+        )
+
+    if signal_stage == "terminal-lease":
+        monkeypatch.setattr(
+            runner.terminal_authority,
+            "terminal_authority_guard",
+            lambda *args, **kwargs: (_ for _ in ()).throw(runner.NativeTerminationSignal(15)),
+        )
+    else:
+        monkeypatch.setattr(runner.terminal_authority, "terminal_authority_guard", authority)
+    monkeypatch.setattr(runner, "_terminal_authority_snapshot_is_current", lambda *a, **k: True)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, **kwargs: statuses.append(dict(args[3])),
+    )
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda code, *args, **kwargs: outcomes.append((code, str(kwargs.get("reason", ""))))
+        or code,
+    )
+
+    def mark_pause(autonomy, _reason, *, infrastructure):
+        assert infrastructure is True
+        autonomy["operational_pause"] = "paused_infrastructure"
+
+    monkeypatch.setattr(runner, "_mark_finalization_pause", mark_pause)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        requested_exit,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state=state,
+        live_state={
+            "active_file": str(source),
+            "declaration_scope": "file",
+            "verified": True,
+        },
+        reason="cached mathematical outcome",
+    )
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert statuses[-1]["exit_code"] == runner.EXIT_INTERRUPTED
+    assert statuses[-1]["reason"] == "signal interrupt"
+    assert statuses[-1]["interrupt_source"] == "signal"
+    assert outcomes == [(runner.EXIT_INTERRUPTED, "signal interrupt")]
+    if signal_stage == "terminal-lease":
+        assert authority_entries == []
+
+
+def test_lock_release_signal_corrects_committed_math_metadata_to_interrupted(
+    monkeypatch,
+    tmp_path,
+):
+    """A signal during strict lock release corrects every durable exit sink."""
+    source = tmp_path / "Demo.lean"
+    source.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    statuses: list[dict[str, object]] = []
+    outcomes: list[tuple[int, str]] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner,
+        "_revalidate_verified_scope_after_quiescence",
+        lambda *args, **kwargs: {
+            "active_file": str(source),
+            "declaration_scope": "file",
+            "verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_live_state_is_verified",
+        lambda live: bool(dict(live or {}).get("verified")),
+    )
+
+    @contextlib.contextmanager
+    def authority(*_args, **_kwargs):
+        yield runner.terminal_authority.TerminalAuthoritySnapshot(
+            operations=(),
+            source_bytes={},
+            blueprint_revision=0,
+        )
+
+    monkeypatch.setattr(runner.terminal_authority, "terminal_authority_guard", authority)
+    monkeypatch.setattr(runner, "_terminal_authority_snapshot_is_current", lambda *a, **k: True)
+    monkeypatch.setattr(
+        runner,
+        "_release_native_runner_locks",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(runner.NativeTerminationSignal(15)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, **kwargs: statuses.append(dict(args[3])),
+    )
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda code, *args, **kwargs: outcomes.append((code, str(kwargs.get("reason", ""))))
+        or code,
+    )
+    monkeypatch.setattr(runner, "_mark_finalization_pause", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_record_learnings", lambda *args, **kwargs: None)
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        0,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state={},
+        live_state={
+            "active_file": str(source),
+            "declaration_scope": "file",
+            "verified": True,
+        },
+        reason="cached verified scope",
+    )
+
+    assert result == runner.EXIT_INTERRUPTED
+    assert [state["exit_code"] for state in statuses] == [0, runner.EXIT_INTERRUPTED]
+    assert statuses[-1]["reason"] == "signal interrupt"
+    assert statuses[-1]["interrupt_source"] == "signal"
+    assert outcomes == [(0, "cached verified scope"), (runner.EXIT_INTERRUPTED, "signal interrupt")]
+
+
+@pytest.mark.parametrize("requested_exit", [0, runner.EXIT_DISPROVED])
+def test_finalization_downgrades_math_exit_when_negation_reconciliation_is_pending(
+    monkeypatch,
+    requested_exit,
+):
+    """The shared exit gate must outrank stale success and disproof verdicts."""
+    persisted: list[dict[str, object]] = []
+    outcomes: list[int] = []
+    messages: list[str] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+
+    def pause(state):
+        state.update(
+            {
+                "operational_pause": "paused_source_quarantine",
+                "source_quarantine_reason": "pending promotion transaction requires replay",
+            }
+        )
+        return True
+
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", pause)
+
+    def revalidate_disproof(state):
+        pause(state)
+        return runner.negation_promotion.PromotionReconciliation()
+
+    monkeypatch.setattr(
+        runner,
+        "_revalidate_disproof_after_quiescence",
+        revalidate_disproof,
+    )
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, **kwargs: persisted.append(dict(args[3])),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda _agent, _event, message, **kwargs: messages.append(str(message)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda exit_code, *args, **kwargs: outcomes.append(exit_code),
+    )
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        requested_exit,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state={},
+        live_state={"verified": True, "sorry_count": 0},
+        reason="cached mathematical verdict",
+        message="stale success message",
+    )
+
+    assert result == runner.EXIT_PAUSED
+    assert persisted[-1]["exit_code"] == runner.EXIT_PAUSED
+    assert persisted[-1]["reason"] == "pending promotion transaction requires replay"
+    assert outcomes == [runner.EXIT_PAUSED]
+    assert messages == [
+        "Managed workflow runner exited with resumable pause: "
+        "pending promotion transaction requires replay"
+    ]
+
+
+def _quiet_finalizer_side_effects(monkeypatch):
+    """Silence durable exit sinks for focused final-outcome gate tests."""
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda *args, **kwargs: None)
+
+
+def test_finalization_rechecks_lean_after_owned_writer_adds_sorry(monkeypatch, tmp_path):
+    """A late worker edit cannot retain cached exit 0 after quiescence."""
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    source = tmp_path / "Demo.lean"
+    source.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    calls: list[str] = []
+
+    def stop(*_args, **_kwargs):
+        calls.append("stop")
+        source.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    def revalidate(*_args, **_kwargs):
+        calls.append("verify")
+        return {"verified": "sorry" not in source.read_text(encoding="utf-8")}
+
+    monkeypatch.setattr(runner, "_stop_native_owned_work", stop)
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(runner, "_revalidate_verified_scope_after_quiescence", revalidate)
+    monkeypatch.setattr(
+        runner,
+        "_live_state_is_verified",
+        lambda state: bool(dict(state or {}).get("verified")),
+    )
+    _quiet_finalizer_side_effects(monkeypatch)
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        0,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state={},
+        live_state={"verified": True},
+        reason="cached verified scope",
+    )
+
+    assert calls == ["stop", "verify"]
+    assert result == runner.EXIT_PAUSED
+
+
+def test_finalization_rejects_unknown_project_sorry_count_after_file_build(monkeypatch, tmp_path):
+    """Project success needs known zero sorries plus a full-project Lean check."""
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    source = tmp_path / "Demo.lean"
+    source.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    provisional = {
+        "active_file": str(source),
+        "declaration_scope": "project",
+        "declaration_queue_total": 0,
+        "diagnostics": "",
+        "goals": "no goals",
+        "sorry_count": 0,
+        "project_sorry_count": None,
+    }
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: dict(provisional),
+    )
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda _root: (None, []))
+    monkeypatch.setattr(
+        runner,
+        "_run_explicit_verification_build",
+        lambda *args, **kwargs: (True, "file build passed"),
+    )
+    monkeypatch.setattr(runner, "_record_manager_verification", lambda *args, **kwargs: {})
+    monkeypatch.setattr(runner, "_store_last_verification", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_log_manager_verification", lambda *args, **kwargs: None)
+    _quiet_finalizer_side_effects(monkeypatch)
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        0,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state={},
+        live_state={"verified": True},
+        reason="cached project verification",
+    )
+
+    assert result == runner.EXIT_PAUSED
+
+
+@pytest.mark.parametrize("late_change", ["source", "graph"])
+def test_finalization_revalidates_disproof_after_late_owned_writer_change(
+    monkeypatch, tmp_path, late_change
+):
+    """Source or graph drift during shutdown cannot retain cached exit 3."""
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    source = tmp_path / "Demo.lean"
+    source.write_text("theorem bad : False := by\n  sorry\n", encoding="utf-8")
+    graph = {"status": "false"}
+    observed: list[str] = []
+
+    def stop(*_args, **_kwargs):
+        observed.append("stop")
+        if late_change == "source":
+            source.write_text("theorem bad : True := by\n  trivial\n", encoding="utf-8")
+        else:
+            graph["status"] = "proving"
+
+    def revalidate(_state):
+        observed.append("revalidate")
+        source_is_original = "False" in source.read_text(encoding="utf-8")
+        remains_false = source_is_original and graph["status"] == "false"
+        return runner.negation_promotion.PromotionReconciliation(terminal_disproof=remains_false)
+
+    state = {
+        "terminal_outcome": "disproved",
+        "negation_promotion": {"ok": True, "is_main_goal": True, "evidence": {}},
+    }
+    monkeypatch.setattr(runner, "_stop_native_owned_work", stop)
+    monkeypatch.setattr(runner, "_revalidate_disproof_after_quiescence", revalidate)
+    _quiet_finalizer_side_effects(monkeypatch)
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        runner.EXIT_DISPROVED,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state=state,
+        live_state={},
+        reason="cached disproof",
+    )
+
+    assert observed == ["stop", "revalidate"]
+    assert result == runner.EXIT_PAUSED
+    assert "terminal_outcome" not in state
+
+
+def test_finalization_math_exit_fails_closed_when_quiescence_fails(monkeypatch):
+    """An un-stopped writer blocks terminal verification and exit truth."""
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    revalidated: list[bool] = []
+    monkeypatch.setattr(
+        runner,
+        "_stop_native_owned_work",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("worker still alive")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_revalidate_verified_scope_after_quiescence",
+        lambda *args, **kwargs: revalidated.append(True) or {"verified": True},
+    )
+    monkeypatch.setattr(
+        runner.terminal_authority,
+        "terminal_authority_guard",
+        lambda *args, **kwargs: pytest.fail("authority waited while writer remained live"),
+    )
+    _quiet_finalizer_side_effects(monkeypatch)
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        0,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state={},
+        live_state={"verified": True},
+        reason="cached verified scope",
+    )
+
+    assert result == runner.EXIT_PAUSED
+    assert revalidated == []
+
+
+def test_stop_native_owned_work_rejects_reported_agent_and_runtime_failures(monkeypatch):
+    class _Agent:
+        session_id = "root-agent"
+
+        def interrupt(self, _message=None):
+            return None
+
+    monkeypatch.setattr(runner, "_quiesce_native_writer_threads", lambda _agent: None)
+    monkeypatch.setattr(
+        runner,
+        "_terminate_descendant_agents",
+        lambda _agent: {
+            "success": False,
+            "failed": [{"agent_id": "child", "error": "still live"}],
+            "terminated": [],
+        },
+    )
+    monkeypatch.setattr(runner, "_terminate_other_agents", lambda _agent: None)
+    monkeypatch.setattr(runner, "_shutdown_campaign_research", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "shutdown_native_runtime_services",
+        lambda _agent: ("terminal processes",),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        runner._stop_native_owned_work(_Agent(), {}, reason="terminal outcome")
+
+    detail = str(caught.value)
+    assert "descendant agents" in detail
+    assert "runtime services" in detail
+
+
+def test_stop_native_owned_work_releases_helper_reservation_after_research(monkeypatch):
+    """Stop reservation refresh only after all admitted background work is gone."""
+    calls: list[str] = []
+
+    class _Agent:
+        session_id = "root-agent"
+
+    monkeypatch.setattr(
+        runner,
+        "_quiesce_native_writer_threads",
+        lambda _agent: calls.append("foreground"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_terminate_descendant_agents",
+        lambda _agent: calls.append("descendants") or None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_terminate_other_agents",
+        lambda _agent: calls.append("project-agents") or None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_shutdown_campaign_research",
+        lambda *_args, **_kwargs: calls.append("research"),
+    )
+    monkeypatch.setattr(
+        runner.verification_batch_admission,
+        "release",
+        lambda *_args, **_kwargs: calls.append("verification-reservation") or True,
+    )
+    monkeypatch.setattr(
+        runner.helper_integration_admission,
+        "release",
+        lambda *_args, **_kwargs: calls.append("helper-reservation") or True,
+    )
+    monkeypatch.setattr(
+        runner,
+        "shutdown_native_runtime_services",
+        lambda _agent: calls.append("runtime") or (),
+    )
+
+    runner._stop_native_owned_work(_Agent(), {}, reason="signal interrupt")
+
+    assert calls == [
+        "foreground",
+        "descendants",
+        "project-agents",
+        "research",
+        "verification-reservation",
+        "helper-reservation",
+        "runtime",
+    ]
+
+
+def test_release_native_runner_locks_preserves_signal_after_other_owner_cleanup(monkeypatch):
+    released: list[str] = []
+    artifact_releases: list[str] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_RUNNER_OWNER", "a-runner")
+
+    class _Agent:
+        session_id = "z-agent"
+
+    def release(*, owner_id, **_kwargs):
+        released.append(owner_id)
+        if owner_id == "a-runner":
+            raise runner.NativeTerminationSignal(15)
+        return {"success": True}
+
+    monkeypatch.setattr(runner, "release_all_file_locks", release)
+    monkeypatch.setattr(
+        runner.process_artifact_cleanup,
+        "release_native_process_artifacts",
+        lambda project_root: artifact_releases.append(str(project_root)),
+    )
+
+    with pytest.raises(runner.NativeTerminationSignal):
+        runner._release_native_runner_locks(_Agent())
+
+    assert released == ["a-runner", "z-agent"]
+    assert len(artifact_releases) == 1
+
+
+def test_release_native_runner_locks_reclaims_exact_run_owner_and_unlocked_waiter(
+    monkeypatch, tmp_path
+):
+    """Remove both stale artifacts in the native finalizer's release stage."""
+    from core import project_resource_admission as admission
+
+    if admission.fcntl is None:
+        pytest.skip("foreground cleanup requires flock")
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "signal-cleanup-run")
+    runner.reset_workflow_run_log()
+    owner_path = project / ".leanflow" / "workflow-state" / ".latest-run.owner"
+    waiter = admission._register_foreground_waiter(project)
+    assert waiter is not None
+    assert admission._arm_foreground_handoff(waiter, requested_grace_s=60.0)
+    admission._clear_foreground_waiter(project, waiter, preserve_grace=True)
+    monkeypatch.setattr(
+        runner,
+        "release_all_file_locks",
+        lambda **_kwargs: {"success": True},
+    )
+
+    runner._release_native_runner_locks(None)
+
+    assert owner_path.exists() is False
+    assert waiter.path.exists() is False
+
+
+def test_terminated_agent_quiescence_escalates_and_waits_for_exact_identity(monkeypatch):
+    identity = {
+        "process_id": 4242,
+        "process_group_id": 4242,
+        "process_session_id": 4242,
+        "process_token_sha256": "token-sha",
+    }
+    live_checks = iter([True, True, False])
+    escalated: list[tuple[int, int | None]] = []
+    monkeypatch.setattr(runner, "workflow_agent_detail", lambda *args, **kwargs: identity)
+    monkeypatch.setattr(
+        runner,
+        "process_identity_matches",
+        lambda _identity: next(live_checks, False),
+    )
+    monkeypatch.setattr(
+        runner,
+        "terminate_process_tree",
+        lambda pid, *, expected_session_id, **kwargs: escalated.append((pid, expected_session_id)),
+    )
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
+
+    runner._prove_terminated_workflow_agents_gone(
+        {"success": True, "failed": [], "terminated": ["child-agent"]}
+    )
+
+    assert escalated == [(4242, 4242)]
+
+
+def test_terminated_agent_quiescence_fails_if_exact_identity_survives(monkeypatch):
+    identity = {
+        "process_id": 4242,
+        "process_group_id": 4242,
+        "process_session_id": 4242,
+        "process_token_sha256": "token-sha",
+    }
+    monkeypatch.setattr(runner, "workflow_agent_detail", lambda *args, **kwargs: identity)
+    monkeypatch.setattr(runner, "process_identity_matches", lambda _identity: True)
+    monkeypatch.setattr(runner, "terminate_process_tree", lambda *args, **kwargs: ())
+    monkeypatch.setattr(runner, "_native_writer_join_timeout_s", lambda: 0.01)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="remains live"):
+        runner._prove_terminated_workflow_agents_gone(
+            {"success": True, "failed": [], "terminated": ["child-agent"]}
+        )
+
+
+def test_research_shutdown_does_not_mark_stopped_while_jobs_remain_open(monkeypatch):
+    entry = type(
+        "_Entry",
+        (),
+        {
+            "process_id": 0,
+            "state": "running",
+            "spec": type("_Spec", (), {"job_id": "job-live"})(),
+            "is_terminal": lambda self: False,
+        },
+    )()
+
+    class _Service:
+        def __init__(self, **_kwargs):
+            return None
+
+        def open_jobs(self):
+            return [entry]
+
+        def shutdown_audit_entries(self):
+            return [entry]
+
+    state: dict[str, object] = {}
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-live"},
+    )
+    monkeypatch.setattr(runner.research_portfolio, "DispatchService", _Service)
+    monkeypatch.setattr(runner.research_portfolio, "shutdown_portfolio", lambda **kwargs: [])
+
+    with pytest.raises(RuntimeError, match="open jobs=.*job-live"):
+        runner._shutdown_campaign_research(state, reason="terminal outcome")
+
+    assert "_native_research_portfolio_stopped" not in state
+
+
+def test_research_shutdown_skips_complete_ledger_hydration_when_no_jobs_are_open(
+    monkeypatch,
+):
+    """An idle resume audits only process-owning rows, not all cold results."""
+
+    class _Service:
+        def __init__(self, **_kwargs):
+            return None
+
+        def shutdown_audit_entries(self):
+            return []
+
+        def open_jobs(self):
+            return []
+
+        def entries(self):
+            pytest.fail("campaign shutdown hydrated the complete dispatch ledger")
+
+    state: dict[str, object] = {}
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-idle"},
+    )
+    monkeypatch.setattr(runner.research_portfolio, "DispatchService", _Service)
+    monkeypatch.setattr(runner.research_portfolio, "shutdown_portfolio", lambda **kwargs: [])
+
+    result = runner._shutdown_campaign_research(state, reason="provider pause")
+
+    assert result == {"success": True, "killed": [], "residual": []}
+    assert state["_native_research_portfolio_stopped"] is True
+
+
+def test_research_shutdown_rejects_terminal_killed_live_process(monkeypatch):
+    """A killed ledger row is not shutdown proof while its exact PID survives."""
+    entry = type(
+        "_Entry",
+        (),
+        {
+            "process_id": 4242,
+            "launch_nonce": "",
+            "state": "killed",
+            "spec": type("_Spec", (), {"job_id": "job-terminal-live"})(),
+            "is_terminal": lambda self: True,
+            "process_identity": lambda self: SimpleNamespace(verifiable=False),
+        },
+    )()
+
+    class _Service:
+        def __init__(self, **_kwargs):
+            return None
+
+        def shutdown_audit_entries(self):
+            return [entry]
+
+        def open_jobs(self):
+            return []
+
+    retirements: list[str] = []
+    state: dict[str, object] = {}
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-live"},
+    )
+    monkeypatch.setattr(runner.research_portfolio, "DispatchService", _Service)
+    monkeypatch.setattr(runner.research_portfolio, "shutdown_portfolio", lambda **kwargs: [])
+    monkeypatch.setattr(
+        runner.dispatch_runtime,
+        "_dispatch_process_identity_has_exited",
+        lambda _entry: False,
+    )
+    monkeypatch.setattr(
+        runner.dispatch_runtime,
+        "_terminate_dispatch_process_and_wait",
+        lambda current: retirements.append(current.spec.job_id) or False,
+    )
+
+    with pytest.raises(RuntimeError, match="live processes=.*job-terminal-live"):
+        runner._shutdown_campaign_research(state, reason="terminal outcome")
+
+    assert retirements == ["job-terminal-live"]
+    assert "_native_research_portfolio_stopped" not in state
+
+
+def test_research_shutdown_accepts_terminal_killed_process_after_exact_exit(monkeypatch):
+    """Shutdown succeeds once exact retirement proves the killed worker gone."""
+    entry = type(
+        "_Entry",
+        (),
+        {
+            "process_id": 4242,
+            "launch_nonce": "",
+            "state": "killed",
+            "spec": type("_Spec", (), {"job_id": "job-terminal-retired"})(),
+            "is_terminal": lambda self: True,
+            "process_identity": lambda self: SimpleNamespace(verifiable=False),
+        },
+    )()
+
+    class _Service:
+        def __init__(self, **_kwargs):
+            return None
+
+        def shutdown_audit_entries(self):
+            return [entry]
+
+        def open_jobs(self):
+            return []
+
+    exit_checks = iter((False, True))
+    state: dict[str, object] = {}
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-live"},
+    )
+    monkeypatch.setattr(runner.research_portfolio, "DispatchService", _Service)
+    monkeypatch.setattr(runner.research_portfolio, "shutdown_portfolio", lambda **kwargs: [])
+    monkeypatch.setattr(
+        runner.dispatch_runtime,
+        "_dispatch_process_identity_has_exited",
+        lambda _entry: next(exit_checks),
+    )
+    monkeypatch.setattr(
+        runner.dispatch_runtime,
+        "_terminate_dispatch_process_and_wait",
+        lambda _entry: True,
+    )
+
+    result = runner._shutdown_campaign_research(state, reason="terminal outcome")
+
+    assert result["success"] is True
+    assert state["_native_research_portfolio_stopped"] is True
+
+
+def test_research_shutdown_accepts_durably_released_legacy_pid_reuse(monkeypatch):
+    """A PID reused after durable legacy release cannot block checkpointing."""
+    entry = type(
+        "_Entry",
+        (),
+        {
+            "process_id": 4242,
+            "launch_nonce": "",
+            "process_released_at": "2026-07-18T09:17:47+00:00",
+            "process_release_reason": "legacy-process-exited",
+            "state": "killed",
+            "spec": type("_Spec", (), {"job_id": "job-reused-pid"})(),
+            "is_terminal": lambda self: True,
+            "process_identity": lambda self: SimpleNamespace(verifiable=False),
+        },
+    )()
+
+    class _Service:
+        def __init__(self, **_kwargs):
+            return None
+
+        def shutdown_audit_entries(self):
+            return [entry]
+
+        def open_jobs(self):
+            return []
+
+        def release_legacy_killed_process_capacity(self, current):
+            assert current is entry
+            return {
+                "released": True,
+                "newly_released": False,
+                "reason": current.process_release_reason,
+                "released_at": current.process_released_at,
+                "report_key": "already-reported",
+                "reported_at": "2026-07-18T09:17:48+00:00",
+            }
+
+    state: dict[str, object] = {}
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-live"},
+    )
+    monkeypatch.setattr(runner.research_portfolio, "DispatchService", _Service)
+    monkeypatch.setattr(runner.research_portfolio, "shutdown_portfolio", lambda **kwargs: [])
+    monkeypatch.setattr(
+        runner.dispatch_runtime,
+        "_dispatch_process_identity_has_exited",
+        lambda _entry: False,
+    )
+    terminations: list[str] = []
+    monkeypatch.setattr(
+        runner.dispatch_runtime,
+        "_terminate_dispatch_process_and_wait",
+        lambda current: terminations.append(current.spec.job_id) or False,
+    )
+
+    result = runner._shutdown_campaign_research(state, reason="signal interruption")
+
+    assert result["success"] is True
+    assert terminations == []
+    assert state["_native_research_portfolio_stopped"] is True
+
+
+def test_research_shutdown_persists_kill_after_final_exact_retirement(monkeypatch):
+    """The final quiescence pass closes a row left open by the first kill."""
+
+    class _Entry:
+        process_id = 4242
+        state = "running"
+        spec = type("_Spec", (), {"job_id": "job-final-retry"})()
+
+        def is_terminal(self):
+            return self.state == "killed"
+
+    entry = _Entry()
+
+    class _Service:
+        def __init__(self, **_kwargs):
+            return None
+
+        def shutdown_audit_entries(self):
+            return [entry]
+
+        def open_jobs(self):
+            return [] if entry.is_terminal() else [entry]
+
+        def kill(self, job_id, *, requester_job_id):
+            assert job_id == "job-final-retry"
+            assert requester_job_id == "campaign-live"
+            entry.state = "killed"
+            return {"job_id": job_id, "state": "killed", "killed": True}
+
+    exit_checks = iter((False, True))
+    state: dict[str, object] = {}
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-live"},
+    )
+    monkeypatch.setattr(runner.research_portfolio, "DispatchService", _Service)
+    monkeypatch.setattr(runner.research_portfolio, "shutdown_portfolio", lambda **kwargs: [])
+    monkeypatch.setattr(
+        runner.dispatch_runtime,
+        "_dispatch_process_identity_has_exited",
+        lambda _entry: next(exit_checks),
+    )
+    monkeypatch.setattr(
+        runner.dispatch_runtime,
+        "_terminate_dispatch_process_and_wait",
+        lambda _entry: True,
+    )
+
+    result = runner._shutdown_campaign_research(state, reason="terminal outcome")
+
+    assert result["success"] is True
+    assert entry.state == "killed"
+    assert state["_native_research_portfolio_stopped"] is True
+
+
+def test_finalization_disproof_revalidation_exception_fails_closed(monkeypatch):
+    """A final verifier error is an infrastructure pause, never exit 3."""
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_revalidate_disproof_after_quiescence",
+        lambda _state: (_ for _ in ()).throw(OSError("ledger unavailable")),
+    )
+    _quiet_finalizer_side_effects(monkeypatch)
+    state = {"terminal_outcome": "disproved"}
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        runner.EXIT_DISPROVED,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state=state,
+        live_state={},
+        reason="cached disproof",
+    )
+
+    assert result == runner.EXIT_PAUSED
+    assert state["operational_pause"] == "paused_infrastructure"
+
+
+def test_finalization_downgrade_retires_every_premature_disproof_artifact(
+    monkeypatch,
+    tmp_path,
+):
+    """A late failed recheck cannot leave report, queue, or campaign disproof truth."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    source = tmp_path / "Demo.lean"
+    source.write_text("theorem bad : False := by\n  sorry\n", encoding="utf-8")
+
+    def seed(summary):
+        summary["campaign"] = {
+            "campaign_id": "campaign-finalizer",
+            "status": "disproved",
+        }
+        summary["final_report"] = {"status": "disproved", "target": "bad"}
+        summary["queue_manager_state"] = {
+            "theorem_outcomes": {
+                "bad": {
+                    "status": "disproved",
+                    "target_symbol": "bad",
+                    "active_file": str(source),
+                }
+            }
+        }
+
+    runner.negation_promotion.update_json_file(
+        runner.plan_state.plan_state_paths().summary_json,
+        seed,
+    )
+    state = {
+        "campaign_id": "campaign-finalizer",
+        "terminal_outcome": "disproved",
+        "final_report_written": True,
+        "learnings_written": True,
+        "negation_promotion": {
+            "ok": True,
+            "is_main_goal": True,
+            "evidence": {
+                "theorem": "bad",
+                "operation_path": str(source),
+            },
+        },
+        "theorem_outcomes": {
+            "bad": {
+                "status": "disproved",
+                "target_symbol": "bad",
+                "active_file": str(source),
+            }
+        },
+    }
+
+    runner._mark_finalization_pause(
+        state,
+        "post-quiescence evidence changed",
+        infrastructure=False,
+    )
+
+    summary = runner.plan_state.load_summary()
+    assert "final_report" not in summary
+    assert summary["queue_manager_state"].get("theorem_outcomes") in (None, {})
+    assert summary["campaign"]["status"] == "paused"
+    assert "terminal_outcome" not in state
+    assert "negation_promotion" not in state
+    assert "final_report_written" not in state
+    assert "learnings_written" not in state
+
+
+@pytest.mark.parametrize("math_exit", [0, runner.EXIT_DISPROVED])
+def test_campaign_outcome_write_failure_corrects_math_exit_to_pause(
+    monkeypatch,
+    tmp_path,
+    math_exit,
+):
+    """A failed durable campaign write cannot leave a successful math exit."""
+    source = tmp_path / "Demo.lean"
+    source.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    state: dict[str, object] = {}
+    if math_exit == runner.EXIT_DISPROVED:
+        state.update(
+            {
+                "terminal_outcome": "disproved",
+                "negation_promotion": {
+                    "ok": True,
+                    "is_main_goal": True,
+                    "evidence": {"operation_path": str(source)},
+                },
+            }
+        )
+    persisted: list[int] = []
+    activities: list[int] = []
+    campaign_attempts: list[int] = []
+    artifacts: list[str] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner,
+        "_revalidate_verified_scope_after_quiescence",
+        lambda *args, **kwargs: {
+            "active_file": str(source),
+            "declaration_scope": "file",
+            "verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_live_state_is_verified",
+        lambda live: bool(dict(live or {}).get("verified")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_revalidate_disproof_after_quiescence",
+        lambda _state: runner.negation_promotion.PromotionReconciliation(terminal_disproof=True),
+    )
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "authoritative_runtime_main_promotion",
+        lambda *args, **kwargs: {"operation_path": str(source)},
+    )
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "revalidate_promotion",
+        lambda *args, **kwargs: runner.negation_promotion.PromotionResult(
+            True,
+            "current",
+            is_main_goal=True,
+        ),
+    )
+    monkeypatch.setattr(runner, "_terminal_authority_snapshot_is_current", lambda *a, **k: True)
+    # This test isolates the campaign-outcome sink after mathematical
+    # authority has already been established. Requested-root enumeration has
+    # its own strict tests, so provide the exact source selected by that prior
+    # boundary instead of depending on an unrelated summary fixture here.
+    monkeypatch.setattr(
+        runner,
+        "_terminal_authority_source_paths",
+        lambda *args, **kwargs: (source.resolve(),),
+    )
+
+    @contextlib.contextmanager
+    def authority(*_args, **_kwargs):
+        yield runner.terminal_authority.TerminalAuthoritySnapshot(
+            operations=(),
+            source_bytes={},
+            blueprint_revision=0,
+        )
+
+    monkeypatch.setattr(runner.terminal_authority, "terminal_authority_guard", authority)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, **kwargs: persisted.append(int(args[3]["exit_code"])),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda _agent, _event, _message, **details: activities.append(int(details["exit_code"])),
+    )
+
+    def record_process_exit(_state, code, **_kwargs):
+        campaign_attempts.append(code)
+        if code == math_exit:
+            raise OSError("campaign outcome write failed")
+
+    monkeypatch.setattr(runner.campaign_epoch, "record_process_exit", record_process_exit)
+
+    def mark_pause(autonomy, _reason, *, infrastructure):
+        assert infrastructure is True
+        autonomy.pop("terminal_outcome", None)
+        autonomy.pop("negation_promotion", None)
+        autonomy.pop("_native_process_exit_recorded", None)
+        autonomy["operational_pause"] = "paused_infrastructure"
+
+    monkeypatch.setattr(runner, "_mark_finalization_pause", mark_pause)
+    monkeypatch.setattr(
+        runner,
+        "_maybe_record_learnings",
+        lambda *args, **kwargs: artifacts.append("learning"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_generate_final_report",
+        lambda *args, **kwargs: artifacts.append("report"),
+    )
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        math_exit,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state=state,
+        live_state={
+            "active_file": str(source),
+            "declaration_scope": "file",
+            "verified": True,
+        },
+        reason="cached mathematical outcome",
+    )
+
+    assert result == runner.EXIT_PAUSED
+    assert persisted == [math_exit, runner.EXIT_PAUSED]
+    assert activities == [math_exit, runner.EXIT_PAUSED]
+    assert campaign_attempts == [math_exit, runner.EXIT_PAUSED]
+    assert state["_native_process_exit_recorded"]["exit_code"] == runner.EXIT_PAUSED
+    assert artifacts == []
+
+
+@pytest.mark.parametrize("math_exit", [0, runner.EXIT_DISPROVED])
+def test_post_commit_derivative_failure_preserves_truthful_math_exit(
+    monkeypatch,
+    math_exit,
+):
+    """A non-authoritative report or learning failure cannot corrupt exit truth."""
+    calls: list[str] = []
+
+    class _CommittedFinalizer:
+        finalized = False
+
+        def finalize(self, _exit_code, **_kwargs):
+            self.finalized = True
+            return math_exit
+
+    monkeypatch.setattr(
+        runner,
+        "_maybe_record_learnings",
+        lambda *args, **kwargs: calls.append("learning")
+        or (_ for _ in ()).throw(OSError("learning write failed")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_generate_final_report",
+        lambda *args, **kwargs: calls.append("report")
+        or (_ for _ in ()).throw(OSError("report write failed")),
+    )
+
+    result = runner._finalize_native_run(
+        _CommittedFinalizer(),
+        math_exit,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state={},
+        live_state={},
+        reason="committed mathematical outcome",
+    )
+
+    assert result == math_exit
+    assert calls == ["learning" if math_exit == 0 else "report"]
+
+
+def test_post_commit_derivative_signal_is_not_retried_on_finalizer_reentry(monkeypatch):
+    """A derivative signal leaves committed truth cached and runs the derivative once."""
+    calls: list[str] = []
+
+    class _CommittedFinalizer:
+        finalized = False
+        committed_code = 0
+
+        def finalize(self, _exit_code, **_kwargs):
+            self.finalized = True
+            return self.committed_code
+
+    finalizer = _CommittedFinalizer()
+    monkeypatch.setattr(
+        runner,
+        "_maybe_record_learnings",
+        lambda *args, **kwargs: calls.append("learning")
+        or (_ for _ in ()).throw(runner.NativeTerminationSignal(15)),
+    )
+
+    with pytest.raises(runner.NativeTerminationSignal):
+        runner._finalize_native_run(
+            finalizer,
+            0,
+            agent=None,
+            history=[],
+            compaction_state={},
+            checkpoint_state={},
+            autonomy_state={},
+            live_state={},
+            reason="committed verified outcome",
+        )
+
+    assert (
+        runner._finalize_native_run(
+            finalizer,
+            runner.EXIT_INTERRUPTED,
+            agent=None,
+            history=[],
+            compaction_state={},
+            checkpoint_state={},
+            autonomy_state={},
+            live_state={},
+            reason="late signal after commit",
+        )
+        == 0
+    )
+    assert calls == ["learning"]
+
+
+@pytest.mark.parametrize("math_exit", [0, runner.EXIT_DISPROVED])
+def test_late_authority_release_failure_overwrites_math_outcome_without_artifacts(
+    monkeypatch,
+    tmp_path,
+    math_exit,
+):
+    """Authority release is part of commit; a late failure corrects every sink."""
+    source = tmp_path / "Demo.lean"
+    source.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    state: dict[str, object] = {}
+    if math_exit == runner.EXIT_DISPROVED:
+        state.update(
+            {
+                "terminal_outcome": "disproved",
+                "negation_promotion": {
+                    "ok": True,
+                    "is_main_goal": True,
+                    "evidence": {"operation_path": str(source)},
+                },
+            }
+        )
+    persisted: list[int] = []
+    campaign_outcomes: list[int] = []
+    artifacts: list[str] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner,
+        "_revalidate_verified_scope_after_quiescence",
+        lambda *args, **kwargs: {
+            "active_file": str(source),
+            "declaration_scope": "file",
+            "verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_live_state_is_verified",
+        lambda live: bool(dict(live or {}).get("verified")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_revalidate_disproof_after_quiescence",
+        lambda _state: runner.negation_promotion.PromotionReconciliation(terminal_disproof=True),
+    )
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "authoritative_runtime_main_promotion",
+        lambda *args, **kwargs: {"operation_path": str(source)},
+    )
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "revalidate_promotion",
+        lambda *args, **kwargs: runner.negation_promotion.PromotionResult(
+            True,
+            "current",
+            is_main_goal=True,
+        ),
+    )
+    monkeypatch.setattr(runner, "_terminal_authority_snapshot_is_current", lambda *a, **k: True)
+    # Keep this characterization focused on the late guard-release failure;
+    # requested-root enumeration is a preceding authority boundary.
+    monkeypatch.setattr(
+        runner,
+        "_terminal_authority_source_paths",
+        lambda *args, **kwargs: (source.resolve(),),
+    )
+
+    @contextlib.contextmanager
+    def authority(*_args, **_kwargs):
+        yield runner.terminal_authority.TerminalAuthoritySnapshot(
+            operations=(),
+            source_bytes={},
+            blueprint_revision=0,
+        )
+        raise RuntimeError("strict authority release failed")
+
+    monkeypatch.setattr(runner.terminal_authority, "terminal_authority_guard", authority)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, **kwargs: persisted.append(int(args[3]["exit_code"])),
+    )
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda code, *args, **kwargs: campaign_outcomes.append(code) or code,
+    )
+
+    def mark_pause(autonomy, reason, *, infrastructure):
+        autonomy.pop("terminal_outcome", None)
+        autonomy.pop("negation_promotion", None)
+        autonomy["operational_pause"] = "paused_infrastructure"
+
+    monkeypatch.setattr(runner, "_mark_finalization_pause", mark_pause)
+    monkeypatch.setattr(
+        runner,
+        "_maybe_record_learnings",
+        lambda *args, **kwargs: artifacts.append("learning"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_generate_final_report",
+        lambda *args, **kwargs: artifacts.append("report"),
+    )
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        math_exit,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state=state,
+        live_state={
+            "active_file": str(source),
+            "declaration_scope": "file",
+            "verified": True,
+        },
+        reason="cached mathematical outcome",
+    )
+
+    assert result == runner.EXIT_PAUSED
+    assert persisted == [math_exit, runner.EXIT_PAUSED]
+    assert campaign_outcomes == [math_exit, runner.EXIT_PAUSED]
+    assert artifacts == []
+
+
+def test_corrupt_runtime_registry_during_terminal_commit_preserves_bytes_and_downgrades(
+    monkeypatch,
+    tmp_path,
+):
+    """Strict authority and generic cleanup never reset ambiguous lock state."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".leanflow").mkdir()
+    (project / ".leanflow" / "project.yaml").write_text("name: demo\n", encoding="utf-8")
+    source = project / "Demo.lean"
+    source.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_RUNNER_OWNER", "terminal-runner")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(project / ".leanflow" / "plan-state"))
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner,
+        "_revalidate_verified_scope_after_quiescence",
+        lambda *args, **kwargs: {
+            "active_file": str(source),
+            "declaration_scope": "project",
+            "project_sorry_count": 0,
+            "verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_live_state_is_verified",
+        lambda live: bool(dict(live or {}).get("verified")),
+    )
+    monkeypatch.setattr(runner, "_terminal_authority_snapshot_is_current", lambda *a, **k: True)
+    statuses: list[int] = []
+    outcomes: list[int] = []
+    activities: list[int] = []
+    corrupt_bytes = b"{corrupt-terminal-lock-registry"
+
+    def persist(*args, **kwargs):
+        code = int(args[3]["exit_code"])
+        statuses.append(code)
+        if code == 0:
+            registry = runner.terminal_authority.file_locks._lock_file()
+            registry.write_bytes(corrupt_bytes)
+
+    monkeypatch.setattr(runner, "_persist_live_status", persist)
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda _agent, _event, _message, **details: activities.append(int(details["exit_code"])),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda code, *args, **kwargs: outcomes.append(code) or code,
+    )
+
+    def mark_pause(state, reason, *, infrastructure):
+        state["operational_pause"] = "paused_infrastructure"
+
+    monkeypatch.setattr(runner, "_mark_finalization_pause", mark_pause)
+    monkeypatch.setattr(runner, "_maybe_record_learnings", lambda *args, **kwargs: None)
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        0,
+        agent=None,
+        history=[],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state={},
+        live_state={
+            "active_file": str(source),
+            "declaration_scope": "project",
+            "verified": True,
+        },
+        reason="cached verified project",
+    )
+
+    registry = runner.terminal_authority.file_locks._lock_file()
+    assert result == runner.EXIT_PAUSED
+    assert statuses[0] == 0 and statuses[-1] == runner.EXIT_PAUSED
+    assert outcomes[0] == 0 and outcomes[-1] == runner.EXIT_PAUSED
+    assert activities[0] == 0 and activities[-1] == runner.EXIT_PAUSED
+    assert registry.read_bytes() == corrupt_bytes
+
+
+def test_infrastructure_pause_finalization_checkpoints_post_edit_state_once(monkeypatch):
+    """A tool edit followed by provider failure must leave a deterministic handoff."""
+    calls: list[str] = []
+    checkpoint_requests: list[dict[str, object]] = []
+    persisted_checkpoints: list[dict[str, object]] = []
+    finalizer = runner.NativeRunFinalizer()
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "_stop_native_owned_work",
+        lambda *args, **kwargs: calls.append("stop"),
+    )
+
+    def checkpoint(*args, **kwargs):
+        calls.append("checkpoint")
+        checkpoint_requests.append(dict(kwargs))
+        return {"checkpoint_id": "post-edit-provider-pause"}
+
+    monkeypatch.setattr(runner, "_write_workflow_checkpoint", checkpoint)
+    monkeypatch.setattr(
+        runner,
+        "_journal_status",
+        lambda: {
+            "count": 2,
+            "current": {
+                "checkpoint_id": "post-edit-provider-pause",
+                "label": "infrastructure-pause checkpoint",
+                "linked_filesystem_checkpoint": "post-edit-source-hash",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_release_native_runner_locks",
+        lambda *args, **kwargs: calls.append("locks"),
+    )
+
+    def persist_status(*args, **kwargs):
+        calls.append("status")
+        persisted_checkpoints.append(dict(args[2]))
+
+    monkeypatch.setattr(runner, "_persist_live_status", persist_status)
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: calls.append("activity"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda *args, **kwargs: calls.append("outcome"),
+    )
+
+    history = [
+        {"role": "tool", "name": "patch", "content": "updated Main.lean"},
+        {"role": "assistant", "content": "provider connection failed"},
+    ]
+    state = {"campaign_id": "campaign-live", "operational_pause": "paused_infrastructure"}
+    first = runner._finalize_native_run(
+        finalizer,
+        runner.EXIT_PAUSED,
+        agent=object(),
+        history=history,
+        compaction_state={},
+        checkpoint_state={"count": 1, "current": {"checkpoint_id": "older"}},
+        autonomy_state=state,
+        live_state={"target_symbol": "remaining_goal", "sorry_count": 1},
+        reason="provider/API failure",
+    )
+    second = runner._finalize_native_run(
+        finalizer,
+        runner.EXIT_PAUSED,
+        agent=object(),
+        history=history,
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state=state,
+        live_state={"target_symbol": "remaining_goal", "sorry_count": 1},
+        reason="provider/API failure",
+    )
+
+    assert first == second == runner.EXIT_PAUSED
+    assert calls == ["stop", "checkpoint", "status", "activity", "outcome", "locks"]
+    assert persisted_checkpoints[-1]["current"]["checkpoint_id"] == ("post-edit-provider-pause")
+    assert checkpoint_requests == [
+        {
+            "label": "infrastructure-pause checkpoint",
+            "trigger": "infrastructure-pause",
+            "note": (
+                "Resume this unresolved campaign from the exact linked filesystem "
+                "snapshot after provider or runtime infrastructure recovers."
+            ),
+            "force_filesystem_checkpoint": True,
+            "deterministic_summary": True,
+            "live_state": {
+                "target_symbol": "remaining_goal",
+                "sorry_count": 1,
+                "exit_code": runner.EXIT_PAUSED,
+                "reason": "provider/API failure",
+            },
+        }
+    ]
+
+
+def test_source_quarantine_finalization_checkpoints_ambiguous_source(monkeypatch):
+    """A post-insertion ambiguity exits 2 with an exact source checkpoint."""
+    requests: list[dict[str, object]] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {"current": {"checkpoint_id": "q"}})
+
+    def checkpoint(*args, **kwargs):
+        requests.append(dict(kwargs))
+        return {"checkpoint_id": "q"}
+
+    monkeypatch.setattr(runner, "_write_workflow_checkpoint", checkpoint)
+    state = {
+        "campaign_id": "campaign-live",
+        "operational_pause": "paused_source_quarantine",
+        "source_quarantine_reason": "rollback refused",
+    }
+
+    result = runner._finalize_native_run(
+        runner.NativeRunFinalizer(),
+        runner.EXIT_PAUSED,
+        agent=object(),
+        history=[{"role": "tool", "content": "helper insertion"}],
+        compaction_state={},
+        checkpoint_state={},
+        autonomy_state=state,
+        live_state={"target_symbol": "remaining_goal", "sorry_count": 1},
+        reason="rollback refused",
+    )
+
+    assert result == runner.EXIT_PAUSED
+    assert requests[0]["label"] == "source-quarantine checkpoint"
+    assert requests[0]["trigger"] == "source-quarantine"
+    assert "quarantined helper source" in str(requests[0]["note"])
+
+
+def test_decomposer_pause_outcome_stops_mathematical_work(monkeypatch):
+    state: dict[str, object] = {
+        "operational_pause": "paused_source_quarantine",
+        "source_quarantine_origin": runner.SOURCE_QUARANTINE_ORIGIN_FALSE_CLEANUP,
+        "source_quarantine_reason": "stale false-cleanup reason",
+    }
+    events: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    statuses: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_status",
+        lambda *args, **kwargs: statuses.append((args, kwargs)),
+    )
+    outcome = runner.decomposer.DecomposeOutcome(
+        ok=False,
+        reason="source changed before safe rollback",
+        file="Main.lean",
+        requires_pause=True,
+    )
+
+    assert runner._pause_for_decomposer_outcome(outcome, state)
+    assert state["operational_pause"] == "paused_source_quarantine"
+    assert state["source_quarantine_origin"] == runner.SOURCE_QUARANTINE_ORIGIN_TRANSACTION
+    runner._pause_for_false_cleanup_reconciliation(
+        runner.negation_promotion.PromotionReconciliation(), state
+    )
+    assert state["operational_pause"] == "paused_source_quarantine"
+    assert state["source_quarantine_reason"] == outcome.reason
+    assert runner._autonomous_stop_reason([], {}, state) == "source-quarantine"
+    assert statuses[0][0][1] == "paused"
+    assert events[0][0][0] == "decomposer-source-quarantined"
+
+
+def test_decompose_route_repeat_guard_blocks_exact_immediate_request(monkeypatch, tmp_path):
+    """Return the prior mechanical evidence instead of repeating its advisor call."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem goal : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    events: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        runner,
+        "_record_agent_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    state = {
+        "current_cycle": 7,
+        "current_queue_assignment": {
+            "target_symbol": "goal",
+            "active_file": "Demo.lean",
+        },
+    }
+    outcome = runner.decomposer.DecomposeOutcome(
+        ok=False,
+        reason="no guarded helper was ready",
+        skipped=("candidate_one", "candidate_two"),
+        obstacle_summary="the residual class is still uncovered",
+        recommended_split="derive a factor-pair certificate",
+    )
+    runner._arm_decompose_route_repeat_guard(
+        state,
+        target_symbol="goal",
+        active_file="Demo.lean",
+        outcome=outcome,
+    )
+    agent = _FakeAgent()
+    agent._managed_autonomy_state = state
+
+    blocked = runner._managed_pre_tool_call(
+        agent,
+        "lean_decompose_helpers",
+        {"theorem_id": "goal", "file_path": str(active)},
+    )
+
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["success"] is False
+    assert payload["status"] == "duplicate_mechanical_decomposition_blocked"
+    assert payload["mechanical_result"] == "no guarded helper was ready"
+    assert payload["obstacle_summary"] == "the residual class is still uncovered"
+    assert payload["recommended_split"] == "derive a factor-pair certificate"
+    assert payload["skipped_helpers"] == ["candidate_one", "candidate_two"]
+    assert payload["next_required_step"].startswith("execute a materially different action")
+    assert state[runner._DECOMPOSE_ROUTE_REPEAT_GUARD_KEY]["cycle"] == 7
+    assert events[0][0][1] == "orchestrator-decompose-repeat-blocked"
+
+
+@pytest.mark.parametrize("release", ["source", "assignment", "cycle"])
+def test_decompose_route_repeat_guard_releases_after_context_change(monkeypatch, tmp_path, release):
+    """Allow decomposition again once its cycle, assignment, or source is distinct."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem goal : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    state = {
+        "current_cycle": 4,
+        "current_queue_assignment": {
+            "target_symbol": "goal",
+            "active_file": "Demo.lean",
+        },
+    }
+    runner._arm_decompose_route_repeat_guard(
+        state,
+        target_symbol="goal",
+        active_file="Demo.lean",
+        outcome=runner.decomposer.DecomposeOutcome(ok=False, reason="not ready"),
+    )
+    if release == "source":
+        active.write_text(
+            "theorem goal : True := by\n  sorry\n\n-- new proof evidence\n",
+            encoding="utf-8",
+        )
+    elif release == "assignment":
+        state["current_queue_assignment"] = {
+            "target_symbol": "next_goal",
+            "active_file": "Demo.lean",
+        }
+    else:
+        state["current_cycle"] = 5
+    agent = _FakeAgent()
+    agent._managed_autonomy_state = state
+
+    allowed = runner._managed_pre_tool_call(
+        agent,
+        "lean_decompose_helpers",
+        {"theorem_id": "goal", "file_path": "Demo.lean"},
+    )
+
+    assert allowed is None
+    assert runner._DECOMPOSE_ROUTE_REPEAT_GUARD_KEY not in state
+
+
+def test_orchestrator_decompose_fallback_arms_repeat_guard(monkeypatch, tmp_path):
+    """Arm the immediate-turn guard when the mechanical route yields only evidence."""
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem goal : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    outcome = runner.decomposer.DecomposeOutcome(
+        ok=False,
+        reason="no ready, guarded helpers to insert",
+        skipped=("candidate_one",),
+        obstacle_summary="the terminal residue family remains uncovered",
+        recommended_split="derive a factor-pair certificate",
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        runner.decomposer,
+        "run_decomposer",
+        lambda **kwargs: calls.append(kwargs) or outcome,
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    state = {
+        "current_cycle": 9,
+        "current_queue_assignment": {
+            "target_symbol": "goal",
+            "active_file": "Demo.lean",
+            "slice": "theorem goal : True := by sorry",
+        },
+        "_orchestrator_last_ctx": {
+            "target_symbol": "goal",
+            "active_file": "Demo.lean",
+        },
+    }
+    route = runner.orchestrator_floor.OrchestratorRoute(
+        route="decompose",
+        reason="split the remaining residue family",
+        source="floor",
+    )
+    history: list[dict[str, object]] = []
+
+    action = runner._orchestrator_apply_route(route, history, state, {}, agent=None)
+
+    assert action == "continue"
+    assert len(calls) == 1
+    guard = state[runner._DECOMPOSE_ROUTE_REPEAT_GUARD_KEY]
+    assert guard["cycle"] == 9
+    assert guard["target_symbol"] == "goal"
+    assert guard["active_file"] == "Demo.lean"
+    assert guard["source_sha256"] == runner._decompose_route_source_revision("Demo.lean")
+    assert guard["obstacle_summary"] == "the terminal residue family remains uncovered"
+    directive = str(history[-1]["content"])
+    assert "mechanical action already completed" in directive
+    assert "do not call `lean_decompose_helpers` again" in directive
+    assert "Call `lean_decompose_helpers` now" not in directive
+
+
+def test_semantic_portfolio_refresh_rolls_campaign_without_parking(monkeypatch):
+    """Semantic exhaustion starts a fresh campaign epoch and remains non-terminal."""
+    requested: list[str] = []
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "request_rollover",
+        lambda _state, reason: requested.append(reason),
+    )
+    state: dict[str, object] = {}
+    history: list[dict[str, object]] = []
+    route = runner.orchestrator_floor.OrchestratorRoute(
+        route=runner.orchestrator_floor.SEMANTIC_REFRESH_ROUTE,
+        reason="all semantic route families are spent",
+    )
+
+    action = runner._orchestrator_apply_route(route, history, state, {}, agent=None)
+
+    assert action == "continue"
+    assert requested == ["semantic-route-portfolio-exhausted"]
+    assert "never a proof outcome or parked scope" in str(history[-1]["content"])
+
+
+def test_orchestrator_consult_admits_semantic_rotation_before_recording(
+    monkeypatch,
+    tmp_path,
+):
+    """The live consult records the rotated family, never the duplicate proposal."""
+    active_file = str(tmp_path / "Main.lean")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": active_file,
+        }
+    }
+    context = runner.orchestrator_floor.RouteContext(
+        trigger="event",
+        target_symbol="demo",
+        active_file=active_file,
+        semantic_route_history=(
+            {
+                "route": "plan",
+                "target_symbol": "demo",
+                "active_file": active_file,
+            },
+        ),
+    )
+    proposed = runner.orchestrator_floor.OrchestratorRoute(
+        route="plan",
+        reason="renamed repeat",
+    )
+    recorded: list[str] = []
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(runner.campaign_epoch, "ensure_campaign", lambda _state: {})
+    monkeypatch.setattr(runner.orchestrator_floor, "build_route_context", lambda **_kwargs: context)
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_route", lambda _ctx: proposed)
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    monkeypatch.setattr(runner, "plan_state_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_route_decision",
+        lambda _state, **kwargs: recorded.append(str(kwargs["route"])) or 2,
+    )
+
+    admitted = runner._orchestrator_consult("event", state, {})
+
+    assert admitted is not None
+    assert admitted.route == "decompose"
+    assert recorded == ["decompose"]
+
+
+def test_false_cleanup_ambiguity_selects_resumable_source_pause(monkeypatch):
+    state: dict[str, object] = {}
+    events: list[str] = []
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda event, *args, **kwargs: events.append(event)
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    reconciliation = runner.negation_promotion.PromotionReconciliation(
+        cleanup_pending=1,
+        cleanup_quarantined=2,
+        cleanup_reasons=("source persisted but graph revision changed",),
+    )
+
+    assert runner._pause_for_false_cleanup_reconciliation(reconciliation, state)
+    assert state["operational_pause"] == "paused_source_quarantine"
+    assert state["source_quarantine_origin"] == "false-decomposition-cleanup"
+    assert state["false_cleanup_pending"] == 1
+    assert state["false_cleanup_quarantined"] == 2
+    assert "graph revision changed" in str(state["source_quarantine_reason"])
+    assert runner._autonomous_stop_reason([], {}, state) == "source-quarantine"
+    assert events == ["false-decomposition-cleanup-paused"]
+
+    assert not runner._pause_for_false_cleanup_reconciliation(
+        runner.negation_promotion.PromotionReconciliation(), state
+    )
+    assert "operational_pause" not in state
+
+
+def test_pending_negation_promotion_selects_resumable_source_pause(monkeypatch):
+    """An unresolved authenticated graph rollback blocks every later model turn."""
+    state: dict[str, object] = {}
+    events: list[str] = []
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda event, *args, **kwargs: events.append(event)
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+
+    reconciliation = runner.negation_promotion.PromotionReconciliation(
+        promotion_pending=1,
+        promotion_reasons=("authenticated graph delta could not be restored",),
+    )
+    assert runner._pause_for_negation_reconciliation(reconciliation, state)
+    assert state["operational_pause"] == "paused_source_quarantine"
+    assert state["source_quarantine_origin"] == runner.SOURCE_QUARANTINE_ORIGIN_NEGATION_PROMOTION
+    assert state["negation_promotion_pending"] == 1
+    assert "graph delta" in str(state["source_quarantine_reason"])
+    assert runner._autonomous_stop_reason([], {}, state) == "source-quarantine"
+    assert events == ["negation-promotion-reconciliation-paused"]
+
+
+def test_false_cleanup_queue_replay_failure_selects_infrastructure_pause(monkeypatch):
+    """An unreadable committed-cleanup ledger is not equivalent to no replay work."""
+    state: dict[str, object] = {}
+    monkeypatch.setattr(
+        runner.false_decomposition_cleanup,
+        "committed_cleanup_records",
+        lambda: (_ for _ in ()).throw(OSError("summary unavailable")),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+
+    assert runner._reconcile_false_decomposition_queue_state(state) == ()
+    assert state["operational_pause"] == "paused_infrastructure"
+    assert "false-decomposition queue replay" in str(state["infrastructure_pause_reason"])
+    assert runner._autonomous_stop_reason([], {}, state) == "infrastructure-pause"
+
+
+def test_empty_restored_queue_state_explicitly_clears_stale_assignment_identity():
+    """Startup status must not retain a helper cleared by source reconciliation."""
+    live_state = {
+        "target_symbol": "deleted_false_helper",
+        "declaration_queue_total": 1,
+        "declaration_queue_preview": [{"label": "deleted_false_helper"}],
+        "current_queue_item": {"label": "deleted_false_helper"},
+        "current_queue_item_slice": "private lemma deleted_false_helper : False := by sorry",
+        "route_decision": {"route": "negate"},
+        "verification_ok": True,
+    }
+
+    live_state.update(runner._restored_queue_assignment_live_state({}))
+
+    assert live_state["target_symbol"] == ""
+    assert live_state["declaration_queue_total"] == 0
+    assert live_state["declaration_queue_preview"] == []
+    assert live_state["current_queue_item"] == {}
+    assert live_state["current_queue_item_slice"] == ""
+    assert live_state["route_decision"] == {}
+    assert live_state["verification_ok"] is False
+
+
+def test_false_cleanup_queue_replay_pauses_on_ancestor_swap(monkeypatch, tmp_path):
+    """A retargeted committed-cleanup path cannot hide a restored parent sorry."""
+    project = tmp_path / "project"
+    project.mkdir()
+    active = project / "Main.lean"
+    active.write_text("theorem parent : True := by\n  sorry\n", encoding="utf-8")
+    displaced = tmp_path / "project-before-swap"
+    transaction = {
+        "transaction_id": "cleanup-ancestor-swap",
+        "file": str(active),
+        "helper": "false_helper",
+        "parent": "parent",
+    }
+    state = {
+        "theorem_outcomes": {
+            f"{active}::false_helper": {
+                "target_symbol": "false_helper",
+                "active_file": str(active),
+                "status": "disproved",
+            },
+            f"{active}::parent": {
+                "target_symbol": "parent",
+                "active_file": str(active),
+                "status": "solved",
+            },
+        }
+    }
+    original_read = runner.decomposition_provenance.read_source_bytes
+
+    def swap_ancestor(operation):
+        project.rename(displaced)
+        project.mkdir()
+        active.write_text("theorem parent : True := by\n  trivial\n", encoding="utf-8")
+        return original_read(operation)
+
+    monkeypatch.setattr(
+        runner.false_decomposition_cleanup,
+        "committed_cleanup_records",
+        lambda: (transaction,),
+    )
+    monkeypatch.setattr(
+        runner.decomposition_provenance,
+        "read_source_bytes",
+        swap_ancestor,
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.plan_state, "save_queue_manager_state", lambda *args: None)
+
+    reconciled = runner._reconcile_false_decomposition_queue_state(state)
+
+    assert reconciled == (runner._queue_key("false_helper", str(active)),)
+    assert state["operational_pause"] == "paused_infrastructure"
+    reason = str(state["infrastructure_pause_reason"])
+    assert "cleanup-ancestor-swap" in reason
+    assert str(active) in reason
+    outcomes = list(dict(state["theorem_outcomes"]).values())
+    assert not any(item["target_symbol"] == "false_helper" for item in outcomes)
+    parent = next(item for item in outcomes if item["target_symbol"] == "parent")
+    assert parent["status"] == "unresolved"
+    assert runner._autonomous_stop_reason([], {}, state) == "infrastructure-pause"
+
+
+def test_promotion_recovery_failure_selects_infrastructure_pause(monkeypatch):
+    """A failed immediate replay cannot fall through to another model request."""
+    state: dict[str, object] = {}
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_negation_promotions_on_startup",
+        lambda autonomy: (_ for _ in ()).throw(OSError("promotion ledger unavailable")),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+
+    result = runner._reconcile_promotion_runtime_exception(
+        state,
+        component="negation promotion",
+        original_exception=RuntimeError("crash after pending write"),
+    )
+
+    assert result is None
+    assert state["operational_pause"] == "paused_infrastructure"
+    assert "promotion reconciliation failed" in str(state["infrastructure_pause_reason"])
+
+
+def test_promotion_recovery_failure_never_trusts_cached_terminal_disproof(monkeypatch):
+    """A verifier exception invalidates cached exit truth and pauses fail-closed."""
+    state: dict[str, object] = {
+        "terminal_outcome": "disproved",
+        "negation_promotion": {
+            "ok": True,
+            "is_main_goal": True,
+            "evidence": {"theorem": "stale-root"},
+        },
+    }
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_negation_promotions_on_startup",
+        lambda autonomy: (_ for _ in ()).throw(OSError("revalidation unavailable")),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+
+    result = runner._reconcile_promotion_runtime_exception(
+        state,
+        component="negation promotion",
+        original_exception=RuntimeError("crash after cached success"),
+    )
+
+    assert result is None
+    assert state["operational_pause"] == "paused_infrastructure"
+    assert runner._workflow_completion_exit_code({}, state) == runner.EXIT_PAUSED
+
+
+def test_new_source_quarantine_replaces_stale_false_cleanup_origin(monkeypatch):
+    """Clean false-cleanup state cannot clear newly observed source-byte ambiguity."""
+    state: dict[str, object] = {
+        "operational_pause": "paused_source_quarantine",
+        "source_quarantine_origin": runner.SOURCE_QUARANTINE_ORIGIN_FALSE_CLEANUP,
+        "source_quarantine_reason": "stale cleanup reason",
+    }
+    monkeypatch.setattr(
+        runner.decomposition_provenance,
+        "recover_pending_decompositions",
+        lambda **kwargs: {"committed": 0, "reverted": 0, "quarantined": 0},
+    )
+    monkeypatch.setattr(
+        runner.decomposition_provenance,
+        "reconcile_quarantined_decompositions",
+        lambda **kwargs: {
+            "active": 1,
+            "resolved": 0,
+            "reasons": ["source inode changed during rollback"],
+        },
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    runner._reconcile_source_transaction_state(state)
+    runner._pause_for_false_cleanup_reconciliation(
+        runner.negation_promotion.PromotionReconciliation(),
+        state,
+    )
+
+    assert state["operational_pause"] == "paused_source_quarantine"
+    assert state["source_quarantine_origin"] == runner.SOURCE_QUARANTINE_ORIGIN_TRANSACTION
+    assert state["source_quarantine_reason"] == "source inode changed during rollback"
+
+
+def test_source_reconciliation_never_clears_false_cleanup_owned_pause(monkeypatch):
+    """Each reconciliation subsystem may clear only the pause origin it owns."""
+    state: dict[str, object] = {
+        "operational_pause": "paused_source_quarantine",
+        "source_quarantine_origin": runner.SOURCE_QUARANTINE_ORIGIN_FALSE_CLEANUP,
+        "source_quarantine_reason": "graph state remains ambiguous",
+    }
+    monkeypatch.setattr(
+        runner.decomposition_provenance,
+        "recover_pending_decompositions",
+        lambda **kwargs: {"committed": 0, "reverted": 0, "quarantined": 0},
+    )
+    monkeypatch.setattr(
+        runner.decomposition_provenance,
+        "reconcile_quarantined_decompositions",
+        lambda **kwargs: {"active": 0, "resolved": 0, "reasons": []},
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+
+    runner._reconcile_source_transaction_state(state)
+
+    assert state["operational_pause"] == "paused_source_quarantine"
+    assert state["source_quarantine_origin"] == runner.SOURCE_QUARANTINE_ORIGIN_FALSE_CLEANUP
+    assert state["source_quarantine_reason"] == "graph state remains ambiguous"
+
+
+def test_false_cleanup_pause_defers_to_active_source_transaction_origin(monkeypatch):
+    """Graph ambiguity is recorded without replacing the stronger source-byte pause."""
+    state: dict[str, object] = {
+        "operational_pause": "paused_source_quarantine",
+        "source_quarantine_origin": runner.SOURCE_QUARANTINE_ORIGIN_TRANSACTION,
+        "source_quarantine_reason": "source compare-and-swap is ambiguous",
+    }
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: events.append(dict(kwargs)),
+    )
+
+    assert runner._pause_for_false_cleanup_reconciliation(
+        runner.negation_promotion.PromotionReconciliation(
+            cleanup_pending=2,
+            cleanup_quarantined=1,
+            cleanup_reasons=("graph revision changed",),
+        ),
+        state,
+    )
+
+    assert state["source_quarantine_origin"] == runner.SOURCE_QUARANTINE_ORIGIN_TRANSACTION
+    assert state["source_quarantine_reason"] == "source compare-and-swap is ambiguous"
+    assert state["false_cleanup_pending"] == 2
+    assert state["false_cleanup_quarantined"] == 1
+    assert events[-1]["deferred_by_origin"] == runner.SOURCE_QUARANTINE_ORIGIN_TRANSACTION
+
+
+def test_persist_exited_status_clears_process_and_lock_ownership(monkeypatch):
+    payloads: list[dict[str, object]] = []
+    released: list[str] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_RUNNER_OWNER", "runner-owner")
+    monkeypatch.setattr(
+        runner,
+        "release_all_file_locks",
+        lambda *, owner_id, **kwargs: released.append(owner_id) or {"success": True, "released": 1},
+    )
+    monkeypatch.setattr(runner, "_held_lock_count", lambda _owner_id: 7)
+    monkeypatch.setattr(
+        runner,
+        "save_workflow_live_status",
+        lambda payload: payloads.append(dict(payload)),
+    )
+
+    runner._persist_live_status(
+        [],
+        {},
+        {},
+        {
+            "active_file": "/tmp/project/Main.lean",
+            "sorry_count": 1,
+            "diagnostics": "declaration uses sorry",
+        },
+        phase="exited",
+    )
+
+    assert released == ["runner-owner"]
+    assert payloads[-1]["phase"] == "exited"
+    assert payloads[-1]["process_id"] == 0
+    assert payloads[-1]["held_locks"] == 0
+
+
+def test_workflow_phase_keeps_unresolved_proving_campaign_active(monkeypatch):
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda _state: False)
+
+    phase = runner._workflow_phase(
+        {
+            "blocker_summary": "model cannot close the remaining arithmetic branch",
+            "diagnostics": "error: unsolved goals",
+        }
+    )
+
+    assert phase == "in-progress"
+
+
+def test_persist_live_status_keeps_mathematical_prove_blocker_active(monkeypatch):
+    payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda _state: False)
+    monkeypatch.setattr(runner, "_held_lock_count", lambda _owner_id: 0)
+    monkeypatch.setattr(
+        runner,
+        "save_workflow_live_status",
+        lambda payload: payloads.append(dict(payload)),
+    )
+
+    runner._persist_live_status(
+        [],
+        {},
+        {},
+        {
+            "blocker_summary": "current proof shape is exhausted",
+            "current_blocker": "current proof shape is exhausted",
+            "diagnostics": "error: unsolved goals",
+            "sorry_count": 1,
+        },
+    )
+
+    assert payloads[-1]["phase"] == "in-progress"
+    assert payloads[-1]["current_blocker"] == "current proof shape is exhausted"
+    assert payloads[-1]["diagnostics"] == "error: unsolved goals"
+
+
+def test_workflow_phase_preserves_explicit_proving_pause(monkeypatch):
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+
+    assert (
+        runner._workflow_phase(
+            {"blocker_summary": "statement-fidelity approval required"},
+            explicit="blocked",
+        )
+        == "blocked"
+    )
+
+
+def test_workflow_phase_still_infers_blocked_for_non_proving_workflow(monkeypatch):
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "formalize")
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda _state: False)
+
+    assert runner._workflow_phase({"diagnostics": "error: declaration failed"}) == "blocked"
+
+
+def test_in_process_campaign_epoch_rollover_persists_busy_phase(monkeypatch):
+    persisted_phases: list[str] = []
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *args: None)
+    monkeypatch.setattr(runner, "_write_workflow_checkpoint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "roll_epoch",
+        lambda *args, **kwargs: "fresh campaign handoff",
+    )
+    monkeypatch.setattr(runner, "_reopen_blocked_theorem_outcomes", lambda *args, **kwargs: ())
+    monkeypatch.setattr(runner.environment_memory, "prompt_block", lambda _state: "")
+    monkeypatch.setattr(runner, "_record_turn_prompt_fingerprint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, **kwargs: persisted_phases.append(kwargs["phase"]),
+    )
+
+    history, _, _ = runner._roll_autonomous_campaign_epoch(
+        object(),
+        [],
+        {},
+        {},
+        {},
+        {},
+        reason="route-no-graph-progress",
+        cycle=4,
+    )
+
+    assert history == [{"role": "user", "content": "fresh campaign handoff"}]
+    assert persisted_phases == ["busy"]
+
+
+def test_campaign_epoch_rollover_retires_old_research_workers(monkeypatch):
+    refresh_calls: list[dict] = []
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *args: None)
+    monkeypatch.setattr(runner, "_write_workflow_checkpoint", lambda *args, **kwargs: None)
+
+    def roll_epoch(state, **kwargs):
+        state["campaign_id"] = "campaign-demo"
+        state["campaign_epoch"] = 9
+        state[runner.campaign_epoch.EPOCH_WORKER_REFRESH_STATE_KEY] = {"token": "refresh-epoch-9"}
+        return "fresh campaign handoff"
+
+    monkeypatch.setattr(runner.campaign_epoch, "roll_epoch", roll_epoch)
+    monkeypatch.setattr(runner.campaign_epoch, "pending_worker_refresh", lambda **kwargs: {})
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.research_portfolio,
+        "refresh_portfolio_for_epoch",
+        lambda **kwargs: refresh_calls.append(kwargs) or ["old-worker"],
+    )
+    monkeypatch.setattr(runner, "_reopen_blocked_theorem_outcomes", lambda *args, **kwargs: ())
+    monkeypatch.setattr(runner.environment_memory, "prompt_block", lambda _state: "")
+    monkeypatch.setattr(runner, "_record_turn_prompt_fingerprint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    state = {"campaign_epoch": 8}
+
+    runner._roll_autonomous_campaign_epoch(
+        object(),
+        [],
+        {},
+        {},
+        state,
+        {"target_symbol": "hard_goal", "active_file": "/tmp/Main.lean"},
+        reason="route-no-graph-progress",
+        cycle=4,
+    )
+
+    assert refresh_calls == [
+        {
+            "campaign_id": "campaign-demo",
+            "target_symbol": "hard_goal",
+            "active_file": "/tmp/Main.lean",
+            "previous_epoch": 8,
+            "new_epoch": 9,
+            "reason": "route-no-graph-progress",
+            "refresh_token": "refresh-epoch-9",
+        }
+    ]
+    assert state["research_portfolio_epoch_refresh"]["killed"] == ["old-worker"]
+
+
+def test_campaign_process_outcome_is_recorded_once(monkeypatch):
+    recorded: list[tuple[int, str]] = []
+    autonomy_state = {}
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_process_exit",
+        lambda _state, code, **kwargs: recorded.append((code, kwargs["reason"])),
+    )
+
+    first = runner._record_campaign_exit(
+        runner.EXIT_INTERRUPTED,
+        autonomy_state,
+        {"verification_ok": False},
+        reason="signal interrupt",
+    )
+    second = runner._record_campaign_exit(
+        0,
+        autonomy_state,
+        {"verification_ok": True},
+        reason="late duplicate",
+    )
+
+    assert first == runner.EXIT_INTERRUPTED
+    assert second == runner.EXIT_INTERRUPTED
+    assert recorded == [(runner.EXIT_INTERRUPTED, "signal interrupt")]
+
+
+def test_campaign_process_outcome_failure_is_not_cached(monkeypatch):
+    autonomy_state: dict[str, object] = {}
+    attempts: list[int] = []
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: False)
+
+    def record(_state, code, **_kwargs):
+        attempts.append(code)
+        if len(attempts) == 1:
+            raise OSError("campaign outcome write failed")
+
+    monkeypatch.setattr(runner.campaign_epoch, "record_process_exit", record)
+
+    with pytest.raises(OSError, match="campaign outcome write failed"):
+        runner._record_campaign_exit(0, autonomy_state, {"verification_ok": True})
+
+    assert "_native_process_exit_recorded" not in autonomy_state
+    assert (
+        runner._record_campaign_exit(
+            runner.EXIT_PAUSED,
+            autonomy_state,
+            {"verification_ok": False},
+        )
+        == runner.EXIT_PAUSED
+    )
+    assert attempts == [0, runner.EXIT_PAUSED]
+    assert autonomy_state["_native_process_exit_recorded"] == {
+        "exit_code": runner.EXIT_PAUSED,
+        "reason": "",
+    }
+
+
 def test_run_managed_conversation_passes_through_result():
     class _Agent(_ManagedRunAgentStub):
         def run_conversation(self, **kwargs):
@@ -158,6 +4128,1967 @@ def test_run_managed_conversation_passes_through_result():
 
     assert result["interrupted"] is False
     assert result["kwargs"]["user_message"] == "hello"
+
+
+def test_managed_conversation_marks_parent_owned_portfolio_maintenance(monkeypatch):
+    """Post-tool callbacks can detect the supervisor's recurring parent poll."""
+
+    class _Agent(_ManagedRunAgentStub):
+        def run_conversation(self, **_kwargs):
+            assert self._managed_parent_portfolio_maintenance_active is True
+            return {"messages": [], "interrupted": False}
+
+    agent = _Agent()
+    monkeypatch.setattr(
+        runner,
+        "_build_research_portfolio_parent_poll",
+        lambda _agent: lambda: None,
+    )
+
+    result = runner._run_managed_conversation(agent, user_message="keep proving")
+
+    assert result["interrupted"] is False
+    assert not hasattr(agent, "_managed_parent_portfolio_maintenance_active")
+
+
+def test_interrupted_live_worker_retains_parent_supervision_marker(monkeypatch):
+    """A still-running callback cannot refill research during finalizer quiescence."""
+
+    class _Agent(_ManagedRunAgentStub):
+        def interrupt(self, message):
+            self.interrupt_message = message
+
+    class _StillRunningThread:
+        def __init__(self, *args, **kwargs):
+            self.target = kwargs.get("target")
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            raise KeyboardInterrupt
+
+    agent = _Agent()
+    monkeypatch.setattr(runner.threading, "Thread", _StillRunningThread)
+    monkeypatch.setattr(
+        runner,
+        "_build_research_portfolio_parent_poll",
+        lambda _agent: lambda: None,
+    )
+
+    with pytest.raises(runner.NativeTerminationSignal):
+        runner._run_managed_conversation(agent, user_message="keep proving")
+
+    assert agent._managed_native_shutdown_active is True
+    assert agent._managed_parent_portfolio_maintenance_active is True
+    assert agent.interrupt_message == runner.RUNNER_KEYBOARD_INTERRUPT
+
+
+def test_shutdown_post_tool_callback_never_refills_portfolio(monkeypatch):
+    """Late tool completion fails closed while native shutdown is active."""
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_native_shutdown_active = True
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "/tmp/Demo.lean",
+                }
+            }
+
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *_args, **_kwargs: pytest.fail("shutdown callback refilled portfolio"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_take_research_findings_prompt",
+        lambda *_args, **_kwargs: pytest.fail("shutdown callback consumed findings"),
+    )
+
+    runner._poll_research_portfolio_after_tool_result(_Agent(), "lean_inspect")
+
+
+def test_completed_worker_is_reaped_during_slow_foreground_tool(monkeypatch, tmp_path):
+    """The process-owning main thread polls while the conversation thread blocks."""
+    reaped = threading.Event()
+    foreground_returned = threading.Event()
+    caller_thread_id = threading.get_ident()
+    poll_thread_ids: list[int] = []
+    requests: list[dict[str, object]] = []
+    old_heartbeat = "2026-01-01T00:00:00+00:00"
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path / "project"))
+    save_workflow_live_status(
+        {
+            "process_id": os.getpid(),
+            "updated_at": old_heartbeat,
+            "runtime_heartbeat_at": old_heartbeat,
+            "last_activity_type": "tool-start",
+            "last_activity_message": "slow Lean tool began",
+        }
+    )
+
+    class _Manager:
+        def attempt_count_for(self, _key):
+            return 3
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_step_boundary_closed = False
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "erdos_242",
+                    "active_file": "/tmp/FormalConjectures/ErdosProblems/242.lean",
+                }
+            }
+
+        def run_conversation(self, **_kwargs):
+            assert reaped.wait(timeout=2), "parent heartbeat did not poll the completed worker"
+            foreground_returned.set()
+            return {"messages": [], "interrupted": False}
+
+    def maintain(**kwargs):
+        assert not foreground_returned.is_set()
+        poll_thread_ids.append(threading.get_ident())
+        requests.append(dict(kwargs))
+        reaped.set()
+        return {"active": 1, "active_jobs": ["campaign.orchestrator.ds-002"]}
+
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-demo"},
+    )
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: _Manager())
+    monkeypatch.setattr(runner.research_portfolio, "maintain_portfolio", maintain)
+    monkeypatch.setattr(runner, "_research_portfolio_parent_poll_interval_s", lambda: 0.01)
+
+    result = runner._run_managed_conversation(_Agent(), user_message="keep proving")
+
+    assert result["interrupted"] is False
+    assert foreground_returned.is_set()
+    assert poll_thread_ids == [caller_thread_id]
+    assert requests == [
+        {
+            "campaign_id": "campaign-demo",
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/FormalConjectures/ErdosProblems/242.lean",
+            "attempt_count": 3,
+            "workers": 2,
+        }
+    ]
+    live_status = load_workflow_live_status()
+    assert live_status["runtime_heartbeat_at"] > old_heartbeat
+    assert live_status["last_activity_type"] == "tool-start"
+    assert live_status["last_activity_message"] == "slow Lean tool began"
+
+
+def test_parent_poll_refreshes_attempt_count_during_foreground_conversation(monkeypatch, tmp_path):
+    """A second failed exact-target check opens the next research archetype."""
+    calls: list[dict[str, object]] = []
+
+    class _Manager:
+        attempt_count = 0
+
+        def attempt_count_for(self, _key):
+            return self.attempt_count
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_step_boundary_closed = False
+        is_interrupted = False
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "campaign_id": "campaign-live-effort",
+                "campaign_epoch": 1,
+                "campaign_status": "running",
+                "current_queue_assignment": {
+                    "target_symbol": "erdos_242",
+                    "active_file": "/tmp/Erdos242.lean",
+                },
+            }
+
+    manager = _Manager()
+    agent = _Agent()
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-live-effort", "epoch": 1},
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "pending_worker_refresh", lambda **_kwargs: {})
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: manager)
+    monkeypatch.setattr(
+        runner.research_portfolio,
+        "maintain_portfolio",
+        lambda **kwargs: calls.append(dict(kwargs)) or {},
+    )
+    monkeypatch.setattr(runner, "touch_workflow_runtime_heartbeat", lambda **_kwargs: None)
+
+    poll = runner._build_research_portfolio_parent_poll(agent)
+    assert poll is not None
+    manager.attempt_count = 2
+    poll()
+
+    assert calls == [
+        {
+            "campaign_id": "campaign-live-effort",
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+            "attempt_count": 2,
+            "workers": 2,
+        }
+    ]
+
+
+def test_parent_poll_fails_closed_when_live_attempt_refresh_fails(monkeypatch, tmp_path):
+    """A queue-state read failure cannot dispatch from the captured effort count."""
+    calls: list[dict[str, object]] = []
+
+    class _Manager:
+        reads = 0
+
+        def attempt_count_for(self, _key):
+            self.reads += 1
+            if self.reads == 1:
+                return 0
+            raise RuntimeError("queue state unavailable")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_step_boundary_closed = False
+        is_interrupted = False
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "campaign_id": "campaign-live-effort",
+                "campaign_epoch": 1,
+                "campaign_status": "running",
+                "current_queue_assignment": {
+                    "target_symbol": "erdos_242",
+                    "active_file": "/tmp/Erdos242.lean",
+                },
+            }
+
+    manager = _Manager()
+    agent = _Agent()
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-live-effort", "epoch": 1},
+    )
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: manager)
+    monkeypatch.setattr(
+        runner.research_portfolio,
+        "maintain_portfolio",
+        lambda **kwargs: calls.append(dict(kwargs)) or {},
+    )
+    monkeypatch.setattr(runner, "touch_workflow_runtime_heartbeat", lambda **_kwargs: None)
+
+    poll = runner._build_research_portfolio_parent_poll(agent)
+    assert poll is not None
+    poll()
+
+    assert calls == []
+
+
+def test_parent_poll_publishes_completion_for_next_safe_consult(monkeypatch, tmp_path):
+    """A completion reaped mid-turn becomes pending without routing in the poll."""
+
+    class _Manager:
+        def attempt_count_for(self, _key):
+            return 2
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_step_boundary_closed = False
+        is_interrupted = False
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "campaign_id": "campaign-demo",
+                "campaign_epoch": 1,
+                "campaign_status": "running",
+                "current_queue_assignment": {
+                    "target_symbol": "erdos_242",
+                    "active_file": "/tmp/Erdos242.lean",
+                },
+            }
+
+    agent = _Agent()
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path / "project"))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-demo", "epoch": 1},
+    )
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: _Manager())
+    monkeypatch.setattr(
+        runner.research_portfolio,
+        "maintain_portfolio",
+        lambda **_kwargs: {
+            "active": 2,
+            "active_jobs": ["campaign.ds-002", "campaign.em-003"],
+            "launched": ["campaign.em-003"],
+            "consumed": ["campaign.ds-001"],
+        },
+    )
+
+    poll = runner._build_research_portfolio_parent_poll(agent)
+    assert poll is not None
+    poll()
+
+    scope = runner._orchestrator_event_scope(agent._managed_autonomy_state)
+    assert runner.orchestrator_event_watermark.has_pending(
+        agent._managed_autonomy_state,
+        scope=scope,
+    )
+    # Parent maintenance only publishes the notification; it never closes or
+    # interrupts an unknown foreground edit/verification boundary.
+    assert agent._managed_step_boundary_closed is False
+
+
+def test_pending_plan_parent_poll_reserves_next_worker_slot(monkeypatch, tmp_path):
+    """A deferred plan route prevents portfolio replacement from winning the slot."""
+    calls: list[dict[str, object]] = []
+
+    class _Manager:
+        def attempt_count_for(self, _key):
+            return 5
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_step_boundary_closed = False
+        is_interrupted = False
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "campaign_id": "campaign-demo",
+                "campaign_epoch": 1,
+                "campaign_status": "running",
+                "prover_requested_route": {"route": "plan"},
+                "current_queue_assignment": {
+                    "target_symbol": "erdos_242",
+                    "active_file": "/tmp/Erdos242.lean",
+                },
+            }
+
+    agent = _Agent()
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path / "project"))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-demo", "epoch": 1},
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "pending_worker_refresh", lambda **_kwargs: {})
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: _Manager())
+    monkeypatch.setattr(
+        runner.research_portfolio,
+        "maintain_portfolio",
+        lambda **kwargs: calls.append(dict(kwargs)) or {},
+    )
+    monkeypatch.setattr(runner, "touch_workflow_runtime_heartbeat", lambda **_kwargs: None)
+
+    poll = runner._build_research_portfolio_parent_poll(agent)
+    assert poll is not None
+    poll()
+
+    assert calls == [
+        {
+            "campaign_id": "campaign-demo",
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+            "attempt_count": 5,
+            "workers": 2,
+            "refill": False,
+        }
+    ]
+
+
+def test_deferred_plan_reservation_survives_restart_before_queue_hydration(monkeypatch, tmp_path):
+    """The first resumed live-state poll cannot refill an owed planner slot."""
+    project = tmp_path / "project"
+    project.mkdir()
+    active_file = str(project / "Erdos242.lean")
+    first_state: dict[str, object] = {}
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "campaign-plan-resume")
+    runner.campaign_epoch.ensure_campaign(first_state)
+    runner.campaign_epoch.reserve_planner_capacity(
+        first_state,
+        target_symbol="erdos_242",
+        active_file=active_file,
+        reason="planner background capacity deferred",
+    )
+
+    # Simulate a hard process loss: no process-local queue/autonomy state is
+    # retained. Startup hydrates the campaign marker before queue restoration.
+    resumed_state: dict[str, object] = {}
+    runner.campaign_epoch.ensure_campaign(resumed_state)
+    calls: list[dict[str, object]] = []
+
+    class _Manager:
+        def attempt_count_for(self, _key):
+            return 6
+
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda _state: False)
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: _Manager())
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "pending_worker_refresh",
+        lambda **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        runner.research_portfolio,
+        "maintain_portfolio",
+        lambda **kwargs: calls.append(dict(kwargs)) or {},
+    )
+
+    # Deliberately supply scope through live_state while current_queue_assignment
+    # is still absent: this is the earliest startup maintenance ordering.
+    runner._maintain_research_portfolio(
+        resumed_state,
+        {"target_symbol": "erdos_242", "active_file": active_file},
+    )
+
+    assert calls == [
+        {
+            "campaign_id": "campaign-plan-resume",
+            "target_symbol": "erdos_242",
+            "active_file": active_file,
+            "attempt_count": 6,
+            "workers": 2,
+            "refill": False,
+        }
+    ]
+    assert resumed_state["prover_requested_route"]["route"] == "plan"
+
+
+def test_plan_route_arm_rolls_back_same_tick_replacement(monkeypatch, tmp_path):
+    """A refill already in flight cannot beat a concurrently armed plan route."""
+    maintain_started = threading.Event()
+    release_maintain = threading.Event()
+    calls: list[dict[str, object]] = []
+    rollbacks: list[tuple[str, tuple[str, ...]]] = []
+    published: list[dict[str, object]] = []
+
+    class _Manager:
+        def attempt_count_for(self, _key):
+            return 3
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_step_boundary_closed = False
+        is_interrupted = False
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "campaign_id": "campaign-race",
+                "campaign_epoch": 1,
+                "campaign_status": "running",
+                "current_queue_assignment": {
+                    "target_symbol": "erdos_242",
+                    "active_file": "/tmp/Erdos242.lean",
+                },
+            }
+
+    agent = _Agent()
+
+    def maintain(**kwargs):
+        calls.append(dict(kwargs))
+        maintain_started.set()
+        assert release_maintain.wait(timeout=2)
+        return {
+            "active": 2,
+            "active_jobs": ["campaign-race.ds-001", "campaign-race.em-002"],
+            "launched": ["campaign-race.em-002"],
+            "consumed": [],
+        }
+
+    def rollback(*, campaign_id, job_ids):
+        rollbacks.append((campaign_id, tuple(job_ids)))
+        return {
+            "requested": list(job_ids),
+            "released": list(job_ids),
+            "killed": list(job_ids),
+            "still_active": [],
+        }
+
+    def reserve(state, **_kwargs):
+        reservation = {
+            "token": "reservation-race",
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+        }
+        state[runner.campaign_epoch.PLANNER_CAPACITY_RESERVATION_STATE_KEY] = reservation
+        return reservation
+
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-race", "epoch": 1},
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "reserve_planner_capacity", reserve)
+    monkeypatch.setattr(runner.campaign_epoch, "pending_worker_refresh", lambda **_kwargs: {})
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: _Manager())
+    monkeypatch.setattr(runner.research_portfolio, "maintain_portfolio", maintain)
+    monkeypatch.setattr(runner.research_portfolio, "rollback_replacement_launches", rollback)
+    monkeypatch.setattr(
+        runner,
+        "_publish_research_portfolio_completion_events",
+        lambda _state, **kwargs: published.append(dict(kwargs["status"])),
+    )
+    monkeypatch.setattr(runner, "touch_workflow_runtime_heartbeat", lambda **_kwargs: None)
+
+    poll = runner._build_research_portfolio_parent_poll(agent)
+    assert poll is not None
+    poll_thread = threading.Thread(target=poll)
+    poll_thread.start()
+    assert maintain_started.wait(timeout=2)
+
+    route_thread = threading.Thread(
+        target=lambda: runner._set_prover_requested_route(
+            agent._managed_autonomy_state,
+            route="plan",
+            target_symbol="erdos_242",
+            active_file="/tmp/Erdos242.lean",
+            reason="search route boundary",
+        )
+    )
+    route_thread.start()
+    deadline = time.monotonic() + 2
+    while (
+        not agent._managed_autonomy_state.get(runner._PLANNER_CAPACITY_INTENT_KEY)
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert agent._managed_autonomy_state[runner._PLANNER_CAPACITY_INTENT_KEY] is True
+    release_maintain.set()
+    poll_thread.join(timeout=2)
+    route_thread.join(timeout=2)
+
+    assert not poll_thread.is_alive()
+    assert not route_thread.is_alive()
+    assert "refill" not in calls[0]
+    assert rollbacks == [("campaign-race", ("campaign-race.em-002",))]
+    assert published[0]["active_jobs"] == ["campaign-race.ds-001"]
+    assert published[0]["active"] == 1
+    assert agent._managed_autonomy_state["prover_requested_route"]["route"] == "plan"
+    assert runner._research_portfolio_refill_allowed(agent._managed_autonomy_state) is False
+
+
+def test_plan_route_rolls_back_launch_published_after_refill_decision(monkeypatch):
+    """A stale allow decision cannot hide the launch record published behind it."""
+    refill_decided = threading.Event()
+    release_publication = threading.Event()
+    rollbacks: list[tuple[str, tuple[str, ...]]] = []
+    finalized: list[dict[str, object]] = []
+    state: dict[str, object] = {
+        "campaign_id": "campaign-race",
+        "campaign_epoch": 1,
+        "current_queue_assignment": {
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+        },
+    }
+    request = runner._ResearchPortfolioPollRequest(
+        campaign_id="campaign-race",
+        campaign_epoch=1,
+        target_symbol="erdos_242",
+        active_file="/tmp/Erdos242.lean",
+        attempt_count=3,
+        workers=2,
+    )
+    job_id = "campaign-race.orchestrator.em-002"
+
+    def stale_refill_decision(*_args, **_kwargs):
+        # Snapshot the pre-intent answer, then expose the exact scheduling
+        # window between that decision and publication of the launch record.
+        allowed = True
+        refill_decided.set()
+        assert release_publication.wait(timeout=2)
+        return allowed
+
+    def reserve(autonomy_state, **kwargs):
+        reservation = {"token": "reservation-race", "route": "plan", **kwargs}
+        autonomy_state[runner.campaign_epoch.PLANNER_CAPACITY_RESERVATION_STATE_KEY] = reservation
+        return reservation
+
+    def rollback(_state, *, campaign_id, target_symbol, active_file, launched):
+        assert target_symbol == "erdos_242"
+        assert active_file == "/tmp/Erdos242.lean"
+        rollbacks.append((campaign_id, tuple(launched)))
+        return {
+            "requested": list(launched),
+            "released": list(launched),
+            "killed": list(launched),
+            "still_active": [],
+        }
+
+    monkeypatch.setattr(runner, "_research_portfolio_refill_allowed", stale_refill_decision)
+    monkeypatch.setattr(runner.campaign_epoch, "reserve_planner_capacity", reserve)
+    monkeypatch.setattr(runner, "_rollback_planner_race_launches", rollback)
+
+    def finalize() -> None:
+        with runner._RESEARCH_PORTFOLIO_MAINTENANCE_LOCK:
+            finalized.append(
+                runner._finalize_research_portfolio_poll(
+                    state,
+                    request,
+                    {
+                        "active": 2,
+                        "active_jobs": ["campaign-race.orchestrator.ds-001", job_id],
+                        "launched": [job_id],
+                        "consumed": [],
+                    },
+                )
+            )
+
+    finalize_thread = threading.Thread(target=finalize)
+    finalize_thread.start()
+    assert refill_decided.wait(timeout=2)
+    route_thread = threading.Thread(
+        target=lambda: runner._set_prover_requested_route(
+            state,
+            route="plan",
+            target_symbol="erdos_242",
+            active_file="/tmp/Erdos242.lean",
+            reason="search route boundary",
+        )
+    )
+    route_thread.start()
+    deadline = time.monotonic() + 2
+    while not state.get(runner._PLANNER_CAPACITY_INTENT_KEY) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert state[runner._PLANNER_CAPACITY_INTENT_KEY] is True
+    release_publication.set()
+    finalize_thread.join(timeout=2)
+    route_thread.join(timeout=2)
+
+    assert not finalize_thread.is_alive()
+    assert not route_thread.is_alive()
+    assert len(finalized) == 1
+    assert rollbacks == [("campaign-race", (job_id,))]
+    assert state[runner._RESEARCH_PORTFOLIO_LAST_LAUNCH_KEY]["launched"] == []
+
+
+def test_planner_race_keeps_unconfirmed_replacement_counted(monkeypatch):
+    """The caller removes only replacement identities proven released."""
+    state = {
+        "prover_requested_route": {
+            "route": "plan",
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+        }
+    }
+    request = runner._ResearchPortfolioPollRequest(
+        campaign_id="campaign-race",
+        campaign_epoch=1,
+        target_symbol="erdos_242",
+        active_file="/tmp/Erdos242.lean",
+        attempt_count=3,
+        workers=2,
+    )
+    job_id = "campaign-race.em-002"
+    monkeypatch.setattr(
+        runner,
+        "_research_portfolio_refill_allowed",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_rollback_planner_race_launches",
+        lambda *_args, **_kwargs: {
+            "requested": [job_id],
+            "released": [],
+            "killed": [],
+            "still_active": [job_id],
+        },
+    )
+
+    result = runner._finalize_research_portfolio_poll(
+        state,
+        request,
+        {
+            "active": 1,
+            "active_jobs": [job_id],
+            "launched": [job_id],
+            "consumed": [],
+        },
+    )
+
+    assert result["active"] == 1
+    assert result["active_jobs"] == [job_id]
+    assert result["planner_reservation_rollback"]["still_active"] == [job_id]
+    assert state[runner._RESEARCH_PORTFOLIO_LAST_LAUNCH_KEY]["launched"] == [job_id]
+
+
+def test_portfolio_poll_persists_active_provider_reset(monkeypatch):
+    """A background worker reset pauses campaign admission in the parent."""
+    now = 1_700_000_000
+    state: dict = {}
+    request = runner._ResearchPortfolioPollRequest(
+        campaign_id="campaign-provider-pause",
+        campaign_epoch=1,
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        attempt_count=3,
+        workers=2,
+    )
+    calls: list[dict] = []
+    monkeypatch.setattr(runner.time, "time", lambda: now)
+
+    def persist(autonomy_state, retry_after, **_kwargs):
+        calls.append(dict(retry_after))
+        autonomy_state.update(
+            {
+                "operational_pause": "paused_infrastructure",
+                "provider_pause_owner": "provider_usage_limit",
+            }
+        )
+
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_provider_usage_limit_pause",
+        persist,
+    )
+
+    runner._finalize_research_portfolio_poll(
+        state,
+        request,
+        {
+            "active": 0,
+            "active_jobs": [],
+            "launched": [],
+            "consumed": [],
+            "provider_unavailable": True,
+            "provider_retry_after": {
+                "kind": "usage_limit_reached",
+                "retry_after_seconds": 600,
+                "unavailable_until_epoch": now + 600,
+            },
+        },
+    )
+
+    assert calls[0]["unavailable_until_epoch"] == now + 600
+    assert state["operational_pause"] == "paused_infrastructure"
+
+
+def test_portfolio_poll_ignores_expired_provider_reset(monkeypatch):
+    """A stale harvested reset does not create a new parent pause."""
+    now = 1_700_000_100
+    state: dict = {}
+    request = runner._ResearchPortfolioPollRequest(
+        campaign_id="campaign-provider-recovered",
+        campaign_epoch=1,
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        attempt_count=3,
+        workers=2,
+    )
+    monkeypatch.setattr(runner.time, "time", lambda: now)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_provider_usage_limit_pause",
+        lambda *args, **kwargs: pytest.fail("expired background reset was persisted"),
+    )
+
+    runner._finalize_research_portfolio_poll(
+        state,
+        request,
+        {
+            "active": 0,
+            "active_jobs": [],
+            "launched": [],
+            "consumed": [],
+            "provider_unavailable": True,
+            "provider_retry_after": {
+                "kind": "usage_limit_reached",
+                "retry_after_seconds": 60,
+                "unavailable_until_epoch": now - 1,
+            },
+        },
+    )
+
+    assert "operational_pause" not in state
+
+
+def test_portfolio_poll_retries_volatile_plan_reservation_persistence(monkeypatch):
+    """A failed initial marker write is retried at the next safe boundary."""
+    calls: list[dict[str, str]] = []
+    state = {
+        "campaign_id": "campaign-retry",
+        "campaign_epoch": 1,
+        "current_queue_assignment": {
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+        },
+        "prover_requested_route": {
+            "route": "plan",
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+            "reason": "capacity deferred",
+        },
+    }
+
+    class _Manager:
+        def attempt_count_for(self, _key):
+            return 4
+
+    def reserve(autonomy_state, **kwargs):
+        calls.append(dict(kwargs))
+        marker = {"route": "plan", **kwargs}
+        autonomy_state[runner.campaign_epoch.PLANNER_CAPACITY_RESERVATION_STATE_KEY] = marker
+        return marker
+
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-retry", "epoch": 1},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_pending_plan_capacity_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "reserve_planner_capacity", reserve)
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: _Manager())
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+
+    request = runner._research_portfolio_poll_request(state, None)
+
+    assert calls == [
+        {
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+            "reason": "capacity deferred",
+        }
+    ]
+    assert request.refill is False
+
+
+def test_portfolio_poll_uses_hydrated_reservation_scope_before_live_state(monkeypatch):
+    """An even earlier startup poll remains harvest-only without queue state."""
+    marker = {
+        "route": "plan",
+        "target_symbol": "erdos_242",
+        "active_file": "/tmp/Erdos242.lean",
+    }
+    state = {
+        "campaign_id": "campaign-early",
+        "campaign_epoch": 1,
+        runner.campaign_epoch.PLANNER_CAPACITY_RESERVATION_STATE_KEY: marker,
+    }
+
+    class _Manager:
+        def attempt_count_for(self, _key):
+            return 2
+
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-early", "epoch": 1},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_pending_plan_capacity_for_assignment",
+        lambda *_args, **_kwargs: marker,
+    )
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: _Manager())
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+
+    request = runner._research_portfolio_poll_request(state, None)
+
+    assert request.target_symbol == "erdos_242"
+    assert request.active_file == "/tmp/Erdos242.lean"
+    assert request.refill is False
+
+
+def test_pending_research_event_closes_safe_tool_boundary_once(monkeypatch):
+    """Deliver one completed finding once, then keep later safe callbacks cheap."""
+
+    class _Agent(_ManagedRunAgentStub):
+        is_interrupted = False
+
+        def __init__(self):
+            self._managed_step_boundary_closed = False
+            self.interrupt_messages: list[str] = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "/tmp/Demo.lean",
+                },
+                # Keep this test focused on an event already published by the
+                # parent heartbeat rather than another maintenance call.
+                "research_portfolio_last_tool_poll": time.monotonic(),
+            }
+
+        def interrupt(self, message):
+            self.interrupt_messages.append(message)
+
+    agent = _Agent()
+    finding_scans: list[str] = []
+    scope = runner._orchestrator_event_scope(agent._managed_autonomy_state)
+    runner._publish_research_portfolio_completion_events(
+        agent._managed_autonomy_state,
+        target_symbol="demo",
+        active_file="/tmp/Demo.lean",
+        status={"consumed": ["campaign.ds-001"]},
+    )
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_take_research_findings_prompt_locked",
+        lambda *_args: finding_scans.append("scan") or "[fresh research finding]",
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    runner._poll_research_portfolio_after_tool_result(agent, "lean_search")
+
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_step_boundary_closed is True
+    assert agent._post_tool_result_appendix == "[fresh research finding]"
+
+    capture = runner.orchestrator_event_watermark.claim_pending(
+        agent._managed_autonomy_state,
+        scope=scope,
+    )
+    assert capture is not None
+    runner.orchestrator_event_watermark.acknowledge(
+        agent._managed_autonomy_state,
+        scope=scope,
+        capture=capture,
+    )
+    assert runner.orchestrator_event_watermark.release_foreground_grace(
+        agent._managed_autonomy_state,
+        scope=scope,
+    )
+    agent._managed_step_boundary_closed = False
+
+    runner._poll_research_portfolio_after_tool_result(agent, "lean_inspect")
+
+    assert finding_scans == ["scan"]
+    assert agent._post_tool_result_appendix == "[fresh research finding]"
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+
+
+def test_safe_tool_callback_skips_delivery_scan_without_pending_event(monkeypatch):
+    """A no-op read result must not rescan the archive or wait on its lock."""
+    staged: list[str] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        is_interrupted = False
+        _managed_step_boundary_closed = False
+        _managed_parent_portfolio_maintenance_active = True
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "/tmp/Demo.lean",
+                },
+                "research_portfolio_last_tool_poll": 0.0,
+            }
+
+        def stage_tool_result_appendix(self, text):
+            staged.append(text)
+
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *_args, **_kwargs: pytest.fail(
+            "conversation callback duplicated parent-owned maintenance"
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_take_research_findings_prompt_locked",
+        lambda *_args: pytest.fail("no pending completion justified an archive scan"),
+    )
+
+    agent = _Agent()
+    scope = runner._orchestrator_event_scope(agent._managed_autonomy_state)
+    runner.research_delivery_gate.mark_scanned(
+        agent._managed_autonomy_state,
+        scope=scope,
+    )
+    runner._poll_research_portfolio_after_tool_result(agent, "lean_inspect")
+
+    assert staged == []
+    assert agent._managed_autonomy_state["research_portfolio_last_tool_poll"] == 0.0
+
+
+def test_safe_tool_callback_delivery_gate_recovers_startup_and_assignment_change(
+    monkeypatch,
+):
+    """Missing or stale scope state fails closed to exactly one archive scan."""
+    scans: list[tuple[str, str]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        is_interrupted = False
+        _managed_step_boundary_closed = False
+        _managed_parent_portfolio_maintenance_active = True
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "/tmp/Demo.lean",
+                },
+                "research_portfolio_last_tool_poll": 0.0,
+            }
+
+    def scan(_state, live_state):
+        scans.append((live_state["target_symbol"], live_state["active_file"]))
+        return ""
+
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *_args, **_kwargs: pytest.fail(
+            "conversation callback duplicated parent-owned maintenance"
+        ),
+    )
+    monkeypatch.setattr(runner, "_take_research_findings_prompt_locked", scan)
+
+    agent = _Agent()
+    runner._poll_research_portfolio_after_tool_result(agent, "skill_view")
+    runner._poll_research_portfolio_after_tool_result(agent, "lean_capabilities")
+
+    agent._managed_autonomy_state["current_queue_assignment"] = {
+        "target_symbol": "next_demo",
+        "active_file": "/tmp/NextDemo.lean",
+    }
+    runner._poll_research_portfolio_after_tool_result(agent, "lean_inspect")
+    runner._poll_research_portfolio_after_tool_result(agent, "lean_search")
+
+    assert scans == [
+        ("demo", "/tmp/Demo.lean"),
+        ("next_demo", "/tmp/NextDemo.lean"),
+    ]
+
+
+def test_foreground_grace_harvests_and_stages_without_consecutive_interrupt(monkeypatch):
+    """A replacement finding cannot preempt the turn owed after the first event."""
+
+    class _Agent(_ManagedRunAgentStub):
+        is_interrupted = False
+
+        def __init__(self):
+            self._managed_step_boundary_closed = False
+            self.interrupt_messages: list[str] = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "/tmp/Demo.lean",
+                },
+                "research_portfolio_last_tool_poll": time.monotonic(),
+            }
+
+        def interrupt(self, message):
+            self.interrupt_messages.append(message)
+
+    agent = _Agent()
+    state = agent._managed_autonomy_state
+    scope = runner._orchestrator_event_scope(state)
+    runner.orchestrator_event_watermark.publish_once(
+        state,
+        scope=scope,
+        source="research-finding:campaign.ds-001::demo",
+        reason="completed research job campaign.ds-001",
+    )
+    prompts = iter(["[first finding]", "[replacement finding]"])
+    maintained: list[str] = []
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *_args: next(prompts))
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda _state, _live: maintained.append("polled"),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    runner._poll_research_portfolio_after_tool_result(agent, "lean_search")
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert runner.orchestrator_event_watermark.foreground_grace_active(state, scope=scope)
+
+    capture = runner.orchestrator_event_watermark.claim_pending(state, scope=scope)
+    assert capture is not None
+    runner.orchestrator_event_watermark.acknowledge(state, scope=scope, capture=capture)
+    agent._managed_step_boundary_closed = False
+    agent.clear_tool_result_appendix()
+    state["research_portfolio_last_tool_poll"] = 0.0
+    runner.orchestrator_event_watermark.publish_once(
+        state,
+        scope=scope,
+        source="research-finding:campaign.em-002::demo",
+        reason="completed replacement research job campaign.em-002",
+    )
+
+    runner._poll_research_portfolio_after_tool_result(agent, "lean_inspect")
+
+    assert maintained == ["polled"]
+    assert agent._post_tool_result_appendix == "[replacement finding]"
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_step_boundary_closed is False
+    assert runner.orchestrator_event_watermark.has_pending(state, scope=scope)
+
+
+def test_foreground_grace_defers_only_route_no_progress_epoch_rollover():
+    """The fourth event route cannot roll its epoch before the owed prover turn."""
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": "/tmp/Demo.lean",
+        }
+    }
+    scope = runner._orchestrator_event_scope(state)
+    assert runner.orchestrator_event_watermark.arm_foreground_grace(state, scope=scope)
+    runner.campaign_epoch.request_rollover(
+        state,
+        runner.campaign_epoch.ROUTE_NO_PROGRESS_ROLLOVER_REASON,
+    )
+
+    assert runner._route_rollover_owes_foreground_turn(state)
+    assert runner._consume_ready_campaign_rollover(state) == ""
+    assert (
+        state["campaign_epoch_requested"] == runner.campaign_epoch.ROUTE_NO_PROGRESS_ROLLOVER_REASON
+    )
+
+    assert runner.orchestrator_event_watermark.release_foreground_grace(state, scope=scope)
+    assert not runner._route_rollover_owes_foreground_turn(state)
+    assert (
+        runner._consume_ready_campaign_rollover(state)
+        == runner.campaign_epoch.ROUTE_NO_PROGRESS_ROLLOVER_REASON
+    )
+    assert "campaign_epoch_requested" not in state
+
+    assert runner.orchestrator_event_watermark.arm_foreground_grace(state, scope=scope)
+    runner.campaign_epoch.request_rollover(state, "context-pressure")
+    assert runner._consume_ready_campaign_rollover(state) == "context-pressure"
+
+
+def test_route_rollover_grace_runs_exactly_one_prover_turn_before_roll(monkeypatch):
+    """A spent route epoch cannot issue a fifth/park route before its owed turn."""
+
+    class RolledEpoch(RuntimeError):
+        pass
+
+    live_state = {
+        "active_file": "/tmp/Demo.lean",
+        "active_file_label": "Demo.lean",
+        "target_symbol": "demo",
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "declaration_queue_total": 1,
+        "diagnostics": "warning: declaration uses sorry",
+        "goals": "no goals",
+        "sorry_count": 1,
+        "verification_ok": False,
+        "message": "demo remains unresolved",
+    }
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": "/tmp/Demo.lean",
+        },
+        "orchestrator_scope_entered": True,
+        "orchestrator_routes_used": 4,
+        "campaign_epoch_requested": runner.campaign_epoch.ROUTE_NO_PROGRESS_ROLLOVER_REASON,
+    }
+    scope = runner._orchestrator_event_scope(state, live_state)
+    assert runner.orchestrator_event_watermark.arm_foreground_grace(state, scope=scope)
+    runner.orchestrator_event_watermark.publish_once(
+        state,
+        scope=scope,
+        source="research-finding:replacement::demo",
+        reason="replacement finding completed during foreground grace",
+    )
+    managed_cycles = {"count": 4}
+    prover_turns: list[str] = []
+    rollovers: list[str] = []
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "managed_cycle_count",
+        lambda _state: managed_cycles["count"],
+    )
+    monkeypatch.setattr(runner, "_autonomous_max_cycles", lambda: 120)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: dict(live_state),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_promote_live_state_to_verified_compat",
+        lambda current, autonomy=None: current,
+    )
+    monkeypatch.setattr(
+        runner, "_advance_project_prove_manager_if_needed", lambda *args, **kwargs: False
+    )
+    monkeypatch.setattr(
+        runner, "_rebuild_history_for_theorem_transition", lambda *args, **kwargs: (None, None)
+    )
+    monkeypatch.setattr(
+        runner, "_maybe_run_document_formalization_review_agent", lambda *args: False
+    )
+    monkeypatch.setattr(runner, "_maybe_announce_final_file_sweep_state", lambda *args: None)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *args: None)
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda _state: False)
+    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *args: "pass")
+    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *args: None)
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *args: "")
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_orchestrator_consult",
+        lambda *args, **kwargs: pytest.fail(
+            "foreground grace reached a forbidden fifth/park orchestrator route"
+        ),
+    )
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_autonomous_stop_reason",
+        lambda *args: pytest.fail("stall routing preempted the owed foreground turn"),
+    )
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent: (history, {"compacted": False, "snapshot_created": False}),
+    )
+
+    def record_cycle(_state):
+        managed_cycles["count"] += 1
+        return managed_cycles["count"]
+
+    monkeypatch.setattr(runner.campaign_epoch, "record_managed_cycle", record_cycle)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_queue_assignment", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_prepare_queue_assignment_state", lambda *args: None)
+    monkeypatch.setattr(runner, "_refresh_theorem_transition_handoff", lambda *args: False)
+    monkeypatch.setattr(runner, "_autonomous_continuation_prompt", lambda *args: "continue")
+    monkeypatch.setattr(runner, "_attach_live_proof_state", lambda prompt, *args, **kwargs: prompt)
+    monkeypatch.setattr(runner, "_research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_record_turn_prompt_fingerprint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_set_runtime_active_skill", lambda *args: None)
+    monkeypatch.setattr(runner, "_apply_managed_reasoning_policy", lambda *args: "high")
+    monkeypatch.setattr(runner, "_record_managed_reasoning_policy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_prepare_managed_turn_or_pause", lambda *args: True)
+
+    def run_owed_turn(*args, **kwargs):
+        prover_turns.append(kwargs["user_message"])
+        assert runner.orchestrator_event_watermark.release_foreground_grace(
+            state,
+            scope=scope,
+        )
+        return {
+            "completed": True,
+            "interrupted": False,
+            "messages": [{"role": "assistant", "content": "owed prover turn completed"}],
+        }
+
+    monkeypatch.setattr(runner, "_run_managed_conversation_with_retries", run_owed_turn)
+    monkeypatch.setattr(runner, "_complete_epoch_route_for_managed_result", lambda *args: None)
+    monkeypatch.setattr(runner, "_review_agent_final_report", lambda result, _state: result)
+    monkeypatch.setattr(
+        runner,
+        "_handle_api_step_budget_exhaustion",
+        lambda agent, result, history, autonomy, current, **kwargs: (history, current, False),
+    )
+    monkeypatch.setattr(runner, "_maybe_trigger_budget_breakpoint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_same_queue_assignment_still_blocked", lambda *args: True)
+    monkeypatch.setattr(
+        runner, "_should_record_unverified_turn_attempt", lambda *args, **kwargs: False
+    )
+    monkeypatch.setattr(runner, "_record_turn_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
+
+    def roll_epoch(*args, **kwargs):
+        rollovers.append(kwargs["reason"])
+        raise RolledEpoch
+
+    monkeypatch.setattr(runner, "_roll_autonomous_campaign_epoch", roll_epoch)
+
+    with pytest.raises(RolledEpoch):
+        runner._drive_autonomous_followups_inner(
+            _FakeAgent(),
+            "system",
+            [],
+            {},
+            {},
+            state,
+        )
+
+    assert len(prover_turns) == 1
+    assert rollovers == [runner.campaign_epoch.ROUTE_NO_PROGRESS_ROLLOVER_REASON]
+    assert state["orchestrator_routes_used"] == 4
+    assert runner.orchestrator_event_watermark.has_pending(state, scope=scope)
+
+
+def test_pending_route_rollover_reconciles_verified_graph_progress_before_roll(
+    monkeypatch, tmp_path
+):
+    """A just-verified child cancels a stale route rollover before epoch advance."""
+    live_state = {
+        "active_file": str(tmp_path / "Demo.lean"),
+        "active_file_label": "Demo.lean",
+        "target_symbol": "parent_goal",
+        "current_queue_item": {"label": "parent_goal", "reasons": ["contains sorry"]},
+        "declaration_queue_total": 1,
+        "diagnostics": "warning: declaration uses sorry",
+        "goals": "no goals",
+        "sorry_count": 1,
+        "verification_ok": False,
+    }
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "verified_child",
+            "active_file": str(tmp_path / "Demo.lean"),
+        },
+        "campaign_epoch_requested": runner.campaign_epoch.ROUTE_NO_PROGRESS_ROLLOVER_REASON,
+        "orchestrator_routes_used": 4,
+    }
+    ordering: list[str] = []
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "run-verified-child-before-rollover")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(runner.campaign_epoch, "managed_cycle_count", lambda _state: 4)
+    monkeypatch.setattr(runner, "_autonomous_max_cycles", lambda: 120)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state_compat", lambda *args, **kwargs: dict(live_state)
+    )
+    monkeypatch.setattr(
+        runner,
+        "_promote_live_state_to_verified_compat",
+        lambda current, autonomy=None: current,
+    )
+    monkeypatch.setattr(
+        runner, "_advance_project_prove_manager_if_needed", lambda *args, **kwargs: False
+    )
+
+    def transition(history, compaction, autonomy, current):
+        ordering.append("transition")
+        autonomy["current_queue_assignment"] = {
+            "target_symbol": "parent_goal",
+            "active_file": current["active_file"],
+        }
+        return None, None
+
+    monkeypatch.setattr(runner, "_rebuild_history_for_theorem_transition", transition)
+    monkeypatch.setattr(
+        runner, "_maybe_run_document_formalization_review_agent", lambda *args: False
+    )
+    monkeypatch.setattr(runner, "_maybe_announce_final_file_sweep_state", lambda *args: None)
+
+    def sync_graph(autonomy, _current):
+        ordering.append("sync")
+        assert (
+            autonomy["campaign_epoch_requested"]
+            == runner.campaign_epoch.ROUTE_NO_PROGRESS_ROLLOVER_REASON
+        )
+        runner.campaign_epoch.record_verified_graph_progress(
+            autonomy,
+            node_ids=["nd703a8a6"],
+        )
+        return True
+
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", sync_graph)
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda _state: False)
+    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *args: "pass")
+    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *args: None)
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *args: "")
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_autonomous_stop_reason", lambda *args: "cancelled")
+    monkeypatch.setattr(runner, "_maybe_generate_final_report", lambda *args: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_roll_autonomous_campaign_epoch",
+        lambda *args, **kwargs: pytest.fail("verified progress should cancel the rollover"),
+    )
+
+    runner._drive_autonomous_followups_inner(_FakeAgent(), "system", [], {}, {}, state)
+
+    assert ordering == ["transition", "sync"]
+    assert "campaign_epoch_requested" not in state
+    assert state["orchestrator_routes_used"] == 0
+    progress = runner.campaign_epoch.campaign_snapshot()["last_verified_graph_progress"]
+    assert progress["node_ids"] == ["nd703a8a6"]
+
+
+def test_pre_exit_checkpoint_refreshes_terminal_checkpoint_state(monkeypatch):
+    """Terminal persistence receives the pre-exit checkpoint just written."""
+    writes: list[dict[str, object]] = []
+    refreshed = {
+        "count": 3,
+        "current": {"label": "pre-exit checkpoint", "checkpoint_id": "checkpoint-3"},
+        "latest_label": "pre-exit checkpoint",
+    }
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "_write_workflow_checkpoint",
+        lambda *args, **kwargs: writes.append(dict(kwargs)) or {},
+    )
+    monkeypatch.setattr(runner, "_journal_status", lambda: refreshed)
+
+    result = runner._write_pre_exit_checkpoint_and_refresh(
+        [{"role": "assistant", "content": "proof remains unresolved"}],
+        object(),
+        {"count": 2, "current": {"label": "older checkpoint"}},
+        live_state={"target_symbol": "demo", "sorry_count": 1},
+    )
+
+    assert result is refreshed
+    assert writes == [
+        {
+            "label": "pre-exit checkpoint",
+            "trigger": "pre-exit",
+            "force_filesystem_checkpoint": True,
+            "live_state": {"target_symbol": "demo", "sorry_count": 1},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "function_name",
+    [
+        "apply_verified_patch",
+        "lean_incremental_check",
+        "lean_verify",
+        "patch",
+        "terminal",
+        "write_file",
+    ],
+)
+def test_pending_research_event_never_interrupts_commit_boundary(monkeypatch, function_name):
+    """Edit and verification callbacks retain exclusive ownership of their gate."""
+
+    class _Agent(_ManagedRunAgentStub):
+        is_interrupted = False
+        _managed_step_boundary_closed = False
+
+        def __init__(self):
+            self.interrupt_messages: list[str] = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "/tmp/Demo.lean",
+                }
+            }
+
+        def interrupt(self, message):
+            self.interrupt_messages.append(message)
+
+    agent = _Agent()
+    scope = runner._orchestrator_event_scope(agent._managed_autonomy_state)
+    runner.orchestrator_event_watermark.publish_once(
+        agent._managed_autonomy_state,
+        scope=scope,
+        source="research-finding:campaign.ds-001::demo",
+        reason="completed research job campaign.ds-001",
+    )
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+
+    runner._poll_research_portfolio_after_tool_result(agent, function_name)
+
+    assert agent.interrupt_messages == []
+    assert agent._managed_step_boundary_closed is False
+
+
+@pytest.mark.parametrize(
+    "function_name",
+    [
+        "acquire_file_lock",
+        "release_file_lock",
+        "lean_worker_dispatch",
+        "delegate_task",
+        "repo_clone",
+        "web_download",
+    ],
+)
+def test_pending_research_event_never_interrupts_state_changing_boundary(
+    monkeypatch, function_name
+):
+    """A research event cannot split a coordination or dispatch protocol."""
+
+    class _Agent(_ManagedRunAgentStub):
+        is_interrupted = False
+        _managed_step_boundary_closed = False
+
+        def __init__(self):
+            self.interrupt_messages: list[str] = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "/tmp/Demo.lean",
+                }
+            }
+
+        def interrupt(self, message):
+            self.interrupt_messages.append(message)
+
+    agent = _Agent()
+    scope = runner._orchestrator_event_scope(agent._managed_autonomy_state)
+    runner.orchestrator_event_watermark.publish_once(
+        agent._managed_autonomy_state,
+        scope=scope,
+        source="research-finding:campaign.ds-001::demo",
+        reason="completed research job campaign.ds-001",
+    )
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    runner._poll_research_portfolio_after_tool_result(agent, function_name)
+
+    assert agent.interrupt_messages == []
+    assert agent._managed_step_boundary_closed is False
+    assert runner.orchestrator_event_watermark.has_pending(
+        agent._managed_autonomy_state,
+        scope=scope,
+    )
+
+
+def test_research_parent_poll_stops_when_foreground_conversation_returns(monkeypatch):
+    """Conversation shutdown leaves no recurring portfolio callback behind."""
+    first_poll = threading.Event()
+    poll_count = 0
+
+    class _Agent(_ManagedRunAgentStub):
+        def run_conversation(self, **_kwargs):
+            assert first_poll.wait(timeout=2)
+            return {"messages": [], "interrupted": False}
+
+    def poll():
+        nonlocal poll_count
+        poll_count += 1
+        first_poll.set()
+
+    monkeypatch.setattr(
+        runner,
+        "_build_research_portfolio_parent_poll",
+        lambda _agent, **_kwargs: poll,
+    )
+    monkeypatch.setattr(runner, "_research_portfolio_parent_poll_interval_s", lambda: 0.01)
+
+    runner._run_managed_conversation(_Agent(), user_message="keep proving")
+    stopped_at = poll_count
+    time.sleep(0.05)
+
+    assert stopped_at == 1
+    assert poll_count == stopped_at
+
+
+def test_synchronous_planner_keeps_parent_portfolio_maintenance_alive(monkeypatch):
+    """A slow planner lane must not suspend process-owner worker reaping."""
+    caller = threading.get_ident()
+    maintained = threading.Event()
+    action_thread_ids: list[int] = []
+    poll_thread_ids: list[int] = []
+    expected = runner.planner_phase.PlannerOutcome(ok=True, reason="pilot complete")
+
+    def planner(**kwargs):
+        assert kwargs["agent"] is agent
+        action_thread_ids.append(threading.get_ident())
+        assert maintained.wait(timeout=2)
+        return expected
+
+    def poll():
+        poll_thread_ids.append(threading.get_ident())
+        maintained.set()
+
+    agent = object()
+    monkeypatch.setattr(runner.planner_phase, "run_planner_phase", planner)
+    monkeypatch.setattr(
+        runner,
+        "_build_research_portfolio_parent_poll",
+        lambda _agent, **_kwargs: poll,
+    )
+    monkeypatch.setattr(runner, "_research_portfolio_parent_poll_interval_s", lambda: 0.01)
+
+    result = runner._run_planner_phase_with_parent_maintenance(agent, goal="hard theorem")
+
+    assert result is expected
+    assert action_thread_ids and action_thread_ids[0] != caller
+    assert poll_thread_ids == [caller]
+
+
+@pytest.mark.parametrize("explicit_request", [False, True])
+def test_plan_route_reserves_actor_before_starting_any_lane(monkeypatch, explicit_request):
+    """Scope-entry and explicit plan routes both free one saturated portfolio slot first."""
+    order: list[str] = []
+    expected = runner.planner_phase.PlannerOutcome(ok=True, reason="lane completed")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "campaign_id": "campaign-demo",
+                "campaign_epoch": 1,
+                "current_queue_assignment": {
+                    "target_symbol": "erdos_242",
+                    "active_file": "/tmp/Erdos242.lean",
+                },
+            }
+            if explicit_request:
+                self._managed_autonomy_state["prover_requested_route"] = {
+                    "route": "plan",
+                    "target_symbol": "erdos_242",
+                    "active_file": "/tmp/Erdos242.lean",
+                }
+            self.interruptions: list[str] = []
+
+        def interrupt(self, message):
+            self.interruptions.append(str(message))
+
+    agent = _Agent()
+
+    def reserve(**kwargs):
+        order.append("reserve")
+        assert kwargs == {
+            "campaign_id": "campaign-demo",
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+            "workers": 2,
+        }
+        return {
+            "capacity": 2,
+            "active_before": ["ds", "em"],
+            "active_after": ["ds"],
+            "requested": ["em"],
+            "released": ["em"],
+            "killed": ["em"],
+            "completed": [],
+            "still_active": [],
+            "slot_reserved": True,
+            "foreground_untouched": True,
+        }
+
+    def planner(**kwargs):
+        order.append("lane")
+        assert kwargs["agent"] is agent
+        assert order == ["reserve", "lane"]
+        return expected
+
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-demo", "epoch": 1},
+    )
+    monkeypatch.setattr(runner.research_portfolio, "reserve_planner_actor_slot", reserve)
+    monkeypatch.setattr(runner.planner_phase, "run_planner_phase", planner)
+    monkeypatch.setattr(
+        runner,
+        "_build_research_portfolio_parent_poll",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    result = runner._run_planner_phase_with_parent_maintenance(
+        agent,
+        goal="hard theorem",
+        target_symbol="erdos_242",
+        active_file="/tmp/Erdos242.lean",
+    )
+
+    assert result is expected
+    assert order == ["reserve", "lane"]
+    assert agent.interruptions == []
+    assert "_planner_capacity_reserved" not in agent._managed_autonomy_state
+
+
+def test_closed_boundary_planner_reaps_finding_and_reserves_worker_slot(monkeypatch, tmp_path):
+    """Post-boundary planner work reaps findings without stealing its actor slot."""
+    planner_started = threading.Event()
+    finding_reaped = threading.Event()
+    calls: list[dict[str, object]] = []
+    expected = runner.planner_phase.PlannerOutcome(ok=True, reason="pilot complete")
+
+    class _Manager:
+        def attempt_count_for(self, _key):
+            return 4
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_step_boundary_closed = True
+        is_interrupted = False
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "campaign_id": "campaign-demo",
+                "campaign_epoch": 1,
+                "campaign_status": "running",
+                "current_queue_assignment": {
+                    "target_symbol": "erdos_242",
+                    "active_file": "/tmp/Erdos242.lean",
+                },
+            }
+
+        def interrupt(self, _message):
+            raise AssertionError("portfolio maintenance must not re-enter the foreground")
+
+    agent = _Agent()
+
+    def planner(**kwargs):
+        assert kwargs["agent"] is agent
+        planner_started.set()
+        assert finding_reaped.wait(
+            timeout=2
+        ), "closed step boundary starved completed worker reconciliation"
+        return expected
+
+    def maintain(**kwargs):
+        assert planner_started.is_set()
+        calls.append(dict(kwargs))
+        finding_reaped.set()
+        return {
+            "active": 1,
+            "active_jobs": ["campaign.em-003"],
+            "consumed": ["campaign.ds-001"],
+            "launched": [],
+            "refill_deferred": True,
+        }
+
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path / "project"))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-demo", "epoch": 1},
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "pending_worker_refresh", lambda **_kwargs: {})
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: _Manager())
+    monkeypatch.setattr(runner.research_portfolio, "maintain_portfolio", maintain)
+    monkeypatch.setattr(runner.planner_phase, "run_planner_phase", planner)
+    monkeypatch.setattr(
+        runner,
+        "touch_workflow_runtime_heartbeat",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("heartbeat unavailable")),
+    )
+    monkeypatch.setattr(runner, "_research_portfolio_parent_poll_interval_s", lambda: 0.01)
+
+    result = runner._run_planner_phase_with_parent_maintenance(agent, goal="hard theorem")
+
+    assert result is expected
+    assert calls == [
+        {
+            "campaign_id": "campaign-demo",
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+            "attempt_count": 4,
+            "workers": 2,
+            "refill": False,
+        }
+    ]
+    assert "_planner_capacity_reserved" not in agent._managed_autonomy_state
+    scope = runner._orchestrator_event_scope(agent._managed_autonomy_state)
+    assert runner.orchestrator_event_watermark.has_pending(
+        agent._managed_autonomy_state,
+        scope=scope,
+    )
+    assert agent._managed_step_boundary_closed is True
+
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        "interrupted",
+        "terminal",
+        "paused",
+        "campaign-paused",
+        "campaign-verified",
+        "campaign-changed",
+        "epoch-changed",
+        "assignment-changed",
+        "closed-without-opt-in",
+    ],
+)
+def test_post_boundary_portfolio_poll_preserves_owner_safety_guards(monkeypatch, tmp_path, guard):
+    """Closed-boundary maintenance cannot outlive its exact unresolved scope."""
+    calls: list[dict[str, object]] = []
+
+    class _Manager:
+        def attempt_count_for(self, _key):
+            return 1
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_step_boundary_closed = True
+            self.is_interrupted = False
+            self._managed_autonomy_state = {
+                "campaign_id": "campaign-demo",
+                "campaign_epoch": 1,
+                "campaign_status": "running",
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "/tmp/Demo.lean",
+                },
+            }
+
+    agent = _Agent()
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path / "project"))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-demo", "epoch": 1},
+    )
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: _Manager())
+    monkeypatch.setattr(
+        runner.research_portfolio,
+        "maintain_portfolio",
+        lambda **kwargs: calls.append(dict(kwargs)) or {},
+    )
+    monkeypatch.setattr(runner, "touch_workflow_runtime_heartbeat", lambda **_kwargs: None)
+
+    poll = runner._build_research_portfolio_parent_poll(
+        agent,
+        continue_after_step_boundary=guard != "closed-without-opt-in",
+    )
+    assert poll is not None
+    if guard == "interrupted":
+        agent.is_interrupted = True
+    elif guard == "terminal":
+        agent._managed_autonomy_state["terminal_outcome"] = "disproved"
+    elif guard == "paused":
+        agent._managed_autonomy_state["operational_pause"] = "paused_infrastructure"
+    elif guard == "campaign-paused":
+        agent._managed_autonomy_state["campaign_status"] = "paused"
+    elif guard == "campaign-verified":
+        agent._managed_autonomy_state["campaign_status"] = "verified"
+    elif guard == "campaign-changed":
+        agent._managed_autonomy_state["campaign_id"] = "replacement-campaign"
+    elif guard == "epoch-changed":
+        agent._managed_autonomy_state["campaign_epoch"] = 2
+    elif guard == "assignment-changed":
+        agent._managed_autonomy_state["current_queue_assignment"] = {
+            "target_symbol": "next_demo",
+            "active_file": "/tmp/Demo.lean",
+        }
+
+    poll()
+
+    assert calls == []
+
+
+def test_parent_poll_rechecks_assignment_after_waiting_for_maintenance_lock(monkeypatch):
+    """A callback blocked behind another poll cannot refill its stale assignment."""
+    heartbeat_called = threading.Event()
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+    calls: list[dict[str, object]] = []
+
+    class _Manager:
+        def attempt_count_for(self, _key):
+            return 1
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_step_boundary_closed = True
+        is_interrupted = False
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "campaign_id": "campaign-demo",
+                "campaign_epoch": 1,
+                "campaign_status": "running",
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "/tmp/Demo.lean",
+                },
+            }
+
+    agent = _Agent()
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_worker_count", lambda: 2)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "ensure_campaign",
+        lambda _state: {"campaign_id": "campaign-demo", "epoch": 1},
+    )
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args: _Manager())
+    monkeypatch.setattr(
+        runner.research_portfolio,
+        "maintain_portfolio",
+        lambda **kwargs: calls.append(dict(kwargs)) or {},
+    )
+    monkeypatch.setattr(
+        runner,
+        "touch_workflow_runtime_heartbeat",
+        lambda **_kwargs: heartbeat_called.set(),
+    )
+    poll = runner._build_research_portfolio_parent_poll(
+        agent,
+        continue_after_step_boundary=True,
+    )
+    assert poll is not None
+
+    def hold_maintenance_lock() -> None:
+        with runner._RESEARCH_PORTFOLIO_MAINTENANCE_LOCK:
+            lock_held.set()
+            assert release_lock.wait(timeout=2)
+
+    def invalidate_assignment() -> None:
+        assert heartbeat_called.wait(timeout=2)
+        agent._managed_autonomy_state["current_queue_assignment"] = {
+            "target_symbol": "next_demo",
+            "active_file": "/tmp/Demo.lean",
+        }
+        release_lock.set()
+
+    holder = threading.Thread(target=hold_maintenance_lock)
+    holder.start()
+    assert lock_held.wait(timeout=2)
+    invalidator = threading.Thread(target=invalidate_assignment)
+    invalidator.start()
+
+    poll()
+    holder.join(timeout=2)
+    invalidator.join(timeout=2)
+
+    assert not holder.is_alive()
+    assert not invalidator.is_alive()
+    assert calls == []
 
 
 def test_run_managed_conversation_uses_managed_tool_task_id():
@@ -208,6 +6139,581 @@ def test_run_managed_conversation_returns_failed_payload_on_provider_error(capsy
     assert "Managed workflow stopped after provider/API error" in output
 
 
+def test_managed_conversation_retries_transient_provider_failures(monkeypatch):
+    results = iter(
+        [
+            {"failed": True, "error": "503 service unavailable", "messages": []},
+            {"failed": True, "error": "Connection reset", "messages": []},
+            {"completed": True, "messages": [], "final_response": "working"},
+        ]
+    )
+    calls: list[int] = []
+    monkeypatch.setenv("LEANFLOW_PROVIDER_RETRY_BACKOFFS", "0,0,0")
+    monkeypatch.setattr(
+        runner,
+        "_run_managed_conversation",
+        lambda *args, **kwargs: calls.append(1) or next(results),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    result = runner._run_managed_conversation_with_retries(_ManagedRunAgentStub())
+
+    assert result["completed"] is True
+    assert len(calls) == 3
+
+
+def test_managed_conversation_does_not_retry_nontransient_failure(monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(
+        runner,
+        "_run_managed_conversation",
+        lambda *args, **kwargs: calls.append(1)
+        or {"failed": True, "error": "invalid API key", "messages": []},
+    )
+
+    result = runner._run_managed_conversation_with_retries(_ManagedRunAgentStub())
+
+    assert result["failed"] is True
+    assert len(calls) == 1
+
+
+def test_managed_conversation_does_not_multiply_exhausted_provider_retries(monkeypatch):
+    """AIAgent's complete 5/15/45 schedule must be the only provider retry budget."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        runner,
+        "_run_managed_conversation",
+        lambda *args, **kwargs: calls.append(1)
+        or {
+            "failed": True,
+            "error": "503 service unavailable after provider retries",
+            "provider_retries_exhausted": True,
+            "messages": [],
+        },
+    )
+
+    result = runner._run_managed_conversation_with_retries(_ManagedRunAgentStub())
+
+    assert result["failed"] is True
+    assert result["provider_retries_exhausted"] is True
+    assert len(calls) == 1
+
+
+def test_managed_conversation_usage_limit_pauses_without_outer_retry(monkeypatch):
+    """A reset-aware failure is a single resumable pause, not a 5/15/45 loop."""
+    calls: list[int] = []
+    state: dict = {}
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+    retry_after = {
+        "kind": "usage_limit_reached",
+        "retry_after_seconds": 453097,
+        "unavailable_until_epoch": 1784949880,
+        "resets_at_epoch": 1784949879,
+        "reported_resets_in_seconds": 453096,
+        "timing_consistent": True,
+        "timing_clamped": False,
+        "source": "exception.body",
+    }
+    monkeypatch.setattr(
+        runner,
+        "_run_managed_conversation",
+        lambda *args, **kwargs: calls.append(1)
+        or {
+            "failed": True,
+            "error": "Codex usage limit reached",
+            "provider_retry_after": retry_after,
+            "provider_globally_unavailable": True,
+            "messages": [],
+        },
+    )
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_provider_usage_limit_pause",
+        lambda autonomy_state, metadata, **_kwargs: autonomy_state.update(
+            {
+                "operational_pause": "paused_infrastructure",
+                "infrastructure_pause_reason": "provider usage limit reached",
+                "provider_retry_after": dict(metadata),
+                "provider_pause_owner": "provider_usage_limit",
+            }
+        ),
+    )
+
+    result = runner._run_managed_conversation_with_retries(_Agent())
+
+    assert result["failed"] is True
+    assert len(calls) == 1
+    assert state["operational_pause"] == "paused_infrastructure"
+    assert state["provider_retry_after"] == retry_after
+
+
+def test_expired_usage_limit_result_does_not_recreate_pause(monkeypatch):
+    """A late child result observed after reset cannot pause a fresh run."""
+    state: dict = {}
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+    monkeypatch.setattr(runner.time, "time", lambda: 1_700_000_100)
+    monkeypatch.setattr(
+        runner,
+        "_run_managed_conversation",
+        lambda *args, **kwargs: {
+            "failed": True,
+            "error": "stale usage limit result",
+            "provider_retry_after": {
+                "kind": "usage_limit_reached",
+                "retry_after_seconds": 60,
+                "unavailable_until_epoch": 1_700_000_000,
+            },
+            "provider_globally_unavailable": True,
+            "messages": [],
+        },
+    )
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_provider_usage_limit_pause",
+        lambda *args, **kwargs: pytest.fail("expired reset was persisted as a new pause"),
+    )
+
+    result = runner._run_managed_conversation_with_retries(_Agent())
+
+    assert result["failed"] is True
+    assert "operational_pause" not in state
+
+
+def test_managed_conversation_propagates_provider_exhaustion_marker(capsys):
+    from agent.providers.api_caller import TransientProviderRetriesExhausted
+
+    class _Agent(_ManagedRunAgentStub):
+        def run_conversation(self, **kwargs):
+            raise TransientProviderRetriesExhausted(RuntimeError("503 unavailable"))
+
+    result = runner._run_managed_conversation(_Agent())
+
+    assert result["failed"] is True
+    assert result["provider_retries_exhausted"] is True
+
+
+def test_successful_foreground_turn_acknowledges_staged_research(monkeypatch):
+    marker = runner.research_findings.delivery_key("campaign.ds-288", "erdos_242")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+        }
+    }
+    runner.research_findings.stage_foreground_delivery(
+        state,
+        target_symbol="erdos_242",
+        markers=[marker],
+        prompt="[completed ds-288 finding]",
+    )
+    scope = runner._orchestrator_event_scope(state)
+    assert runner.orchestrator_event_watermark.arm_foreground_grace(state, scope=scope)
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+    def run_conversation(*args, **kwargs):
+        prompt = kwargs["user_message"]
+        assert "completed ds-288 finding" in prompt
+        return {
+            "completed": True,
+            "interrupted": False,
+            "messages": [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "Applying ds-288 now."},
+            ],
+        }
+
+    monkeypatch.setattr(runner, "_run_managed_conversation", run_conversation)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    runner._run_managed_conversation_with_retries(
+        _Agent(),
+        deliver_pending_research=True,
+        user_message="continue",
+        conversation_history=[],
+    )
+
+    assert state["research_findings_delivered"] == [marker]
+    assert not runner.orchestrator_event_watermark.foreground_grace_active(state, scope=scope)
+
+
+def test_successful_foreground_ack_reopens_delivery_gate_for_overflow_once(monkeypatch, tmp_path):
+    """Free one pending slot and stage the next materialized batch exactly once."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    target_symbol = "demo"
+    active_file = str(tmp_path / "Main.lean")
+    first_job_id = "campaign.ds-first"
+    overflow_job_id = "campaign.ds-overflow"
+    first_marker = runner.research_findings.delivery_key(first_job_id, target_symbol)
+    overflow_marker = runner.research_findings.delivery_key(overflow_job_id, target_symbol)
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+        },
+    }
+    first_prompt = runner.research_findings.stage_foreground_delivery(
+        state,
+        target_symbol=target_symbol,
+        markers=[first_marker],
+        prompt="first completed finding",
+    )
+    summary = {
+        "research_findings": [
+            {
+                "job_id": overflow_job_id,
+                "target_symbol": target_symbol,
+                "active_file": active_file,
+                "archetype": "deep_search",
+                "deliverable": {"summary": "overflow invariant"},
+            }
+        ]
+    }
+    migration_scans: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: migration_scans.append("scan") or {},
+    )
+    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
+    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    scope = runner._orchestrator_event_scope(state)
+    runner.research_delivery_gate.mark_scanned(state, scope=scope)
+    assert not runner.research_delivery_gate.scan_required(state, scope=scope)
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+    def run_conversation(*_args, **kwargs):
+        prompt = kwargs["user_message"]
+        assert first_prompt in prompt
+        return {
+            "completed": True,
+            "interrupted": False,
+            "messages": [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "Using the first finding now."},
+            ],
+        }
+
+    monkeypatch.setattr(runner, "_run_managed_conversation", run_conversation)
+
+    runner._run_managed_conversation_with_retries(
+        _Agent(),
+        deliver_pending_research=True,
+        user_message="continue",
+        conversation_history=[],
+    )
+
+    assert state["research_findings_delivered"] == [first_marker]
+    assert runner.research_delivery_gate.scan_required(state, scope=scope)
+
+    live_state = {"target_symbol": target_symbol, "active_file": active_file}
+    overflow_prompt = runner._take_research_findings_prompt(state, live_state)
+
+    assert "overflow invariant" in overflow_prompt
+    assert overflow_job_id in overflow_prompt
+    assert overflow_marker in runner.research_findings.pending_foreground_markers(
+        state,
+        target_symbol=target_symbol,
+    )
+    assert runner._take_research_findings_prompt(state, live_state) == ""
+    assert migration_scans == ["scan"]
+
+
+def test_successful_foreground_turn_records_auditable_delivery_identifiers(monkeypatch):
+    """Identify the exact durable finding acknowledged by the foreground turn."""
+    job_id = "campaign.ds-288"
+    target_symbol = "erdos_242"
+    marker = runner.research_findings.delivery_key(job_id, target_symbol)
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": target_symbol,
+            "active_file": "/tmp/Erdos242.lean",
+        }
+    }
+    runner.research_findings.stage_foreground_delivery(
+        state,
+        target_symbol=target_symbol,
+        markers=[marker],
+        prompt="[completed ds-288 finding]",
+    )
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+    def run_conversation(*args, **kwargs):
+        prompt = kwargs["user_message"]
+        return {
+            "completed": True,
+            "interrupted": False,
+            "messages": [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "Applying ds-288 now."},
+            ],
+        }
+
+    events: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(runner, "_run_managed_conversation", run_conversation)
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+
+    runner._run_managed_conversation_with_retries(
+        _Agent(),
+        deliver_pending_research=True,
+        user_message="continue",
+        conversation_history=[],
+    )
+
+    delivered = next(event for event in events if event[0][0] == "research-findings-delivered")
+    details = delivered[1]
+    assert details["marker_count"] == 1
+    assert details["delivery_job_ids"] == [job_id]
+    assert details["delivery_target_symbols"] == [target_symbol]
+    assert details["delivery_receipt_markers"] == [marker]
+    assert len(details["delivery_ack_tokens"]) == 1
+    assert details["delivery_identifiers_truncated"] is False
+
+
+def test_successful_foreground_turn_acknowledges_research_after_persistence_rewrite(monkeypatch):
+    """Use the clean-history rewrite that previously erased receipt evidence."""
+    from agent.compression.conversation_manager import ConversationManager
+
+    marker = runner.research_findings.delivery_key("campaign.ds-288", "erdos_242")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+        }
+    }
+    tagged_prompt = runner.research_findings.stage_foreground_delivery(
+        state,
+        target_symbol="erdos_242",
+        markers=[marker],
+        prompt="[completed ds-288 finding]",
+    )
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+        def _log_session_usage_summary(self):
+            return None
+
+        def _save_session_log(self, messages):
+            return None
+
+        def _flush_messages_to_session_db(self, messages, conversation_history):
+            return None
+
+    agent = _Agent()
+
+    def run_conversation(*args, **kwargs):
+        prompt = kwargs["user_message"]
+        assert tagged_prompt in prompt
+        messages = [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": "Applying ds-288 now."},
+        ]
+        agent._persist_user_message_idx = 0
+        agent._persist_user_message_override = kwargs["persist_user_message"]
+        ConversationManager(agent).persist_session(messages, [])
+        assert tagged_prompt not in messages[0]["content"]
+        return {
+            "completed": True,
+            "interrupted": False,
+            "messages": messages,
+        }
+
+    monkeypatch.setattr(runner, "_run_managed_conversation", run_conversation)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    runner._run_managed_conversation_with_retries(
+        agent,
+        deliver_pending_research=True,
+        user_message="continue",
+        conversation_history=[],
+        persist_user_message="[clean autonomous continuation]",
+    )
+
+    assert state["research_findings_delivered"] == [marker]
+    assert marker not in runner.research_findings.pending_foreground_markers(
+        state,
+        target_symbol="erdos_242",
+    )
+
+
+def test_user_interrupted_foreground_turn_does_not_acknowledge_staged_research(monkeypatch):
+    marker = runner.research_findings.delivery_key("campaign.em-289", "erdos_242")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+        }
+    }
+    runner.research_findings.stage_foreground_delivery(
+        state,
+        target_symbol="erdos_242",
+        markers=[marker],
+        prompt="[completed em-289 finding]",
+    )
+    scope = runner._orchestrator_event_scope(state)
+    assert runner.orchestrator_event_watermark.arm_foreground_grace(state, scope=scope)
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+    def run_conversation(*args, **kwargs):
+        prompt = kwargs["user_message"]
+        return {
+            "completed": False,
+            "interrupted": True,
+            "interrupt_message": None,
+            "messages": [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "Partial response before signal."},
+            ],
+        }
+
+    monkeypatch.setattr(runner, "_run_managed_conversation", run_conversation)
+
+    runner._run_managed_conversation_with_retries(
+        _Agent(),
+        deliver_pending_research=True,
+        user_message="continue",
+        conversation_history=[],
+    )
+
+    assert "research_findings_delivered" not in state
+    assert marker in runner.research_findings.pending_foreground_markers(
+        state,
+        target_symbol="erdos_242",
+    )
+    assert runner.orchestrator_event_watermark.foreground_grace_active(state, scope=scope)
+
+
+def test_step_boundary_acknowledges_only_delivery_followed_by_assistant(monkeypatch):
+    old_marker = runner.research_findings.delivery_key("campaign.ds-288", "erdos_242")
+    new_marker = runner.research_findings.delivery_key("campaign.em-291", "erdos_242")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+        }
+    }
+    old_prompt = runner.research_findings.stage_foreground_delivery(
+        state,
+        target_symbol="erdos_242",
+        markers=[old_marker],
+        prompt="[completed ds-288 finding]",
+    )
+    new_prompt = runner.research_findings.stage_foreground_delivery(
+        state,
+        target_symbol="erdos_242",
+        markers=[new_marker],
+        prompt="[completed em-291 finding]",
+    )
+    scope = runner._orchestrator_event_scope(state)
+    assert old_prompt and new_prompt
+    assert runner.orchestrator_event_watermark.arm_foreground_grace(state, scope=scope)
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+    def run_conversation(*args, **kwargs):
+        prompt = kwargs["user_message"]
+        assert "completed ds-288 finding" in prompt
+        assert "completed em-291 finding" not in prompt
+        return {
+            "completed": False,
+            "interrupted": True,
+            "interrupt_message": runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT,
+            "messages": [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "Using ds-288 before the safe boundary."},
+                {"role": "tool", "content": new_prompt},
+            ],
+        }
+
+    monkeypatch.setattr(runner, "_run_managed_conversation", run_conversation)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    runner._run_managed_conversation_with_retries(
+        _Agent(),
+        deliver_pending_research=True,
+        user_message="continue",
+        conversation_history=[],
+    )
+
+    assert state["research_findings_delivered"] == [old_marker]
+    assert runner.research_findings.pending_foreground_markers(
+        state,
+        target_symbol="erdos_242",
+    ) == {new_marker}
+    assert runner.orchestrator_event_watermark.foreground_grace_active(state, scope=scope)
+
+
+def test_failed_foreground_turn_does_not_acknowledge_staged_research(monkeypatch):
+    marker = runner.research_findings.delivery_key("campaign.ds-288", "erdos_242")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "erdos_242",
+            "active_file": "/tmp/Erdos242.lean",
+        }
+    }
+    runner.research_findings.stage_foreground_delivery(
+        state,
+        target_symbol="erdos_242",
+        markers=[marker],
+        prompt="[completed ds-288 finding]",
+    )
+    scope = runner._orchestrator_event_scope(state)
+    assert runner.orchestrator_event_watermark.arm_foreground_grace(state, scope=scope)
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+    def run_conversation(*args, **kwargs):
+        prompt = kwargs["user_message"]
+        return {
+            "completed": False,
+            "failed": True,
+            "error": "invalid provider response",
+            "messages": [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "Non-authoritative partial response."},
+            ],
+        }
+
+    monkeypatch.setattr(runner, "_run_managed_conversation", run_conversation)
+
+    runner._run_managed_conversation_with_retries(
+        _Agent(),
+        deliver_pending_research=True,
+        user_message="continue",
+        conversation_history=[],
+    )
+
+    assert "research_findings_delivered" not in state
+    assert marker in runner.research_findings.pending_foreground_markers(
+        state,
+        target_symbol="erdos_242",
+    )
+    assert runner.orchestrator_event_watermark.foreground_grace_active(state, scope=scope)
+
+
 def test_run_managed_conversation_interrupts_on_ctrl_c(monkeypatch, capsys):
     class _Agent(_ManagedRunAgentStub):
         def __init__(self):
@@ -244,13 +6750,105 @@ def test_run_managed_conversation_interrupts_on_ctrl_c(monkeypatch, capsys):
 
     monkeypatch.setattr(runner.threading, "Thread", _FakeThread)
 
-    result = runner._run_managed_conversation(agent, user_message="hello")
+    with pytest.raises(runner.NativeTerminationSignal) as raised:
+        runner._run_managed_conversation(agent, user_message="hello")
 
     assert agent.interrupt_calls == 1
-    assert result["interrupted"] is True
+    assert raised.value.signum == runner.signal.SIGINT
     output = capsys.readouterr().out
     assert "Interrupt requested" in output
-    assert "Returned to prover-agent mode after interrupt." in output
+    assert "Returned to prover-agent mode after interrupt." not in output
+
+
+def test_run_managed_conversation_does_not_wait_for_never_stopping_worker_after_repeated_sigint(
+    monkeypatch,
+):
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self.interrupt_calls = 0
+
+        def interrupt(self, message=None):
+            self.interrupt_calls += 1
+            raise KeyboardInterrupt
+
+        def run_conversation(self, **kwargs):
+            return {"messages": []}
+
+    class _NeverStoppingThread:
+        def __init__(self, target=None, daemon=None):
+            self._alive = True
+            self.join_calls = 0
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            self.join_calls += 1
+            raise KeyboardInterrupt
+
+    agent = _Agent()
+    callback_calls = {"count": 0}
+
+    def repeatedly_interrupted_callback():
+        callback_calls["count"] += 1
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner.threading, "Thread", _NeverStoppingThread)
+
+    with pytest.raises(runner.NativeTerminationSignal) as raised:
+        runner._run_managed_conversation(
+            agent,
+            user_message="hello",
+            on_interrupt=repeatedly_interrupted_callback,
+        )
+
+    assert raised.value.signum == runner.signal.SIGINT
+    assert callback_calls == {"count": 1}
+    assert agent.interrupt_calls == 1
+    assert agent._managed_foreground_worker.join_calls == 1
+    assert agent._managed_foreground_worker.is_alive() is True
+
+
+def test_run_managed_conversation_tracks_live_writer_after_termination_signal(monkeypatch):
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self.interrupt_messages = []
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+        def run_conversation(self, **kwargs):
+            return {"messages": []}
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+            self._alive = True
+            self._raised = False
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            if not self._raised:
+                self._raised = True
+                raise runner.NativeTerminationSignal(15)
+
+    agent = _Agent()
+    monkeypatch.setattr(runner.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(runner, "_native_writer_join_timeout_s", lambda: 0.01)
+
+    with pytest.raises(runner.NativeTerminationSignal):
+        runner._run_managed_conversation(agent, user_message="hello")
+
+    assert agent.interrupt_messages == ["native runner process termination"]
+    assert agent._managed_foreground_worker.is_alive() is True
 
 
 def test_run_managed_conversation_returns_interrupted_result_when_no_payload_arrives_after_interrupt(
@@ -293,13 +6891,13 @@ def test_run_managed_conversation_returns_interrupted_result_when_no_payload_arr
 
     monkeypatch.setattr(runner.threading, "Thread", _FakeThread)
 
-    result = runner._run_managed_conversation(agent, user_message="hello")
+    with pytest.raises(runner.NativeTerminationSignal) as raised:
+        runner._run_managed_conversation(agent, user_message="hello")
 
     assert agent.interrupt_calls == 1
-    assert result["interrupted"] is True
-    assert result["messages"] == [{"role": "assistant", "content": "partial"}]
+    assert raised.value.signum == runner.signal.SIGINT
     output = capsys.readouterr().out
-    assert "Returned to prover-agent mode after interrupt." in output
+    assert "Returned to prover-agent mode after interrupt." not in output
 
 
 def test_run_managed_conversation_converts_worker_interrupted_error(monkeypatch, capsys):
@@ -360,11 +6958,12 @@ def test_run_managed_conversation_calls_interrupt_callback(monkeypatch):
 
     monkeypatch.setattr(runner.threading, "Thread", _FakeThread)
 
-    runner._run_managed_conversation(
-        agent,
-        user_message="hello",
-        on_interrupt=lambda: callback_hits.__setitem__("count", callback_hits["count"] + 1),
-    )
+    with pytest.raises(runner.NativeTerminationSignal):
+        runner._run_managed_conversation(
+            agent,
+            user_message="hello",
+            on_interrupt=lambda: callback_hits.__setitem__("count", callback_hits["count"] + 1),
+        )
 
     assert agent.interrupt_calls == 1
     assert callback_hits["count"] == 1
@@ -384,6 +6983,17 @@ def test_interactive_mode_header_uses_formalizer_label(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "formalizer-agent mode  ·  waiting for document formalization handoff verifier" in output
     assert "prover-agent mode" not in output
+
+
+def test_interactive_command_propagates_ctrl_c_to_native_finalizer_boundary(monkeypatch):
+    monkeypatch.setattr(
+        "builtins.input", lambda _prompt: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
+
+    with pytest.raises(runner.NativeTerminationSignal) as raised:
+        runner._read_interactive_command("prover-agent")
+
+    assert raised.value.signum == runner.signal.SIGINT
 
 
 def test_interactive_mode_header_keeps_prover_label(monkeypatch, capsys):
@@ -442,6 +7052,15 @@ def test_handle_managed_tool_result_records_failed_attempt_after_verification_fe
         "_manager_verify_queue_file",
         lambda active_file: {"ok": False, "command": "lake env lean Demo/Main.lean"},
     )
+    coach_calls = []
+    monkeypatch.setattr(
+        runner,
+        "_maybe_manager_nudge",
+        lambda autonomy_state, manager_check, **kwargs: (
+            coach_calls.append((manager_check, kwargs))
+            or "\n[PERSISTENCE COACH]\nKeep pursuing this verified route."
+        ),
+    )
 
     agent = _Agent()
     runner._handle_managed_tool_result(agent, "patch", {}, "")
@@ -455,6 +7074,9 @@ def test_handle_managed_tool_result_records_failed_attempt_after_verification_fe
     )
     assert "THEOREM FEEDBACK" in agent._post_tool_result_appendix
     assert "continue the same theorem turn" in agent._post_tool_result_appendix
+    assert "[PERSISTENCE COACH]" in agent._post_tool_result_appendix
+    assert len(coach_calls) == 1
+    assert coach_calls[0][1]["target_symbol"] == "demo"
     assert agent.interrupt_messages == []
     assert agent._managed_pending_theorem_feedback is None
 
@@ -530,7 +7152,7 @@ def test_handle_managed_tool_result_nudges_after_repeated_failed_edits(monkeypat
     assert any(args[0] == "failed-attempt-escalation-nudge" for args, _kwargs in events)
 
 
-def test_handle_managed_incremental_feedback_records_current_output(monkeypatch):
+def test_handle_managed_incremental_feedback_is_diagnostic_only(monkeypatch):
     class _Agent(_ManagedRunAgentStub):
         def __init__(self):
             self._session_messages = [{"role": "assistant", "content": "partial"}]
@@ -539,7 +7161,18 @@ def test_handle_managed_incremental_feedback_records_current_output(monkeypatch)
                     "target_symbol": "demo",
                     "active_file": "Demo/Main.lean",
                     "slice": "theorem demo : True := by\n  sorry",
-                }
+                },
+                "failed_attempts": [
+                    {
+                        "attempt": attempt,
+                        "cycle": attempt,
+                        "target_symbol": "demo",
+                        "active_file": "Demo/Main.lean",
+                        "proof_shape": f"failed edit {attempt}",
+                        "reason": f"kernel rejection {attempt}",
+                    }
+                    for attempt in (1, 2)
+                ],
             }
             self._managed_pending_theorem_feedback = None
             self.interrupt_messages: list[str | None] = []
@@ -550,14 +7183,6 @@ def test_handle_managed_incremental_feedback_records_current_output(monkeypatch)
         def interrupt(self, message=None):
             self.interrupt_messages.append(message)
 
-    live_state = {
-        "target_symbol": "demo",
-        "active_file": "Demo/Main.lean",
-        "active_file_label": "Demo/Main.lean",
-        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
-        "current_queue_item_slice": "theorem demo : True := by\n  exact False.elim ?h",
-        "blocker_summary": "stale blocker",
-    }
     payload = {
         "success": True,
         "ok": False,
@@ -570,19 +7195,82 @@ def test_handle_managed_incremental_feedback_records_current_output(monkeypatch)
     }
 
     monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    boundary_calls = []
+    portfolio_calls = []
+    coach_calls = []
     monkeypatch.setattr(
-        runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state)
+        runner,
+        "_finish_queue_step_boundary",
+        lambda *args, **kwargs: boundary_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *args, **kwargs: portfolio_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_manager_nudge",
+        lambda *args, **kwargs: coach_calls.append((args, kwargs)) or "unexpected coach",
     )
 
     agent = _Agent()
     runner._handle_managed_tool_result(
-        agent, "lean_incremental_check", {"action": "feedback"}, json.dumps(payload)
+        # The result remains authoritative even if an older wrapper omits the
+        # action from its echoed call arguments.
+        agent,
+        "lean_incremental_check",
+        {},
+        json.dumps(payload),
     )
 
     attempts = agent._managed_autonomy_state["failed_attempts"]
-    assert len(attempts) == 1
-    assert attempts[0]["reason"] == "current feedback diagnostic"
-    assert "current feedback diagnostic" in agent._post_tool_result_appendix
+    assert [attempt["attempt"] for attempt in attempts] == [1, 2]
+    assert boundary_calls == []
+    assert portfolio_calls == []
+    assert coach_calls == []
+    assert not hasattr(agent, "_post_tool_result_appendix")
+    assert agent.interrupt_messages == []
+
+
+def test_incremental_diagnostic_actions_do_not_count_as_theorem_feedback():
+    assert (
+        runner._tool_result_counts_as_theorem_feedback(
+            "lean_incremental_check", {"action": "prepare_file"}
+        )
+        is False
+    )
+    assert (
+        runner._tool_result_counts_as_theorem_feedback(
+            "lean_incremental_check", {"action": "check_target"}
+        )
+        is True
+    )
+    assert (
+        runner._tool_result_counts_as_theorem_feedback(
+            "lean_incremental_check", {"action": "feedback"}
+        )
+        is False
+    )
+    assert runner._tool_result_counts_as_theorem_feedback("lean_incremental_check", {}) is True
+
+
+def test_terminal_lean_check_only_counts_for_assigned_file():
+    assert runner._tool_result_counts_as_theorem_feedback(
+        "terminal",
+        {"command": "lake env lean Demo/Main.lean"},
+        active_file="/tmp/project/Demo/Main.lean",
+    )
+    assert not runner._tool_result_counts_as_theorem_feedback(
+        "terminal",
+        {"command": "lake env lean Demo/Probe.lean"},
+        active_file="/tmp/project/Demo/Main.lean",
+    )
+    assert runner._tool_result_counts_as_theorem_feedback(
+        "terminal",
+        {"command": "lake build"},
+        active_file="/tmp/project/Demo/Main.lean",
+    )
 
 
 def test_handle_managed_tool_result_nudges_repeated_successful_search(monkeypatch, tmp_path):
@@ -770,9 +7458,784 @@ def test_search_progress_nudge_ignores_non_search_capability_degradation(monkeyp
     assert "search providers are responding" in appendix
 
 
-def test_generate_checkpoint_summary_falls_back_on_keyboard_interrupt(monkeypatch):
+def test_web_search_only_loop_requests_route_and_interrupts_once(monkeypatch, tmp_path):
+    """A long web-only inner turn must yield to the outer orchestrator exactly once."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self.session_id = "route-search-agent"
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_search_progress_hard_limit", lambda: 3)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+
+    calls = [
+        ("web_search", {"query": "Erdos Strauss residue zero"}),
+        ("web_fetch", {"url": "https://example.test/paper"}),
+        ("web_download", {"url": "https://example.test/preprint.pdf"}),
+    ]
+    for function_name, args in calls:
+        runner._handle_managed_tool_result(
+            agent,
+            function_name,
+            args,
+            json.dumps({"success": True, **args}),
+        )
+
+    route_request = agent._managed_autonomy_state["prover_requested_route"]
+    assert route_request == {
+        "route": "plan",
+        "target_symbol": "demo",
+        "active_file": str(active),
+    }
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert agent._managed_step_boundary_closed is True
+    route_events = [event for event in events if event[0][0] == "search-route-change"]
+    assert len(route_events) == 1
+    assert route_events[0][1]["search_count"] == 3
+    assert route_events[0][1]["agent_session_id"] == "route-search-agent"
+    assert route_events[0][1]["process_id"] == os.getpid()
+    assert set(route_events[0][1]["used_tools"]) == {
+        "web_search",
+        "web_fetch",
+        "web_download",
+    }
+
+    # The callback may observe another already-completed result while the
+    # interruption propagates. It must not fire the same boundary twice.
+    runner._handle_managed_tool_result(
+        agent,
+        "web_search",
+        {"query": "another query"},
+        json.dumps({"success": True, "query": "another query"}),
+    )
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+    assert len([event for event in events if event[0][0] == "search-route-change"]) == 1
+
+
+def test_search_progress_nudge_records_originating_agent(monkeypatch, tmp_path):
+    """Search nudges must identify their process and agent in concurrent research logs."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self.session_id = "nudge-search-agent"
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_search_progress_hard_limit", lambda: 0)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+
+    for _ in range(runner.SEARCH_PROGRESS_REPEAT_NUDGE_LIMIT):
+        runner._handle_managed_tool_result(
+            agent,
+            "lean_search",
+            {"query": "same theorem"},
+            json.dumps({"success": True, "query": "same theorem", "results": []}),
+        )
+
+    nudge_events = [event for event in events if event[0][0] == "search-progress-nudge"]
+    assert len(nudge_events) == 1
+    assert nudge_events[0][1]["agent_session_id"] == "nudge-search-agent"
+    assert nudge_events[0][1]["process_id"] == os.getpid()
+
+
+def test_rejected_terminal_does_not_hide_web_search_only_loop(monkeypatch, tmp_path):
+    """A rejected command is not concrete progress and must not reset the search streak."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_search_progress_hard_limit", lambda: 3)
+    agent = _Agent()
+
+    for query in ("first", "second"):
+        runner._handle_managed_tool_result(
+            agent,
+            "web_search",
+            {"query": query},
+            json.dumps({"success": True, "query": query}),
+        )
+    runner._handle_managed_tool_result(
+        agent,
+        "terminal",
+        {"command": "touch scratch.txt"},
+        json.dumps(
+            {
+                "output": "",
+                "exit_code": -1,
+                "error": "command rejected",
+                "status": "blocked",
+            }
+        ),
+    )
+    assert agent._managed_autonomy_state["search_progress"]["search_count"] == 2
+
+    runner._handle_managed_tool_result(
+        agent,
+        "web_fetch",
+        {"url": "https://example.test/third"},
+        json.dumps({"success": True, "url": "https://example.test/third"}),
+    )
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+
+
+def test_successful_concrete_terminal_progress_resets_search_streak(monkeypatch, tmp_path):
+    """Ordinary search/edit mixtures get a fresh bounded-search window after real progress."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_search_progress_hard_limit", lambda: 3)
+    agent = _Agent()
+
+    for query in ("first", "second"):
+        runner._handle_managed_tool_result(
+            agent,
+            "web_search",
+            {"query": query},
+            json.dumps({"success": True, "query": query}),
+        )
+    runner._handle_managed_tool_result(
+        agent,
+        "terminal",
+        {"command": "touch scratch.txt"},
+        json.dumps({"output": "", "exit_code": 0, "error": None}),
+    )
+    assert "search_progress" not in agent._managed_autonomy_state
+
+    for query in ("fresh first", "fresh second"):
+        runner._handle_managed_tool_result(
+            agent,
+            "web_search",
+            {"query": query},
+            json.dumps({"success": True, "query": query}),
+        )
+
+    assert agent.interrupt_messages == []
+    assert agent._managed_autonomy_state["search_progress"]["search_count"] == 2
+
+
+def test_guard_restored_patch_does_not_reset_search_streak(monkeypatch, tmp_path):
+    """A successful tool result is not progress when the queue guard rejects its edit."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "theorem demo : True := by\n  sorry\n\ntheorem later : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_search_progress_hard_limit", lambda: 3)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item",
+        lambda *_: ({"ok": False, "has_errors": True}, "lean_incremental_check"),
+    )
+    monkeypatch.setattr(runner, "_finish_queue_step_boundary", lambda *_args, **_kwargs: None)
+    agent = _Agent()
+
+    for query in ("first", "second"):
+        runner._handle_managed_tool_result(
+            agent,
+            "web_search",
+            {"query": query},
+            json.dumps({"success": True, "query": query}),
+        )
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "theorem demo : True := by\n  trivial\n\ntheorem later : True := by\n  trivial\n",
+        encoding="utf-8",
+    )
+    result = json.dumps({"success": True})
+    feedback, accepted = runner._finalize_managed_queue_edit_verdict(agent, "patch", result)
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        {"path": str(active)},
+        result,
+        queue_edit_accepted=accepted,
+    )
+
+    assert accepted is False
+    assert "restored those protected declarations" in feedback
+    assert agent._managed_autonomy_state["search_progress"]["search_count"] == 2
+    runner._handle_managed_tool_result(
+        agent,
+        "web_fetch",
+        {"url": "https://example.test/third"},
+        json.dumps({"success": True, "url": "https://example.test/third"}),
+    )
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+
+
+def test_support_file_patch_does_not_reset_search_streak(monkeypatch, tmp_path):
+    """A plan edit is useful orchestration state, but not active-proof progress."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    plan = tmp_path / ".leanflow" / "workflow-state" / "plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("# Plan\n", encoding="utf-8")
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_search_progress_hard_limit", lambda: 3)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item",
+        lambda *_args, **_kwargs: pytest.fail("plan edits must not invoke the theorem gate"),
+    )
+    agent = _Agent()
+
+    for query in ("first", "second"):
+        runner._handle_managed_tool_result(
+            agent,
+            "web_search",
+            {"query": query},
+            json.dumps({"success": True, "query": query}),
+        )
+    agent._managed_queue_edit_snapshot = {
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "before_text": active.read_text(encoding="utf-8"),
+    }
+    args = {"path": str(plan), "old_string": "# Plan\n", "new_string": "# Plan\nnotes\n"}
+    assert runner._managed_pre_tool_call(agent, "patch", args) is None
+    assert not hasattr(agent, "_managed_queue_edit_snapshot")
+    plan.write_text("# Plan\nnotes\n", encoding="utf-8")
+    result = json.dumps({"success": True})
+    verdict = runner._finalize_managed_queue_edit_details(agent, "patch", result)
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        args,
+        result,
+        queue_edit_accepted=verdict.accepted,
+        queue_assignment_changed=verdict.declaration_delta.assigned_changed,
+        queue_helper_candidates=verdict.declaration_delta.helper_names,
+    )
+
+    assert verdict.accepted is None
+    assert agent._managed_autonomy_state["search_progress"]["search_count"] == 2
+    assert not any(args[0] == "queue-helper-progress" for args, _kwargs in events)
+    assert any(args[0] == "queue-support-file-edit" for args, _kwargs in events)
+    runner._handle_managed_tool_result(
+        agent,
+        "web_fetch",
+        {"url": "https://example.test/third"},
+        json.dumps({"success": True, "url": "https://example.test/third"}),
+    )
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+
+
+def test_malformed_edit_snapshot_emits_no_unknown_finalization_event(monkeypatch):
+    """Incomplete edit identity is discarded before timing or graph work."""
+    agent = _ManagedRunAgentStub()
+    agent._managed_queue_edit_snapshot = {"target_symbol": "demo"}
+    events: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event, *_args, **_kwargs: events.append(event),
+    )
+
+    verdict = runner._finalize_managed_queue_edit_details(agent, "patch", "ok")
+
+    assert verdict == runner._ManagedQueueEditVerdict()
+    assert events == []
+    assert not hasattr(agent, "_managed_queue_edit_snapshot")
+
+
+def test_accepted_active_proof_patch_resets_search_streak(monkeypatch, tmp_path):
+    """A queue-accepted Lean edit starts a fresh bounded-search window."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item",
+        lambda *_args: ({"ok": False, "has_errors": True}, "lean_incremental_check"),
+    )
+    monkeypatch.setattr(runner, "_finish_queue_step_boundary", lambda *_args, **_kwargs: None)
+    agent = _Agent()
+
+    for query in ("first", "second"):
+        runner._handle_managed_tool_result(
+            agent,
+            "web_search",
+            {"query": query},
+            json.dumps({"success": True, "query": query}),
+        )
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        {"path": str(active)},
+        json.dumps({"success": True}),
+        queue_edit_accepted=True,
+        queue_assignment_changed=True,
+    )
+
+    assert "search_progress" not in agent._managed_autonomy_state
+
+
+def test_kernel_rejected_check_does_not_reset_search_streak(monkeypatch, tmp_path):
+    """A check that runs but rejects the draft is evidence, not verified progress."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_search_progress_hard_limit", lambda: 10)
+    agent = _Agent()
+    runner._handle_managed_tool_result(
+        agent,
+        "web_search",
+        {"query": "first"},
+        json.dumps({"success": True, "query": "first"}),
+    )
+
+    runner._note_non_search_tool_progress(
+        agent,
+        "lean_incremental_check",
+        {"action": "check_target"},
+        json.dumps({"success": True, "ok": False, "errors": 1}),
+    )
+
+    assert agent._managed_autonomy_state["search_progress"]["search_count"] == 1
+
+
+def test_terminal_check_with_residual_sorry_does_not_reset_search_streak(monkeypatch, tmp_path):
+    """A zero-exit Lean command with `sorry` is not verified proof progress."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_search_progress_hard_limit", lambda: 10)
+    agent = _Agent()
+    runner._handle_managed_tool_result(
+        agent,
+        "web_search",
+        {"query": "first"},
+        json.dumps({"success": True, "query": "first"}),
+    )
+
+    runner._note_non_search_tool_progress(
+        agent,
+        "terminal",
+        {"command": f"lake env lean {active}"},
+        json.dumps(
+            {
+                "output": "warning: declaration uses 'sorry'",
+                "exit_code": 0,
+                "error": None,
+            }
+        ),
+    )
+
+    assert agent._managed_autonomy_state["search_progress"]["search_count"] == 1
+
+
+def test_search_progress_hard_limit_is_configurable(monkeypatch):
+    monkeypatch.delenv("LEANFLOW_SEARCH_PROGRESS_HARD_LIMIT", raising=False)
+    assert runner._search_progress_hard_limit() == runner.SEARCH_PROGRESS_HARD_LIMIT_DEFAULT
+    monkeypatch.setenv("LEANFLOW_SEARCH_PROGRESS_HARD_LIMIT", "17")
+    assert runner._search_progress_hard_limit() == 17
+    monkeypatch.setenv("LEANFLOW_SEARCH_PROGRESS_HARD_LIMIT", "0")
+    assert runner._search_progress_hard_limit() == 0
+
+
+def test_consumed_search_route_starts_a_fresh_search_streak(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "prover_requested_route": {
+            "route": "plan",
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "search_progress": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "search_count": 12,
+            "hard_route_requested": True,
+        },
+    }
+    context = runner.orchestrator_floor.RouteContext(
+        trigger="event",
+        target_symbol="demo",
+        active_file=str(active),
+        requested_route="plan",
+    )
+    route = runner.orchestrator_floor.OrchestratorRoute(
+        route="plan",
+        reason="bounded search handoff",
+    )
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(runner.orchestrator_floor, "build_route_context", lambda **kwargs: context)
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_route", lambda ctx: route)
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    monkeypatch.setattr(runner, "plan_state_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    assert runner._orchestrator_consult("event", state, {}) == route
+    assert "prover_requested_route" not in state
+    assert "search_progress" not in state
+
+
+def test_explicit_plan_request_precedes_stale_epoch_negate_replay(monkeypatch, tmp_path):
+    """Run the newest exact prover handoff before an older strategy replay."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "prover_requested_route": {
+            "route": "plan",
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "reason": "request a new explicit plan",
+        },
+        runner.campaign_epoch.EPOCH_ROUTE_REFRESH_STATE_KEY: {
+            "required": True,
+        },
+    }
+    context = runner.orchestrator_floor.RouteContext(
+        trigger="event",
+        target_symbol="demo",
+        active_file=str(active),
+        requested_route="plan",
+    )
+    plan_route = runner.orchestrator_floor.OrchestratorRoute(
+        route="plan",
+        reason="honor the exact prover request",
+    )
+    stale_negate = {
+        "route": "negate",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "token": "epoch-negate",
+        "epoch": 42,
+    }
+    ordering: list[str] = []
+
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_route_rollover_owes_foreground_turn", lambda *_args: False)
+    monkeypatch.setattr(runner.campaign_epoch, "ensure_campaign", lambda _state: {})
+    monkeypatch.setattr(runner.orchestrator_floor, "build_route_context", lambda **kwargs: context)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "reusable_inflight_route",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "reusable_epoch_route_selection",
+        lambda *_args, **_kwargs: dict(stale_negate),
+    )
+
+    def choose_route(ctx):
+        assert ctx.requested_route == "plan"
+        ordering.append("deterministic-plan")
+        return plan_route
+
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_route", choose_route)
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    monkeypatch.setattr(runner, "plan_state_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.plan_state, "append_journal_event", lambda *_args: None)
+
+    def record_route(_state, **kwargs):
+        ordering.append(f"record-{kwargs['route']}")
+        return 2
+
+    monkeypatch.setattr(runner.campaign_epoch, "record_route_decision", record_route)
+
+    def record_activity(event, *_args, **_kwargs):
+        ordering.append(event)
+
+    monkeypatch.setattr(runner, "_record_activity", record_activity)
+
+    assert runner._orchestrator_consult("event", state, {}) == plan_route
+    assert ordering == [
+        "prover-route-request-superseded-replay",
+        "deterministic-plan",
+        "record-plan",
+        "orchestrator-route",
+    ]
+    assert "prover_requested_route" not in state
+    assert state[runner.campaign_epoch.EPOCH_ROUTE_SELECTION_STATE_KEY] == stale_negate
+
+
+def test_explicit_plan_request_retires_stale_inflight_negate(monkeypatch, tmp_path):
+    """Retire a conflicting crash replay before charging the requested plan."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "prover_requested_route": {
+            "route": "plan",
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    context = runner.orchestrator_floor.RouteContext(
+        trigger="event",
+        target_symbol="demo",
+        active_file=str(active),
+        requested_route="plan",
+    )
+    plan_route = runner.orchestrator_floor.OrchestratorRoute(
+        route="plan",
+        reason="honor the exact prover request",
+    )
+    stale_negate = {
+        "route": "negate",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "token": "inflight-negate",
+        "epoch": 42,
+    }
+    ordering: list[str] = []
+
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_route_rollover_owes_foreground_turn", lambda *_args: False)
+    monkeypatch.setattr(runner.campaign_epoch, "ensure_campaign", lambda _state: {})
+    monkeypatch.setattr(runner.orchestrator_floor, "build_route_context", lambda **kwargs: context)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "reusable_inflight_route",
+        lambda *_args, **_kwargs: dict(stale_negate),
+    )
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "reusable_epoch_route_selection",
+        lambda *_args, **_kwargs: pytest.fail("in-flight replay owns crash recovery ordering"),
+    )
+
+    def retire_inflight(_state, **kwargs):
+        assert kwargs == {
+            "token": "inflight-negate",
+            "outcome": "dropped",
+            "dropped_reason": "superseded-by-explicit-prover-request",
+        }
+        ordering.append("retire-inflight-negate")
+        return True
+
+    monkeypatch.setattr(runner.campaign_epoch, "complete_inflight_route", retire_inflight)
+    monkeypatch.setattr(
+        runner.orchestrator_floor,
+        "orchestrator_route",
+        lambda ctx: ordering.append("deterministic-plan") or plan_route,
+    )
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    monkeypatch.setattr(runner, "plan_state_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.plan_state, "append_journal_event", lambda *_args: None)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_route_decision",
+        lambda _state, **kwargs: ordering.append(f"record-{kwargs['route']}") or 2,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event, *_args, **_kwargs: ordering.append(event),
+    )
+
+    assert runner._orchestrator_consult("event", state, {}) == plan_route
+    assert ordering == [
+        "retire-inflight-negate",
+        "prover-route-request-superseded-replay",
+        "deterministic-plan",
+        "record-plan",
+        "orchestrator-route",
+    ]
+    assert "prover_requested_route" not in state
+
+
+def test_generate_checkpoint_summary_propagates_keyboard_interrupt(monkeypatch):
     monkeypatch.setattr(
         runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        runner._generate_checkpoint_summary(
+            _FakeCompressor(),
+            [{"role": "user", "content": "prove Demo.main"}],
+            label="manual",
+            trigger="exit",
+            note="leaving",
+        )
+
+
+def test_generate_checkpoint_summary_falls_back_on_interrupted_error(monkeypatch):
+    monkeypatch.setattr(
+        runner, "call_llm", lambda **kwargs: (_ for _ in ()).throw(InterruptedError())
     )
 
     summary = runner._generate_checkpoint_summary(
@@ -860,6 +8323,18 @@ def test_apply_verified_patch_counts_as_edit_and_verification_feedback(monkeypat
     monkeypatch.setattr(
         runner, "_build_live_proof_state", lambda history, checkpoint_state=None: dict(live_state)
     )
+    portfolio_updates = []
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda autonomy_state, state: portfolio_updates.append(
+            runner._failed_attempt_count_for_theorem(
+                autonomy_state,
+                target_symbol="demo",
+                active_file="Demo/Main.lean",
+            )
+        ),
+    )
 
     agent = _Agent()
     runner._handle_managed_tool_result(
@@ -873,8 +8348,4102 @@ def test_apply_verified_patch_counts_as_edit_and_verification_feedback(monkeypat
     assert len(attempts) == 1
     assert attempts[0]["reason"] == "error: unsolved goals"
     assert "THEOREM FEEDBACK" in agent._post_tool_result_appendix
+    assert portfolio_updates == [1]
     assert agent.interrupt_messages == []
     assert agent._managed_pending_theorem_feedback is None
+
+
+def test_verified_patch_file_gate_is_rechecked_for_exact_assignment_and_proves_graph(
+    monkeypatch, tmp_path
+):
+    """A broad tool-level check must not be lost or mistaken for the queue gate."""
+    active = tmp_path / "Main.lean"
+    helper = "erdos_242_residual_mod_seven_eq_zero_of_mod_five_eq_four"
+    next_target = "next_helper"
+    active.write_text(
+        "\n".join(
+            [
+                f"lemma {helper} : True := by",
+                "  trivial",
+                "",
+                "theorem parent_goal : True := by",
+                "  sorry",
+                "",
+                f"lemma {next_target} : True := by",
+                "  sorry",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    live_state = {
+        "target_symbol": next_target,
+        "active_file": str(active),
+        "active_file_label": str(active),
+        "current_queue_item": {"label": next_target, "reasons": ["contains sorry"]},
+        "current_queue_item_slice": f"lemma {next_target} : True := by\n  sorry",
+        "declaration_queue_summary": (
+            f"- parent_goal [{active}] — contains sorry\n"
+            f"- {next_target} [{active}] — contains sorry"
+        ),
+        "diagnostics": "warning: declaration uses sorry",
+        "goals": "no goals",
+        "build_status": "lake env lean Main.lean exits 0",
+        "current_blocker": "parent_goal still contains sorry",
+    }
+    exact_checks = []
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        quiet_mode = True
+
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "patched helper"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": helper,
+                    "active_file": str(active),
+                    "slice": f"lemma {helper} : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self._managed_step_boundary_closed = False
+            self.interrupt_messages = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    def exact_target_check(active_file, target_symbol):
+        exact_checks.append((active_file, target_symbol))
+        return {
+            "ok": True,
+            "mode": "incremental_target",
+            "target": target_symbol,
+            "command": f"lean_interact check_target {target_symbol}",
+            "axiom_profile_checked": True,
+            "axiom_profile_blockers": [],
+            "incremental": {
+                "success": True,
+                "ok": True,
+                "target": target_symbol,
+                "file": active_file,
+                "has_errors": False,
+                "has_sorry": False,
+                "messages": [],
+            },
+        }
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_EFFECTIVE_PROMPT", "prove the Erdős helper")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(runner, "_manager_incremental_check_queue_item", exact_target_check)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: dict(live_state),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+    tool_result = json.dumps(
+        {
+            "success": True,
+            "status": "patch_elaborated",
+            "check_passed": True,
+            "patch_elaborated": True,
+            "target_verified": False,
+            "verified": False,
+            "check_mode": "file_exact",
+            # This broad record is deliberately not an assignment gate.  It
+            # may coexist with unrelated admitted declarations in the file.
+            "verification": {
+                "ok": True,
+                "mode": "file_exact",
+                "target": str(active),
+            },
+        }
+    )
+
+    runner._handle_managed_tool_result(
+        agent,
+        "apply_verified_patch",
+        {"path": str(active), "theorem_id": helper, "check_mode": "file_exact"},
+        tool_result,
+        queue_edit_accepted=True,
+        queue_assignment_changed=True,
+    )
+
+    assert exact_checks == [(str(active), helper)]
+    verification = agent._managed_autonomy_state["last_verification"]
+    assert verification["scope"] == f"target:{helper}"
+    assert verification["target"] == helper
+    assert verification["axiom_profile_checked"] is True
+    assert agent.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
+
+    rebuilt, transition = runner._rebuild_history_for_theorem_transition(
+        agent._session_messages,
+        {"snapshot_text": "Compact workflow snapshot"},
+        agent._managed_autonomy_state,
+        live_state,
+    )
+
+    assert rebuilt is not None
+    assert transition is not None
+    outcome_key = f"{active}::{helper}"
+    outcome = agent._managed_autonomy_state["theorem_outcomes"][outcome_key]
+    assert outcome["status"] == "solved"
+    assert outcome["last_verification"]["scope"] == f"target:{helper}"
+
+    # Mirror the outer loop's assignment refresh before graph sync.  The
+    # solved helper is historical now; the later target owns ``proving``.
+    agent._managed_autonomy_state["current_queue_assignment"] = {
+        "target_symbol": next_target,
+        "active_file": str(active),
+        "slice": f"lemma {next_target} : True := by\n  sorry",
+    }
+    runner._maybe_sync_plan_state(agent._managed_autonomy_state, live_state)
+
+    node_id = runner.plan_state.node_id_for(helper, str(active))
+    assert runner.plan_state.load_blueprint().node_by_id(node_id).status == "proved"
+    assert agent._managed_autonomy_state["theorem_outcomes"][outcome_key]["status"] == "solved"
+    assert not any(
+        args[0] == "plan-graph-stale-outcome-retired" and kwargs.get("target_symbol") == helper
+        for args, kwargs in events
+    )
+    # Solving this helper does not claim the parent theorem is closed.
+    assert "theorem parent_goal : True := by\n  sorry" in active.read_text(encoding="utf-8")
+
+
+def test_verified_patch_file_gate_cannot_bypass_exact_target_axiom_rejection(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    helper = "checked_helper"
+    active.write_text(
+        f"lemma {helper} : True := by\n  trivial\n\nlemma next_helper : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    live_state = {
+        "target_symbol": "next_helper",
+        "active_file": str(active),
+        "active_file_label": str(active),
+        "current_queue_item": {"label": "next_helper", "reasons": ["contains sorry"]},
+        "current_queue_item_slice": "lemma next_helper : True := by\n  sorry",
+        "declaration_queue_summary": "- next_helper — contains sorry",
+        "diagnostics": "warning: declaration uses sorry",
+        "goals": "no goals",
+        "build_status": "lake env lean Main.lean exits 0",
+        "current_blocker": "",
+    }
+
+    class _Agent(_ManagedRunAgentStub):
+        quiet_mode = True
+
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": helper,
+                    "active_file": str(active),
+                    "slice": f"lemma {helper} : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self._managed_step_boundary_closed = False
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            pass
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda active_file, target_symbol: {
+            "ok": True,
+            "mode": "incremental_target",
+            "target": target_symbol,
+            "command": f"lean_interact check_target {target_symbol}",
+            "incremental": {
+                "success": True,
+                "ok": True,
+                "target": target_symbol,
+                "file": active_file,
+                "has_errors": False,
+                "has_sorry": False,
+                "messages": [],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda active_file, target_symbol: (
+            ["sorryAx"],
+            f"axiom guard: {target_symbol} depends on sorryAx",
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: dict(live_state),
+    )
+    agent = _Agent()
+
+    runner._handle_managed_tool_result(
+        agent,
+        "apply_verified_patch",
+        {"path": str(active), "theorem_id": helper, "check_mode": "file_exact"},
+        json.dumps(
+            {
+                "success": True,
+                "status": "patch_elaborated",
+                "check_passed": True,
+                "patch_elaborated": True,
+                "target_verified": False,
+                "verified": False,
+                "check_mode": "file_exact",
+                "verification": {"ok": True, "mode": "file_exact", "target": str(active)},
+            }
+        ),
+        queue_edit_accepted=True,
+        queue_assignment_changed=True,
+    )
+
+    assert agent._managed_autonomy_state["last_verification"]["ok"] is False
+    assert agent._managed_autonomy_state["last_verification"]["target"] == helper
+    assert agent._managed_autonomy_state["last_verification"]["axiom_profile_blockers"] == [
+        "sorryAx"
+    ]
+    runner._rebuild_history_for_theorem_transition(
+        [],
+        {"snapshot_text": "Compact workflow snapshot"},
+        agent._managed_autonomy_state,
+        live_state,
+    )
+    outcome = agent._managed_autonomy_state["theorem_outcomes"][f"{active}::{helper}"]
+    assert outcome["status"] == "unverified"
+
+
+def test_incremental_checked_candidate_is_non_authoritative_commit_guidance(
+    monkeypatch, tmp_path, capsys
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda history, checkpoint_state=None: {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "active_file_label": "Main.lean",
+            "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+            "current_queue_item_slice": "theorem demo : True := by\n  sorry",
+            "diagnostics": "warning: declaration uses sorry",
+            "goals": "⊢ True",
+            "build_status": "unknown",
+            "blocker_summary": "warning: declaration uses sorry",
+        },
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_manager_nudge",
+        lambda *args, **kwargs: pytest.fail("checked candidates must not trigger coaching"),
+    )
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda *_args: pytest.fail(
+            "a replacement-bound inline profile must not inspect the unresolved source target"
+        ),
+    )
+
+    agent = _Agent()
+    inline_profile = _inline_axiom_incremental_payload(["propext"])
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_incremental_check",
+        {
+            "action": "check_target",
+            "theorem_id": "demo",
+            "replacement": "theorem demo : True := by\n  trivial",
+            "include_axiom_profile": True,
+        },
+        json.dumps(
+            {
+                **inline_profile,
+                "action": "check_target",
+                "target": "demo",
+                "valid_without_sorry": True,
+                "has_errors": False,
+                "has_sorry": False,
+                "replacement_matches_target": True,
+            }
+        ),
+    )
+
+    assert "failed_attempts" not in agent._managed_autonomy_state
+    assert agent._managed_step_boundary_recorded_attempt is False
+    assert "last_verification" not in agent._managed_autonomy_state
+    assert (
+        "replacement passed an isolated kernel check but is not committed or authoritatively verified"
+        in agent._post_tool_result_appendix
+    )
+    assert "not stored as successful verification" in agent._post_tool_result_appendix
+    assert "write that exact replacement" in agent._post_tool_result_appendix
+    event = next(kwargs for args, kwargs in events if args[0] == "queue-theorem-candidate-ready")
+    assert event["candidate_pending_commit"] is True
+    assert event["authoritative_verification"] is False
+    assert event["manager_verification"]["candidate_check_passed"] is True
+    assert event["manager_verification"]["on_disk_verification_ok"] is False
+    assert "Temporary candidate check passed for demo" in capsys.readouterr().out
+
+
+def test_exact_candidate_retention_requires_only_operational_axiom_unavailability(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    replacement = "theorem demo : True := by\n  trivial"
+    retained = []
+    events = []
+    monkeypatch.setattr(runner, "_axiom_profile_check_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.verification_candidate_replay,
+        "capture_operational_candidate",
+        lambda **kwargs: retained.append(kwargs)
+        or {"candidate_id": "vcr-demo", "replacement_sha256": "a" * 64},
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    payload = {
+        "success": True,
+        "ok": True,
+        "action": "check_target",
+        "target": "demo",
+        "file": str(active),
+        "valid_without_sorry": True,
+        "has_errors": False,
+        "has_sorry": False,
+        "replacement_matches_target": True,
+        "verification_scope": "target_candidate",
+    }
+    args = {
+        "action": "check_target",
+        "theorem_id": "demo",
+        "file_path": str(active),
+        "replacement": replacement,
+    }
+    monkeypatch.setattr(
+        runner,
+        "_enforce_manager_axiom_profile",
+        lambda *_args, **_kwargs: {
+            **payload,
+            "ok": False,
+            "axiom_profile_checked": True,
+            "axiom_profile_blockers": ["axiom-profile-unavailable"],
+        },
+    )
+
+    assert runner._capture_operational_exact_candidate(
+        {"campaign_id": "campaign-demo"},
+        args,
+        payload,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert retained[0]["replacement"] == replacement
+    assert retained[0]["target_symbol"] == "demo"
+    assert events[-1][0][0] == "queue-exact-candidate-retained"
+
+    retained.clear()
+    monkeypatch.setattr(
+        runner,
+        "_enforce_manager_axiom_profile",
+        lambda *_args, **_kwargs: {
+            **payload,
+            "ok": False,
+            "axiom_profile_checked": True,
+            "axiom_profile_blockers": ["sorryAx"],
+        },
+    )
+    assert not runner._capture_operational_exact_candidate(
+        {"campaign_id": "campaign-demo"},
+        args,
+        payload,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert retained == []
+
+    assert not runner._capture_operational_exact_candidate(
+        {"campaign_id": "campaign-demo"},
+        args,
+        {**payload, "ok": False, "valid_without_sorry": False, "has_errors": True},
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert retained == []
+
+
+def test_replay_exact_candidate_rechecks_current_kernel_and_axiom_gate_without_editing(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    replacement = "theorem demo : True := by\n  trivial"
+    candidate = {
+        "candidate_id": "vcr-demo",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "replacement": replacement,
+        "replacement_sha256": "a" * 64,
+        "state": "ready_to_commit",
+        "last_replay": {
+            "process_id": os.getpid(),
+            "process_fingerprint": "e" * 64,
+            "verifier_contract_version": (
+                runner.verification_candidate_replay.VERIFIER_CONTRACT_VERSION
+            ),
+        },
+    }
+    calls = []
+    marks = []
+    events = []
+    monkeypatch.setattr(
+        runner.verification_candidate_replay,
+        "matching_candidate",
+        lambda **_kwargs: dict(candidate),
+    )
+    monkeypatch.setattr(
+        runner.verification_candidate_replay,
+        "current_process_fingerprint",
+        lambda: "f" * 64,
+    )
+    monkeypatch.setattr(
+        runner.verification_candidate_replay,
+        "mark_replay",
+        lambda candidate_id, **kwargs: marks.append((candidate_id, kwargs))
+        or {**candidate, "state": "ready_to_commit"},
+    )
+    monkeypatch.setattr(
+        runner.verification_transaction,
+        "parent_lean_verification_transaction",
+        lambda *_args, **_kwargs: contextlib.nullcontext(),
+    )
+
+    raw_check = {
+        "success": True,
+        "ok": True,
+        "action": "check_target",
+        "target": "demo",
+        "file": str(active),
+        "valid_without_sorry": True,
+        "has_errors": False,
+        "has_sorry": False,
+        "replacement_matches_target": True,
+        "verification_scope": "target_candidate",
+    }
+
+    def check(**kwargs):
+        calls.append(kwargs)
+        return dict(raw_check)
+
+    monkeypatch.setattr(runner, "lean_incremental_check", check)
+    monkeypatch.setattr(
+        runner,
+        "_enforce_manager_axiom_profile",
+        lambda _file, _target, current, **_kwargs: {
+            **dict(current),
+            "axiom_profile_checked": True,
+            "axiom_profile_blockers": [],
+        },
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    ready = runner._replay_exact_candidate_if_due(
+        {},
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert ready is not None and ready["state"] == "ready_to_commit"
+    assert len(calls) == 1
+    assert calls[0]["replacement"] == replacement
+    assert calls[0]["include_axiom_profile"] is True
+    assert marks[-1][1]["status"] == "ready_to_commit"
+    assert events[-1][0][0] == "queue-exact-candidate-replay-accepted"
+    assert active.read_text(encoding="utf-8") == source
+
+
+def test_replay_exact_candidate_retires_current_mathematical_rejection(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    candidate = {
+        "candidate_id": "vcr-demo",
+        "replacement": "theorem demo : True := by\n  exact False.elim (by contradiction)",
+        "state": "awaiting_axiom_profile",
+    }
+    marks = []
+    monkeypatch.setattr(
+        runner.verification_candidate_replay,
+        "matching_candidate",
+        lambda **_kwargs: dict(candidate),
+    )
+    monkeypatch.setattr(
+        runner.verification_candidate_replay,
+        "replay_due",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        runner.verification_candidate_replay,
+        "mark_replay",
+        lambda candidate_id, **kwargs: marks.append((candidate_id, kwargs)),
+    )
+    monkeypatch.setattr(
+        runner.verification_transaction,
+        "parent_lean_verification_transaction",
+        lambda *_args, **_kwargs: contextlib.nullcontext(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "lean_incremental_check",
+        lambda **_kwargs: {
+            "success": True,
+            "ok": False,
+            "action": "check_target",
+            "target": "demo",
+            "file": str(active),
+            "valid_without_sorry": False,
+            "has_errors": True,
+            "has_sorry": False,
+            "replacement_matches_target": True,
+            "verification_scope": "target_candidate",
+            "output": "error: type mismatch",
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_enforce_manager_axiom_profile",
+        lambda _file, _target, check, **_kwargs: dict(check),
+    )
+    monkeypatch.setattr(
+        runner.helper_gate_retry,
+        "gate_temporarily_unavailable",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+
+    assert (
+        runner._replay_exact_candidate_if_due(
+            {},
+            target_symbol="demo",
+            active_file=str(active),
+        )
+        is None
+    )
+    assert marks[-1][1]["status"] == "mathematically_rejected"
+
+
+def test_incremental_unrelated_replacement_is_scratch_not_theorem_feedback(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    agent = _Agent()
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_incremental_check",
+        {
+            "action": "check_target",
+            "theorem_id": "demo",
+            "replacement": "private lemma helper : True := by\n  trivial",
+        },
+        json.dumps(
+            {
+                "success": True,
+                "ok": True,
+                "action": "check_target",
+                "target": "demo",
+                "replacement_matches_target": False,
+                "replacement_declarations": ["helper"],
+                "verification_scope": "scratch_replacement",
+                "replacement_mismatch_reason": "replacement does not declare the assigned target",
+            }
+        ),
+    )
+
+    assert "failed_attempts" not in agent._managed_autonomy_state
+    assert "SCRATCH CHECK" in agent._post_tool_result_appendix
+    assert "not verification of the assigned declaration" in agent._post_tool_result_appendix
+    assert any(args[0] == "queue-scratch-replacement-checked" for args, _kwargs in events)
+    assert not any(args[0] == "queue-theorem-candidate-ready" for args, _kwargs in events)
+
+
+def test_incremental_helper_check_cannot_verify_assigned_theorem(monkeypatch, tmp_path, capsys):
+    """A concurrent helper check must never cross the assigned theorem gate."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma helper : True := by trivial\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "Demo.demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        runner,
+        "_finish_queue_step_boundary",
+        lambda *args, **kwargs: pytest.fail("a helper result must not reach the theorem gate"),
+    )
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_incremental_check",
+        {"action": "check_target", "theorem_id": "helper"},
+        json.dumps(
+            {
+                "success": True,
+                "ok": True,
+                "action": "check_target",
+                "target": "helper",
+                "file": str(active),
+                "valid_without_sorry": True,
+                "has_errors": False,
+                "has_sorry": False,
+            }
+        ),
+    )
+
+    assert "failed_attempts" not in agent._managed_autonomy_state
+    assert "SUPPORT DECLARATION CHECK" in agent._post_tool_result_appendix
+    assert "not verification of the assigned declaration" in agent._post_tool_result_appendix
+    assert any(args[0] == "queue-support-target-checked" for args, _kwargs in events)
+    assert "Manager verification" not in capsys.readouterr().out
+
+
+def test_incremental_exact_target_timeout_without_echoed_target_is_rejected_feedback(
+    monkeypatch, tmp_path
+):
+    """Route an exact timeout through coaching and same-turn research delivery."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events = []
+    coach_calls = []
+    finding_calls = []
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_parent_portfolio_maintenance_active = True
+
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state",
+        lambda *_args, **_kwargs: pytest.fail(
+            "temporary candidate rejection must not start a second Lean inspection"
+        ),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_manager_nudge",
+        lambda autonomy_state, manager_check, **kwargs: (
+            coach_calls.append((manager_check, kwargs))
+            or "\n[PERSISTENCE COACH]\nKeep pursuing this verified route."
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *_args, **_kwargs: pytest.fail(
+            "verification callback duplicated parent-owned maintenance"
+        ),
+    )
+
+    def take_findings(autonomy_state, live_state):
+        finding_calls.append((autonomy_state, live_state))
+        return (
+            "[LEANFLOW COMPLETED RESEARCH FINDINGS]\n"
+            "- exact-target job ds-631: use Nat.dvd_of_mod_eq_zero"
+        )
+
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", take_findings)
+    monkeypatch.setattr(
+        runner,
+        "_orchestrator_consult",
+        lambda *_args, **_kwargs: pytest.fail(
+            "rejected verification callback entered unsafe orchestration"
+        ),
+    )
+
+    agent = _Agent()
+    replacement = "theorem demo : True := by\n  exact timeout_candidate_shape"
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_incremental_check",
+        {
+            "action": "check_target",
+            "theorem_id": "demo",
+            "replacement": replacement,
+        },
+        json.dumps(
+            {
+                "success": False,
+                "ok": False,
+                "action": "check_target",
+                "timed_out": True,
+                "error_code": "timeout",
+                "error": "The Lean server did not respond in time",
+                "file": str(active),
+                "replacement_matches_target": True,
+                "replacement_declarations": ["demo"],
+                "verification_scope": "target_candidate",
+            }
+        ),
+    )
+
+    event_types = [args[0] for args, _kwargs in events]
+    assert "queue-theorem-feedback" in event_types
+    assert "queue-support-target-checked" not in event_types
+    assert len(agent._managed_autonomy_state["failed_attempts"]) == 1
+    assert (
+        "timeout_candidate_shape"
+        in agent._managed_autonomy_state["failed_attempts"][0]["proof_shape"]
+    )
+    assert len(coach_calls) == 1
+    assert coach_calls[0][1]["target_symbol"] == "demo"
+    assert "THEOREM FEEDBACK" in agent._post_tool_result_appendix
+    assert "[PERSISTENCE COACH]" in agent._post_tool_result_appendix
+    assert "[LEANFLOW COMPLETED RESEARCH FINDINGS]" in agent._post_tool_result_appendix
+    assert "Nat.dvd_of_mod_eq_zero" in agent._post_tool_result_appendix
+    assert agent._post_tool_result_appendix.index("THEOREM FEEDBACK") < (
+        agent._post_tool_result_appendix.index("LEANFLOW COMPLETED RESEARCH FINDINGS")
+    )
+    assert len(finding_calls) == 1
+    assert finding_calls[0][1]["target_symbol"] == "demo"
+    assert "research-findings-feedback-staged" in event_types
+    source_reuse = next(
+        kwargs for args, kwargs in events if args[0] == "manager-candidate-source-reused"
+    )
+    assert source_reuse["source_unchanged"] is True
+    assert source_reuse["candidate_check_passed"] is False
+
+
+def test_rejected_verification_reclaims_consumed_delivery_before_staging_fresh_finding(
+    monkeypatch, tmp_path
+):
+    """Reopen a clean gate after rejection frees one same-prefix delivery slot."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    migration_scans: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: migration_scans.append("scan") or {},
+    )
+    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
+    active_file = str(tmp_path / "Main.lean")
+    target_symbol = "demo"
+    visible_marker = runner.research_findings.delivery_key("campaign.ds-visible", target_symbol)
+    unseen_marker = runner.research_findings.delivery_key("campaign.ds-unseen", target_symbol)
+    fresh_job_id = "campaign.ds-fresh"
+    fresh_marker = runner.research_findings.delivery_key(fresh_job_id, target_symbol)
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+        },
+    }
+    visible_prompt = runner.research_findings.stage_foreground_delivery(
+        state,
+        target_symbol=target_symbol,
+        markers=[visible_marker],
+        prompt="visible completed finding",
+    )
+    runner.research_findings.stage_foreground_delivery(
+        state,
+        target_symbol=target_symbol,
+        markers=[unseen_marker],
+        prompt="unseen completed finding",
+    )
+    summary = {
+        "research_findings": [
+            {
+                "job_id": fresh_job_id,
+                "target_symbol": target_symbol,
+                "active_file": active_file,
+                "archetype": "deep_search",
+                "deliverable": {"summary": "fresh exact-target invariant"},
+            }
+        ]
+    }
+    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
+    events = []
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    class _Agent:
+        _session_messages = [
+            {"role": "user", "content": visible_prompt},
+            {"role": "assistant", "content": "Trying the visible finding now."},
+        ]
+
+    live_state = {"target_symbol": target_symbol, "active_file": active_file}
+
+    # Both target-local pending slots are full before the rejection seam.
+    assert runner._take_research_findings_prompt(state, live_state) == ""
+    scope = runner._orchestrator_event_scope(state, live_state)
+    assert not runner.research_delivery_gate.scan_required(state, scope=scope)
+    assert migration_scans == ["scan"]
+
+    prompt = runner._take_research_findings_after_rejected_verification(_Agent(), state, live_state)
+
+    assert "fresh exact-target invariant" in prompt
+    assert fresh_job_id in prompt
+    assert visible_marker in state["research_findings_delivered"]
+    assert unseen_marker in runner.research_findings.pending_foreground_markers(
+        state, target_symbol=target_symbol
+    )
+    assert fresh_marker in runner.research_findings.pending_foreground_markers(
+        state, target_symbol=target_symbol
+    )
+    assert fresh_marker not in state["research_findings_delivered"]
+    assert [args[0] for args, _kwargs in events].count("research-findings-delivered") == 1
+    assert migration_scans == ["scan", "scan"]
+
+    # The newly staged token stays pending and cannot be staged twice before a
+    # later assistant response proves that the model consumed it.
+    assert (
+        runner._take_research_findings_after_rejected_verification(_Agent(), state, live_state)
+        == ""
+    )
+    assert migration_scans == ["scan", "scan"]
+    acknowledged = runner.research_findings.acknowledge_foreground_deliveries(
+        state,
+        [
+            *_Agent._session_messages,
+            {"role": "tool", "content": prompt},
+            {"role": "assistant", "content": "Using the fresh invariant now."},
+        ],
+    )
+    assert acknowledged == (fresh_marker,)
+    assert unseen_marker in runner.research_findings.pending_foreground_markers(
+        state, target_symbol=target_symbol
+    )
+    assert runner._take_research_findings_prompt(state, live_state) == ""
+    # Direct acknowledgement also reopens selection once. The remaining
+    # unseen prompt still occupies its slot, so this scan stages nothing and
+    # closes the gate again without duplicating either finding.
+    assert migration_scans == ["scan", "scan", "scan"]
+
+
+def test_anchored_followup_delivery_suppresses_duplicate_source_and_couples_receipts(
+    monkeypatch, tmp_path
+):
+    """Deliver em-647 once instead of racing foreground against its em-646 source."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
+    target_symbol = "erdos_242_residual_mod_five_two"
+    active_file = str(tmp_path / "242.lean")
+    source_job_id = "campaign.orchestrator.em-646"
+    followup_job_id = "campaign.orchestrator.em-647"
+    summary = {
+        "research_findings": [
+            {
+                "job_id": source_job_id,
+                "target_symbol": target_symbol,
+                "active_file": active_file,
+                "archetype": "empirical",
+                "deliverable": {"construction": "unchecked q = 85*t + 72 formula"},
+            },
+            {
+                "job_id": followup_job_id,
+                "target_symbol": target_symbol,
+                "active_file": active_file,
+                "archetype": "empirical",
+                "deliverable": {"summary": "checked q = 85*t + 72 helper"},
+            },
+        ]
+    }
+    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
+    monkeypatch.setattr(
+        runner.research_portfolio,
+        "prepare_anchored_foreground_findings",
+        lambda findings, **_kwargs: (
+            {
+                **next(item for item in findings if item["job_id"] == followup_job_id),
+                "route_anchor_delivery": {
+                    "source_job_id": source_job_id,
+                    "source_job_ids": [source_job_id],
+                    "policy": (
+                        "This substantive background follow-up consumes the exact source "
+                        "finding. Do not independently rerun that source synthesis."
+                    ),
+                },
+            },
+        ),
+    )
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+        },
+    }
+
+    prompt = runner._take_research_findings_prompt(
+        state,
+        {"target_symbol": target_symbol, "active_file": active_file},
+    )
+
+    assert followup_job_id in prompt
+    assert "checked q = 85*t + 72 helper" in prompt
+    assert "unchecked q = 85*t + 72 formula" not in prompt
+    assert "Do not independently rerun that source synthesis" in prompt
+    source_marker = runner.research_findings.delivery_key(source_job_id, target_symbol)
+    followup_marker = runner.research_findings.delivery_key(followup_job_id, target_symbol)
+    assert runner.research_findings.pending_foreground_markers(
+        state,
+        target_symbol=target_symbol,
+    ) == {source_marker, followup_marker}
+    acknowledged = runner.research_findings.acknowledge_foreground_deliveries(
+        state,
+        [
+            {"role": "tool", "content": prompt},
+            {"role": "assistant", "content": "Parent-checking em-647 now."},
+        ],
+    )
+    assert set(acknowledged) == {source_marker, followup_marker}
+    staged = next(
+        kwargs for args, kwargs in events if args[0] == "research-findings-followup-staged"
+    )
+    assert staged["followup_job_ids"] == [followup_job_id]
+    assert staged["source_job_ids"] == [source_job_id]
+
+
+def test_actionable_checked_helper_stays_pending_after_foreground_acknowledgement(
+    monkeypatch, tmp_path
+):
+    """Seeing a checked helper cannot substitute for parent recheck and insertion."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    target_symbol = "demo"
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    declaration = "private lemma checked_family (n : Nat) : True := by\n  trivial"
+    finding = {
+        "job_id": "campaign.orchestrator.em-checked",
+        "target_symbol": target_symbol,
+        "active_file": str(active),
+        "archetype": "empirical",
+        "deliverable": {
+            "checked_helper_status": "worker_checked_parent_recheck_required",
+            "parent_recheck_required": True,
+            "checked_helpers": [
+                {
+                    "active_file": str(active),
+                    "anchor_target_symbol": target_symbol,
+                    "declaration": declaration,
+                    "declaration_sha256": runner.hashlib.sha256(
+                        declaration.encode("utf-8")
+                    ).hexdigest(),
+                    "parent_recheck_required": True,
+                    "worker_check": {
+                        "tool": "lean_incremental_check",
+                        "action": "check_helper",
+                        "valid_without_sorry": True,
+                        "has_errors": False,
+                        "has_sorry": False,
+                        "verification_scope": "helper_candidate",
+                        "replacement_matches_target": False,
+                        "replacement_declarations": ["checked_family"],
+                    },
+                }
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        runner.plan_state,
+        "load_summary",
+        lambda: {"research_findings": [finding], "dispatch_ledger": []},
+    )
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": target_symbol,
+            "active_file": str(active),
+        },
+    }
+
+    prompt = runner._take_research_findings_prompt(
+        state,
+        {"target_symbol": target_symbol, "active_file": str(active)},
+    )
+    pending = runner.research_helper_candidate_priority.load(state)
+
+    assert pending is not None
+    assert pending.helper_name == "checked_family"
+    assert "checked_family" in prompt
+    assert "checked_helpers" in prompt
+    acknowledged = runner.research_findings.acknowledge_foreground_deliveries(
+        state,
+        [
+            {"role": "tool", "content": prompt},
+            {"role": "assistant", "content": "I saw the helper; searching for alternatives."},
+        ],
+    )
+    assert acknowledged
+    runner.research_delivery_gate.request_scan(
+        state,
+        scope=runner._orchestrator_event_scope(state),
+    )
+    assert runner.research_helper_candidate_priority.load(state) == pending
+
+    # Migration: campaigns that acknowledged the finding before this durable
+    # state existed must recover it instead of treating the receipt as action.
+    runner.research_helper_candidate_priority.retire(state)
+    assert (
+        runner._take_research_findings_prompt(
+            state,
+            {"target_symbol": target_symbol, "active_file": str(active)},
+        )
+        == ""
+    )
+    recovered = runner.research_helper_candidate_priority.load(state)
+    assert recovered is not None
+    assert recovered.candidate_id == pending.candidate_id
+
+
+def test_consumed_ledger_helper_recovers_after_active_finding_compaction(monkeypatch, tmp_path):
+    """Recover exact helper source even after its delivered hot-cache row is gone."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    target_symbol = "demo"
+    campaign_id = "campaign"
+    active = tmp_path / "Main.lean"
+    target_statement = "theorem demo : True := by\n  sorry"
+    active.write_text(target_statement + "\n", encoding="utf-8")
+    blueprint = runner.plan_state.Blueprint(
+        nodes=(
+            runner.plan_state.GraphNode(
+                id=runner.plan_state.node_id_for(target_symbol, str(active)),
+                name=target_symbol,
+                file=str(active),
+                statement=target_statement,
+                status="proving",
+            ),
+        )
+    )
+    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: blueprint)
+    assignment_revision = runner.hashlib.sha256(target_statement.encode("utf-8")).hexdigest()
+    declaration = "private lemma checked_family (n : Nat) : True := by\n  trivial"
+    redundant_declaration = "private lemma finite_probe : True := by\n  trivial"
+    helper_job_id = f"{campaign_id}.orchestrator.em-helper"
+    source_job_id = f"{campaign_id}.orchestrator.em-source"
+    redundant_job_id = f"{campaign_id}.orchestrator.np-redundant"
+
+    def ledger_entry(job_id, *, deliverable, inputs=None):
+        return {
+            "spec": {
+                "job_id": job_id,
+                "archetype": "empirical",
+                "requester_role": "orchestrator",
+                "objective": f"research {target_symbol}",
+                "budget": {"api_steps": 4, "wall_clock_s": 60},
+                "deliverable": "experiment_result",
+                "inputs": {
+                    "campaign_id": campaign_id,
+                    "target_symbol": target_symbol,
+                    "active_file": str(active),
+                    "assignment_statement_sha256": assignment_revision,
+                    **(inputs or {}),
+                },
+                "parent_job_id": f"{campaign_id}.orchestrator",
+            },
+            "state": "done",
+            "consumed": True,
+            "finished_at": (
+                "2026-01-01T00:02:00+00:00"
+                if job_id == helper_job_id
+                else "2026-01-01T00:01:00+00:00"
+            ),
+            "result": {"status": "done", "deliverable": deliverable},
+        }
+
+    summary = {
+        "campaign": {"campaign_id": campaign_id},
+        "research_findings": [],
+        "dispatch_ledger": [
+            ledger_entry(source_job_id, deliverable={"summary": "exact family formula"}),
+            ledger_entry(
+                helper_job_id,
+                inputs={
+                    "route_key": "evidence-to-helper",
+                    "route_mode": "evidence_synthesis",
+                    "route_anchor_job_id": source_job_id,
+                    "route_anchor_consumption_key": f"consume:{source_job_id}",
+                    "route_anchor_provenance": {
+                        "job_id": source_job_id,
+                        "target_symbol": target_symbol,
+                        "active_file": str(active),
+                    },
+                },
+                deliverable={
+                    "checked_helper_status": "worker_checked_parent_recheck_required",
+                    "parent_recheck_required": True,
+                    "checked_helpers": [
+                        {
+                            "active_file": str(active),
+                            "anchor_target_symbol": target_symbol,
+                            "declaration": declaration,
+                            "declaration_sha256": runner.hashlib.sha256(
+                                declaration.encode("utf-8")
+                            ).hexdigest(),
+                            "parent_recheck_required": True,
+                            "worker_check": {
+                                "tool": "lean_incremental_check",
+                                "action": "check_helper",
+                                "valid_without_sorry": True,
+                                "has_errors": False,
+                                "has_sorry": False,
+                                "verification_scope": "helper_candidate",
+                                "replacement_matches_target": False,
+                                "replacement_declarations": ["checked_family"],
+                            },
+                        }
+                    ],
+                },
+            ),
+            ledger_entry(
+                redundant_job_id,
+                inputs={"route_key": "bounded-formal-negation"},
+                deliverable={
+                    "checked_helper_status": "worker_checked_parent_recheck_required",
+                    "parent_recheck_required": True,
+                    "checked_helpers": [
+                        {
+                            "active_file": str(active),
+                            "anchor_target_symbol": target_symbol,
+                            "declaration": redundant_declaration,
+                            "declaration_sha256": runner.hashlib.sha256(
+                                redundant_declaration.encode("utf-8")
+                            ).hexdigest(),
+                            "parent_recheck_required": True,
+                            "worker_check": {
+                                "tool": "lean_incremental_check",
+                                "action": "check_helper",
+                                "valid_without_sorry": True,
+                                "has_errors": False,
+                                "has_sorry": False,
+                                "verification_scope": "helper_candidate",
+                                "replacement_matches_target": False,
+                                "replacement_declarations": ["finite_probe"],
+                            },
+                        }
+                    ],
+                },
+            ),
+        ],
+    }
+    monkeypatch.setattr(runner.plan_state, "load_summary", lambda: summary)
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+    state = {
+        "campaign_id": campaign_id,
+        "current_queue_assignment": {
+            "target_symbol": target_symbol,
+            "active_file": str(active),
+        },
+    }
+
+    assert (
+        runner._take_research_findings_prompt(
+            state,
+            {"target_symbol": target_symbol, "active_file": str(active)},
+        )
+        == ""
+    )
+
+    recovered = runner.research_helper_candidate_priority.load(state)
+    assert recovered is not None
+    assert recovered.job_id == helper_job_id
+    assert recovered.helper_name == "checked_family"
+    event = next(
+        kwargs for args, kwargs in events if args[0] == "research-helper-candidate-recovered"
+    )
+    assert event["migration"] == "consumed_before_parent_action_state"
+
+    runner.research_helper_candidate_priority.resolve(state, disposition="integrated")
+    assert runner._take_research_findings_prompt(state, None) == ""
+    assert runner.research_helper_candidate_priority.load(state) is None
+
+
+def test_scope_entry_replays_exact_inflight_negate_before_helper_recheck(monkeypatch, tmp_path):
+    """Resume exact durable negation before spending a helper or provider turn."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    ordering: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "_maybe_sync_plan_state",
+        lambda *_args, **_kwargs: ordering.append("sync-plan"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_statement_fidelity_audit",
+        lambda *_args: pytest.fail("fidelity audit preempted durable negate"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: ordering.append("migrate-findings") or {},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *_args: pytest.fail("portfolio refill preempted durable negate"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_take_research_findings_prompt",
+        lambda *_args: pytest.fail("finding consumption preempted durable negate"),
+    )
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_route_rollover_owes_foreground_turn", lambda *_args: False)
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    pending = {
+        "route": "negate",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "token": "route-token",
+    }
+
+    def reusable(_state, *, target_symbol, active_file):
+        assert target_symbol == "demo"
+        assert active_file == str(active)
+        ordering.append("inflight-negate")
+        return pending
+
+    monkeypatch.setattr(runner.campaign_epoch, "reusable_inflight_route", reusable)
+    monkeypatch.setattr(
+        runner,
+        "_recheck_pending_research_helper_if_due",
+        lambda *_args, **_kwargs: pytest.fail("helper recheck preempted durable negate"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_legacy_epoch_route_completion",
+        lambda *_args: pytest.fail("legacy route cannot preempt durable negate"),
+    )
+
+    route = runner.orchestrator_floor.OrchestratorRoute(
+        route="negate",
+        reason="resume exact crash-durable negation",
+        target={"target_symbol": "demo", "active_file": str(active)},
+    )
+
+    def consult(trigger, *_args):
+        assert trigger == "scope-entry"
+        ordering.append("consult")
+        return route
+
+    def apply(selected, *_args, **_kwargs):
+        assert selected is route
+        ordering.append("apply")
+        return "continue"
+
+    monkeypatch.setattr(runner, "_orchestrator_consult", consult)
+    monkeypatch.setattr(runner, "_apply_orchestrator_route_with_completion", apply)
+
+    prompt = runner._research_scope_entry_setup(
+        "",
+        state,
+        {"target_symbol": "demo", "active_file": str(active)},
+        agent=object(),
+        apply_route=True,
+    )
+
+    assert ordering == [
+        "sync-plan",
+        "inflight-negate",
+        "migrate-findings",
+        "consult",
+        "apply",
+    ]
+    assert "route: negate" in prompt
+    assert state[runner._RESEARCH_SCOPE_ENTRY_ACTION_KEY] == "continue"
+    assert state["orchestrator_scope_entered"] is True
+
+
+def test_scope_entry_non_negate_keeps_portfolio_and_finding_order(monkeypatch, tmp_path):
+    """Keep fail-closed scope delivery ahead of non-negation routing."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    ordering: list[str] = []
+    monkeypatch.setattr(
+        runner.scope_entry_admission,
+        "arm",
+        lambda *_args, **_kwargs: ordering.append("arm-foreground") or None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_sync_plan_state",
+        lambda *_args, **_kwargs: ordering.append("sync-plan"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_statement_fidelity_audit",
+        lambda *_args: ordering.append("fidelity-audit"),
+    )
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_route_rollover_owes_foreground_turn", lambda *_args: False)
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+
+    def reusable(_state, *, target_symbol, active_file):
+        assert target_symbol == "demo"
+        assert active_file == str(active)
+        ordering.append("inflight-direct-prove")
+        return {"route": "direct-prove"}
+
+    monkeypatch.setattr(runner.campaign_epoch, "reusable_inflight_route", reusable)
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *_args: ordering.append("maintain-portfolio"),
+    )
+
+    def take_findings(*_args):
+        ordering.append("take-findings")
+        return "[existing finding]"
+
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", take_findings)
+    monkeypatch.setattr(
+        runner,
+        "_recheck_pending_research_helper_if_due",
+        lambda *_args, **_kwargs: ordering.append("helper-recheck") or "",
+    )
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority,
+        "matching",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_legacy_epoch_route_completion",
+        lambda *_args: ordering.append("legacy-reconcile") or None,
+    )
+    route = runner.orchestrator_floor.OrchestratorRoute(
+        route="direct-prove",
+        reason="continue the ordinary route",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_orchestrator_consult",
+        lambda *_args, **_kwargs: ordering.append("consult") or route,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_apply_orchestrator_route_with_completion",
+        lambda selected, *_args, **_kwargs: (
+            ordering.append(f"apply-{selected.route}") or "continue"
+        ),
+    )
+
+    prompt = runner._research_scope_entry_setup(
+        "",
+        state,
+        {"target_symbol": "demo", "active_file": str(active)},
+        agent=object(),
+        apply_route=True,
+    )
+
+    assert ordering == [
+        "arm-foreground",
+        "sync-plan",
+        "inflight-direct-prove",
+        "fidelity-audit",
+        "maintain-portfolio",
+        "take-findings",
+        "helper-recheck",
+        "legacy-reconcile",
+        "consult",
+        "apply-direct-prove",
+    ]
+    assert "[existing finding]" in prompt
+    assert "route: direct-prove" in prompt
+
+
+def test_scope_entry_checked_target_candidate_preempts_decompose(monkeypatch, tmp_path):
+    """A staged exact checked replacement owns the next foreground turn."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *_args: None)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *_args: None)
+    monkeypatch.setattr(
+        runner,
+        "_take_research_findings_prompt",
+        lambda *_args: "[checked em-709 target replacement]",
+    )
+    monkeypatch.setattr(
+        runner.research_findings,
+        "pending_checked_target_replacement",
+        lambda *_args, **_kwargs: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_recheck_pending_research_helper_if_due",
+        lambda *_args, **_kwargs: "",
+    )
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority,
+        "matching",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_legacy_epoch_route_completion",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_orchestrator_consult",
+        lambda *_args, **_kwargs: pytest.fail("decompose ran before checked target candidate"),
+    )
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+
+    prompt = runner._research_scope_entry_setup(
+        "",
+        state,
+        {"target_symbol": "demo", "active_file": str(active)},
+        agent=object(),
+        apply_route=True,
+    )
+
+    assert "checked em-709 target replacement" in prompt
+    assert state["orchestrator_scope_entered"] is True
+
+
+def test_scope_entry_operationally_paused_checked_helper_preempts_route(monkeypatch, tmp_path):
+    """Keep an exact helper in front even when its parent recheck must resume."""
+
+    class PendingCandidate:
+        ready = False
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *_args: None)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *_args: None)
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *_args: "")
+    monkeypatch.setattr(
+        runner,
+        "_recheck_pending_research_helper_if_due",
+        lambda *_args, **_kwargs: "[checked helper recheck paused; resume exact candidate]",
+    )
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority,
+        "matching",
+        lambda *_args, **_kwargs: PendingCandidate(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_pending_checked_target_replacement",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_legacy_epoch_route_completion",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_orchestrator_consult",
+        lambda *_args, **_kwargs: pytest.fail("route displaced a pending checked helper"),
+    )
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+
+    prompt = runner._research_scope_entry_setup(
+        "",
+        state,
+        {"target_symbol": "demo", "active_file": str(active)},
+        agent=object(),
+        apply_route=True,
+    )
+
+    assert "checked helper recheck paused" in prompt
+    assert state["orchestrator_scope_entered"] is True
+
+
+def test_scope_entry_new_decomposer_child_preempts_fresh_epoch_negate(monkeypatch, tmp_path):
+    """Live epoch-42 regression: prove a fresh helper before generic negation."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *_args: None)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_queued_decomposition_helper_priority_prompt",
+        lambda *_args, **_kwargs: "[prove scale_three_unit_fraction first]",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *_args: pytest.fail("fresh helper launched background search"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_orchestrator_consult",
+        lambda *_args, **_kwargs: pytest.fail("fresh helper was routed to negate"),
+    )
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    active = tmp_path / "242.lean"
+    active.write_text(
+        "private lemma scale_three_unit_fraction : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    state = {
+        "campaign_epoch": 42,
+        "current_queue_assignment": {
+            "target_symbol": "scale_three_unit_fraction",
+            "active_file": str(active),
+        },
+    }
+
+    prompt = runner._research_scope_entry_setup(
+        "",
+        state,
+        {
+            "target_symbol": "scale_three_unit_fraction",
+            "active_file": str(active),
+        },
+        agent=object(),
+        apply_route=True,
+    )
+
+    assert "prove scale_three_unit_fraction first" in prompt
+    assert state["orchestrator_scope_entered"] is True
+
+
+def test_parent_rechecks_checked_helper_before_orchestrator_and_fences_broad_search(
+    monkeypatch, tmp_path
+):
+    """Turn a staged helper into the immediate exact integration task."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *_args: None)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *_args: None)
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *_args: "")
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    declaration = "private lemma checked_family (n : Nat) : True := by\n  trivial"
+    declaration_hash = runner.hashlib.sha256(declaration.encode("utf-8")).hexdigest()
+    finding = {
+        "job_id": "campaign.orchestrator.em-checked",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "deliverable": {
+            "checked_helper_status": "worker_checked_parent_recheck_required",
+            "parent_recheck_required": True,
+            "checked_helpers": [
+                {
+                    "active_file": str(active),
+                    "anchor_target_symbol": "demo",
+                    "declaration": declaration,
+                    "declaration_sha256": declaration_hash,
+                    "parent_recheck_required": True,
+                    "worker_check": {
+                        "tool": "lean_incremental_check",
+                        "action": "check_helper",
+                        "valid_without_sorry": True,
+                        "has_errors": False,
+                        "has_sorry": False,
+                        "verification_scope": "helper_candidate",
+                        "replacement_matches_target": False,
+                        "replacement_declarations": ["checked_family"],
+                    },
+                }
+            ],
+        },
+    }
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    runner.research_helper_candidate_priority.remember_from_findings(
+        state,
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    checks = []
+    admission_order: list[str] = []
+    monkeypatch.setattr(
+        runner.helper_integration_admission,
+        "ensure",
+        lambda *_args, **_kwargs: admission_order.append("continuous-helper-reservation")
+        or SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        runner.helper_integration_admission,
+        "release",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event, *_args, **_kwargs: (
+            admission_order.append(event)
+            if event == "research-helper-parent-recheck-accepted"
+            else None
+        ),
+    )
+
+    monkeypatch.setattr(
+        runner.scope_entry_admission,
+        "arm",
+        lambda *_args, **kwargs: admission_order.append(str(kwargs.get("reason", "scope-entry")))
+        or SimpleNamespace(to_dict=lambda: {"marker_path": "lease"}),
+    )
+
+    def check(**kwargs):
+        admission_order.append("parent-check")
+        checks.append(kwargs)
+        return {
+            "success": True,
+            "ok": True,
+            "action": "check_helper",
+            "valid_without_sorry": True,
+            "has_errors": False,
+            "has_sorry": False,
+            "timed_out": False,
+            "verification_scope": "helper_candidate",
+            "replacement_matches_target": False,
+            "replacement_declarations": ["checked_family"],
+            "axiom_profile_requested": True,
+            "axiom_profile_checked": True,
+            "axiom_profile_axioms": ["Classical.choice"],
+            "axiom_profile_blockers": [],
+            "axiom_profile_error": "",
+        }
+
+    monkeypatch.setattr(runner, "lean_incremental_check", check)
+
+    @contextlib.contextmanager
+    def parent_transaction(*_args):
+        admission_order.append("parent-transaction-enter")
+        try:
+            yield
+        finally:
+            admission_order.append("parent-transaction-exit")
+
+    monkeypatch.setattr(
+        runner.verification_transaction,
+        "parent_lean_verification_transaction",
+        parent_transaction,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_orchestrator_consult",
+        lambda *_args, **_kwargs: pytest.fail("orchestrator ran before helper integration"),
+    )
+
+    prompt = runner._research_scope_entry_setup(
+        "",
+        state,
+        {"target_symbol": "demo", "active_file": str(active)},
+        agent=SimpleNamespace(),
+        apply_route=True,
+    )
+
+    assert admission_order == [
+        "scope-entry",
+        "pending parent helper recheck for checked_family",
+        "parent-transaction-enter",
+        "parent-check",
+        "continuous-helper-reservation",
+        "parent-transaction-exit",
+        "research-helper-parent-recheck-accepted",
+    ]
+    assert checks[0]["action"] == "check_helper"
+    assert checks[0]["replacement"] == declaration
+    pending = runner.research_helper_candidate_priority.load(state)
+    assert pending is not None and pending.ready
+    assert pending.parent_recheck_axioms == ("Classical.choice",)
+    assert pending.expected_integrated_source_revision_sha256
+    assert runner.research_helper_candidate_priority.parent_recheck_evidence_authenticated(pending)
+    assert declaration in prompt
+    assert state["orchestrator_scope_entered"] is True
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+        def is_interrupted(self):
+            return False
+
+    blocked = json.loads(
+        runner._managed_pre_tool_call(
+            _Agent(),
+            "lean_search",
+            {"query": "another route", "file_path": str(active)},
+        )
+    )
+    assert blocked["status"] == "checked_helper_integration_required"
+    assert blocked["helper_symbol"] == "checked_family"
+    exact_patch = {
+        "path": str(active),
+        "old_string": "theorem demo : True := by\n  sorry",
+        "new_string": declaration + "\n\ntheorem demo : True := by\n  sorry",
+    }
+    removal_disguise = {
+        "path": str(active),
+        "old_string": declaration,
+        "new_string": "-- unrelated edit",
+    }
+    disguised = json.loads(runner._managed_pre_tool_call(_Agent(), "patch", removal_disguise))
+    assert disguised["status"] == "checked_helper_integration_required"
+    assert runner._managed_pre_tool_call(_Agent(), "patch", exact_patch) is None
+    assert runner._managed_pre_tool_call(_Agent(), "patch", exact_patch) is None
+    assert (
+        runner.research_helper_candidate_priority.load(state).integration_attempts
+        == runner.research_helper_candidate_priority.MAX_INTEGRATION_ATTEMPTS
+    )
+    # Two failed exact insertion preflights exhaust only the tool fence, not the
+    # durable candidate. Research can continue while the helper stays pending.
+    assert (
+        runner._managed_pre_tool_call(
+            _Agent(),
+            "lean_search",
+            {"query": "different route", "file_path": str(active)},
+        )
+        is None
+    )
+    assert runner.research_helper_candidate_priority.load(state) is not None
+
+
+def test_scope_entry_binds_state_before_recovering_helper_already_in_source(monkeypatch, tmp_path):
+    """Bank an exact resumed helper before any unrelated scope-entry route."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *_args: None)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *_args: None)
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *_args: "")
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    active = tmp_path / "Main.lean"
+    target = "theorem demo : True := by\n  sorry"
+    declaration = "private lemma checked_family : True := by\n  trivial"
+    active.write_text(target + "\n", encoding="utf-8")
+    declaration_hash = runner.hashlib.sha256(declaration.encode("utf-8")).hexdigest()
+    finding = {
+        "job_id": "campaign.orchestrator.em-checked",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "deliverable": {
+            "checked_helper_status": "worker_checked_parent_recheck_required",
+            "parent_recheck_required": True,
+            "checked_helpers": [
+                {
+                    "active_file": str(active),
+                    "anchor_target_symbol": "demo",
+                    "declaration": declaration,
+                    "declaration_sha256": declaration_hash,
+                    "parent_recheck_required": True,
+                    "worker_check": {
+                        "tool": "lean_incremental_check",
+                        "action": "check_helper",
+                        "valid_without_sorry": True,
+                        "has_errors": False,
+                        "has_sorry": False,
+                        "verification_scope": "helper_candidate",
+                        "replacement_matches_target": False,
+                        "replacement_declarations": ["checked_family"],
+                    },
+                }
+            ],
+        },
+    }
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    pending = runner.research_helper_candidate_priority.remember_from_findings(
+        state,
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert pending is not None
+    active.write_text(declaration + "\n\n" + target + "\n", encoding="utf-8")
+
+    class _Agent:
+        pass
+
+    agent = _Agent()
+    helper_checks: list[tuple[str, ...]] = []
+
+    def bank_helper(current_agent, **kwargs):
+        assert current_agent._managed_autonomy_state is state
+        helper_checks.append(tuple(kwargs["helper_names"]))
+        return runner._ManagedHelperEditResult(verified_any=True, proof_progress=True)
+
+    monkeypatch.setattr(runner, "_record_helper_only_edit_progress", bank_helper)
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+
+    prompt = runner._research_scope_entry_setup(
+        "",
+        state,
+        {"target_symbol": "demo", "active_file": str(active)},
+        agent=agent,
+        apply_route=True,
+    )
+
+    assert prompt == ""
+    assert helper_checks == [("checked_family",)]
+    assert runner.research_helper_candidate_priority.load(state) is None
+    resolved = state[runner.research_helper_candidate_priority.RESOLVED_STATE_KEY]
+    assert resolved[-1]["candidate_id"] == pending.candidate_id
+    assert resolved[-1]["disposition"] == "integrated_source_recovery"
+    integrated = next(
+        kwargs for args, kwargs in events if args[0] == "research-helper-candidate-integrated"
+    )
+    assert integrated["integration_path"] == "source_recovery"
+
+
+def test_active_anchored_followup_defers_source_without_acknowledging_it(monkeypatch, tmp_path):
+    """An active synthesis reservation leaves its source durable and unseen."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
+    target_symbol = "demo"
+    active_file = str(tmp_path / "Main.lean")
+    source_job_id = "campaign.orchestrator.em-source"
+    monkeypatch.setattr(
+        runner.plan_state,
+        "load_summary",
+        lambda: {
+            "research_findings": [
+                {
+                    "job_id": source_job_id,
+                    "target_symbol": target_symbol,
+                    "active_file": active_file,
+                    "archetype": "empirical",
+                    "deliverable": {"construction": "reserved source formula"},
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        runner.research_portfolio,
+        "prepare_anchored_foreground_findings",
+        lambda findings, **_kwargs: (),
+    )
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+        },
+    }
+
+    assert (
+        runner._take_research_findings_prompt(
+            state,
+            {"target_symbol": target_symbol, "active_file": active_file},
+        )
+        == ""
+    )
+    assert "research_findings_delivered" not in state
+    assert not runner.research_findings.pending_foreground_markers(
+        state,
+        target_symbol=target_symbol,
+    )
+
+
+def test_research_finding_staging_waits_for_portfolio_maintenance_transaction(
+    monkeypatch, tmp_path
+):
+    """Never snapshot a source finding before its replacement reservation is published."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_research_findings_for_assignment",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: None)
+    target_symbol = "demo"
+    active_file = str(tmp_path / "Main.lean")
+    source_job_id = "campaign.orchestrator.em-source"
+    summary_loaded = threading.Event()
+    worker_entered = threading.Event()
+    result: list[str] = []
+    errors: list[BaseException] = []
+
+    def load_summary():
+        summary_loaded.set()
+        return {
+            "research_findings": [
+                {
+                    "job_id": source_job_id,
+                    "target_symbol": target_symbol,
+                    "active_file": active_file,
+                    "archetype": "empirical",
+                    "deliverable": {"construction": "source formula"},
+                }
+            ],
+            "dispatch_ledger": [],
+        }
+
+    monkeypatch.setattr(runner.plan_state, "load_summary", load_summary)
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": target_symbol,
+            "active_file": active_file,
+        },
+    }
+
+    def stage_findings():
+        worker_entered.set()
+        try:
+            result.append(
+                runner._take_research_findings_prompt(
+                    state,
+                    {"target_symbol": target_symbol, "active_file": active_file},
+                )
+            )
+        except BaseException as exc:  # preserve assertion context from the worker
+            errors.append(exc)
+
+    with runner._RESEARCH_PORTFOLIO_MAINTENANCE_LOCK:
+        worker = threading.Thread(target=stage_findings, daemon=True)
+        worker.start()
+        assert worker_entered.wait(timeout=1.0)
+        assert not summary_loaded.wait(timeout=0.2)
+        assert worker.is_alive()
+
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert len(result) == 1
+    assert source_job_id in result[0]
+
+
+def test_checked_source_negation_invalidates_assignment_and_yields(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma not_demo : ¬ True := by omega\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    events = []
+    interrupts = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **_kwargs: runner.negation_promotion.PromotionResult(
+            True,
+            "promoted",
+            node_id="n-demo",
+            is_main_goal=False,
+            evidence={"proof_declaration": "not_demo"},
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_request_step_boundary_interrupt",
+        lambda agent: interrupts.append(agent),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_finish_queue_step_boundary",
+        lambda *args, **kwargs: pytest.fail("the disproved theorem must not reach acceptance"),
+    )
+
+    agent = _Agent()
+    runner._handle_managed_tool_result(
+        agent,
+        "lean_incremental_check",
+        {"action": "check_target", "theorem_id": "not_demo"},
+        json.dumps(
+            {
+                "success": True,
+                "ok": True,
+                "action": "check_target",
+                "target": "not_demo",
+                "file": str(active),
+                "valid_without_sorry": True,
+                "has_errors": False,
+                "has_sorry": False,
+            }
+        ),
+    )
+
+    outcome = agent._managed_autonomy_state["theorem_outcomes"][f"{active}::demo"]
+    assert outcome["status"] == "disproved"
+    assert agent._managed_autonomy_state["negation_promotion"]["ok"] is True
+    assert agent._managed_step_boundary_closed is True
+    assert interrupts == [agent]
+    assert any(args[0] == "queue-source-negation-promoted" for args, _kwargs in events)
+    assert "AUTHORITATIVE NEGATION" in agent._post_tool_result_appendix
+
+
+def test_parent_verified_ordinary_helper_skips_eager_negation_promotion(monkeypatch, tmp_path):
+    """Bank an ordinary helper without a second full-source negation check."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma support_demo : True := by simp\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    outcomes: list[dict] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                }
+            }
+
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item_transaction",
+        lambda *_args, **_kwargs: (
+            {
+                "ok": True,
+                "target": "support_demo",
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": [],
+                "incremental": {
+                    "success": True,
+                    "ok": True,
+                    "target": "support_demo",
+                    "file": str(active),
+                    "has_errors": False,
+                    "has_sorry": False,
+                },
+            },
+            "lean_incremental_check",
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_theorem_outcome",
+        lambda _state, outcome: outcomes.append(dict(outcome)),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "plan_state_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner.decomposer,
+        "prover_edit_evidence_helper_names",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: pytest.fail(
+            "ordinary helper loaded the plan/summary counterexample graph"
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_promote_source_negation_candidate",
+        lambda *_args, **_kwargs: pytest.fail(
+            "ordinary positive helper triggered an eager full-source negation check"
+        ),
+    )
+
+    result = runner._record_helper_only_edit_progress(
+        _Agent(),
+        target_symbol="demo",
+        active_file=str(active),
+        helper_names=("support_demo",),
+        verification_tool="patch",
+    )
+
+    assert result.verified_any is True
+    assert result.proof_progress is True
+    assert result.step_boundary_closed is False
+    assert outcomes[0]["target_symbol"] == "support_demo"
+    assert outcomes[0]["status"] == "solved"
+
+
+def test_parent_verified_counterexample_helper_enters_eager_promotion_gate(monkeypatch, tmp_path):
+    """Exact graph counterexample provenance retains immediate promotion authority."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma not_demo : ¬ True := by simp\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    promotion_calls: list[dict] = []
+    evidence_lookups: list[dict] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                }
+            }
+
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item_transaction",
+        lambda *_args, **_kwargs: (
+            {
+                "ok": True,
+                "target": "not_demo",
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": [],
+                "incremental": {
+                    "success": True,
+                    "ok": True,
+                    "target": "not_demo",
+                    "file": str(active),
+                    "has_errors": False,
+                    "has_sorry": False,
+                },
+            },
+            "lean_incremental_check",
+        ),
+    )
+    monkeypatch.setattr(runner, "_record_theorem_outcome", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **kwargs: evidence_lookups.append(dict(kwargs))
+        or ({"name": "not_demo", "node_id": "counterexample-node"},),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_promote_source_negation_candidate",
+        lambda _agent, **kwargs: promotion_calls.append(dict(kwargs)) or True,
+    )
+
+    result = runner._record_helper_only_edit_progress(
+        _Agent(),
+        target_symbol="demo",
+        active_file=str(active),
+        helper_names=("not_demo",),
+        verification_tool="patch",
+        evidence_helper_names=("not_demo",),
+    )
+
+    assert result.verified_any is True
+    assert result.proof_progress is False
+    assert result.step_boundary_closed is True
+    assert evidence_lookups == [
+        {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    ]
+    assert promotion_calls == [
+        {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "proof_declaration": "not_demo",
+        }
+    ]
+
+
+def test_negate_route_rechecks_durable_parent_verified_counterexample(monkeypatch, tmp_path):
+    """A later negate route reuses an exact helper instead of losing it at rollover."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma not_demo : ¬ True := by simp\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    helper_key = f"{active}::not_demo"
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+        "theorem_outcomes": {
+            helper_key: {
+                "target_symbol": "not_demo",
+                "active_file": str(active),
+                "status": "solved",
+                "last_verification": {
+                    "target": "not_demo",
+                    "ok": True,
+                    "sorry": 0,
+                },
+            }
+        },
+    }
+    promotion_calls: list[dict] = []
+    activities: list[tuple[tuple, dict]] = []
+
+    monkeypatch.setattr(runner.negation_probe, "negation_probe_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_failed_attempt_count_for_theorem", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **kwargs: promotion_calls.append(dict(kwargs))
+        or runner.negation_promotion.PromotionResult(
+            True,
+            "promoted",
+            node_id="n-demo",
+            is_main_goal=False,
+            evidence={"proof_declaration": "not_demo"},
+        ),
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_false_decomposition_queue_state",
+        lambda _state: (),
+    )
+    monkeypatch.setattr(
+        runner.negation_probe,
+        "run_negation_probe",
+        lambda *args, **kwargs: pytest.fail("scratch tactics ignored verified source evidence"),
+    )
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_status",
+        lambda *args, **kwargs: pytest.fail("a false sublemma must not end the campaign"),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: activities.append((args, kwargs))
+    )
+
+    execution = runner._maybe_negation_probe(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+        force=True,
+        trigger="orchestrator-explicit-route",
+        route_reason="kernel-verified counterexample helper",
+    )
+
+    assert execution.completed is True
+    assert execution.promotion_recorded is True
+    assert execution.outcome == "negation_proved"
+    assert promotion_calls == [
+        {
+            "theorem_id": "demo",
+            "file_label": str(active),
+            "proof_declaration": "not_demo",
+            "cwd": str(tmp_path),
+            "expected_source_revision_sha256": runner._source_revision_sha256(str(active)),
+        }
+    ]
+    assert state["theorem_outcomes"][f"{active}::demo"]["status"] == "disproved"
+    assert "terminal_outcome" not in state
+    assert any(
+        args[0] == "queue-source-negation-promoted"
+        and kwargs["recovered_from_verified_helper"] is True
+        for args, kwargs in activities
+    )
+
+
+def test_source_negation_scan_unions_exact_graph_evidence_before_same_file_fallbacks(
+    monkeypatch, tmp_path
+):
+    """Exact graph evidence survives a missing redundant theorem-outcome row."""
+    active = tmp_path / "Main.lean"
+    target = "erdos_242_mod_five_two_witness_candidate"
+    unrelated = "erdos_242_exceptional_family_169_not_dvd_small_primes"
+    synthetic = f"{target}_at_two_impossible"
+    exact = f"{target}_counterexample"
+    active.write_text(
+        "\n".join(
+            (
+                f"lemma {unrelated} : ¬ True := by simp",
+                f"lemma {synthetic} : ¬ True := by simp",
+                f"lemma {exact} : ¬ True := by simp",
+                f"theorem {target} : True := by sorry",
+            )
+        ),
+        encoding="utf-8",
+    )
+    state = {
+        "theorem_outcomes": {
+            f"{active}::{unrelated}": {
+                "target_symbol": unrelated,
+                "active_file": str(active),
+                "status": "solved",
+            },
+            f"{active}::{synthetic}": {
+                "target_symbol": synthetic,
+                "active_file": str(active),
+                "status": "solved",
+            },
+        }
+    }
+    promotion_calls: list[str] = []
+    activities: list[tuple[tuple, dict]] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: ({"name": exact, "node_id": "n-exact"},),
+    )
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.source_negation_candidates.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **kwargs: promotion_calls.append(kwargs["proof_declaration"])
+        or runner.negation_promotion.PromotionResult(
+            True,
+            "promoted",
+            node_id="n-target",
+            is_main_goal=False,
+            evidence={"proof_declaration": exact},
+        ),
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_false_decomposition_queue_state",
+        lambda _state: (),
+    )
+    monkeypatch.setattr(runner, "_record_theorem_outcome", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: activities.append((args, kwargs)),
+    )
+
+    promotion, paused, retry_reason = runner._promote_verified_source_negation(
+        state,
+        target_symbol=target,
+        active_file=str(active),
+    )
+
+    assert promotion is not None and promotion.ok is True
+    assert paused is False
+    assert retry_reason == ""
+    assert promotion_calls == [exact]
+    ranking_event = next(
+        kwargs for args, kwargs in activities if args[0] == "source-negation-candidates-ranked"
+    )
+    assert ranking_event["candidate_count"] == 3
+    assert ranking_event["candidates"][0]["name"] == exact
+    assert ranking_event["candidates"][0]["rank_reason"] == ("exact-target-graph-evidence")
+
+
+def test_source_negation_scan_does_not_cache_graph_state_uncertainty(monkeypatch, tmp_path):
+    """A non-candidate failure must retry the same cursor position."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma demo_counterexample : ¬ True := by simp\n"
+        "lemma demo_impossible : ¬ True := by simp\n"
+        "theorem demo : True := by sorry\n",
+        encoding="utf-8",
+    )
+    state = {
+        "theorem_outcomes": {
+            f"{active}::demo_counterexample": {
+                "target_symbol": "demo_counterexample",
+                "active_file": str(active),
+                "status": "solved",
+            },
+            f"{active}::demo_impossible": {
+                "target_symbol": "demo_impossible",
+                "active_file": str(active),
+                "status": "solved",
+            },
+        }
+    }
+    promotion_calls: list[str] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.source_negation_candidates.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **kwargs: promotion_calls.append(kwargs["proof_declaration"])
+        or runner.negation_promotion.PromotionResult(
+            False,
+            "dependency graph changed during transaction",
+            failure_kind="graph_transaction_changed",
+        ),
+    )
+
+    first = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    second = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert first == (None, False, "dependency graph changed during transaction")
+    assert second == first
+    assert promotion_calls == ["demo_counterexample", "demo_counterexample"]
+    scan = state[runner.source_negation_candidates.PROCESS_STATE_KEY]
+    assert scan["exact_cursor"] == 0
+
+
+def test_source_negation_scan_keeps_cursor_at_zero_across_revision_aba(monkeypatch, tmp_path):
+    """A revision changed after scheduling cannot cache rejection under A."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma demo_counterexample : ¬ True := by simp\n" "theorem demo : True := by sorry\n",
+        encoding="utf-8",
+    )
+    revision_a = runner._source_revision_sha256(str(active))
+    state = {
+        "theorem_outcomes": {
+            f"{active}::demo_counterexample": {
+                "target_symbol": "demo_counterexample",
+                "active_file": str(active),
+                "status": "solved",
+            }
+        }
+    }
+    expected_revisions: list[str] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.source_negation_candidates.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+
+    def race_source(**kwargs):
+        expected_revisions.append(kwargs["expected_source_revision_sha256"])
+        active.write_text(
+            "lemma demo_counterexample : ¬ True := by simp\n"
+            "theorem demo : True := by\n  trivial\n",
+            encoding="utf-8",
+        )
+        return runner.negation_promotion.PromotionResult(
+            False,
+            "source revision changed before source-candidate verification",
+            failure_kind="source_revision_changed_before_candidate_check",
+            retryable=True,
+        )
+
+    monkeypatch.setattr(runner.negation_promotion, "promote_source_negation", race_source)
+
+    result = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert result == (
+        None,
+        False,
+        "source revision changed before source-candidate verification",
+    )
+    assert expected_revisions == [revision_a]
+    assert runner._source_revision_sha256(str(active)) != revision_a
+    scan = state[runner.source_negation_candidates.PROCESS_STATE_KEY]
+    assert scan["source_revision_sha256"] == revision_a
+    assert scan["exact_cursor"] == 0
+
+
+def test_source_negation_scan_bypasses_candidate_local_timeout(monkeypatch, tmp_path):
+    """A retryable exact-harness timeout cannot starve the next exact helper."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma demo_counterexample : ¬ True := by simp\n"
+        "lemma demo_impossible : ¬ True := by simp\n"
+        "theorem demo : True := by sorry\n",
+        encoding="utf-8",
+    )
+    candidates = ("demo_counterexample", "demo_impossible")
+    state = {
+        "theorem_outcomes": {
+            f"{active}::{candidate}": {
+                "target_symbol": candidate,
+                "active_file": str(active),
+                "status": "solved",
+            }
+            for candidate in candidates
+        }
+    }
+    promotion_calls: list[str] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.source_negation_candidates.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+
+    def promote(**kwargs):
+        candidate = kwargs["proof_declaration"]
+        promotion_calls.append(candidate)
+        if candidate == candidates[0]:
+            return runner.negation_promotion.PromotionResult(
+                False,
+                "exact candidate harness timed out",
+                failure_kind="infrastructure_timeout",
+                retryable=True,
+                scan_may_continue=True,
+            )
+        return runner.negation_promotion.PromotionResult(
+            True,
+            "promoted",
+            node_id="n-demo",
+            is_main_goal=False,
+            evidence={"proof_declaration": candidate},
+        )
+
+    monkeypatch.setattr(runner.negation_promotion, "promote_source_negation", promote)
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_false_decomposition_queue_state",
+        lambda _state: (),
+    )
+    monkeypatch.setattr(runner, "_record_theorem_outcome", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+
+    promotion, paused, retry_reason = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert promotion is not None and promotion.ok is True
+    assert paused is False
+    assert retry_reason == ""
+    assert promotion_calls == list(candidates)
+    scan = state[runner.source_negation_candidates.PROCESS_STATE_KEY]
+    assert scan["exact_cursor"] == 0
+
+
+def test_source_negation_scan_aborts_on_global_retryable_failure(monkeypatch, tmp_path):
+    """A global continuation failure aborts and is rechecked next route."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma demo_counterexample : ¬ True := by simp\n"
+        "lemma demo_impossible : ¬ True := by simp\n"
+        "lemma demo_refutation : ¬ True := by simp\n"
+        "theorem demo : True := by sorry\n",
+        encoding="utf-8",
+    )
+    candidates = ("demo_counterexample", "demo_impossible", "demo_refutation")
+    state = {
+        "theorem_outcomes": {
+            f"{active}::{candidate}": {
+                "target_symbol": candidate,
+                "active_file": str(active),
+                "status": "solved",
+            }
+            for candidate in candidates
+        }
+    }
+    promotion_calls: list[str] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.source_negation_candidates.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+
+    def promote(**kwargs):
+        candidate = kwargs["proof_declaration"]
+        promotion_calls.append(candidate)
+        if candidate == candidates[0]:
+            return runner.negation_promotion.PromotionResult(
+                False,
+                "candidate-local timeout",
+                failure_kind="infrastructure_timeout",
+                retryable=True,
+                scan_may_continue=True,
+            )
+        return runner.negation_promotion.PromotionResult(
+            False,
+            "source provider unavailable",
+            failure_kind="infrastructure_unavailable",
+            retryable=True,
+        )
+
+    monkeypatch.setattr(runner.negation_promotion, "promote_source_negation", promote)
+
+    first = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    second = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert first == (None, False, "source provider unavailable")
+    assert second == first
+    assert promotion_calls == [
+        candidates[0],
+        candidates[1],
+        candidates[0],
+        candidates[1],
+    ]
+    assert runner.source_negation_candidates.CONTINUATION_STATE_KEY not in state
+    scan = state[runner.source_negation_candidates.PROCESS_STATE_KEY]
+    assert scan["exact_cursor"] == 0
+
+
+def test_source_negation_continuation_rotation_reaches_beyond_window(monkeypatch, tmp_path):
+    """Repeated uncertainty rotates bounded checks while retrying the index-zero head."""
+    active = tmp_path / "Main.lean"
+    candidates = (
+        "demo_counterexample",
+        "demo_impossible",
+        "demo_refutation",
+        "demo_obstruction",
+    )
+    active.write_text(
+        "".join(f"lemma {candidate} : ¬ True := by simp\n" for candidate in candidates)
+        + "theorem demo : True := by sorry\n",
+        encoding="utf-8",
+    )
+    state = {
+        "theorem_outcomes": {
+            f"{active}::{candidate}": {
+                "target_symbol": candidate,
+                "active_file": str(active),
+                "status": "solved",
+            }
+            for candidate in candidates
+        }
+    }
+    promotion_calls: list[str] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.source_negation_candidates.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+
+    def promote(**kwargs):
+        candidate = kwargs["proof_declaration"]
+        promotion_calls.append(candidate)
+        if candidate == candidates[-1]:
+            return runner.negation_promotion.PromotionResult(
+                True,
+                "promoted",
+                node_id="n-demo",
+                is_main_goal=False,
+                evidence={"proof_declaration": candidate},
+            )
+        return runner.negation_promotion.PromotionResult(
+            False,
+            "candidate-local exact harness timeout",
+            failure_kind="infrastructure_timeout",
+            retryable=True,
+            scan_may_continue=True,
+        )
+
+    monkeypatch.setattr(runner.negation_promotion, "promote_source_negation", promote)
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_false_decomposition_queue_state",
+        lambda _state: (),
+    )
+    monkeypatch.setattr(runner, "_record_theorem_outcome", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+
+    first = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    second = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert first == (None, False, "candidate-local exact harness timeout")
+    assert second[0] is not None and second[0].ok is True
+    assert promotion_calls == [
+        "demo_counterexample",
+        "demo_impossible",
+        "demo_refutation",
+        "demo_counterexample",
+        "demo_obstruction",
+    ]
+    continuation = state[runner.source_negation_candidates.CONTINUATION_STATE_KEY]
+    assert continuation["anchor_lane_index"] == 0
+    scan = state[runner.source_negation_candidates.PROCESS_STATE_KEY]
+    assert scan["exact_cursor"] == 0
+
+
+def test_source_negation_exact_scan_is_bounded_and_resumes(monkeypatch, tmp_path):
+    """A large exact lane defers at the route cap and reaches later evidence next route."""
+    active = tmp_path / "Main.lean"
+    candidates = tuple(f"demo_counterexample_{index}" for index in range(6))
+    active.write_text(
+        "".join(f"lemma {candidate} : ¬ True := by simp\n" for candidate in candidates)
+        + "theorem demo : True := by sorry\n",
+        encoding="utf-8",
+    )
+    state = {
+        "theorem_outcomes": {
+            f"{active}::{candidate}": {
+                "target_symbol": candidate,
+                "active_file": str(active),
+                "status": "solved",
+            }
+            for candidate in candidates
+        }
+    }
+    route_calls: list[list[str]] = [[], []]
+    route_index = 0
+
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.source_negation_candidates.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+
+    def promote(**kwargs):
+        candidate = kwargs["proof_declaration"]
+        route_calls[route_index].append(candidate)
+        if candidate == candidates[-1]:
+            return runner.negation_promotion.PromotionResult(
+                True,
+                "promoted",
+                node_id="n-demo",
+                is_main_goal=False,
+                evidence={"proof_declaration": candidate},
+            )
+        return runner.negation_promotion.PromotionResult(
+            False,
+            "candidate is incompatible",
+            failure_kind=(runner.negation_promotion.SOURCE_CANDIDATE_KERNEL_INCOMPATIBLE),
+        )
+
+    monkeypatch.setattr(runner.negation_promotion, "promote_source_negation", promote)
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_false_decomposition_queue_state",
+        lambda _state: (),
+    )
+    monkeypatch.setattr(runner, "_record_theorem_outcome", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+
+    first = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    route_index = 1
+    second = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert first == (
+        None,
+        False,
+        "bounded source-negation candidate scan has deferred exact-source checks",
+    )
+    assert second[0] is not None and second[0].ok is True
+    assert route_calls == [list(candidates[:4]), list(candidates[4:])]
+    assert all(
+        len(calls) <= runner.source_negation_candidates.DEFAULT_SOURCE_PROMOTION_CHECK_LIMIT
+        for calls in route_calls
+    )
+
+
+def test_source_negation_scan_advances_only_explicit_candidate_incompatibility(
+    monkeypatch, tmp_path
+):
+    """A definitive first candidate rejection may expose the next exact helper."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma demo_counterexample : ¬ True := by simp\n"
+        "lemma demo_impossible : ¬ True := by simp\n"
+        "theorem demo : True := by sorry\n",
+        encoding="utf-8",
+    )
+    state = {
+        "theorem_outcomes": {
+            f"{active}::demo_counterexample": {
+                "target_symbol": "demo_counterexample",
+                "active_file": str(active),
+                "status": "solved",
+            },
+            f"{active}::demo_impossible": {
+                "target_symbol": "demo_impossible",
+                "active_file": str(active),
+                "status": "solved",
+            },
+        }
+    }
+    promotion_calls: list[str] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.source_negation_candidates.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+
+    def promote(**kwargs):
+        candidate = kwargs["proof_declaration"]
+        promotion_calls.append(candidate)
+        if candidate == "demo_counterexample":
+            return runner.negation_promotion.PromotionResult(
+                False,
+                "candidate cannot elaborate in the exact target harness",
+                failure_kind=(runner.negation_promotion.SOURCE_CANDIDATE_KERNEL_INCOMPATIBLE),
+            )
+        return runner.negation_promotion.PromotionResult(
+            True,
+            "promoted",
+            node_id="n-demo",
+            is_main_goal=False,
+            evidence={"proof_declaration": candidate},
+        )
+
+    monkeypatch.setattr(runner.negation_promotion, "promote_source_negation", promote)
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_false_decomposition_queue_state",
+        lambda _state: (),
+    )
+    monkeypatch.setattr(runner, "_record_theorem_outcome", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+
+    promotion, paused, retry_reason = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert promotion is not None and promotion.ok is True
+    assert paused is False
+    assert retry_reason == ""
+    assert promotion_calls == ["demo_counterexample", "demo_impossible"]
+    scan = state[runner.source_negation_candidates.PROCESS_STATE_KEY]
+    assert scan["exact_cursor"] == 1
+
+
+def test_research_source_negation_scan_batches_four_incompatible_candidates(monkeypatch, tmp_path):
+    """One exact batch replaces four full-source rejection compiles."""
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    active = tmp_path / "Main.lean"
+    candidates = tuple(f"demo_counterexample_{index}" for index in range(4))
+    active.write_text(
+        "".join(f"lemma {candidate} : True := by trivial\n" for candidate in candidates)
+        + "theorem demo : True := by sorry\n",
+        encoding="utf-8",
+    )
+    state = {
+        "theorem_outcomes": {
+            f"{active}::{candidate}": {
+                "target_symbol": candidate,
+                "active_file": str(active),
+                "status": "solved",
+            }
+            for candidate in candidates
+        }
+    }
+    batch_calls: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.source_negation_candidates.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+
+    def preflight(**kwargs):
+        scheduled = tuple(kwargs["proof_declarations"])
+        batch_calls.append(scheduled)
+        return tuple(
+            runner.source_negation_batch.BatchCandidateVerdict(
+                proof_declaration=candidate,
+                disposition=runner.source_negation_batch.INCOMPATIBLE,
+                reason="candidate cannot elaborate in the exact target harness",
+                failure_kind=(runner.negation_promotion.SOURCE_CANDIDATE_KERNEL_INCOMPATIBLE),
+            )
+            for candidate in scheduled
+        )
+
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "preflight_source_negation_candidates",
+        preflight,
+    )
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **_kwargs: pytest.fail("incompatible batch candidate was recompiled"),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+
+    result = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert result == (None, False, "")
+    assert batch_calls == [candidates]
+    scan = state[runner.source_negation_candidates.PROCESS_STATE_KEY]
+    assert scan["exact_cursor"] == 4
+
+
+def test_research_source_negation_batch_success_still_uses_authoritative_gate(
+    monkeypatch, tmp_path
+):
+    """A clean batch alias cannot mutate graph truth without an exact rerun."""
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    active = tmp_path / "Main.lean"
+    candidates = ("demo_counterexample", "demo_impossible")
+    active.write_text(
+        "".join(f"lemma {candidate} : True := by trivial\n" for candidate in candidates)
+        + "theorem demo : True := by sorry\n",
+        encoding="utf-8",
+    )
+    state = {
+        "theorem_outcomes": {
+            f"{active}::{candidate}": {
+                "target_symbol": candidate,
+                "active_file": str(active),
+                "status": "solved",
+            }
+            for candidate in candidates
+        }
+    }
+    promotion_calls: list[str] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.source_negation_candidates.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "preflight_source_negation_candidates",
+        lambda **_kwargs: (
+            runner.source_negation_batch.BatchCandidateVerdict(
+                proof_declaration=candidates[0],
+                disposition=runner.source_negation_batch.INCOMPATIBLE,
+                reason="incompatible",
+                failure_kind=(runner.negation_promotion.SOURCE_CANDIDATE_KERNEL_INCOMPATIBLE),
+            ),
+            runner.source_negation_batch.BatchCandidateVerdict(
+                proof_declaration=candidates[1],
+                disposition=runner.source_negation_batch.COMPATIBLE,
+                reason="exact alias elaborated",
+            ),
+        ),
+    )
+
+    def promote(**kwargs):
+        promotion_calls.append(kwargs["proof_declaration"])
+        return runner.negation_promotion.PromotionResult(
+            True,
+            "promoted",
+            node_id="n-demo",
+            is_main_goal=False,
+            evidence={"proof_declaration": kwargs["proof_declaration"]},
+        )
+
+    monkeypatch.setattr(runner.negation_promotion, "promote_source_negation", promote)
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_false_decomposition_queue_state",
+        lambda _state: (),
+    )
+    monkeypatch.setattr(runner, "_record_theorem_outcome", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+
+    promotion, paused, retry_reason = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert promotion is not None and promotion.ok is True
+    assert paused is False
+    assert retry_reason == ""
+    assert promotion_calls == [candidates[1]]
+    scan = state[runner.source_negation_candidates.PROCESS_STATE_KEY]
+    assert scan["exact_cursor"] == 1
+
+
+def test_research_source_negation_batch_uncertainty_falls_back_to_complete_scan(
+    monkeypatch, tmp_path
+):
+    """A timed-out batch cannot starve candidates behind its first alias."""
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    active = tmp_path / "Main.lean"
+    candidates = ("demo_counterexample", "demo_impossible")
+    active.write_text(
+        "".join(f"lemma {candidate} : True := by trivial\n" for candidate in candidates)
+        + "theorem demo : True := by sorry\n",
+        encoding="utf-8",
+    )
+    state = {
+        "theorem_outcomes": {
+            f"{active}::{candidate}": {
+                "target_symbol": candidate,
+                "active_file": str(active),
+                "status": "solved",
+            }
+            for candidate in candidates
+        }
+    }
+    promotion_calls: list[str] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.source_negation_candidates.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "preflight_source_negation_candidates",
+        lambda **_kwargs: tuple(
+            runner.source_negation_batch.BatchCandidateVerdict(
+                proof_declaration=candidate,
+                disposition=runner.source_negation_batch.UNCERTAIN,
+                reason="batch timed out",
+                failure_kind="infrastructure_timeout",
+                retryable=True,
+            )
+            for candidate in candidates
+        ),
+    )
+
+    def promote(**kwargs):
+        candidate = kwargs["proof_declaration"]
+        promotion_calls.append(candidate)
+        if candidate == candidates[0]:
+            return runner.negation_promotion.PromotionResult(
+                False,
+                "incompatible",
+                failure_kind=(runner.negation_promotion.SOURCE_CANDIDATE_KERNEL_INCOMPATIBLE),
+            )
+        return runner.negation_promotion.PromotionResult(
+            True,
+            "promoted",
+            node_id="n-demo",
+            is_main_goal=False,
+            evidence={"proof_declaration": candidate},
+        )
+
+    monkeypatch.setattr(runner.negation_promotion, "promote_source_negation", promote)
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_false_decomposition_queue_state",
+        lambda _state: (),
+    )
+    monkeypatch.setattr(runner, "_record_theorem_outcome", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+
+    promotion, paused, retry_reason = runner._promote_verified_source_negation(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert promotion is not None and promotion.ok is True
+    assert paused is False
+    assert retry_reason == ""
+    assert promotion_calls == list(candidates)
+
+
+def test_negate_route_defers_retryable_verified_counterexample_gate(monkeypatch, tmp_path):
+    """A transient exact-source recheck cannot spend the scratch probe budget."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma not_demo : ¬ True := by simp\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    state = {
+        "theorem_outcomes": {
+            f"{active}::not_demo": {
+                "target_symbol": "not_demo",
+                "active_file": str(active),
+                "status": "solved",
+            }
+        }
+    }
+
+    monkeypatch.setattr(runner.negation_probe, "negation_probe_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_failed_attempt_count_for_theorem", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **_kwargs: runner.negation_promotion.PromotionResult(
+            False,
+            "ephemeral Lean check timed out",
+            failure_kind="timeout",
+            retryable=True,
+        ),
+    )
+    monkeypatch.setattr(
+        runner.negation_probe,
+        "run_negation_probe",
+        lambda *args, **kwargs: pytest.fail("retryable source evidence spent scratch budget"),
+    )
+
+    execution = runner._maybe_negation_probe(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+        force=True,
+    )
+
+    assert execution.completed is False
+    assert execution.outcome == "source_negation_retryable"
+    assert "fresh promotion retry" in execution.reason
+    assert "negation_promotion" not in state
+
+
+def test_negate_route_reconciles_failed_source_candidate_before_scratch(monkeypatch, tmp_path):
+    """A failed candidate gate cannot bypass ambiguous durable promotion state."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma not_demo : ¬ True := by simp\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    state = {
+        "theorem_outcomes": {
+            f"{active}::not_demo": {
+                "target_symbol": "not_demo",
+                "active_file": str(active),
+                "status": "solved",
+            }
+        }
+    }
+    barrier_calls: list[dict] = []
+
+    monkeypatch.setattr(runner.negation_probe, "negation_probe_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_failed_attempt_count_for_theorem", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **_kwargs: runner.negation_promotion.PromotionResult(
+            False,
+            "existing negation-promotion authority requires reconciliation",
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_negation_reconciliation_barrier",
+        lambda current: barrier_calls.append(current) or True,
+    )
+    monkeypatch.setattr(
+        runner.negation_probe,
+        "run_negation_probe",
+        lambda *args, **kwargs: pytest.fail("ambiguous promotion authority reached scratch"),
+    )
+
+    execution = runner._maybe_negation_probe(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+        force=True,
+    )
+
+    assert execution.completed is False
+    assert execution.outcome == "promotion_reconciliation_pending"
+    assert barrier_calls == [state]
+    assert "negation_promotion" not in state
+
+
+def test_negate_route_hides_successful_promotion_until_barrier_is_clean(monkeypatch, tmp_path):
+    """An ambiguous cleanup cannot expose provisional runtime promotion state."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma not_demo : ¬ True := by simp\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    state = {
+        "theorem_outcomes": {
+            f"{active}::not_demo": {
+                "target_symbol": "not_demo",
+                "active_file": str(active),
+                "status": "solved",
+            }
+        }
+    }
+
+    monkeypatch.setattr(runner.negation_probe, "negation_probe_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_failed_attempt_count_for_theorem", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **_kwargs: runner.negation_promotion.PromotionResult(
+            True,
+            "promotion committed; cleanup pending",
+            node_id="n-demo",
+            is_main_goal=False,
+            evidence={"proof_declaration": "not_demo"},
+        ),
+    )
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: True)
+    monkeypatch.setattr(
+        runner.negation_probe,
+        "run_negation_probe",
+        lambda *args, **kwargs: pytest.fail("ambiguous successful promotion reached scratch"),
+    )
+
+    execution = runner._maybe_negation_probe(
+        state,
+        target_symbol="demo",
+        active_file=str(active),
+        force=True,
+    )
+
+    assert execution.completed is False
+    assert execution.outcome == "promotion_reconciliation_pending"
+    assert "negation_promotion" not in state
+    assert "terminal_outcome" not in state
+
+
+def test_existing_source_negation_does_not_reemit_promotion_activity(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma not_demo : ¬ True := by omega\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    events = []
+    interrupts = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **_kwargs: runner.negation_promotion.PromotionResult(
+            True,
+            "already promoted",
+            node_id="n-demo",
+            is_main_goal=False,
+            evidence={"proof_declaration": "not_demo"},
+            already_promoted=True,
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_request_step_boundary_interrupt",
+        lambda agent: interrupts.append(agent),
+    )
+
+    agent = _Agent()
+    promoted = runner._maybe_promote_checked_source_negation(
+        agent,
+        {
+            "ok": True,
+            "action": "check_target",
+            "target": "not_demo",
+            "file": str(active),
+        },
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    assert promoted is True
+    assert not any(args[0] == "queue-source-negation-promoted" for args, _kwargs in events)
+    assert interrupts == [agent]
+    assert agent._managed_step_boundary_closed is True
+    assert agent._managed_autonomy_state["negation_promotion"]["already_promoted"] is True
+
+
+def test_source_negation_route_pauses_before_next_provider_when_cleanup_is_ambiguous(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma not_demo : ¬ True := by omega\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {}
+            self._managed_pending_theorem_feedback = None
+
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **kwargs: runner.negation_promotion.PromotionResult(
+            True,
+            "promoted",
+            node_id="n-demo",
+            is_main_goal=False,
+            evidence={"proof_declaration": "not_demo"},
+        ),
+    )
+    monkeypatch.setattr(
+        runner.false_decomposition_cleanup,
+        "cleanup_reconciliation_state",
+        lambda: runner.false_decomposition_cleanup.CleanupReconciliation(
+            pending=1,
+            reasons=("source persisted but graph cleanup is pending",),
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_false_decomposition_queue_state",
+        lambda state: pytest.fail("ambiguous cleanup must not mutate queue state"),
+    )
+    monkeypatch.setattr(runner, "_request_step_boundary_interrupt", lambda agent: None)
+    agent = _Agent()
+
+    assert runner._maybe_promote_checked_source_negation(
+        agent,
+        {
+            "ok": True,
+            "action": "check_target",
+            "target": "not_demo",
+            "file": str(active),
+        },
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    state = agent._managed_autonomy_state
+    assert state["operational_pause"] == "paused_source_quarantine"
+    assert state["false_cleanup_pending"] == 1
+    assert "theorem_outcomes" not in state
+
+
+def test_source_negation_crash_recovers_pending_promotion_and_stops_turn(monkeypatch, tmp_path):
+    """A promotion crash cannot be downgraded to an ordinary support check."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma not_demo : ¬ True := by omega\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    interrupts = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("crash after graph write")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_negation_promotions_on_startup",
+        lambda state: runner.negation_promotion.PromotionReconciliation(
+            promotion_pending=1,
+            promotion_reasons=("graph rollback revision changed",),
+        ),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_request_step_boundary_interrupt",
+        lambda agent: interrupts.append(agent),
+    )
+    agent = _Agent()
+
+    assert runner._maybe_promote_checked_source_negation(
+        agent,
+        {
+            "ok": True,
+            "action": "check_target",
+            "target": "not_demo",
+            "file": str(active),
+        },
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    state = agent._managed_autonomy_state
+    assert state["operational_pause"] == "paused_source_quarantine"
+    assert state["source_quarantine_origin"] == "negation-promotion"
+    assert agent._managed_step_boundary_closed is True
+    assert interrupts == [agent]
+
+
+def test_source_negation_rejection_with_pending_graph_reconciliation_stops_turn(
+    monkeypatch, tmp_path
+):
+    """A non-raising failed promotion cannot hide its durable graph ambiguity."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma not_demo : ¬ True := by omega\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    interrupts = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {}
+            self._managed_pending_theorem_feedback = None
+
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **_kwargs: runner.negation_promotion.PromotionResult(
+            False,
+            "dependency graph changed before promotion finalization",
+        ),
+    )
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "_promotion_pending_state",
+        lambda: (1, ("graph rollback requires reconciliation",)),
+    )
+    monkeypatch.setattr(
+        runner.false_decomposition_cleanup,
+        "cleanup_reconciliation_state",
+        lambda: runner.false_decomposition_cleanup.CleanupReconciliation(),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_request_step_boundary_interrupt",
+        lambda agent: interrupts.append(agent),
+    )
+    agent = _Agent()
+
+    assert runner._maybe_promote_checked_source_negation(
+        agent,
+        {
+            "ok": True,
+            "action": "check_target",
+            "target": "not_demo",
+            "file": str(active),
+        },
+        target_symbol="demo",
+        active_file=str(active),
+    )
+
+    state = agent._managed_autonomy_state
+    assert state["operational_pause"] == "paused_source_quarantine"
+    assert state["source_quarantine_origin"] == "negation-promotion"
+    assert "negation_promotion" not in state
+    assert interrupts == [agent]
+
+
+def test_source_negation_post_commit_crash_pauses_until_clean_reconciliation(
+    monkeypatch,
+    tmp_path,
+):
+    """A post-commit crash cannot silently claim a terminal main disproof."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    interrupts = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+    promotion = {
+        "theorem": "demo",
+        "file": str(active),
+        "node_id": "n-demo",
+        "is_main_goal": True,
+    }
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_source_negation",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("activity append failed")),
+    )
+
+    def reconcile_after_commit(state):
+        state["terminal_outcome"] = "disproved"
+        state["negation_promotion"] = {
+            "ok": True,
+            "reason": "authoritative negation revalidated during startup",
+            "node_id": "n-demo",
+            "is_main_goal": True,
+            "evidence": promotion,
+            "already_promoted": True,
+        }
+        raise OSError("activity append failed during reconciliation")
+
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_negation_promotions_on_startup",
+        reconcile_after_commit,
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_request_step_boundary_interrupt",
+        lambda agent: interrupts.append(agent),
+    )
+    agent = _Agent()
+
+    assert runner._maybe_promote_checked_source_negation(
+        agent,
+        {
+            "ok": True,
+            "action": "check_target",
+            "target": "not_demo",
+            "file": str(active),
+        },
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert agent._managed_autonomy_state["operational_pause"] == "paused_infrastructure"
+    assert "terminal_outcome" not in agent._managed_autonomy_state
+    assert "negation_promotion" not in agent._managed_autonomy_state
+    assert (
+        runner._workflow_completion_exit_code(
+            None,
+            agent._managed_autonomy_state,
+        )
+        == runner.EXIT_PAUSED
+    )
+    assert interrupts == [agent]
+
+
+def test_negation_probe_crash_recovers_before_route_can_continue(monkeypatch, tmp_path):
+    """The deterministic probe path observes the same promotion crash barrier."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    monkeypatch.setattr(runner.negation_probe, "negation_probe_enabled", lambda: True)
+    monkeypatch.setattr(runner.negation_probe, "probe_after_failures", lambda: 2)
+    monkeypatch.setattr(runner, "_failed_attempt_count_for_theorem", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(
+        runner.negation_probe,
+        "run_negation_probe",
+        lambda *args, **kwargs: {
+            "verdict": "negation_proved",
+            "probe_entry": {"theorem": "demo", "file": str(active)},
+        },
+    )
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "promote_negation",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("pending persisted")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_negation_promotions_on_startup",
+        lambda autonomy: runner.negation_promotion.PromotionReconciliation(
+            promotion_pending=1,
+            promotion_reasons=("graph rollback requires replay",),
+        ),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+
+    runner._maybe_negation_probe(state, target_symbol="demo", active_file=str(active))
+
+    assert state["operational_pause"] == "paused_source_quarantine"
+    assert state["source_quarantine_origin"] == "negation-promotion"
+
+
+def test_managed_cycle_pending_promotion_barrier_skips_provider_and_selects_exit_two(
+    monkeypatch,
+):
+    """A torn graph rollback is observed before any next managed provider call."""
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    live_state = {
+        "active_file": "/tmp/Main.lean",
+        "target_symbol": "demo",
+        "sorry_count": 1,
+        "verification_ok": False,
+    }
+    persisted_phases = []
+    autonomy_state = {}
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "_promotion_pending_state",
+        lambda: (1, ("graph drift left quarantine pending",)),
+    )
+    monkeypatch.setattr(
+        runner.false_decomposition_cleanup,
+        "cleanup_reconciliation_state",
+        lambda: runner.false_decomposition_cleanup.CleanupReconciliation(),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: dict(live_state),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_promote_live_state_to_verified_compat",
+        lambda state, autonomy=None: state,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, phase=None, **kwargs: persisted_phases.append(str(phase or "")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_managed_conversation_with_retries",
+        lambda *args, **kwargs: pytest.fail("promotion ambiguity reached the provider"),
+    )
+
+    _history, _compaction, _checkpoint, final_live = runner._drive_autonomous_followups_inner(
+        _FakeAgent(), "system", [], {}, {}, autonomy_state
+    )
+
+    assert autonomy_state["operational_pause"] == "paused_source_quarantine"
+    assert autonomy_state["negation_promotion_pending"] == 1
+    assert persisted_phases == ["paused_source_quarantine"]
+    assert runner._workflow_completion_exit_code(final_live, autonomy_state) == runner.EXIT_PAUSED
+
+
+def test_autonomous_provider_nonce_gate_pauses_before_conversation(monkeypatch):
+    """A registry race after startup still blocks the next autonomous provider."""
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    live_state = {
+        "active_file": "/tmp/Main.lean",
+        "target_symbol": "demo",
+        "sorry_count": 1,
+        "verification_ok": False,
+    }
+    autonomy_state = {}
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda state: False)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: dict(live_state),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_promote_live_state_to_verified_compat",
+        lambda state, autonomy=None: state,
+    )
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_queue_assignment", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_prepare_queue_assignment_state", lambda *args: None)
+    monkeypatch.setattr(runner, "_refresh_theorem_transition_handoff", lambda *args: None)
+    monkeypatch.setattr(runner, "_record_turn_prompt_fingerprint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_set_runtime_active_skill", lambda *args: None)
+    monkeypatch.setattr(runner, "_apply_managed_reasoning_policy", lambda *args: "high")
+    monkeypatch.setattr(runner, "_record_managed_reasoning_policy", lambda *args, **kwargs: None)
+
+    def block_provider(_agent, state):
+        state.update(
+            {
+                "operational_pause": "paused_infrastructure",
+                "infrastructure_pause_reason": "requested campaign roots are not registered",
+            }
+        )
+        return False
+
+    monkeypatch.setattr(runner, "_prepare_managed_turn_or_pause", block_provider)
+    monkeypatch.setattr(
+        runner,
+        "_run_managed_conversation_with_retries",
+        lambda *args, **kwargs: pytest.fail("root provider gate reached conversation"),
+    )
+
+    _history, _compaction, _checkpoint, final_live = runner._drive_autonomous_followups_inner(
+        _FakeAgent(), "system", [], {}, {}, autonomy_state
+    )
+
+    assert autonomy_state["operational_pause"] == "paused_infrastructure"
+    assert runner._workflow_completion_exit_code(final_live, autonomy_state) == runner.EXIT_PAUSED
+
+
+def test_support_file_write_does_not_verify_or_reject_assigned_theorem(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    support = tmp_path / "Probe.lean"
+    support.write_text("example : True := by trivial\n", encoding="utf-8")
+    events = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("support file must not invoke theorem verification")
+        ),
+    )
+    agent = _Agent()
+
+    runner._handle_managed_tool_result(
+        agent,
+        "write_file",
+        {"path": str(support)},
+        json.dumps({"success": True}),
+    )
+
+    assert "failed_attempts" not in agent._managed_autonomy_state
+    assert agent._managed_pending_theorem_feedback is None
+    assert any(args[0] == "queue-support-file-edit" for args, _kwargs in events)
 
 
 def test_handle_managed_tool_result_keeps_assigned_theorem_when_queue_advances(monkeypatch, capsys):
@@ -1581,7 +13150,9 @@ def test_handle_managed_tool_result_yields_after_hard_retry_limit(monkeypatch, t
 
     output = capsys.readouterr().out
     text = active.read_text(encoding="utf-8")
-    assert "Manager retry limit reached for demo" in output
+    assert "Local feedback window complete for demo" in output
+    assert "campaign continues on a new route" in output
+    assert "recorded this as unresolved" not in output
     assert "-- LeanFlow failed attempt preserved after API step budget exhaustion." in text
     assert "theorem demo : True := by\n  sorry" in text
     assert not hasattr(agent, "_post_tool_result_appendix")
@@ -1683,6 +13254,81 @@ def test_manager_feedback_kind_adapter_detects_assigned_sorry(tmp_path):
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
 
     assert runner._manager_feedback_kind(str(active), "demo", {"ok": True, "output": ""}) == "sorry"
+
+
+def test_open_problem_blocker_report_never_claims_queue_success():
+    report = (
+        "The nonresidual cases are verified, but the residual case is a genuine "
+        "open-problem blocker."
+    )
+
+    assert runner._final_report_claims_queue_success(report) is False
+
+
+def test_partial_completion_that_does_not_solve_main_goal_never_claims_queue_success():
+    report = (
+        "The helper theorem is complete and passes Lean verification. This does not solve "
+        "the main goal, which must remain in the queue."
+    )
+
+    assert runner._final_report_claims_queue_success(report) is False
+
+
+def test_blocked_report_with_verified_state_never_claims_queue_success():
+    report = (
+        "erdos_242 remains blocked; no source edit was made. "
+        "Verified state: the nonresidual helper passes Lean."
+    )
+
+    assert runner._final_report_claims_queue_success(report) is False
+
+
+def test_completed_search_with_blocked_not_proved_status_never_claims_queue_success():
+    report = (
+        "Autonomous proving session completed its sound search/verification pass.\n"
+        "Status: blocked, not proved.\n"
+        "The remaining branch is the unresolved residual core."
+    )
+
+    assert runner._final_report_claims_queue_success(report) is False
+
+
+def test_completed_investigation_with_remaining_sorry_never_claims_queue_success():
+    """A completed research pass is not a completed proof."""
+    report = (
+        "Autonomous proving session completed its Lean-checked investigation, but "
+        "`erdos_242` cannot be soundly repaired with currently known mathematics.\n"
+        "Current verified state:\n"
+        "- `lean_inspect`: no compiler errors; `erdos_242` still contains one `sorry`.\n"
+        "- the residual branch remains unresolved."
+    )
+
+    assert runner._final_report_claims_queue_success(report) is False
+
+
+@pytest.mark.parametrize(
+    "report,target_symbol",
+    [
+        ("The assigned target is proved and kernel-verified.", "demo"),
+        ("`demo` solved and verified.", "demo"),
+        ("Successfully proved `demo`.", "demo"),
+    ],
+)
+def test_explicit_target_completion_claims_queue_success(report, target_symbol):
+    """Target-specific completion language remains recognized as a success claim."""
+    assert runner._final_report_claims_queue_success(report, target_symbol) is True
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        "Verified helpers exist and the research pass completed.",
+        "Verified `demo` helper construction and recorded it.",
+        "`demo` verified helper construction and recorded it.",
+    ],
+)
+def test_verified_helper_progress_never_claims_queue_success(report):
+    assert runner._final_report_claims_queue_success(report, "demo") is False
 
 
 def test_handle_managed_tool_result_yields_for_unrelated_warning_cleanup(
@@ -1862,6 +13508,8 @@ def test_handle_managed_tool_result_logs_target_verification_and_stores_record(m
                 "action": "check_target",
                 "target": "demo",
                 "elapsed_s": 0.42,
+                "leanflow_timing": {"total_s": 2.5},
+                "resource_admission": {"waited_s": 0.25, "nested": True},
                 "cache": {"cache_hit": True},
                 "messages": [],
             }
@@ -1872,6 +13520,111 @@ def test_handle_managed_tool_result_logs_target_verification_and_stores_record(m
     assert "Manager verification (target demo): passed" in output
     assert agent._managed_autonomy_state["last_verification"]["scope"] == "target:demo"
     assert agent._managed_autonomy_state["last_verification"]["tool"] == "lean_incremental_check"
+    assert agent._managed_autonomy_state["last_verification"]["lean_command_elapsed_s"] == 0.42
+    assert agent._managed_autonomy_state["last_verification"]["probe_wall_elapsed_s"] == 2.5
+    assert agent._managed_autonomy_state["last_verification"]["tool_wall_elapsed_s"] == 2.75
+
+
+def test_direct_incremental_feedback_record_reports_sorry_and_warnings():
+    record = runner._verification_record_from_check(
+        "Demo/Main.lean",
+        "demo",
+        {
+            "success": True,
+            "ok": False,
+            "backend": "lean_interact",
+            "action": "feedback",
+            "target": "demo",
+            "has_errors": False,
+            "has_sorry": True,
+            "messages": [
+                {"severity": "warning", "message": "declaration uses 'sorry'"},
+            ],
+            "output": "warning: declaration uses 'sorry'",
+        },
+        "lean_incremental_check",
+    )
+
+    assert record["ok"] is False
+    assert record["warnings"] == 1
+    assert record["sorry"] == 1
+
+
+def test_file_exact_manager_verification_counts_errors_after_bounded_warning_prefix(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("import Mathlib\n\ntheorem demo : True := by\n  trivial\n", encoding="utf-8")
+    raw_output = "\n".join(
+        [
+            f"{active}:1:1: warning: style linter warning",
+            "linter context " + ("x" * 700),
+            f"{active}:3:3: error: type mismatch",
+            f"{active}:3:3: error: unsolved goals",
+            f"{active}:3:3: error: failed to synthesize instance",
+            f"{active}:3:3: error: unknown identifier candidate",
+            f"{active}:4:3: warning: declaration uses 'sorry'",
+        ]
+    )
+
+    # Characterize the live failure: the old bounded prefix retained only the
+    # leading linter warning, so downstream counting reported zero errors.
+    assert runner._diagnostic_counts_from_messages(output=runner._single_line(raw_output, 500)) == (
+        0,
+        1,
+        0,
+    )
+
+    class _Result:
+        ok = False
+        mode = "file_exact"
+        command = "lake env lean Main.lean"
+        target = str(active)
+        output = raw_output
+
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(runner, "lean_verify", lambda **_kwargs: _Result())
+
+    check = runner._manager_verify_queue_file(str(active))
+    record = runner._verification_record_from_check(
+        str(active),
+        "demo",
+        check,
+        "lean_verify",
+    )
+    evidence = runner._manager_check_for_feedback_kind(str(active), "demo", check)
+
+    assert check["errors"] == 4
+    assert check["warnings"] == 2
+    assert check["sorry"] == 1
+    assert check["has_errors"] is True
+    assert check["ok"] is False
+    assert len(check["output"]) <= 500
+    assert check["output"].startswith("error near line 3: type mismatch")
+    assert record["errors"] == 4
+    assert record["warnings"] == 2
+    assert record["sorry"] == 1
+    assert record["ok"] is False
+    assert "errors: 4" in runner._verification_status_text(record)
+    assert "type mismatch" in runner._verification_status_text(record)
+    assert evidence.has_assigned_error is True
+
+
+def test_verification_record_preserves_clean_axiom_profile_verdict():
+    record = runner._verification_record_from_check(
+        "Demo/Main.lean",
+        "demo",
+        {
+            "ok": True,
+            "mode": "incremental_target",
+            "axiom_profile_checked": True,
+            "axiom_profile_blockers": [],
+        },
+        "lean_incremental_check",
+    )
+
+    assert record["axiom_profile_checked"] is True
+    assert record["axiom_profile_blockers"] == []
 
 
 def test_handle_managed_tool_result_disables_auto_try_schema_for_run(monkeypatch):
@@ -2010,6 +13763,9 @@ def test_review_agent_final_report_rejects_disallowed_axiom_dependency(monkeypat
         runner, "lean_axioms", lambda target, **kw: _fake_axiom_report(["propext", "sorryAx"])
     )
 
+    autonomy_state = {
+        "current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}
+    }
     result = runner._review_agent_final_report(
         {
             "completed": True,
@@ -2017,12 +13773,13 @@ def test_review_agent_final_report_rejects_disallowed_axiom_dependency(monkeypat
             "final_response": "`demo` solved.",
             "messages": [{"role": "assistant", "content": "done"}],
         },
-        {"current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}},
+        autonomy_state,
     )
 
     review = result["manager_final_report_review"]
     assert review["ok"] is False
     assert review.get("axiom_violation") == ["sorryAx"]
+    assert autonomy_state["last_verification"]["ok"] is False
 
 
 def test_review_agent_final_report_accepts_incremental_queue_success_with_future_file_errors(
@@ -2348,7 +14105,10 @@ def test_review_agent_final_report_restores_sorry_after_hard_retry_limit(monkeyp
     assert result["exit_reason"] == "manager_retry_exhausted"
     assert result["manager_final_report_review"]["retry_exhausted"] is True
     assert result["manager_final_report_review"]["restore"]["restored"] is True
-    assert "LEANFLOW-NATIVE MANAGER RETRY LIMIT REACHED" in result["messages"][-1]["content"]
+    message = result["messages"][-1]["content"]
+    assert "LEANFLOW-NATIVE LOCAL FEEDBACK WINDOW COMPLETE" in message
+    assert "campaign remains active" in message
+    assert "MANAGER RETRY LIMIT REACHED" not in message
     text = active.read_text(encoding="utf-8")
     assert "-- LeanFlow failed attempt preserved after API step budget exhaustion." in text
     assert "theorem demo : True := by\n  sorry" in text
@@ -2391,6 +14151,584 @@ def test_review_agent_final_report_rejects_claim_with_manager_feedback(
     output = capsys.readouterr().out
     assert "needs work" in output
     assert "Queue step boundary: demo needs manager feedback" in output
+
+
+def test_review_agent_surrender_response_is_verified_and_rerouted(monkeypatch, tmp_path, capsys):
+    """The old Numina halt response is a rejected turn, never an exit verdict."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {
+            "ok": False,
+            "command": "lake env lean Main.lean",
+            "output": "Main.lean:2:3: warning: declaration uses 'sorry'",
+        },
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+
+    result = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": (
+                "NOT SOLVED. The blocker remains. Deciding to halt further attempts."
+            ),
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "NOT SOLVED. Deciding to halt further attempts.",
+                }
+            ],
+        },
+        {"current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}},
+    )
+
+    review = result["manager_final_report_review"]
+    assert review["ok"] is False
+    assert review["agent_claimed_success"] is False
+    assert result["messages"][-1]["role"] == "user"
+    assert "[PERSISTENCE COACH]" in result["messages"][-1]["content"]
+    assert "evidence, not an ending" in result["messages"][-1]["content"]
+    assert "ended an unresolved queue turn" in result["messages"][-1]["content"]
+    output = capsys.readouterr().out
+    assert "ended an unresolved turn" in output
+    assert "reported demo as solved" not in output
+
+
+@pytest.mark.parametrize("placeholder", ["sorry", "admit"])
+def test_review_unresolved_final_report_rejects_source_placeholder_without_kernel_transaction(
+    monkeypatch, tmp_path, placeholder
+):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        f"theorem demo : True := by\n  {placeholder}\n",
+        encoding="utf-8",
+    )
+    activities: list[tuple[tuple, dict]] = []
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item_transaction",
+        lambda *args, **kwargs: pytest.fail(
+            "a literal source placeholder already proves this unresolved report is open"
+        ),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: activities.append((args, kwargs))
+    )
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+
+    result = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "Blocked — requested route: plan. The target remains open.",
+            "messages": [],
+        },
+        autonomy_state,
+    )
+
+    review = result["manager_final_report_review"]
+    assert review["ok"] is False
+    assert review["feedback_kind"] == "sorry"
+    assert review["manager_tool"] == "source_placeholder_gate"
+    assert review["source_placeholder"] == placeholder
+    assert autonomy_state["last_verification"]["scope"] == "target:demo"
+    assert autonomy_state["last_verification"]["tool"] == "source_placeholder_gate"
+    assert any(args[0] == "manager-source-placeholder-gate" for args, _ in activities)
+    assert not any(args[0] == "manager-verification-transaction-start" for args, _ in activities)
+
+
+def test_review_unresolved_final_report_without_source_placeholder_still_kernel_checks(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    def check(active_file, target_symbol, *, purpose, required_axiom_profile=False):
+        calls.append((target_symbol, purpose))
+        return (
+            {
+                "ok": False,
+                "has_errors": True,
+                "output": "error: synthetic kernel rejection",
+            },
+            "lean_verify",
+        )
+
+    monkeypatch.setattr(runner, "_manager_check_queue_item_transaction", check)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+
+    result = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "Blocked — requested route: plan. The target remains open.",
+            "messages": [],
+        },
+        {"current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}},
+    )
+
+    assert calls == [("demo", "target-final-report")]
+    assert result["manager_final_report_review"]["manager_tool"] == "lean_verify"
+
+
+@pytest.mark.parametrize(
+    "mention",
+    [
+        "  -- sorry and admit are words in this comment\n  trivial",
+        '  let note := "sorry and admit are words in this string"\n  trivial',
+    ],
+)
+def test_review_unresolved_final_report_ignores_comment_and_string_placeholders(
+    monkeypatch, tmp_path, mention
+):
+    active = tmp_path / "Main.lean"
+    active.write_text(f"theorem demo : True := by\n{mention}\n", encoding="utf-8")
+    calls: list[str] = []
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    def check(active_file, target_symbol, *, purpose, required_axiom_profile=False):
+        calls.append(purpose)
+        return ({"ok": False, "has_errors": True, "output": "error: rejected"}, "lean_verify")
+
+    monkeypatch.setattr(runner, "_manager_check_queue_item_transaction", check)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+
+    runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "Blocked — requested route: plan. The target remains open.",
+            "messages": [],
+        },
+        {"current_queue_assignment": {"target_symbol": "demo", "active_file": str(active)}},
+    )
+
+    assert calls == ["target-final-report"]
+
+
+@pytest.mark.parametrize(
+    "final",
+    [
+        "\n".join(
+            [
+                "Autonomous proving session completed its sound search/verification pass.",
+                "Status: blocked, not proved.",
+                "Verified state: the nonresidual helper passes Lean.",
+            ]
+        ),
+        "\n".join(
+            [
+                "Autonomous proving session completed its Lean-checked investigation, but "
+                "`erdos_242` cannot be soundly repaired with currently known mathematics.",
+                "Current verified state:",
+                "- `lean_inspect`: no compiler errors; `erdos_242` still contains one `sorry`.",
+                "- the residual branch remains unresolved.",
+            ]
+        ),
+        "\n".join(
+            [
+                "Startup state refreshed for:",
+                "",
+                "`FormalConjectures/ErdosProblems/242.lean`",
+                "target: `erdos_242_residual_mod_seven_eq_five`",
+                "",
+                "The Notes section now records:",
+                "",
+                "- Live five-`sorry` inventory.",
+                "- The assigned residual slice `k % 7 = 5`, equivalently " "`n = 168*t + 121`.",
+                "- Missing unconditional witness/factor-pair coverage lemmas.",
+                "- The false `witness_construction` theorem is explicitly excluded as a helper.",
+                "- Intended order: preserve verified declarations, obtain a sound universal "
+                "construction, split arithmetic/order/identity helpers, then run "
+                "`lean_incremental_check(check_target)`.",
+                "",
+                "Lean capabilities are healthy and theorem-local context loaded successfully. "
+                "No Lean theorem was edited: no sound construction for this unresolved "
+                "Erdős–Straus residual class is currently available, so the target remains "
+                "on the explicit `plan` blocker rather than receiving an unsupported proof.",
+            ]
+        ),
+    ],
+)
+def test_review_blocked_verified_state_is_not_reported_as_claimed_solved(
+    monkeypatch, tmp_path, capsys, final
+):
+    """A verified helper in a blocked report must not flip the queue verdict."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem erdos_242 : True := by\n  sorry\n", encoding="utf-8")
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {
+            "ok": False,
+            "command": "lake env lean Main.lean",
+            "output": "Main.lean:2:3: warning: declaration uses 'sorry'",
+        },
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+    result = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": final,
+            "messages": [{"role": "assistant", "content": final}],
+        },
+        {
+            "current_queue_assignment": {
+                "target_symbol": "erdos_242",
+                "active_file": str(active),
+            }
+        },
+    )
+
+    review = result["manager_final_report_review"]
+    assert review["ok"] is False
+    assert review["agent_claimed_success"] is False
+    assert "ended an unresolved queue turn" in result["messages"][-1]["content"]
+    output = capsys.readouterr().out
+    assert "ended an unresolved turn" in output
+    assert "claimed erdos_242 was solved" not in output
+
+
+def test_review_agent_explicit_route_request_survives_verified_partial_progress(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda active_file: {
+            "ok": False,
+            "command": "lake env lean Main.lean",
+            "output": "warning: declaration uses 'sorry'",
+        },
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+
+    marker = "Blocked — requested route: plan/statement revision."
+    reason = "Reason: Five helper cases are verified, but the main goal remains open."
+    result = runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "\n".join(
+                (
+                    "Example only: requested route: negate.",
+                    marker,
+                    reason,
+                    "Unrelated footer that must not become route evidence.",
+                )
+            ),
+            "messages": [],
+        },
+        autonomy_state,
+    )
+
+    assert result["manager_final_report_review"]["agent_claimed_success"] is False
+    assert autonomy_state["prover_requested_route"]["route"] == "plan"
+    assert autonomy_state["prover_requested_route"]["reason"] == f"{marker}\n{reason}"
+    assert len(autonomy_state["prover_requested_route"]["reason"]) <= (
+        runner.orchestrator_floor.PROVER_ROUTE_REASON_MAX_CHARS
+    )
+    route_events = [
+        (args, kwargs) for args, kwargs in events if args[0] == "prover-route-requested"
+    ]
+    assert len(route_events) == 1
+    assert route_events[0][1]["route"] == "plan"
+    assert route_events[0][1]["reason"] == f"{marker}\n{reason}"
+
+
+def test_review_agent_records_reverse_route_request_phrase(monkeypatch, tmp_path):
+    """Preserve the live prover wording as an explicit orchestration event."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item_transaction",
+        lambda *args, **kwargs: pytest.fail(
+            "the source placeholder gate must reject this unresolved report"
+        ),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+
+    final_response = "\n".join(
+        (
+            "The current proof shape has no verified path to the target.",
+            "Route requested: `negate`",
+            "This footer is not route evidence.",
+        )
+    )
+    runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": final_response,
+            "messages": [],
+        },
+        autonomy_state,
+    )
+
+    request = autonomy_state["prover_requested_route"]
+    assert request["route"] == "negate"
+    assert request["reason"] == "Route requested: `negate`"
+    route_events = [
+        (args, kwargs) for args, kwargs in events if args[0] == "prover-route-requested"
+    ]
+    assert len(route_events) == 1
+    assert route_events[0][1]["route"] == "negate"
+    assert route_events[0][1]["reason"] == "Route requested: `negate`"
+
+
+def test_review_agent_does_not_emit_route_event_for_meta_or_denied_mention(monkeypatch, tmp_path):
+    """Keep rejected prose out of persisted route authority and activity."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item_transaction",
+        lambda *args, **kwargs: pytest.fail(
+            "the source placeholder gate must reject this unresolved report"
+        ),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+
+    runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "No requested route: plan. This is only an example.",
+            "messages": [],
+        },
+        autonomy_state,
+    )
+
+    assert "prover_requested_route" not in autonomy_state
+    assert not any(args[0] == "prover-route-requested" for args, _kwargs in events)
+
+
+def test_review_agent_accepts_unpunctuated_negate_request_only_with_verified_evidence(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : ∀ n : Nat, n < 5 := by\n  sorry\n", encoding="utf-8")
+    active_file = str(active)
+    target_id = runner.plan_state.node_id_for("demo", active_file)
+    helper_id = runner.plan_state.node_id_for("demo_counterexample", active_file)
+    declaration = "private lemma demo_counterexample : ¬ ((5 : Nat) < 5) := by\n  omega"
+    blueprint = runner.plan_state.Blueprint(
+        nodes=(
+            runner.plan_state.GraphNode(
+                id=target_id,
+                name="demo",
+                file=active_file,
+                status="proving",
+            ),
+            runner.plan_state.GraphNode(
+                id=helper_id,
+                name="demo_counterexample",
+                file=active_file,
+                statement=declaration,
+                status="proved",
+            ),
+        ),
+        edges=(
+            runner.plan_state.GraphEdge(
+                source=helper_id,
+                target=target_id,
+                kind="evidence",
+            ),
+        ),
+    )
+    finding = {
+        "job_id": "campaign.ds-1",
+        "target_symbol": "demo",
+        "active_file": active_file,
+        "deliverable": {
+            "counterexample": {"n": 5},
+            "checked_helper_status": "worker_checked_parent_recheck_required",
+            "parent_recheck_required": True,
+            "checked_helpers": [
+                {
+                    "anchor_target_symbol": "demo",
+                    "active_file": active_file,
+                    "declaration": declaration,
+                    "declaration_sha256": runner.hashlib.sha256(declaration.encode()).hexdigest(),
+                    "parent_recheck_required": True,
+                    "worker_check": {
+                        "tool": "lean_incremental_check",
+                        "action": "check_helper",
+                        "valid_without_sorry": True,
+                        "has_errors": False,
+                        "has_sorry": False,
+                        "verification_scope": "helper_candidate",
+                        "replacement_matches_target": False,
+                        "replacement_declarations": ["demo_counterexample"],
+                    },
+                }
+            ],
+        },
+    }
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": active_file,
+        }
+    }
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
+    monkeypatch.setattr(runner.plan_state, "load_blueprint", lambda: blueprint)
+    monkeypatch.setattr(
+        runner.plan_state,
+        "load_summary",
+        lambda: {"research_findings": [finding]},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda _active_file: {
+            "ok": False,
+            "command": "lake env lean Main.lean",
+            "output": "warning: declaration uses 'sorry'",
+        },
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+
+    assert (
+        runner.orchestrator_floor.requested_route_from_text("Blocked: requested route negate") == ""
+    )
+    runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": "Blocked: requested route negate",
+            "messages": [],
+        },
+        state,
+    )
+
+    assert state["prover_requested_route"]["route"] == "negate"
+    assert "parent-kernel-verified counterexample" in state["prover_requested_route"]["reason"]
+
+
+def test_review_agent_routes_live_negated_obstruction_wording_with_verified_evidence(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    evidence = (
+        {
+            "node_id": "n-counterexample",
+            "name": "demo_impossible",
+            "statement": "lemma demo_impossible : ¬ True := by simp",
+        },
+    )
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "project")
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda _active_file: {
+            "ok": False,
+            "command": "lake env lean Main.lean",
+            "output": "warning: declaration uses 'sorry'",
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_verified_counterexample_evidence_for_assignment",
+        lambda **_kwargs: evidence,
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+
+    runner._review_agent_final_report(
+        {
+            "completed": True,
+            "interrupted": False,
+            "final_response": (
+                "Blocked: the assigned statement is false, so it cannot be repaired without "
+                "changing its statement. Required resolution: correct or replace the false "
+                "candidate statement (for example, route it as a negated obstruction), then "
+                "assign the revised declaration."
+            ),
+            "messages": [],
+        },
+        state,
+    )
+
+    assert state["prover_requested_route"]["route"] == "negate"
+    assert "parent-kernel-verified counterexample" in state["prover_requested_route"]["reason"]
+    assert any(args[0] == "prover-route-requested" for args, _kwargs in events)
 
 
 def test_declaration_queue_ignores_names_referenced_only_in_future_error_context(tmp_path):
@@ -2498,6 +14836,14 @@ def test_managed_pre_tool_call_blocks_terminal_edits_in_queue(monkeypatch, tmp_p
     assert payload["success"] is False
     assert "terminal-based file edits" in payload["error"]
     assert active.read_text(encoding="utf-8") == "theorem demo : True := by\n  sorry\n"
+    restore_result = runner._managed_pre_tool_call(
+        _Agent(),
+        "terminal",
+        {"command": "git restore -- Main.lean"},
+    )
+    restore_payload = json.loads(restore_result)
+    assert restore_payload["success"] is False
+    assert "terminal-based file edits" in restore_payload["error"]
     assert (
         runner._managed_pre_tool_call(
             _Agent(),
@@ -2506,6 +14852,48 @@ def test_managed_pre_tool_call_blocks_terminal_edits_in_queue(monkeypatch, tmp_p
         )
         is None
     )
+
+
+def test_terminal_command_edit_classifier_ignores_python_heredoc_payload():
+    command = """python3 - <<'PY'
+from pathlib import Path
+
+source = open("FormalConjectures/ErdosProblems/242.lean").read()
+# This is mathematical notation, not output redirection: x > n / 4.
+# Searching for words such as rm, cp, and touch must also remain read-only.
+print(Path("FormalConjectures/ErdosProblems/242.lean").exists(), len(source))
+PY
+"""
+
+    assert runner._terminal_command_may_edit(command) is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 - <<PY\nprint('x > y and rm is prose')\nPY\n",
+        'python3 - <<"PY"\nprint("cp and touch are prose")\nPY\n',
+        "python3 - <<-'PY'\n\tprint('x > y')\n\tPY\n",
+        'cat <<FIRST <<"SECOND"\nx > y\nFIRST\nrm and cp are prose\nSECOND\n',
+    ],
+)
+def test_terminal_command_edit_classifier_masks_supported_heredoc_forms(command):
+    assert runner._terminal_command_may_edit(command) is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 - <<'PY' > empirical.txt\nprint('x > y')\nPY\n",
+        "python3 - <<-PY\n\tprint('x > y')\n\tPY\ntouch changed.txt\n",
+        "cat <<FIRST <<\"SECOND\"\nx > y and rm is prose\nFIRST\ncp is prose too\nSECOND\nsed -i '' 's/a/b/' Main.lean\n",
+        "printf '%s' '<<EOF'\nrm Main.lean\n",
+        "printf ok # <<EOF\ncp Main.lean Backup.lean\n",
+        "value=$((1 << 2))\ntouch changed.txt\n",
+    ],
+)
+def test_terminal_command_edit_classifier_still_checks_outside_heredoc_payload(command):
+    assert runner._terminal_command_may_edit(command) is True
 
 
 def test_prepare_queue_assignment_state_warms_incremental_once(monkeypatch, tmp_path):
@@ -2543,6 +14931,192 @@ def test_prepare_queue_assignment_state_warms_incremental_once(monkeypatch, tmp_
 
     assert calls == [(str(active), "demo")]
     assert autonomy_state["current_queue_assignment"]["incremental_prepare"]["success"] is True
+
+
+def test_prepare_queue_assignment_reassigns_earlier_incremental_blocker(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "private lemma broken : True := by\n  trivial\n\n" "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    calls: list[tuple[str, str]] = []
+
+    def fake_prepare(active_file, target_symbol):
+        calls.append((active_file, target_symbol))
+        if target_symbol == "demo":
+            return {
+                "success": False,
+                "ok": False,
+                "error": (
+                    "failed to build env before target at broken: line 1:1 error: "
+                    "maximum number of heartbeats has been reached"
+                ),
+            }
+        return {"success": True, "ok": True, "target": target_symbol}
+
+    events = []
+    monkeypatch.setattr(runner, "_manager_prepare_incremental_queue_item", fake_prepare)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    autonomy_state = {}
+    live_state = {
+        "active_file": str(active),
+        "target_symbol": "demo",
+        "current_queue_item": {"label": "demo"},
+        "current_queue_item_slice": "theorem demo : True := by\n  sorry",
+    }
+
+    runner._prepare_queue_assignment_state(autonomy_state, live_state)
+
+    assert calls == [(str(active), "demo"), (str(active), "broken")]
+    assert autonomy_state["current_queue_assignment"]["target_symbol"] == "broken"
+    assert live_state["target_symbol"] == "broken"
+    assert live_state["current_queue_item"]["label"] == "broken"
+    assert any(args[0] == "queue-prerequisite-reassigned" for args, _kwargs in events)
+
+
+def test_transition_handoff_retargets_after_prerequisite_reassignment(tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "private lemma broken : True := by\n  trivial\n\n" "theorem later : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    history = [
+        {
+            "role": "assistant",
+            "content": (
+                "[LEANFLOW-NATIVE THEOREM TRANSITION HANDOFF]\n\n"
+                "Current queue focus:\n- declaration: later"
+            ),
+        }
+    ]
+    autonomy_state = {
+        "last_theorem_outcome": {
+            "target_symbol": "previous",
+            "active_file": str(active),
+            "status": "solved",
+            "note": "verified",
+        },
+        "current_queue_assignment": {
+            "target_symbol": "broken",
+            "active_file": str(active),
+        },
+    }
+    live_state = {
+        "active_file": str(active),
+        "current_queue_item": {
+            "label": "broken",
+            "reasons": ["incremental environment blocker before later"],
+        },
+        "current_queue_item_slice": "private lemma broken : True := by\n  trivial",
+        "declaration_scope": "file",
+        "declaration_queue_total": 2,
+        "declaration_queue_summary": "- broken\n- later",
+    }
+
+    assert runner._refresh_theorem_transition_handoff(history, live_state, autonomy_state)
+    assert "- declaration: broken" in history[0]["content"]
+    assert "- declaration: later" not in history[0]["content"]
+
+
+def test_startup_negation_migration_reports_repairs(monkeypatch, tmp_path):
+    events = []
+    calls = []
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+
+    def migrate(**kwargs):
+        calls.append(kwargs)
+        return {
+            "records_before": 2,
+            "records_after": 1,
+            "records_canonicalized": 2,
+            "duplicates_removed": 1,
+        }
+
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "migrate_promotion_summary",
+        migrate,
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    result = runner._migrate_negation_promotions_on_startup()
+
+    assert result["duplicates_removed"] == 1
+    assert calls == [{"cwd": str(tmp_path)}]
+    assert events[0][0][0] == "negation-promotion-summary-migrated"
+    assert events[0][1]["records_after"] == 1
+
+
+def test_startup_scratch_artifact_cleanup_reports_repairs(monkeypatch, tmp_path):
+    events = []
+    calls = []
+    monkeypatch.setattr(runner, "_project_root", lambda: str(tmp_path))
+
+    def cleanup(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "completed",
+            "artifacts_removed": 2,
+            "checkpoints_removed": 5,
+            "verified_patch_status_cleared": 1,
+        }
+
+    monkeypatch.setattr(
+        runner.scratch_artifact_cleanup,
+        "cleanup_legacy_scratch_artifacts",
+        cleanup,
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    result = runner._cleanup_scratch_artifacts_on_startup()
+
+    assert result["artifacts_removed"] == 2
+    assert calls == [{"cwd": str(tmp_path)}]
+    assert events[0][0][0] == "scratch-artifacts-cleaned"
+    assert events[0][1]["checkpoints_removed"] == 5
+
+
+def test_restore_queue_manager_state_hydrates_attempts_before_startup(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    runner.plan_state.save_queue_manager_state(
+        {
+            "failed_attempts": [
+                {
+                    "target_symbol": "demo",
+                    "active_file": "Demo.lean",
+                    "attempt": 7,
+                    "cycle": 4,
+                    "proof_shape": "exact missing",
+                    "reason": "unknown identifier",
+                }
+            ]
+        }
+    )
+    events = []
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    autonomy_state = {"blocked_runs": 0}
+
+    restored = runner._restore_queue_manager_state(autonomy_state)
+
+    assert restored is True
+    assert autonomy_state[runner._QUEUE_MANAGER_STATE_RESTORED_KEY] is True
+    assert autonomy_state["failed_attempts"][0]["attempt"] == 7
+    assert (
+        runner._failed_attempt_count_for_theorem(
+            autonomy_state, target_symbol="demo", active_file="Demo.lean"
+        )
+        == 7
+    )
+    assert events[0][0][0] == "queue-manager-restored"
 
 
 def test_manager_incremental_prepare_uses_cold_mathlib_timeout(monkeypatch, tmp_path):
@@ -2605,7 +15179,715 @@ def test_manager_incremental_check_uses_configurable_timeout(monkeypatch, tmp_pa
 
     assert result["ok"] is True
     assert calls[0]["action"] == "check_target"
+    assert calls[0]["include_axiom_profile"] is True
     assert calls[0]["timeout_s"] == 180
+
+
+def test_low_memory_manager_skips_incremental_cache(monkeypatch):
+    verification = {"ok": True, "command": "lake env lean Main.lean"}
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "1")
+    monkeypatch.setattr(
+        runner,
+        "lean_incremental_check",
+        lambda **kwargs: pytest.fail("low-memory manager started LeanProbe"),
+    )
+    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda path: verification)
+
+    prepared = runner._manager_prepare_incremental_queue_item("Main.lean", "demo")
+    checked, tool = runner._manager_check_queue_item("Main.lean", "demo")
+
+    assert prepared["error_code"] == "low_memory_mode"
+    assert checked == verification
+    assert tool == "lean_verify"
+
+
+def test_manager_incremental_heartbeat_timeout_falls_back_to_file(monkeypatch):
+    file_verification = {"ok": True, "command": "lake env lean Main.lean"}
+    events = []
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
+    monkeypatch.setattr(
+        runner,
+        "_manager_incremental_check_queue_item",
+        lambda *_args: {
+            "ok": False,
+            "output": "error: maximum number of heartbeats has been reached",
+            "incremental": {
+                "success": True,
+                "ok": False,
+                "has_errors": True,
+            },
+        },
+    )
+    monkeypatch.setattr(runner, "_manager_verify_queue_file", lambda _path: file_verification)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    checked, tool = runner._manager_check_queue_item("Main.lean", "demo")
+
+    assert checked == file_verification
+    assert tool == "lean_verify"
+    assert any(args[0] == "manager-incremental-file-fallback" for args, _ in events)
+
+
+def test_manager_incremental_ordinary_rejection_stays_incremental(monkeypatch):
+    incremental = {
+        "ok": False,
+        "output": "error: unsolved goals",
+        "incremental": {"success": True, "ok": False, "has_errors": True},
+    }
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
+    monkeypatch.setattr(runner, "_manager_incremental_check_queue_item", lambda *_args: incremental)
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda _path: pytest.fail("ordinary target errors must not start a file fallback"),
+    )
+
+    checked, tool = runner._manager_check_queue_item("Main.lean", "demo")
+
+    assert checked == incremental
+    assert tool == "lean_incremental_check"
+
+
+def test_manager_queue_item_timing_exposes_incremental_internal_phases(monkeypatch):
+    incremental = {
+        "ok": False,
+        "output": "error: unsolved goals",
+        "incremental": {
+            "success": True,
+            "ok": False,
+            "has_errors": True,
+            "elapsed_s": 37.5,
+            "leanflow_timing": {
+                "total_s": 132.0,
+                "probe_call_s": 38.0,
+                "session_reclaim_s": 94.0,
+            },
+            "resource_admission": {"waited_s": 30.5},
+        },
+    }
+    events = []
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
+    monkeypatch.setattr(runner, "_manager_incremental_check_queue_item", lambda *_: incremental)
+    monkeypatch.setattr(
+        runner,
+        "_manager_verify_queue_file",
+        lambda _path: pytest.fail("ordinary target errors must remain incremental"),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    checked, tool = runner._manager_check_queue_item("Main.lean", "demo")
+
+    assert checked == incremental
+    assert tool == "lean_incremental_check"
+    timing = next(kwargs for args, kwargs in events if args[0] == "manager-queue-item-check-timing")
+    assert timing["route"] == "incremental"
+    assert timing["incremental_reported_elapsed_s"] == 37.5
+    assert timing["incremental_timing"]["session_reclaim_s"] == 94.0
+    assert timing["incremental_resource_admission"]["waited_s"] == 30.5
+    assert "incremental_check" in timing["phase_seconds"]
+
+
+def test_verification_record_distinguishes_command_probe_and_tool_wall_time():
+    """Display end-to-end wait/probe time without relabeling Lean command time."""
+    record = runner._verification_record_from_check(
+        "Demo/Main.lean",
+        "demo",
+        {
+            "ok": False,
+            "mode": "incremental_target",
+            "incremental": {
+                "success": True,
+                "ok": False,
+                "elapsed_s": 74.605,
+                "leanflow_timing": {"total_s": 216.635},
+                "resource_admission": {"waited_s": 178.633, "nested": True},
+                "output": "error: unsolved goals",
+            },
+        },
+        "lean_incremental_check",
+    )
+
+    assert record["elapsed_s"] == 74.605
+    assert record["lean_command_elapsed_s"] == 74.605
+    assert record["probe_wall_elapsed_s"] == 216.635
+    assert record["tool_wall_elapsed_s"] == 395.268
+    status = runner._verification_status_text(record)
+    assert "wall: 395.268s" in status
+    assert "Lean commands: 74.605s" in status
+
+
+def test_verification_record_reads_direct_tool_wall_timing_from_top_level_payload():
+    """Preserve direct prover telemetry instead of relabeling command time as wall time."""
+    record = runner._verification_record_from_check(
+        "Demo/Main.lean",
+        "demo",
+        {
+            "success": True,
+            "ok": False,
+            "action": "check_target",
+            "target": "demo",
+            "elapsed_s": 69.541,
+            "leanflow_timing": {"total_s": 244.034},
+            "resource_admission": {"waited_s": 0.063, "nested": True},
+            "output": "error: unsolved goals",
+        },
+        "lean_incremental_check",
+    )
+
+    assert record["lean_command_elapsed_s"] == 69.541
+    assert record["probe_wall_elapsed_s"] == 244.034
+    assert record["tool_wall_elapsed_s"] == 244.097
+    status = runner._verification_status_text(record)
+    assert "wall: 244.097s" in status
+    assert "Lean commands: 69.541s" in status
+
+
+def test_verification_record_does_not_double_count_non_nested_admission_time():
+    """Treat a non-nested tool total as already inclusive of its admission wait."""
+    record = runner._verification_record_from_check(
+        "Demo/Main.lean",
+        "demo",
+        {
+            "ok": False,
+            "mode": "incremental_target",
+            "incremental": {
+                "elapsed_s": 40.0,
+                "leanflow_timing": {"total_s": 90.0},
+                "resource_admission": {"waited_s": 30.0, "nested": False},
+                "output": "error: unsolved goals",
+            },
+        },
+        "lean_incremental_check",
+    )
+
+    assert record["probe_wall_elapsed_s"] == 90.0
+    assert record["tool_wall_elapsed_s"] == 90.0
+
+
+def test_manager_incremental_acceptance_rejects_transitive_sorry_axiom(monkeypatch):
+    incremental = {
+        "ok": True,
+        "output": "",
+        "incremental": {"success": True, "ok": True, "has_errors": False},
+    }
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_manager_incremental_check_queue_item", lambda *_args: incremental)
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda *_args: (["sorryAx"], "axiom guard: target depends on sorryAx"),
+    )
+
+    checked, tool = runner._manager_check_queue_item("Main.lean", "demo")
+
+    assert checked["ok"] is False
+    assert checked["has_errors"] is True
+    assert checked["axiom_violation"] == ["sorryAx"]
+    assert "sorryAx" in checked["output"]
+    assert tool == "lean_incremental_check"
+
+
+def _inline_axiom_incremental_payload(
+    axioms,
+    *,
+    requested_target="demo",
+    profile_target="demo",
+    checked=True,
+):
+    if axioms:
+        output = f"'{profile_target}' depends on axioms: [{', '.join(axioms)}]"
+    else:
+        output = f"'{profile_target}' does not depend on any axioms"
+    return {
+        "success": True,
+        "ok": True,
+        "has_errors": False,
+        "axiom_profile_checked": checked,
+        "axiom_profile_axioms": list(axioms),
+        "axiom_profile_target": profile_target,
+        "axiom_profile_requested_target": requested_target,
+        "axiom_profile_declaration_sha256": "a" * 64,
+        "axiom_profile_output": output,
+        "axiom_profile_error": "" if checked else "missing markers",
+    }
+
+
+def test_manager_incremental_clean_inline_axioms_skip_second_harness(monkeypatch):
+    incremental = {
+        "ok": True,
+        "output": "",
+        "incremental": _inline_axiom_incremental_payload(["Classical.choice", "propext"]),
+    }
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_manager_incremental_check_queue_item", lambda *_args: incremental)
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda *_args: pytest.fail("complete inline evidence started a second axiom harness"),
+    )
+
+    checked, tool = runner._manager_check_queue_item("Main.lean", "demo")
+
+    assert checked["ok"] is True
+    assert checked["axiom_profile_checked"] is True
+    assert checked["axiom_profile_blockers"] == []
+    assert checked["axiom_profile_axioms"] == ["Classical.choice", "propext"]
+    assert checked["axiom_profile_source"] == "incremental_inline"
+    assert tool == "lean_incremental_check"
+
+
+def test_manager_incremental_inline_axioms_apply_allowlist_without_second_harness(
+    monkeypatch,
+):
+    incremental = {
+        "ok": True,
+        "output": "",
+        "incremental": _inline_axiom_incremental_payload(["propext", "sorryAx"]),
+    }
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_manager_incremental_check_queue_item", lambda *_args: incremental)
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda *_args: pytest.fail("disallowed inline evidence started a second axiom harness"),
+    )
+
+    checked, tool = runner._manager_check_queue_item("Main.lean", "demo")
+
+    assert checked["ok"] is False
+    assert checked["axiom_violation"] == ["sorryAx"]
+    assert checked["axiom_profile_source"] == "incremental_inline"
+    assert "sorryAx" in checked["output"]
+    assert tool == "lean_incremental_check"
+
+
+@pytest.mark.parametrize(
+    "incremental",
+    [
+        _inline_axiom_incremental_payload([], checked=False),
+        _inline_axiom_incremental_payload([], requested_target="other"),
+        {
+            **_inline_axiom_incremental_payload([]),
+            "axiom_profile_declaration_sha256": "not-a-digest",
+        },
+    ],
+)
+def test_manager_incremental_incomplete_inline_axioms_fall_back_fail_closed(
+    monkeypatch,
+    incremental,
+):
+    calls = []
+    check = {"ok": True, "output": "", "incremental": incremental}
+    monkeypatch.setenv("LEANFLOW_LOW_MEMORY", "0")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_manager_incremental_check_queue_item", lambda *_args: check)
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda *_args: (calls.append("legacy") or ["axiom-profile-unavailable"], "unavailable"),
+    )
+
+    checked, tool = runner._manager_check_queue_item("Main.lean", "demo")
+
+    assert calls == ["legacy"]
+    assert checked["ok"] is False
+    assert checked["axiom_profile_blockers"] == ["axiom-profile-unavailable"]
+    assert tool == "lean_incremental_check"
+
+
+def test_required_axiom_gate_consumes_inline_profile_when_default_gate_is_off(monkeypatch):
+    check = {
+        "ok": True,
+        "incremental": _inline_axiom_incremental_payload(["propext"]),
+    }
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "0")
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda *_args: pytest.fail("required inline evidence started a second axiom harness"),
+    )
+
+    checked = runner._enforce_manager_axiom_profile("Main.lean", "demo", check, required=True)
+
+    assert checked["ok"] is True
+    assert checked["axiom_profile_checked"] is True
+    assert checked["axiom_profile_source"] == "incremental_inline"
+
+
+def test_agent_exact_replacement_consumes_direct_inline_axiom_profile(monkeypatch):
+    """A direct tool payload profiles the temporary replacement, never the source sorry."""
+    check = {
+        **_inline_axiom_incremental_payload(["Classical.choice", "propext"]),
+        "action": "check_target",
+        "replacement_matches_target": True,
+        "verification_scope": "target_candidate",
+    }
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda *_args: pytest.fail("candidate profiling fell through to the on-disk sorry"),
+    )
+
+    checked = runner._enforce_manager_axiom_profile("Main.lean", "demo", check)
+
+    assert checked["ok"] is True
+    assert checked["axiom_profile_checked"] is True
+    assert checked["axiom_profile_blockers"] == []
+    assert checked["axiom_profile_axioms"] == ["Classical.choice", "propext"]
+    assert checked["axiom_profile_source"] == "incremental_inline"
+
+
+def test_agent_exact_replacement_without_bound_profile_fails_closed_off_disk(monkeypatch):
+    """Missing candidate evidence must not borrow the unresolved source's axiom profile."""
+    check = {
+        "success": True,
+        "ok": True,
+        "action": "check_target",
+        "replacement_matches_target": True,
+        "verification_scope": "target_candidate",
+    }
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda *_args: pytest.fail("candidate fallback inspected the on-disk declaration"),
+    )
+
+    checked = runner._enforce_manager_axiom_profile("Main.lean", "demo", check)
+
+    assert checked["ok"] is False
+    assert checked["axiom_profile_blockers"] == ["axiom-profile-unavailable"]
+    assert "temporary replacement" in checked["output"]
+    assert "replacement-bound axiom profile is unavailable" in checked["output"]
+
+
+def test_parent_manager_transaction_holds_exact_and_axiom_stages(monkeypatch, tmp_path):
+    """Do not release foreground priority between sequential manager gates."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    order: list[str] = []
+    activities: list[tuple[tuple, dict]] = []
+
+    class _Admission:
+        def to_dict(self):
+            return {"waited_s": 0.125, "nested": False, "enforced": True}
+
+    @contextlib.contextmanager
+    def transaction(scope):
+        assert Path(scope).resolve() == active.resolve()
+        order.append("transaction-enter")
+        try:
+            yield _Admission()
+        finally:
+            order.append("transaction-exit")
+
+    def exact(_active_file, _target_symbol):
+        order.append("exact")
+        return {"ok": True}, "lean_incremental_check"
+
+    def axiom(_active_file, _target_symbol, check, *, required=False):
+        assert required is True
+        order.append("axiom")
+        return {**check, "axiom_profile_checked": True}
+
+    monkeypatch.setattr(
+        runner.verification_transaction,
+        "parent_lean_verification_transaction",
+        transaction,
+    )
+    monkeypatch.setattr(runner, "_manager_check_queue_item", exact)
+    monkeypatch.setattr(runner, "_enforce_manager_axiom_profile", axiom)
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: activities.append((args, kwargs)),
+    )
+
+    checked, tool = runner._manager_check_queue_item_transaction(
+        str(active),
+        "demo",
+        purpose="helper",
+        required_axiom_profile=True,
+    )
+
+    assert checked["axiom_profile_checked"] is True
+    assert tool == "lean_incremental_check"
+    assert order == ["transaction-enter", "exact", "axiom", "transaction-exit"]
+    event = next(
+        kwargs for args, kwargs in activities if args[0] == "manager-verification-transaction"
+    )
+    assert event["target_symbol"] == "demo"
+    assert event["purpose"] == "helper"
+    assert event["completed"] is True
+    assert event["elapsed_s"] >= 0.0
+    assert event["resource_admission"]["waited_s"] == 0.125
+    assert event["manager_tool"] == "lean_incremental_check"
+    assert set(event["phase_seconds"]) == {
+        "manager_check",
+        "required_axiom_enforcement",
+        "unattributed",
+    }
+    assert any(args[0] == "manager-verification-transaction-start" for args, _ in activities)
+
+
+def test_queue_edit_finalization_exposes_graph_update_phase(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    before = "theorem demo : True := by\n  sorry\n"
+    after = "lemma helper : True := by\n  trivial\n\n" + before
+    active.write_text(after, encoding="utf-8")
+    events = []
+
+    class _Agent:
+        _managed_queue_edit_snapshot = {
+            "active_file": str(active),
+            "target_symbol": "demo",
+            "before_text": before,
+            "start": 1,
+            "end": 2,
+            "assigned_statement_signature": "theorem demo : True",
+            "protected_declarations": [],
+        }
+
+    ticks = iter(float(value) for value in range(0, 100, 2))
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(runner, "plan_state_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner.decomposer,
+        "record_prover_helpers_from_edit",
+        lambda **_kwargs: runner.decomposer.ProverHelperGraphUpdate(introduced=("helper",)),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    verdict = runner._finalize_managed_queue_edit_details(
+        _Agent(),
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    assert verdict.accepted is True
+    assert verdict.declaration_delta.helper_names == ("helper",)
+    assert any(args[0] == "queue-edit-finalization-start" for args, _ in events)
+    assert any(args[0] == "queue-edit-graph-update-start" for args, _ in events)
+    slow = next(kwargs for args, kwargs in events if args[0] == "queue-edit-finalization-slow")
+    assert slow["phase_seconds"]["helper_graph_update"] > 0
+
+
+def test_helper_batch_uses_one_verification_transaction_per_helper(monkeypatch, tmp_path):
+    """Release between helpers, never between one helper's exact and axiom gates."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    calls: list[tuple[str, str]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state: dict = {}
+
+    def transaction(_active_file, target_symbol, *, purpose, required_axiom_profile=False):
+        assert required_axiom_profile is False
+        calls.append((target_symbol, purpose))
+        return (
+            {
+                "ok": True,
+                "mode": "incremental_target",
+                "target": target_symbol,
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": [],
+                "incremental": {
+                    "success": True,
+                    "ok": True,
+                    "target": target_symbol,
+                    "file": str(active),
+                    "has_errors": False,
+                    "has_sorry": False,
+                    "messages": [],
+                },
+            },
+            "lean_incremental_check",
+        )
+
+    monkeypatch.setattr(runner, "_manager_check_queue_item_transaction", transaction)
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item",
+        lambda *_args: pytest.fail("helper gate bypassed its transaction"),
+    )
+    monkeypatch.setattr(runner, "plan_state_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_record_theorem_outcome", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_append_post_tool_result_message", lambda *args, **kwargs: None)
+
+    result = runner._record_helper_only_edit_progress(
+        _Agent(),
+        target_symbol="demo",
+        active_file=str(active),
+        helper_names=("helper_one", "helper_two"),
+        verification_tool="patch",
+        evidence_helper_names=("helper_one", "helper_two"),
+    )
+
+    assert result.verified_any is True
+    assert result.proof_progress is False
+    assert calls == [
+        ("helper_one", "queue-helper"),
+        ("helper_two", "queue-helper"),
+    ]
+
+
+def test_axiom_profile_gate_is_idempotent_for_agent_issued_target_check(monkeypatch):
+    calls = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda *_args: (calls.append("profile") or ["sorryAx"], "depends on sorryAx"),
+    )
+
+    first = runner._enforce_manager_axiom_profile("Main.lean", "demo", {"ok": True})
+    second = runner._enforce_manager_axiom_profile("Main.lean", "demo", first)
+
+    assert first["ok"] is False
+    assert first["axiom_violation"] == ["sorryAx"]
+    assert first["axiom_profile_checked"] is True
+    assert second == first
+    assert calls == ["profile"]
+
+
+def test_managed_pre_tool_call_requires_inline_profile_for_exact_replacement(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "Demo.demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    args = {
+        "action": "check_target",
+        "file_path": str(active),
+        "theorem_id": "demo",
+        "replacement": "theorem demo : True := by\n  trivial",
+        "include_axiom_profile": False,
+    }
+
+    assert runner._managed_pre_tool_call(_Agent(), "lean_incremental_check", args) is None
+    assert args["include_axiom_profile"] is True
+
+
+def test_managed_pre_tool_call_injects_search_source_horizon_for_file_assignment(
+    monkeypatch, tmp_path
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "Demo.demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "file")
+    args = {
+        "query": "demo",
+        "file_path": str(active),
+        "cwd": str(tmp_path),
+    }
+
+    assert runner._managed_pre_tool_call(_Agent(), "lean_search", args) is None
+    assert args["_leanflow_source_horizon_file"] == str(active)
+    assert args["_leanflow_source_horizon_target"] == "Demo.demo"
+
+
+@pytest.mark.parametrize("condition", ["project", "interrupted", "assignment-less"])
+def test_managed_pre_tool_call_does_not_inject_search_horizon_outside_managed_file_scope(
+    monkeypatch, tmp_path, condition
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return condition == "interrupted"
+
+    if condition == "assignment-less":
+        _Agent._managed_autonomy_state = {}
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_declaration_queue_scope",
+        lambda: "project" if condition == "project" else "file",
+    )
+    args = {"query": "demo", "file_path": str(active), "cwd": str(tmp_path)}
+
+    assert runner._managed_pre_tool_call(_Agent(), "lean_search", args) is None
+    assert "_leanflow_source_horizon_file" not in args
+    assert "_leanflow_source_horizon_target" not in args
+
+
+@pytest.mark.parametrize(
+    ("theorem_id", "file_name"),
+    [("other", "Main.lean"), ("demo", "Other.lean")],
+)
+def test_managed_pre_tool_call_does_not_profile_stale_or_foreign_replacement(
+    monkeypatch, tmp_path, theorem_id, file_name
+):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    requested = tmp_path / file_name
+    if requested != active:
+        requested.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    args = {
+        "action": "check_target",
+        "file_path": str(requested),
+        "theorem_id": theorem_id,
+        "replacement": f"theorem {theorem_id} : True := by\n  trivial",
+    }
+
+    assert runner._managed_pre_tool_call(_Agent(), "lean_incremental_check", args) is None
+    assert "include_axiom_profile" not in args
 
 
 def test_out_of_scope_queue_edit_guard_restores_future_declarations(monkeypatch, tmp_path):
@@ -2747,6 +16029,31 @@ def test_manager_axiom_profile_blocker_flags_disallowed(monkeypatch, tmp_path):
     assert "sorryAx" in message
 
 
+def test_manager_axiom_profile_blocker_disables_sibling_prefetch(monkeypatch, tmp_path):
+    """The parent acceptance gate inspects only its exact declaration."""
+    calls: list[tuple[str, dict]] = []
+
+    def exact_axioms(target, **kwargs):
+        calls.append((target, kwargs))
+        return _fake_axiom_report(["propext"])
+
+    monkeypatch.setattr(runner, "lean_axioms", exact_axioms)
+
+    assert runner._manager_axiom_profile_blocker(str(tmp_path / "M.lean"), "demo") == (
+        [],
+        "",
+    )
+    assert calls == [
+        (
+            "demo",
+            {
+                "file_path": str(tmp_path / "M.lean"),
+                "prefetch_siblings": False,
+            },
+        )
+    ]
+
+
 def test_manager_axiom_profile_blocker_clean_and_allowlisted(monkeypatch, tmp_path):
     # Standard axioms are clean...
     monkeypatch.delenv("LEANFLOW_NATIVE_ALLOWED_AXIOMS", raising=False)
@@ -2763,6 +16070,34 @@ def test_manager_axiom_profile_blocker_clean_and_allowlisted(monkeypatch, tmp_pa
         runner, "lean_axioms", lambda target, **kw: _fake_axiom_report(["propext", "myAx"])
     )
     assert runner._manager_axiom_profile_blocker(str(tmp_path / "M.lean"), "demo") == ([], "")
+
+
+def test_manager_axiom_profile_blocker_fails_closed_when_inspection_unavailable(
+    monkeypatch, tmp_path
+):
+    from leanflow_cli.lean.lean_models import LeanAxiomReport
+
+    monkeypatch.setattr(
+        runner,
+        "lean_axioms",
+        lambda target, **kw: LeanAxiomReport(
+            target=target,
+            file_path=str(tmp_path / "M.lean"),
+            ok=False,
+            axioms=[],
+            custom_axioms=[],
+            classical=False,
+            choice=False,
+            note="unexpected token '#print'",
+            inspection_succeeded=False,
+        ),
+    )
+
+    blockers, message = runner._manager_axiom_profile_blocker(str(tmp_path / "M.lean"), "demo")
+
+    assert blockers == ["axiom-profile-unavailable"]
+    assert "not accepted until inspection succeeds" in message
+    assert "unexpected token" in message
 
 
 def test_out_of_scope_queue_edit_guard_allows_new_helper_declarations(monkeypatch, tmp_path):
@@ -2803,6 +16138,3018 @@ def test_out_of_scope_queue_edit_guard_allows_new_helper_declarations(monkeypatc
 
     assert feedback == ""
     assert "demo_helper" in active.read_text(encoding="utf-8")
+
+
+def test_queue_preamble_guard_restores_doc_stealing_helper_insertion(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    before = (
+        "/-- Documentation owned by demo. -/\n"
+        "@[simp]\n"
+        "theorem demo : True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(before, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "/-- Documentation owned by demo. -/\n"
+        "private lemma checked_helper : True := by\n"
+        "  trivial\n\n"
+        "@[simp]\n"
+        "theorem demo : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
+
+    assert "QUEUE PREAMBLE GUARD" in feedback
+    assert "before the entire target preamble" in feedback
+    assert active.read_text(encoding="utf-8") == before
+
+
+def test_queue_preamble_guard_restores_intermediate_misplaced_doc_deletion(monkeypatch, tmp_path):
+    """A two-step repair cannot delete a stolen target doc before reinsertion."""
+    active = tmp_path / "Main.lean"
+    doc = "/-- Documentation intended for demo. -/\n"
+    before = (
+        doc + "private lemma checked_helper : True := by\n"
+        "  trivial\n\n"
+        "@[simp]\n"
+        "theorem demo : True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(before, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(before.removeprefix(doc), encoding="utf-8")
+
+    feedback = runner._restore_out_of_scope_queue_edit(agent, "patch")
+
+    assert "QUEUE PREAMBLE GUARD" in feedback
+    assert "complete relocation in one atomic patch" in feedback
+    assert active.read_text(encoding="utf-8") == before
+
+
+def test_accepted_queue_edit_records_only_new_helpers_in_plan_graph(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    before = (
+        "lemma historical : True := by\n"
+        "  trivial\n"
+        "\n"
+        "theorem demo : True := by\n"
+        "  sorry\n"
+        "\n"
+        "theorem later : True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(before, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        before.replace(
+            "theorem demo : True := by\n  sorry",
+            (
+                "private lemma demo_helper : True := by\n"
+                "  sorry\n"
+                "\n"
+                "lemma demo_ready : True := by\n"
+                "  trivial\n"
+                "\n"
+                "theorem demo : True := by\n"
+                "  exact demo_ready"
+            ),
+        ),
+        encoding="utf-8",
+    )
+
+    feedback = runner._finalize_managed_queue_edit(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    assert feedback == ""
+    bp = runner.plan_state.load_blueprint()
+    target_id = runner.plan_state.node_id_for("demo", str(active))
+    helper_id = runner.plan_state.node_id_for("demo_helper", str(active))
+    ready_id = runner.plan_state.node_id_for("demo_ready", str(active))
+    historical_id = runner.plan_state.node_id_for("historical", str(active))
+    helper = bp.node_by_id(helper_id)
+    ready = bp.node_by_id(ready_id)
+    assert helper is not None
+    assert helper.status == "stated"
+    assert helper.generated_by == "prover-edit"
+    assert ready is not None
+    assert ready.status == "proving"
+    assert ready.generated_by == "prover-edit"
+    assert bp.node_by_id(historical_id) is None
+    # The whole accepted helper batch is one parent-runner graph transaction.
+    assert bp.revision == 1
+    edges = {(edge.source, edge.target, edge.kind) for edge in bp.edges}
+    assert (helper_id, target_id, "evidence") in edges
+    assert (helper_id, target_id, "split_of") not in edges
+    assert (target_id, helper_id, "depends_on") not in edges
+    assert (ready_id, target_id, "split_of") in edges
+    assert (target_id, ready_id, "depends_on") in edges
+
+
+def test_first_unintegrated_singleton_is_accepted_as_evidence(monkeypatch, tmp_path):
+    """The guard preserves the first finite base case for later integration."""
+    active = tmp_path / "Main.lean"
+    before = "theorem demo (s : Nat) : True := by\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
+    after = "lemma demo_at_zero : (0 : Nat) = 0 := by\n" "  rfl\n\n" + before
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "slice": before.strip(),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    agent = _Agent()
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(after, encoding="utf-8")
+
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    assert verdict.accepted is True
+    assert verdict.declaration_delta.helper_names == ("demo_at_zero",)
+    assert verdict.evidence_helper_names == ("demo_at_zero",)
+    assert active.read_text(encoding="utf-8") == after
+    blueprint = runner.plan_state.load_blueprint()
+    helper_id = runner.plan_state.node_id_for("demo_at_zero", str(active))
+    target_id = runner.plan_state.node_id_for("demo", str(active))
+    assert {
+        (edge.source, edge.target, edge.kind)
+        for edge in blueprint.edges
+        if helper_id in {edge.source, edge.target}
+    } == {(helper_id, target_id, "evidence")}
+
+
+def test_repeated_unintegrated_singleton_rolls_back_before_graph_or_gate(monkeypatch, tmp_path):
+    """Resume detects a source-only base and rejects the next before side effects."""
+    active = tmp_path / "Main.lean"
+    before = (
+        "lemma demo_at_zero : (0 : Nat) = 0 := by\n"
+        "  rfl\n\n"
+        "theorem demo (s : Nat) : True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(before, encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "slice": before.strip(),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.decomposer,
+        "record_prover_helpers_from_edit",
+        lambda **_kwargs: pytest.fail("rejected singleton must not mutate the graph"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item",
+        lambda *_args: pytest.fail("rejected singleton must not reach helper verification"),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        before.replace(
+            "theorem demo",
+            "lemma demo_at_one : (1 : Nat) = 1 := by\n  rfl\n\ntheorem demo",
+        ),
+        encoding="utf-8",
+    )
+
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    assert verdict.accepted is False
+    assert verdict.declaration_delta.helper_names == ()
+    assert "FINITE SINGLETON GUARD" in verdict.feedback
+    assert "uniform induction/recurrence" in verdict.feedback
+    assert active.read_text(encoding="utf-8") == before
+    guard = next(kwargs for args, kwargs in events if args[0] == "queue-finite-singleton-guard")
+    assert guard["candidate_helpers"] == ["demo_at_one"]
+    assert guard["prior_helpers"] == ["demo_at_zero"]
+    assert guard["restored"] is True
+    assert guard["campaign_progress"] is False
+    assert guard["next_route_requirement"] == "uniform-or-exhaustive-bridge"
+    assert guard["orchestrator_event_watermark"] == 1
+    assert guard["orchestrator_reroute_pending"] is True
+    state = agent._managed_autonomy_state
+    scope = runner._orchestrator_event_scope(state)
+    assert runner.orchestrator_event_watermark.has_pending(state, scope=scope)
+
+    # An identical same-cycle retry preserves one durable trigger rather than
+    # flooding the next orchestration boundary with duplicate consultations.
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        before.replace(
+            "theorem demo",
+            "lemma demo_at_one : (1 : Nat) = 1 := by\n  rfl\n\ntheorem demo",
+        ),
+        encoding="utf-8",
+    )
+    repeated = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+    assert repeated.accepted is False
+    assert state["orchestrator_event_watermark"] == 1
+    assert runner._orchestrator_event_due(state, cycle=1) == "event"
+
+
+def test_rejected_priority_singleton_is_retired_after_source_rollback(monkeypatch, tmp_path):
+    """A deterministic rollback must not leave an impossible insertion fence."""
+    active = tmp_path / "Main.lean"
+    before = (
+        "lemma demo_at_zero : (0 : Nat) = 0 := by\n"
+        "  rfl\n\n"
+        "theorem demo (s : Nat) : True := by\n"
+        "  sorry\n"
+    )
+    declaration = "lemma demo_at_one : (1 : Nat) = 1 := by\n  rfl"
+    active.write_text(before, encoding="utf-8")
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": before.strip(),
+        },
+    }
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+        def is_interrupted(self):
+            return False
+
+    finding = {
+        "job_id": "campaign.orchestrator.em-singleton",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "deliverable": {
+            "checked_helper_status": "worker_checked_parent_recheck_required",
+            "parent_recheck_required": True,
+            "checked_helpers": [
+                {
+                    "active_file": str(active),
+                    "anchor_target_symbol": "demo",
+                    "declaration": declaration,
+                    "declaration_sha256": runner.hashlib.sha256(
+                        declaration.encode("utf-8")
+                    ).hexdigest(),
+                    "parent_recheck_required": True,
+                    "worker_check": {
+                        "tool": "lean_incremental_check",
+                        "action": "check_helper",
+                        "valid_without_sorry": True,
+                        "has_errors": False,
+                        "has_sorry": False,
+                        "verification_scope": "helper_candidate",
+                        "replacement_matches_target": False,
+                        "replacement_declarations": ["demo_at_one"],
+                    },
+                }
+            ],
+        },
+    }
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.decomposer,
+        "record_prover_helpers_from_edit",
+        lambda **_kwargs: pytest.fail("rejected singleton must not mutate the graph"),
+    )
+    candidate = runner.research_helper_candidate_priority.remember_from_findings(
+        state,
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert candidate is not None
+    ready = runner.research_helper_candidate_priority.mark_parent_recheck(
+        state,
+        candidate_id=candidate.candidate_id,
+        status="accepted",
+        source_revision_sha256=(
+            runner.research_helper_candidate_priority.source_revision_sha256(str(active))
+        ),
+        detail="parent exact helper check and axiom profile passed",
+    )
+    assert ready is not None and ready.ready
+    args = {
+        "path": str(active),
+        "old_string": "theorem demo (s : Nat) : True := by\n  sorry",
+        "new_string": declaration + "\n\ntheorem demo (s : Nat) : True := by\n  sorry",
+    }
+    agent = _Agent()
+
+    assert runner._managed_pre_tool_call(agent, "patch", args) is None
+    active.write_text(declaration + "\n\n" + before, encoding="utf-8")
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    assert verdict.accepted is False
+    assert "FINITE SINGLETON GUARD" in verdict.feedback
+    assert active.read_text(encoding="utf-8") == before
+    assert runner.research_helper_candidate_priority.load(state) is None
+    assert (
+        state[runner.research_helper_candidate_priority.RESOLVED_STATE_KEY][-1]["disposition"]
+        == "finite_singleton_guard_rejected"
+    )
+    # The candidate fence is retired, while the generic source fence now
+    # prevents a costly Lean check of the restored, unchanged sorry target.
+    blocked_target_check = runner._managed_pre_tool_call(
+        agent,
+        "lean_incremental_check",
+        {
+            "action": "check_target",
+            "file_path": str(active),
+            "theorem_id": "demo",
+        },
+    )
+    assert blocked_target_check is not None
+    assert json.loads(blocked_target_check)["status"] == "source_placeholder_check_skipped"
+
+
+def test_priority_singleton_restore_failure_keeps_candidate_pending(monkeypatch, tmp_path):
+    """Do not acknowledge a guard rejection until baseline restoration is verified."""
+    active = tmp_path / "Main.lean"
+    before = (
+        "lemma demo_at_zero : (0 : Nat) = 0 := by\n"
+        "  rfl\n\n"
+        "theorem demo (s : Nat) : True := by\n"
+        "  sorry\n"
+    )
+    declaration = "lemma demo_at_one : (1 : Nat) = 1 := by\n  rfl"
+    active.write_text(before, encoding="utf-8")
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+        def is_interrupted(self):
+            return False
+
+    finding = {
+        "job_id": "campaign.orchestrator.em-singleton",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "deliverable": {
+            "checked_helper_status": "worker_checked_parent_recheck_required",
+            "parent_recheck_required": True,
+            "checked_helpers": [
+                {
+                    "active_file": str(active),
+                    "anchor_target_symbol": "demo",
+                    "declaration": declaration,
+                    "declaration_sha256": runner.hashlib.sha256(
+                        declaration.encode("utf-8")
+                    ).hexdigest(),
+                    "parent_recheck_required": True,
+                    "worker_check": {
+                        "tool": "lean_incremental_check",
+                        "action": "check_helper",
+                        "valid_without_sorry": True,
+                        "has_errors": False,
+                        "has_sorry": False,
+                        "verification_scope": "helper_candidate",
+                        "replacement_matches_target": False,
+                        "replacement_declarations": ["demo_at_one"],
+                    },
+                }
+            ],
+        },
+    }
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(runner, "plan_state_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    candidate = runner.research_helper_candidate_priority.remember_from_findings(
+        state,
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert candidate is not None
+    runner.research_helper_candidate_priority.mark_parent_recheck(
+        state,
+        candidate_id=candidate.candidate_id,
+        status="accepted",
+        source_revision_sha256=(
+            runner.research_helper_candidate_priority.source_revision_sha256(str(active))
+        ),
+    )
+    args = {
+        "path": str(active),
+        "old_string": "theorem demo (s : Nat) : True := by\n  sorry",
+        "new_string": declaration + "\n\ntheorem demo (s : Nat) : True := by\n  sorry",
+    }
+    agent = _Agent()
+    assert runner._managed_pre_tool_call(agent, "patch", args) is None
+    after = declaration + "\n\n" + before
+    active.write_text(after, encoding="utf-8")
+    original_write_text = runner.Path.write_text
+
+    def fail_baseline_restore(path, data, *args, **kwargs):
+        if path == active and data == before:
+            raise OSError("simulated rollback failure")
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(runner.Path, "write_text", fail_baseline_restore)
+
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    assert verdict.accepted is False
+    assert "could not confirm source restoration" in verdict.feedback
+    assert active.read_text(encoding="utf-8") == after
+    pending = runner.research_helper_candidate_priority.load(state)
+    assert pending is not None and pending.candidate_id == candidate.candidate_id
+    assert not state[runner.research_helper_candidate_priority.RESOLVED_STATE_KEY]
+
+
+def test_exhausted_priority_attempts_alone_remain_pending(monkeypatch, tmp_path):
+    """Preflight attempts cannot prove that an edit succeeded and was rolled back."""
+    active = tmp_path / "Main.lean"
+    before = (
+        "lemma demo_at_zero : (0 : Nat) = 0 := by\n"
+        "  rfl\n\n"
+        "theorem demo (s : Nat) : True := by\n"
+        "  sorry\n"
+    )
+    declaration = "lemma demo_at_one : (1 : Nat) = 1 := by\n  rfl"
+    active.write_text(before, encoding="utf-8")
+    state = {
+        "campaign_id": "campaign",
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        },
+    }
+    finding = {
+        "job_id": "campaign.orchestrator.em-singleton",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "deliverable": {
+            "checked_helper_status": "worker_checked_parent_recheck_required",
+            "parent_recheck_required": True,
+            "checked_helpers": [
+                {
+                    "active_file": str(active),
+                    "anchor_target_symbol": "demo",
+                    "declaration": declaration,
+                    "declaration_sha256": runner.hashlib.sha256(
+                        declaration.encode("utf-8")
+                    ).hexdigest(),
+                    "parent_recheck_required": True,
+                    "worker_check": {
+                        "tool": "lean_incremental_check",
+                        "action": "check_helper",
+                        "valid_without_sorry": True,
+                        "has_errors": False,
+                        "has_sorry": False,
+                        "verification_scope": "helper_candidate",
+                        "replacement_matches_target": False,
+                        "replacement_declarations": ["demo_at_one"],
+                    },
+                }
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        runner,
+        "lean_incremental_check",
+        lambda **_kwargs: pytest.fail("a ready unchanged candidate needs no repeated Lean check"),
+    )
+    candidate = runner.research_helper_candidate_priority.remember_from_findings(
+        state,
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert candidate is not None
+    runner.research_helper_candidate_priority.mark_parent_recheck(
+        state,
+        candidate_id=candidate.candidate_id,
+        status="accepted",
+        source_revision_sha256=(
+            runner.research_helper_candidate_priority.source_revision_sha256(str(active))
+        ),
+    )
+    for _ in range(runner.research_helper_candidate_priority.MAX_INTEGRATION_ATTEMPTS):
+        runner.research_helper_candidate_priority.note_integration_attempt(
+            state,
+            candidate_id=candidate.candidate_id,
+        )
+
+    prompt = runner._recheck_pending_research_helper_if_due(
+        state,
+        state["current_queue_assignment"],
+        agent=object(),
+    )
+
+    assert "[LEANFLOW PARENT-CHECKED RESEARCH HELPER PRIORITY]" in prompt
+    assert "before the entire assigned declaration preamble" in prompt
+    assert "never insert the helper between" in prompt
+    assert "one atomic patch/replacement" in prompt
+    assert declaration in prompt
+    assert active.read_text(encoding="utf-8") == before
+    pending = runner.research_helper_candidate_priority.load(state)
+    assert pending is not None
+    assert pending.candidate_id == candidate.candidate_id
+    assert (
+        pending.integration_attempts
+        == runner.research_helper_candidate_priority.MAX_INTEGRATION_ATTEMPTS
+    )
+    assert not state[runner.research_helper_candidate_priority.RESOLVED_STATE_KEY]
+
+
+def test_grouped_finite_case_edit_rolls_back_before_graph_or_gate(monkeypatch, tmp_path):
+    """The live Erdős two-through-five shape cannot evade finite-case containment."""
+    active = tmp_path / "Main.lean"
+    before = (
+        "private lemma demo_at_zero : (0 : Nat) = 0 := by\n"
+        "  rfl\n\n"
+        "private lemma demo_at_one : (1 : Nat) = 1 := by\n"
+        "  rfl\n\n"
+        "private lemma demo (s : Nat) : True := by\n"
+        "  sorry\n"
+    )
+    grouped = (
+        "private lemma demo_at_two_through_five (s : ℕ)\n"
+        "    (hs : s = 2 ∨ s = 3 ∨ s = 4 ∨ s = 5) : True := by\n"
+        "  rcases hs with rfl | rfl | rfl | rfl\n"
+        "  all_goals trivial\n\n"
+    )
+    active.write_text(before, encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "slice": before.strip(),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner.decomposer,
+        "record_prover_helpers_from_edit",
+        lambda **_kwargs: pytest.fail("rejected grouped cases must not mutate the graph"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item",
+        lambda *_args: pytest.fail("rejected grouped cases must not reach helper verification"),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(grouped + before, encoding="utf-8")
+
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    assert verdict.accepted is False
+    assert "FINITE SINGLETON GUARD" in verdict.feedback
+    assert active.read_text(encoding="utf-8") == before
+    guard = next(kwargs for args, kwargs in events if args[0] == "queue-finite-singleton-guard")
+    assert guard["candidate_helpers"] == ["demo_at_two_through_five"]
+    assert guard["candidate_branches"] == ["finite-cases:s={2,3,4,5}"]
+    assert guard["prior_helpers"] == ["demo_at_one", "demo_at_zero"]
+    assert guard["restored"] is True
+    assert guard["campaign_progress"] is False
+    assert guard["orchestrator_reroute_pending"] is True
+
+
+def test_structural_uniform_bridge_allows_another_singleton_base(monkeypatch, tmp_path):
+    """A durable induction-step child permits legitimate multiple base cases."""
+    active = tmp_path / "Main.lean"
+    before = (
+        "lemma demo_at_zero : (0 : Nat) = 0 := by\n"
+        "  rfl\n\n"
+        "lemma demo_step (s : Nat) : True := by\n"
+        "  trivial\n\n"
+        "theorem demo (s : Nat) : True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(before, encoding="utf-8")
+    after = before.replace(
+        "lemma demo_step",
+        "lemma demo_at_one : (1 : Nat) = 1 := by\n  rfl\n\nlemma demo_step",
+    )
+    file = str(active)
+    target_id = runner.plan_state.node_id_for("demo", file)
+    bridge_id = runner.plan_state.node_id_for("demo_step", file)
+    blueprint = runner.plan_state.Blueprint(
+        nodes=(
+            runner.plan_state.GraphNode(
+                id=target_id,
+                kind="theorem",
+                name="demo",
+                file=file,
+                status="proving",
+            ),
+            runner.plan_state.GraphNode(
+                id=bridge_id,
+                kind="lemma",
+                name="demo_step",
+                file=file,
+                status="stated",
+            ),
+        ),
+        edges=(
+            runner.plan_state.GraphEdge(bridge_id, target_id, "split_of"),
+            runner.plan_state.GraphEdge(target_id, bridge_id, "depends_on"),
+        ),
+    )
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": file,
+                "slice": before.strip(),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    runner.plan_state.save_blueprint(blueprint)
+    agent = _Agent()
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": file}) is None
+    active.write_text(after, encoding="utf-8")
+
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    assert verdict.accepted is True
+    assert verdict.declaration_delta.helper_names == ("demo_at_one",)
+    assert verdict.evidence_helper_names == ("demo_at_one",)
+    assert active.read_text(encoding="utf-8") == after
+    helper_id = runner.plan_state.node_id_for("demo_at_one", file)
+    updated = runner.plan_state.load_blueprint()
+    assert {
+        (edge.source, edge.target, edge.kind)
+        for edge in updated.edges
+        if helper_id in {edge.source, edge.target}
+    } == {(helper_id, target_id, "evidence")}
+
+
+def test_same_edit_singleton_integration_remains_valid_proof_support(monkeypatch, tmp_path):
+    """Exact target use preserves legitimate multiple-base induction scaffolding."""
+    active = tmp_path / "Main.lean"
+    before = (
+        "lemma demo_at_zero : (0 : Nat) = 0 := by\n"
+        "  rfl\n\n"
+        "theorem demo (s : Nat) : True ∧ True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(before, encoding="utf-8")
+    after = (
+        "lemma demo_at_zero : (0 : Nat) = 0 := by\n"
+        "  rfl\n\n"
+        "lemma demo_at_one : (1 : Nat) = 1 := by\n"
+        "  rfl\n\n"
+        "theorem demo (s : Nat) : True ∧ True := by\n"
+        "  constructor\n"
+        "  · have _base : (1 : Nat) = 1 := demo_at_one\n"
+        "    trivial\n"
+        "  · sorry\n"
+    )
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "slice": before.strip(),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    agent = _Agent()
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(after, encoding="utf-8")
+
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    assert verdict.accepted is True
+    assert verdict.declaration_delta.assigned_changed is True
+    assert verdict.declaration_delta.helper_names == ("demo_at_one",)
+    assert verdict.evidence_helper_names == ()
+    assert active.read_text(encoding="utf-8") == after
+    blueprint = runner.plan_state.load_blueprint()
+    helper_id = runner.plan_state.node_id_for("demo_at_one", str(active))
+    target_id = runner.plan_state.node_id_for("demo", str(active))
+    assert {
+        (edge.source, edge.target, edge.kind)
+        for edge in blueprint.edges
+        if helper_id in {edge.source, edge.target}
+    } == {
+        (helper_id, target_id, "split_of"),
+        (target_id, helper_id, "depends_on"),
+    }
+
+
+def test_newly_closed_target_is_not_rolled_back_for_unused_singleton(monkeypatch, tmp_path):
+    """A target closure reaches its kernel gate even with unused finite evidence."""
+    active = tmp_path / "Main.lean"
+    before = (
+        "lemma demo_at_zero : (0 : Nat) = 0 := by\n"
+        "  rfl\n\n"
+        "theorem demo (s : Nat) : True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(before, encoding="utf-8")
+    after = (
+        "lemma demo_at_zero : (0 : Nat) = 0 := by\n"
+        "  rfl\n\n"
+        "lemma demo_at_one : (1 : Nat) = 1 := by\n"
+        "  rfl\n\n"
+        "theorem demo (s : Nat) : True := by\n"
+        "  trivial\n"
+    )
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "slice": before.strip(),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    agent = _Agent()
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(after, encoding="utf-8")
+
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    assert verdict.accepted is True
+    assert verdict.declaration_delta.assigned_changed is True
+    assert verdict.declaration_delta.helper_names == ("demo_at_one",)
+    assert verdict.evidence_helper_names == ("demo_at_one",)
+    assert active.read_text(encoding="utf-8") == after
+
+
+def test_spontaneous_conditional_helper_is_generic_evidence(monkeypatch, tmp_path):
+    """A prover-created bridge needs exact target use before specialized progress."""
+    active = tmp_path / "Main.lean"
+    before = "theorem demo (k : ℕ) (hk : 1 ≤ k) (hmod : k % 7 = 0) : Witness k := by\n" "  sorry\n"
+    active.write_text(before, encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": before.strip(),
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    def check_helper(_active_file, target_symbol):
+        assert target_symbol == "conditional_bridge"
+        return (
+            {
+                "ok": True,
+                "mode": "incremental_target",
+                "target": target_symbol,
+                "command": f"lean_interact check_target {target_symbol}",
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": [],
+                "incremental": {
+                    "success": True,
+                    "ok": True,
+                    "target": target_symbol,
+                    "file": str(active),
+                    "has_errors": False,
+                    "has_sorry": False,
+                    "messages": [],
+                },
+            },
+            "lean_incremental_check",
+        )
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "conditional-helper-edit")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_manager_check_queue_item", check_helper)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+    for route in ("plan", "decompose"):
+        runner.campaign_epoch.record_route_decision(
+            agent._managed_autonomy_state,
+            route=route,
+            target_symbol="demo",
+            active_file=str(active),
+        )
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "lemma conditional_bridge\n"
+        "    (hmain : ∀ k : ℕ, 1 ≤ k → k % 7 = 0 → Witness k) : True := by\n"
+        "  exact True.intro\n\n" + before,
+        encoding="utf-8",
+    )
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    result = runner._record_helper_only_edit_progress(
+        agent,
+        target_symbol="demo",
+        active_file=str(active),
+        helper_names=verdict.declaration_delta.helper_names,
+        verification_tool="patch",
+        assigned_changed=False,
+    )
+
+    assert result.verified_any is True
+    assert result.proof_progress is False
+    assert (
+        runner.plan_state.load_blueprint()
+        .node_by_id(runner.plan_state.node_id_for("conditional_bridge", str(active)))
+        .status
+        == "proved"
+    )
+    assert agent._managed_autonomy_state["orchestrator_routes_used"] == 2
+    event_names = [args[0] for args, _kwargs in events]
+    assert "queue-helper-evidence" in event_names
+    assert "queue-helper-conditional-progress-deferred" not in event_names
+    assert "queue-helper-progress" not in event_names
+    assert "[LEANFLOW-NATIVE HELPER EVIDENCE]" in agent._post_tool_result_appendix
+
+
+def test_spontaneous_finite_branch_edit_is_generic_evidence(monkeypatch, tmp_path):
+    """A prover-created residue is evidence before finite-family accounting."""
+    active = tmp_path / "Main.lean"
+    prior_specs = ((41, 10), (43, 12), (83, 41), (87, 20))
+    source = "".join(
+        f"lemma residue_{modulus}_{residue} (t : Nat) "
+        f"(h : t % {modulus} = {residue}) : True := by\n  trivial\n\n"
+        for modulus, residue in prior_specs
+    )
+    source += (
+        "lemma residue_47_40 (t : Nat) (h : t % 47 = 40) : True := by\n"
+        "  omega\n\n"
+        "theorem erdos_242 : True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(source, encoding="utf-8")
+    target = runner.plan_state.GraphNode(
+        id=runner.plan_state.node_id_for("erdos_242", str(active)),
+        kind="theorem",
+        name="erdos_242",
+        file=str(active),
+        statement="True",
+        status="proving",
+    )
+    prior_nodes = tuple(
+        runner.plan_state.GraphNode(
+            id=runner.plan_state.node_id_for(f"residue_{modulus}_{residue}", str(active)),
+            kind="lemma",
+            name=f"residue_{modulus}_{residue}",
+            file=str(active),
+            statement=f"(t : Nat) (h : t % {modulus} = {residue}) : True",
+            status="proved",
+        )
+        for modulus, residue in prior_specs
+    )
+    current = runner.plan_state.GraphNode(
+        id=runner.plan_state.node_id_for("residue_47_40", str(active)),
+        kind="lemma",
+        name="residue_47_40",
+        file=str(active),
+        statement="(t : Nat) (h : t % 47 = 40) : True",
+        status="proved",
+    )
+    helpers = (*prior_nodes, current)
+    blueprint = runner.plan_state.Blueprint(
+        nodes=(target, *helpers),
+        edges=tuple(
+            edge
+            for helper in helpers
+            for edge in (
+                runner.plan_state.GraphEdge(helper.id, target.id, "split_of"),
+                runner.plan_state.GraphEdge(target.id, helper.id, "depends_on"),
+            )
+        ),
+    )
+    events: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "erdos_242",
+                    "active_file": str(active),
+                    "slice": "theorem erdos_242 : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+    def check_helper(_active_file, target_symbol):
+        assert target_symbol == "residue_47_40"
+        return (
+            {
+                "ok": True,
+                "target": target_symbol,
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": [],
+                "incremental": {
+                    "success": True,
+                    "ok": True,
+                    "target": target_symbol,
+                    "file": str(active),
+                    "has_errors": False,
+                    "has_sorry": False,
+                },
+            },
+            "lean_incremental_check",
+        )
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "finite-branch-queue")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    runner.plan_state.save_blueprint(blueprint)
+    monkeypatch.setattr(runner, "_manager_check_queue_item", check_helper)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *_args: True)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+    for route in ("plan", "decompose", "negate"):
+        runner.campaign_epoch.record_route_decision(
+            agent._managed_autonomy_state,
+            route=route,
+            target_symbol="erdos_242",
+            active_file=str(active),
+        )
+
+    result = runner._record_helper_only_edit_progress(
+        agent,
+        target_symbol="erdos_242",
+        active_file=str(active),
+        helper_names=("residue_47_40",),
+        verification_tool="patch",
+    )
+
+    assert result.verified_any is True
+    assert result.proof_progress is False
+    assert runner.campaign_epoch.campaign_snapshot()["no_progress_route_streak"] == 3
+    event_names = [args[0] for args, _kwargs in events]
+    assert "queue-helper-evidence" in event_names
+    assert "queue-helper-finite-branch-evidence" not in event_names
+    assert "queue-helper-progress" not in event_names
+    assert "[LEANFLOW-NATIVE HELPER EVIDENCE]" in agent._post_tool_result_appendix
+
+
+def test_saturated_finite_branch_graph_fact_does_not_reset_campaign(monkeypatch, tmp_path):
+    """Graph reconciliation retains a closed singleton without campaign progress."""
+    active = tmp_path / "Main.lean"
+    prior_specs = ((41, 10), (43, 12), (83, 41), (87, 20))
+    active.write_text(
+        "".join(
+            f"lemma residue_{modulus}_{residue} (t : Nat) "
+            f"(h : t % {modulus} = {residue}) : True := by\n  trivial\n\n"
+            for modulus, residue in prior_specs
+        )
+        + "lemma erdos_242_at_twenty_one : "
+        + "\u2203 x : Nat, x = 4 / (168 * 21 + 1) := by\n  exact \u27e80, by norm_num\u27e9\n\n"
+        + "theorem erdos_242 : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    target = runner.plan_state.GraphNode(
+        id=runner.plan_state.node_id_for("erdos_242", str(active)),
+        kind="theorem",
+        name="erdos_242",
+        file=str(active),
+        statement="True",
+        status="proving",
+    )
+    prior_nodes = tuple(
+        runner.plan_state.GraphNode(
+            id=runner.plan_state.node_id_for(f"residue_{modulus}_{residue}", str(active)),
+            kind="lemma",
+            name=f"residue_{modulus}_{residue}",
+            file=str(active),
+            statement=f"(t : Nat) (h : t % {modulus} = {residue}) : True",
+            status="proved",
+        )
+        for modulus, residue in prior_specs
+    )
+    proving = runner.plan_state.GraphNode(
+        id=runner.plan_state.node_id_for("erdos_242_at_twenty_one", str(active)),
+        kind="lemma",
+        name="erdos_242_at_twenty_one",
+        file=str(active),
+        statement="\u2203 x : Nat, x = 4 / (168 * 21 + 1)",
+        status="proving",
+    )
+    proved = replace(proving, status="proved")
+
+    def graph(current):
+        helpers = (*prior_nodes, current)
+        return runner.plan_state.Blueprint(
+            nodes=(target, *helpers),
+            edges=tuple(
+                edge
+                for helper in helpers
+                for edge in (
+                    runner.plan_state.GraphEdge(helper.id, target.id, "split_of"),
+                    runner.plan_state.GraphEdge(target.id, helper.id, "depends_on"),
+                )
+            ),
+        )
+
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "finite-branch-graph")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    state: dict = {}
+    for route in ("plan", "decompose", "negate"):
+        runner.campaign_epoch.record_route_decision(
+            state,
+            route=route,
+            target_symbol="erdos_242",
+            active_file=str(active),
+        )
+
+    progressed = runner._record_newly_verified_campaign_progress(
+        graph(proving),
+        graph(proved),
+        state,
+        previously_proved_node_ids={node.id for node in prior_nodes},
+        newly_verified_node_ids={proved.id},
+    )
+
+    assert progressed == ()
+    campaign = runner.campaign_epoch.campaign_snapshot()
+    assert campaign["no_progress_route_streak"] == 3
+    assert "last_verified_graph_progress" not in campaign
+    event_names = [args[0] for args, _kwargs in events]
+    assert "plan-graph-finite-branch-evidence" in event_names
+    assert "plan-graph-mechanism-repeat" not in event_names
+
+
+def test_closed_target_case_graph_fact_does_not_reset_campaign(monkeypatch, tmp_path):
+    """Graph reconciliation contains an exact closed case before saturation."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "private lemma demo_residual_case_k_eq_1 : "
+        + "∃ x y z : ℕ, "
+        + "(4 / ((24 * 1 + 1 : ℕ) : ℚ)) = "
+        + "1 / (x : ℚ) + 1 / (y : ℚ) + 1 / (z : ℚ) := by\n"
+        + "  exact case_certificate\n\n"
+        + "lemma demo_residual (k : ℕ) : ∃ x : ℕ, x = k := by\n"
+        + "  sorry\n",
+        encoding="utf-8",
+    )
+    target = runner.plan_state.GraphNode(
+        id=runner.plan_state.node_id_for("demo_residual", str(active)),
+        kind="lemma",
+        name="demo_residual",
+        file=str(active),
+        statement="(k : ℕ) : ∃ x : ℕ, x = k",
+        status="proving",
+    )
+    proving = runner.plan_state.GraphNode(
+        id=runner.plan_state.node_id_for("demo_residual_case_k_eq_1", str(active)),
+        kind="lemma",
+        name="demo_residual_case_k_eq_1",
+        file=str(active),
+        statement=(
+            "∃ x y z : ℕ, (4 / ((24 * 1 + 1 : ℕ) : ℚ)) = " "1 / (x : ℚ) + 1 / (y : ℚ) + 1 / (z : ℚ)"
+        ),
+        status="proving",
+    )
+    proved = replace(proving, status="proved")
+
+    def graph(current):
+        return runner.plan_state.Blueprint(
+            nodes=(target, current),
+            edges=(
+                runner.plan_state.GraphEdge(current.id, target.id, "split_of"),
+                runner.plan_state.GraphEdge(target.id, current.id, "depends_on"),
+            ),
+        )
+
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "closed-target-case-graph")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    state: dict = {}
+    for route in ("plan", "decompose", "negate"):
+        runner.campaign_epoch.record_route_decision(
+            state,
+            route=route,
+            target_symbol="demo_residual",
+            active_file=str(active),
+        )
+
+    progressed = runner._record_newly_verified_campaign_progress(
+        graph(proving),
+        graph(proved),
+        state,
+        previously_proved_node_ids=set(),
+        newly_verified_node_ids={proved.id},
+    )
+
+    assert progressed == ()
+    campaign = runner.campaign_epoch.campaign_snapshot()
+    assert campaign["no_progress_route_streak"] == 3
+    assert "last_verified_graph_progress" not in campaign
+    event_names = [args[0] for args, _kwargs in events]
+    assert "plan-graph-finite-branch-evidence" in event_names
+    assert "plan-graph-mechanism-repeat" not in event_names
+
+
+def test_decompose_route_helper_edit_is_verified_evidence_without_campaign_progress(
+    monkeypatch, tmp_path
+):
+    """An unused prover helper is evidence even while the route says decompose."""
+    active = tmp_path / "Main.lean"
+    before = "theorem demo : True := by\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+    checked: list[str] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": before.strip(),
+                },
+                "orchestrator_current_route": "decompose",
+                "search_progress": {"search_count": 7},
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    def check_helper(_active_file, target_symbol):
+        if target_symbol == "demo":
+            pytest.fail("unchanged target must not enter the failure gate")
+        checked.append(target_symbol)
+        return (
+            {
+                "ok": True,
+                "mode": "incremental_target",
+                "target": target_symbol,
+                "command": f"lean_interact check_target {target_symbol}",
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": [],
+                "incremental": {
+                    "success": True,
+                    "ok": True,
+                    "target": target_symbol,
+                    "file": str(active),
+                    "has_errors": False,
+                    "has_sorry": False,
+                    "messages": [],
+                },
+            },
+            "lean_incremental_check",
+        )
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "decompose-helper-evidence")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(runner, "_refresh_live_queue_source_after_managed_edit", lambda *_: None)
+    monkeypatch.setattr(runner, "_manager_check_queue_item", check_helper)
+    monkeypatch.setattr(
+        runner,
+        "_finish_queue_step_boundary",
+        lambda *args, **kwargs: pytest.fail("evidence must not enter the target failure gate"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_manager_nudge",
+        lambda *args, **kwargs: pytest.fail("evidence must not trigger target coaching"),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+    for route in ("plan", "negate", "decompose"):
+        runner.campaign_epoch.record_route_decision(
+            agent._managed_autonomy_state,
+            route=route,
+            target_symbol="demo",
+            active_file=str(active),
+        )
+    agent._managed_autonomy_state["orchestrator_current_route"] = "decompose"
+    assert agent._managed_autonomy_state["orchestrator_routes_used"] == 3
+
+    tool_args = {"path": str(active)}
+    assert runner._managed_pre_tool_call(agent, "patch", tool_args) is None
+    active.write_text(
+        "lemma terminal_conditions_consistent : True := by\n" "  trivial\n\n" + before,
+        encoding="utf-8",
+    )
+    result = json.dumps({"success": True})
+    verdict = runner._finalize_managed_queue_edit_details(agent, "patch", result)
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        tool_args,
+        result,
+        queue_edit_accepted=verdict.accepted,
+        queue_assignment_changed=verdict.declaration_delta.assigned_changed,
+        queue_helper_candidates=verdict.declaration_delta.helper_names,
+        queue_evidence_helpers=verdict.evidence_helper_names,
+        queue_promoted_helpers=verdict.promoted_helper_names,
+    )
+
+    assert verdict.accepted is True
+    assert verdict.declaration_delta.assigned_changed is False
+    assert verdict.declaration_delta.helper_names == ("terminal_conditions_consistent",)
+    assert verdict.evidence_helper_names == ("terminal_conditions_consistent",)
+    assert verdict.promoted_helper_names == ()
+    assert checked == ["terminal_conditions_consistent"]
+    state = agent._managed_autonomy_state
+    assert state["orchestrator_routes_used"] == 3
+    assert state["search_progress"] == {"search_count": 7}
+    campaign = runner.campaign_epoch.campaign_snapshot()
+    assert campaign["no_progress_route_streak"] == 3
+    assert "last_verified_graph_progress" not in campaign
+    assert "verified_mechanisms" not in campaign
+
+    outcome = state["theorem_outcomes"][f"{active}::terminal_conditions_consistent"]
+    assert outcome["status"] == "solved"
+    assert "evidence" in outcome["note"]
+    blueprint = runner.plan_state.load_blueprint()
+    helper_id = runner.plan_state.node_id_for("terminal_conditions_consistent", str(active))
+    target_id = runner.plan_state.node_id_for("demo", str(active))
+    assert blueprint.node_by_id(helper_id).status == "proved"
+    helper_edges = {
+        (edge.source, edge.target, edge.kind)
+        for edge in blueprint.edges
+        if helper_id in {edge.source, edge.target}
+    }
+    assert helper_edges == {(helper_id, target_id, "evidence")}
+
+    event_names = [args[0] for args, _kwargs in events]
+    assert "queue-helper-verification-request" in event_names
+    assert "queue-helper-verification" in event_names
+    assert "queue-helper-evidence" in event_names
+    assert "plan-graph-evidence-verified" in event_names
+    assert "queue-helper-progress" not in event_names
+    request_event = next(
+        kwargs for args, kwargs in events if args[0] == "queue-helper-verification-request"
+    )
+    verification_event = next(
+        kwargs for args, kwargs in events if args[0] == "queue-helper-verification"
+    )
+    assert event_names.index("queue-helper-verification-request") < event_names.index(
+        "queue-helper-verification"
+    )
+    assert request_event["helper_role"] == "evidence"
+    assert request_event["elapsed_s"] == 0.0
+    assert request_event["timeout_s"] > 0
+    assert verification_event["helper_role"] == "evidence"
+    assert verification_event["campaign_progress"] is False
+    assert verification_event["elapsed_s"] >= 0.0
+    assert verification_event["timeout_s"] == request_event["timeout_s"]
+    assert "[LEANFLOW-NATIVE HELPER EVIDENCE]" in agent._post_tool_result_appendix
+    assert "does not reset campaign no-progress" in agent._post_tool_result_appendix
+
+    journal = (tmp_path / "plan-state" / "journal.jsonl").read_text(encoding="utf-8")
+    assert '"event": "helper-evidence-recorded"' in journal
+    assert '"event": "helper-split-recorded"' not in journal
+
+
+def test_exactly_integrated_prover_helper_is_proof_support_and_campaign_progress(
+    monkeypatch, tmp_path
+):
+    """Exact same-edit target use outranks spontaneous-helper evidence policy."""
+    active = tmp_path / "Main.lean"
+    before = "theorem demo : True ∧ True := by\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+    checked: list[str] = []
+    target_boundaries: list[str] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": before.strip(),
+                },
+                "orchestrator_current_route": "decompose",
+                "search_progress": {"search_count": 7},
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    def check_declaration(_active_file, target_symbol):
+        checked.append(target_symbol)
+        accepted = target_symbol == "integrated_helper"
+        return (
+            {
+                "ok": accepted,
+                "mode": "incremental_target",
+                "target": target_symbol,
+                "command": f"lean_interact check_target {target_symbol}",
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": [],
+                "incremental": {
+                    "success": accepted,
+                    "ok": accepted,
+                    "target": target_symbol,
+                    "file": str(active),
+                    "has_errors": not accepted,
+                    "has_sorry": not accepted,
+                    "messages": [],
+                },
+            },
+            "lean_incremental_check",
+        )
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "negate-integrated-helper")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(runner, "_refresh_live_queue_source_after_managed_edit", lambda *_: None)
+    monkeypatch.setattr(runner, "_manager_check_queue_item", check_declaration)
+    monkeypatch.setattr(
+        runner,
+        "_finish_queue_step_boundary",
+        lambda _agent, **kwargs: target_boundaries.append(kwargs["pending_target"]),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+    for route in ("plan", "negate", "decompose"):
+        runner.campaign_epoch.record_route_decision(
+            agent._managed_autonomy_state,
+            route=route,
+            target_symbol="demo",
+            active_file=str(active),
+        )
+    agent._managed_autonomy_state["orchestrator_current_route"] = "decompose"
+
+    tool_args = {"path": str(active)}
+    assert runner._managed_pre_tool_call(agent, "patch", tool_args) is None
+    active.write_text(
+        "lemma integrated_helper : True := by\n"
+        "  trivial\n\n"
+        "theorem demo : True ∧ True := by\n"
+        "  constructor\n"
+        "  · exact integrated_helper\n"
+        "  · sorry\n",
+        encoding="utf-8",
+    )
+    result = json.dumps({"success": True})
+    verdict = runner._finalize_managed_queue_edit_details(agent, "patch", result)
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        tool_args,
+        result,
+        queue_edit_accepted=verdict.accepted,
+        queue_assignment_changed=verdict.declaration_delta.assigned_changed,
+        queue_helper_candidates=verdict.declaration_delta.helper_names,
+        queue_evidence_helpers=verdict.evidence_helper_names,
+        queue_promoted_helpers=verdict.promoted_helper_names,
+    )
+
+    assert verdict.accepted is True
+    assert verdict.declaration_delta.assigned_changed is True
+    assert verdict.declaration_delta.helper_names == ("integrated_helper",)
+    assert verdict.evidence_helper_names == ()
+    assert verdict.promoted_helper_names == ()
+    assert checked == ["integrated_helper", "demo"]
+    assert target_boundaries == ["demo"]
+    state = agent._managed_autonomy_state
+    assert state["orchestrator_routes_used"] == 0
+    campaign = runner.campaign_epoch.campaign_snapshot()
+    assert campaign["no_progress_route_streak"] == 0
+    helper_id = runner.plan_state.node_id_for("integrated_helper", str(active))
+    assert campaign["last_verified_graph_progress"]["node_ids"] == [helper_id]
+
+    blueprint = runner.plan_state.load_blueprint()
+    target_id = runner.plan_state.node_id_for("demo", str(active))
+    helper_edges = {
+        (edge.source, edge.target, edge.kind)
+        for edge in blueprint.edges
+        if helper_id in {edge.source, edge.target}
+    }
+    assert helper_edges == {
+        (helper_id, target_id, "split_of"),
+        (target_id, helper_id, "depends_on"),
+    }
+    event_names = [args[0] for args, _kwargs in events]
+    assert "queue-helper-progress" in event_names
+    assert "queue-helper-evidence" not in event_names
+    verification_event = next(
+        kwargs for args, kwargs in events if args[0] == "queue-helper-verification"
+    )
+    assert verification_event["helper_role"] == "proof-support"
+    journal = (tmp_path / "plan-state" / "journal.jsonl").read_text(encoding="utf-8")
+    assert '"event": "helper-split-recorded"' in journal
+    assert '"event": "helper-evidence-recorded"' not in journal
+
+
+@pytest.mark.parametrize("final_uses_helper", [True, False])
+def test_forward_reference_promotion_retries_after_helper_reorder(
+    monkeypatch, tmp_path, final_uses_helper
+):
+    """A failed promotion is credited only if the repaired target still uses it."""
+    active = tmp_path / "Main.lean"
+    original = "theorem demo : True ∧ True := by\n  sorry\n"
+    active.write_text(original, encoding="utf-8")
+    events: list[tuple[tuple, dict]] = []
+    checked: list[str] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self.quiet_mode = True
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": original.strip(),
+                },
+                "orchestrator_current_route": "decompose",
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    def check_declaration(_active_file, target_symbol):
+        checked.append(target_symbol)
+        source = active.read_text(encoding="utf-8")
+        accepted = target_symbol == "saved_observation" or (
+            source.index("lemma saved_observation") < source.index("theorem demo")
+            and "sorry" not in runner._declaration_slice_text(str(active), "demo")
+        )
+        return (
+            {
+                "ok": accepted,
+                "mode": "incremental_target",
+                "target": target_symbol,
+                "command": f"lean_interact check_target {target_symbol}",
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": [],
+                "incremental": {
+                    "success": accepted,
+                    "ok": accepted,
+                    "target": target_symbol,
+                    "file": str(active),
+                    "has_errors": not accepted,
+                    "has_sorry": False,
+                    "messages": [],
+                },
+            },
+            "lean_incremental_check",
+        )
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "promote-used-evidence")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(runner, "_refresh_live_queue_source_after_managed_edit", lambda *_: None)
+    monkeypatch.setattr(runner, "_manager_check_queue_item", check_declaration)
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *_args, **_kwargs: {
+            "active_file": str(active),
+            "active_file_label": str(active),
+            "target_symbol": (
+                ""
+                if active.read_text(encoding="utf-8").index("lemma saved_observation")
+                < active.read_text(encoding="utf-8").index("theorem demo")
+                else "demo"
+            ),
+            "current_queue_item": (
+                {}
+                if active.read_text(encoding="utf-8").index("lemma saved_observation")
+                < active.read_text(encoding="utf-8").index("theorem demo")
+                else {"label": "demo", "reasons": ["forward reference"]}
+            ),
+            "current_queue_item_slice": runner._declaration_slice_text(str(active), "demo"),
+            "diagnostics": "unknown identifier saved_observation",
+            "current_blocker": "unknown identifier saved_observation",
+            "build_status": "target:demo failed",
+        },
+    )
+    monkeypatch.setattr(runner, "_maybe_manager_nudge", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_request_step_boundary_interrupt", lambda *_args: None)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+    for route in ("plan", "negate", "decompose"):
+        runner.campaign_epoch.record_route_decision(
+            agent._managed_autonomy_state,
+            route=route,
+            target_symbol="demo",
+            active_file=str(active),
+        )
+    agent._managed_autonomy_state["orchestrator_current_route"] = "decompose"
+    tool_args = {"path": str(active)}
+
+    assert runner._managed_pre_tool_call(agent, "patch", tool_args) is None
+    evidence_source = "lemma saved_observation : True := by\n" "  trivial\n\n" + original
+    active.write_text(evidence_source, encoding="utf-8")
+    result = json.dumps({"success": True})
+    evidence_verdict = runner._finalize_managed_queue_edit_details(agent, "patch", result)
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        tool_args,
+        result,
+        queue_edit_accepted=evidence_verdict.accepted,
+        queue_assignment_changed=evidence_verdict.declaration_delta.assigned_changed,
+        queue_helper_candidates=evidence_verdict.declaration_delta.helper_names,
+        queue_evidence_helpers=evidence_verdict.evidence_helper_names,
+        queue_promoted_helpers=evidence_verdict.promoted_helper_names,
+    )
+    assert evidence_verdict.evidence_helper_names == ("saved_observation",)
+    assert runner.campaign_epoch.campaign_snapshot()["no_progress_route_streak"] == 3
+
+    assert runner._managed_pre_tool_call(agent, "patch", tool_args) is None
+    active.write_text(
+        "theorem demo : True ∧ True := by\n"
+        "  exact ⟨saved_observation, trivial⟩\n\n"
+        "lemma saved_observation : True := by\n"
+        "  trivial\n",
+        encoding="utf-8",
+    )
+    promoted_verdict = runner._finalize_managed_queue_edit_details(agent, "patch", result)
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        tool_args,
+        result,
+        queue_edit_accepted=promoted_verdict.accepted,
+        queue_assignment_changed=promoted_verdict.declaration_delta.assigned_changed,
+        queue_helper_candidates=promoted_verdict.declaration_delta.helper_names,
+        queue_evidence_helpers=promoted_verdict.evidence_helper_names,
+        queue_promoted_helpers=promoted_verdict.promoted_helper_names,
+    )
+
+    assert promoted_verdict.declaration_delta.assigned_changed is True
+    assert promoted_verdict.declaration_delta.helper_names == ()
+    assert promoted_verdict.promoted_helper_names == ("saved_observation",)
+    assert checked == ["saved_observation", "demo"]
+    helper_id = runner.plan_state.node_id_for("saved_observation", str(active))
+    target_id = runner.plan_state.node_id_for("demo", str(active))
+    blueprint = runner.plan_state.load_blueprint()
+    assert blueprint.node_by_id(helper_id).status == "proved"
+    assert {
+        (edge.source, edge.target, edge.kind)
+        for edge in blueprint.edges
+        if helper_id in {edge.source, edge.target}
+    } == {
+        (helper_id, target_id, "split_of"),
+        (target_id, helper_id, "depends_on"),
+    }
+    campaign = runner.campaign_epoch.campaign_snapshot()
+    assert campaign["no_progress_route_streak"] == 3
+    assert "last_verified_graph_progress" not in campaign
+    assert not any(args[0] == "queue-helper-integration" for args, _kwargs in events)
+    deferred_event = next(
+        kwargs for args, kwargs in events if args[0] == "queue-helper-integration-deferred"
+    )
+    assert deferred_event["target_gate_accepted"] is False
+    assert deferred_event["campaign_progress"] is False
+    pending = dict(agent._managed_autonomy_state.get("pending_promoted_helper_integration") or {})
+    assert pending["target_symbol"] == "demo"
+    assert pending["helper_names"] == ["saved_observation"]
+    assert pending["gate_attempts"] == 1
+    agent._managed_autonomy_state.pop("pending_promoted_helper_integration")
+
+    agent._managed_step_boundary_closed = False
+    assert runner._managed_pre_tool_call(agent, "patch", tool_args) is None
+    active.write_text(
+        "lemma saved_observation : True := by\n"
+        "  trivial\n\n"
+        "theorem demo : True ∧ True := by\n"
+        + (
+            "  exact ⟨saved_observation, trivial⟩\n"
+            if final_uses_helper
+            else "  exact ⟨trivial, trivial⟩\n"
+        ),
+        encoding="utf-8",
+    )
+    reordered_verdict = runner._finalize_managed_queue_edit_details(agent, "patch", result)
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        tool_args,
+        result,
+        queue_edit_accepted=reordered_verdict.accepted,
+        queue_assignment_changed=reordered_verdict.declaration_delta.assigned_changed,
+        queue_helper_candidates=reordered_verdict.declaration_delta.helper_names,
+        queue_evidence_helpers=reordered_verdict.evidence_helper_names,
+        queue_promoted_helpers=reordered_verdict.promoted_helper_names,
+    )
+
+    assert reordered_verdict.accepted is True
+    assert reordered_verdict.declaration_delta.assigned_changed is (not final_uses_helper)
+    assert reordered_verdict.declaration_delta.helper_names == ()
+    assert reordered_verdict.promoted_helper_names == ()
+    assert checked == ["saved_observation", "demo", "demo"]
+    campaign = runner.campaign_epoch.campaign_snapshot()
+    assert campaign["no_progress_route_streak"] == (0 if final_uses_helper else 3)
+    if final_uses_helper:
+        assert campaign["last_verified_graph_progress"]["node_ids"] == [helper_id]
+    else:
+        assert "last_verified_graph_progress" not in campaign
+    assert not agent._managed_autonomy_state.get("pending_promoted_helper_integration")
+    assert sum(args[0] == "queue-helper-integration" for args, _kwargs in events) == int(
+        final_uses_helper
+    )
+    reset_events = read_workflow_activity(
+        limit=5,
+        event_types={"campaign-route-streak-reset"},
+    )
+    assert len(reset_events) == int(final_uses_helper)
+    if not final_uses_helper:
+        assert any(args[0] == "queue-helper-integration-retired" for args, _kwargs in events)
+    journal = (tmp_path / "plan-state" / "journal.jsonl").read_text(encoding="utf-8")
+    assert '"event": "helper-evidence-promoted-to-proof-support"' in journal
+    assert '"event": "helper-evidence-integration-deferred"' in journal
+    assert ('"event": "helper-evidence-integration-accounted"' in journal) is final_uses_helper
+
+
+@pytest.mark.parametrize("live_refresh_succeeded", [True, False])
+def test_committed_target_gate_credits_promoted_helper_integration(
+    monkeypatch, tmp_path, live_refresh_succeeded
+):
+    """A clean target gate needs a nonempty refreshed live state before credit."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma saved_observation : True := by\n"
+        "  trivial\n\n"
+        "theorem demo : True ∧ True := by\n"
+        "  exact ⟨saved_observation, trivial⟩\n",
+        encoding="utf-8",
+    )
+    helper_id = runner.plan_state.node_id_for("saved_observation", str(active))
+    target_id = runner.plan_state.node_id_for("demo", str(active))
+    events: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        quiet_mode = True
+
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                },
+                "orchestrator_current_route": "decompose",
+            }
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "committed-helper-integration")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    runner.plan_state.save_blueprint(
+        runner.plan_state.Blueprint(
+            nodes=(
+                runner.plan_state.GraphNode(
+                    id=helper_id,
+                    kind="lemma",
+                    name="saved_observation",
+                    file=str(active),
+                    statement=": True",
+                    status="proved",
+                    generated_by="prover-edit",
+                ),
+                runner.plan_state.GraphNode(
+                    id=target_id,
+                    kind="theorem",
+                    name="demo",
+                    file=str(active),
+                    statement=": True ∧ True",
+                    status="proving",
+                ),
+            ),
+            edges=(
+                runner.plan_state.GraphEdge(helper_id, target_id, "split_of"),
+                runner.plan_state.GraphEdge(target_id, helper_id, "depends_on"),
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *_args, **_kwargs: (
+            {
+                "active_file": str(active),
+                "active_file_label": str(active),
+                "target_symbol": "",
+                "current_queue_item": {},
+                "build_status": "verified",
+            }
+            if live_refresh_succeeded
+            else {}
+        ),
+    )
+    monkeypatch.setattr(runner, "_request_step_boundary_interrupt", lambda *_args: None)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+    for route in ("plan", "negate", "decompose"):
+        runner.campaign_epoch.record_route_decision(
+            agent._managed_autonomy_state,
+            route=route,
+            target_symbol="demo",
+            active_file=str(active),
+        )
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file=str(active),
+        verification_tool="patch+lean_incremental_check",
+        manager_verification={
+            "ok": True,
+            "mode": "incremental_target",
+            "target": "demo",
+            "command": "lean_interact check_target demo",
+            "axiom_profile_checked": True,
+            "axiom_profile_blockers": [],
+            "incremental": {
+                "success": True,
+                "ok": True,
+                "target": "demo",
+                "file": str(active),
+                "has_errors": False,
+                "has_sorry": False,
+                "messages": [],
+            },
+        },
+        promoted_helper_names=("saved_observation",),
+    )
+
+    campaign = runner.campaign_epoch.campaign_snapshot()
+    assert campaign["no_progress_route_streak"] == (0 if live_refresh_succeeded else 3)
+    if live_refresh_succeeded:
+        assert campaign["last_verified_graph_progress"]["node_ids"] == [helper_id]
+        integration_event = next(
+            kwargs for args, kwargs in events if args[0] == "queue-helper-integration"
+        )
+        assert integration_event["campaign_progress"] is True
+        assert not agent._managed_autonomy_state.get("pending_promoted_helper_integration")
+    else:
+        assert "last_verified_graph_progress" not in campaign
+        assert not any(args[0] == "queue-helper-integration" for args, _kwargs in events)
+        assert agent._managed_autonomy_state["pending_promoted_helper_integration"][
+            "helper_names"
+        ] == ["saved_observation"]
+    assert agent._managed_autonomy_state["last_verification"]["scope"] == "target:demo"
+    assert any(args[0] == "queue-helper-integration-deferred" for args, _kwargs in events) is (
+        not live_refresh_succeeded
+    )
+
+
+def test_temporary_target_candidate_never_credits_promoted_helper(monkeypatch, tmp_path):
+    """An isolated replacement check cannot spend pending integration credit."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma saved_observation : True := by\n"
+        "  trivial\n\n"
+        "theorem demo : True ∧ True := by\n"
+        "  constructor\n"
+        "  · exact saved_observation\n"
+        "  · sorry\n",
+        encoding="utf-8",
+    )
+    helper_id = runner.plan_state.node_id_for("saved_observation", str(active))
+    target_id = runner.plan_state.node_id_for("demo", str(active))
+    events: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        quiet_mode = True
+
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": runner._declaration_slice_text(str(active), "demo"),
+                },
+                "orchestrator_current_route": "decompose",
+            }
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "temporary-helper-integration")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    runner.plan_state.save_blueprint(
+        runner.plan_state.Blueprint(
+            nodes=(
+                runner.plan_state.GraphNode(
+                    id=helper_id,
+                    kind="lemma",
+                    name="saved_observation",
+                    file=str(active),
+                    statement=": True",
+                    status="proved",
+                ),
+                runner.plan_state.GraphNode(
+                    id=target_id,
+                    kind="theorem",
+                    name="demo",
+                    file=str(active),
+                    statement=": True ∧ True",
+                    status="proving",
+                ),
+            ),
+            edges=(
+                runner.plan_state.GraphEdge(helper_id, target_id, "split_of"),
+                runner.plan_state.GraphEdge(target_id, helper_id, "depends_on"),
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+    for route in ("plan", "negate", "decompose"):
+        runner.campaign_epoch.record_route_decision(
+            agent._managed_autonomy_state,
+            route=route,
+            target_symbol="demo",
+            active_file=str(active),
+        )
+
+    runner._finish_queue_step_boundary(
+        agent,
+        pending_target="demo",
+        pending_file=str(active),
+        verification_tool="lean_incremental_check",
+        manager_verification={
+            "ok": True,
+            "mode": "incremental_target",
+            "action": "check_target",
+            "target": "demo",
+            "replacement_matches_target": True,
+            "axiom_profile_checked": True,
+            "axiom_profile_blockers": [],
+            "incremental": {
+                "success": True,
+                "ok": True,
+                "target": "demo",
+                "file": str(active),
+                "has_errors": False,
+                "has_sorry": False,
+                "messages": [],
+            },
+        },
+        promoted_helper_names=("saved_observation",),
+    )
+
+    campaign = runner.campaign_epoch.campaign_snapshot()
+    assert campaign["no_progress_route_streak"] == 3
+    assert "last_verified_graph_progress" not in campaign
+    assert not any(args[0] == "queue-helper-integration" for args, _kwargs in events)
+    assert not any(args[0] == "queue-helper-integration-deferred" for args, _kwargs in events)
+    assert not agent._managed_autonomy_state.get("pending_promoted_helper_integration")
+
+
+def test_plan_sync_runs_legacy_prover_helper_edge_migration(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    runner.plan_state.save_blueprint(runner.plan_state.Blueprint())
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runner.decomposer,
+        "migrate_legacy_prover_helper_edges",
+        lambda: calls.append("migration") or ("unused_helper",),
+    )
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "rehydrate_campaign",
+        lambda state: calls.append("rehydrate") or state,
+    )
+
+    assert runner._maybe_sync_plan_state({}, None)
+    assert calls == ["migration", "rehydrate"]
+
+
+def test_helper_only_edit_verifies_helpers_without_charging_target_attempt(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    before = (
+        "theorem demo : True := by\n" "  sorry\n" "\n" "theorem later : True := by\n" "  sorry\n"
+    )
+    active.write_text(before, encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    save_workflow_live_status(
+        {
+            "process_id": os.getpid(),
+            "phase": "busy",
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "current_queue_item": {
+                "label": "demo",
+                "kind": "theorem",
+                "line": 1,
+                "end_line": 2,
+                "reasons": ["contains sorry"],
+            },
+            "current_queue_item_prefix": "old prefix",
+            "current_queue_item_slice": "Assigned declaration slice (1-2):\ntheorem demo",
+        }
+    )
+    events = []
+    checked: list[str] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    def check_helper(active_file, target_symbol):
+        if target_symbol == "demo":
+            pytest.fail("an unchanged assigned theorem must not be checked or rejected")
+        checked.append(target_symbol)
+        accepted = target_symbol == "complete_helper"
+        return (
+            {
+                "ok": accepted,
+                "mode": "incremental_target",
+                "target": target_symbol,
+                "command": f"lean_interact check_target {target_symbol}",
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": [],
+                "incremental": {
+                    "success": True,
+                    "ok": accepted,
+                    "target": target_symbol,
+                    "file": str(active),
+                    "has_errors": False,
+                    "has_sorry": not accepted,
+                    "messages": [],
+                },
+            },
+            "lean_incremental_check",
+        )
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(runner, "_manager_check_queue_item", check_helper)
+    monkeypatch.setattr(
+        runner,
+        "_finish_queue_step_boundary",
+        lambda *args, **kwargs: pytest.fail("helper progress must not enter target failure gate"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_manager_nudge",
+        lambda *args, **kwargs: pytest.fail("helper progress must not trigger target coaching"),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "lemma complete_helper : True := by\n"
+        "  trivial\n"
+        "\n"
+        "lemma unchecked_helper : True := by\n"
+        "  sorry\n"
+        "\n" + before,
+        encoding="utf-8",
+    )
+    result = json.dumps({"success": True})
+    verdict = runner._finalize_managed_queue_edit_details(agent, "patch", result)
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        {"path": str(active)},
+        result,
+        queue_edit_accepted=verdict.accepted,
+        queue_assignment_changed=verdict.declaration_delta.assigned_changed,
+        queue_helper_candidates=verdict.declaration_delta.helper_names,
+    )
+
+    assert verdict.accepted is True
+    assert verdict.declaration_delta.assigned_changed is False
+    assert verdict.declaration_delta.helper_names == (
+        "complete_helper",
+        "unchecked_helper",
+    )
+    assert checked == ["complete_helper", "unchecked_helper"]
+    assert "failed_attempts" not in agent._managed_autonomy_state
+    assert "manager_feedback_retries" not in agent._managed_autonomy_state
+    outcomes = agent._managed_autonomy_state["theorem_outcomes"]
+    assert outcomes[f"{active}::complete_helper"]["status"] == "solved"
+    assert outcomes[f"{active}::unchecked_helper"]["status"] == "unverified"
+    assert f"{active}::demo" not in outcomes
+    blueprint = runner.plan_state.load_blueprint()
+    complete = blueprint.node_by_id(runner.plan_state.node_id_for("complete_helper", str(active)))
+    unchecked = blueprint.node_by_id(runner.plan_state.node_id_for("unchecked_helper", str(active)))
+    assert complete is not None and complete.status == "proved"
+    assert unchecked is not None and unchecked.status != "proved"
+    appendix = agent._post_tool_result_appendix
+    assert "kernel-verified helper(s): complete_helper" in appendix
+    assert "helper(s) still needing Lean correction: unchecked_helper" in appendix
+    # This appendix is attached to the successful patch tool result before the
+    # next provider request.  Make the parent-owned verification authority
+    # unmistakable so the prover does not spend another Lean gate on either
+    # the already-banked helper or the unchanged sorry target.
+    assert "parent manager already ran the exact helper gate and banked" in appendix
+    assert 'Do not call `lean_incremental_check(action="check_helper")`' in appendix
+    assert "Do not call `lean_inspect` or `lean_axioms`" in appendix
+    assert "verified/banked helper(s): complete_helper" in appendix
+    assert "assigned target unchanged and unresolved (`sorry` remains): demo" in appendix
+    assert 'Do not call `lean_incremental_check(action="check_target")`' in appendix
+    assert "until you have changed the assigned target" in appendix
+    reused_inspection = json.loads(
+        runner._managed_pre_tool_call(
+            agent,
+            "lean_inspect",
+            {"target": str(active), "symbol": "complete_helper"},
+        )
+        or "{}"
+    )
+    assert reused_inspection["status"] == "parent_kernel_verification_reused"
+    assert reused_inspection["lean_started"] is False
+    assert checked == ["complete_helper", "unchecked_helper"]
+    # Exercise the production one-shot consumer, not just the runner-side
+    # staging attribute: the handoff must be part of this patch result, not a
+    # later synthetic user turn where the model could already issue a repeat.
+    from run_agent import AIAgent as RuntimeAgent
+
+    tool_message = {"role": "tool", "content": result}
+    RuntimeAgent._apply_post_tool_result_appendix(agent, tool_message)
+    assert tool_message["content"].startswith(result)
+    assert appendix in tool_message["content"]
+    assert agent._post_tool_result_appendix is None
+    assert any(args[0] == "queue-helper-evidence" for args, _kwargs in events)
+    assert not any(args[0] == "queue-helper-progress" for args, _kwargs in events)
+    live_status = load_workflow_live_status()
+    assert live_status["current_queue_item"]["line"] == 7
+    assert live_status["current_queue_item"]["end_line"] == 8
+    assert "Assigned declaration slice (7-8)" in live_status["current_queue_item_slice"]
+    assert "theorem demo : True := by" in live_status["current_queue_item_prefix"]
+
+
+def test_exact_parent_checked_helper_edit_retires_priority_without_closing_target(
+    monkeypatch, tmp_path
+):
+    """Bank the matching helper while preserving the assigned target's sorry."""
+    active = tmp_path / "Main.lean"
+    target = "theorem demo : True := by\n  sorry\n"
+    active.write_text(target, encoding="utf-8")
+    declaration = "private lemma checked_family : True := by\n  trivial"
+    declaration_hash = runner.hashlib.sha256(declaration.encode("utf-8")).hexdigest()
+    finding = {
+        "job_id": "campaign.em-checked",
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "deliverable": {
+            "checked_helper_status": "worker_checked_parent_recheck_required",
+            "parent_recheck_required": True,
+            "checked_helpers": [
+                {
+                    "active_file": str(active),
+                    "anchor_target_symbol": "demo",
+                    "declaration": declaration,
+                    "declaration_sha256": declaration_hash,
+                    "parent_recheck_required": True,
+                    "worker_check": {
+                        "tool": "lean_incremental_check",
+                        "action": "check_helper",
+                        "valid_without_sorry": True,
+                        "has_errors": False,
+                        "has_sorry": False,
+                        "verification_scope": "helper_candidate",
+                        "replacement_matches_target": False,
+                        "replacement_declarations": ["checked_family"],
+                    },
+                }
+            ],
+        },
+    }
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+    state = {
+        "campaign_id": "campaign",
+        "orchestrator_scope_entered": True,
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": target.strip(),
+        },
+    }
+    pending = runner.research_helper_candidate_priority.remember_from_findings(
+        state,
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    runner.research_helper_candidate_priority.mark_parent_recheck(
+        state,
+        candidate_id=pending.candidate_id,
+        status="accepted",
+        source_revision_sha256=runner.research_helper_candidate_priority.source_revision_sha256(
+            str(active)
+        ),
+    )
+    active.write_text(declaration + "\n\n" + target, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = state
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_refresh_live_queue_source_after_managed_edit", lambda *_: None)
+    monkeypatch.setattr(
+        runner,
+        "_record_helper_only_edit_progress",
+        lambda *_args, **_kwargs: runner._ManagedHelperEditResult(
+            verified_any=True,
+            proof_progress=True,
+        ),
+    )
+
+    class _Outcome:
+        status = "solved"
+
+    class _Manager:
+        def outcome_for(self, _key):
+            return _Outcome()
+
+    monkeypatch.setattr(runner, "_queue_manager_from_state", lambda *_args, **_kwargs: _Manager())
+    events = []
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda *args, **kwargs: events.append((args, kwargs)),
+    )
+
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        {"path": str(active), "new_string": declaration + "\n\n" + target},
+        json.dumps({"success": True}),
+        queue_edit_accepted=True,
+        queue_assignment_changed=False,
+        queue_helper_candidates=("checked_family",),
+    )
+
+    assert runner.research_helper_candidate_priority.load(state) is None
+    assert "orchestrator_scope_entered" not in state
+    assert "theorem demo : True := by\n  sorry" in active.read_text(encoding="utf-8")
+    integrated = next(
+        kwargs for args, kwargs in events if args[0] == "research-helper-candidate-integrated"
+    )
+    assert integrated["target_resolved"] is False
+
+
+def test_changed_target_edit_banks_verified_helper_before_rejecting_target(monkeypatch, tmp_path):
+    """A bundled target edit must not retire its independently valid helper."""
+    active = tmp_path / "Main.lean"
+    before = "theorem demo : True ∧ True := by\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
+    events = []
+    checked: list[str] = []
+    boundaries: list[tuple[tuple, dict]] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": before.strip(),
+                },
+                "orchestrator_routes_used": 3,
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    def check_item(_active_file, target_symbol):
+        checked.append(target_symbol)
+        accepted = target_symbol == "banked_helper"
+        return (
+            {
+                "ok": accepted,
+                "mode": "incremental_target",
+                "target": target_symbol,
+                "command": f"lean_interact check_target {target_symbol}",
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": [],
+                "incremental": {
+                    "success": True,
+                    "ok": accepted,
+                    "target": target_symbol,
+                    "file": str(active),
+                    "has_errors": False,
+                    "has_sorry": not accepted,
+                    "messages": [],
+                },
+            },
+            "lean_incremental_check",
+        )
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(runner, "_manager_check_queue_item", check_item)
+    monkeypatch.setattr(
+        runner,
+        "_finish_queue_step_boundary",
+        lambda *args, **kwargs: boundaries.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+
+    tool_args = {"path": str(active)}
+    assert runner._managed_pre_tool_call(agent, "patch", tool_args) is None
+    active.write_text(
+        "lemma banked_helper : True := by\n"
+        "  trivial\n\n"
+        "theorem demo : True ∧ True := by\n"
+        "  constructor\n"
+        "  · exact banked_helper\n"
+        "  · sorry\n",
+        encoding="utf-8",
+    )
+    result = json.dumps({"success": True})
+    verdict = runner._finalize_managed_queue_edit_details(agent, "patch", result)
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        tool_args,
+        result,
+        queue_edit_accepted=verdict.accepted,
+        queue_assignment_changed=verdict.declaration_delta.assigned_changed,
+        queue_helper_candidates=verdict.declaration_delta.helper_names,
+    )
+
+    assert verdict.accepted is True
+    assert verdict.declaration_delta.assigned_changed is True
+    assert verdict.declaration_delta.helper_names == ("banked_helper",)
+    assert checked == ["banked_helper", "demo"]
+    assert len(boundaries) == 1
+    assert boundaries[0][1]["pending_target"] == "demo"
+    assert boundaries[0][1]["manager_verification"]["ok"] is False
+    outcomes = agent._managed_autonomy_state["theorem_outcomes"]
+    assert outcomes[f"{active}::banked_helper"]["status"] == "solved"
+    assert f"{active}::demo" not in outcomes
+    blueprint = runner.plan_state.load_blueprint()
+    helper_id = runner.plan_state.node_id_for("banked_helper", str(active))
+    target_id = runner.plan_state.node_id_for("demo", str(active))
+    assert blueprint.node_by_id(helper_id).status == "proved"
+    assert blueprint.node_by_id(target_id).status == "proving"
+    assert agent._managed_autonomy_state["orchestrator_routes_used"] == 0
+    journal = (tmp_path / "plan-state" / "journal.jsonl").read_text(encoding="utf-8")
+    helper_events = [line for line in journal.splitlines() if helper_id in line]
+    assert any('"to": "proved"' in line and '"via_gate": true' in line for line in helper_events)
+    assert not any('"event": "plan-graph-assignment-retired"' in line for line in helper_events)
+    assert any(args[0] == "queue-helper-progress" for args, _kwargs in events)
+
+
+def test_unverified_helper_edit_enters_target_failure_gate(monkeypatch, tmp_path):
+    """An unchecked Lean helper is an attempt, not privileged helper progress."""
+    active = tmp_path / "Main.lean"
+    before = "theorem demo : True := by\n  sorry\n"
+    active.write_text(before, encoding="utf-8")
+    events = []
+    checked: list[str] = []
+    boundaries = []
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = []
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": str(active),
+                    "slice": before.strip(),
+                },
+                "search_progress": {"search_count": 2},
+            }
+            self._managed_pending_theorem_feedback = None
+
+        def is_interrupted(self):
+            return False
+
+    def check_item(_active_file, target_symbol):
+        checked.append(target_symbol)
+        return (
+            {
+                "ok": False,
+                "mode": "incremental_target",
+                "target": target_symbol,
+                "has_errors": False,
+                "has_sorry": True,
+                "incremental": {
+                    "success": True,
+                    "ok": False,
+                    "target": target_symbol,
+                    "file": str(active),
+                    "has_errors": False,
+                    "has_sorry": True,
+                },
+            },
+            "lean_incremental_check",
+        )
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(runner, "_manager_check_queue_item", check_item)
+    monkeypatch.setattr(
+        runner,
+        "_finish_queue_step_boundary",
+        lambda *args, **kwargs: boundaries.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    agent = _Agent()
+
+    tool_args = {"path": str(active)}
+    assert runner._managed_pre_tool_call(agent, "patch", tool_args) is None
+    active.write_text(
+        "lemma unchecked_helper : True := by\n  sorry\n\n" + before,
+        encoding="utf-8",
+    )
+    result = json.dumps({"success": True})
+    verdict = runner._finalize_managed_queue_edit_details(agent, "patch", result)
+    runner._handle_managed_tool_result(
+        agent,
+        "patch",
+        tool_args,
+        result,
+        queue_edit_accepted=verdict.accepted,
+        queue_assignment_changed=verdict.declaration_delta.assigned_changed,
+        queue_helper_candidates=verdict.declaration_delta.helper_names,
+    )
+
+    assert verdict.accepted is True
+    assert verdict.declaration_delta.assigned_changed is False
+    assert verdict.declaration_delta.helper_names == ("unchecked_helper",)
+    assert checked == ["unchecked_helper", "demo"]
+    assert len(boundaries) == 1
+    assert boundaries[0][1]["pending_target"] == "demo"
+    assert agent._managed_autonomy_state["search_progress"]["search_count"] == 2
+    assert any(args[0] == "queue-helper-unverified" for args, _kwargs in events)
+    assert not any(args[0] == "queue-helper-progress" for args, _kwargs in events)
+
+
+def _unavailable_helper_outcome(active_file, helper_name="checked_helper"):
+    """Return the persisted shape emitted by an unavailable helper axiom gate."""
+    return {
+        f"{active_file}::{helper_name}": {
+            "target_symbol": helper_name,
+            "active_file": str(active_file),
+            "status": "unverified",
+            "note": "helper edit for main_target still needs Lean verification",
+            "build_status": "axiom profile unavailable",
+            "last_verification": {
+                "scope": f"target:{helper_name}",
+                "ok": False,
+                "tool": "lean_incremental_check",
+                "target": helper_name,
+                "active_file": str(active_file),
+                "errors": 1,
+                "warnings": 0,
+                "sorry": 0,
+                "summary": "axiom guard could not inspect the helper",
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": ["axiom-profile-unavailable"],
+            },
+        }
+    }
+
+
+def test_unavailable_sorry_free_helper_gate_retries_before_next_sorry(monkeypatch, tmp_path):
+    """A helper omitted by the sorry queue gets one deterministic priority recheck."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma checked_helper : True := by\n"
+        "  trivial\n\n"
+        "theorem main_target : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    state = {"theorem_outcomes": _unavailable_helper_outcome(active)}
+    checks = []
+    events = []
+
+    def clean_check(active_file, target_symbol):
+        checks.append((active_file, target_symbol))
+        return (
+            {
+                "ok": True,
+                "mode": "incremental_target",
+                "target": target_symbol,
+                "command": f"lean_interact check_target {target_symbol}",
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": [],
+                "incremental": {
+                    "success": True,
+                    "ok": True,
+                    "target": target_symbol,
+                    "file": active_file,
+                    "has_errors": False,
+                    "has_sorry": False,
+                    "messages": [],
+                },
+            },
+            "lean_incremental_check",
+        )
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_manager_check_queue_item", clean_check)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    # The ordinary declaration queue sees only the unrelated sorry. The
+    # retry hook must therefore recover the helper from durable outcomes.
+    queue = runner._declaration_work_queue(str(active), "", scope="file")
+    assert [item["label"] for item in queue] == ["main_target"]
+
+    assert (
+        runner._retry_unverified_helper_gates(
+            state,
+            str(active),
+            has_other_queue_work=bool(queue),
+        )
+        == 1
+    )
+    runner._retry_unverified_helper_gates(
+        state,
+        str(active),
+        has_other_queue_work=bool(queue),
+    )
+
+    assert checks == [(str(active), "checked_helper")]
+    outcome = state["theorem_outcomes"][f"{active}::checked_helper"]
+    assert outcome["status"] == "solved"
+    assert outcome["last_verification"]["axiom_profile_checked"] is True
+    assert outcome["last_verification"]["axiom_profile_blockers"] == []
+    assert state.get("operational_pause") is None
+    assert any(args[0] == "queue-helper-gate-retry-accepted" for args, _kwargs in events)
+
+
+def test_live_state_retries_pending_helper_before_selecting_next_queue_item(monkeypatch, tmp_path):
+    """The live-state builder runs the gate retry before handing off a later sorry."""
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text(
+        "lemma checked_helper : True := by\n"
+        "  trivial\n\n"
+        "theorem main_target : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    state = {"theorem_outcomes": _unavailable_helper_outcome(active)}
+    checks = []
+
+    class _Capabilities:
+        def to_dict(self):
+            return {"degraded_reasons": []}
+
+    class _Inspection:
+        diagnostics = "warning: declaration uses sorry"
+        goals = "no goals"
+        sorry_count = 1
+        project_sorry_count = 1
+        capability_report = {"degraded_reasons": []}
+        queue_items = []
+
+    class _Route:
+        def to_dict(self):
+            return {
+                "route_action": "prove-next",
+                "skill_name": "lean-theorem-queue-worker",
+                "reason": "prove the queue head",
+            }
+
+    def clean_check(active_file, target_symbol):
+        checks.append(target_symbol)
+        return (
+            {
+                "ok": True,
+                "mode": "incremental_target",
+                "target": target_symbol,
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": [],
+                "incremental": {
+                    "success": True,
+                    "ok": True,
+                    "target": target_symbol,
+                    "file": active_file,
+                    "has_errors": False,
+                    "has_sorry": False,
+                    "messages": [],
+                },
+            },
+            "lean_incremental_check",
+        )
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "probe_capabilities", lambda *_args, **_kwargs: _Capabilities())
+    monkeypatch.setattr(runner, "lean_inspect", lambda *_args, **_kwargs: _Inspection())
+    monkeypatch.setattr(runner, "route_workflow_step", lambda *_args, **_kwargs: _Route())
+    monkeypatch.setattr(runner, "_manager_check_queue_item", clean_check)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    live_state = runner._build_live_proof_state([], {}, state)
+
+    assert checks == ["checked_helper"]
+    assert live_state["current_queue_item"]["label"] == "main_target"
+    assert state["theorem_outcomes"][f"{active}::checked_helper"]["status"] == "solved"
+
+
+def test_unavailable_helper_gate_retry_is_bounded_and_resumable(monkeypatch, tmp_path):
+    """Persistent infrastructure failure pauses cleanly after bounded retries."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma checked_helper : True := by\n  trivial\n",
+        encoding="utf-8",
+    )
+    state = {"theorem_outcomes": _unavailable_helper_outcome(active)}
+    checks = []
+    campaign_statuses = []
+
+    def unavailable_check(active_file, target_symbol):
+        checks.append((active_file, target_symbol))
+        message = f"axiom guard could not inspect {target_symbol}"
+        return (
+            {
+                "ok": False,
+                "mode": "incremental_target",
+                "target": target_symbol,
+                "output": message,
+                "has_errors": True,
+                "axiom_violation": ["axiom-profile-unavailable"],
+                "axiom_profile_checked": True,
+                "axiom_profile_blockers": ["axiom-profile-unavailable"],
+                "messages": [{"severity": "error", "message": message}],
+                "incremental": {
+                    "success": True,
+                    "ok": True,
+                    "target": target_symbol,
+                    "file": active_file,
+                    "has_errors": False,
+                    "has_sorry": False,
+                },
+            },
+            "lean_incremental_check",
+        )
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", "1")
+    monkeypatch.setattr(runner, "_manager_check_queue_item", unavailable_check)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_status",
+        lambda *args, **kwargs: campaign_statuses.append((args, kwargs)),
+    )
+
+    # One priority attempt while other proof work exists; repeated live-state
+    # builds cannot hammer the same unavailable service.
+    assert (
+        runner._retry_unverified_helper_gates(
+            state,
+            str(active),
+            has_other_queue_work=True,
+        )
+        == 0
+    )
+    runner._retry_unverified_helper_gates(
+        state,
+        str(active),
+        has_other_queue_work=True,
+    )
+    assert len(checks) == 1
+    assert state.get("operational_pause") is None
+
+    # Once no mathematical queue item remains, grant one final bounded retry,
+    # then record a truthful resumable infrastructure pause instead of looping.
+    runner._retry_unverified_helper_gates(
+        state,
+        str(active),
+        has_other_queue_work=False,
+    )
+    runner._retry_unverified_helper_gates(
+        state,
+        str(active),
+        has_other_queue_work=False,
+    )
+    assert len(checks) == 2
+    assert state["operational_pause"] == "paused_infrastructure"
+    assert campaign_statuses[0][0][1] == "paused_infrastructure"
+    outcome = state["theorem_outcomes"][f"{active}::checked_helper"]
+    assert outcome["status"] == "unverified"
+    assert outcome["last_verification"]["axiom_profile_blockers"] == ["axiom-profile-unavailable"]
+
+    # Process-local retry reservations are deliberately absent from the
+    # durable manager checkpoint, while the unresolved outcome remains. A
+    # resumed process therefore gets a fresh bounded retry opportunity.
+    checkpoint = runner._queue_manager_from_state(state).to_checkpoint_state()
+    assert "helper_gate_retry_attempts" not in checkpoint
+    assert checkpoint["theorem_outcomes"][f"{active}::checked_helper"]["status"] == ("unverified")
+
+
+def test_pending_profile_retry_cannot_be_promoted_when_profile_mode_is_disabled(
+    monkeypatch, tmp_path
+):
+    """A config drift cannot turn prior unavailable profile evidence into acceptance."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma checked_helper : True := by\n  trivial\n",
+        encoding="utf-8",
+    )
+    state = {"theorem_outcomes": _unavailable_helper_outcome(active)}
+    profile_calls = []
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.delenv("LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK", raising=False)
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item",
+        lambda active_file, target_symbol: (
+            {
+                "ok": True,
+                "mode": "incremental_target",
+                "target": target_symbol,
+                "incremental": {
+                    "success": True,
+                    "ok": True,
+                    "target": target_symbol,
+                    "file": active_file,
+                    "has_errors": False,
+                    "has_sorry": False,
+                },
+            },
+            "lean_incremental_check",
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_manager_axiom_profile_blocker",
+        lambda active_file, target_symbol: (
+            profile_calls.append((active_file, target_symbol))
+            or (
+                ["axiom-profile-unavailable"],
+                "axiom inspection is temporarily unavailable",
+            )
+        ),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+
+    assert (
+        runner._retry_unverified_helper_gates(
+            state,
+            str(active),
+            has_other_queue_work=False,
+        )
+        == 0
+    )
+
+    assert profile_calls == [(str(active), "checked_helper")]
+    outcome = state["theorem_outcomes"][f"{active}::checked_helper"]
+    assert outcome["status"] == "unverified"
+    assert outcome["last_verification"]["axiom_profile_blockers"] == ["axiom-profile-unavailable"]
+    assert state["operational_pause"] == "paused_infrastructure"
+
+
+def test_unavailable_helper_gate_retry_requires_sorry_free_declaration(monkeypatch, tmp_path):
+    """A helper still containing sorry remains ordinary prover work, not gate-only work."""
+    active = tmp_path / "Main.lean"
+    active.write_text(
+        "lemma checked_helper : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    state = {"theorem_outcomes": _unavailable_helper_outcome(active)}
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "_manager_check_queue_item",
+        lambda *_args: pytest.fail("a sorry-bearing helper must not use the gate-only retry"),
+    )
+
+    assert (
+        runner._retry_unverified_helper_gates(
+            state,
+            str(active),
+            has_other_queue_work=False,
+        )
+        == 0
+    )
+    assert state.get("operational_pause") is None
+
+
+def test_rejected_or_failed_queue_edit_does_not_record_helper_graph_edges(monkeypatch, tmp_path):
+    active = tmp_path / "Main.lean"
+    before = (
+        "theorem demo : True := by\n" "  sorry\n" "\n" "theorem later : True := by\n" "  sorry\n"
+    )
+    active.write_text(before, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    agent = _Agent()
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "lemma rejected_helper : True := by\n"
+        "  trivial\n\n"
+        "theorem demo : True := by\n"
+        "  trivial\n\n"
+        "theorem later : True := by\n"
+        "  trivial\n",
+        encoding="utf-8",
+    )
+    feedback = runner._finalize_managed_queue_edit(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+    assert "restored those protected declarations" in feedback
+    assert runner.plan_state.load_blueprint().nodes == ()
+    assert not runner.plan_state.plan_state_paths().journal_jsonl.exists()
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": str(active)}) is None
+    active.write_text(
+        "lemma failed_helper : True := by\n" "  trivial\n\n" + active.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    assert (
+        runner._finalize_managed_queue_edit(
+            agent,
+            "patch",
+            json.dumps({"success": False, "error": "patch failed"}),
+        )
+        == ""
+    )
+    assert runner.plan_state.load_blueprint().nodes == ()
+    assert not runner.plan_state.plan_state_paths().journal_jsonl.exists()
 
 
 def test_out_of_scope_queue_edit_guard_allows_iterating_on_added_helpers(monkeypatch, tmp_path):
@@ -3000,6 +19347,8 @@ def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
     project = tmp_path / "Project"
     project.mkdir()
     registered = []
+    handoffs = []
+    provider_pauses = []
 
     class _Agent(_ManagedRunAgentStub):
         session_id = "abc123"
@@ -3012,11 +19361,27 @@ def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_NATIVE_BASE_URL", "https://example.test/v1")
     monkeypatch.setenv("LEANFLOW_NATIVE_API_KEY", "key")
     monkeypatch.setenv("LEANFLOW_NATIVE_PROVIDER", "provider")
-    monkeypatch.delenv("LEANFLOW_ALLOW_LEAN_STATEMENT_EDITS", raising=False)
+    # Seed the flag through monkeypatch so teardown restores it even though
+    # _build_agent mutates os.environ directly.  delenv on an already-absent
+    # key records no ownership and leaked "1" into later xdist tests.
+    monkeypatch.setenv("LEANFLOW_ALLOW_LEAN_STATEMENT_EDITS", "0")
     monkeypatch.setattr(runner, "AIAgent", _Agent)
+    monkeypatch.setattr(
+        runner.candidate_commit_priority,
+        "handoff_seconds",
+        lambda function_name, arguments, result, **kwargs: handoffs.append(
+            (function_name, arguments, result, kwargs)
+        )
+        or 37.0,
+    )
     monkeypatch.setattr(
         "tools.implementations.terminal_tool.register_task_env_overrides",
         lambda task_id, overrides: registered.append((task_id, overrides)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_provider_usage_limit_pause",
+        lambda built_agent, result: provider_pauses.append((built_agent, result)) or True,
     )
 
     agent = runner._build_agent()
@@ -3024,7 +19389,408 @@ def test_build_agent_registers_project_tool_cwd(monkeypatch, tmp_path):
     assert os.environ["TERMINAL_CWD"] == str(project)
     assert os.environ["LEANFLOW_ALLOW_LEAN_STATEMENT_EDITS"] == "1"
     assert agent._managed_tool_task_id == "leanflow-native-abc123"
+    assert callable(agent._managed_delegated_post_tool_result_callback)
+    assert callable(agent._project_lean_handoff_request_callback)
+    assert callable(agent._managed_provider_usage_limit_callback)
+    agent._managed_provider_usage_limit_callback(
+        {
+            "kind": "usage_limit_reached",
+            "retry_after_seconds": 60,
+            "unavailable_until_epoch": 1_900_000_000,
+        }
+    )
+    assert provider_pauses == [
+        (
+            agent,
+            {
+                "provider_retry_after": {
+                    "kind": "usage_limit_reached",
+                    "retry_after_seconds": 60,
+                    "unavailable_until_epoch": 1_900_000_000,
+                }
+            },
+        )
+    ]
+    agent._managed_autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(project / "Main.lean"),
+        }
+    }
+    assert (
+        agent._project_lean_handoff_request_callback(
+            "lean_incremental_check",
+            {"theorem_id": "demo"},
+            '{"ok": true}',
+        )
+        == 37.0
+    )
+    assert handoffs[0][3]["assignment"] == agent._managed_autonomy_state["current_queue_assignment"]
+    assert handoffs[0][3]["allowed_axioms"] == runner._allowed_axioms()
     assert registered == [("leanflow-native-abc123", {"cwd": str(project)})]
+
+
+def test_build_agent_post_tool_callback_reports_slow_phase(monkeypatch, tmp_path):
+    project = tmp_path / "Project"
+    project.mkdir()
+    active = project / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    events = []
+    leases = []
+    ordering: list[str] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        session_id = "timed-callback"
+
+        def __init__(self, **_kwargs):
+            pass
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_MODEL", "model")
+    monkeypatch.setenv("LEANFLOW_NATIVE_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("LEANFLOW_NATIVE_API_KEY", "key")
+    monkeypatch.setenv("LEANFLOW_NATIVE_PROVIDER", "provider")
+    monkeypatch.setattr(runner, "AIAgent", _Agent)
+    monkeypatch.setattr(
+        "tools.implementations.terminal_tool.register_task_env_overrides",
+        lambda *_args, **_kwargs: None,
+    )
+    agent = runner._build_agent()
+    agent._managed_autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    agent._managed_queue_edit_snapshot = {
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "before_text": active.read_text(encoding="utf-8"),
+    }
+    monkeypatch.setattr(
+        runner,
+        "_finalize_managed_queue_edit_details",
+        lambda *_args, **_kwargs: ordering.append("edit-finalized")
+        or runner._ManagedQueueEditVerdict(
+            feedback="continue",
+            accepted=True,
+            declaration_delta=runner.QueueEditDeclarationDelta(True, ()),
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_handle_managed_tool_result",
+        lambda *_args, **_kwargs: ordering.append("manager-verification"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_sync_research_helper_integration_admission",
+        lambda *_args, **_kwargs: ordering.append("helper-reservation-synced") or True,
+    )
+    monkeypatch.setattr(
+        runner.scope_entry_admission,
+        "arm",
+        lambda *args, **kwargs: ordering.append("foreground-armed")
+        or leases.append((args, kwargs))
+        or SimpleNamespace(to_dict=lambda: {"marker_path": "lease"}),
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    ticks = iter(float(value) for value in range(0, 30, 2))
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(ticks))
+
+    agent.post_tool_result_callback("patch", {"path": str(active)}, "ok")
+
+    assert agent._post_tool_result_appendix == "continue"
+    assert len(leases) == 1
+    assert leases[0][1]["reason"].startswith("accepted source edit")
+    assert ordering == [
+        "edit-finalized",
+        "helper-reservation-synced",
+        "foreground-armed",
+        "manager-verification",
+        "helper-reservation-synced",
+    ]
+    slow = next(kwargs for args, kwargs in events if args[0] == "post-tool-callback-slow")
+    assert slow["function_name"] == "patch"
+    assert set(slow["phase_seconds"]) == {
+        "edit_finalization",
+        "foreground_admission",
+        "managed_result",
+        "feedback_staging",
+    }
+
+
+def test_verified_patch_admission_spans_full_post_tool_callback(monkeypatch, tmp_path):
+    """Block background Lean from tool release through live-state refresh."""
+    project = tmp_path / "Project"
+    project.mkdir()
+    active = project / "Main.lean"
+    active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    ordering: list[str] = []
+    pending: set[str] = set()
+
+    class _Agent(_ManagedRunAgentStub):
+        session_id = "verification-batch"
+
+        def __init__(self, **_kwargs):
+            pass
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_MODEL", "model")
+    monkeypatch.setenv("LEANFLOW_NATIVE_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("LEANFLOW_NATIVE_API_KEY", "key")
+    monkeypatch.setenv("LEANFLOW_NATIVE_PROVIDER", "provider")
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv("LEANFLOW_RESEARCH_WORKERS", "2")
+    monkeypatch.setattr(runner, "AIAgent", _Agent)
+    monkeypatch.setattr(
+        "tools.implementations.terminal_tool.register_task_env_overrides",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        runner.candidate_commit_priority,
+        "handoff_seconds",
+        lambda *_args, **_kwargs: 0.0,
+    )
+    monkeypatch.setattr(
+        runner.verification_batch_admission,
+        "invocation_key",
+        lambda arguments: f"patch:{arguments.get('path', '')}",
+    )
+
+    def begin(_agent, *, expected_invocation_key, **_kwargs):
+        pending.add(expected_invocation_key)
+        ordering.append("continuous-marker-started")
+        return SimpleNamespace(batch_id="batch")
+
+    monkeypatch.setattr(runner.verification_batch_admission, "begin", begin)
+    monkeypatch.setattr(
+        runner.verification_batch_admission,
+        "current",
+        lambda _agent: SimpleNamespace(batch_id="batch") if pending else None,
+    )
+    monkeypatch.setattr(
+        runner.verification_batch_admission,
+        "has_pending",
+        lambda _agent, *, expected_invocation_key: expected_invocation_key in pending,
+    )
+
+    def complete_one(_agent, *, expected_invocation_key, **_kwargs):
+        pending.remove(expected_invocation_key)
+        ordering.append("continuous-marker-released")
+        return True
+
+    monkeypatch.setattr(
+        runner.verification_batch_admission,
+        "complete_one",
+        complete_one,
+    )
+    monkeypatch.setattr(
+        runner.scope_entry_admission,
+        "arm",
+        lambda *_args, **_kwargs: pytest.fail(
+            "continuous verification must not leave a second one-shot lease"
+        ),
+    )
+    monkeypatch.setattr(runner, "_queue_edit_finalization_required", lambda *_args: True)
+    monkeypatch.setattr(
+        runner,
+        "_finalize_managed_queue_edit_details",
+        lambda *_args, **_kwargs: runner._ManagedQueueEditVerdict(
+            accepted=True,
+            declaration_delta=runner.QueueEditDeclarationDelta(True, ()),
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_sync_research_helper_integration_admission",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+
+    def handle(_agent, *_args, **_kwargs):
+        assert pending
+        ordering.append("manager-verification-and-refresh")
+
+    monkeypatch.setattr(runner, "_handle_managed_tool_result", handle)
+    agent = runner._build_agent()
+    agent._managed_autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+        }
+    }
+    result = json.dumps(
+        {
+            "success": True,
+            "status": "patch_elaborated",
+            "check_passed": True,
+        }
+    )
+    arguments = {"path": str(active), "patch": "*** Begin Patch"}
+
+    agent._project_lean_handoff_request_callback(
+        "apply_verified_patch",
+        arguments,
+        result,
+    )
+    agent.post_tool_result_callback("apply_verified_patch", arguments, result)
+
+    assert ordering == [
+        "continuous-marker-started",
+        "manager-verification-and-refresh",
+        "continuous-marker-released",
+    ]
+    assert pending == set()
+
+
+def test_build_agent_read_only_callback_skips_edit_finalization(monkeypatch, tmp_path):
+    """Read-only tools still reach managed handling without edit telemetry."""
+    project = tmp_path / "Project"
+    project.mkdir()
+    handled: list[str] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        session_id = "read-only-callback"
+
+        def __init__(self, **_kwargs):
+            pass
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_MODEL", "model")
+    monkeypatch.setenv("LEANFLOW_NATIVE_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("LEANFLOW_NATIVE_API_KEY", "key")
+    monkeypatch.setenv("LEANFLOW_NATIVE_PROVIDER", "provider")
+    monkeypatch.setattr(runner, "AIAgent", _Agent)
+    monkeypatch.setattr(
+        "tools.implementations.terminal_tool.register_task_env_overrides",
+        lambda *_args, **_kwargs: None,
+    )
+    agent = runner._build_agent()
+    monkeypatch.setattr(
+        runner,
+        "_finalize_managed_queue_edit_details",
+        lambda *_args, **_kwargs: pytest.fail("read-only callback reached edit finalization"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_handle_managed_tool_result",
+        lambda _agent, function_name, *_args, **_kwargs: handled.append(function_name),
+    )
+
+    agent.post_tool_result_callback("read_file", {"path": "Main.lean"}, "ok")
+
+    assert handled == ["read_file"]
+
+
+def test_read_only_callback_cannot_consume_concurrent_patch_snapshot(monkeypatch, tmp_path):
+    """A read result cannot race the source-edit result that owns a snapshot."""
+    project = tmp_path / "Project"
+    project.mkdir()
+    active = project / "Main.lean"
+    source = "theorem demo : True := by\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    finalized: list[str] = []
+
+    class _Agent(_ManagedRunAgentStub):
+        session_id = "concurrent-callback"
+
+        def __init__(self, **_kwargs):
+            pass
+
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_MODEL", "model")
+    monkeypatch.setenv("LEANFLOW_NATIVE_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("LEANFLOW_NATIVE_API_KEY", "key")
+    monkeypatch.setenv("LEANFLOW_NATIVE_PROVIDER", "provider")
+    monkeypatch.setattr(runner, "AIAgent", _Agent)
+    monkeypatch.setattr(
+        "tools.implementations.terminal_tool.register_task_env_overrides",
+        lambda *_args, **_kwargs: None,
+    )
+    agent = runner._build_agent()
+    agent._managed_queue_edit_snapshot = {
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "before_text": source,
+    }
+    monkeypatch.setattr(
+        runner,
+        "_finalize_managed_queue_edit_details",
+        lambda _agent, function_name, _result: finalized.append(function_name)
+        or runner._ManagedQueueEditVerdict(accepted=True),
+    )
+    monkeypatch.setattr(runner, "_handle_managed_tool_result", lambda *_args, **_kwargs: None)
+
+    agent.post_tool_result_callback("read_file", {"path": str(active)}, "ok")
+    assert finalized == []
+    assert hasattr(agent, "_managed_queue_edit_snapshot")
+
+    agent.post_tool_result_callback("patch", {"path": str(active)}, "ok")
+    assert finalized == ["patch"]
+
+
+def test_delegated_search_callback_uses_child_identity_and_lane_local_state(monkeypatch, tmp_path):
+    """A lane search event belongs to the executing child, never its managed owner."""
+
+    class _Owner(_ManagedRunAgentStub):
+        session_id = "managed-owner"
+
+        def __init__(self):
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "erdos_242_residual_mod_seven_eq_five",
+                    "active_file": str(tmp_path / "242.lean"),
+                    "slice": "private lemma erdos_242_residual_mod_seven_eq_five : True := by sorry",
+                }
+            }
+
+    class _Child(_ManagedRunAgentStub):
+        session_id = "planner-lane"
+        _parent_session_id = "managed-owner"
+        _delegate_depth = 1
+        quiet_mode = True
+
+        def __init__(self):
+            self._interrupted = False
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return self._interrupted
+
+        def interrupt(self, message=None):
+            self._interrupted = True
+            self.interrupt_messages.append(message)
+
+    owner = _Owner()
+    child = _Child()
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_search_progress_hard_limit", lambda: 1)
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    runner._handle_delegated_managed_search_result(
+        owner,
+        child,
+        "web_search",
+        {"query": "Erdos Straus n = 168 t + 121"},
+        '{"success": true, "results": []}',
+    )
+
+    assert "search_progress" not in owner._managed_autonomy_state
+    assert child._managed_autonomy_state["current_queue_assignment"] == (
+        owner._managed_autonomy_state["current_queue_assignment"]
+    )
+    assert child._managed_autonomy_state["search_progress"]["search_count"] == 1
+    route_events = [(args, details) for args, details in events if args[0] == "search-route-change"]
+    assert len(route_events) == 1
+    assert route_events[0][1]["agent_session_id"] == "planner-lane"
+    assert route_events[0][1]["parent_agent_session_id"] == "managed-owner"
+    assert child.interrupt_messages == [runner.WORKFLOW_STEP_BOUNDARY_INTERRUPT]
 
 
 def test_handle_managed_tool_result_interrupts_even_if_live_refresh_fails(monkeypatch):
@@ -3208,7 +19974,7 @@ def test_background_control_loop_processes_queued_prompt_and_remote_exit(monkeyp
         {},
     )
 
-    assert result == 0
+    assert result == runner.EXIT_PAUSED
     assert any(
         event_type == "agent-resume" and details.get("text") == "Try another proof."
         for event_type, _, details in recorded
@@ -3310,6 +20076,85 @@ def test_background_control_loop_exits_after_verified_completion(monkeypatch):
     assert "exited" in persisted
 
 
+def test_background_control_loop_provider_gate_exits_two_before_conversation(monkeypatch):
+    """An idle background runner rechecks immutable roots for each queued turn."""
+
+    class _Agent(_ManagedRunAgentStub):
+        session_id = "root-gated-background"
+        _parent_session_id = ""
+        _delegate_depth = 0
+
+    state: dict = {}
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner,
+        "read_workflow_agent_inbox",
+        lambda _agent_id: [{"seq": 1, "kind": "message", "text": "continue"}],
+    )
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_agent_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+    monkeypatch.setattr(runner, "_stop_native_owned_work", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_release_native_runner_locks", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: {"verified": False, "sorry_count": 1},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_promote_live_state_to_verified_compat",
+        lambda live, autonomy=None: live,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maybe_checkpoint_before_compaction",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent, force=False: (history, {"compacted": False}),
+    )
+    monkeypatch.setattr(runner, "_record_queue_assignment", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_prepare_queue_assignment_state", lambda *args: None)
+    monkeypatch.setattr(runner, "_set_runtime_active_skill", lambda *args: None)
+    monkeypatch.setattr(runner, "_apply_managed_reasoning_policy", lambda *args: "high")
+    monkeypatch.setattr(runner, "_record_managed_reasoning_policy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+
+    def block(_agent, autonomy):
+        autonomy.update(
+            {
+                "operational_pause": "paused_infrastructure",
+                "infrastructure_pause_reason": "requested campaign roots are not registered",
+            }
+        )
+        return False
+
+    monkeypatch.setattr(runner, "_prepare_managed_turn_or_pause", block)
+    monkeypatch.setattr(
+        runner,
+        "_run_managed_conversation_with_retries",
+        lambda *args, **kwargs: pytest.fail("background root gate reached provider"),
+    )
+
+    result = runner._run_background_control_loop(
+        _Agent(),
+        "system",
+        [],
+        {},
+        {},
+        {"verified": False, "sorry_count": 1},
+        state,
+    )
+
+    assert result == runner.EXIT_PAUSED
+    assert state["operational_pause"] == "paused_infrastructure"
+
+
 def test_terminate_descendant_agents_records_shutdown_activity(monkeypatch):
     class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
@@ -3340,6 +20185,37 @@ def test_terminate_descendant_agents_records_shutdown_activity(monkeypatch):
     runner._terminate_descendant_agents(_Agent())
 
     assert any(event_type == "descendants-terminated" for event_type, _, _ in recorded)
+
+
+def test_terminate_descendant_agents_ignores_same_process_sessions(monkeypatch):
+    """Logical sessions skipped by cleanup must not emit failure telemetry."""
+
+    class _Agent(_ManagedRunAgentStub):
+        session_id = "30761"
+        _parent_session_id = ""
+        _delegate_depth = 0
+
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "terminate_workflow_agent_descendants",
+        lambda agent_id: {
+            "success": True,
+            "count": 0,
+            "terminated": [],
+            "failed": [],
+            "skipped_same_process": ["80967", "89919", "90446"],
+        },
+    )
+
+    runner._terminate_descendant_agents(_Agent())
+
+    assert recorded == []
 
 
 def test_terminate_other_agents_records_shutdown_activity(monkeypatch):
@@ -3469,6 +20345,517 @@ def test_background_runner_exits_immediately_after_verified_completion(monkeypat
     )
 
 
+def test_verified_startup_skips_model_and_research_portfolio(monkeypatch, tmp_path):
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    persisted: list[str] = []
+    migration_calls: list[bool] = []
+    source = tmp_path / "Main.lean"
+    source.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    verified_state = {
+        "active_file": str(source),
+        "declaration_scope": "file",
+        "diagnostics": "no errors found",
+        "goals": "no goals",
+        "sorry_count": 0,
+        "project_sorry_count": 19,
+        "verification_ok": True,
+        "last_verification": {"ok": True},
+    }
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_negation_promotions_on_startup",
+        lambda: migration_calls.append(True) or {},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_agent",
+        lambda: pytest.fail("verified startup initialized model and MCP services"),
+    )
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_plan_state_resume_block", lambda autonomy_state: "")
+    monkeypatch.setattr(
+        runner,
+        "_verified_startup_preflight",
+        lambda history, checkpoint, autonomy: dict(verified_state),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: pytest.fail("verified startup built full capability state"),
+    )
+    monkeypatch.setattr(runner, "_print_header", lambda: None)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *args, **kwargs: True)
+    monkeypatch.setattr(runner, "_maybe_record_learnings", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", lambda _state: False)
+    monkeypatch.setattr(
+        runner,
+        "_revalidate_verified_scope_after_quiescence",
+        lambda *args, **kwargs: dict(verified_state),
+    )
+    monkeypatch.setattr(runner, "_terminal_authority_snapshot_is_current", lambda *a, **k: True)
+    monkeypatch.setattr(runner, "_terminate_descendant_agents", lambda agent: None)
+    monkeypatch.setattr(runner, "_terminate_other_agents", lambda agent: None)
+    monkeypatch.setattr(
+        runner,
+        "_persist_live_status",
+        lambda *args, phase=None, **kwargs: persisted.append(str(phase or "")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_campaign_exit",
+        lambda code, *args, **kwargs: code,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_research_scope_entry_setup",
+        lambda *args, **kwargs: pytest.fail("verified startup launched research"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_managed_conversation_with_retries",
+        lambda *args, **kwargs: pytest.fail("verified startup called the model"),
+    )
+
+    assert runner.main() == 0
+    assert migration_calls == [True]
+    assert persisted[-1] == "exited"
+    assert any(
+        event_type == "runner-exit" and "before startup" in message
+        for event_type, message, _ in recorded
+    )
+
+
+def test_native_campaign_root_setup_honors_exact_project_file_scope(monkeypatch, tmp_path):
+    """An out-of-scope project theorem cannot acquire terminal root authority."""
+    first = tmp_path / "A.lean"
+    second = tmp_path / "B.lean"
+    first.write_text("theorem root_a : True := by\n  sorry\n", encoding="utf-8")
+    second.write_text("theorem root_b : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "native-scoped-roots")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_NEGATION_PROBE", "1")
+    monkeypatch.setenv("LEANFLOW_PROVE_FILE_SCOPE", '["A.lean"]')
+    monkeypatch.delenv("LEANFLOW_NATIVE_ACTIVE_FILE", raising=False)
+    monkeypatch.setattr(runner, "_project_lean_files", lambda _root: [first, second])
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    state: dict = {}
+    runner.campaign_epoch.ensure_campaign(state)
+
+    assert runner._initialize_campaign_root_authority(state)
+
+    registry = runner.plan_state.load_summary()["campaign"][
+        runner.negation_promotion._CAMPAIGN_ROOTS_FIELD
+    ]
+    assert [root["theorem"] for root in registry["roots"]] == ["root_a"]
+    assert (
+        runner.plan_state.load_blueprint().node_by_id(
+            runner.plan_state.node_id_for("root_b", str(second))
+        )
+        is None
+    )
+
+
+def test_campaign_root_registration_failure_stops_before_preflight_and_provider(
+    monkeypatch,
+):
+    """A fresh incomplete registry is a truthful exit-2 startup boundary."""
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_reconcile_source_transaction_state", lambda state: {})
+
+    def fail_registration(state):
+        state.update(
+            {
+                "operational_pause": "paused_infrastructure",
+                "infrastructure_pause_reason": "root graph revision raced registration",
+            }
+        )
+        return False
+
+    monkeypatch.setattr(runner, "_initialize_campaign_root_authority", fail_registration)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_negation_promotions_on_startup",
+        lambda: pytest.fail("root registration failure reached promotion migration"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_verified_startup_preflight",
+        lambda *args, **kwargs: pytest.fail("root registration failure reached preflight"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_ensure_project_prove_manager_started",
+        lambda *args, **kwargs: pytest.fail("root registration failure reached project manager"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_agent",
+        lambda: pytest.fail("root registration failure initialized a provider"),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    assert runner.main() == runner.EXIT_PAUSED
+
+
+def test_active_provider_reset_stops_before_any_startup_reconciliation(monkeypatch):
+    """A resumed usage-limit pause starts no provider, research, or Lean services."""
+    projection_calls: list[dict] = []
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+
+    def hydrate_provider_pause(state):
+        state.update(
+            {
+                "campaign_id": "campaign-provider-paused",
+                "campaign_epoch": 1,
+                "campaign_status": "paused_infrastructure",
+                "operational_pause": "paused_infrastructure",
+                "infrastructure_pause_reason": "Codex reset remains active",
+                "provider_pause_owner": "provider_usage_limit",
+                "provider_retry_after": {
+                    "kind": "usage_limit_reached",
+                    "retry_after_seconds": 600,
+                    "unavailable_until_epoch": 1_900_000_000,
+                },
+            }
+        )
+        return {
+            "campaign_id": "campaign-provider-paused",
+            "epoch": 1,
+            "status": "paused_infrastructure",
+        }
+
+    monkeypatch.setattr(runner.campaign_epoch, "ensure_campaign", hydrate_provider_pause)
+    monkeypatch.setattr(
+        runner.resume_projection_reconciliation,
+        "reconcile_provider_free_resume_projections",
+        lambda state: projection_calls.append(dict(state)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_cleanup_scratch_artifacts_on_startup",
+        lambda *args, **kwargs: pytest.fail("provider pause reached scratch cleanup"),
+    )
+    monkeypatch.setattr(
+        runner.environment_memory,
+        "hydrate",
+        lambda *args, **kwargs: pytest.fail("provider pause reached environment hydration"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_verified_startup_preflight",
+        lambda *args, **kwargs: pytest.fail("provider pause reached Lean preflight"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_agent",
+        lambda: pytest.fail("provider pause initialized provider or MCP services"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_research_scope_entry_setup",
+        lambda *args, **kwargs: pytest.fail("provider pause launched research"),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    assert runner.main() == runner.EXIT_PAUSED
+    assert len(projection_calls) == 1
+    assert projection_calls[0]["campaign_id"] == "campaign-provider-paused"
+
+
+def test_revalidated_main_disproof_skips_provider_and_exits_three(monkeypatch, tmp_path):
+    """A restarted authoritative disproof terminates before agent construction."""
+    from leanflow_cli.workflows.negation_promotion import PromotionReconciliation
+
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    source = tmp_path / "Main.lean"
+    source.write_text("theorem main_goal : True := by\n  sorry\n", encoding="utf-8")
+    unresolved_state = {
+        "active_file": str(source),
+        "target_symbol": "main_goal",
+        "sorry_count": 1,
+        "verification_ok": False,
+    }
+    promotion = {
+        "theorem": "main_goal",
+        "file": str(source),
+        "is_main_goal": True,
+        "promotion_id": "promotion-main",
+    }
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_plan_state_resume_block", lambda autonomy_state: "")
+    monkeypatch.setattr(
+        runner,
+        "_verified_startup_preflight",
+        lambda history, checkpoint, autonomy: dict(unresolved_state),
+    )
+    monkeypatch.setattr(runner, "_print_header", lambda: None)
+    monkeypatch.setattr(
+        runner,
+        "_build_agent",
+        lambda: pytest.fail("disproved startup initialized provider or MCP services"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_negation_promotions_on_startup",
+        lambda state: PromotionReconciliation(
+            terminal_disproof=True,
+            promotion=promotion,
+        ),
+    )
+    monkeypatch.setattr(runner, "_maybe_record_learnings", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "authoritative_runtime_main_promotion",
+        lambda *args, **kwargs: dict(promotion),
+    )
+    monkeypatch.setattr(
+        runner.negation_promotion,
+        "revalidate_promotion",
+        lambda *args, **kwargs: runner.negation_promotion.PromotionResult(
+            True,
+            "current",
+            is_main_goal=True,
+        ),
+    )
+    monkeypatch.setattr(runner, "_terminal_authority_snapshot_is_current", lambda *a, **k: True)
+    # Startup reconciliation is mocked as already authoritative in this test.
+    # Select that exact source directly so the terminal guard does not require
+    # a second, unrelated requested-root registry fixture.
+    monkeypatch.setattr(
+        runner,
+        "_terminal_authority_source_paths",
+        lambda *args, **kwargs: (source.resolve(),),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event_type, message, **details: recorded.append((event_type, message, details)),
+    )
+
+    assert runner.main() == runner.EXIT_DISPROVED
+    assert any(
+        event_type == "runner-exit" and "disproof before startup" in message
+        for event_type, message, _details in recorded
+    )
+
+
+def test_false_cleanup_pause_skips_provider_and_exits_two(monkeypatch):
+    """A mixed source/graph cleanup state pauses before agent construction."""
+    from leanflow_cli.workflows.negation_promotion import PromotionReconciliation
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_plan_state_resume_block", lambda autonomy_state: "")
+    monkeypatch.setattr(
+        runner,
+        "_verified_startup_preflight",
+        lambda *args, **kwargs: pytest.fail("cleanup pause reached startup preflight"),
+    )
+    monkeypatch.setattr(runner, "_print_header", lambda: None)
+    monkeypatch.setattr(
+        runner,
+        "_build_agent",
+        lambda: pytest.fail("cleanup-paused startup initialized provider or MCP services"),
+    )
+    monkeypatch.setattr(runner, "_reconcile_source_transaction_state", lambda state: {})
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_negation_promotions_on_startup",
+        lambda state: PromotionReconciliation(
+            cleanup_pending=1,
+            cleanup_quarantined=1,
+            cleanup_reasons=("helper source and graph need manual reconciliation",),
+        ),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_compact_closed_activity_on_startup",
+        lambda: pytest.fail("cleanup pause reached retention"),
+    )
+
+    assert runner.main() == runner.EXIT_PAUSED
+
+
+def test_pending_negation_promotion_skips_preflight_provider_and_retention(monkeypatch):
+    """Startup graph ambiguity is a hard barrier, not advisory reconciliation output."""
+    from leanflow_cli.workflows.negation_promotion import PromotionReconciliation
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_reconcile_source_transaction_state", lambda state: {})
+    monkeypatch.setattr(runner, "_migrate_negation_promotions_on_startup", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_negation_promotions_on_startup",
+        lambda state: PromotionReconciliation(
+            promotion_pending=1,
+            promotion_reasons=("authenticated graph delta could not be restored",),
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_plan_state_resume_block",
+        lambda state: pytest.fail("promotion pause reached plan-state replay"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_verified_startup_preflight",
+        lambda *args, **kwargs: pytest.fail("promotion pause reached startup preflight"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_agent",
+        lambda: pytest.fail("promotion pause initialized provider or MCP services"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_compact_closed_activity_on_startup",
+        lambda: pytest.fail("promotion pause reached retention"),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+
+    assert runner.main() == runner.EXIT_PAUSED
+
+
+def test_source_transaction_pause_skips_provider_and_exits_two(monkeypatch):
+    """An ambiguous helper insertion pauses before provider construction."""
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_install_workflow_run_log_capture", lambda: None)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(runner, "_plan_state_resume_block", lambda autonomy_state: "")
+    monkeypatch.setattr(
+        runner,
+        "_verified_startup_preflight",
+        lambda *args, **kwargs: pytest.fail("source pause reached startup preflight"),
+    )
+    monkeypatch.setattr(runner, "_print_header", lambda: None)
+    monkeypatch.setattr(
+        runner,
+        "_build_agent",
+        lambda: pytest.fail("source-paused startup initialized provider or MCP services"),
+    )
+
+    def pause_source(state):
+        state.update(
+            {
+                "operational_pause": "paused_source_quarantine",
+                "source_quarantine_origin": runner.SOURCE_QUARANTINE_ORIGIN_TRANSACTION,
+                "source_quarantine_reason": "ambiguous helper insertion",
+                # A stale terminal marker must never outrank unresolved source
+                # ownership or cause exit 3.
+                "terminal_outcome": "disproved",
+            }
+        )
+        return {"active": 1}
+
+    monkeypatch.setattr(runner, "_reconcile_source_transaction_state", pause_source)
+    monkeypatch.setattr(
+        runner,
+        "_migrate_negation_promotions_on_startup",
+        lambda: pytest.fail("source pause reached negation migration"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_negation_promotions_on_startup",
+        lambda state: pytest.fail("source pause reached negation reconciliation"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_plan_state_resume_block",
+        lambda state: pytest.fail("source pause reached plan-state replay"),
+    )
+    monkeypatch.setattr(runner, "_record_campaign_exit", lambda code, *args, **kwargs: code)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_compact_closed_activity_on_startup",
+        lambda: pytest.fail("source pause reached retention"),
+    )
+
+    assert runner.main() == runner.EXIT_PAUSED
+
+
+def test_startup_exact_gate_retires_stale_verified_campaign_status(monkeypatch):
+    state = {"campaign_status": "verified"}
+    statuses: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "record_status",
+        lambda _state, status, *, reason="": statuses.append((status, reason)),
+    )
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda live: bool(live.get("verified")))
+
+    runner._reconcile_verified_campaign_status_on_startup(state, {"verified": False})
+    runner._reconcile_verified_campaign_status_on_startup(state, {"verified": True})
+
+    assert statuses == [("running", "persisted verification regressed during startup revalidation")]
+
+
+def test_verified_startup_preflight_uses_exact_gate_without_capability_probe(monkeypatch):
+    clean_file = "/tmp/project/Main.lean"
+    promoted = {
+        "active_file": clean_file,
+        "declaration_scope": "file",
+        "diagnostics": "",
+        "goals": "no goals",
+        "sorry_count": 0,
+        "project_sorry_count": 5,
+        "verification_ok": True,
+        "last_verification": {"ok": True},
+    }
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_resolve_active_file", lambda *args, **kwargs: clean_file)
+    monkeypatch.setattr(runner, "_count_sorries", lambda path: 0)
+    monkeypatch.setattr(runner, "_declaration_queue_scope", lambda: "file")
+    monkeypatch.setattr(
+        runner,
+        "_promote_live_state_to_verified_compat",
+        lambda state, autonomy: dict(promoted),
+    )
+    monkeypatch.setattr(
+        runner,
+        "probe_capabilities",
+        lambda *args, **kwargs: pytest.fail("preflight probed MCP capabilities"),
+    )
+
+    result = runner._verified_startup_preflight([], {}, {})
+
+    assert result == promoted
+
+
 def test_background_control_loop_handles_keyboard_interrupt_cleanly(monkeypatch):
     class _Agent(_ManagedRunAgentStub):
         session_id = "12345"
@@ -3507,7 +20894,7 @@ def test_background_control_loop_handles_keyboard_interrupt_cleanly(monkeypatch)
         {},
     )
 
-    assert result == 0
+    assert result == runner.EXIT_INTERRUPTED
     assert any(
         event_type == "runner-exit" and "interrupted by signal" in message
         for event_type, message, _ in recorded
@@ -3522,6 +20909,60 @@ def test_workflow_startup_guidance_mentions_autonomous_loop():
     assert "/prove Main.lean" in text
     assert "lean_capabilities" in text
     assert "lean_worker_dispatch" not in text
+
+
+def test_workflow_completion_exit_codes_never_report_unresolved_success(monkeypatch):
+    monkeypatch.setattr(
+        runner,
+        "_live_state_is_verified",
+        lambda state: bool((state or {}).get("verified")),
+    )
+
+    assert runner._workflow_completion_exit_code({"verified": True}, {}) == 0
+    assert runner._workflow_completion_exit_code({"verified": False}, {}) == runner.EXIT_PAUSED
+    assert (
+        runner._workflow_completion_exit_code(
+            {"verified": False}, {"terminal_outcome": "disproved"}
+        )
+        == runner.EXIT_DISPROVED
+    )
+    assert (
+        runner._workflow_completion_exit_code(
+            {"verified": False},
+            {
+                "terminal_outcome": "disproved",
+                "operational_pause": "paused_source_quarantine",
+            },
+        )
+        == runner.EXIT_PAUSED
+    )
+
+
+def test_reconcile_stale_workflow_file_locks_releases_only_terminal_owners(monkeypatch):
+    released: list[list[str]] = []
+    events: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        runner,
+        "summarize_workflow_agents",
+        lambda activity_limit=1: [
+            {"agent_id": "dead-agent", "status": "dead"},
+            {"agent_id": "finished-agent", "status": "exited"},
+            {"agent_id": "live-agent", "status": "active"},
+        ],
+    )
+    monkeypatch.setattr(
+        runner,
+        "release_stale_file_locks",
+        lambda *, dead_owner_ids: released.append(list(dead_owner_ids))
+        or {"released": ["/tmp/Main.lean"], "count": 1},
+    )
+    monkeypatch.setattr(
+        runner, "_record_activity", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+
+    assert runner._reconcile_stale_workflow_file_locks() == 1
+    assert released == [["dead-agent", "finished-agent"]]
+    assert events[0][0][0] == "stale-file-locks-released"
 
 
 def test_workflow_startup_guidance_mentions_user_approved_swarm(monkeypatch):
@@ -3712,7 +21153,7 @@ def test_autonomous_continuation_prompt_snapshot_with_runner_lean_prompt(monkeyp
         "Use the refreshed live proof state below as the current turn state.\n\n"
         "This is autonomous continuation cycle 3.\n"
         "Current verification gate: `lean_inspect` on Main.lean, then `lake env lean Main.lean`\n"
-        "Do not stop until that gate is satisfied or you report a blocker with a requested route (`decompose` | `negate` | `plan`) and the evidence.\n\n"
+        "Do not end this assignment until that gate is satisfied. If the current proof shape is exhausted, report its evidence with a requested route (`decompose` | `negate` | `plan`) and immediately continue under the manager's next route. A blocker is a routing event, never a conclusion.\n\n"
         "Route decision:\n"
         "- skill: lean-theorem-queue-worker\n"
         "- action: queue-worker\n"
@@ -4519,13 +21960,211 @@ def test_build_live_proof_state_assigns_current_queue_head_as_target(monkeypatch
     monkeypatch.setattr(runner, "_extract_recent_build_status", lambda history: "unknown")
     monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
 
-    live_state = runner._build_live_proof_state([])
+    history = [
+        {
+            "role": "tool",
+            "name": "skill_view",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "name": "lean-theorem-queue-worker",
+                    "content": (
+                        "## Blocker Taxonomy\n"
+                        "A failed proof attempt is route evidence, never permission to stop."
+                    ),
+                }
+            ),
+        }
+    ]
+
+    live_state = runner._build_live_proof_state(history)
 
     assert live_state["target_symbol"] == "first"
     assert live_state["current_queue_item"]["label"] == "first"
+    assert live_state["current_blocker"] == "contains sorry"
+    assert live_state["blocker_summary"] == ""
     assert "Current file prefix ending at `first`" in live_state["current_queue_item_prefix"]
     assert "theorem first" in live_state["current_queue_item_prefix"]
     assert "theorem first" in live_state["current_queue_item_slice"]
+
+
+def test_excluded_live_queue_clears_stale_assignment_and_routes_plan(monkeypatch, tmp_path):
+    """Rank-3 graph exclusion must survive the build-to-assignment transition."""
+    project = tmp_path / "Demo"
+    active = project / "Demo" / "Main.lean"
+    active.parent.mkdir(parents=True)
+    active.write_text("theorem false_helper : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
+    monkeypatch.setattr(runner, "_project_root", lambda: str(project))
+    monkeypatch.setattr(
+        runner, "_resolve_active_file", lambda history, checkpoint_state=None: str(active)
+    )
+    monkeypatch.setattr(
+        runner,
+        "_resolve_target_symbol",
+        lambda history, checkpoint_state=None: "false_helper",
+    )
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (1, [str(active)]))
+    monkeypatch.setattr(runner, "_retry_unverified_helper_gates", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_graph_frontier_precedence",
+        lambda autonomy_state=None, *, active_file="", queue_labels=None: (lambda _label: 3),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_query_live_goals_from_capabilities",
+        lambda _path, _symbol, _report: "no assigned declaration",
+    )
+
+    class _Inspection:
+        diagnostics = f"{active}:2:3: warning: declaration uses `sorry`"
+        goals = "goals for false_helper"
+        sorry_count = 1
+        project_sorry_count = 1
+        queue_items = []
+        capability_report = {
+            "cwd": str(project),
+            "project_root": str(project),
+            "degraded_reasons": [],
+        }
+
+    class _Route:
+        def to_dict(self):
+            return {
+                "route_action": "prove-current",
+                "skill_name": "lean-proof-loop",
+                "reason": "unresolved queue",
+            }
+
+    monkeypatch.setattr(runner, "lean_inspect", lambda *args, **kwargs: _Inspection())
+    monkeypatch.setattr(runner, "route_workflow_step", lambda *args, **kwargs: _Route())
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "false_helper",
+            "active_file": str(active),
+        }
+    }
+
+    live_state = runner._build_live_proof_state([], {}, autonomy_state)
+
+    assert live_state["declaration_queue_total"] == 1
+    assert live_state["current_queue_item"] == {}
+    assert live_state["target_symbol"] == ""
+    assert live_state["queue_frontier_exhausted"] is True
+    assert live_state["queue_needs_final_file_sweep"] is False
+    runner._prepare_queue_assignment_state(autonomy_state, live_state)
+    assert "current_queue_assignment" not in autonomy_state
+    context = runner.orchestrator_floor.build_route_context(
+        trigger="scope-entry",
+        live_state=live_state,
+        autonomy_state=autonomy_state,
+    )
+    assert runner.orchestrator_floor.orchestrator_route(context).route == "plan"
+
+
+def test_build_live_proof_state_refreshes_goals_after_queue_rotation(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    module_dir = project / "Demo"
+    module_dir.mkdir(parents=True)
+    active = module_dir / "Main.lean"
+    active.write_text(
+        "\n".join(
+            [
+                "theorem old_target : True := by",
+                "  trivial",
+                "",
+                "theorem current_target : True := by",
+                "  sorry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_ACTIVE_FILE", "Demo/Main.lean")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", "/prove Demo/Main.lean")
+    monkeypatch.setattr(runner, "_project_root", lambda: str(project))
+    monkeypatch.setattr(
+        runner, "_resolve_active_file", lambda history, checkpoint_state=None: str(active)
+    )
+    monkeypatch.setattr(
+        runner,
+        "_resolve_target_symbol",
+        lambda history, checkpoint_state=None: "old_target",
+    )
+    monkeypatch.setattr(runner, "_count_project_sorries", lambda root: (1, ["Demo/Main.lean (1)"]))
+    monkeypatch.setattr(runner, "_retry_unverified_helper_gates", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_promote_live_state_to_verified", lambda live_state: live_state)
+    monkeypatch.setattr(
+        runner,
+        "probe_capabilities",
+        lambda cwd=None: pytest.fail(
+            "live inspection capability report must prevent a duplicate probe"
+        ),
+    )
+    inspected_symbols: list[str | None] = []
+    direct_goal_symbols: list[str] = []
+
+    def _inspect(*args, symbol=None, **kwargs):
+        inspected_symbols.append(symbol)
+        return type(
+            "_Inspection",
+            (),
+            {
+                "diagnostics": f"{active}:5:3: warning: declaration uses `sorry`",
+                "goals": f"goals for {symbol or '[file]'}",
+                "sorry_count": 1,
+                "project_sorry_count": 1,
+                "blocker_kind": "open_goals",
+                "queue_items": [],
+                "capability_report": {
+                    "cwd": str(project),
+                    "project_root": str(project),
+                    "degraded_reasons": [],
+                },
+            },
+        )()
+
+    monkeypatch.setattr(runner, "lean_inspect", _inspect)
+    monkeypatch.setattr(
+        runner,
+        "_query_live_goals_from_capabilities",
+        lambda _path, symbol, _report: direct_goal_symbols.append(symbol) or f"goals for {symbol}",
+    )
+
+    rotating_state = {
+        "current_queue_assignment": {
+            "target_symbol": "old_target",
+            "active_file": str(active),
+        }
+    }
+    live_state = runner._build_live_proof_state([], {}, rotating_state)
+
+    assert live_state["target_symbol"] == "current_target"
+    assert live_state["goals"] == "goals for current_target"
+    assert "goals for current_target" in live_state["message"]
+    assert "goals for old_target" not in live_state["message"]
+    assert inspected_symbols == ["old_target"]
+    assert direct_goal_symbols == ["current_target"]
+
+    inspected_symbols.clear()
+    direct_goal_symbols.clear()
+    assigned_state = {
+        "current_queue_assignment": {
+            "target_symbol": "current_target",
+            "active_file": str(active),
+        }
+    }
+    live_state = runner._build_live_proof_state([], {}, assigned_state)
+
+    assert live_state["goals"] == "goals for current_target"
+    assert inspected_symbols == ["current_target"]
+    assert direct_goal_symbols == []
 
 
 def test_declaration_prefix_text_keeps_last_200_lines(tmp_path):
@@ -5034,6 +22673,7 @@ def test_live_state_is_not_verified_when_typed_verification_failed():
 def test_live_state_ignores_legacy_reported_errors_when_typed_verification_passed():
     live_state = {
         "active_file": "/tmp/project/Main.lean",
+        "declaration_scope": "file",
         "diagnostics": "no errors found",
         "goals": "no goals",
         "build_status": "lake build reported errors",
@@ -5235,7 +22875,12 @@ def test_document_formalization_handoff_blocks_queue_without_root_import(monkeyp
                 "reason": "queue is empty",
             }
 
-    monkeypatch.setattr(runner, "probe_capabilities", lambda root: _Caps())
+    probe_calls: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "probe_capabilities",
+        lambda root: probe_calls.append(str(root)) or _Caps(),
+    )
     monkeypatch.setattr(runner, "lean_inspect", lambda *args, **kwargs: _Inspection())
     monkeypatch.setattr(runner, "route_workflow_step", lambda *args, **kwargs: _Route())
 
@@ -5246,6 +22891,7 @@ def test_document_formalization_handoff_blocks_queue_without_root_import(monkeyp
     assert live_state["queue_needs_final_file_sweep"] is False
     assert live_state["route_decision"]["route_action"] == "planner-review-gate"
     assert live_state["route_decision"]["skill_name"] == "lean-formalization"
+    assert probe_calls == [str(project)]
     assert "lean_verify(mode=project)" in live_state["verification_hint"]
     handoff = live_state["document_formalization_handoff"]
     assert handoff["ok"] is False
@@ -5573,6 +23219,491 @@ def test_drive_autonomous_followups_runs_independent_document_review_before_bloc
     assert final_live_state["active_file_label"] == "Demo/Paper/Main.lean"
     assert len(review_calls) == 1
     assert persisted[-1] == "blocked"
+
+
+def test_drive_autonomous_followups_refreshes_transition_assignment_before_orchestration(
+    monkeypatch,
+):
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    live_state = {
+        "active_file": "/tmp/Demo.lean",
+        "active_file_label": "Demo.lean",
+        "target_symbol": "next_demo",
+        "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
+        "declaration_queue_total": 1,
+        "sorry_count": 1,
+    }
+    autonomy_state = {
+        "orchestrator_scope_entered": True,
+        "current_queue_assignment": {
+            "target_symbol": "completed_demo",
+            "active_file": "/tmp/Demo.lean",
+        },
+    }
+    observed = []
+
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(
+        runner, "_build_live_proof_state_compat", lambda *args, **kwargs: dict(live_state)
+    )
+    monkeypatch.setattr(
+        runner, "_promote_live_state_to_verified_compat", lambda state, autonomy_state=None: state
+    )
+    monkeypatch.setattr(
+        runner, "_advance_project_prove_manager_if_needed", lambda *args, **kwargs: False
+    )
+    monkeypatch.setattr(
+        runner,
+        "_rebuild_history_for_theorem_transition",
+        lambda *args, **kwargs: (
+            [{"role": "assistant", "content": "next theorem handoff"}],
+            {
+                "previous_target": "completed_demo",
+                "previous_file": "/tmp/Demo.lean",
+                "current_target": "next_demo",
+                "current_file": "/tmp/Demo.lean",
+            },
+        ),
+    )
+
+    def prepare_assignment(state, current_live_state):
+        observed.append("prepared")
+        state["current_queue_assignment"] = {
+            "target_symbol": current_live_state["target_symbol"],
+            "active_file": current_live_state["active_file"],
+        }
+        state.pop("orchestrator_scope_entered", None)
+
+    def consult(_trigger, state, current_live_state):
+        observed.append(
+            (
+                state["current_queue_assignment"]["target_symbol"],
+                current_live_state["target_symbol"],
+            )
+        )
+        return None
+
+    monkeypatch.setattr(runner, "_prepare_queue_assignment_state", prepare_assignment)
+    monkeypatch.setattr(runner, "_maybe_run_document_formalization_review_agent", lambda *a: False)
+    monkeypatch.setattr(runner, "_maybe_announce_final_file_sweep_state", lambda *a: None)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *a: None)
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda *a: False)
+    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *a: "")
+    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *a: None)
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *a: "")
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_orchestrator_consult", consult)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_autonomous_stop_reason", lambda *a: "cancelled")
+    monkeypatch.setattr(runner, "_maybe_generate_final_report", lambda *a: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_print_theorem_transition_handoff", lambda *a: None)
+
+    runner._drive_autonomous_followups_inner(_FakeAgent(), "system", [], {}, {}, autonomy_state)
+
+    assert observed == ["prepared", ("next_demo", "next_demo")]
+
+
+def test_requested_route_preempts_ready_research_helper_before_next_prover_turn(monkeypatch):
+    """An unresolved final's route handoff must beat helper-priority delivery."""
+
+    class ConversationReached(RuntimeError):
+        pass
+
+    class ReadyCandidate:
+        ready = True
+
+    active_file = "/tmp/Demo.lean"
+    live_state = {
+        "active_file": active_file,
+        "active_file_label": "Demo.lean",
+        "target_symbol": "demo",
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "declaration_queue_total": 1,
+        "sorry_count": 1,
+    }
+    autonomy_state = {
+        "orchestrator_scope_entered": True,
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": active_file,
+        },
+        "prover_requested_route": {
+            "route": "negate",
+            "target_symbol": "demo",
+            "active_file": active_file,
+            "reason": "Blocked — requested route: negate; checked counterexample exists.",
+        },
+    }
+    consults: list[str] = []
+    applied: list[str] = []
+    ordering: list[str] = []
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_is_autonomous_workflow", lambda: True)
+
+    def maintenance_barrier(_state):
+        ordering.append("maintenance-barrier")
+        return False
+
+    monkeypatch.setattr(runner, "_negation_reconciliation_barrier", maintenance_barrier)
+    monkeypatch.setattr(runner.campaign_epoch, "managed_cycle_count", lambda _state: 0)
+    monkeypatch.setattr(runner, "_autonomous_max_cycles", lambda: 120)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: dict(live_state),
+    )
+    monkeypatch.setattr(
+        runner, "_promote_live_state_to_verified_compat", lambda state, _autonomy=None: state
+    )
+    monkeypatch.setattr(
+        runner, "_advance_project_prove_manager_if_needed", lambda *args, **kwargs: False
+    )
+    monkeypatch.setattr(
+        runner, "_rebuild_history_for_theorem_transition", lambda *args, **kwargs: (None, None)
+    )
+    monkeypatch.setattr(runner, "_maybe_run_document_formalization_review_agent", lambda *a: False)
+    monkeypatch.setattr(runner, "_maybe_announce_final_file_sweep_state", lambda *a: None)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *a: None)
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda *a: False)
+    monkeypatch.setattr(runner, "_consume_ready_campaign_rollover", lambda *a: "")
+
+    def fidelity_audit(*_args):
+        ordering.append("fidelity-audit")
+        return "pass"
+
+    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", fidelity_audit)
+    monkeypatch.setattr(runner, "_maintain_research_portfolio", lambda *a: None)
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *a: "")
+
+    def recheck_helper(*_args, **_kwargs):
+        ordering.append("helper-recheck")
+        return "[checked helper]"
+
+    monkeypatch.setattr(runner, "_recheck_pending_research_helper_if_due", recheck_helper)
+    monkeypatch.setattr(runner, "_research_helper_assignment", lambda *a: ("demo", active_file))
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority,
+        "matching",
+        lambda *a, **k: ReadyCandidate(),
+    )
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+
+    def consult(trigger, _state, _live_state):
+        ordering.append("orchestrator-consult")
+        consults.append(trigger)
+        return runner.orchestrator_floor.OrchestratorRoute(
+            route="negate",
+            reason="prover reported a blocker and requested route negate",
+        )
+
+    def apply_route(route, *_args, **_kwargs):
+        ordering.append("route-applied")
+        applied.append(route.route)
+        return "continue"
+
+    monkeypatch.setattr(runner, "_orchestrator_consult", consult)
+    monkeypatch.setattr(runner, "_apply_orchestrator_route_with_completion", apply_route)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_autonomous_stop_reason", lambda *a: "continue")
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent: (history, {"compacted": False, "snapshot_created": False}),
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "record_managed_cycle", lambda _state: 1)
+    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_record_queue_assignment", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_prepare_queue_assignment_state", lambda *a: None)
+    monkeypatch.setattr(runner, "_refresh_theorem_transition_handoff", lambda *a: False)
+    monkeypatch.setattr(runner, "_autonomous_continuation_prompt", lambda *a: "continue")
+    monkeypatch.setattr(runner, "_attach_live_proof_state", lambda prompt, *a, **k: prompt)
+    monkeypatch.setattr(runner, "_record_turn_prompt_fingerprint", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_effective_skill_name", lambda *a: "lean-theorem-queue-worker")
+    monkeypatch.setattr(runner, "_set_runtime_active_skill", lambda *a: None)
+    monkeypatch.setattr(runner, "_apply_managed_reasoning_policy", lambda *a: "high")
+    monkeypatch.setattr(runner, "_record_managed_reasoning_policy", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_prepare_managed_turn_or_pause", lambda *a: True)
+
+    def reach_conversation(*_args, **_kwargs):
+        ordering.append("provider-turn")
+        raise ConversationReached
+
+    monkeypatch.setattr(runner, "_run_managed_conversation_with_retries", reach_conversation)
+
+    with pytest.raises(ConversationReached):
+        runner._drive_autonomous_followups_inner(_FakeAgent(), "system", [], {}, {}, autonomy_state)
+
+    assert consults == ["event"]
+    assert applied == ["negate"]
+    assert ordering == [
+        "maintenance-barrier",
+        "fidelity-audit",
+        "orchestrator-consult",
+        "route-applied",
+        "maintenance-barrier",
+        "provider-turn",
+    ]
+
+
+def test_ready_helper_precedes_remaining_stale_route_on_following_tick(monkeypatch):
+    """After the requested route runs, deliver its checked helper before stale replay."""
+
+    class ConversationReached(RuntimeError):
+        pass
+
+    class ReadyCandidate:
+        ready = True
+
+    active_file = "/tmp/Demo.lean"
+    live_state = {
+        "active_file": active_file,
+        "active_file_label": "Demo.lean",
+        "target_symbol": "demo",
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "declaration_queue_total": 1,
+        "sorry_count": 1,
+    }
+    stale_negate = {
+        "route": "negate",
+        "target_symbol": "demo",
+        "active_file": active_file,
+        "token": "epoch-negate",
+        "epoch": 42,
+    }
+    autonomy_state = {
+        "orchestrator_scope_entered": True,
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": active_file,
+        },
+        runner.campaign_epoch.EPOCH_ROUTE_SELECTION_STATE_KEY: dict(stale_negate),
+    }
+    ordering: list[str] = []
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_is_autonomous_workflow", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_negation_reconciliation_barrier",
+        lambda _state: ordering.append("maintenance-barrier") or False,
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "managed_cycle_count", lambda _state: 0)
+    monkeypatch.setattr(runner, "_autonomous_max_cycles", lambda: 120)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: dict(live_state),
+    )
+    monkeypatch.setattr(
+        runner, "_promote_live_state_to_verified_compat", lambda state, _autonomy=None: state
+    )
+    monkeypatch.setattr(
+        runner, "_advance_project_prove_manager_if_needed", lambda *args, **kwargs: False
+    )
+    monkeypatch.setattr(
+        runner, "_rebuild_history_for_theorem_transition", lambda *args, **kwargs: (None, None)
+    )
+    monkeypatch.setattr(runner, "_maybe_run_document_formalization_review_agent", lambda *a: False)
+    monkeypatch.setattr(runner, "_maybe_announce_final_file_sweep_state", lambda *a: None)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *a: None)
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda *a: False)
+    monkeypatch.setattr(runner, "_consume_ready_campaign_rollover", lambda *a: "")
+    monkeypatch.setattr(
+        runner,
+        "_maybe_statement_fidelity_audit",
+        lambda *a: ordering.append("fidelity-audit") or "pass",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda *a: ordering.append("maintain-portfolio"),
+    )
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", lambda *a: "")
+    monkeypatch.setattr(
+        runner,
+        "_recheck_pending_research_helper_if_due",
+        lambda *a, **k: ordering.append("helper-recheck") or "[checked helper ready]",
+    )
+    monkeypatch.setattr(runner, "_research_helper_assignment", lambda *a: ("demo", active_file))
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority,
+        "matching",
+        lambda *a, **k: ReadyCandidate(),
+    )
+    monkeypatch.setattr(runner, "_pending_checked_target_replacement", lambda *a: False)
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_orchestrator_consult",
+        lambda *a, **k: pytest.fail("stale negate replay displaced the ready helper"),
+    )
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent: (history, {"compacted": False, "snapshot_created": False}),
+    )
+    monkeypatch.setattr(runner.campaign_epoch, "record_managed_cycle", lambda _state: 1)
+    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_record_queue_assignment", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_prepare_queue_assignment_state", lambda *a: None)
+    monkeypatch.setattr(runner, "_refresh_theorem_transition_handoff", lambda *a: False)
+    monkeypatch.setattr(runner, "_research_mode_enabled", lambda: False)
+    monkeypatch.setattr(runner, "_autonomous_continuation_prompt", lambda *a: "continue")
+    monkeypatch.setattr(runner, "_attach_live_proof_state", lambda prompt, *a, **k: prompt)
+    monkeypatch.setattr(runner, "_record_turn_prompt_fingerprint", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_effective_skill_name", lambda *a: "lean-theorem-queue-worker")
+    monkeypatch.setattr(runner, "_set_runtime_active_skill", lambda *a: None)
+    monkeypatch.setattr(runner, "_apply_managed_reasoning_policy", lambda *a: "high")
+    monkeypatch.setattr(runner, "_record_managed_reasoning_policy", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_prepare_managed_turn_or_pause", lambda *a: True)
+
+    def reach_conversation(*_args, **kwargs):
+        ordering.append("provider-turn")
+        assert kwargs["conversation_history"][-1]["content"] == "[checked helper ready]"
+        raise ConversationReached
+
+    monkeypatch.setattr(runner, "_run_managed_conversation_with_retries", reach_conversation)
+
+    with pytest.raises(ConversationReached):
+        runner._drive_autonomous_followups_inner(_FakeAgent(), "system", [], {}, {}, autonomy_state)
+
+    assert ordering == [
+        "maintenance-barrier",
+        "fidelity-audit",
+        "maintain-portfolio",
+        "helper-recheck",
+        "maintenance-barrier",
+        "provider-turn",
+    ]
+    assert autonomy_state[runner.campaign_epoch.EPOCH_ROUTE_SELECTION_STATE_KEY] == stale_negate
+
+
+def test_late_assignment_transition_injects_findings_before_first_followup(monkeypatch):
+    """A planner-created queue target enters research scope before its first prover call."""
+
+    class ConversationReached(RuntimeError):
+        pass
+
+    eq_one = {
+        "active_file": "/tmp/Demo.lean",
+        "active_file_label": "Demo.lean",
+        "target_symbol": "eq_one",
+        "current_queue_item": {"label": "eq_one", "reasons": ["contains sorry"]},
+        "declaration_queue_total": 2,
+        "sorry_count": 2,
+    }
+    eq_four = {
+        **eq_one,
+        "target_symbol": "eq_four",
+        "current_queue_item": {"label": "eq_four", "reasons": ["contains sorry"]},
+    }
+    live_states = iter([eq_one, eq_four])
+    autonomy_state = {
+        "orchestrator_scope_entered": True,
+        "current_queue_assignment": {
+            "target_symbol": "eq_one",
+            "active_file": "/tmp/Demo.lean",
+        },
+    }
+    maintained: list[str] = []
+    consults: list[tuple[str, str]] = []
+    sent_prompts: list[str] = []
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.research_mode, "research_mode_enabled", lambda: True)
+    monkeypatch.setattr(runner.orchestrator_floor, "orchestrator_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_journal_status", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "_build_live_proof_state_compat",
+        lambda *args, **kwargs: dict(next(live_states)),
+    )
+    monkeypatch.setattr(
+        runner, "_promote_live_state_to_verified_compat", lambda state, autonomy_state=None: state
+    )
+    monkeypatch.setattr(
+        runner, "_advance_project_prove_manager_if_needed", lambda *args, **kwargs: False
+    )
+    monkeypatch.setattr(
+        runner, "_rebuild_history_for_theorem_transition", lambda *args, **kwargs: (None, None)
+    )
+    monkeypatch.setattr(runner, "_maybe_run_document_formalization_review_agent", lambda *a: False)
+    monkeypatch.setattr(runner, "_maybe_announce_final_file_sweep_state", lambda *a: None)
+    monkeypatch.setattr(runner, "_maybe_sync_plan_state", lambda *a: None)
+    monkeypatch.setattr(runner, "_live_state_is_verified", lambda *a: False)
+    monkeypatch.setattr(runner, "_maybe_statement_fidelity_audit", lambda *a: "pass")
+
+    def maintain(state, _live_state):
+        maintained.append(state["current_queue_assignment"]["target_symbol"])
+
+    def take_findings(state, _live_state):
+        target = state["current_queue_assignment"]["target_symbol"]
+        return "[inherited ds-102 eq-four witnesses]" if target == "eq_four" else ""
+
+    def consult(trigger, state, _live_state):
+        target = state["current_queue_assignment"]["target_symbol"]
+        consults.append((trigger, target))
+        return runner.orchestrator_floor.OrchestratorRoute(
+            route="direct-prove",
+            reason="use inherited witnesses",
+        )
+
+    monkeypatch.setattr(runner, "_maintain_research_portfolio", maintain)
+    monkeypatch.setattr(runner, "_take_research_findings_prompt", take_findings)
+    monkeypatch.setattr(runner, "_orchestrator_event_due", lambda *a: "")
+    monkeypatch.setattr(runner, "_orchestrator_consult", consult)
+    monkeypatch.setattr(runner, "_persist_live_status", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_autonomous_stop_reason", lambda *a: "continue")
+    monkeypatch.setattr(runner, "_maybe_checkpoint_before_compaction", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runner,
+        "_auto_compact_history",
+        lambda history, agent: (history, {"compacted": False, "snapshot_created": False}),
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_record_queue_assignment", lambda *a, **k: None)
+
+    def prepare(state, current_live_state):
+        state["current_queue_assignment"] = {
+            "target_symbol": current_live_state["target_symbol"],
+            "active_file": current_live_state["active_file"],
+        }
+        state.pop("orchestrator_scope_entered", None)
+
+    monkeypatch.setattr(runner, "_prepare_queue_assignment_state", prepare)
+    monkeypatch.setattr(runner, "_refresh_theorem_transition_handoff", lambda *a: False)
+    monkeypatch.setattr(runner, "_autonomous_continuation_prompt", lambda *a: "continue")
+    monkeypatch.setattr(runner, "_attach_live_proof_state", lambda prompt, *a, **k: prompt)
+    monkeypatch.setattr(runner, "_record_turn_prompt_fingerprint", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_effective_skill_name", lambda *a: "lean-theorem-queue-worker")
+    monkeypatch.setattr(runner, "_set_runtime_active_skill", lambda *a: None)
+    monkeypatch.setattr(runner, "_apply_managed_reasoning_policy", lambda *a: "high")
+    monkeypatch.setattr(runner, "_record_managed_reasoning_policy", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_prepare_managed_turn_state", lambda *a: None)
+
+    def run_conversation(*args, **kwargs):
+        sent_prompts.append(kwargs["user_message"])
+        raise ConversationReached
+
+    monkeypatch.setattr(runner, "_run_managed_conversation_with_retries", run_conversation)
+
+    with pytest.raises(ConversationReached):
+        runner._drive_autonomous_followups_inner(_FakeAgent(), "system", [], {}, {}, autonomy_state)
+
+    assert maintained == ["eq_one", "eq_four"]
+    assert consults == [("scope-entry", "eq_four")]
+    assert len(sent_prompts) == 1
+    assert "[inherited ds-102 eq-four witnesses]" in sent_prompts[0]
+    assert "[ORCHESTRATOR SCOPE-ENTRY ROUTE]" in sent_prompts[0]
+    assert autonomy_state["orchestrator_scope_entered"] is True
 
 
 def test_document_formalization_reviewed_draft_stops_ready_for_prove(monkeypatch, tmp_path):
@@ -7521,6 +25652,112 @@ def test_extract_active_files_normalizes_project_relative_paths(monkeypatch, tmp
     assert files == ["Demo/Main.lean", "Main.lean"]
 
 
+def test_checkpoint_active_files_rejects_diff_header_fragments(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    target = project / "Demo" / "Main.lean"
+    scratch = project / "Demo" / "Scratch.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
+    scratch.write_text("example : True := by\n  trivial\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+
+    files = runner._checkpoint_active_files(
+        {
+            "active_file": str(target),
+            "active_file_label": "Demo/Main.lean",
+        },
+        "\n".join(
+            [
+                "a/Demo/Main.lean",
+                "b/Demo/Main.lean",
+                "nDemo/Main.lean",
+                str(target),
+                "Demo/Scratch.lean",
+            ]
+        ),
+    )
+
+    assert files == ["Demo/Main.lean", "Demo/Scratch.lean"]
+
+
+def test_failed_verification_is_not_labeled_build_verified(monkeypatch):
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    history = [
+        {
+            "role": "assistant",
+            "content": "diagnostic typecheck failed",
+            "tool_calls": [{"function": {"name": "patch"}}],
+        }
+    ]
+
+    label = runner._milestone_label_for_delta(
+        [],
+        history,
+        {},
+        live_state={
+            "last_verification": {
+                "ok": False,
+                "scope": "file",
+                "tool": "lean_verify",
+            }
+        },
+    )
+
+    assert label == ("", "")
+
+
+def test_passed_verification_can_create_build_milestone(monkeypatch):
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    history = [
+        {
+            "role": "assistant",
+            "content": "diagnostic typecheck passed",
+            "tool_calls": [{"function": {"name": "patch"}}],
+        }
+    ]
+
+    label = runner._milestone_label_for_delta(
+        [],
+        history,
+        {},
+        live_state={
+            "last_verification": {
+                "ok": True,
+                "scope": "file",
+                "tool": "lean_verify",
+            }
+        },
+    )
+
+    assert label == ("successful build/typecheck after edits", "build-verified")
+
+
+def test_successful_skill_view_result_is_not_a_blocker_milestone(monkeypatch):
+    monkeypatch.setattr(runner, "_workflow_kind", lambda: "prove")
+    delta = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "skill_view"}}],
+        },
+        {
+            "role": "tool",
+            "name": "skill_view",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "content": "## Blocker Taxonomy\nA failed attempt changes the route.",
+                }
+            ),
+        },
+    ]
+    autonomy_state: dict = {}
+
+    assert runner._milestone_label_for_delta([], delta, autonomy_state) == ("", "")
+    assert runner._milestone_label_for_delta([], delta, autonomy_state) == ("", "")
+    assert autonomy_state.get("blocked_runs", 0) == 0
+
+
 def test_goals_still_open_ignores_structured_history_fields_without_current_goals():
     payload = {
         "line_context": "theorem demo : True := by",
@@ -7623,6 +25860,82 @@ def test_write_workflow_checkpoint_persists_index_and_current(monkeypatch, tmp_p
     assert index_payload["checkpoints"][0]["label"] == "verified proof milestone"
     assert current_payload["checkpoint_id"] == entry["checkpoint_id"]
     assert entry["linked_filesystem_checkpoint"] == "abc123def456"
+
+
+def test_deterministic_workflow_checkpoint_skips_provider_summary(monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+    monkeypatch.setattr(
+        runner,
+        "_generate_checkpoint_summary",
+        lambda *args, **kwargs: pytest.fail("signal cleanup must not call a provider"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_fallback_checkpoint_summary",
+        lambda *args, **kwargs: "## Goal\nResume deterministically",
+    )
+    checkpoint_requests: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        runner,
+        "_latest_filesystem_checkpoint_hash",
+        lambda _agent, *, reason="", force=False: (
+            checkpoint_requests.append((reason, force)) or "fresh-source-hash"
+        ),
+    )
+
+    entry = runner._write_workflow_checkpoint(
+        [{"role": "assistant", "content": "verified helper added"}],
+        _FakeAgent(),
+        label="signal-interrupt checkpoint",
+        trigger="signal-interrupt",
+        force_filesystem_checkpoint=True,
+        deterministic_summary=True,
+        live_state={"target_symbol": "remaining_goal", "sorry_count": 1},
+    )
+
+    assert entry["summary_text"] == "## Goal\nResume deterministically"
+    assert entry["linked_filesystem_checkpoint"] == "fresh-source-hash"
+    assert checkpoint_requests == [("signal-interrupt checkpoint", True)]
+
+
+def test_signal_checkpoint_metadata_and_summary_share_in_progress_status(monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "Main.lean"
+    source.write_text("theorem remaining_goal : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", "/prove Main.lean")
+    monkeypatch.setattr(
+        runner,
+        "_latest_filesystem_checkpoint_hash",
+        lambda *args, **kwargs: "fresh-source-hash",
+    )
+
+    entry = runner._write_workflow_checkpoint(
+        [],
+        _FakeAgent(),
+        label="signal-interrupt checkpoint",
+        trigger="signal-interrupt",
+        force_filesystem_checkpoint=True,
+        deterministic_summary=True,
+        live_state={
+            "exit_code": runner.EXIT_INTERRUPTED,
+            "interrupt_source": "signal",
+            "target_symbol": "remaining_goal",
+            "active_file": str(source),
+            "sorry_count": 1,
+            "blocker_summary": "`remaining_goal` remains unresolved at the signal checkpoint.",
+        },
+    )
+
+    assert entry["success_state"] == "in-progress"
+    assert "Success state: in-progress" in entry["summary_text"]
+    assert "Success state: blocked" not in entry["summary_text"]
 
 
 def test_current_checkpoint_ignored_for_different_workflow_command(monkeypatch, tmp_path):
@@ -7744,6 +26057,7 @@ def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeyp
 
     final_state = {
         "active_file": "/tmp/project/Main.lean",
+        "declaration_scope": "file",
         "diagnostics": "no errors found",
         "goals": "no goals",
         "build_status": "lake build succeeded",
@@ -7755,6 +26069,7 @@ def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeyp
         [
             {
                 "active_file": "/tmp/project/Main.lean",
+                "declaration_scope": "file",
                 "diagnostics": "warning: declaration uses sorry",
                 "goals": "x : Nat\n⊢ x = x",
                 "build_status": "unknown",
@@ -7763,6 +26078,7 @@ def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeyp
             },
             {
                 "active_file": "/tmp/project/Main.lean",
+                "declaration_scope": "file",
                 "diagnostics": "warning: declaration uses sorry",
                 "goals": "x : Nat\n⊢ x = x",
                 "build_status": "unknown",
@@ -7771,6 +26087,7 @@ def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeyp
             },
             {
                 "active_file": "/tmp/project/Main.lean",
+                "declaration_scope": "file",
                 "diagnostics": "no errors found",
                 "goals": "no goals",
                 "build_status": "lake build succeeded",
@@ -7795,6 +26112,12 @@ def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeyp
         lambda history, agent: (history, {"snapshot_text": "", "reason": "no-op"}),
     )
     monkeypatch.setattr(runner, "_maybe_write_milestone_checkpoint", lambda *args, **kwargs: None)
+    portfolio_states = []
+    monkeypatch.setattr(
+        runner,
+        "_maintain_research_portfolio",
+        lambda autonomy_state, live_state: portfolio_states.append(live_state.get("message")),
+    )
 
     agent = _LoopAgent()
     history, _, _, live_state = runner._drive_autonomous_followups(
@@ -7811,6 +26134,8 @@ def test_drive_autonomous_followups_retries_until_live_state_is_verified(monkeyp
     assert "Verification requires all of the following" in agent.calls[0]["user_message"]
     assert history[-1]["content"] == "continuation 1"
     assert runner._live_state_is_verified(live_state) is True
+    assert "live-verified" not in portfolio_states
+    assert "live-verified-stable" not in portfolio_states
 
 
 def test_drive_autonomous_followups_does_not_pause_at_followup_limit(monkeypatch):
@@ -7839,6 +26164,7 @@ def test_drive_autonomous_followups_does_not_pause_at_followup_limit(monkeypatch
         return {
             "active_file": "/tmp/project/Main.lean",
             "active_file_label": "Main.lean",
+            "declaration_scope": "file",
             "target_symbol": "demo",
             "diagnostics": (
                 "no errors found" if verified else f"warning: declaration uses sorry {idx}"
@@ -8148,6 +26474,109 @@ def test_remember_failed_attempt_uses_theorem_delta_for_proof_shape():
     assert "intro x" in autonomy_state["current_queue_assignment"]["slice"]
 
 
+def test_remember_failed_attempt_persists_attempt_and_refreshed_baseline_once(
+    tmp_path, monkeypatch
+):
+    """One rejection must not rewrite the queue-manager checkpoint twice."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": "theorem demo : True := by\n  exact True.intro",
+        }
+    }
+    live_state = {
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "current_queue_item_slice": "theorem demo : True := by\n  sorry",
+        "blocker_summary": "warning: declaration uses 'sorry'",
+    }
+    flushes: list[object] = []
+    original_flush = runner._flush_queue_manager
+
+    def counting_flush(state, manager):
+        flushes.append(manager)
+        original_flush(state, manager)
+
+    monkeypatch.setattr(runner, "_flush_queue_manager", counting_flush)
+    monkeypatch.setattr(runner.plan_state, "save_queue_manager_state", lambda state: None)
+    monkeypatch.setattr(runner.plan_state, "append_journal_event", lambda event: None)
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+
+    assert runner._remember_failed_attempt(autonomy_state, live_state, cycle_number=2)
+
+    assert len(flushes) == 1
+    assert len(autonomy_state["failed_attempts"]) == 1
+    assert autonomy_state["current_queue_assignment"]["slice"].endswith("sorry")
+
+
+def test_remember_failed_attempt_flushes_record_before_baseline_refresh_error(
+    tmp_path, monkeypatch
+):
+    """Baseline presentation failure must not lose durable rejection evidence."""
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": "theorem demo : True := by\n  exact True.intro",
+        }
+    }
+    live_state = {
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "current_queue_item_slice": "theorem demo : True := by\n  sorry",
+        "blocker_summary": "warning: declaration uses 'sorry'",
+    }
+    flushes: list[object] = []
+    original_flush = runner._flush_queue_manager
+
+    def counting_flush(state, manager):
+        flushes.append(manager)
+        original_flush(state, manager)
+
+    monkeypatch.setattr(runner, "_flush_queue_manager", counting_flush)
+    monkeypatch.setattr(runner.plan_state, "save_queue_manager_state", lambda state: None)
+    monkeypatch.setattr(
+        runner,
+        "_refresh_failed_attempt_baseline",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("baseline refresh failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="baseline refresh failed"):
+        runner._remember_failed_attempt(autonomy_state, live_state, cycle_number=2)
+
+    assert len(flushes) == 1
+    assert len(autonomy_state["failed_attempts"]) == 1
+    assert autonomy_state["failed_attempts"][0]["reason"] == "warning: declaration uses 'sorry'"
+
+
+def test_attempt_proof_shape_ignores_queue_slice_line_header_drift():
+    declaration = "theorem demo : True := by\n  sorry"
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "slice": f"Assigned declaration slice (10-12):\n{declaration}",
+        }
+    }
+
+    proof_shape = runner._attempt_proof_shape_from_delta(
+        autonomy_state,
+        {
+            "target_symbol": "demo",
+            "current_queue_item_slice": (f"Assigned declaration slice (20-22):\n{declaration}"),
+        },
+    )
+
+    assert proof_shape == "theorem demo : True := by sorry"
+    assert "Assigned declaration slice" not in proof_shape
+
+
 def test_remember_failed_attempt_prefers_current_manager_reason():
     autonomy_state = {
         "current_queue_assignment": {
@@ -8171,6 +26600,307 @@ def test_remember_failed_attempt_prefers_current_manager_reason():
 
     attempt = autonomy_state["failed_attempts"][0]
     assert attempt["reason"] == "latest rewrite failure"
+
+
+def test_remember_failed_attempt_uses_temporary_candidate_shape_and_hash(tmp_path, monkeypatch):
+    """Temporary check failures must identify the checked candidate, not source sorry."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.plan_state, "append_journal_event", lambda event: None)
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    live_state = {
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "current_queue_item_slice": source,
+        "blocker_summary": "error: unknown identifier candidate_shape",
+    }
+    feedback_lean = "\n".join(
+        (
+            "theorem demo : True := by",
+            "  -- goal: ⊢ True",
+            "  -- ✗ error: unknown identifier 'candidate_shape'",
+            "  exact candidate_shape",
+            "",
+            '#check ("LEANFLOW_INCREMENTAL_AXIOMS_BEGIN_DEMO" : String)',
+            "#print axioms demo",
+        )
+    )
+
+    assert runner._remember_failed_attempt(
+        state,
+        live_state,
+        cycle_number=2,
+        candidate_evidence={"feedback_lean": feedback_lean},
+    )
+
+    attempt = state["failed_attempts"][0]
+    source_hash = runner.hashlib.sha256(source.strip().encode()).hexdigest()
+    assert "candidate_shape" in attempt["proof_shape"]
+    assert "LEANFLOW_INCREMENTAL_AXIOMS" not in attempt["proof_shape"]
+    assert attempt["declaration_hash"] != source_hash
+
+
+def test_failed_attempt_candidate_extraction_is_bounded_and_falls_back(tmp_path, monkeypatch):
+    """Oversized feedback may use replacement, while malformed evidence uses source truth."""
+    active = tmp_path / "Main.lean"
+    source = "theorem demo : True := by\n  sorry\n"
+    active.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.plan_state, "append_journal_event", lambda event: None)
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": source,
+        }
+    }
+    live_state = {
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "current_queue_item_slice": source,
+        "blocker_summary": "error: unsolved goals",
+    }
+    replacement = "theorem demo : True := by\n  exact bounded_replacement"
+
+    assert runner._remember_failed_attempt(
+        state,
+        live_state,
+        cycle_number=3,
+        candidate_evidence={
+            "feedback_lean": "x" * 100_000,
+            "replacement": replacement,
+        },
+    )
+    assert "bounded_replacement" in state["failed_attempts"][0]["proof_shape"]
+
+    state["_failed_attempt_provider_turn"] = {"epoch": 1, "nonce": 2}
+    assert runner._remember_failed_attempt(
+        state,
+        live_state,
+        cycle_number=3,
+        candidate_evidence={
+            "feedback_lean": "not a Lean declaration",
+            "replacement": "also not a declaration",
+        },
+    )
+    fallback = state["failed_attempts"][1]
+    assert (
+        fallback["declaration_hash"] == runner.hashlib.sha256(source.strip().encode()).hexdigest()
+    )
+    assert len(fallback["proof_shape"]) <= 240
+
+
+def test_remember_failed_attempt_deduplicates_diff_and_full_gate_presentations(
+    tmp_path, monkeypatch
+):
+    active = tmp_path / "Main.lean"
+    declaration = "theorem demo : True := by\n  sorry\n"
+    active.write_text(declaration, encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "prove-test-run")
+    activities: list[str] = []
+    journal: list[dict] = []
+    monkeypatch.setattr(
+        runner,
+        "_record_activity",
+        lambda event, *args, **kwargs: activities.append(event),
+    )
+    monkeypatch.setattr(
+        runner.plan_state, "append_journal_event", lambda event: journal.append(dict(event))
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": "Assigned declaration slice (1-2):\ntheorem demo : True := by\n  exact True.intro",
+        }
+    }
+    live_state = {
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "current_queue_item_slice": "Assigned declaration slice (1-2):\n" + declaration,
+        "blocker_summary": "warning: declaration uses 'sorry'",
+    }
+
+    first = runner._remember_failed_attempt(autonomy_state, live_state, cycle_number=2)
+    duplicate = runner._remember_failed_attempt(autonomy_state, live_state, cycle_number=2)
+
+    assert first is True
+    assert duplicate is False
+    assert len(autonomy_state["failed_attempts"]) == 1
+    assert activities.count("manager-failed-attempt") == 1
+    assert len(journal) == 1
+    assert journal[0]["event"] == "proof-attempt-rejected"
+    assert journal[0]["declaration_hash"]
+    assert journal[0]["gate_verdict"] == "warning: declaration uses 'sorry'"
+    assert journal[0]["turn_key"] == "prove-test-run:epoch-1:cycle-2:turn-unreserved"
+
+
+def test_failed_attempt_identity_counts_same_cycle_after_epoch_rollover(tmp_path, monkeypatch):
+    active = tmp_path / "Main.lean"
+    declaration = "theorem demo : True := by\n  sorry\n"
+    active.write_text(declaration, encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.plan_state, "append_journal_event", lambda event: None)
+    reservations = iter(
+        [
+            {"campaign_id": "prove-test-run", "epoch": 1, "nonce": 17},
+            {"campaign_id": "prove-test-run", "epoch": 2, "nonce": 18},
+        ]
+    )
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "reserve_provider_turn",
+        lambda _state: next(reservations),
+    )
+    state = {
+        "campaign_id": "prove-test-run",
+        "campaign_epoch": 1,
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": declaration,
+        },
+    }
+    live_state = {
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
+        "current_queue_item_slice": declaration,
+        "blocker_summary": "warning: declaration uses 'sorry'",
+    }
+    agent = _ManagedRunAgentStub()
+
+    runner._prepare_managed_turn_state(agent, state)
+    first = runner._remember_failed_attempt(state, live_state, cycle_number=1)
+    duplicate = runner._remember_failed_attempt(state, live_state, cycle_number=1)
+    state["campaign_epoch"] = 2
+    runner._prepare_managed_turn_state(agent, state)
+    next_epoch = runner._remember_failed_attempt(state, live_state, cycle_number=1)
+
+    assert first is True
+    assert duplicate is False
+    assert next_epoch is True
+    assert [entry["turn_key"] for entry in state["failed_attempts"]] == [
+        "prove-test-run:epoch-1:cycle-1:turn-17",
+        "prove-test-run:epoch-2:cycle-1:turn-18",
+    ]
+
+
+def test_prepare_managed_turn_propagates_campaign_root_provider_gate(monkeypatch):
+    """Correctness gating cannot be swallowed as optional attempt accounting."""
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setattr(
+        runner.campaign_epoch,
+        "reserve_provider_turn",
+        lambda _state: (_ for _ in ()).throw(
+            runner.campaign_epoch.CampaignRootProviderBlocked(
+                "requested campaign roots are not registered"
+            )
+        ),
+    )
+    state = {"campaign_id": "fresh-gated"}
+
+    with pytest.raises(
+        runner.campaign_epoch.CampaignRootProviderBlocked,
+        match="not registered",
+    ):
+        runner._prepare_managed_turn_state(_ManagedRunAgentStub(), state)
+
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *args, **kwargs: None)
+    assert not runner._prepare_managed_turn_or_pause(_ManagedRunAgentStub(), state)
+    assert state["operational_pause"] == "paused_infrastructure"
+    assert state["campaign_root_provider_blocked"] is True
+
+
+def test_failed_attempt_feedback_prints_the_persisted_fallback_reason(
+    tmp_path, monkeypatch, capsys
+):
+    active = tmp_path / "Main.lean"
+    declaration = "theorem demo : True := by\n  sorry\n"
+    active.write_text(declaration, encoding="utf-8")
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.plan_state, "append_journal_event", lambda event: None)
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": declaration,
+        }
+    }
+
+    assert runner._remember_failed_attempt(
+        state,
+        {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "current_queue_item_slice": declaration,
+            "blocker_summary": "kernel fallback says unsolved goals",
+        },
+        cycle_number=4,
+    )
+
+    output = capsys.readouterr().out
+    assert "blocker: kernel fallback says unsolved goals" in output
+
+
+def test_remember_failed_attempt_counts_source_or_gate_changes(tmp_path, monkeypatch):
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "prove-test-run")
+    monkeypatch.setattr(runner, "_record_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner.plan_state, "append_journal_event", lambda event: None)
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "slice": "theorem demo : True := by\n  sorry",
+        }
+    }
+
+    assert runner._remember_failed_attempt(
+        autonomy_state,
+        {
+            "target_symbol": "demo",
+            "active_file": str(active),
+            "current_queue_item_slice": "theorem demo : True := by\n  sorry",
+            "blocker_summary": "warning: declaration uses 'sorry'",
+        },
+        cycle_number=3,
+    )
+    active.write_text(
+        "theorem demo : True := by\n  have helper : True := True.intro\n  sorry\n",
+        encoding="utf-8",
+    )
+    changed_live_state = {
+        "target_symbol": "demo",
+        "active_file": str(active),
+        "current_queue_item_slice": active.read_text(encoding="utf-8"),
+        "blocker_summary": "warning: declaration uses 'sorry'",
+    }
+    assert runner._remember_failed_attempt(autonomy_state, changed_live_state, cycle_number=3)
+    assert runner._remember_failed_attempt(
+        autonomy_state,
+        changed_live_state,
+        cycle_number=3,
+        reason="error: type mismatch",
+    )
+
+    assert len(autonomy_state["failed_attempts"]) == 3
+    assert len({item["declaration_hash"] for item in autonomy_state["failed_attempts"]}) == 2
+    assert autonomy_state["failed_attempts"][-1]["gate_verdict"] == "error: type mismatch"
 
 
 def test_remember_failed_attempt_prefers_restored_assignment_over_live_queue_item(
@@ -8344,7 +27074,14 @@ def test_summarize_theorem_transition_outcome_marks_reverted_to_sorry():
                 "target_symbol": "amc12a_2021_p19",
                 "active_file": "ProveDemo/MiniF2F.lean",
                 "slice": "theorem amc12a_2021_p19 : True := by\n  sorry",
-            }
+            },
+            "last_verification": {
+                "scope": "target:amc12a_2021_p19",
+                "target": "amc12a_2021_p19",
+                "ok": True,
+                "errors": 0,
+                "sorry": 0,
+            },
         },
         {
             "active_file_label": "ProveDemo/MiniF2F.lean",
@@ -8371,6 +27108,33 @@ def test_summarize_theorem_transition_outcome_marks_reverted_to_sorry():
     assert "reverted" in outcome["note"]
 
 
+def test_summarize_transition_never_solves_without_exact_target_gate():
+    outcome = runner._summarize_theorem_transition_outcome(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "demo",
+                "active_file": "Demo/Main.lean",
+            },
+            "last_verification": {
+                "scope": "file",
+                "target": "demo",
+                "ok": False,
+                "errors": 0,
+                "sorry": 1,
+            },
+        },
+        {
+            "active_file": "Demo/Main.lean",
+            "current_queue_item": {"label": "next_demo"},
+            "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
+        },
+        [],
+    )
+
+    assert outcome["status"] == "unverified"
+    assert "without an accepted exact-target kernel gate" in outcome["note"]
+
+
 def test_rebuild_history_for_theorem_transition_uses_compact_handoff(monkeypatch):
     monkeypatch.delenv("LEANFLOW_NATIVE_WORKFLOW_KIND", raising=False)
     monkeypatch.delenv("LEANFLOW_NATIVE_ACTIVE_FILE", raising=False)
@@ -8386,7 +27150,14 @@ def test_rebuild_history_for_theorem_transition_uses_compact_handoff(monkeypatch
                 "target_symbol": "amc12a_2021_p19",
                 "active_file": "ProveDemo/MiniF2F.lean",
                 "slice": "theorem amc12a_2021_p19 : True := by\n  sorry",
-            }
+            },
+            "last_verification": {
+                "scope": "target:amc12a_2021_p19",
+                "target": "amc12a_2021_p19",
+                "ok": True,
+                "errors": 0,
+                "sorry": 0,
+            },
         },
         {
             "active_file_label": "ProveDemo/MiniF2F.lean",
@@ -8446,7 +27217,14 @@ def test_rebuild_history_for_theorem_transition_preserves_full_active_skill_cont
                 "target_symbol": "old_demo",
                 "active_file": "Demo/Main.lean",
                 "slice": "theorem old_demo : True := by\n  exact True.intro",
-            }
+            },
+            "last_verification": {
+                "scope": "target:old_demo",
+                "target": "old_demo",
+                "ok": True,
+                "errors": 0,
+                "sorry": 0,
+            },
         },
         {
             "active_file_label": "Demo/Main.lean",
@@ -8501,7 +27279,7 @@ def test_summarize_theorem_transition_outcome_prefers_previous_theorem_failed_at
         [{"role": "assistant", "content": "Moving on to another theorem for now."}],
     )
 
-    assert outcome["status"] == "blocked"
+    assert outcome["status"] == "deferred"
     assert outcome["note"] == "nonlinear arithmetic blocker"
 
 
@@ -8653,7 +27431,7 @@ def test_handle_api_step_budget_exhaustion_records_attempt_and_restores_sorry(
     assert events[-1][0][0] == "api-step-budget-exhausted"
 
 
-def test_rebuild_history_for_theorem_transition_records_blocked_outcome_without_fake_attempt():
+def test_rebuild_history_for_theorem_transition_records_deferred_outcome_without_fake_attempt():
     autonomy_state = {
         "current_cycle": 3,
         "current_queue_assignment": {
@@ -8693,7 +27471,16 @@ def test_rebuild_history_for_theorem_transition_records_blocked_outcome_without_
     assert attempts[0]["active_file"] == "Demo/Main.lean"
     assert "still has unresolved goals" in attempts[0]["reason"]
     outcomes = autonomy_state["theorem_outcomes"]
-    assert outcomes["Demo/Main.lean::blocked_demo"]["status"] == "blocked"
+    assert outcomes["Demo/Main.lean::blocked_demo"]["status"] == "deferred"
+    handoff = next(
+        message["content"]
+        for message in rebuilt_history
+        if str(message.get("content", "")).startswith(
+            "[LEANFLOW-NATIVE THEOREM TRANSITION HANDOFF]"
+        )
+    )
+    assert "final status: deferred" in handoff
+    assert "unresolved and still eligible" in handoff
 
 
 def test_rebuild_history_for_theorem_transition_clears_solved_theorem_failed_attempts():
@@ -8702,6 +27489,13 @@ def test_rebuild_history_for_theorem_transition_clears_solved_theorem_failed_att
             "target_symbol": "solved_demo",
             "active_file": "Demo/Main.lean",
             "slice": "theorem solved_demo : True := by\n  exact True.intro",
+        },
+        "last_verification": {
+            "scope": "target:solved_demo",
+            "target": "solved_demo",
+            "ok": True,
+            "errors": 0,
+            "sorry": 0,
         },
         "failed_attempts": [
             {
@@ -8747,6 +27541,7 @@ def test_autonomous_stop_reason_blocks_verified_exit_when_prior_theorem_is_unres
     live_state = {
         "active_file": "/tmp/project/Demo/Main.lean",
         "active_file_label": "Demo/Main.lean",
+        "declaration_scope": "file",
         "target_symbol": "next_demo",
         "diagnostics": "no errors found",
         "goals": "no goals",
@@ -9064,6 +27859,7 @@ def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkey
             {
                 "active_file": "/tmp/project/ProveDemo/MiniF2F.lean",
                 "active_file_label": "ProveDemo/MiniF2F.lean",
+                "declaration_scope": "file",
                 "target_symbol": "algebra_amgm_sumasqdivbgeqsuma",
                 "current_queue_item": {
                     "label": "algebra_amgm_sumasqdivbgeqsuma",
@@ -9080,6 +27876,7 @@ def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkey
             {
                 "active_file": "/tmp/project/ProveDemo/MiniF2F.lean",
                 "active_file_label": "ProveDemo/MiniF2F.lean",
+                "declaration_scope": "file",
                 "target_symbol": "algebra_amgm_sumasqdivbgeqsuma",
                 "current_queue_item": {
                     "label": "algebra_amgm_sumasqdivbgeqsuma",
@@ -9099,6 +27896,7 @@ def test_drive_autonomous_followups_rebuilds_history_when_theorem_changes(monkey
             {
                 "active_file": "/tmp/project/ProveDemo/MiniF2F.lean",
                 "active_file_label": "ProveDemo/MiniF2F.lean",
+                "declaration_scope": "file",
                 "target_symbol": "algebra_amgm_sumasqdivbgeqsuma",
                 "current_queue_item": {
                     "label": "algebra_amgm_sumasqdivbgeqsuma",
@@ -9293,6 +28091,7 @@ def test_drive_autonomous_followups_keeps_history_when_theorem_does_not_change(m
     stable_live_state = {
         "active_file": "/tmp/project/Demo/Main.lean",
         "active_file_label": "Demo/Main.lean",
+        "declaration_scope": "file",
         "target_symbol": "demo",
         "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
         "declaration_queue_summary": "- demo [Demo/Main.lean] — contains sorry",
@@ -9380,6 +28179,7 @@ def test_drive_autonomous_followups_applies_auto_reasoning_to_current_theorem(mo
     stable_live_state = {
         "active_file": "/tmp/project/Demo/Main.lean",
         "active_file_label": "Demo/Main.lean",
+        "declaration_scope": "file",
         "target_symbol": "demo",
         "current_queue_item": {"label": "demo", "reasons": ["contains sorry"]},
         "declaration_queue_summary": "- demo [Demo/Main.lean] — contains sorry",
@@ -9469,6 +28269,7 @@ def test_drive_autonomous_followups_records_transition_events(monkeypatch, tmp_p
             {
                 "active_file": "/tmp/project/Demo/Main.lean",
                 "active_file_label": "Demo/Main.lean",
+                "declaration_scope": "file",
                 "target_symbol": "next_demo",
                 "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
                 "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
@@ -9482,6 +28283,7 @@ def test_drive_autonomous_followups_records_transition_events(monkeypatch, tmp_p
             {
                 "active_file": "/tmp/project/Demo/Main.lean",
                 "active_file_label": "Demo/Main.lean",
+                "declaration_scope": "file",
                 "target_symbol": "next_demo",
                 "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
                 "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
@@ -9498,6 +28300,7 @@ def test_drive_autonomous_followups_records_transition_events(monkeypatch, tmp_p
             {
                 "active_file": "/tmp/project/Demo/Main.lean",
                 "active_file_label": "Demo/Main.lean",
+                "declaration_scope": "file",
                 "target_symbol": "next_demo",
                 "current_queue_item": {"label": "next_demo", "reasons": ["contains sorry"]},
                 "declaration_queue_summary": "- next_demo [Demo/Main.lean] — contains sorry",
@@ -9631,6 +28434,43 @@ def test_autonomous_stop_reason_blocker_prose_does_not_stop_while_state_advances
         }
         stuck.append(runner._autonomous_stop_reason(blocker_history, live_state, autonomy_state))
     assert "blocked" in stuck, f"genuinely stuck run never gave up: {stuck}"
+
+
+def test_autonomous_stop_reason_ignores_blocker_words_in_successful_tool_result(monkeypatch):
+    monkeypatch.setattr(
+        runner, "_document_formalization_ready_for_prover_handoff", lambda ls: False
+    )
+    monkeypatch.setattr(
+        runner, "_document_formalization_waiting_for_independent_review", lambda ls: False
+    )
+    monkeypatch.setattr(runner, "_autonomous_blocked_limit", lambda: 1)
+    monkeypatch.setattr(runner, "_autonomous_stalled_limit", lambda: 99)
+    history = [
+        {
+            "role": "tool",
+            "name": "skill_view",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "content": "## Blocker Taxonomy\nA failed proof attempt is route evidence.",
+                }
+            ),
+        }
+    ]
+    live_state = {
+        "active_file": "",
+        "active_file_label": "F.lean",
+        "target_symbol": "thm",
+        "diagnostics": "identical error",
+        "goals": "open goal",
+        "build_status": "reported errors",
+        "sorry_count": 1,
+    }
+    autonomy_state: dict = {}
+
+    assert runner._autonomous_stop_reason(history, live_state, autonomy_state) == "continue"
+    assert runner._autonomous_stop_reason(history, live_state, autonomy_state) == "continue"
+    assert autonomy_state.get("continuation_blocked_runs", 0) == 0
 
 
 def test_continuation_prompt_prefix_cache_moves_cycle_number_last(monkeypatch):

@@ -1,0 +1,144 @@
+"""Resolve safe source positions for Lean multi-attempt tactic screening."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from leanflow_cli.lean.lean_declarations import _declaration_index
+from leanflow_cli.lean.lean_parsing import (
+    _find_assignment_marker_for_statement,
+    _strip_lean_comments_and_strings,
+)
+
+__all__ = ["_resolve_multi_attempt_location"]
+
+
+def _resolve_tactic_line_after_blank(path: Path, requested_line: int) -> int:
+    """Resolve an immediate post-proof blank to the preceding tactic line.
+
+    Model-facing declaration ranges historically included separator whitespace. A caller may
+    therefore submit that stale range end to ``lean_multi_attempt``. Only adjust one blank line
+    directly after a multiline ``:= by`` declaration; every other location remains unchanged.
+    """
+    line = int(requested_line)
+    if line <= 1:
+        return line
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return line
+    if line > len(lines) or lines[line - 1].strip():
+        return line
+    previous_line = line - 1
+    for entry in _declaration_index(path):
+        start = int(entry.get("line", 0) or 0)
+        end = int(entry.get("end_line", 0) or 0)
+        text = str(entry.get("text", "") or "")
+        marker = _find_assignment_marker_for_statement(text)
+        proof = _strip_lean_comments_and_strings(text[marker + 2 :]).lstrip() if marker >= 0 else ""
+        if end == previous_line and end > start and re.match(r"by\b", proof):
+            return previous_line
+    return line
+
+
+def _skip_lean_trivia(text: str, start: int) -> int:
+    """Return the next source index after whitespace and Lean comments."""
+    index = max(int(start), 0)
+    block_depth = 0
+    while index < len(text):
+        if block_depth:
+            if text.startswith("/-", index):
+                block_depth += 1
+                index += 2
+            elif text.startswith("-/", index):
+                block_depth -= 1
+                index += 2
+            else:
+                index += 1
+            continue
+        if text[index].isspace():
+            index += 1
+            continue
+        if text.startswith("--", index):
+            newline = text.find("\n", index + 2)
+            if newline < 0:
+                return len(text)
+            index = newline + 1
+            continue
+        if text.startswith("/-", index):
+            block_depth = 1
+            index += 2
+            continue
+        break
+    return index
+
+
+def _resolve_inline_tactic_column(path: Path, requested_line: int) -> int | None:
+    """Return the 1-indexed tactic-body column for an inline ``:= by`` proof.
+
+    A columnless multi-attempt normally targets the first non-whitespace character on its line.
+    When the declaration header and tactic body share a line, that character begins the
+    declaration rather than the proof. Resolve only when both ``by`` and its first tactic token
+    occur on the requested line; ordinary multiline tactic lines keep their faster line-only path.
+    """
+    line = int(requested_line)
+    if line <= 0:
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    if line > len(lines):
+        return None
+    entry = next(
+        (
+            candidate
+            for candidate in _declaration_index(path)
+            if int(candidate.get("line", 0) or 0) <= line <= int(candidate.get("end_line", 0) or 0)
+        ),
+        None,
+    )
+    if entry is None:
+        return None
+    start_line = int(entry.get("line", 0) or 0)
+    end_line = int(entry.get("end_line", 0) or 0)
+    declaration = "\n".join(lines[start_line - 1 : end_line])
+    marker = _find_assignment_marker_for_statement(declaration)
+    if marker < 0:
+        return None
+    by_start = _skip_lean_trivia(declaration, marker + 2)
+    if not re.match(r"by\b", declaration[by_start:]):
+        return None
+    tactic_start = _skip_lean_trivia(declaration, by_start + 2)
+    if tactic_start >= len(declaration):
+        return None
+    by_line = start_line + declaration.count("\n", 0, by_start)
+    tactic_line = start_line + declaration.count("\n", 0, tactic_start)
+    if by_line != line or tactic_line != line:
+        return None
+    line_start = declaration.rfind("\n", 0, tactic_start) + 1
+    return tactic_start - line_start + 1
+
+
+def _resolve_multi_attempt_location(
+    path: Path,
+    requested_line: int,
+    requested_column: int | None,
+) -> tuple[int, int | None, str | None]:
+    """Return a safe line, column, and adjustment for multi-attempt screening.
+
+    Preserve explicit columns. For line-only requests, correct either a stale blank declaration
+    end or an inline tactic body. The latter deliberately supplies a column so the upstream MCP
+    uses its exact-position LSP path instead of reconstructing incomplete context in the REPL.
+    """
+    line = int(requested_line)
+    resolved_line = _resolve_tactic_line_after_blank(path, line)
+    if resolved_line != line:
+        return resolved_line, None, "previous_tactic_line_after_blank"
+    if requested_column is not None:
+        return line, requested_column, None
+    inline_column = _resolve_inline_tactic_column(path, line)
+    if inline_column is not None:
+        return line, inline_column, "inline_tactic_body"
+    return line, None, None

@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.runtime import file_locks
 from leanflow_cli.workflows import decomposer, plan_state, prover_jobs
 from leanflow_cli.workflows.dispatch_models import JobBudget, JobSpec
 
@@ -145,6 +146,46 @@ def direction_file_path(goal_file: str, direction: str) -> str:
     return str(goal.with_name(f"{goal.stem}_{safe}.lean"))
 
 
+def _materialize_direction_file(
+    path: Path,
+    *,
+    rel_path: str,
+    content: str,
+    names: Sequence[str],
+    cwd: str,
+) -> str:
+    """Create and validate one reserved direction source, returning an error."""
+    try:
+        # O_EXCL: exclusive creation — refuses existing files AND symlinks
+        # (dangling ones included), closing the check-then-write race.
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return f"direction file already exists: {rel_path}"
+    except OSError as exc:
+        return f"cannot write direction file: {exc}"
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    except OSError as exc:
+        path.unlink(missing_ok=True)
+        return f"cannot write direction file: {exc}"
+
+    from leanflow_cli.lean.lean_incremental import lean_incremental_check
+
+    for name in names:
+        try:
+            check = lean_incremental_check(
+                action="check_target", file_path=str(path), theorem_id=name, cwd=cwd
+            )
+        except Exception as exc:
+            path.unlink(missing_ok=True)
+            return f"validation crashed for {name}: {exc}"
+        if not check.get("success") or check.get("has_errors"):
+            path.unlink(missing_ok=True)
+            return f"stub {name} does not elaborate in {rel_path}"
+    return ""
+
+
 def state_direction_file(
     *,
     direction: str,
@@ -189,34 +230,32 @@ def state_direction_file(
     path = root / rel_path if not os.path.isabs(rel_path) else Path(rel_path)
     header = _import_header(goal_text)
     content = (header + "\n\n" if header else "") + "\n\n".join(skeletons) + "\n"
+    owner_id = str(os.getenv("LEANFLOW_NATIVE_RUNNER_OWNER", "") or "").strip() or (
+        f"multi-direction:{os.getpid()}"
+    )
+    reservation = file_locks.acquire_file_lock(
+        str(path),
+        owner_id=owner_id,
+        purpose="multi-direction source creation",
+    )
+    if reservation.get("success") is not True:
+        return "", (), str(reservation.get("error", "direction source is reserved") or "")
+    materialization_error = ""
+    release_error = ""
     try:
-        # O_EXCL: exclusive creation — refuses existing files AND symlinks
-        # (dangling ones included), closing the check-then-write race.
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    except FileExistsError:
-        return "", (), f"direction file already exists: {rel_path}"
-    except OSError as exc:
-        return "", (), f"cannot write direction file: {exc}"
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
-    except OSError as exc:
-        path.unlink(missing_ok=True)
-        return "", (), f"cannot write direction file: {exc}"
-
-    from leanflow_cli.lean.lean_incremental import lean_incremental_check
-
-    for name in names:
-        try:
-            check = lean_incremental_check(
-                action="check_target", file_path=str(path), theorem_id=name, cwd=cwd
-            )
-        except Exception as exc:
-            path.unlink(missing_ok=True)
-            return "", (), f"validation crashed for {name}: {exc}"
-        if not check.get("success") or check.get("has_errors"):
-            path.unlink(missing_ok=True)
-            return "", (), f"stub {name} does not elaborate in {rel_path}"
+        materialization_error = _materialize_direction_file(
+            path,
+            rel_path=rel_path,
+            content=content,
+            names=names,
+            cwd=cwd,
+        )
+    finally:
+        released = file_locks.release_file_lock(str(path), owner_id=owner_id)
+        if released.get("success") is not True:
+            release_error = str(released.get("error", "direction reservation release failed") or "")
+    if materialization_error or release_error:
+        return "", (), materialization_error or release_error
     return rel_path, tuple(names), ""
 
 

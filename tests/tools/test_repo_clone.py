@@ -198,6 +198,26 @@ def test_repo_clone_failed_clone_reports_and_cleans(monkeypatch, tmp_path):
     assert not (tmp_path / ".leanflow" / "workspace" / "repos" / "gone").exists()
 
 
+def test_repo_clone_timeout_is_bounded_configurable_and_cleans(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LEANFLOW_REPO_CLONE_TIMEOUT_SECONDS", "7")
+    observed: dict[str, int] = {}
+
+    def timeout(argv, **kwargs):
+        observed["seconds"] = kwargs["timeout"]
+        destination = Path(argv[-1])
+        destination.mkdir(parents=True)
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(rc.subprocess, "run", timeout)
+
+    out = json.loads(rc.repo_clone_tool("https://example.com/slow.git", name="slow-clone"))
+
+    assert observed == {"seconds": 7}
+    assert "timed out after 7s" in out["error"]
+    assert not (tmp_path / ".leanflow" / "workspace" / "repos" / "slow-clone").exists()
+
+
 def test_repo_clone_registered_in_web_toolsets():
     from core.toolsets import resolve_toolset
     from tools.registry import registry

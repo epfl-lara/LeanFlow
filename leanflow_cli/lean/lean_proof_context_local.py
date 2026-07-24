@@ -12,16 +12,201 @@ and introduces no import cycle.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from leanflow_cli.lean.lean_declarations import (
+    _declaration_index,
     _declaration_text_from_location,
     _find_declaration_entry,
     _split_declaration_statement_and_proof,
     _surrounding_declarations,
 )
+from leanflow_cli.lean.lean_parsing import LEAN_DECLARATION_PREAMBLE_RE
+
+_BINDER_OPENERS = {"(": ")", "{": "}", "[": "]", "⦃": "⦄"}
+
+
+def _skip_lean_space_and_comments(text: str, start: int) -> int:
+    """Return the next source position outside whitespace and Lean comments."""
+    index = start
+    while index < len(text):
+        if text[index].isspace():
+            index += 1
+            continue
+        if text.startswith("--", index):
+            newline = text.find("\n", index + 2)
+            index = len(text) if newline < 0 else newline + 1
+            continue
+        if text.startswith("/-", index):
+            depth = 1
+            index += 2
+            while index < len(text) and depth:
+                if text.startswith("/-", index):
+                    depth += 1
+                    index += 2
+                elif text.startswith("-/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            continue
+        break
+    return index
+
+
+def _balanced_binder_group(text: str, start: int) -> tuple[str, int] | None:
+    """Return one balanced declaration binder and the position after its closer."""
+    opener = text[start] if start < len(text) else ""
+    expected = _BINDER_OPENERS.get(opener)
+    if not expected:
+        return None
+    stack = [expected]
+    index = start + 1
+    while index < len(text):
+        if text.startswith("--", index):
+            newline = text.find("\n", index + 2)
+            index = len(text) if newline < 0 else newline + 1
+            continue
+        if text.startswith("/-", index):
+            depth = 1
+            index += 2
+            while index < len(text) and depth:
+                if text.startswith("/-", index):
+                    depth += 1
+                    index += 2
+                elif text.startswith("-/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            continue
+        if text[index] == '"':
+            index += 1
+            while index < len(text):
+                if text[index] == "\\":
+                    index += 2
+                elif text[index] == '"':
+                    index += 1
+                    break
+                else:
+                    index += 1
+            continue
+        nested_closer = _BINDER_OPENERS.get(text[index])
+        if nested_closer:
+            stack.append(nested_closer)
+        elif text[index] == stack[-1]:
+            stack.pop()
+            if not stack:
+                return text[start + 1 : index].strip(), index + 1
+        index += 1
+    return None
+
+
+def _local_hypotheses_from_statement(statement: str) -> list[str]:
+    """Return explicit source binders as proof-context hypothesis strings."""
+    match = re.match(LEAN_DECLARATION_PREAMBLE_RE, str(statement or ""))
+    if not match:
+        return []
+    index = match.end()
+    hypotheses: list[str] = []
+    possible_universe_group = str(match.group(2) or "").endswith(".")
+    while True:
+        index = _skip_lean_space_and_comments(statement, index)
+        if index >= len(statement) or statement[index] not in _BINDER_OPENERS:
+            break
+        group = _balanced_binder_group(statement, index)
+        if group is None:
+            break
+        binder, index = group
+        # ``foo.{u}`` is split by the shared declaration preamble regex as
+        # ``foo.`` plus ``{u}``; universe parameters are not proof hypotheses.
+        if possible_universe_group and ":" not in binder:
+            possible_universe_group = False
+            continue
+        possible_universe_group = False
+        compact = " ".join(binder.split())
+        if compact:
+            hypotheses.append(compact)
+    return hypotheses
+
+
+def _enrich_backend_proof_context(
+    payload: dict[str, Any], local_payload: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Fill backend-omitted binders from the exact local declaration slice."""
+    if not isinstance(local_payload, Mapping) or payload.get("hypotheses"):
+        return payload
+    if not any(
+        str(payload.get(key, "") or "").strip() for key in ("theorem_statement", "original_proof")
+    ):
+        # Keep the existing all-empty response path intact: lean_proof_context
+        # replaces that payload wholesale with its local fallback, including
+        # local proof text and degraded-reason provenance.
+        return payload
+    local_hypotheses = local_payload.get("hypotheses")
+    if not isinstance(local_hypotheses, list) or not local_hypotheses:
+        return payload
+    local_statement = str(local_payload.get("theorem_statement", "") or "").strip()
+    payload["hypotheses"] = list(local_hypotheses)
+    statement_enriched = bool(local_statement)
+    if statement_enriched:
+        payload["theorem_statement"] = local_statement
+    metadata = (
+        dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {}
+    )
+    metadata["local_context_enrichment"] = {
+        "theorem_statement": statement_enriched,
+        "hypotheses": True,
+        "reason": "backend omitted explicit declaration binders",
+    }
+    payload["metadata"] = metadata
+    return payload
+
+
+def _filter_backend_in_scope_source_order(
+    payload: dict[str, Any], file_path: Path, theorem_id: str
+) -> dict[str, Any]:
+    """Remove target and later same-file names from backend proof context."""
+    in_scope = payload.get("in_scope")
+    if not isinstance(in_scope, list) or not in_scope:
+        return payload
+    entries = _declaration_index(file_path)
+    wanted = str(theorem_id or "").strip()
+    short_name = wanted.split(".")[-1]
+    target_index = next(
+        (
+            index
+            for index, entry in enumerate(entries)
+            if str(entry.get("name", "") or "").strip() in {wanted, short_name}
+        ),
+        None,
+    )
+    if target_index is None:
+        return payload
+    inaccessible = {
+        str(entry.get("name", "") or "").strip()
+        for entry in entries[target_index:]
+        if str(entry.get("name", "") or "").strip()
+    }
+    filtered = [
+        item for item in in_scope if not isinstance(item, str) or item.strip() not in inaccessible
+    ]
+    removed_count = len(in_scope) - len(filtered)
+    if not removed_count:
+        return payload
+    payload["in_scope"] = filtered
+    metadata = (
+        dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {}
+    )
+    metadata["source_order_filter"] = {
+        "removed_same_file_names": removed_count,
+        "reason": "target and later same-file declarations are unavailable",
+    }
+    payload["metadata"] = metadata
+    return payload
 
 
 def _local_proof_context_payload(
@@ -63,7 +248,7 @@ def _local_proof_context_payload(
         "theorem_id": theorem_name,
         "theorem_statement": statement,
         "original_proof": proof,
-        "hypotheses": [],
+        "hypotheses": _local_hypotheses_from_statement(statement),
         "in_scope": _surrounding_declarations(file_path, theorem_name),
         "namespace": theorem_name.rsplit(".", 1)[0] if "." in theorem_name else "",
         "similar_proofs": [],

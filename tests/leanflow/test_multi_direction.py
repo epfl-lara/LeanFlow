@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from leanflow_cli.native import native_runner as runner
+from leanflow_cli.runtime import file_locks
 from leanflow_cli.workflows import multi_direction as md
 from leanflow_cli.workflows import plan_state
 from leanflow_cli.workflows.dispatch_models import LedgerEntry
@@ -173,6 +174,36 @@ def test_state_direction_file_never_clobbers(project, monkeypatch):
 
     assert "already exists" in err
     assert (project / "Demo/Main_dirA.lean").read_text(encoding="utf-8") == "-- precious\n"
+
+
+def test_state_direction_file_honors_terminal_project_namespace(project, monkeypatch):
+    _fake_checker(monkeypatch)
+    monkeypatch.setenv("LEANFLOW_HOME", str(project / "home"))
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+    monkeypatch.setenv("LEANFLOW_NATIVE_RUNNER_OWNER", "writer-owner")
+    reserved = file_locks.acquire_namespace_lock(
+        str(project),
+        owner_id="terminal-owner",
+        purpose="terminal mathematical outcome",
+        strict=True,
+    )
+    assert reserved["success"] is True
+    try:
+        rel, _names, err = md.state_direction_file(
+            direction="dirA",
+            statements=[{"name": "x", "statement": "lemma x : True := by sorry"}],
+            goal_file=GOAL_FILE,
+            cwd=str(project),
+        )
+    finally:
+        released = file_locks.release_namespace_lock(
+            str(project), owner_id="terminal-owner", strict=True
+        )
+        assert released["success"] is True
+
+    assert rel == ""
+    assert "terminal-owner" in err
+    assert not (project / "Demo/Main_dirA.lean").exists()
 
 
 def test_stub_shape_guard_applies(project, monkeypatch):

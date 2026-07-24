@@ -7,6 +7,8 @@ tie-break that can never override the bucket rule or frontier ranks.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -128,11 +130,17 @@ def test_learnings_survive_disabled_final_report(enabled, monkeypatch):
     assert learnings.learnings_path().is_file()
 
 
-def test_verified_exits_record_learnings_idempotently(enabled):
+def test_verified_exits_record_learnings_after_quiescence_idempotently(enabled):
     state = _state()
 
+    # Verified truth can still be invalidated by an owned worker until the
+    # shared finalizer has quiesced it and acquired terminal authority.
     runner._maybe_record_learnings("verified", state)
-    runner._maybe_record_learnings("verified", state)  # idempotent per run
+    assert not learnings.learnings_path().exists()
+    assert "learnings_written" not in state
+
+    runner._maybe_record_learnings("verified", state, post_quiescence=True)
+    runner._maybe_record_learnings("verified", state, post_quiescence=True)  # idempotent per run
 
     text = learnings.learnings_path().read_text(encoding="utf-8")
     assert text.count("(verified)") == 1
@@ -140,8 +148,6 @@ def test_verified_exits_record_learnings_idempotently(enabled):
 
 
 def test_routes_are_scoped_to_this_run(enabled):
-    import json as _json
-
     from leanflow_cli.workflows.workflow_state import workflow_run_activity_path
 
     def seed(run_id: str, route: str) -> None:
@@ -149,7 +155,7 @@ def test_routes_are_scoped_to_this_run(enabled):
         path = workflow_run_activity_path(run_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            _json.dumps(
+            json.dumps(
                 {
                     "type": "orchestrator-route",
                     "run_id": run_id,
@@ -168,6 +174,41 @@ def test_routes_are_scoped_to_this_run(enabled):
     text = learnings.learnings_path().read_text(encoding="utf-8")
     assert "stall->decompose" in text
     assert "park" not in text  # the other run's routes never attributed here
+
+
+def test_route_history_streams_and_retains_only_the_tail(enabled, monkeypatch):
+    from leanflow_cli.workflows.workflow_state import workflow_run_activity_path
+
+    path = workflow_run_activity_path("large-run")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "type": "orchestrator-route",
+                    "run_id": "large-run",
+                    "details": {"trigger": "tick", "route": f"route-{index}"},
+                }
+            )
+            + "\n"
+            for index in range(20_000)
+        ),
+        encoding="utf-8",
+    )
+    original_read_text = Path.read_text
+
+    def guarded_read_text(candidate, *args, **kwargs):
+        if candidate == path:
+            raise AssertionError("activity history must be streamed")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+
+    assert learnings._routes_from_run_activity("large-run", limit=3) == [
+        "tick->route-19997",
+        "tick->route-19998",
+        "tick->route-19999",
+    ]
 
 
 def test_hostile_content_cannot_fabricate_prompt_structure(enabled):
@@ -320,3 +361,202 @@ def test_runner_curriculum_key(monkeypatch, tmp_path):
 
     monkeypatch.delenv("LEANFLOW_CURRICULUM_ORDERING", raising=False)
     assert runner._curriculum_order_key() is None
+
+
+def _research_curriculum_blueprint(active_file: str) -> plan_state.Blueprint:
+    parent_id = plan_state.node_id_for("erdos_242", active_file)
+    zero_id = plan_state.node_id_for("erdos_242_residual_mod_seven_eq_zero", active_file)
+    two_id = plan_state.node_id_for("erdos_242_residual_mod_seven_eq_two", active_file)
+    unrelated_id = plan_state.node_id_for("unrelated_parent", active_file)
+    return plan_state.Blueprint(
+        nodes=(
+            plan_state.GraphNode(
+                id=parent_id,
+                name="erdos_242",
+                file=active_file,
+                statement="theorem erdos_242 : True",
+            ),
+            plan_state.GraphNode(
+                id=zero_id,
+                name="erdos_242_residual_mod_seven_eq_zero",
+                file=active_file,
+                statement="lemma residual : True",
+            ),
+            plan_state.GraphNode(
+                id=two_id,
+                name="erdos_242_residual_mod_seven_eq_two",
+                file=active_file,
+                statement="lemma residual : True",
+            ),
+            plan_state.GraphNode(
+                id=unrelated_id,
+                name="unrelated_parent",
+                file=active_file,
+                statement="lemma unrelated_parent : True",
+            ),
+        ),
+        edges=(
+            plan_state.GraphEdge(source=zero_id, target=parent_id, kind="split_of"),
+            plan_state.GraphEdge(source=two_id, target=parent_id, kind="split_of"),
+        ),
+    )
+
+
+def _enable_research_curriculum(monkeypatch, tmp_path) -> str:
+    active_file = str(tmp_path / "242.lean")
+    monkeypatch.setenv("LEANFLOW_CURRICULUM_ORDERING", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "ps"))
+    plan_state.save_blueprint(_research_curriculum_blueprint(active_file))
+    return active_file
+
+
+def test_research_curriculum_prefers_strong_scratch_identifier_suffix(monkeypatch, tmp_path):
+    active_file = _enable_research_curriculum(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        plan_state,
+        "load_summary",
+        lambda: {
+            "research_findings": [
+                {
+                    "job_id": "ds-096",
+                    "target_symbol": "erdos_242",
+                    "active_file": active_file,
+                    "deliverable": {
+                        "concrete_new_branch": {
+                            "lean_status": (
+                                "research_residual_k_mod_seven_eq_two compiles "
+                                "with no sorry in the scratch file"
+                            )
+                        }
+                    },
+                },
+                {
+                    "job_id": "generic-audit",
+                    "target_symbol": "erdos_242",
+                    "active_file": active_file,
+                    "deliverable": {
+                        "formal_status": {
+                            "unresolved_helpers": [
+                                "erdos_242_residual_mod_seven_eq_zero",
+                                "erdos_242_residual_mod_seven_eq_two",
+                            ]
+                        }
+                    },
+                },
+            ]
+        },
+    )
+    key = runner._curriculum_order_key()
+    assert key is not None
+    queue = [
+        QueueItem(
+            label="erdos_242_residual_mod_seven_eq_zero",
+            reasons=("contains sorry",),
+        ),
+        QueueItem(
+            label="erdos_242_residual_mod_seven_eq_two",
+            reasons=("contains sorry",),
+        ),
+    ]
+
+    selected = select_next_item(queue, is_present_in_file=lambda label: True, order_key=key)
+
+    assert selected.label == "erdos_242_residual_mod_seven_eq_two"
+
+
+def test_research_curriculum_exact_target_beats_suffix_match(monkeypatch, tmp_path):
+    active_file = _enable_research_curriculum(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        plan_state,
+        "load_summary",
+        lambda: {
+            "research_findings": [
+                {
+                    "job_id": "exact-zero",
+                    "target_symbol": "erdos_242_residual_mod_seven_eq_zero",
+                    "active_file": active_file,
+                    "deliverable": {},
+                },
+                {
+                    "job_id": "suffix-two",
+                    "target_symbol": "erdos_242",
+                    "active_file": active_file,
+                    "deliverable": {"verified_helper": "scratch_k_mod_seven_eq_two"},
+                },
+            ]
+        },
+    )
+    key = runner._curriculum_order_key()
+    assert key is not None
+
+    assert key("erdos_242_residual_mod_seven_eq_zero") < key("erdos_242_residual_mod_seven_eq_two")
+
+
+def test_research_curriculum_ignores_unrelated_same_file_finding(monkeypatch, tmp_path):
+    active_file = _enable_research_curriculum(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        plan_state,
+        "load_summary",
+        lambda: {
+            "research_findings": [
+                {
+                    "job_id": "unrelated",
+                    "target_symbol": "unrelated_parent",
+                    "active_file": active_file,
+                    "deliverable": {"verified_helper": "scratch_k_mod_seven_eq_two"},
+                }
+            ]
+        },
+    )
+    key = runner._curriculum_order_key()
+    assert key is not None
+    queue = [
+        QueueItem(
+            label="erdos_242_residual_mod_seven_eq_zero",
+            reasons=("contains sorry",),
+        ),
+        QueueItem(
+            label="erdos_242_residual_mod_seven_eq_two",
+            reasons=("contains sorry",),
+        ),
+    ]
+
+    selected = select_next_item(queue, is_present_in_file=lambda label: True, order_key=key)
+
+    assert selected.label == "erdos_242_residual_mod_seven_eq_zero"
+
+
+def test_research_curriculum_never_overrides_diagnostic_bucket(monkeypatch, tmp_path):
+    active_file = _enable_research_curriculum(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        plan_state,
+        "load_summary",
+        lambda: {
+            "research_findings": [
+                {
+                    "job_id": "exact-zero",
+                    "target_symbol": "erdos_242_residual_mod_seven_eq_zero",
+                    "active_file": active_file,
+                    "deliverable": {},
+                }
+            ]
+        },
+    )
+    key = runner._curriculum_order_key()
+    assert key is not None
+    queue = [
+        QueueItem(
+            label="erdos_242_residual_mod_seven_eq_zero",
+            reasons=("contains sorry",),
+        ),
+        QueueItem(
+            label="erdos_242_residual_mod_seven_eq_two",
+            reasons=("diagnostic near line 3",),
+        ),
+    ]
+
+    selected = select_next_item(queue, is_present_in_file=lambda label: True, order_key=key)
+
+    assert selected.label == "erdos_242_residual_mod_seven_eq_two"

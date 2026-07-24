@@ -1,10 +1,4 @@
-"""Phase 6 §6.10 tests: the research-mode semantics profile.
-
-The invariants: flag off is byte-identical everywhere; suppression only
-fires for routable stops WITH the orchestrator on; budgets are raised,
-never removed; the N1 closed set survives (ceiling and park stay
-terminal).
-"""
+"""Tests for the complete relentless-research semantics profile."""
 
 from __future__ import annotations
 
@@ -34,15 +28,15 @@ def test_flag_default_off(monkeypatch):
     assert research_mode.scaled_lane_iterations(24) == 24
 
 
-def test_multipliers_raise_but_keep_finite(research_on):
-    assert research_mode.scaled_max_cycles(120) == 480
+def test_job_multipliers_raise_but_epoch_cycles_stay_bounded(research_on):
+    assert research_mode.scaled_max_cycles(120) == 120
     assert research_mode.scaled_prover_job_turns(40) == 80
     assert research_mode.scaled_lane_iterations(24) == 48
 
 
 def test_runner_ceiling_scales(research_on, monkeypatch):
     monkeypatch.delenv("LEANFLOW_NATIVE_AUTONOMOUS_MAX_CYCLES", raising=False)
-    assert runner._autonomous_max_cycles() == 480
+    assert runner._autonomous_max_cycles() == 120
     monkeypatch.delenv("LEANFLOW_RESEARCH_MODE", raising=False)
     assert runner._autonomous_max_cycles() == 120
 
@@ -57,12 +51,12 @@ def test_runner_ceiling_scales(research_on, monkeypatch):
     [
         ("stalled", True, True, True),
         ("blocked", True, True, True),
-        ("stalled", True, False, False),  # router-less runs keep classic stops
+        ("stalled", True, False, True),  # router failure is not surrender authority
         ("blocked", False, True, False),  # flag off is byte-identical
-        ("budget-breakpoint", True, True, False),  # Phase 4 owns this one
+        ("budget-breakpoint", True, True, True),
         ("failed", True, True, False),
         ("verified", True, True, False),
-        ("parked", True, True, False),  # park stays terminal (N1 valve)
+        ("parked", True, True, True),
     ],
 )
 def test_suppression_matrix(monkeypatch, reason, research, orchestrator, suppressed):
@@ -81,6 +75,75 @@ def test_suppressed_stop_nudge_requests_a_route():
     assert "requested route" in nudge
     for route_word in ("decompose", "negate", "plan"):
         assert route_word in nudge
+
+
+def test_profile_env_enables_all_research_surfaces():
+    env = research_mode.research_profile_env(2)
+    assert env["LEANFLOW_PLAN_STATE"] == "1"
+    assert env["LEANFLOW_ORCHESTRATOR_ENABLED"] == "1"
+    assert env["LEANFLOW_ORCHESTRATOR_LLM_ENABLED"] == "1"
+    assert env["LEANFLOW_DISPATCH_ENABLED"] == "1"
+    assert env["LEANFLOW_NEGATION_PROBE"] == "1"
+    assert env["LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK"] == "1"
+    assert env["LEANFLOW_MANAGER_LLM_MODE"] == "live"
+    assert env["LEANFLOW_ORCHESTRATOR_CADENCE_CYCLES"] == "4"
+    assert env["LEANFLOW_DISPATCH_MAX_CONCURRENT"] == "2"
+    assert env["LEANFLOW_BACKGROUND_PROVIDER_CAPACITY"] == "2"
+    assert env["LEANFLOW_PROJECT_LEAN_ADMISSION"] == "1"
+    assert env["LEANFLOW_RESEARCH_LOCAL_LOOGLE"] == "0"
+
+
+def test_explicit_profile_forces_features_but_keeps_debug_overrides():
+    env = {
+        "LEANFLOW_ORCHESTRATOR_ENABLED": "0",
+        "LEANFLOW_DISPATCH_ENABLED": "false",
+        "LEANFLOW_MANAGER_LLM_MODE": "off",
+        "LEANFLOW_RESEARCH_LOCAL_LOOGLE": "1",
+    }
+
+    research_mode.apply_research_profile_env(env, workers=3, explicit_cli=True)
+
+    assert env["LEANFLOW_ORCHESTRATOR_ENABLED"] == "1"
+    assert env["LEANFLOW_DISPATCH_ENABLED"] == "1"
+    assert env["LEANFLOW_MANAGER_LLM_MODE"] == "off"
+    assert env["LEANFLOW_RESEARCH_LOCAL_LOOGLE"] == "1"
+    assert env["LEANFLOW_RESEARCH_WORKERS"] == "3"
+    assert env["LEANFLOW_DISPATCH_MAX_CONCURRENT"] == "3"
+    assert env["LEANFLOW_BACKGROUND_PROVIDER_CAPACITY"] == "3"
+
+
+def test_environment_profile_respects_feature_overrides_without_surrender(monkeypatch):
+    env = {
+        "LEANFLOW_ORCHESTRATOR_ENABLED": "0",
+        "LEANFLOW_DISPATCH_ENABLED": "0",
+    }
+
+    research_mode.apply_research_profile_env(env, workers=1, explicit_cli=False)
+
+    assert env["LEANFLOW_ORCHESTRATOR_ENABLED"] == "0"
+    assert env["LEANFLOW_DISPATCH_ENABLED"] == "0"
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    assert research_mode.suppress_terminal_stop("blocked", orchestrator_on=False)
+
+
+def test_research_local_loogle_requires_explicit_opt_in(monkeypatch):
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.delenv("LEANFLOW_RESEARCH_LOCAL_LOOGLE", raising=False)
+    assert research_mode.research_local_loogle_enabled() is False
+
+    monkeypatch.setenv("LEANFLOW_RESEARCH_LOCAL_LOOGLE", "1")
+    assert research_mode.research_local_loogle_enabled() is True
+
+    monkeypatch.delenv("LEANFLOW_RESEARCH_MODE", raising=False)
+    monkeypatch.delenv("LEANFLOW_RESEARCH_LOCAL_LOOGLE", raising=False)
+    assert research_mode.research_local_loogle_enabled() is True
+
+
+def test_planner_parallelism_shares_research_worker_capacity(research_on, monkeypatch):
+    monkeypatch.setenv("LEANFLOW_RESEARCH_WORKERS", "2")
+    assert research_mode.planner_lane_parallelism(3) == 2
+    monkeypatch.setenv("LEANFLOW_RESEARCH_WORKERS", "0")
+    assert research_mode.planner_lane_parallelism(3) == 1
 
 
 # ---------------------------------------------------------------------------

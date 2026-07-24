@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import contextlib
 import os
+import secrets
 import shlex
+import signal
 import subprocess
 import tempfile
+import threading
+import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from leanflow_cli.config import get_env_value, load_config
 from leanflow_cli.workflows.workflow_state import append_workflow_activity
+from tools.utilities.interrupt import is_interrupted
 
 COMMAND_PROVIDER_ALIASES = {
     "codex": "codex",
@@ -37,6 +42,10 @@ TASK_FALLBACKS = {
     "planner_synthesis": "orchestration",
 }
 
+_EXPERT_PROCESS_TOKEN_ENV = "LEANFLOW_INTERNAL_EXPERT_PROCESS_TOKEN"
+_EXPERT_COMMUNICATE_POLL_S = 0.1
+_EXPERT_SHUTDOWN_WAIT_S = 5.0
+
 
 @dataclass(frozen=True)
 class ExpertCommandResult:
@@ -49,6 +58,40 @@ class ExpertCommandResult:
     response_chars: int
     max_response_chars: int
     timed_out: bool = False
+
+
+@dataclass(frozen=True)
+class _IsolatedCommandResult:
+    """Capture one command result after process-group timeout handling."""
+
+    returncode: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+
+
+@dataclass(frozen=True)
+class _ExpertProcessIdentity:
+    """Identify one token-bearing advisor process at a point in time."""
+
+    pid: int
+    ppid: int
+    pgid: int
+
+
+@dataclass
+class _ActiveExpertCommand:
+    """Track one advisor until its owner thread proves process-tree cleanup."""
+
+    process: subprocess.Popen[str]
+    process_token: str
+    cancel_requested: threading.Event = field(default_factory=threading.Event)
+    finished: threading.Event = field(default_factory=threading.Event)
+
+
+_ACTIVE_EXPERT_COMMANDS_LOCK = threading.Lock()
+_ACTIVE_EXPERT_COMMANDS: dict[int, _ActiveExpertCommand] = {}
+_EXPERT_SHUTDOWN_GENERATION = 0
 
 
 def normalize_expert_provider(value: str) -> str:
@@ -180,6 +223,381 @@ def _build_command(template: str, values: Mapping[str, str]) -> list[str]:
     return command
 
 
+def _subprocess_text(value: Any) -> str:
+    """Return captured subprocess output as text across Python timeout variants."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")
+
+
+def _valid_descendant_pid(process_id: int) -> bool:
+    """Return whether a PID is safe to target as an advisor descendant."""
+    return process_id > 1 and process_id != os.getpid()
+
+
+def _parse_tagged_processes(output: str, process_token: str) -> list[_ExpertProcessIdentity]:
+    """Parse only token-bearing process identities without retaining command text."""
+    if not process_token:
+        return []
+    token_entry = f"{_EXPERT_PROCESS_TOKEN_ENV}={process_token}"
+    tagged: list[_ExpertProcessIdentity] = []
+    for line in output.splitlines():
+        fields = line.lstrip().split(maxsplit=3)
+        if len(fields) != 4 or token_entry not in fields[3]:
+            continue
+        try:
+            process_id, parent_id, process_group_id = (int(field) for field in fields[:3])
+        except ValueError:
+            continue
+        if not _valid_descendant_pid(process_id) or parent_id < 0 or process_group_id <= 0:
+            continue
+        tagged.append(
+            _ExpertProcessIdentity(
+                pid=process_id,
+                ppid=parent_id,
+                pgid=process_group_id,
+            )
+        )
+
+    by_pid = {identity.pid: identity for identity in tagged}
+
+    def depth(identity: _ExpertProcessIdentity) -> int:
+        current = identity
+        visited = {identity.pid}
+        result = 0
+        while current.ppid in by_pid and current.ppid not in visited:
+            visited.add(current.ppid)
+            current = by_pid[current.ppid]
+            result += 1
+        return result
+
+    tagged.sort(key=lambda identity: (depth(identity), identity.pid), reverse=True)
+    return tagged
+
+
+def _snapshot_tagged_expert_processes(
+    process_token: str,
+) -> list[_ExpertProcessIdentity]:
+    """Return token-bearing advisor processes ordered deepest-first on POSIX."""
+    if os.name == "nt" or not process_token:
+        return []
+    try:
+        completed = subprocess.run(
+            ["ps", "e", "-ww", "-axo", "pid=,ppid=,pgid=,command="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return _parse_tagged_processes(completed.stdout, process_token)
+
+
+def _process_identity_still_tagged(
+    identity: _ExpertProcessIdentity,
+    process_token: str,
+) -> bool:
+    """Revalidate a PID's unique advisor token immediately before signaling."""
+    if os.name == "nt" or not _valid_descendant_pid(identity.pid) or not process_token:
+        return False
+    try:
+        completed = subprocess.run(
+            [
+                "ps",
+                "e",
+                "-ww",
+                "-p",
+                str(identity.pid),
+                "-o",
+                "pid=,ppid=,pgid=,command=",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return any(
+        current.pid == identity.pid and current.pgid == identity.pgid
+        for current in _parse_tagged_processes(completed.stdout, process_token)
+    )
+
+
+def _signal_tagged_process(
+    identity: _ExpertProcessIdentity,
+    process_token: str,
+    sig: signal.Signals,
+) -> None:
+    """Signal one advisor PID only after its unique token is revalidated."""
+    if not _process_identity_still_tagged(identity, process_token):
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.kill(identity.pid, sig)
+
+
+def _signal_tagged_process_group(
+    process_group_id: int,
+    process_token: str,
+    sig: signal.Signals,
+) -> None:
+    """Signal an advisor group only while a tagged member still belongs to it."""
+    if process_group_id <= 1 or process_group_id == os.getpgrp() or not hasattr(os, "killpg"):
+        return
+    identities = _snapshot_tagged_expert_processes(process_token)
+    if not any(
+        identity.pgid == process_group_id
+        and _process_identity_still_tagged(identity, process_token)
+        for identity in identities
+    ):
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(process_group_id, sig)
+
+
+def _close_expert_process_pipes(process: subprocess.Popen[str]) -> None:
+    """Close retained advisor pipes after the leader has been reaped."""
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            with contextlib.suppress(OSError, ValueError):
+                stream.close()
+
+
+def _terminate_expert_process_tree(
+    process: subprocess.Popen[str],
+    *,
+    process_token: str,
+    grace_s: float = 0.5,
+) -> None:
+    """Terminate and reap an advisor tree, including detached POSIX groups."""
+    if os.name == "nt" or not hasattr(os, "killpg"):
+        # Full Windows tree cleanup requires a Job Object. Keep the fallback
+        # bounded to the direct child instead of pretending it is recursive.
+        with contextlib.suppress(ProcessLookupError):
+            process.terminate()
+        try:
+            process.wait(timeout=max(0.0, grace_s))
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+        return
+
+    process_group_id = int(process.pid or 0)
+    # The live Popen object is stronger authority than a best-effort process
+    # inventory: this exact child was launched in a new session, so its PID is
+    # also the owned process-group id until the leader exits. Signal it first;
+    # restricted hosts may deny the `ps e` token scan used below for detached
+    # descendants, and waiting five seconds before killing the known child can
+    # otherwise outlive the native runner's bounded shutdown gate.
+    if process.poll() is None and process_group_id > 1 and process_group_id != os.getpgrp():
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process_group_id, signal.SIGTERM)
+    identities = _snapshot_tagged_expert_processes(process_token)
+    for identity in identities:
+        _signal_tagged_process(identity, process_token, signal.SIGTERM)
+    _signal_tagged_process_group(
+        process_group_id,
+        process_token,
+        signal.SIGTERM,
+    )
+
+    deadline = time.monotonic() + max(0.0, grace_s)
+    while time.monotonic() < deadline:
+        if not _snapshot_tagged_expert_processes(process_token):
+            break
+        time.sleep(0.01)
+
+    survivors = _snapshot_tagged_expert_processes(process_token)
+    for identity in survivors:
+        _signal_tagged_process(identity, process_token, signal.SIGKILL)
+    _signal_tagged_process_group(
+        process_group_id,
+        process_token,
+        signal.SIGKILL,
+    )
+
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=5)
+
+
+def _drain_terminated_expert_process(
+    process: subprocess.Popen[str],
+    *,
+    partial_stdout: str = "",
+    partial_stderr: str = "",
+) -> tuple[str, str]:
+    """Drain terminated advisor pipes without allowing an escaped holder to block."""
+    try:
+        # Detached descendants may inherit the leader's pipes. The leader has
+        # already been terminated/reaped, so a long drain cannot add process
+        # authority and only delays native shutdown; retain partial output and
+        # close the pipes after one ordinary communication poll.
+        stdout, stderr = process.communicate(timeout=_EXPERT_COMMUNICATE_POLL_S)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        _close_expert_process_pipes(process)
+        return partial_stdout, partial_stderr
+    return (
+        _subprocess_text(stdout) or partial_stdout,
+        _subprocess_text(stderr) or partial_stderr,
+    )
+
+
+def _expert_shutdown_generation() -> int:
+    """Return the current process-owner shutdown generation."""
+    with _ACTIVE_EXPERT_COMMANDS_LOCK:
+        return _EXPERT_SHUTDOWN_GENERATION
+
+
+def _register_active_expert_command(
+    active: _ActiveExpertCommand,
+    *,
+    launch_generation: int,
+) -> None:
+    """Register one command and cancel it if shutdown crossed its launch."""
+    with _ACTIVE_EXPERT_COMMANDS_LOCK:
+        _ACTIVE_EXPERT_COMMANDS[id(active)] = active
+        if launch_generation != _EXPERT_SHUTDOWN_GENERATION:
+            active.cancel_requested.set()
+
+
+def _unregister_active_expert_command(active: _ActiveExpertCommand) -> None:
+    """Publish owner-thread completion and retire one active command."""
+    with _ACTIVE_EXPERT_COMMANDS_LOCK:
+        _ACTIVE_EXPERT_COMMANDS.pop(id(active), None)
+        active.finished.set()
+
+
+def shutdown_active_expert_commands(
+    *,
+    timeout_s: float = _EXPERT_SHUTDOWN_WAIT_S,
+) -> tuple[int, ...]:
+    """Cancel active advisors and return PIDs whose owner threads did not finish."""
+    global _EXPERT_SHUTDOWN_GENERATION
+
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    with _ACTIVE_EXPERT_COMMANDS_LOCK:
+        _EXPERT_SHUTDOWN_GENERATION += 1
+
+    while True:
+        with _ACTIVE_EXPERT_COMMANDS_LOCK:
+            active = tuple(_ACTIVE_EXPERT_COMMANDS.values())
+            for command in active:
+                command.cancel_requested.set()
+        if not active:
+            return ()
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            break
+        # Every owner polls at 100 ms; short waits also admit commands that
+        # crossed Popen while this shutdown generation was being published.
+        active[0].finished.wait(timeout=min(_EXPERT_COMMUNICATE_POLL_S, remaining))
+
+    with _ACTIVE_EXPERT_COMMANDS_LOCK:
+        residual = tuple(_ACTIVE_EXPERT_COMMANDS.values())
+        for command in residual:
+            command.cancel_requested.set()
+    return tuple(
+        sorted(
+            {
+                int(command.process.pid or 0)
+                for command in residual
+                if int(command.process.pid or 0) > 1
+            }
+        )
+    )
+
+
+def _run_isolated_expert_command(
+    command: list[str],
+    *,
+    input: str,
+    cwd: str,
+    timeout: int,
+) -> _IsolatedCommandResult:
+    """Run one advisor and clean its full process tree on every abnormal exit."""
+    if is_interrupted():
+        raise InterruptedError("expert command interrupted before launch")
+
+    launch_generation = _expert_shutdown_generation()
+    process_token = secrets.token_urlsafe(32)
+    environment = dict(os.environ)
+    environment[_EXPERT_PROCESS_TOKEN_ENV] = process_token
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        start_new_session=True,
+        env=environment,
+    )
+    active = _ActiveExpertCommand(process=process, process_token=process_token)
+    _register_active_expert_command(active, launch_generation=launch_generation)
+    deadline = time.monotonic() + max(1, int(timeout or 0))
+    communicate_input: str | None = input
+    partial_stdout = ""
+    partial_stderr = ""
+    try:
+        while True:
+            if active.cancel_requested.is_set() or is_interrupted():
+                raise InterruptedError("expert command interrupted")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                _terminate_expert_process_tree(process, process_token=process_token)
+                stdout, stderr = _drain_terminated_expert_process(
+                    process,
+                    partial_stdout=partial_stdout,
+                    partial_stderr=partial_stderr,
+                )
+                return _IsolatedCommandResult(
+                    returncode=None,
+                    stdout=stdout,
+                    stderr=stderr,
+                    timed_out=True,
+                )
+            try:
+                stdout, stderr = process.communicate(
+                    input=communicate_input,
+                    timeout=min(_EXPERT_COMMUNICATE_POLL_S, remaining),
+                )
+            except subprocess.TimeoutExpired as exc:
+                communicate_input = None
+                partial_stdout = _subprocess_text(exc.stdout) or partial_stdout
+                partial_stderr = _subprocess_text(exc.stderr) or partial_stderr
+                continue
+
+            # A signal can race the final pipe drain. Honor it and sweep any
+            # token-bearing descendant even though the command leader exited.
+            if active.cancel_requested.is_set() or is_interrupted():
+                raise InterruptedError("expert command interrupted")
+            return _IsolatedCommandResult(
+                returncode=process.returncode,
+                stdout=_subprocess_text(stdout),
+                stderr=_subprocess_text(stderr),
+                timed_out=False,
+            )
+    except BaseException:
+        _terminate_expert_process_tree(process, process_token=process_token)
+        _drain_terminated_expert_process(
+            process,
+            partial_stdout=partial_stdout,
+            partial_stderr=partial_stderr,
+        )
+        raise
+    finally:
+        _unregister_active_expert_command(active)
+
+
 def run_command_expert_help(
     *,
     provider: str,
@@ -227,15 +645,44 @@ def run_command_expert_help(
             cwd=workdir,
             timeout_s=timeout_s,
         )
-        completed = subprocess.run(
+        completed = _run_isolated_expert_command(
             command,
             input=prompt,
-            text=True,
-            capture_output=True,
             cwd=workdir,
             timeout=max(1, int(timeout_s or 0)),
-            check=False,
         )
+        if bool(getattr(completed, "timed_out", False)):
+            stdout = str(completed.stdout or "").strip()
+            stderr = str(completed.stderr or "").strip()
+            truncated = len(stdout) > max_chars
+            response = stdout[:max_chars].rstrip() if truncated else stdout
+            result = ExpertCommandResult(
+                provider=provider,
+                command=command,
+                exit_status=None,
+                response=response,
+                stderr=stderr,
+                truncated=truncated,
+                response_chars=len(stdout),
+                max_response_chars=max_chars,
+                timed_out=True,
+            )
+            record_expert_help_activity(
+                "expert-help-result",
+                "Expert help command timed out",
+                provider=provider,
+                mode="command",
+                prompt=prompt,
+                command=result.command,
+                exit_status=None,
+                response=result.response,
+                stderr=result.stderr,
+                truncated=result.truncated,
+                response_chars=result.response_chars,
+                max_response_chars=result.max_response_chars,
+                timed_out=True,
+            )
+            return result
         response = str(completed.stdout or "").strip()
         try:
             output_file_response = Path(output_file_path).read_text(encoding="utf-8").strip()
@@ -273,38 +720,6 @@ def run_command_expert_help(
             response_chars=result.response_chars,
             max_response_chars=result.max_response_chars,
             timed_out=False,
-        )
-        return result
-    except subprocess.TimeoutExpired as exc:
-        stdout = str(exc.stdout or "").strip()
-        stderr = str(exc.stderr or "").strip()
-        truncated = len(stdout) > max_chars
-        response = stdout[:max_chars].rstrip() if truncated else stdout
-        result = ExpertCommandResult(
-            provider=provider,
-            command=getattr(exc, "cmd", []) if isinstance(getattr(exc, "cmd", []), list) else [],
-            exit_status=None,
-            response=response,
-            stderr=stderr,
-            truncated=truncated,
-            response_chars=len(stdout),
-            max_response_chars=max_chars,
-            timed_out=True,
-        )
-        record_expert_help_activity(
-            "expert-help-result",
-            "Expert help command timed out",
-            provider=provider,
-            mode="command",
-            prompt=prompt,
-            command=result.command,
-            exit_status=None,
-            response=result.response,
-            stderr=result.stderr,
-            truncated=result.truncated,
-            response_chars=result.response_chars,
-            max_response_chars=result.max_response_chars,
-            timed_out=True,
         )
         return result
     finally:

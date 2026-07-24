@@ -19,6 +19,7 @@ re-export.
 from __future__ import annotations
 
 import contextlib
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
@@ -33,6 +34,7 @@ __all__ = [
     "MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S",
     "_manager_incremental_prepare_timeout_s",
     "_manager_incremental_check_timeout_s",
+    "_incremental_prepare_blocking_declaration",
     "_last_verification_record",
     "_verification_outcome",
     "_manager_feedback_retry_key",
@@ -43,6 +45,22 @@ __all__ = [
 # Default deterministic-verification timeouts (seconds). Used only by the timeout readers below.
 MANAGER_INCREMENTAL_PREPARE_TIMEOUT_DEFAULT_S = 300
 MANAGER_INCREMENTAL_CHECK_TIMEOUT_DEFAULT_S = 300
+
+_ENV_BEFORE_TARGET_BLOCKER_RE = re.compile(
+    r"failed to build env before target at\s+([A-Za-z_«][\w'.«»]*):",
+    re.IGNORECASE,
+)
+
+
+def _incremental_prepare_blocking_declaration(error: str) -> str:
+    """Return the earlier declaration named by an incremental warmup failure.
+
+    LeanProbe reports this form when elaborating the environment before the
+    requested target fails. The named prerequisite, rather than the later
+    target, must become the managed queue assignment.
+    """
+    match = _ENV_BEFORE_TARGET_BLOCKER_RE.search(str(error or ""))
+    return match.group(1) if match else ""
 
 
 def _manager_incremental_prepare_timeout_s() -> int:

@@ -9,6 +9,7 @@ import pytest
 from evals import harness
 from leanflow_cli.workflows import plan_state
 from leanflow_cli.workflows.plan_state import Blueprint, DeclTruth, GraphNode
+from leanflow_cli.workflows.workflow_json_io import update_json_file
 
 
 @pytest.fixture()
@@ -132,3 +133,126 @@ def test_t1_fixture_inventory_lists_demo_projects():
 
     assert any(path.name == "ProveDemo" for path in projects)
     assert all(path.is_dir() for path in projects)
+
+
+def test_frozen_t2_t3_and_adversarial_corpora_are_complete():
+    assert harness.validate_corpus_manifest() == []
+    assert len(harness.suite_cases("t2")) == 40
+    assert len(harness.suite_cases("t3")) == 10
+    assert len(harness.suite_cases("adversarial")) == 4
+    assert any(case["declaration"] == "erdos_865.variants.k2" for case in harness.suite_cases("t3"))
+
+
+def test_campaign_metrics_report_relentless_acceptance_data(state_root):
+    plan_state.save_blueprint(
+        Blueprint(
+            goal="g",
+            nodes=(GraphNode(id="n-a", name="helper", file="A.lean", status="proved"),),
+        )
+    )
+    plan_state.append_journal_event(
+        {"event": "orchestrator-route", "route": "decompose", "name": "hard"}
+    )
+    plan_state.append_journal_event(
+        {"event": "orchestrator-route", "route": "negate", "name": "hard"}
+    )
+    plan_state.append_journal_event(
+        {"event": "proof-attempt-rejected", "proof_shape": "simp", "name": "hard"}
+    )
+
+    def seed(summary):
+        summary["campaign"] = {
+            "campaign_id": "campaign-test",
+            "status": "paused",
+            "last_exit_code": 2,
+            "last_exit_verified": False,
+            "last_exit_reason": "headless early exit",
+            "epoch_history": [{"epoch": 1}],
+        }
+        summary["campaign_metrics"] = {
+            "rejected_turns": 3,
+            "coach_messages": 3,
+            "coach_fallbacks": 2,
+        }
+        summary["dispatch_ledger"] = [
+            {
+                "state": "done",
+                "started_at": "now",
+                "consumed": True,
+                "spec": {"inputs": {"generation": 1}},
+            },
+            {
+                "state": "running",
+                "started_at": "later",
+                "consumed": False,
+                "spec": {"inputs": {"generation": 2}},
+            },
+        ]
+
+    update_json_file(state_root / "summary.json", seed)
+
+    report = harness.score_campaign_metrics(state_root)
+
+    assert report["voluntary_give_up_termination"] is False
+    assert report["unresolved_success_exit"] is False
+    assert report["coach_coverage"] == 1.0
+    assert report["route_diversity"] == 2
+    assert report["proof_shape_diversity"] == 1
+    assert report["jobs_launched"] == 2
+    assert report["jobs_consumed"] == 1
+    assert report["jobs_replaced"] == 1
+    assert report["verified_graph_progress"] == 1
+    assert report["epoch_rollovers"] == 1
+    assert all(report["acceptance"].values())
+
+
+def test_campaign_metrics_detect_surrender_and_false_success(state_root):
+    plan_state.save_blueprint(Blueprint(goal="g"))
+
+    def seed(summary):
+        summary["campaign"] = {
+            "last_exit_code": 0,
+            "last_exit_verified": False,
+            "last_exit_reason": "NOT SOLVED; deciding to halt further attempts",
+        }
+
+    update_json_file(state_root / "summary.json", seed)
+    report = harness.score_campaign_metrics(state_root)
+
+    assert report["unresolved_success_exit"] is True
+    # Exit 0 is classified as false success rather than a non-success surrender.
+    assert report["voluntary_give_up_termination"] is False
+
+
+def test_campaign_metric_aggregation_reports_required_rates():
+    aggregate = harness.aggregate_campaign_metrics(
+        [
+            {
+                "rejected_turns": 2,
+                "coach_messages": 2,
+                "voluntary_give_up_termination": False,
+                "unresolved_success_exit": False,
+                "routes": ["decompose", "negate"],
+                "proof_shapes": ["simp"],
+                "jobs_launched": 2,
+                "jobs_consumed": 1,
+                "jobs_replaced": 1,
+                "verified_graph_progress": 1,
+                "epoch_rollovers": 1,
+            },
+            {
+                "rejected_turns": 1,
+                "coach_messages": 1,
+                "voluntary_give_up_termination": False,
+                "unresolved_success_exit": False,
+                "routes": ["plan"],
+                "proof_shapes": ["omega"],
+            },
+        ]
+    )
+
+    assert aggregate["voluntary_give_up_termination_rate"] == 0
+    assert aggregate["unresolved_success_exit_rate"] == 0
+    assert aggregate["coach_coverage"] == 1
+    assert aggregate["route_diversity"] == 3
+    assert aggregate["proof_shape_diversity"] == 2

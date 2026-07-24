@@ -7,6 +7,7 @@ import pytest
 from leanflow_cli.workflows.workflow_json_io import (
     WorkflowStateCorruptionError,
     read_json_file,
+    update_json_file_if_changed,
     write_json_file,
 )
 
@@ -34,6 +35,54 @@ class TestWriteJsonFile:
         write_json_file(target, {"ok": True})
         assert not [f.name for f in tmp_path.iterdir() if ".tmp" in f.name]
         assert target.exists()
+
+    def test_conditional_update_skips_noop_atomic_write(self, monkeypatch, tmp_path):
+        from leanflow_cli.workflows import workflow_json_io
+
+        target = tmp_path / "state.json"
+        write_json_file(target, {"stable": True})
+        before = target.read_bytes()
+        before_mtime = target.stat().st_mtime_ns
+        writes: list[dict] = []
+        original_write = workflow_json_io.atomic_json_write
+
+        def record_write(path, payload, *, sort_keys):
+            writes.append(dict(payload))
+            original_write(path, payload, sort_keys=sort_keys)
+
+        monkeypatch.setattr(workflow_json_io, "atomic_json_write", record_write)
+
+        outcome = update_json_file_if_changed(
+            target,
+            lambda payload: (payload.get("stable"), False),
+        )
+
+        assert outcome is True
+        assert writes == []
+        assert target.read_bytes() == before
+        assert target.stat().st_mtime_ns == before_mtime
+
+    def test_conditional_update_writes_reported_change(self, monkeypatch, tmp_path):
+        from leanflow_cli.workflows import workflow_json_io
+
+        target = tmp_path / "state.json"
+        write_json_file(target, {"generation": 1})
+        original_write = workflow_json_io.atomic_json_write
+        writes: list[dict] = []
+
+        def record_write(path, payload, *, sort_keys):
+            writes.append(dict(payload))
+            original_write(path, payload, sort_keys=sort_keys)
+
+        def advance(payload):
+            payload["generation"] = 2
+            return "advanced", True
+
+        monkeypatch.setattr(workflow_json_io, "atomic_json_write", record_write)
+
+        assert update_json_file_if_changed(target, advance) == "advanced"
+        assert writes == [{"generation": 2}]
+        assert read_json_file(target) == {"generation": 2}
 
 
 class TestReadJsonFile:

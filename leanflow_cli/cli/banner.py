@@ -455,7 +455,11 @@ def render_workflow_status_panel(
     status: dict[str, object],
     activities: list[dict[str, object]] | None = None,
 ) -> None:
-    """Display live managed workflow state including phase, workflow kind, provider/model, active file/theorem, project manager queue (if enabled), build/warning-cleanup status, sorry count, and optional recent activity table. Flags stale snapshots in phase display."""
+    """Display managed workflow state, including any terminal process outcome.
+
+    Show workflow, proof, queue, provider, checkpoint, and optional recent activity
+    details. Flag stale snapshots in the phase display.
+    """
     workflow_name = str(status.get("workflow_kind", "[none]") or "[none]")
     workflow_name = WORKFLOW_DISPLAY_NAMES.get(workflow_name, workflow_name)
     phase = str(status.get("phase", "[none]") or "[none]")
@@ -473,6 +477,12 @@ def render_workflow_status_panel(
     table.add_row("Model", str(status.get("model", "[none]")))
     table.add_row("Skill", str(status.get("active_skill", "(none)")))
     table.add_row("Agents", str(status.get("parallel_agents", "1")))
+    if "exit_code" in status:
+        exit_code = str(status.get("exit_code", "[unknown]"))
+        exit_reason = str(status.get("reason", "") or "").strip()
+        table.add_row("Exit", f"{exit_code}: {exit_reason}" if exit_reason else exit_code)
+    if bool(status.get("startup_reconciliation_pending")):
+        table.add_row("Proof state", "prior durable snapshot; reconciliation pending")
     table.add_row("File", str(status.get("active_file_label", "[unknown]")))
     table.add_row("Theorem", str(status.get("target_symbol", "[unknown]")))
     if bool(status.get("project_prove_manager")):

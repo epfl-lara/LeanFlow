@@ -19,11 +19,13 @@ reaches its collaborators directly via ``leanflow_cli.runtime.file_locks`` /
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 from pathlib import Path
 
+from core.runtime_modes import scratch_only_dispatch_worker_enabled
 from leanflow_cli.lean.lean_services import lean_verify
 from leanflow_cli.runtime.file_locks import ensure_file_lock, release_file_lock
 from leanflow_cli.workflows.workflow_state import (
@@ -87,6 +89,8 @@ def _verified_patch_failure(
         "check_mode": check_mode,
         "patch_applied": patch_applied,
         "check_passed": False,
+        "patch_elaborated": False,
+        "target_verified": False,
         "verified": False,
         "message": message,
     }
@@ -152,6 +156,11 @@ def _patch_error_is_no_change(error: str) -> bool:
     )
 
 
+def _source_revision_sha256(content: bytes) -> str:
+    """Return the exact source-byte digest used to bind verification evidence."""
+    return hashlib.sha256(content).hexdigest()
+
+
 def apply_verified_patch_tool(
     path: str,
     patch: str,
@@ -167,6 +176,29 @@ def apply_verified_patch_tool(
     raw_path = str(path or "").strip()
     raw_patch = str(patch or "")
     normalized_check = _normalize_verified_patch_check_mode(check_mode)
+    if scratch_only_dispatch_worker_enabled():
+        # Do not call _verified_patch_failure here: it intentionally persists
+        # the latest authoritative patch status, which a research job must
+        # never replace even when its write request is rejected.
+        return json.dumps(
+            {
+                "success": False,
+                "status": "scratch_only_write_denied",
+                "path": raw_path,
+                "cwd": cwd,
+                "check_mode": normalized_check,
+                "patch_applied": False,
+                "check_passed": False,
+                "patch_elaborated": False,
+                "target_verified": False,
+                "verified": False,
+                "message": (
+                    "Scratch-only research jobs cannot edit project files. "
+                    "Use lean_incremental_check with an inline replacement."
+                ),
+            },
+            ensure_ascii=False,
+        )
     if not raw_path:
         return _verified_patch_failure(
             "invalid_request", "path required.", check_mode=normalized_check
@@ -313,30 +345,55 @@ def apply_verified_patch_tool(
             verification=None,
         )
 
+    try:
+        verification_source_bytes = resolved_path.read_bytes()
+    except OSError:
+        verification_source_bytes = b""
+    verification_source_revision_sha256 = _source_revision_sha256(verification_source_bytes)
     verification = lean_verify(
         target=str(resolved_path), cwd=str(base_cwd), mode=normalized_check
     ).to_dict()
-    verified = bool(verification.get("ok"))
-    status = "verified" if verified else "check_failed"
+    try:
+        post_verification_bytes = resolved_path.read_bytes()
+    except OSError:
+        post_verification_bytes = b""
+    verification_source_unchanged = bool(
+        resolved_path.exists() and post_verification_bytes == verification_source_bytes
+    )
+    check_passed = bool(verification.get("ok")) and verification_source_unchanged
+    status = "patch_elaborated" if check_passed else "check_failed"
     payload = {
-        "success": verified,
+        "success": check_passed,
         "status": status,
         "path": str(resolved_path),
         "cwd": str(base_cwd),
         "theorem_id": str(theorem_id or ""),
         "check_mode": normalized_check,
         "patch_applied": True,
-        "check_passed": verified,
-        "verified": verified,
+        "check_passed": check_passed,
+        # This tool checks a broad file/module/project scope.  It does not run
+        # the queue manager's declaration-identity and axiom-profile gate, so
+        # a helper-only edit must never be presented as proof of the assigned
+        # theorem.  The native runner performs that exact gate immediately
+        # after this broad check succeeds.
+        "patch_elaborated": check_passed,
+        "target_verified": False,
+        "verified": False,
         "checkpoint_id": checkpoint.get("checkpoint_id", ""),
         "checkpoint": checkpoint,
         "patch": patch_payload,
         "changed_ranges": _diff_hunk_headers(str(patch_payload.get("diff", "") or "")),
         "verification": verification,
+        "verified_source_revision_sha256": verification_source_revision_sha256,
+        "verification_source_unchanged": verification_source_unchanged,
         "message": (
-            "Patch applied and verification passed."
-            if verified
-            else "Patch applied, but verification failed. Continue repair from the returned diagnostics."
+            "Patch applied and its broad verification check passed; the exact target gate is still required."
+            if check_passed
+            else (
+                "Patch applied and Lean returned successfully, but the source changed during verification. Run a fresh exact check on the current revision."
+                if verification.get("ok") and not verification_source_unchanged
+                else "Patch applied, but verification failed. Continue repair from the returned diagnostics."
+            )
         ),
     }
     save_verified_patch_status(payload)

@@ -44,6 +44,8 @@ _SAFE_ENV_KEYS = frozenset(
 )
 _LOOGLE_STALE_ARTIFACT_SCAN_LIMIT = 80
 _LEAN_MODULE_PART_PATTERN = re.compile(r"^[A-Z_][A-Za-z0-9_']*$")
+_DISPATCH_LOCAL_LOOGLE_ENV = "LEANFLOW_DISPATCH_LOCAL_LOOGLE"
+_RESEARCH_LOCAL_LOOGLE_ENV = "LEANFLOW_RESEARCH_LOCAL_LOOGLE"
 
 # Regex for credential patterns to strip from error messages
 _CREDENTIAL_PATTERN = re.compile(
@@ -161,6 +163,64 @@ def _truthy_env_value(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _dispatch_local_loogle_allowed() -> bool:
+    """Return whether this process may start a private local Loogle index.
+
+    A research worker already owns an isolated Lean service tree. Starting local
+    Loogle in every such tree eagerly materializes the same multi-gigabyte index
+    once per concurrent lane. Keep the foreground behavior unchanged and require
+    an explicit worker-only opt-in when a deployment has provisioned that memory.
+    """
+    if not _truthy_env_value(os.getenv("LEANFLOW_DISPATCH_WORKER")):
+        return True
+    return _truthy_env_value(os.getenv(_DISPATCH_LOCAL_LOOGLE_ENV))
+
+
+def _apply_dispatch_local_loogle_policy(server_name: str, env: dict) -> dict:
+    """Disable private local Loogle in a worker while retaining remote search."""
+    updated = dict(env or {})
+    if str(server_name or "") != "lean-lsp":
+        return updated
+    if not _truthy_env_value(updated.get("LEAN_LOOGLE_LOCAL")):
+        return updated
+    if _dispatch_local_loogle_allowed():
+        return updated
+    updated["LEAN_LOOGLE_LOCAL"] = "false"
+    logger.info(
+        "Local Loogle disabled in this research worker to avoid duplicating its "
+        "multi-gigabyte index; remote Loogle and native text-search fallbacks remain enabled. "
+        "Set %s=1 only for explicitly memory-provisioned workers.",
+        _DISPATCH_LOCAL_LOOGLE_ENV,
+    )
+    return updated
+
+
+def _research_local_loogle_allowed() -> bool:
+    """Return whether a research foreground may retain local Loogle."""
+    if not _truthy_env_value(os.getenv("LEANFLOW_RESEARCH_MODE")):
+        return True
+    return _truthy_env_value(os.getenv(_RESEARCH_LOCAL_LOOGLE_ENV))
+
+
+def _apply_research_local_loogle_policy(server_name: str, env: dict) -> dict:
+    """Disable only local Loogle in research mode while retaining lean-lsp."""
+    updated = dict(env or {})
+    if str(server_name or "") != "lean-lsp":
+        return updated
+    if not _truthy_env_value(updated.get("LEAN_LOOGLE_LOCAL")):
+        return updated
+    if _research_local_loogle_allowed():
+        return updated
+    updated["LEAN_LOOGLE_LOCAL"] = "false"
+    logger.info(
+        "Local Loogle disabled for this research campaign to avoid retaining its "
+        "multi-gigabyte index; foreground lean-lsp, remote Loogle, and native "
+        "search remain enabled. Set %s=1 only for an explicitly memory-provisioned run.",
+        _RESEARCH_LOCAL_LOOGLE_ENV,
+    )
+    return updated
+
+
 def _mcp_stderr_log_dir(cwd: str | None) -> Path:
     """Resolve the directory for per-server MCP stderr logs.
 
@@ -260,7 +320,8 @@ def _disable_incompatible_local_loogle(server_name: str, env: dict, cwd: str | N
 
 def _augment_lean_stdio_env(server_name: str, env: dict, cwd: str | None) -> dict:
     """Add project-local Lean runtime env expected by managed Lean MCP servers."""
-    updated = dict(env or {})
+    updated = _apply_dispatch_local_loogle_policy(server_name, env)
+    updated = _apply_research_local_loogle_policy(server_name, updated)
     if not str(server_name or "").startswith("lean-") or not cwd:
         return updated
 
@@ -361,6 +422,8 @@ def _effective_connect_timeout(name: str, config: dict) -> float:
         str(name or "") == "lean-lsp"
         and isinstance(env, dict)
         and _truthy_env_value(env.get("LEAN_LOOGLE_LOCAL"))
+        and _dispatch_local_loogle_allowed()
+        and _research_local_loogle_allowed()
     ):
         timeout = max(timeout, float(_LOCAL_LOOGLE_CONNECT_TIMEOUT))
     return timeout

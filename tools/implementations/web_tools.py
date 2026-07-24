@@ -121,6 +121,7 @@ def _get_firecrawl_client():
 
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
+SUMMARIZER_TIMEOUT_SECONDS = 30.0
 
 # Allow per-task override via env var
 DEFAULT_SUMMARIZER_MODEL = os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
@@ -286,8 +287,11 @@ Your goal is to preserve ALL important information while reducing length. Never 
 
 Create a markdown summary that captures all key information in a well-organized, scannable format. Include important quotes and code snippets in their original formatting. Focus on actionable information, specific details, and unique insights."""
 
-    # Call the LLM with retry logic
-    max_retries = 6
+    # Page extraction is an optional context-reduction step. Give it one true
+    # bounded attempt, then return the original hard-capped content. Stacking
+    # six retries here on top of provider retries used to freeze a concurrent
+    # planner web batch for many minutes.
+    max_retries = 1
     retry_delay = 2
     last_error = None
 
@@ -301,6 +305,7 @@ Create a markdown summary that captures all key information in a well-organized,
                 ],
                 "temperature": 0.1,
                 "max_tokens": max_tokens,
+                "timeout": SUMMARIZER_TIMEOUT_SECONDS,
             }
             if model:
                 call_kwargs["model"] = model

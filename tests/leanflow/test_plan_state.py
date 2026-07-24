@@ -14,6 +14,7 @@ from leanflow_cli.workflows.plan_state import (
     GraphNode,
     PlanStateRevisionConflict,
 )
+from leanflow_cli.workflows.workflow_json_io import update_json_file
 
 
 @pytest.fixture()
@@ -66,6 +67,17 @@ def test_blueprint_round_trip_and_revision_bump(enabled):
     assert loaded.updated_at
 
 
+def test_update_node_effort_is_monotonic():
+    bp = _demo_blueprint()
+
+    raised = plan_state.update_node_effort(bp, "n-main", attempts=3, api_steps=19)
+    unchanged = plan_state.update_node_effort(raised, "n-main", attempts=1, api_steps=7)
+
+    assert raised.node_by_id("n-main").attempts == 3
+    assert raised.node_by_id("n-main").api_steps == 19
+    assert unchanged == raised
+
+
 def test_stale_revision_write_is_refused_loudly(enabled):
     first = plan_state.save_blueprint(_demo_blueprint())
     plan_state.save_blueprint(first)  # disk now at revision 2
@@ -76,6 +88,18 @@ def test_stale_revision_write_is_refused_loudly(enabled):
     journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
     events = [json.loads(line) for line in journal.splitlines()]
     assert any(event["event"] == "plan-state-revision-conflict" for event in events)
+
+
+def test_blueprint_commit_guard_is_reentrant_across_existing_save_path(enabled):
+    """An outer cross-artifact lease survives nested graph reconciliation writes."""
+    with plan_state.blueprint_commit_guard():
+        first = plan_state.save_blueprint(_demo_blueprint())
+        with plan_state.blueprint_commit_guard():
+            second = plan_state.save_blueprint(first)
+        assert plan_state.load_blueprint().revision == 2
+
+    assert first.revision == 1
+    assert second.revision == 2
 
 
 def test_frontier_requires_proved_dependencies(enabled):
@@ -98,6 +122,40 @@ def test_invalidate_false_subtree_poisons_split_ancestors_but_not_proved(enabled
     assert poisoned.node_by_id("n-main").status == "conjectured"
     # proved nodes are immutable kernel facts.
     assert poisoned.node_by_id("n-helper").status == "proved"
+
+
+def test_false_dependency_reopens_a_proved_decomposition_ancestor(enabled):
+    child = GraphNode(id="n-child", name="child", file="Demo.lean", status="proving")
+    main = GraphNode(id="n-main", name="main", file="Demo.lean", status="proved")
+    bp = Blueprint(
+        nodes=(main, child),
+        edges=(
+            GraphEdge(source="n-child", target="n-main", kind="split_of"),
+            GraphEdge(source="n-main", target="n-child", kind="depends_on"),
+        ),
+    )
+
+    poisoned = bp.invalidate_false_subtree("n-child")
+
+    assert poisoned.node_by_id("n-child").status == "false"
+    assert poisoned.node_by_id("n-main").status == "conjectured"
+
+
+def test_invalid_dependency_detection_is_transitive(enabled):
+    leaf = GraphNode(id="n-leaf", name="leaf", file="Demo.lean", status="false")
+    middle = GraphNode(id="n-middle", name="middle", file="Demo.lean", status="stated")
+    main = GraphNode(id="n-main", name="main", file="Demo.lean", status="proved")
+    bp = Blueprint(
+        nodes=(main, middle, leaf),
+        edges=(
+            GraphEdge(source="n-main", target="n-middle", kind="depends_on"),
+            GraphEdge(source="n-middle", target="n-leaf", kind="depends_on"),
+        ),
+    )
+
+    assert bp.has_invalid_dependency("n-main") is True
+    assert bp.has_invalid_dependency("n-middle") is True
+    assert bp.has_invalid_dependency("n-leaf") is False
 
 
 def test_set_node_status_enforces_kernel_truth_rules(enabled):
@@ -196,12 +254,21 @@ def test_reconcile_downgrades_and_promotes_without_proving(enabled):
             GraphNode(id="n3", name="now_stated", file="A.lean", status="conjectured"),
             GraphNode(id="n4", name="still_clean", file="A.lean", status="stated"),
             GraphNode(id="n5", name="unscanned", file="B.lean", status="proved"),
+            GraphNode(
+                id="n6",
+                name="unchecked_planner_stub",
+                file="A.lean",
+                status="conjectured",
+                notes="This helper needs separate verification.",
+                generated_by="planner",
+            ),
         )
     )
     truth = {
         ("A.lean", "regressed"): DeclTruth(present=True, has_sorry=True),
         ("A.lean", "now_stated"): DeclTruth(present=True, has_sorry=True),
         ("A.lean", "still_clean"): DeclTruth(present=True, has_sorry=False),
+        ("A.lean", "unchecked_planner_stub"): DeclTruth(present=True, has_sorry=True),
     }
 
     updated, events = plan_state.reconcile(bp, truth)
@@ -212,8 +279,44 @@ def test_reconcile_downgrades_and_promotes_without_proving(enabled):
     # Never promoted to proved; unscanned files untouched.
     assert updated.node_by_id("n4").status == "stated"
     assert updated.node_by_id("n5").status == "proved"
+    assert updated.node_by_id("n6").status == "conjectured"
     assert {event["node_id"] for event in events} == {"n1", "n2", "n3"}
     assert all(event["event"] == "plan-graph-reconcile" for event in events)
+
+
+def test_reconcile_refreshes_clean_proved_declaration_snapshot_and_source_revision(enabled):
+    bp = Blueprint(
+        nodes=(
+            GraphNode(
+                id="n1",
+                name="helper",
+                file="A.lean",
+                statement="lemma helper : True := by sorry",
+                status="proved",
+                source_sha256="old-revision",
+            ),
+        )
+    )
+    current = "lemma helper : True := by\n  trivial"
+
+    updated, events = plan_state.reconcile(
+        bp,
+        {
+            ("A.lean", "helper"): DeclTruth(
+                present=True,
+                has_sorry=False,
+                declaration_text=current,
+                source_sha256="new-revision",
+            )
+        },
+    )
+
+    node = updated.node_by_id("n1")
+    assert node is not None
+    assert node.status == "proved"
+    assert node.statement == current
+    assert node.source_sha256 == "new-revision"
+    assert events == []
 
 
 def test_render_plan_md_sections_and_notes_preservation(enabled):
@@ -246,6 +349,377 @@ def test_render_plan_md_sections_and_notes_preservation(enabled):
     path.write_text(edited, encoding="utf-8")
     plan_state.save_plan_md(bp, summary)
     assert "KEEP THIS HUMAN NOTE" in path.read_text(encoding="utf-8")
+
+
+def test_plan_render_surfaces_current_route_and_recent_route_decisions(enabled):
+    summary = {
+        "campaign": {
+            "last_route_decision": {
+                "route": "decompose",
+                "target_symbol": "main_thm",
+                "active_file": "Demo.lean",
+                "decided_at": "2026-07-15T18:00:00+00:00",
+            }
+        }
+    }
+    for route, reason in (
+        ("direct-prove", "start with the assigned theorem"),
+        ("decompose", "split the remaining residue classes"),
+    ):
+        plan_state.append_journal_event(
+            {
+                "event": "orchestrator-route",
+                "trigger": "stall",
+                "route": route,
+                "reason": reason,
+                "source": "deterministic",
+                "name": "main_thm",
+            }
+        )
+
+    plan_state.save_plan_md(_demo_blueprint(), summary)
+
+    rendered = plan_state.plan_state_paths().plan_md.read_text(encoding="utf-8")
+    strategy = rendered.split("## Strategy", 1)[1].split("## Frontier", 1)[0]
+    decisions = rendered.split("## Decision log", 1)[1].split("## Dead ends & proven false", 1)[0]
+    assert "current orchestrator route: `decompose`" in strategy
+    assert "[none yet]" not in strategy
+    assert "route `direct-prove`" in decisions
+    assert "route `decompose`" in decisions
+
+
+def test_resume_omits_advisory_route_rationale_but_keeps_routing_metadata(enabled):
+    """Unverified route prose must not become mathematical resume knowledge."""
+    false_rationale = "decompose because 0 ∣ 2521 * 631 is true"
+    plan_state.save_blueprint(_demo_blueprint())
+    plan_state.save_queue_manager_state(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "main_thm",
+                "active_file": "Demo.lean",
+            }
+        }
+    )
+    update_json_file(
+        plan_state.plan_state_paths().summary_json,
+        lambda summary: summary.update(
+            {
+                "campaign": {
+                    "epoch": 9,
+                    "no_progress_route_streak": 3,
+                    "no_progress_route_limit": 4,
+                    "last_route_decision": {
+                        "route": "decompose",
+                        "target_symbol": "main_thm",
+                        "active_file": "Demo.lean",
+                    },
+                }
+            }
+        ),
+    )
+    plan_state.append_journal_event(
+        {
+            "event": "orchestrator-route",
+            "trigger": "event",
+            "route": "decompose",
+            "reason": false_rationale,
+            "source": "llm",
+            "name": "main_thm",
+            "file": "Demo.lean",
+        }
+    )
+    plan_state.save_plan_md(plan_state.load_blueprint(), plan_state.load_summary())
+
+    block = plan_state.resume_context_block()
+    generated_plan = plan_state.read_generated_plan_prompt_view()
+
+    assert false_rationale not in block
+    assert false_rationale not in generated_plan
+    assert "current orchestrator route: `decompose` for `main_thm`" in block
+    assert "recent route decision: `decompose` for `main_thm`" in block
+    assert "trigger=event" in block
+    assert "source=llm" in block
+    assert "campaign epoch: 9" in block
+    assert "route streak: 3/4" in block
+    assert "route rationales are omitted" in block
+    assert plan_state.recent_orchestrator_routes()[-1]["reason"] == false_rationale
+
+
+def test_plan_render_does_not_call_a_retired_assignment_route_current(enabled):
+    summary = {
+        "queue_manager_state": {
+            "current_queue_assignment": {
+                "target_symbol": "new_target",
+                "active_file": "Demo.lean",
+            }
+        },
+        "campaign": {
+            "last_route_decision": {
+                "route": "direct-prove",
+                "target_symbol": "solved_target",
+                "active_file": "Demo.lean",
+            }
+        },
+    }
+    recent = (
+        {
+            "event": "orchestrator-route",
+            "route": "direct-prove",
+            "name": "solved_target",
+            "file": "Demo.lean",
+            "trigger": "scope-entry",
+        },
+    )
+
+    rendered = plan_state.render_plan_md(
+        _demo_blueprint(),
+        summary,
+        recent_routes=recent,
+    )
+
+    strategy = rendered.split("## Strategy", 1)[1].split("## Frontier", 1)[0]
+    decisions = rendered.split("## Decision log", 1)[1].split("## Dead ends & proven false", 1)[0]
+    assert "current orchestrator route" not in strategy
+    assert "current deterministic assignment: `new_target`" in strategy
+    assert "[none yet]" not in strategy
+    assert "route `direct-prove` for `solved_target`" in decisions
+
+
+@pytest.mark.parametrize(
+    "strategy_scope",
+    [
+        None,
+        {"target_symbol": "old_target", "active_file": "Demo.lean"},
+    ],
+)
+def test_plan_render_suppresses_unscoped_or_retired_assignment_strategy(enabled, strategy_scope):
+    summary = {
+        "queue_manager_state": {
+            "current_queue_assignment": {
+                "target_symbol": "current_target",
+                "active_file": "Demo.lean",
+            }
+        },
+        "campaign": {
+            "last_route_decision": {
+                "route": "plan",
+                "target_symbol": "current_target",
+                "active_file": "Demo.lean",
+            }
+        },
+        "strategy_notes": ["Step 1: decompose the retired target"],
+    }
+    if strategy_scope is not None:
+        summary["strategy_notes_scope"] = strategy_scope
+
+    rendered = plan_state.render_plan_md(_demo_blueprint(), summary)
+    strategy = rendered.split("## Strategy", 1)[1].split("## Frontier", 1)[0]
+
+    assert "current orchestrator route: `plan` for `current_target`" in strategy
+    assert "decompose the retired target" not in strategy
+
+
+def test_plan_render_keeps_strategy_for_exact_current_assignment(enabled):
+    summary = {
+        "queue_manager_state": {
+            "current_queue_assignment": {
+                "target_symbol": "current_target",
+                "active_file": "Demo.lean",
+            }
+        },
+        "strategy_notes": ["Step 1: attack the current target"],
+        "strategy_notes_scope": {
+            "target_symbol": "current_target",
+            "active_file": "Demo.lean",
+        },
+    }
+
+    rendered = plan_state.render_plan_md(_demo_blueprint(), summary)
+
+    assert "Step 1: attack the current target" in rendered
+
+
+def test_plan_render_scopes_strategy_and_frontier_to_current_assignment(enabled):
+    """Resume views never present unrelated campaign inventory as current work."""
+    current = GraphNode(
+        id=plan_state.node_id_for("current_target", "Demo.lean"),
+        name="current_target",
+        file="Demo.lean",
+        status="proving",
+    )
+    dependency = GraphNode(
+        id=plan_state.node_id_for("current_dependency", "Demo.lean"),
+        name="current_dependency",
+        file="Demo.lean",
+        status="stated",
+    )
+    unrelated = GraphNode(
+        id=plan_state.node_id_for("unrelated_frontier", "Demo.lean"),
+        name="unrelated_frontier",
+        file="Demo.lean",
+        status="stated",
+    )
+    blueprint = Blueprint(
+        nodes=(current, dependency, unrelated),
+        edges=(GraphEdge(current.id, dependency.id, "depends_on"),),
+    )
+    summary = {
+        "queue_manager_state": {
+            "current_queue_assignment": {
+                "target_symbol": "current_target",
+                "active_file": "Demo.lean",
+            }
+        },
+        "campaign": {
+            "last_route_decision": {
+                "route": "decompose",
+                "target_symbol": "retired_target",
+                "active_file": "Demo.lean",
+            }
+        },
+        "strategy_notes": ["attack the retired target"],
+        "strategy_notes_scope": {
+            "target_symbol": "retired_target",
+            "active_file": "Demo.lean",
+        },
+    }
+
+    rendered = plan_state.render_plan_md(blueprint, summary)
+
+    strategy = rendered.split("## Strategy", 1)[1].split("## Frontier", 1)[0]
+    frontier = rendered.split("## Frontier", 1)[1].split("## Grounding", 1)[0]
+    assert "current deterministic assignment: `current_target`" in strategy
+    assert "retired_target" not in strategy
+    assert "current assignment: `current_target`" in frontier
+    assert "dependency frontier: `current_dependency`" in frontier
+    assert "unrelated_frontier" not in frontier
+
+
+def test_plan_regeneration_preserves_notes_bytes_and_restores_generated_authority(enabled):
+    summary = {"strategy_notes": ["authoritative generated strategy"]}
+    bp = _demo_blueprint()
+    plan_state.save_plan_md(bp, summary)
+    path = plan_state.plan_state_paths().plan_md
+    current = path.read_text(encoding="utf-8")
+    duplicated = current.replace(
+        "## Strategy\n\n- authoritative generated strategy",
+        "## Strategy\n\n- MODEL EDIT THAT MUST NOT SURVIVE",
+    ).replace(
+        "## Notes",
+        "## Notes\n\n- newly appended agent note\n\n## Notes",
+        1,
+    )
+    duplicated = duplicated.replace(
+        "[free-form notes below survive regeneration]",
+        "KEEP THIS HISTORICAL USER NOTE",
+    )
+    preserved_tail = duplicated[duplicated.index("## Notes") :]
+    path.write_text(duplicated, encoding="utf-8")
+
+    plan_state.save_plan_md(bp, summary)
+
+    final = path.read_text(encoding="utf-8")
+    assert final.endswith(preserved_tail)
+    assert "newly appended agent note" in final
+    assert "KEEP THIS HISTORICAL USER NOTE" in final
+    assert "authoritative generated strategy" in final
+    assert "MODEL EDIT THAT MUST NOT SURVIVE" not in final
+
+
+def test_generated_plan_prompt_read_stops_before_user_notes_without_rewriting(enabled):
+    """Keep historical Notes out of prompts and preserve their exact bytes."""
+    path = plan_state.plan_state_paths().plan_md
+    path.parent.mkdir(parents=True, exist_ok=True)
+    before = (
+        b"# Proving Plan\n\n## Strategy\n\n- generated attack order\n\n"
+        b"## Notes\n\nKEEP THIS HISTORICAL USER NOTE\n" + (b"x" * 20_000)
+    )
+    path.write_bytes(before)
+
+    first = plan_state.read_generated_plan_prompt_view(max_chars=1_000)
+    second = plan_state.read_generated_plan_prompt_view(max_chars=1_000)
+
+    assert first == second
+    assert "generated attack order" in first
+    assert "## Notes" not in first
+    assert "KEEP THIS HISTORICAL USER NOTE" not in first
+    assert len(first) <= 1_000
+    assert path.read_bytes() == before
+
+
+def test_generated_plan_prompt_default_uses_eight_thousand_character_projection(enabled):
+    text = (
+        "# Proving Plan\n\n## Goal\n\nprove current_target\n\n"
+        "## Strategy\n\n- current route\n\n"
+        "## Frontier\n\n- `current_target` (Demo.lean)\n\n"
+        "## Grounding\n\n" + ("x" * 20_000) + "\n\n## Final report\n\n- status: in-progress\n\n"
+        "## Notes\n\nHISTORICAL"
+    )
+
+    view = plan_state.generated_plan_prompt_view(text)
+
+    assert plan_state.PLAN_PROMPT_VIEW_MAX_CHARS == 8_000
+    assert len(view) == 8_000
+    assert "prove current_target" in view
+    assert "current route" in view
+    assert "`current_target` (Demo.lean)" in view
+    assert "## Final report" in view
+    assert "returned_chars=8000" in view
+    assert "HISTORICAL" not in view
+
+
+def test_resume_context_privileges_current_inventory_over_historical_notes(enabled):
+    stale_main = GraphNode(
+        id="n-main",
+        name="main_thm",
+        file="Demo.lean",
+        statement="theorem main_thm : OldShape := by sorry",
+        status="blocked",
+    )
+    plan_state.save_blueprint(Blueprint(goal="prove main_thm", nodes=(stale_main,)))
+    plan_state.save_queue_manager_state(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "current_helper",
+                "active_file": "Demo.lean",
+                "slice": "theorem current_helper : FreshShape := by sorry",
+            }
+        }
+    )
+    from leanflow_cli.workflows.workflow_json_io import update_json_file
+
+    update_json_file(
+        plan_state.plan_state_paths().summary_json,
+        lambda summary: summary.update(
+            {
+                "campaign": {
+                    "last_route_decision": {
+                        "route": "plan",
+                        "target_symbol": "current_helper",
+                        "active_file": "Demo.lean",
+                    }
+                }
+            }
+        ),
+    )
+    plan_state.save_plan_md(plan_state.load_blueprint(), plan_state.load_summary())
+    path = plan_state.plan_state_paths().plan_md
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "[free-form notes below survive regeneration]",
+            "STALE INVENTORY: only two sorries remain; use theorem OldShape",
+        ),
+        encoding="utf-8",
+    )
+
+    block = plan_state.resume_context_block()
+
+    assert "current deterministic assignment: `current_helper` (Demo.lean)" in block
+    assert "current orchestrator route: `plan`" in block
+    assert "Notes are preserved historical context, not inventory or declaration truth" in block
+    assert "current Lean source and queue assignment outrank stored graph statements" in block
+    assert "STALE INVENTORY" not in block
+    assert "FreshShape" not in block  # declaration bodies stay source-owned, not prompt-owned
 
 
 def test_write_final_report_is_persisted_and_journaled(enabled):
@@ -282,6 +756,63 @@ def test_artifact_blocks_are_stable_and_bounded(enabled):
     assert "Dependency graph digest:" in combined
 
 
+def test_frontier_digest_exposes_only_the_current_assignment_route(enabled):
+    plan_state.save_blueprint(_demo_blueprint())
+    plan_state.save_queue_manager_state(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "new_target",
+                "active_file": "Demo.lean",
+            }
+        }
+    )
+    summary = plan_state.load_summary()
+    summary["campaign"] = {
+        "last_route_decision": {
+            "route": "direct-prove",
+            "target_symbol": "solved_target",
+            "active_file": "Demo.lean",
+        }
+    }
+    plan_state.save_summary(summary)
+    plan_state.append_journal_event(
+        {
+            "event": "orchestrator-route",
+            "route": "direct-prove",
+            "name": "solved_target",
+            "file": "Demo.lean",
+        }
+    )
+
+    stale_digest = plan_state.frontier_digest_block()
+
+    assert "deterministic assignment: `new_target`" in stale_digest
+    assert "current route" not in stale_digest
+
+    summary = plan_state.load_summary()
+    summary["campaign"] = {
+        "last_route_decision": {
+            "route": "plan",
+            "target_symbol": "new_target",
+            "active_file": "Demo.lean",
+        }
+    }
+    plan_state.save_summary(summary)
+    plan_state.append_journal_event(
+        {
+            "event": "orchestrator-route",
+            "route": "plan",
+            "name": "new_target",
+            "file": "Demo.lean",
+        }
+    )
+
+    fresh_digest = plan_state.frontier_digest_block()
+
+    assert "current route: `plan` for `new_target`" in fresh_digest
+    assert "solved_target" not in fresh_digest
+
+
 def test_node_id_is_stable_across_path_spellings(tmp_path):
     active = tmp_path / "Demo.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
@@ -300,15 +831,121 @@ def test_save_summary_never_regresses_foreign_keys(enabled):
     update_json_file(
         plan_state.plan_state_paths().summary_json,
         lambda summary: summary.update(
-            {"manager_nudges": [{"mode": "dark"}], "dispatch_ledger": [{"state": "running"}]}
+            {
+                "manager_nudges": [{"mode": "dark"}],
+                "dispatch_ledger": [{"state": "running"}],
+                "research_finding_migration": {"version": 2, "records": {"ds-1": {}}},
+                "research_delivery_backpressure": {
+                    "active": True,
+                    "scope": "active_delivery_target",
+                },
+                "research_portfolio_failure_backoff": {
+                    "version": 2,
+                    "scopes": {"scope-1": {"consecutive_failures": 2}},
+                },
+                "source_negation_candidate_scans": [
+                    {
+                        "schema_version": 3,
+                        "check_contract_version": "exact-source-harness-v3",
+                        "scope_key": "Demo.lean::demo",
+                        "source_revision_sha256": "a" * 64,
+                        "exact_order_sha256": "b" * 64,
+                        "exact_cursor": 1,
+                        "generic_order_sha256": "c" * 64,
+                        "generic_cursor": 7,
+                    }
+                ],
+                "pending_research_helper_candidate": {"candidate_id": "rhcp-current"},
+                "resolved_research_helper_candidates": [{"candidate_id": "rhcp-resolved"}],
+            }
         ),
     )
 
     stale["goal"] = "merged later"
     stale["manager_nudges"] = []  # stale foreign copy must be ignored
+    stale["research_finding_migration"] = {"version": 1}
+    stale["research_delivery_backpressure"] = {"active": False}
+    stale["research_portfolio_failure_backoff"] = {"version": 1, "scopes": {}}
+    stale["source_negation_candidate_scans"] = []
+    stale["pending_research_helper_candidate"] = {}
+    stale["resolved_research_helper_candidates"] = []
     plan_state.save_summary(stale)
 
     current = plan_state.load_summary()
     assert current["goal"] == "merged later"
     assert current["manager_nudges"] == [{"mode": "dark"}]
     assert current["dispatch_ledger"] == [{"state": "running"}]
+    assert current["research_finding_migration"] == {
+        "version": 2,
+        "records": {"ds-1": {}},
+    }
+    assert current["research_delivery_backpressure"] == {
+        "active": True,
+        "scope": "active_delivery_target",
+    }
+    assert current["research_portfolio_failure_backoff"] == {
+        "version": 2,
+        "scopes": {"scope-1": {"consecutive_failures": 2}},
+    }
+    assert current["source_negation_candidate_scans"] == [
+        {
+            "schema_version": 3,
+            "check_contract_version": "exact-source-harness-v3",
+            "scope_key": "Demo.lean::demo",
+            "source_revision_sha256": "a" * 64,
+            "exact_order_sha256": "b" * 64,
+            "exact_cursor": 1,
+            "generic_order_sha256": "c" * 64,
+            "generic_cursor": 7,
+        }
+    ]
+    assert current["pending_research_helper_candidate"] == {"candidate_id": "rhcp-current"}
+    assert current["resolved_research_helper_candidates"] == [{"candidate_id": "rhcp-resolved"}]
+
+
+def test_queue_manager_state_has_a_dedicated_non_regressing_writer(enabled):
+    stale = plan_state.load_summary()
+    state = {
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": "Demo.lean",
+                "attempt": 4,
+                "cycle": 2,
+                "proof_shape": "exact missing",
+                "reason": "unknown identifier",
+            }
+        ]
+    }
+
+    plan_state.save_queue_manager_state(state)
+    stale["queue_manager_state"] = {}
+    stale["goal"] = "updated goal"
+    plan_state.save_summary(stale)
+
+    current = plan_state.load_summary()
+    assert current["goal"] == "updated goal"
+    assert current["queue_manager_state"] == state
+    assert plan_state.load_queue_manager_state() == state
+
+
+def test_queue_manager_state_rebuilds_old_campaign_attempts_from_journal(enabled):
+    for index in range(12):
+        plan_state.append_journal_event(
+            {
+                "event": "proof-attempt-rejected",
+                "attempt": index + 1,
+                "cycle": index,
+                "name": "demo",
+                "file": "Demo.lean",
+                "proof_shape": f"shape {index + 1}",
+                "reason": f"failure {index + 1}",
+            }
+        )
+
+    restored = plan_state.load_queue_manager_state()["failed_attempts"]
+
+    assert len(restored) == 10
+    assert restored[0]["attempt"] == 3
+    assert restored[-1]["attempt"] == 12
+    assert restored[-1]["proof_shape"] == "shape 12"

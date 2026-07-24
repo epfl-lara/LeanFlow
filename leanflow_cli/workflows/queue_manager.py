@@ -38,6 +38,8 @@ class only owns the *bookkeeping* and the invariant checks.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar
@@ -85,6 +87,64 @@ class QueueInvariantError(AssertionError):
     Callers can run with ``LEANFLOW_QUEUE_INVARIANT_CHECKS=1`` to turn these
     on. Off by default so production never crashes on a paranoid check.
     """
+
+
+def _normalize_attempt_gate_verdict(verdict: str) -> str:
+    """Return a bounded canonical gate verdict without losing tail differences."""
+    normalized = " ".join((verdict or "").split()).casefold()
+    if len(normalized) <= 500:
+        return normalized
+    digest = hashlib.sha256(normalized.encode("utf-8", "replace")).hexdigest()
+    return f"{normalized[:420]}... [sha256:{digest}]"
+
+
+def _has_failed_attempt_evidence(reason: str) -> bool:
+    """Return whether a reason represents failure rather than a successful tool result.
+
+    Older checkpoints can contain the JSON payload of a successful non-verification
+    tool call because the runner once treated every incremental-check action as
+    theorem feedback.  Plain-text reasons remain valid failure evidence; only an
+    unambiguously successful structured result is rejected.
+    """
+    normalized = (reason or "").strip()
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    if lowered.startswith("target:") and " passed | tool:" in lowered:
+        return False
+    try:
+        payload = json.loads(normalized)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        if normalized.startswith("{"):
+            explicit_failure_markers = (
+                '"success": false',
+                '"ok": false',
+                '"status": "blocked"',
+                '"status": "error"',
+                '"status": "fail"',
+                '"status": "failed"',
+                '"status": "timeout"',
+                '"has_errors": true',
+                '"has_sorry": true',
+            )
+            return any(marker in lowered for marker in explicit_failure_markers)
+        return True
+    if not isinstance(payload, Mapping):
+        return True
+
+    status = str(payload.get("status", "") or "").strip().lower()
+    has_error = bool(str(payload.get("error", "") or "").strip())
+    has_degraded_reason = bool(payload.get("degraded_reasons"))
+    explicitly_failed = (
+        payload.get("success") is False
+        or payload.get("ok") is False
+        or status in {"blocked", "error", "fail", "failed", "timeout"}
+        or has_error
+        or has_degraded_reason
+    )
+    if explicitly_failed:
+        return True
+    return False
 
 
 class TheoremQueueManager:
@@ -300,7 +360,16 @@ class TheoremQueueManager:
 
     # ----- failed attempts ---------------------------------------------
 
-    def record_attempt(self, *, cycle: int, proof_shape: str, reason: str) -> FailedAttempt | None:
+    def record_attempt(
+        self,
+        *,
+        cycle: int,
+        proof_shape: str,
+        reason: str,
+        declaration_hash: str = "",
+        gate_verdict: str = "",
+        turn_key: str = "",
+    ) -> FailedAttempt | None:
         """Append a failed attempt scoped to the current assignment.
 
         Replaces ``_remember_failed_attempt`` and fixes the budget-exhaustion
@@ -318,6 +387,9 @@ class TheoremQueueManager:
             cycle=cycle,
             proof_shape=proof_shape,
             reason=reason,
+            declaration_hash=declaration_hash,
+            gate_verdict=gate_verdict,
+            turn_key=turn_key,
         )
 
     def record_attempt_for(
@@ -327,19 +399,50 @@ class TheoremQueueManager:
         cycle: int,
         proof_shape: str,
         reason: str,
+        declaration_hash: str = "",
+        gate_verdict: str = "",
+        turn_key: str = "",
     ) -> FailedAttempt | None:
-        """Append a failed attempt for an explicit theorem key."""
+        """Append one semantically distinct failure for an explicit theorem.
+
+        A single provider turn can expose the same unchanged rejection through
+        both a patch/diff result and a subsequent full-declaration check. The
+        presentation is useful history, but it is not a second proof attempt.
+        Suppress that duplicate when the theorem, exact declaration, normalized
+        gate verdict, and provider-turn identity all match. Legacy callers and
+        checkpoints omit the new identity fields and retain append-only behavior.
+        """
         if not key.is_valid():
             return None
         self._remember_display_file(key, self._display_file_for(key))
+        normalized_hash = (declaration_hash or "").strip().lower()
+        normalized_verdict = _normalize_attempt_gate_verdict(gate_verdict)
+        normalized_turn_key = (turn_key or "").strip()
+        if normalized_hash and normalized_verdict and normalized_turn_key:
+            duplicate = next(
+                (
+                    previous
+                    for previous in reversed(self._attempts)
+                    if previous.key == key
+                    and previous.turn_key == normalized_turn_key
+                    and previous.declaration_hash == normalized_hash
+                    and previous.gate_verdict == normalized_verdict
+                ),
+                None,
+            )
+            if duplicate is not None:
+                return None
         attempt = FailedAttempt(
             key=key,
             attempt=self.attempt_count_for(key) + 1,
             cycle=cycle,
             proof_shape=(proof_shape or "").strip(),
             reason=(reason or "").strip(),
+            declaration_hash=normalized_hash,
+            gate_verdict=normalized_verdict,
+            turn_key=normalized_turn_key,
         )
-        if not attempt.reason:
+        if not _has_failed_attempt_evidence(attempt.reason):
             return None
         self._attempts.append(attempt)
         self._prune_attempts()
@@ -594,7 +697,10 @@ class TheoremQueueManager:
                 return Decision(
                     action="restore_baseline",
                     classification=cls,
-                    reason="hard retry limit reached; restore baseline sorry and continue",
+                    reason=(
+                        "local feedback window complete; restore baseline sorry and "
+                        "continue on a new route"
+                    ),
                     feedback_kind=feedback_kind,
                     retry_count=count,
                     retry_limit=limit,
@@ -734,6 +840,73 @@ class TheoremQueueManager:
     def outcome_for(self, key: TheoremKey) -> TheoremOutcome | None:
         return self._outcomes.get(key)
 
+    def discard_outcome_for(self, key: TheoremKey) -> TheoremOutcome | None:
+        """Remove one obsolete theorem verdict without changing other knowledge."""
+        return self._outcomes.pop(key, None) if key.is_valid() else None
+
+    def retire_theorem_state(self, key: TheoremKey) -> bool:
+        """Remove all scheduler state for a declaration deleted by the campaign.
+
+        Authoritative false-decomposition cleanup preserves its mathematical
+        negation in plan state, so queue-local proof attempts and verdicts for
+        the now-absent helper are stale rather than useful campaign knowledge.
+        """
+        if not key.is_valid():
+            return False
+        changed = False
+        filtered_queue = [item for item in self._queue if item.label != key.target_symbol]
+        if len(filtered_queue) != len(self._queue):
+            self._queue = filtered_queue
+            changed = True
+        if self._current is not None and self._current.key == key:
+            self._current = None
+            self._last_verification = None
+            changed = True
+        filtered_attempts = [attempt for attempt in self._attempts if attempt.key != key]
+        if len(filtered_attempts) != len(self._attempts):
+            self._attempts = filtered_attempts
+            changed = True
+        for storage in (
+            self._display_files,
+            self._warning_retries,
+            self._hard_retries,
+            self._api_steps,
+            self._outcomes,
+            self._reasoning_effort_by_key,
+        ):
+            if storage.pop(key, None) is not None:
+                changed = True
+        for retry_key in tuple(self._retry_signatures):
+            if retry_key[0] == key:
+                self._retry_signatures.pop(retry_key, None)
+                changed = True
+        return changed
+
+    def reopen_blocked_outcomes(self, *, trigger: str) -> tuple[TheoremOutcome, ...]:
+        """Return temporary route deferrals to unresolved queue work.
+
+        ``deferred`` is the current non-terminal scheduler vocabulary. Legacy
+        checkpoints may still carry ``blocked`` from before route exhaustion
+        was separated from mathematical verdicts, so both are reopened. A
+        campaign epoch or verified-knowledge refresh clears the temporary
+        cooldown; solved, disproved, and operational campaign states remain
+        untouched. Repeated calls are idempotent until a later proof turn
+        records another deferred outcome.
+        """
+        refresh = (trigger or "strategy refresh").strip()
+        reopened: list[TheoremOutcome] = []
+        for key, outcome in tuple(self._outcomes.items()):
+            if str(outcome.status or "").strip().lower() not in {"blocked", "deferred"}:
+                continue
+            prior_note = str(outcome.note or "").strip()
+            note = f"{refresh}: reopened for a distinct proof route"
+            if prior_note:
+                note = f"{note}; prior blocker: {prior_note}"
+            updated = replace(outcome, status="unresolved", note=note)
+            self._outcomes[key] = updated
+            reopened.append(updated)
+        return tuple(reopened)
+
     def record_outcome_for(
         self,
         key: TheoremKey,
@@ -854,6 +1027,7 @@ class TheoremQueueManager:
                     prepare=PrepareState.from_mapping(assignment.get("incremental_prepare")),
                 )
 
+        dropped_attempt_numbers: dict[TheoremKey, list[int]] = {}
         for raw in autonomy_state.get("failed_attempts", []) or []:
             if not isinstance(raw, Mapping):
                 continue
@@ -863,14 +1037,31 @@ class TheoremQueueManager:
             )
             if not key.is_valid():
                 continue
+            raw_attempt = int(raw.get("attempt", 0) or 0)
+            reason = str(raw.get("reason", "") or "")
+            if not _has_failed_attempt_evidence(reason):
+                if raw_attempt > 0:
+                    dropped_attempt_numbers.setdefault(key, []).append(raw_attempt)
+                continue
+            dropped_before = sum(
+                1 for dropped in dropped_attempt_numbers.get(key, ()) if dropped <= raw_attempt
+            )
+            attempt_number = (
+                max(1, raw_attempt - dropped_before) if raw_attempt > 0 else raw_attempt
+            )
             mgr._remember_display_file(key, str(raw.get("active_file", "") or ""))
             mgr._attempts.append(
                 FailedAttempt(
                     key=key,
-                    attempt=int(raw.get("attempt", 0) or 0),
+                    attempt=attempt_number,
                     cycle=int(raw.get("cycle", 0) or 0),
                     proof_shape=str(raw.get("proof_shape", "") or ""),
-                    reason=str(raw.get("reason", "") or ""),
+                    reason=reason,
+                    declaration_hash=str(raw.get("declaration_hash", "") or "").strip().lower(),
+                    gate_verdict=_normalize_attempt_gate_verdict(
+                        str(raw.get("gate_verdict", "") or "")
+                    ),
+                    turn_key=str(raw.get("turn_key", "") or "").strip(),
                 )
             )
 
@@ -965,7 +1156,7 @@ class TheoremQueueManager:
         return mgr
 
     def _attempt_to_mapping(self, attempt: FailedAttempt) -> dict[str, Any]:
-        return {
+        payload = {
             "target_symbol": attempt.key.target_symbol,
             "active_file": self._display_file_for(attempt.key),
             "attempt": attempt.attempt,
@@ -973,6 +1164,13 @@ class TheoremQueueManager:
             "proof_shape": attempt.proof_shape,
             "reason": attempt.reason,
         }
+        if attempt.declaration_hash:
+            payload["declaration_hash"] = attempt.declaration_hash
+        if attempt.gate_verdict:
+            payload["gate_verdict"] = attempt.gate_verdict
+        if attempt.turn_key:
+            payload["turn_key"] = attempt.turn_key
+        return payload
 
     def _outcome_to_mapping(self, outcome: TheoremOutcome) -> dict[str, Any]:
         payload = {
@@ -1052,6 +1250,30 @@ class TheoremQueueManager:
             }
 
         return out
+
+    def to_checkpoint_state(self) -> dict[str, Any]:
+        """Return durable queue knowledge safe to hydrate in a new process.
+
+        Process-local verifier state must not cross a runner restart: a new
+        LeanInteract server needs its own warmup, the last verification may
+        describe an older source revision, and disabled tools are scoped to
+        the process that observed their failure.  The assignment identity,
+        failed proof shapes, retry signatures, outcomes, and accounting are
+        durable campaign knowledge and are preserved.
+        """
+        state = self.to_autonomy_state()
+        state.pop("last_verification", None)
+        state.pop("disabled_tools_this_run", None)
+        assignment = state.get("current_queue_assignment")
+        if isinstance(assignment, dict):
+            assignment["incremental_prepare"] = {
+                "success": False,
+                "ok": False,
+                "elapsed_s": 0.0,
+                "cache": {},
+                "error": "runner restart requires fresh warmup",
+            }
+        return state
 
 
 @dataclass(frozen=True)

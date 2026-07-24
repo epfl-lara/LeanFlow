@@ -36,7 +36,9 @@ Do not use this worker for theorem discovery or broad proof redesign. Search fir
 - stay on the assigned file and declaration
 - prefer the smallest diff that changes the blocker
 - preserve theorem meaning and declaration headers
-- stop after a real repair or a crisp blocker report; do not drift into broad cleanup
+- after a real repair, hand control back to the kernel gate; after a blocker report,
+  preserve its evidence and continue on the manager-selected route without drifting
+  into broad cleanup
 
 ## Handoff
 

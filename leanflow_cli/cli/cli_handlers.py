@@ -58,7 +58,31 @@ __all__ = [
     "_handle_sandbox",
     "_print_mcp_status",
     "_print_mcp_bootstrap",
+    "workflow_run_help_text",
 ]
+
+
+def workflow_run_help_text(workflow: str) -> str:
+    """Return safe leaf-command help without launching a native workflow."""
+    name = str(workflow or "workflow").strip().lstrip("/") or "workflow"
+    lines = [
+        f"usage: leanflow workflow {name} FILE [options]",
+        "",
+        f"Run the {name} workflow in the native Lean runtime.",
+        "",
+        "options:",
+        "  --provider PROVIDER       Override the configured runtime provider",
+        "  --no-parallel             Disable parallel prover/research execution",
+    ]
+    if name in {"prove", "autoprove"}:
+        lines.extend(
+            [
+                "  --research                Enable the complete research profile",
+                "  --research-workers N      Set background workers (implies --research)",
+            ]
+        )
+    lines.append("  -h, --help                Show this help and exit")
+    return "\n".join(lines)
 
 
 def _parse_config_value(raw: str) -> Any:

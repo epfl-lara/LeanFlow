@@ -65,6 +65,17 @@ def test_prove_contract_recommends_helper_decomposition_for_hard_theorems():
     assert "decomposition blocker" in prove.content
 
 
+def test_prove_contract_treats_plan_notes_as_historical_not_inventory():
+    prove = get_lean_spec("prove")
+
+    assert prove is not None
+    assert "never paginate it" in prove.content
+    assert "user-owned historical context" in prove.content
+    normalized = " ".join(prove.content.split())
+    assert "current Lean source/kernel diagnostics outrank" in normalized
+    assert "Do not read raw `summary.json` or `blueprint.json`" in prove.content
+
+
 def test_specs_for_skill_returns_native_workflow_links():
     spec_ids = {record.spec_id for record in specs_for_skill("lean-proof-loop")}
 
@@ -194,6 +205,7 @@ def test_phase_review_vocabulary_matches_orchestrator_routes():
     # `continue` is the reviewer's word for the direct-prove route (§6.9).
     assert actions - {"continue"} <= set(ROUTES)
     assert "continue" in actions
+    assert "Difficulty and exhausted routes are not parking reasons" in record.content
     for retired in ("deep", "repair", "redraft", "golf", "replan", "falsify"):
         assert retired not in actions
 

@@ -16,7 +16,7 @@ import json
 
 import pytest
 
-from tools.implementations import web_fetch
+from tools.implementations import web_fetch, web_tools
 from tools.registry import registry
 
 
@@ -163,6 +163,22 @@ def test_web_fetch_caps_when_summarizer_unavailable(monkeypatch):
     assert result["truncated"] is True
     assert "[... truncated for context management ...]" in result["content"]
     assert len(result["content"]) <= 1000 + 80
+
+
+def test_web_summarizer_uses_one_bounded_provider_attempt(monkeypatch):
+    calls: list[dict] = []
+
+    async def fail_once(**kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("provider read timeout")
+
+    monkeypatch.setattr(web_tools, "async_call_llm", fail_once)
+
+    with pytest.raises(TimeoutError, match="provider read timeout"):
+        _run(web_tools._call_summarizer_llm("long content", "", None))
+
+    assert len(calls) == 1
+    assert calls[0]["timeout"] == web_tools.SUMMARIZER_TIMEOUT_SECONDS
 
 
 def test_web_fetch_rejects_empty_url():

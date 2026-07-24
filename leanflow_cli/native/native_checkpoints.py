@@ -8,16 +8,16 @@ JSON file helpers and the in-memory checkpoint replay/rollback builders.
 The cluster is a fixpoint closure under "calls": every moved function's only non-stdlib
 callees are other moved functions or already-extracted modules
 (``native_config._project_root`` / ``_managed_home`` / ``_workflow_kind`` / ``_read_native_env``
-and ``native_utils._message_text``), or ``run_agent.AIAgent`` (used only for the
-``agent._checkpoint_mgr`` attribute, never native_runner state). None of these functions read
-or mutate native_runner module-level state, declare ``global``, or touch the Lean-services /
-queue backends. ``WORKFLOW_CHECKPOINT_PREFIX`` is the only constant in the closure (used by
-``_workflow_replay_message``) and moves with them.
+and ``native_utils._message_text``), or ``run_agent.AIAgent`` (used only as the
+type of the object carrying ``agent._checkpoint_mgr``, never native_runner state). None of these
+functions read or mutate native_runner module-level state, declare ``global``, or touch the
+Lean-services / queue backends. ``WORKFLOW_CHECKPOINT_PREFIX`` is the only constant in the closure
+(used by ``_workflow_replay_message``) and moves with them.
 
-``run_agent`` does not import ``native_runner``, so importing ``AIAgent`` here introduces no
-import cycle, and this module deliberately does NOT import ``native_runner``. The names are
-re-exported from ``native_runner`` for backwards compatibility so every caller and test keeps
-resolving them as ``native_runner.<name>``.
+``AIAgent`` is imported only while type checking so checkpoint reads remain provider- and
+MCP-free. This module deliberately does NOT import ``native_runner``. The names are re-exported
+from ``native_runner`` for backwards compatibility so every caller and test keeps resolving them
+as ``native_runner.<name>``.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from core.utils import atomic_json_write
 from leanflow_cli.native.native_config import (
@@ -36,7 +36,9 @@ from leanflow_cli.native.native_config import (
 )
 from leanflow_cli.native.native_utils import _message_text
 from leanflow_cli.workflows.workflow_json_io import read_json_file
-from run_agent import AIAgent
+
+if TYPE_CHECKING:
+    from run_agent import AIAgent
 
 logger = logging.getLogger(__name__)
 
@@ -191,13 +193,18 @@ def _checkpoint_replay_history(entry: Mapping[str, Any]) -> list[dict[str, Any]]
 def _latest_filesystem_checkpoint_hash(
     agent: AIAgent, *, reason: str = "", force: bool = False
 ) -> str:
+    """Return the latest source snapshot hash, forcing current state when requested."""
     checkpoint_mgr = getattr(agent, "_checkpoint_mgr", None)
     if checkpoint_mgr is None or not getattr(checkpoint_mgr, "enabled", False):
         return ""
     working_dir = _project_root()
     if force:
         try:
-            checkpoint_mgr.ensure_checkpoint(working_dir, reason or "workflow checkpoint")
+            checkpoint_mgr.ensure_checkpoint(
+                working_dir,
+                reason or "workflow checkpoint",
+                force=True,
+            )
         except Exception:
             return ""
     try:

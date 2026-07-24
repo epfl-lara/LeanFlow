@@ -614,10 +614,14 @@ def bootstrap_lean_mcp(
             extra_install_specs=spec.extra_install_specs,
         )
         if spec.name == "lean-lsp":
-            from leanflow_cli.cli.loogle_local import patch_lean_lsp_loogle_build_lock
+            from leanflow_cli.cli.loogle_local import (
+                patch_lean_lsp_loogle_build_lock,
+                patch_lean_lsp_loogle_lifecycle,
+            )
 
             _patch_lean_lsp_loogle_project_paths(venv_dir)
             patch_lean_lsp_loogle_build_lock(venv_dir)
+            patch_lean_lsp_loogle_lifecycle(venv_dir)
         installed_servers.append(
             {
                 "name": spec.name,

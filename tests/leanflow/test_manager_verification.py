@@ -74,6 +74,15 @@ def test_incremental_timeout_readers_honor_env(monkeypatch):
     assert mv._manager_incremental_check_timeout_s() == 456
 
 
+def test_incremental_prepare_blocking_declaration_parses_named_prerequisite():
+    error = (
+        "failed to build env before target at no_witness_ten_sixty_one: "
+        "line 335:47 error: maximum number of heartbeats has been reached"
+    )
+    assert mv._incremental_prepare_blocking_declaration(error) == "no_witness_ten_sixty_one"
+    assert mv._incremental_prepare_blocking_declaration("provider unavailable") == ""
+
+
 def test_verification_review_system_prompt_branches_on_task():
     blueprint = mv._verification_review_system_prompt(BLUEPRINT_VERIFICATION_TASK)
     autoform = mv._verification_review_system_prompt(AUTOFORMALIZER_VERIFICATION_TASK)

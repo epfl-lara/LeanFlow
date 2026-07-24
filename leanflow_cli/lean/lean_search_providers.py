@@ -33,6 +33,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from core.runtime_modes import dispatch_worker_enabled, low_memory_mode_enabled
+
 SEARCH_PROVIDER_LABELS = {
     "local_search": "mcp-local-search",
     "leanexplore_local": "leanexplore-local",
@@ -60,6 +62,15 @@ def _leanexplore_api_key() -> str:
 
 
 def _leanexplore_backend_preference() -> str:
+    if low_memory_mode_enabled():
+        return "off"
+    if dispatch_worker_enabled():
+        # Each worker is already a process-isolated research lane. Loading a
+        # second local FAISS/BM25 service in every lane defeats that isolation's
+        # memory bound; the foreground keeps its full configured backend.
+        value = str(os.getenv("LEANFLOW_DISPATCH_LEANEXPLORE_BACKEND", "off") or "off")
+        value = value.strip().lower()
+        return value if value in {"auto", "local", "api", "off", "disabled"} else "off"
     value = (
         str(
             os.getenv("LEANFLOW_LEANEXPLORE_BACKEND", "")
@@ -70,6 +81,26 @@ def _leanexplore_backend_preference() -> str:
         .lower()
     )
     return value if value in {"auto", "local", "api", "off", "disabled"} else "auto"
+
+
+def _leanexplore_local_rerank_top() -> int:
+    """Return the opt-in local cross-encoder rerank candidate count.
+
+    LeanExplore's Qwen reranker materializes full-vocabulary logits for every
+    token in a candidate batch.  Its historical default of 50 can therefore
+    create multi-gigabyte transient allocations even though LeanFlow only
+    consumes the final-token score.  Hybrid BM25 plus FAISS retrieval remains
+    enabled by default; deployments with sufficient memory can explicitly
+    restore cross-encoder reranking through the environment.
+    """
+    raw = str(os.getenv("LEANFLOW_LEANEXPLORE_RERANK_TOP", "") or "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return max(0, min(value, 50))
 
 
 def _leanexplore_cache_root() -> Path:

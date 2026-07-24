@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from leanflow_cli import workflow as workflow_mod
+from leanflow_cli.cli import loogle_local
 from leanflow_cli.config import save_config
 from leanflow_cli.formalization.formalization_documents import FormalizationDocumentError
 from leanflow_cli.workflow import (
@@ -49,6 +50,35 @@ def test_parse_workflow_command_extracts_provider_override():
     assert spec.workflow_args == "Main.lean"
     assert spec.backend_command == "/prove Main.lean"
     assert spec.provider_override == "codex"
+
+
+def test_parse_workflow_command_extracts_research_profile():
+    spec = parse_workflow_command(
+        "/prove Main.lean --provider codex --research --research-workers 3"
+    )
+
+    assert spec.workflow_args == "Main.lean"
+    assert spec.research_mode is True
+    assert spec.research_workers == 3
+
+    defaulted = parse_workflow_command("/autoprove Main.lean --research")
+    assert defaulted.research_mode is True
+    assert defaulted.research_workers == 2
+
+    sequential = parse_workflow_command("/prove Main.lean --research --no-parallel")
+    assert sequential.no_parallel is True
+    assert sequential.research_workers == 0
+
+
+def test_parse_research_workers_implies_research_and_validates():
+    implied = parse_workflow_command("/prove Main.lean --research-workers 1")
+    assert implied.research_mode is True
+    assert implied.research_workers == 1
+
+    with pytest.raises(ValueError, match="non-negative"):
+        parse_workflow_command("/prove Main.lean --research-workers -1")
+    with pytest.raises(ValueError, match="only for prove"):
+        parse_workflow_command("/formalize notes.tex --research")
 
 
 def test_parse_workflow_command_extracts_allowed_axioms():
@@ -103,6 +133,7 @@ def test_parse_workflow_command_defaults_to_single_agent():
     spec = parse_workflow_command('autoformalize "formalize theorem"')
 
     assert spec.parallel_agents == 1
+    assert spec.no_parallel is False
     assert spec.explicit_goal == ""
 
 
@@ -165,6 +196,283 @@ def test_resolve_workflow_request_uses_inline_provider_override(monkeypatch, tmp
     assert plan.child_env["LEANFLOW_NATIVE_REASONING_EFFORT"] == "xhigh"
 
 
+def test_resolve_research_profile_activates_complete_child_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_leanflow_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "sk-test",
+            "model": "gpt-5.5",
+        },
+    )
+
+    plan = resolve_workflow_request(
+        "/prove Main.lean --provider codex --research --research-workers 2",
+        active_cwd=tmp_path,
+    )
+
+    assert plan.workflow.research_mode is True
+    assert plan.child_env["LEANFLOW_RESEARCH_MODE"] == "1"
+    assert plan.child_env["LEANFLOW_RESEARCH_WORKERS"] == "2"
+    assert plan.child_env["LEANFLOW_DISPATCH_MAX_CONCURRENT"] == "2"
+    for key in (
+        "LEANFLOW_PLAN_STATE",
+        "LEANFLOW_PREMISE_RETRIEVAL",
+        "LEANFLOW_BUDGET_BREAKPOINT",
+        "LEANFLOW_ORCHESTRATOR_ENABLED",
+        "LEANFLOW_ORCHESTRATOR_LLM_ENABLED",
+        "LEANFLOW_FIDELITY_AUDIT",
+        "LEANFLOW_GRAPH_FRONTIER_SELECTION",
+        "LEANFLOW_PLANNER_ENABLED",
+        "LEANFLOW_DISPATCH_ENABLED",
+        "LEANFLOW_NEGATION_PROBE",
+        "LEANFLOW_LEARNINGS",
+        "LEANFLOW_CURRICULUM_ORDERING",
+    ):
+        assert plan.child_env[key] == "1"
+    assert plan.child_env["LEANFLOW_MANAGER_LLM_MODE"] == "live"
+    assert plan.child_env["LEANFLOW_RESEARCH_LOCAL_LOOGLE"] == "0"
+    assert plan.child_env["LEANFLOW_PLAN_MD"].endswith("plan.md")
+
+
+@pytest.mark.parametrize(
+    ("command", "local_loogle_override", "expected_builds"),
+    [
+        ("/prove Main.lean --research", None, 0),
+        ("/prove Main.lean --research", "1", 1),
+        ("/prove Main.lean", None, 1),
+    ],
+)
+def test_research_profile_suppresses_only_its_detached_local_loogle_build(
+    monkeypatch,
+    tmp_path,
+    command,
+    local_loogle_override,
+    expected_builds,
+):
+    if local_loogle_override is None:
+        monkeypatch.delenv("LEANFLOW_RESEARCH_LOCAL_LOOGLE", raising=False)
+    else:
+        monkeypatch.setenv("LEANFLOW_RESEARCH_LOCAL_LOOGLE", local_loogle_override)
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_leanflow_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "sk-test",
+            "model": "gpt-5.5",
+        },
+    )
+    builds: list[Path] = []
+    monkeypatch.setattr(
+        loogle_local,
+        "ensure_local_loogle_for_project_async",
+        lambda project_root: builds.append(Path(project_root)),
+    )
+
+    plan = resolve_workflow_request(command, active_cwd=tmp_path)
+
+    assert len(builds) == expected_builds
+    assert plan.child_env.get("LEANFLOW_RESEARCH_LOCAL_LOOGLE", "0") == (
+        "1" if local_loogle_override == "1" else "0"
+    )
+
+
+def test_env_research_respects_parsed_no_parallel_worker_contract(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.delenv("LEANFLOW_RESEARCH_WORKERS", raising=False)
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_leanflow_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "sk-test",
+            "model": "gpt-5.5",
+        },
+    )
+
+    plan = resolve_workflow_request(
+        "/prove Main.lean --no-parallel",
+        active_cwd=tmp_path,
+    )
+
+    assert plan.workflow.no_parallel is True
+    assert plan.workflow.research_mode is True
+    assert plan.workflow.research_workers == 0
+    assert plan.child_env["LEANFLOW_RESEARCH_WORKERS"] == "0"
+    assert plan.child_env["LEANFLOW_DISPATCH_MAX_CONCURRENT"] == "1"
+    assert plan.child_env["LEANFLOW_BACKGROUND_PROVIDER_CAPACITY"] == "0"
+
+
+def test_inherited_research_identity_does_not_leak_into_non_prove_workflow(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_leanflow_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "sk-test",
+            "model": "gpt-5.5",
+        },
+    )
+    builds: list[Path] = []
+    monkeypatch.setattr(
+        loogle_local,
+        "ensure_local_loogle_for_project_async",
+        lambda project_root: builds.append(Path(project_root)),
+    )
+
+    plan = resolve_workflow_request("/review Main.lean", active_cwd=tmp_path)
+
+    assert plan.workflow.workflow_kind == "review"
+    assert plan.workflow.research_mode is False
+    assert plan.child_env["LEANFLOW_RESEARCH_MODE"] == "0"
+    assert plan.child_env["LEANFLOW_PLAN_STATE"] == "1"
+    assert builds == [Path(tmp_path)]
+
+
+def test_explicit_research_workers_override_stale_inherited_capacity(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_RESEARCH_WORKERS", "9")
+    monkeypatch.setenv("LEANFLOW_DISPATCH_MAX_CONCURRENT", "9")
+    monkeypatch.setenv("LEANFLOW_BACKGROUND_PROVIDER_CAPACITY", "9")
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_leanflow_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "sk-test",
+            "model": "gpt-5.5",
+        },
+    )
+
+    plan = resolve_workflow_request(
+        "/prove Main.lean --provider codex --research --research-workers 2",
+        active_cwd=tmp_path,
+    )
+
+    assert plan.child_env["LEANFLOW_RESEARCH_WORKERS"] == "2"
+    assert plan.child_env["LEANFLOW_DISPATCH_MAX_CONCURRENT"] == "2"
+    assert plan.child_env["LEANFLOW_BACKGROUND_PROVIDER_CAPACITY"] == "2"
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "/prove Main.lean --provider codex --research",
+        "/prove Main.lean --provider codex --research-workers 2",
+    ),
+)
+def test_explicit_research_forces_inherited_disabled_features(monkeypatch, tmp_path, command):
+    required_features = (
+        "LEANFLOW_PLAN_STATE",
+        "LEANFLOW_PREMISE_RETRIEVAL",
+        "LEANFLOW_BUDGET_BREAKPOINT",
+        "LEANFLOW_ORCHESTRATOR_ENABLED",
+        "LEANFLOW_ORCHESTRATOR_LLM_ENABLED",
+        "LEANFLOW_FIDELITY_AUDIT",
+        "LEANFLOW_GRAPH_FRONTIER_SELECTION",
+        "LEANFLOW_PLANNER_ENABLED",
+        "LEANFLOW_DISPATCH_ENABLED",
+        "LEANFLOW_NEGATION_PROBE",
+        "LEANFLOW_NATIVE_AXIOM_PROFILE_CHECK",
+        "LEANFLOW_FINAL_REPORT",
+        "LEANFLOW_LEARNINGS",
+        "LEANFLOW_CURRICULUM_ORDERING",
+        "LEANFLOW_PROJECT_LEAN_ADMISSION",
+    )
+    for key in required_features:
+        monkeypatch.setenv(key, "0")
+    # Manager mode is a documented debug control rather than a required
+    # feature toggle; deterministic coaching still covers every rejection.
+    monkeypatch.setenv("LEANFLOW_MANAGER_LLM_MODE", "off")
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_leanflow_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "sk-test",
+            "model": "gpt-5.5",
+        },
+    )
+
+    plan = resolve_workflow_request(command, active_cwd=tmp_path)
+
+    assert plan.workflow.research_mode is True
+    for key in required_features:
+        assert plan.child_env[key] == "1"
+    assert plan.child_env["LEANFLOW_MANAGER_LLM_MODE"] == "off"
+
+
+def test_environment_research_keeps_feature_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv("LEANFLOW_ORCHESTRATOR_ENABLED", "0")
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_leanflow_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+    monkeypatch.setattr(
+        workflow_mod,
+        "resolve_runtime_provider",
+        lambda requested=None: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "sk-test",
+            "model": "gpt-5.5",
+        },
+    )
+
+    plan = resolve_workflow_request("/prove Main.lean", active_cwd=tmp_path)
+
+    assert plan.workflow.research_mode is True
+    assert plan.child_env["LEANFLOW_ORCHESTRATOR_ENABLED"] == "0"
+
+
 def test_resolve_workflow_request_passes_configured_api_step_budget(monkeypatch, tmp_path):
     monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("AGENT_MAX_TURNS", raising=False)
@@ -222,6 +530,44 @@ def test_run_workflow_handles_parent_keyboard_interrupt_after_child_exit(monkeyp
 
     assert workflow_mod.run_workflow("/prove Main.lean", active_cwd=tmp_path) == 1
     assert process.wait_calls == 2
+    assert process.terminated is False
+    assert process.killed is False
+
+
+def test_run_workflow_never_terminates_child_while_native_runner_handles_interrupt(
+    monkeypatch, tmp_path
+):
+    class _FakeProcess:
+        returncode = None
+
+        def __init__(self):
+            self.wait_calls = 0
+            self.terminated = False
+            self.killed = False
+
+        def wait(self, timeout=None):
+            assert timeout is None
+            self.wait_calls += 1
+            if self.wait_calls < 3:
+                raise KeyboardInterrupt
+            self.returncode = 2
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    process = _FakeProcess()
+    monkeypatch.setattr(
+        workflow_mod,
+        "spawn_workflow",
+        lambda *args, **kwargs: (object(), process),
+    )
+
+    assert workflow_mod.run_workflow("/prove Main.lean", active_cwd=tmp_path) == 2
+    assert process.wait_calls == 3
     assert process.terminated is False
     assert process.killed is False
 
@@ -414,11 +760,13 @@ def test_parse_workflow_command_agents_clamped_to_minimum_1():
 def test_parse_workflow_command_no_parallel_forces_single_agent():
     spec = parse_workflow_command("/prove Main.lean --agents 4 --no-parallel")
     assert spec.parallel_agents == 1
+    assert spec.no_parallel is True
 
 
 def test_parse_workflow_command_legacy_no_parallel_alias_forces_single_agent():
     spec = parse_workflow_command("/prove Main.lean --agents 4 -no-parallel")
     assert spec.parallel_agents == 1
+    assert spec.no_parallel is True
 
 
 def test_parse_workflow_command_agents_rejects_non_integer():

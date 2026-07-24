@@ -22,7 +22,9 @@ Primary specs:
 
 ## Worker Contract
 
-1. Focus only on solving the assigned declaration until it is solved or a blocker is proven — and a blocker report always carries a requested route (`decompose` | `negate` | `plan`) plus the evidence for it.
+1. Focus only on solving the assigned declaration until the manager's verification gate accepts it. Never end
+   an unresolved assignment: a blocker report always carries a requested route (`decompose` | `negate` |
+   `plan`) plus the evidence for it, and a blocker is never permission to end an unresolved theorem.
 2. Do not jump to later theorems in the file, even if they also contain `sorry`.
 3. Treat previous failed attempts as negative guidance:
    - do not blindly repeat the same proof shape
@@ -37,6 +39,14 @@ Primary specs:
 11. Do not treat `lake build`, `grep`, `head`, or truncated output as proof that the assigned theorem is clean.
 12. If the declaration becomes clean, stop and hand control back to the manager rather than continuing to the next theorem on your own.
 13. Treat runtime step-budget warnings as real control signals. With only a few API steps left, prefer one concrete verification-backed edit or a concise blocker report over starting a broad new strategy. A decompose-and-insert helper batch counts as one meaningful edit, not several; switching strategy to decomposition is budgeted work, never budget waste.
+
+## Plan-State Freshness
+
+1. Start every assignment from the deterministic queue handoff and refresh the assigned declaration with `lean_inspect` or current Lean diagnostics. Those sources and the kernel gate are inventory and declaration truth.
+2. A managed `plan.md` read exposes bounded, read-only generated sections. Do not edit or paginate that file: the hidden, user-owned historical Notes tail may contain stale sorry counts, helper inventory, copied declarations, and proof sketches. Structured planner state is persisted by the workflow manager.
+3. Dependency-graph statuses are useful routing state, but stored graph statements and plan prose are snapshots. If either disagrees with the current queue assignment, Lean source, or kernel diagnostics, follow the current queue and Lean evidence.
+4. Use generated Strategy, Frontier, Grounding, and Decision sections as route context. Do not reconstruct the queue or choose a declaration body from historical Notes.
+5. Do not read raw `summary.json` or `blueprint.json`: they are machine snapshots that can contain large historical ledgers and stale stored bodies. Use the injected graph digest, completed research-finding handoff, queue assignment, and current Lean diagnostics.
 
 ## Queue Hygiene
 
@@ -61,6 +71,7 @@ Primary specs:
 11. If repeated focused attempts fail while the theorem still looks solvable and the blocker is broad strategy/library navigation rather than a split plan, call `lean_reasoning_help` with the statement, diagnostics, current attempt, and failed-attempt summary.
 12. If `lean_reasoning_help` reports that the advisor is unavailable or returned no answer, continue with the strongest concrete edit, verification, or blocker report you have.
 13. If repeated searches keep returning no useful results, stop searching in that turn and switch to the strongest concrete edit, `lean_decompose_helpers` when a helper split is the likely next edit, verification, or blocker report you have.
+14. Preserve accumulated proof work. Never use `git restore`, `git checkout`, `git reset`, or an equivalent bulk reversion to discard a partially verified declaration. Revise it with managed patches; only the deterministic manager may restore its captured safe baseline after recording the failed attempt.
 
 ## Success Condition
 
@@ -73,14 +84,16 @@ The assigned declaration is successful only when:
 - and the manager-requested check succeeds, either through the automatic post-edit `lean_incremental_check(check_target)` gate, an explicit incremental check, or a final/fallback `lean_verify(mode=file_exact)`
 - and any recommended specialist worker route has either been used or explicitly ruled out
 
-## Failure Condition
+## Route-Change Conditions
 
-Stop and report a blocker — with a requested route and the evidence — when:
+Record failed-attempt evidence and request a distinct route when:
 
 - the same proof approach keeps failing for a known reason
 - the declaration appears to require a missing lemma or changed statement
 - the surrounding file state prevents isolated progress on the assigned declaration
 
-When stopping with failure, summarize the blocker in terms the manager can store as the next failed attempt context.
+When a proof shape fails, summarize the blocker in terms the manager can store as failed-attempt evidence,
+request a distinct route (`decompose`, `plan`, or `negate`), and keep the assignment active. A blocker is
+never permission to end an unresolved theorem.
 
 If the API step budget is exhausted before you finish, the runner records the current theorem as a failed attempt and, when it has the original untruncated `sorry` slice, comments the current failed declaration above the theorem and restores that declaration to the safe baseline `sorry` body. That is not success and does not skip the theorem; the next queue cycle resumes the same item with the failed-attempt context.

@@ -7,6 +7,7 @@ import pytest
 from leanflow_cli.native import native_checkpoints
 from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows import plan_state
+from leanflow_cli.workflows.workflow_json_io import update_json_file
 
 
 def test_retired_commands_are_gone(capsys):
@@ -79,6 +80,142 @@ def test_resume_context_block_renders_the_handoff(plan_enabled, tmp_path):
     assert "open decision packet bp-7" in block
     assert "dead end: `wrong_lemma` [parked]" in block
     assert "resume authority" in block
+
+
+def test_startup_queue_block_uses_the_live_assignment_after_resume_rotation(
+    plan_enabled, tmp_path, monkeypatch
+):
+    """Characterize the later startup block as live queue authority.
+
+    The persisted plan handoff can be rendered before startup queue selection
+    rotates the assignment.  The ordinary startup queue block already uses the
+    newly built live state, so it must name the rotated theorem rather than the
+    durable pre-rotation assignment.
+    """
+    active = tmp_path / "Demo.lean"
+    active.write_text(
+        "theorem old_target : True := by\n  sorry\n\n" "theorem new_target : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    plan_state.save_queue_manager_state(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "old_target",
+                "active_file": str(active),
+            }
+        }
+    )
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_COMMAND", f"/prove {active}")
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_queue_needs_final_file_sweep", lambda _state: False)
+    monkeypatch.setattr(runner, "_startup_active_skill_contract", lambda _name: "")
+    monkeypatch.setattr(runner, "_startup_additional_skill_contracts", lambda _name: "")
+    monkeypatch.setattr(runner, "_swarm_enabled", lambda: False)
+    monkeypatch.setattr(
+        runner,
+        "route_workflow_step",
+        lambda *args, **kwargs: type("Route", (), {"to_dict": lambda self: {}})(),
+    )
+    live_state = {
+        "active_file": str(active),
+        "active_file_label": "Demo.lean",
+        "target_symbol": "new_target",
+        "current_queue_item": {
+            "label": "new_target",
+            "reasons": ["sorry placeholder"],
+        },
+    }
+
+    prompt = runner._startup_user_message(
+        live_state=live_state,
+        autonomy_state={
+            "current_queue_assignment": {
+                "target_symbol": "old_target",
+                "active_file": str(active),
+            }
+        },
+    )
+
+    assert "Assigned queue item:\n- declaration: new_target" in prompt
+    assert "Assigned queue item:\n- declaration: old_target" not in prompt
+
+
+def test_resume_handoff_refreshes_a_rotated_runtime_assignment(plan_enabled, tmp_path):
+    """Do not prefix a current startup turn with a stale durable assignment."""
+    active = tmp_path / "Demo.lean"
+    active.write_text(
+        "theorem old_target : True := by\n  sorry\n\n" "theorem new_target : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            goal="prove Demo",
+            nodes=(
+                plan_state.GraphNode(
+                    id=plan_state.node_id_for("old_target", str(active)),
+                    name="old_target",
+                    file=str(active),
+                    status="stated",
+                ),
+                plan_state.GraphNode(
+                    id=plan_state.node_id_for("new_target", str(active)),
+                    name="new_target",
+                    file=str(active),
+                    status="stated",
+                ),
+            ),
+        )
+    )
+    plan_state.save_queue_manager_state(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "old_target",
+                "active_file": str(active),
+            }
+        }
+    )
+    update_json_file(
+        plan_state.plan_state_paths().summary_json,
+        lambda summary: summary.update(
+            {
+                "campaign": {
+                    "last_route_decision": {
+                        "route": "direct-prove",
+                        "target_symbol": "old_target",
+                        "active_file": str(active),
+                    }
+                }
+            }
+        ),
+    )
+    plan_state.append_journal_event(
+        {
+            "event": "orchestrator-route",
+            "route": "direct-prove",
+            "name": "old_target",
+            "file": str(active),
+            "trigger": "cycle-cadence",
+        }
+    )
+    stale = plan_state.resume_context_block()
+    assert "current deterministic assignment: `old_target`" in stale
+    assert "current orchestrator route: `direct-prove` for `old_target`" in stale
+
+    refreshed = runner._refresh_plan_state_resume_block(
+        stale,
+        {
+            "current_queue_assignment": {
+                "target_symbol": "new_target",
+                "active_file": str(active),
+            }
+        },
+    )
+
+    assert "current deterministic assignment: `new_target`" in refreshed
+    assert "current deterministic assignment: `old_target`" not in refreshed
+    assert "current orchestrator route: `direct-prove` for `old_target`" not in refreshed
+    assert "recent route decision: `direct-prove` for `old_target`" in refreshed
 
 
 def test_resume_prefers_plan_state_over_checkpoint(plan_enabled, tmp_path, monkeypatch):

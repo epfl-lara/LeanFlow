@@ -192,6 +192,19 @@ def test_selector_falls_back_to_avoided_items_when_nothing_else(monkeypatch):
     )
 
 
+def test_selector_never_retries_an_absolutely_excluded_false_item():
+    excluded = [QueueItem(label="false_helper", reasons=("contains sorry",))]
+
+    assert (
+        select_next_item(
+            excluded,
+            is_present_in_file=lambda _label: True,
+            precedence=lambda _label: 3,
+        )
+        is None
+    )
+
+
 def test_selector_diagnostic_bucket_still_outranks_frontier_rank():
     queue = [
         QueueItem(label="sorry_ready", reasons=("contains sorry",)),
@@ -268,7 +281,7 @@ def test_parked_skip_active_without_frontier_flag(enabled, monkeypatch):
 
     precedence = runner._graph_frontier_precedence()
     assert precedence is not None
-    assert precedence("parked_one") == 2
+    assert precedence("parked_one") == 3
     assert precedence("ready_one") == 1  # no frontier ORDERING without the flag
 
     selected = select_next_item(
@@ -309,6 +322,535 @@ def test_runner_precedence_builder(enabled, monkeypatch):
     precedence = runner._graph_frontier_precedence()
     assert precedence is not None
     assert precedence("ready_one") == 0
-    assert precedence("parked_one") == 2
+    assert precedence("parked_one") == 3
     assert precedence("waiting_one") == 2  # dependency blocked -> avoid
     assert precedence("SomeFile.lean") == 1  # project-scope labels: unknown
+
+
+def test_runner_precedence_prefers_current_assignment_split_dependency(
+    enabled, monkeypatch, tmp_path
+):
+    """Keep a newly placed split ahead of unrelated historical frontier work."""
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
+    active_file = str(tmp_path / "Demo.lean")
+    target_id = plan_state.node_id_for("current_target", active_file)
+    helper_id = plan_state.node_id_for("current_target_helper", active_file)
+    unrelated_id = plan_state.node_id_for("short_unrelated", active_file)
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=unrelated_id,
+                    name="short_unrelated",
+                    file=active_file,
+                    status="stated",
+                ),
+                plan_state.GraphNode(
+                    id=target_id,
+                    name="current_target",
+                    file=active_file,
+                    status="proving",
+                ),
+                plan_state.GraphNode(
+                    id=helper_id,
+                    name="current_target_helper",
+                    file=active_file,
+                    status="stated",
+                ),
+            ),
+            edges=(
+                plan_state.GraphEdge(
+                    source=helper_id,
+                    target=target_id,
+                    kind="split_of",
+                ),
+                plan_state.GraphEdge(
+                    source=target_id,
+                    target=helper_id,
+                    kind="depends_on",
+                ),
+            ),
+        )
+    )
+    precedence = runner._graph_frontier_precedence(
+        {
+            "current_queue_assignment": {
+                "target_symbol": "current_target",
+                "active_file": active_file,
+            }
+        }
+    )
+
+    assert precedence is not None
+    assert precedence("current_target_helper") == -1
+    assert precedence("short_unrelated") == 0
+    assert precedence("current_target") == 1
+    selected = select_next_item(
+        (
+            QueueItem(label="short_unrelated", reasons=("contains sorry",)),
+            QueueItem(label="current_target_helper", reasons=("contains sorry",)),
+            QueueItem(label="current_target", reasons=("contains sorry",)),
+        ),
+        is_present_in_file=lambda _label: True,
+        precedence=precedence,
+        # Curriculum may prefer the short unrelated lemma only within a rank.
+        order_key=lambda label: 0 if label == "short_unrelated" else 100,
+    )
+    assert selected is not None
+    assert selected.label == "current_target_helper"
+
+
+def test_runner_precedence_keeps_split_family_focused_through_parent_handback(
+    enabled, monkeypatch, tmp_path
+):
+    """Stick to the assigned helper, then its sibling and parent before unrelated work."""
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
+    active_file = str(tmp_path / "Demo.lean")
+    parent_id = plan_state.node_id_for("parent", active_file)
+    helper_id = plan_state.node_id_for("helper", active_file)
+    sibling_id = plan_state.node_id_for("sibling", active_file)
+    unrelated_id = plan_state.node_id_for("short_unrelated", active_file)
+
+    def save(*, helper_status: str, sibling_status: str) -> None:
+        plan_state.save_blueprint(
+            plan_state.Blueprint(
+                nodes=(
+                    plan_state.GraphNode(
+                        id=unrelated_id,
+                        name="short_unrelated",
+                        file=active_file,
+                        status="stated",
+                    ),
+                    plan_state.GraphNode(
+                        id=parent_id,
+                        name="parent",
+                        file=active_file,
+                        status="proving",
+                    ),
+                    plan_state.GraphNode(
+                        id=helper_id,
+                        name="helper",
+                        file=active_file,
+                        status=helper_status,
+                    ),
+                    plan_state.GraphNode(
+                        id=sibling_id,
+                        name="sibling",
+                        file=active_file,
+                        status=sibling_status,
+                    ),
+                ),
+                edges=(
+                    plan_state.GraphEdge(source=helper_id, target=parent_id, kind="split_of"),
+                    plan_state.GraphEdge(source=sibling_id, target=parent_id, kind="split_of"),
+                    plan_state.GraphEdge(source=parent_id, target=helper_id, kind="depends_on"),
+                    plan_state.GraphEdge(source=parent_id, target=sibling_id, kind="depends_on"),
+                ),
+                revision=plan_state.load_blueprint().revision,
+            )
+        )
+
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "helper",
+            "active_file": active_file,
+        }
+    }
+    save(helper_status="stated", sibling_status="stated")
+    precedence = runner._graph_frontier_precedence(autonomy_state, active_file=active_file)
+    assert precedence is not None
+    assert precedence("helper") == -2
+    assert precedence("sibling") == 0
+    assert precedence("short_unrelated") == 0
+    queue = tuple(
+        QueueItem(label=label, reasons=("contains sorry",))
+        for label in ("short_unrelated", "sibling", "helper", "parent")
+    )
+    selected = select_next_item(
+        queue,
+        is_present_in_file=lambda _label: True,
+        precedence=precedence,
+        order_key=lambda label: 0 if label == "short_unrelated" else 100,
+    )
+    assert selected is not None and selected.label == "helper"
+
+    # Source truth can lose the helper one refresh before graph reconciliation
+    # marks it proved. Its absence from the unresolved queue still enables the
+    # one-level split handback without opening older ancestor branches.
+    precedence = runner._graph_frontier_precedence(
+        autonomy_state,
+        active_file=active_file,
+        queue_labels=("short_unrelated", "sibling", "parent"),
+    )
+    assert precedence is not None and precedence("sibling") == -1
+    assert precedence("parent") == 1
+
+    save(helper_status="proved", sibling_status="stated")
+    precedence = runner._graph_frontier_precedence(autonomy_state, active_file=active_file)
+    selected = select_next_item(
+        tuple(item for item in queue if item.label != "helper"),
+        is_present_in_file=lambda _label: True,
+        precedence=precedence,
+        order_key=lambda label: 0 if label == "short_unrelated" else 100,
+    )
+    assert selected is not None and selected.label == "sibling"
+
+    save(helper_status="proved", sibling_status="proved")
+    precedence = runner._graph_frontier_precedence(autonomy_state, active_file=active_file)
+    selected = select_next_item(
+        tuple(item for item in queue if item.label not in {"helper", "sibling"}),
+        is_present_in_file=lambda _label: True,
+        precedence=precedence,
+        order_key=lambda label: 0 if label == "short_unrelated" else 100,
+    )
+    assert selected is not None and selected.label == "parent"
+
+
+def test_runner_precedence_hands_verified_source_absent_child_to_direct_parent(
+    enabled, monkeypatch, tmp_path
+):
+    """Prefer the exact parent when source truth gets ahead of graph reconciliation."""
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
+    active_file = str(tmp_path / "Erdos242.lean")
+    child = "erdos_242_residual_mod_seven_eq_one_normalized_of_mod_five_zero"
+    parent = "erdos_242_residual_mod_seven_eq_one_normalized"
+    unrelated = "erdos_242_family_one_ordering"
+    ancestor = "erdos_242_residual_mod_seven_eq_one"
+    old_sibling = "erdos_242_residual_mod_seven_eq_one_of_mod_five_one"
+    child_id = plan_state.node_id_for(child, active_file)
+    parent_id = plan_state.node_id_for(parent, active_file)
+    unrelated_id = plan_state.node_id_for(unrelated, active_file)
+    ancestor_id = plan_state.node_id_for(ancestor, active_file)
+    old_sibling_id = plan_state.node_id_for(old_sibling, active_file)
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=unrelated_id,
+                    name=unrelated,
+                    file=active_file,
+                    status="stated",
+                ),
+                plan_state.GraphNode(
+                    id=parent_id,
+                    name=parent,
+                    file=active_file,
+                    status="audited",
+                ),
+                # This is the live stale state: kernel/source verification has
+                # removed the child from the queue, while the graph still says
+                # that the child is being proved.
+                plan_state.GraphNode(
+                    id=child_id,
+                    name=child,
+                    file=active_file,
+                    status="proving",
+                ),
+                plan_state.GraphNode(
+                    id=ancestor_id,
+                    name=ancestor,
+                    file=active_file,
+                    status="stated",
+                ),
+                plan_state.GraphNode(
+                    id=old_sibling_id,
+                    name=old_sibling,
+                    file=active_file,
+                    status="stated",
+                ),
+            ),
+            edges=(
+                plan_state.GraphEdge(source=child_id, target=parent_id, kind="split_of"),
+                plan_state.GraphEdge(source=parent_id, target=child_id, kind="depends_on"),
+                # Preserve the older family edges present in the live graph;
+                # handback must not climb or revive either historical branch.
+                plan_state.GraphEdge(source=parent_id, target=ancestor_id, kind="split_of"),
+                plan_state.GraphEdge(source=ancestor_id, target=parent_id, kind="depends_on"),
+                plan_state.GraphEdge(source=old_sibling_id, target=parent_id, kind="split_of"),
+            ),
+        )
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": child,
+            "active_file": active_file,
+        }
+    }
+    queue = (
+        QueueItem(label=unrelated, reasons=("contains sorry",)),
+        QueueItem(label=parent, reasons=("contains sorry",)),
+    )
+
+    precedence = runner._graph_frontier_precedence(
+        autonomy_state,
+        active_file=active_file,
+        queue_labels=tuple(item.label for item in queue),
+    )
+
+    assert precedence is not None
+    assert precedence(parent) == -1
+    assert precedence(unrelated) == 0
+    assert precedence(ancestor) == 1
+    selected = select_next_item(
+        queue,
+        is_present_in_file=lambda _label: True,
+        precedence=precedence,
+        order_key=lambda label: 0 if label == unrelated else 100,
+    )
+    assert selected is not None
+    assert selected.label == parent
+
+
+def test_runner_precedence_revives_fresh_split_dependency_from_stale_deferred_outcome(
+    enabled, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
+    active_file = str(tmp_path / "Demo.lean")
+    parent_id = plan_state.node_id_for("parent", active_file)
+    helper_id = plan_state.node_id_for("helper", active_file)
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=parent_id, name="parent", file=active_file, status="proving"
+                ),
+                plan_state.GraphNode(
+                    id=helper_id, name="helper", file=active_file, status="stated"
+                ),
+            ),
+            edges=(
+                plan_state.GraphEdge(source=helper_id, target=parent_id, kind="split_of"),
+                plan_state.GraphEdge(source=parent_id, target=helper_id, kind="depends_on"),
+            ),
+        )
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "parent",
+            "active_file": active_file,
+        },
+        "theorem_outcomes": {
+            f"{active_file}::helper": {
+                "target_symbol": "helper",
+                "active_file": active_file,
+                "status": "deferred",
+            }
+        },
+    }
+
+    precedence = runner._graph_frontier_precedence(autonomy_state, active_file=active_file)
+
+    assert precedence is not None
+    assert precedence("helper") == -1
+
+
+def test_runner_precedence_is_file_scoped_for_duplicate_declaration_names(
+    enabled, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
+    first_file = str(tmp_path / "A.lean")
+    second_file = str(tmp_path / "B.lean")
+    parent_id = plan_state.node_id_for("parent", first_file)
+    first_helper_id = plan_state.node_id_for("helper", first_file)
+    second_helper_id = plan_state.node_id_for("helper", second_file)
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=parent_id, name="parent", file=first_file, status="proving"
+                ),
+                plan_state.GraphNode(
+                    id=first_helper_id, name="helper", file=first_file, status="stated"
+                ),
+                plan_state.GraphNode(
+                    id=second_helper_id, name="helper", file=second_file, status="false"
+                ),
+            ),
+            edges=(
+                plan_state.GraphEdge(source=first_helper_id, target=parent_id, kind="split_of"),
+                plan_state.GraphEdge(source=parent_id, target=first_helper_id, kind="depends_on"),
+            ),
+        )
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "parent",
+            "active_file": first_file,
+        }
+    }
+
+    first = runner._graph_frontier_precedence(autonomy_state, active_file=first_file)
+    second = runner._graph_frontier_precedence({}, active_file=second_file)
+
+    assert first is not None and first("helper") == -1
+    assert second is not None and second("helper") == 3
+
+
+def test_runner_precedence_propagates_invalid_dependencies_and_avoids_cycles(
+    enabled, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
+    active_file = str(tmp_path / "Demo.lean")
+    ids = {
+        name: plan_state.node_id_for(name, active_file)
+        for name in ("parent", "middle", "false_leaf", "cycle_a", "cycle_b")
+    }
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=tuple(
+                plan_state.GraphNode(
+                    id=ids[name],
+                    name=name,
+                    file=active_file,
+                    status="false" if name == "false_leaf" else "stated",
+                )
+                for name in ids
+            ),
+            edges=(
+                plan_state.GraphEdge(source=ids["parent"], target=ids["middle"], kind="depends_on"),
+                plan_state.GraphEdge(
+                    source=ids["middle"], target=ids["false_leaf"], kind="depends_on"
+                ),
+                plan_state.GraphEdge(
+                    source=ids["cycle_a"], target=ids["cycle_b"], kind="depends_on"
+                ),
+                plan_state.GraphEdge(
+                    source=ids["cycle_b"], target=ids["cycle_a"], kind="depends_on"
+                ),
+            ),
+        )
+    )
+
+    precedence = runner._graph_frontier_precedence({}, active_file=active_file)
+
+    assert precedence is not None
+    assert precedence("parent") == 3
+    assert precedence("middle") == 3
+    assert precedence("cycle_a") == 2
+    assert precedence("cycle_b") == 2
+
+
+def test_false_current_helper_excludes_its_split_family_before_replan(
+    enabled, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
+    active_file = str(tmp_path / "Demo.lean")
+    parent_id = plan_state.node_id_for("parent", active_file)
+    helper_id = plan_state.node_id_for("false_helper", active_file)
+    sibling_id = plan_state.node_id_for("sibling", active_file)
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=parent_id, name="parent", file=active_file, status="conjectured"
+                ),
+                plan_state.GraphNode(
+                    id=helper_id, name="false_helper", file=active_file, status="false"
+                ),
+                plan_state.GraphNode(
+                    id=sibling_id, name="sibling", file=active_file, status="stated"
+                ),
+            ),
+            edges=(
+                plan_state.GraphEdge(source=helper_id, target=parent_id, kind="split_of"),
+                plan_state.GraphEdge(source=sibling_id, target=parent_id, kind="split_of"),
+                plan_state.GraphEdge(source=parent_id, target=helper_id, kind="depends_on"),
+                plan_state.GraphEdge(source=parent_id, target=sibling_id, kind="depends_on"),
+            ),
+        )
+    )
+    autonomy_state = {
+        "current_queue_assignment": {
+            "target_symbol": "false_helper",
+            "active_file": active_file,
+        }
+    }
+
+    precedence = runner._graph_frontier_precedence(
+        autonomy_state,
+        active_file=active_file,
+        queue_labels=("sibling", "parent"),
+    )
+
+    assert precedence is not None
+    assert precedence("sibling") == 3
+    assert precedence("parent") == 3
+    assert (
+        select_next_item(
+            (
+                QueueItem(label="sibling", reasons=("contains sorry",)),
+                QueueItem(label="parent", reasons=("contains sorry",)),
+            ),
+            is_present_in_file=lambda _label: True,
+            precedence=precedence,
+        )
+        is None
+    )
+
+
+def test_ambiguous_multiple_split_parents_fail_closed(enabled, monkeypatch, tmp_path):
+    monkeypatch.setenv("LEANFLOW_GRAPH_FRONTIER_SELECTION", "1")
+    active_file = str(tmp_path / "Demo.lean")
+    names = ("helper", "parent_a", "parent_b", "sibling_a", "sibling_b", "unrelated")
+    ids = {name: plan_state.node_id_for(name, active_file) for name in names}
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=tuple(
+                plan_state.GraphNode(
+                    id=ids[name],
+                    name=name,
+                    file=active_file,
+                    status="proved" if name == "helper" else "stated",
+                )
+                for name in names
+            ),
+            edges=(
+                plan_state.GraphEdge(source=ids["helper"], target=ids["parent_a"], kind="split_of"),
+                plan_state.GraphEdge(source=ids["helper"], target=ids["parent_b"], kind="split_of"),
+                plan_state.GraphEdge(
+                    source=ids["parent_a"], target=ids["helper"], kind="depends_on"
+                ),
+                plan_state.GraphEdge(
+                    source=ids["parent_a"], target=ids["sibling_a"], kind="depends_on"
+                ),
+                plan_state.GraphEdge(
+                    source=ids["parent_b"], target=ids["helper"], kind="depends_on"
+                ),
+                plan_state.GraphEdge(
+                    source=ids["parent_b"], target=ids["sibling_b"], kind="depends_on"
+                ),
+            ),
+        )
+    )
+    state = {
+        "current_queue_assignment": {
+            "target_symbol": "helper",
+            "active_file": active_file,
+        }
+    }
+
+    precedence = runner._graph_frontier_precedence(
+        state,
+        active_file=active_file,
+        queue_labels=("parent_a", "parent_b", "sibling_a", "sibling_b", "unrelated"),
+    )
+
+    assert precedence is not None
+    assert precedence("sibling_a") == 3
+    assert precedence("sibling_b") == 3
+    assert precedence("unrelated") == 0
+
+
+def test_exhausted_graph_frontier_routes_to_plan():
+    ctx = RouteContext(
+        trigger="scope-entry",
+        active_file="Demo.lean",
+        declaration_queue_total=1,
+        sorry_count=1,
+        queue_frontier_exhausted=True,
+    )
+
+    route = orchestrator_route(ctx)
+
+    assert route.route == "plan"
+    assert "no assignable graph frontier" in route.reason

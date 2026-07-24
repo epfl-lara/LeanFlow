@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import logging
+import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from agent.providers.auxiliary_client import call_llm
+from agent.providers.isolated_auxiliary import (
+    IsolatedAuxiliaryError,
+    IsolatedAuxiliaryTimeout,
+    IsolatedAuxiliaryUnavailable,
+    run_isolated_auxiliary_text,
+    sanitize_auxiliary_error,
+)
 from leanflow_cli.cli.expert_help import (
     is_command_expert_provider,
     normalize_expert_provider,
     run_command_expert_help,
 )
 from leanflow_cli.workflows.workflow_state import append_workflow_activity
+from tools.utilities.interrupt import raise_if_interrupted
 
 logger = logging.getLogger(__name__)
 
@@ -103,15 +112,20 @@ def run_command_verification_review(
     timeout_s: int = 1200,
 ) -> VerificationReviewResult:
     """Execute a verification review via a command-based expert provider and return its output and status. Normalizes the provider name, invokes run_command_expert_help with the given prompt and timeout, and constructs a VerificationReviewResult with command execution details including exit status and response truncation. Records telemetry before and after execution."""
+    raise_if_interrupted("verification command review interrupted before launch")
     normalized = normalize_verification_provider(provider)
+    review_id = uuid.uuid4().hex
+    started_at = time.monotonic()
     _record_verification_activity(
         "verification-review-request",
         "Verification command review started",
+        review_id=review_id,
         task=task,
         provider=normalized,
         mode="command",
         cwd=cwd,
         timeout_s=timeout_s,
+        elapsed_s=0.0,
         prompt=prompt,
     )
     command_result = run_command_expert_help(
@@ -121,6 +135,7 @@ def run_command_verification_review(
         cwd=cwd,
         timeout_s=timeout_s,
     )
+    raise_if_interrupted("verification command review interrupted after provider return")
     status = (
         "timeout"
         if command_result.timed_out
@@ -142,9 +157,12 @@ def run_command_verification_review(
     _record_verification_activity(
         "verification-review-result",
         "Verification command review finished",
+        review_id=review_id,
         task=task,
         provider=result.provider,
         mode=result.mode,
+        timeout_s=timeout_s,
+        elapsed_s=max(0.0, time.monotonic() - started_at),
         status=result.status,
         command=result.command,
         exit_status=result.exit_status,
@@ -167,8 +185,11 @@ def run_model_verification_review(
     max_tokens: int = 12000,
 ) -> VerificationReviewResult:
     """Execute a verification review via an LLM call, building optional system/user message pair and capturing model response, timeout behavior, and error states. Handles RuntimeError (provider unavailable) and generic exceptions distinctly, returning a VerificationReviewResult with the model's content or appropriate error message. Records telemetry before and after execution."""
+    raise_if_interrupted("verification model review interrupted before launch")
     normalized = normalize_verification_provider(provider)
     effective_provider = None if normalized == "auto" else normalized
+    review_id = uuid.uuid4().hex
+    started_at = time.monotonic()
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -176,14 +197,18 @@ def run_model_verification_review(
     _record_verification_activity(
         "verification-review-request",
         "Verification model review started",
+        review_id=review_id,
         task=task,
         provider=normalized,
         mode="model",
         prompt=prompt,
         timeout_s=timeout_s,
+        elapsed_s=0.0,
     )
+    timed_out = False
+    resolved_provider = normalized
     try:
-        response = call_llm(
+        response = run_isolated_auxiliary_text(
             task=task,
             provider=effective_provider,
             messages=messages,
@@ -191,27 +216,50 @@ def run_model_verification_review(
             max_tokens=max_tokens,
             timeout=max(1, int(timeout_s or 0)),
         )
-        try:
-            content = str(response.choices[0].message.content or "").strip()
-        except Exception:
-            content = ""
-        model = str(getattr(response, "model", "") or "")
+        raise_if_interrupted("verification model review interrupted after provider return")
+        content = response.content.strip()
+        model = response.model
         status = "ok" if content else "no_answer"
         error = "" if content else "the configured verifier returned no content"
+    except IsolatedAuxiliaryTimeout as exc:
+        content = ""
+        model = sanitize_auxiliary_error(getattr(exc, "model", ""), limit=200)
+        resolved_provider = (
+            sanitize_auxiliary_error(getattr(exc, "provider", ""), limit=200) or normalized
+        )
+        status = "timeout"
+        error = sanitize_auxiliary_error(exc)
+        timed_out = True
+    except IsolatedAuxiliaryUnavailable as exc:
+        content = ""
+        model = sanitize_auxiliary_error(getattr(exc, "model", ""), limit=200)
+        resolved_provider = (
+            sanitize_auxiliary_error(getattr(exc, "provider", ""), limit=200) or normalized
+        )
+        status = "unavailable"
+        error = sanitize_auxiliary_error(exc)
+    except IsolatedAuxiliaryError as exc:
+        content = ""
+        model = sanitize_auxiliary_error(getattr(exc, "model", ""), limit=200)
+        resolved_provider = (
+            sanitize_auxiliary_error(getattr(exc, "provider", ""), limit=200) or normalized
+        )
+        status = "error"
+        error = sanitize_auxiliary_error(exc)
     except RuntimeError as exc:
         content = ""
         model = ""
         status = "unavailable"
-        error = str(exc)
+        error = sanitize_auxiliary_error(exc)
     except Exception as exc:
         content = ""
         model = ""
         status = "error"
-        error = f"{type(exc).__name__}: {exc}"
+        error = sanitize_auxiliary_error(f"{type(exc).__name__}: {exc}")
 
     result = VerificationReviewResult(
         task=task,
-        provider=normalized,
+        provider=resolved_provider,
         mode="model",
         response=content,
         status=status,
@@ -220,20 +268,26 @@ def run_model_verification_review(
         truncated=False,
         response_chars=len(content),
         max_response_chars=max_tokens,
+        timed_out=timed_out,
         model=model,
         error=error,
     )
     _record_verification_activity(
         "verification-review-result",
         "Verification model review finished",
+        review_id=review_id,
         task=task,
         provider=result.provider,
+        requested_provider=normalized,
         mode=result.mode,
+        timeout_s=timeout_s,
+        elapsed_s=max(0.0, time.monotonic() - started_at),
         status=result.status,
         response=result.response,
         response_chars=result.response_chars,
         max_response_chars=result.max_response_chars,
         model=result.model,
         error=result.error,
+        timed_out=result.timed_out,
     )
     return result

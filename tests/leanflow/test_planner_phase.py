@@ -164,6 +164,233 @@ def test_happy_path_merges_graph_and_prose(enabled, monkeypatch):
     assert "## Strategy" in plan_state.plan_state_paths().plan_md.read_text(encoding="utf-8")
 
 
+def test_planner_synthesis_uses_pinned_timeout(enabled, monkeypatch):
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    synth_calls = _fake_synth(monkeypatch)
+    _fake_place(monkeypatch)
+
+    outcome = planner_phase.run_planner_phase(goal="g", agent=object())
+
+    assert outcome.ok
+    assert synth_calls[0]["task"] == planner_phase.PLANNER_SYNTHESIS_TASK
+    assert synth_calls[0]["timeout_s"] == planner_phase.PLANNER_SYNTHESIS_TIMEOUT_S == 900
+
+
+def test_false_affine_synthesis_is_rejected_before_any_planner_state_mutation(enabled, monkeypatch):
+    """Replay the live false Erdős formula without persisting its plan claims."""
+    synthesis = json.dumps(
+        {
+            "grounding": [
+                "Probe whether a nonlinear construction could cover the residual family.",
+                "Let n = 168*q+25. Then n+7 = 24*(7*q+4).",
+            ],
+            "strategy": ["Keep the speculative nonlinear route available for later testing."],
+            "nodes": [
+                {
+                    "name": "false_affine",
+                    "file": "Demo.lean",
+                    "statement": (
+                        "lemma false_affine (q n : ℕ) (h : n = 168*q+25) : "
+                        "n+7 = 24*(7*q+4) := by sorry"
+                    ),
+                }
+            ],
+        }
+    )
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch, response=synthesis)
+    monkeypatch.setattr(
+        planner_phase.decomposer,
+        "place_helpers",
+        lambda **_kwargs: pytest.fail("a refuted synthesis must not place stubs"),
+    )
+    original_blueprint = plan_state.load_blueprint()
+    original_summary = plan_state.load_summary()
+
+    outcome = planner_phase.run_planner_phase(
+        goal="prove demo",
+        target_symbol="demo",
+        active_file="Demo.lean",
+        agent=object(),
+    )
+
+    assert outcome.ok is False
+    assert outcome.synthesis_status == planner_phase.PLANNER_ARITHMETIC_REJECTION_STATUS
+    assert outcome.reason.startswith(
+        planner_phase.orchestrator_arithmetic_preflight.ARITHMETIC_PREFLIGHT_REJECTION_PREFIX
+    )
+    assert "168*q+32 != 168*q+96" in outcome.reason
+    assert outcome.nodes_added == 0
+    assert outcome.stubs_placed == ()
+    assert outcome.grounding_count == 0
+    assert outcome.strategy_count == 0
+    assert plan_state.load_blueprint() == original_blueprint
+    assert plan_state.load_summary() == original_summary
+
+    events = [
+        json.loads(line)
+        for line in plan_state.plan_state_paths()
+        .journal_jsonl.read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    rejection = next(
+        event for event in events if event["event"] == "planner-synthesis-arithmetic-rejected"
+    )
+    assert [
+        (item["section"], item["index"], item.get("field", "")) for item in rejection["rejections"]
+    ] == [("grounding", 1, "")]
+    assert rejection["rejections"][0]["evidence"] == [
+        {
+            "kind": "affine-identity",
+            "claim": "n+7=24*(7*q+4)",
+            "evidence": "normalized affine forms differ: 168*q+32 != 168*q+96",
+        }
+    ]
+    journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    assert "node-created" not in journal
+    assert "grounding_findings" not in journal
+
+
+def test_valid_affine_synthesis_preserves_normal_planner_merge(enabled, monkeypatch):
+    """A supported affine identity passes the conservative planner preflight."""
+    grounding = "Let n = 168*q+25. Then n+7 = 168*q+32."
+    strategy = "Let n = 168*q+25. Use n+7 = 168*q+32 before the next reduction."
+    synthesis = json.dumps(
+        {
+            "grounding": [grounding],
+            "strategy": [strategy],
+            "nodes": [
+                {
+                    "name": "valid_affine",
+                    "file": "Demo.lean",
+                    "statement": (
+                        "lemma valid_affine (q n : ℕ) (h : n = 168*q+25) : "
+                        "n+7 = 168*q+32 := by sorry"
+                    ),
+                }
+            ],
+        }
+    )
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch, response=synthesis)
+    _fake_place(monkeypatch)
+
+    outcome = planner_phase.run_planner_phase(
+        goal="prove demo",
+        target_symbol="demo",
+        active_file="Demo.lean",
+        agent=object(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.synthesis_status == "ok"
+    assert outcome.nodes_added == 1
+    assert outcome.stubs_placed == ("valid_affine",)
+    summary = plan_state.load_summary()
+    assert summary["grounding_findings"] == [grounding]
+    assert summary["strategy_notes"] == [strategy]
+    node = plan_state.load_blueprint().node_by_id(
+        plan_state.node_id_for("valid_affine", "Demo.lean")
+    )
+    assert node is not None and node.status == "stated"
+    journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    assert "planner-synthesis-arithmetic-rejected" not in journal
+
+
+def test_empirical_enumerations_and_existential_helpers_fail_open(enabled, monkeypatch):
+    """Historical examples and existential contracts are not universal assertions."""
+    empirical = "Tested s=0, n=121; s=1, n=961; s=3, n=2641, and all exact checks passed."
+    synthesis = json.dumps(
+        {
+            "grounding": [
+                empirical,
+                "Examples: mod17=2, mod11=1, mod53=3, and mod41=4 are covered.",
+            ],
+            "strategy": ["Keep the finite residue inventory and factor-pair route active."],
+            "nodes": [
+                {
+                    "name": "factor_pair_witnesses",
+                    "file": "Demo.lean",
+                    "statement": (
+                        "lemma factor_pair_witnesses (s : ℕ) : ∃ p₁ p₂ : ℕ, "
+                        "p₁ * p₂ = (210*s+44)*(210*s+44) ∧ 7 ∣ p₁ ∧ 7 ∣ p₂ := by sorry"
+                    ),
+                    "notes": (
+                        "M = (24*k+1)*(6*k+2), M ≡ 4 (mod 7) so 7|(M+10); "
+                        "70|M*(M+10) from 2|M and 5|M or 5|(M+10)."
+                    ),
+                }
+            ],
+        }
+    )
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch, response=synthesis)
+    _fake_place(monkeypatch)
+
+    outcome = planner_phase.run_planner_phase(
+        goal="prove demo",
+        target_symbol="demo",
+        active_file="Demo.lean",
+        agent=object(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.synthesis_status == "ok"
+    assert plan_state.load_summary()["grounding_findings"][0] == empirical
+    assert (
+        "planner-synthesis-arithmetic-rejected"
+        not in plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    )
+
+
+def test_complete_false_rational_node_is_rejected_by_exact_counterexample() -> None:
+    statement = """private lemma false_rational (q : ℕ) :
+    (4 : ℚ) / ((168 * q + 25 : ℕ) : ℚ) =
+      (1 : ℚ) / ((42 * q + 8 : ℕ) : ℚ) +
+      (1 : ℚ) / (((168 * q + 25 : ℕ) * (7 * q + 4 : ℕ) : ℕ) : ℚ) +
+      (1 : ℚ) / (((168 * q + 25 : ℕ) * (42 * q + 8 : ℕ) : ℕ) : ℚ) := by
+  sorry"""
+
+    rejections, note = planner_phase._synthesis_arithmetic_rejections(
+        {"nodes": [{"name": "false_rational", "statement": statement}]}
+    )
+
+    assert rejections == (
+        {
+            "section": "nodes",
+            "index": 0,
+            "evidence": [
+                {
+                    "kind": "ground-rational-identity",
+                    "claim": "false_rational",
+                    "evidence": "exact counterexample at q=0: 4/25 != 7/50",
+                }
+            ],
+            "field": "statement",
+        },
+    )
+    assert "exact counterexample at q=0" in note
+
+
+def test_hypothesis_bearing_affine_claims_are_not_treated_as_universal() -> None:
+    rejections, note = planner_phase._synthesis_arithmetic_rejections(
+        {
+            "grounding": ["`normalize` proves k = 7*(k/7)+1 from k % 7 = 1."],
+            "nodes": [
+                {
+                    "name": "conditional_identity",
+                    "statement": (
+                        "lemma conditional_identity (q : ℕ) (h : q = 1) : " "q = 1 := by sorry"
+                    ),
+                }
+            ],
+        }
+    )
+
+    assert rejections == ()
+    assert note == ""
+
+
 def test_lane_parse_failure_is_recorded_not_lost(enabled, monkeypatch):
     _fake_delegate(
         monkeypatch,
@@ -178,8 +405,12 @@ def test_lane_parse_failure_is_recorded_not_lost(enabled, monkeypatch):
     statuses = {lane["lane"]: lane["status"] for lane in outcome.lanes}
     assert statuses["web"] == "parse-failure"
     assert statuses["mathlib"] == "completed"
+    web = next(lane for lane in outcome.lanes if lane["lane"] == "web")
+    assert web["raw_summary"] == "utter prose, no json"
     journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
-    assert "planner-lanes" in journal and "parse-failure" in journal
+    assert all(
+        needle in journal for needle in ("planner-lanes", "parse-failure", "utter prose, no json")
+    )
 
 
 def test_delegate_explosion_yields_error_lanes(enabled, monkeypatch):
@@ -211,6 +442,149 @@ def test_failed_lane_status_preserved(enabled, monkeypatch):
     assert statuses == ["completed", "failed", "error"]
 
 
+@pytest.mark.parametrize("interrupted_status", ["interrupted", "cancelled", "canceled"])
+def test_interrupted_lane_defers_synthesis_before_graph_mutation(
+    enabled, monkeypatch, interrupted_status
+):
+    """An incomplete requested evidence portfolio cannot mint planner nodes."""
+    _fake_delegate(
+        monkeypatch,
+        _delegate_payload(
+            '{"findings": [{"claim": "known", "source": "paper"}]}',
+            '{"candidates": [{"name": "Nat.le_trans"}]}',
+            "Operation interrupted: waiting for model response",
+            statuses=("completed", "completed", interrupted_status),
+        ),
+    )
+    monkeypatch.setattr(
+        planner_phase,
+        "run_model_verification_review",
+        lambda **_kwargs: pytest.fail("an interrupted lane must defer synthesis"),
+    )
+    before = plan_state.load_blueprint()
+
+    outcome = planner_phase.run_planner_phase(
+        goal="g", target_symbol="demo", active_file="Demo.lean", agent=object()
+    )
+
+    assert outcome.ok is False
+    assert outcome.synthesis_status == "evidence-interrupted"
+    assert outcome.nodes_added == 0
+    assert outcome.stubs_placed == ()
+    assert plan_state.load_blueprint() == before
+    assert len(plan_state.load_summary()["grounding_findings"]) == 2
+    journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    assert "planner-synthesis-deferred-incomplete-evidence" in journal
+    assert interrupted_status in journal
+
+
+def test_explicitly_unchecked_synthesis_node_is_not_admitted(enabled, monkeypatch):
+    """A synthesizer cannot turn its own unchecked candidate into an obligation."""
+    synthesis = json.dumps(
+        {
+            "grounding": [],
+            "strategy": ["Validate the candidate before using it."],
+            "nodes": [
+                {
+                    "name": "checked_helper",
+                    "file": "Demo.lean",
+                    "statement": "lemma checked_helper : True := by sorry",
+                },
+                {
+                    "name": "unchecked_universal_witness",
+                    "file": "Demo.lean",
+                    "statement": (
+                        "lemma unchecked_universal_witness (n : Nat) : " "n % 3 = 0 := by sorry"
+                    ),
+                    "notes": (
+                        "The divisibility still needs checking; if it fails, " "adjust the witness."
+                    ),
+                },
+            ],
+        }
+    )
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch, response=synthesis)
+    place_calls = _fake_place(monkeypatch)
+
+    outcome = planner_phase.run_planner_phase(
+        goal="g", target_symbol="demo", active_file="Demo.lean", agent=object()
+    )
+
+    assert outcome.ok is True
+    assert outcome.nodes_added == 1
+    assert outcome.stubs_placed == ("checked_helper",)
+    assert [call["skeletons"] for call in place_calls] == [
+        ["lemma checked_helper : True := by sorry"]
+    ]
+    blueprint = plan_state.load_blueprint()
+    assert blueprint.node_by_id(plan_state.node_id_for("checked_helper", "Demo.lean")) is not None
+    assert (
+        blueprint.node_by_id(plan_state.node_id_for("unchecked_universal_witness", "Demo.lean"))
+        is None
+    )
+    journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    assert "planner-synthesis-node-uncertainty-rejected" in journal
+    assert "needs-checking" in journal
+
+
+@pytest.mark.parametrize(
+    ("notes", "expected_kind"),
+    [
+        (
+            "If B+1 is not always divisible by 3, the witness x must be changed.",
+            "conditional-revision",
+        ),
+        (
+            "The edge case t = 0 needs separate verification before assembly.",
+            "needs-checking",
+        ),
+        (
+            "This boundary branch needs independent validation.",
+            "needs-checking",
+        ),
+        (
+            "The exceptional residue needs explicit checking.",
+            "needs-checking",
+        ),
+    ],
+)
+def test_residual_uncertainty_metadata_self_disqualifies_candidate(notes, expected_kind):
+    admitted, rejected = planner_phase.planner_candidate_admission.partition_synthesis_nodes(
+        [{"name": "candidate", "notes": notes}]
+    )
+
+    assert admitted == []
+    assert rejected[0]["name"] == "candidate"
+    assert expected_kind in {item["kind"] for item in rejected[0]["evidence"]}
+
+
+@pytest.mark.parametrize(
+    "notes",
+    [
+        "If h : B + 1 ∣ n, use h to rewrite the target.",
+        "For the edge case t = 0, exact the previously proved base case.",
+        "Split on whether B + 1 is divisible by 3 and prove both branches.",
+    ],
+)
+def test_normal_theorem_conditions_do_not_self_disqualify_candidate(notes):
+    candidate = {
+        "name": "conditional_helper",
+        "notes": notes,
+        "statement": (
+            "lemma conditional_helper : True := by "
+            "-- If the witness fails, it must be changed.\n  trivial"
+        ),
+    }
+
+    admitted, rejected = planner_phase.planner_candidate_admission.partition_synthesis_nodes(
+        [candidate]
+    )
+
+    assert admitted == [candidate]
+    assert rejected == ()
+
+
 # ---------------------------------------------------------------------------
 # Lane selection via probes
 # ---------------------------------------------------------------------------
@@ -239,19 +613,180 @@ def test_non_research_probe_selection_falls_back_to_full_wave(enabled, monkeypat
     assert len(calls[0]["tasks"]) == 3
 
 
+@pytest.mark.parametrize(("workers", "wave_sizes"), [(2, [2, 1]), (0, [1, 1, 1])])
+def test_research_planner_waves_respect_background_parallelism(
+    enabled, monkeypatch, workers, wave_sizes
+):
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv("LEANFLOW_RESEARCH_WORKERS", str(workers))
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(**kwargs):
+        calls.append(kwargs)
+        return _delegate_payload(*("{}" for _task in kwargs["tasks"]))
+
+    monkeypatch.setattr(planner_phase, "delegate_task", fake_delegate)
+    _fake_synth(monkeypatch)
+    _fake_place(monkeypatch)
+
+    outcome = planner_phase.run_planner_phase(goal="g", agent=object())
+
+    assert outcome.ok
+    assert [len(call["tasks"]) for call in calls] == wave_sizes
+    assert [lane["lane"] for lane in outcome.lanes] == ["web", "mathlib", "empirical"]
+
+
+def test_capacity_deferred_lane_retries_after_sibling_releases_slot(enabled, monkeypatch):
+    """Retry only the lane that lost a same-wave actor-capacity race."""
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv("LEANFLOW_RESEARCH_WORKERS", "2")
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return _delegate_payload(
+                '{"findings": [{"claim": "web", "source": "paper"}]}',
+                "",
+                statuses=("completed", "capacity-deferred"),
+            )
+        if len(calls) == 2:
+            return _delegate_payload('{"candidates": [{"name": "Nat.le_trans"}]}')
+        return _delegate_payload('{"hypothesis": "h", "result": "supports"}')
+
+    monkeypatch.setattr(planner_phase, "delegate_task", fake_delegate)
+    _fake_synth(monkeypatch)
+    _fake_place(monkeypatch)
+
+    outcome = planner_phase.run_planner_phase(goal="g", agent=object())
+
+    assert outcome.ok
+    assert [len(call["tasks"]) for call in calls] == [2, 1, 1]
+    assert calls[1]["tasks"][0]["goal"] == calls[0]["tasks"][1]["goal"]
+    assert calls[2]["tasks"][0]["goal"] != calls[0]["tasks"][0]["goal"]
+    assert [lane["lane"] for lane in outcome.lanes] == ["web", "mathlib", "empirical"]
+    assert [lane["status"] for lane in outcome.lanes] == ["completed"] * 3
+    assert outcome.lanes[0]["deliverable"]["findings"][0]["claim"] == "web"
+    assert outcome.lanes[1]["deliverable"]["candidates"][0]["name"] == "Nat.le_trans"
+    assert outcome.lanes[2]["deliverable"]["result"] == "supports"
+
+
+def test_capacity_deferred_lane_retry_is_bounded(enabled, monkeypatch):
+    """Keep a lane deferred when its one bounded retry still cannot acquire."""
+    monkeypatch.setenv("LEANFLOW_RESEARCH_MODE", "1")
+    monkeypatch.setenv("LEANFLOW_RESEARCH_WORKERS", "2")
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(**kwargs):
+        calls.append(kwargs)
+        return _delegate_payload("", statuses=("capacity-deferred",))
+
+    monkeypatch.setattr(planner_phase, "delegate_task", fake_delegate)
+    monkeypatch.setattr(
+        planner_phase,
+        "run_model_verification_review",
+        lambda **_kwargs: pytest.fail("a still-deferred wave must not reach synthesis"),
+    )
+
+    outcome = planner_phase.run_planner_phase(
+        goal="g",
+        agent=object(),
+        lane_keys=["deep-search"],
+    )
+
+    assert not outcome.ok
+    assert outcome.synthesis_status == "capacity-deferred"
+    assert [len(call["tasks"]) for call in calls] == [1, 1]
+    assert calls[1]["tasks"][0]["goal"] == calls[0]["tasks"][0]["goal"]
+    assert outcome.lanes == ({"lane": "web", "status": "capacity-deferred"},)
+
+
 # ---------------------------------------------------------------------------
 # Synthesizer failure modes keep the floor authoritative
 # ---------------------------------------------------------------------------
 
 
 def test_synthesizer_unavailable_fails_soft(enabled, monkeypatch):
-    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_delegate(
+        monkeypatch,
+        _delegate_payload(
+            '{"findings": [{"claim": "lane evidence survives", "source": "paper"}]}',
+            '{"candidates": [{"name": "Nat.le_trans"}]}',
+            '{"hypothesis": "small cases hold", "result": "supports"}',
+        ),
+    )
     _fake_synth(monkeypatch, response="", status="unavailable")
 
     outcome = planner_phase.run_planner_phase(goal="g", agent=object())
 
     assert not outcome.ok and "unavailable" in outcome.reason
+    assert outcome.grounding_count == 3
+    assert outcome.lanes[0]["deliverable"]["findings"][0]["claim"] == ("lane evidence survives")
     assert plan_state.load_blueprint().nodes == ()  # nothing merged
+    summary = plan_state.load_summary()
+    assert len(summary["grounding_findings"]) == 3
+    assert "lane evidence survives" in summary["grounding_findings"][0]
+    assert "lane evidence survives" in plan_state.plan_state_paths().plan_md.read_text(
+        encoding="utf-8"
+    )
+    journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    assert "planner-unsynthesized-findings" in journal
+    assert "lane evidence survives" in journal
+
+
+def test_interrupt_after_synthesis_never_enters_graph_or_stub_validation(enabled, monkeypatch):
+    from tools.utilities.interrupt import CooperativeInterrupt, set_interrupt
+
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    placement_calls = _fake_place(monkeypatch)
+
+    def synthesize_then_interrupt(**_kwargs):
+        set_interrupt(True)
+        return SimpleNamespace(response=_SYNTHESIS, status="ok")
+
+    monkeypatch.setattr(planner_phase, "run_model_verification_review", synthesize_then_interrupt)
+    set_interrupt(False)
+    try:
+        with pytest.raises(CooperativeInterrupt, match="after synthesis review"):
+            planner_phase.run_planner_phase(
+                goal="g",
+                target_symbol="demo",
+                active_file="Demo.lean",
+                agent=object(),
+            )
+    finally:
+        set_interrupt(False)
+
+    assert plan_state.load_blueprint().nodes == ()
+    assert placement_calls == []
+
+
+def test_interrupt_during_stub_validation_demotes_premerged_stated_node(enabled, monkeypatch):
+    from tools.utilities.interrupt import CooperativeInterrupt
+
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch)
+    monkeypatch.setattr(
+        planner_phase,
+        "_place_planner_stubs",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            CooperativeInterrupt("validation interrupted")
+        ),
+    )
+
+    with pytest.raises(CooperativeInterrupt, match="validation interrupted"):
+        planner_phase.run_planner_phase(
+            goal="g",
+            target_symbol="demo",
+            active_file="Demo.lean",
+            agent=object(),
+        )
+
+    helper = plan_state.load_blueprint().node_by_id(
+        plan_state.node_id_for("demo_helper", "Demo.lean")
+    )
+    assert helper is not None
+    assert helper.status == "conjectured"
 
 
 def test_synthesizer_garbage_fails_soft_with_lanes_kept(enabled, monkeypatch):
@@ -262,6 +797,8 @@ def test_synthesizer_garbage_fails_soft_with_lanes_kept(enabled, monkeypatch):
 
     assert not outcome.ok and outcome.synthesis_status == "parse-failure"
     assert len(outcome.lanes) == 3  # N1: lane work still reported
+    assert outcome.grounding_count == 3
+    assert len(plan_state.load_summary()["grounding_findings"]) == 3
 
 
 def test_stub_name_mismatch_is_skipped_and_journaled(enabled, monkeypatch):
@@ -334,9 +871,69 @@ def test_lane_and_synthesis_prompts_embed_phase_fragments(enabled, monkeypatch):
     assert "Deliverable schema (YAML):" in web_goal  # schema rides with the body
     empirical_goal = delegate_calls[0]["tasks"][2]["goal"]
     assert "[PHASE SPEC" not in empirical_goal  # plausibility lane, not the kernel probe
+    assert "at most 12 deliberately chosen small cases" in empirical_goal
+    assert "at most 2 terminal calls" in empirical_goal
+    assert "trial-divide a squared denominator" in empirical_goal
+    assert "complete compatible residue basis" in empirical_goal
+    tasks = delegate_calls[0]["tasks"]
+    assert "_pre_tool_call_callback" not in tasks[0]
+    assert "_pre_tool_call_callback" not in tasks[1]
+    empirical_policy = tasks[2]["_pre_tool_call_callback"]
+    terminal_args = {"command": "python exhaustive.py", "timeout": 180, "background": True}
+    assert empirical_policy("terminal", terminal_args) is None
+    assert terminal_args["timeout"] == 20
+    assert terminal_args["background"] is False
     synth_prompt = synth_calls[0]["prompt"]
     assert "[PHASE SPEC: phase-planning]" in synth_prompt
     assert "[PHASE SPEC: phase-draft]" in synth_prompt
+
+
+def test_lane_prompts_are_scoped_to_the_exact_active_assignment(enabled, monkeypatch):
+    """Planner fan-out must not silently fall back to the whole-file prompt."""
+    delegate_calls = _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    synth_calls = _fake_synth(monkeypatch)
+    _fake_place(monkeypatch)
+
+    planner_phase.run_planner_phase(
+        goal="/prove FormalConjectures/ErdosProblems/242.lean",
+        target_symbol="erdos_242_residual_mod_seven_eq_five",
+        active_file="FormalConjectures/ErdosProblems/242.lean",
+        declaration_slice=(
+            "private lemma erdos_242_residual_mod_seven_eq_five (k : ℕ) "
+            "(hk : k % 7 = 5) : ∃ x y z, (4 : ℚ) / (24 * k + 1) = "
+            "1 / x + 1 / y + 1 / z := by\n  sorry"
+        ),
+        lean_goal="k : ℕ\nhk : k % 7 = 5\n⊢ ∃ x y z, (4 : ℚ) / (168 * (k / 7) + 121) = _",
+        requested_route="plan",
+        failed_route_signature='{"proof_shapes":["search-only"],"route":"plan"}',
+        search_signature='{"search_count":12,"used_tools":{"lean_search":7,"web_search":5}}',
+        agent=object(),
+    )
+
+    tasks = delegate_calls[0]["tasks"]
+    assert len(tasks) == 3
+    for task in tasks:
+        prompt = task["goal"]
+        assert "erdos_242_residual_mod_seven_eq_five" in prompt
+        assert "FormalConjectures/ErdosProblems/242.lean" in prompt
+        assert "24 * k + 1" in prompt
+        assert "168 * (k / 7) + 121" in prompt
+        assert "Requested route: plan" in prompt
+        assert '"proof_shapes":["search-only"]' in prompt
+        assert '"search_count":12' in prompt
+        assert "Do not broaden to the whole file" in prompt
+        assert "workflow command, not a filesystem path" in prompt
+
+    # Each lane keeps its own evidence contract after receiving the same
+    # assignment envelope.
+    assert '"findings"' in tasks[0]["goal"] and '"source"' in tasks[0]["goal"]
+    assert '"candidate_lemmas"' in tasks[1]["goal"]
+    assert '"hypothesis"' in tasks[2]["goal"] and '"counterexample"' in tasks[2]["goal"]
+
+    synth_prompt = synth_calls[0]["prompt"]
+    assert "erdos_242_residual_mod_seven_eq_five" in synth_prompt
+    assert "168 * (k / 7) + 121" in synth_prompt
+    assert '"search_count":12' in synth_prompt
 
 
 def test_sibling_file_statements_defer_to_conjectures(enabled, monkeypatch):
@@ -476,6 +1073,68 @@ def test_duplicate_restatement_never_demotes_existing_node(enabled, monkeypatch)
 
     assert outcome.ok
     assert plan_state.load_blueprint().node_by_id(node_id).status == "stated"
+
+
+def test_signature_conflict_is_not_placed_or_bound_to_proved_node(enabled, monkeypatch):
+    """A different private declaration cannot borrow graph truth or poison placement."""
+    split_id = plan_state.node_id_for("residue_split", "Demo.lean")
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=split_id,
+                    name="residue_split",
+                    file="Demo.lean",
+                    statement=(
+                        "private lemma residue_split (k : ℕ) (hmod : k % 7 = 1) : "
+                        "k % 35 = 1 ∨ k % 35 = 8 := by omega"
+                    ),
+                    status="proved",
+                ),
+            )
+        )
+    )
+    synthesis = json.dumps(
+        {
+            "grounding": [],
+            "strategy": [],
+            "nodes": [
+                {
+                    "name": "residue_split",
+                    "file": "Demo.lean",
+                    "statement": (
+                        "private lemma residue_split (k : ℕ) (hk : 1 ≤ k) "
+                        "(hmod : k % 7 = 1) : "
+                        "k % 35 = 1 ∨ k % 35 = 8 := by sorry"
+                    ),
+                },
+                {
+                    "name": "fresh_branch",
+                    "file": "Demo.lean",
+                    "statement": "private lemma fresh_branch : True := by sorry",
+                    "depends_on": ["residue_split"],
+                },
+            ],
+        }
+    )
+    _fake_delegate(monkeypatch, _delegate_payload("{}", "{}", "{}"))
+    _fake_synth(monkeypatch, response=synthesis)
+    place_calls = _fake_place(monkeypatch)
+
+    outcome = planner_phase.run_planner_phase(
+        goal="g", target_symbol="demo", active_file="Demo.lean", agent=object()
+    )
+
+    assert outcome.ok
+    assert outcome.stubs_placed == ("fresh_branch",)
+    assert len(place_calls) == 1
+    assert place_calls[0]["skeletons"] == ["private lemma fresh_branch : True := by sorry"]
+    blueprint = plan_state.load_blueprint()
+    assert blueprint.node_by_id(split_id).status == "proved"
+    branch_id = plan_state.node_id_for("fresh_branch", "Demo.lean")
+    assert not any(edge.source == branch_id and edge.target == split_id for edge in blueprint.edges)
+    journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    assert "plan-delta-node-signature-conflict" in journal
 
 
 def test_plan_md_renders_after_demotion(enabled, monkeypatch):
@@ -667,6 +1326,113 @@ def test_runner_plan_route_falls_back_to_directive(enabled, monkeypatch):
 
     assert action == "continue"
     assert history and "- directive:" in history[-1]["content"]
+
+
+def test_runner_disabled_planner_releases_pending_capacity(monkeypatch):
+    """Text-only plan fallback cannot retain a mechanical planner slot."""
+    monkeypatch.delenv("LEANFLOW_PLANNER_ENABLED", raising=False)
+    cleared: list[dict[str, Any]] = []
+    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runner,
+        "_clear_pending_plan_capacity",
+        lambda state: cleared.append(state) or True,
+    )
+    state = {
+        "_orchestrator_last_ctx": {
+            "target_symbol": "demo",
+            "active_file": "Demo.lean",
+        },
+        "prover_requested_route": {"route": "plan"},
+    }
+    history: list[dict] = []
+
+    action = _apply_plan_route(state, history)
+
+    assert action == "continue"
+    assert cleared == [state]
+    assert history and "- directive:" in history[-1]["content"]
+
+
+def test_runner_retries_capacity_deferred_planner_at_next_boundary(enabled, monkeypatch):
+    events: list[tuple] = []
+    monkeypatch.setattr(runner, "_record_activity", lambda *a, **k: events.append((a, k)))
+    monkeypatch.setattr(
+        runner.planner_phase,
+        "run_planner_phase",
+        lambda **kwargs: planner_phase.PlannerOutcome(
+            ok=False,
+            reason="planner background capacity busy; lane wave deferred",
+            synthesis_status="capacity-deferred",
+            lanes=({"lane": "web", "status": "capacity-deferred"},),
+        ),
+    )
+    autonomy_state = {
+        "_orchestrator_last_ctx": {
+            "target_symbol": "demo",
+            "active_file": "Demo.lean",
+        }
+    }
+    history: list[dict] = []
+
+    action = _apply_plan_route(autonomy_state, history)
+
+    assert action == "continue"
+    assert autonomy_state["prover_requested_route"] == {
+        "route": "plan",
+        "target_symbol": "demo",
+        "active_file": "Demo.lean",
+        "reason": "planner background capacity deferred",
+    }
+    planner_event = next(details for args, details in events if args[0] == "planner")
+    assert planner_event["synthesis_status"] == "capacity-deferred"
+
+
+def test_runner_planner_exception_reconciles_source_before_directive_fallback(enabled, monkeypatch):
+    monkeypatch.setattr(
+        runner,
+        "_run_planner_phase_with_parent_maintenance",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("planner crashed")),
+    )
+
+    def reconcile(state):
+        state["operational_pause"] = "paused_source_quarantine"
+        return {"active": 1}
+
+    monkeypatch.setattr(runner, "_reconcile_source_transaction_state", reconcile)
+    state = {
+        "_orchestrator_last_ctx": {
+            "target_symbol": "demo",
+            "active_file": "Demo.lean",
+        }
+    }
+
+    assert _apply_plan_route(state, []) == "stop:source-quarantine"
+
+
+def test_runner_planner_exception_pauses_infrastructure_when_source_is_clean(enabled, monkeypatch):
+    monkeypatch.setattr(
+        runner,
+        "_run_planner_phase_with_parent_maintenance",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("planner crashed")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_reconcile_source_transaction_state",
+        lambda _state: {"active": 0},
+    )
+    monkeypatch.setattr(runner, "_record_activity", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner.campaign_epoch, "record_status", lambda *_args, **_kwargs: None)
+    state = {
+        "_orchestrator_last_ctx": {
+            "target_symbol": "demo",
+            "active_file": "Demo.lean",
+        }
+    }
+
+    assert _apply_plan_route(state, []) == "stop:infrastructure-pause"
+    assert state["operational_pause"] == "paused_infrastructure"
+    assert "planner crashed" in state["infrastructure_pause_reason"]
 
 
 def test_runner_plan_route_flag_off_is_directive_only(monkeypatch, tmp_path):

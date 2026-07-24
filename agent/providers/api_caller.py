@@ -38,12 +38,51 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from typing import TYPE_CHECKING, Any
+
+from agent.accounting.redact import redact_sensitive_text
+from core.provider_capacity import background_provider_lease
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from run_agent import AIAgent
 
 logger = logging.getLogger(__name__)
+
+# One initial request plus three transient retries.  Keep this deterministic:
+# managed Lean campaigns checkpoint only after the provider has been given the
+# full recovery window promised by the research-workflow contract.
+TRANSIENT_PROVIDER_RETRY_DELAYS_S: tuple[float, ...] = (5.0, 15.0, 45.0)
+TRANSIENT_PROVIDER_MAX_ATTEMPTS = 1 + len(TRANSIENT_PROVIDER_RETRY_DELAYS_S)
+
+
+class TransientProviderRetriesExhausted(RuntimeError):
+    """Report that the complete transient-provider retry schedule failed.
+
+    Preserve a machine-readable marker so managed workflow wrappers do not
+    apply a second retry budget.  The public message is redacted because the
+    wrapper persists it in workflow activity and pause checkpoints.
+    """
+
+    provider_retries_exhausted = True
+
+    def __init__(self, error: BaseException) -> None:
+        self.original_error_type = type(error).__name__
+        message = redact_sensitive_text(str(error).strip()) or self.original_error_type
+        super().__init__(message)
+
+
+def transient_provider_retry_delay_s(failed_attempt: int) -> float | None:
+    """Return the delay before retrying one failed provider attempt.
+
+    ``failed_attempt`` is one-based.  ``None`` means the initial request and
+    all three retries have already failed, so the caller must surface an
+    infrastructure pause instead of issuing another request.
+    """
+    index = int(failed_attempt) - 1
+    if index < 0 or index >= len(TRANSIENT_PROVIDER_RETRY_DELAYS_S):
+        return None
+    return TRANSIENT_PROVIDER_RETRY_DELAYS_S[index]
 
 
 def _ra() -> Any:
@@ -164,6 +203,26 @@ class ApiCaller:
     # ── Interruptible (non-streaming) call ──────────────────────────────────
 
     def interruptible_api_call(self, api_kwargs: dict):
+        """Run one request while respecting research background capacity.
+
+        The foreground prover remains outside this gate. Delegated planner
+        lanes and process-isolated dispatch agents have ``_delegate_depth``
+        greater than zero and therefore share the campaign's configured
+        background-provider slots.
+        """
+        agent = self._agent
+        dispatch_process = any(
+            str(os.getenv(name, "") or "").strip()
+            for name in ("LEANFLOW_DISPATCH_WORKER", "LEANFLOW_DISPATCH_JOB_ID")
+        )
+        is_background = int(getattr(agent, "_delegate_depth", 0) or 0) > 0 or dispatch_process
+        with background_provider_lease(
+            enabled=is_background,
+            cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)),
+        ):
+            return self._interruptible_api_call_unleased(api_kwargs)
+
+    def _interruptible_api_call_unleased(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
         can detect interrupts without waiting for the full HTTP round-trip.

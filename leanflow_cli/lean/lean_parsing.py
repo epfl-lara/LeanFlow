@@ -25,6 +25,8 @@ __all__ = [
     "_text_has_any_completed_theorem_or_lemma",
     "_extract_target_symbol",
     "_find_assignment_marker_for_statement",
+    "declaration_statement_text",
+    "_statement_signature_text",
     "_trim_declaration_region_end",
     "_declaration_line_index_from_text",
     "_declaration_names_from_text",
@@ -38,6 +40,116 @@ LEAN_DECLARATION_PREAMBLE_RE = (
     r"^\s*(?:(?:@\[[^\]]*\]|@[A-Za-z0-9_.]+|private|protected|noncomputable|unsafe|partial)\s+)*"
     r"(theorem|lemma|example|def|instance|class|structure)\s+([A-Za-z0-9_'.-]+)?"
 )
+
+_DECLARATION_OPENERS = {"(": ")", "{": "}", "[": "]", "⦃": "⦄", "⟨": "⟩"}
+_DECLARATION_CLOSERS = {closer: opener for opener, closer in _DECLARATION_OPENERS.items()}
+_TYPE_ASSIGNMENT_KEYWORDS = ("let", "have")
+
+
+def _next_significant_character(text: str, start: int) -> tuple[int, str] | None:
+    """Return the next source character outside Lean comments and strings."""
+    index = start
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "-" and text.startswith("--", index):
+            newline = text.find("\n", index)
+            index = length if newline < 0 else newline + 1
+            continue
+        if char == "/" and text.startswith("/-", index):
+            depth = 1
+            index += 2
+            while index < length and depth:
+                if text.startswith("/-", index):
+                    depth += 1
+                    index += 2
+                elif text.startswith("-/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            continue
+        if char == '"':
+            index += 1
+            while index < length:
+                if text[index] == "\\":
+                    index += 2
+                    continue
+                if text[index] == '"':
+                    index += 1
+                    break
+                index += 1
+            continue
+        if char == "«":
+            close = text.find("»", index + 1)
+            index = length if close < 0 else close + 1
+            continue
+        return index, char
+    return None
+
+
+def _standalone_keyword_at(text: str, position: int, keyword: str) -> bool:
+    """Return whether one source position starts a complete Lean keyword."""
+    if not text.startswith(keyword, position):
+        return False
+    before = text[position - 1] if position else ""
+    after_index = position + len(keyword)
+    after = text[after_index] if after_index < len(text) else ""
+    identifier_chars = "_'"
+    return not (before.isalnum() or before in identifier_chars) and not (
+        after.isalnum() or after in identifier_chars
+    )
+
+
+def _type_assignment_keyword_at(text: str, position: int) -> bool:
+    """Return whether one position starts a result-type assignment form."""
+    return any(
+        _standalone_keyword_at(text, position, keyword) for keyword in _TYPE_ASSIGNMENT_KEYWORDS
+    )
+
+
+def _declaration_statement_end(text: str) -> int:
+    """Return the assignment starting a declaration body, or ``len(text)``.
+
+    Top-level ``let`` assignments after the declaration's type colon belong to
+    the result type. Count them before accepting the next assignment as the
+    body marker, independent of whether the proof is a ``by`` block or term.
+    """
+    depth = 0
+    index = 0
+    seen_type_colon = False
+    pending_type_let_assignments = 0
+    while True:
+        found = _next_significant_character(text, index)
+        if found is None:
+            return len(text)
+        position, char = found
+        if char in _DECLARATION_OPENERS:
+            depth += 1
+        elif char in _DECLARATION_CLOSERS:
+            depth = max(0, depth - 1)
+        elif (
+            depth == 0
+            and seen_type_colon
+            and char in {"l", "h"}
+            and _type_assignment_keyword_at(text, position)
+        ):
+            pending_type_let_assignments += 1
+        elif depth == 0 and char == ":":
+            if text.startswith(":=", position):
+                if seen_type_colon and pending_type_let_assignments:
+                    pending_type_let_assignments -= 1
+                    index = position + 2
+                    continue
+                return position
+            seen_type_colon = True
+        index = position + 1
+
+
+def declaration_statement_text(text: str) -> str:
+    """Return one declaration through its complete statement, excluding its body."""
+    declaration = str(text or "").strip()
+    return declaration[: _declaration_statement_end(declaration)].strip()
 
 
 def _strip_lean_comments_and_strings(text: str) -> str:
@@ -169,10 +281,12 @@ def _declaration_stable_key(entry: Mapping[str, Any]) -> tuple[str, str] | None:
 
 
 def _find_assignment_marker_for_statement(text: str) -> int:
-    depth = 0
+    block_comment_depth = 0
+    delimiter_stack: list[str] = []
     in_line_comment = False
     in_string = False
     escaped = False
+    visible_markers: list[tuple[int, int]] = []
     i = 0
     while i < len(text) - 1:
         ch = text[i]
@@ -182,13 +296,13 @@ def _find_assignment_marker_for_statement(text: str) -> int:
                 in_line_comment = False
             i += 1
             continue
-        if depth:
+        if block_comment_depth:
             if ch == "/" and nxt == "-":
-                depth += 1
+                block_comment_depth += 1
                 i += 2
                 continue
             if ch == "-" and nxt == "/":
-                depth -= 1
+                block_comment_depth -= 1
                 i += 2
                 continue
             i += 1
@@ -207,17 +321,51 @@ def _find_assignment_marker_for_statement(text: str) -> int:
             i += 2
             continue
         if ch == "/" and nxt == "-":
-            depth = 1
+            block_comment_depth = 1
             i += 2
             continue
         if ch == '"':
             in_string = True
             i += 1
             continue
+        if ch in "([{":
+            delimiter_stack.append(ch)
+            i += 1
+            continue
+        if ch in ")]}" and delimiter_stack:
+            expected = {")": "(", "]": "[", "}": "{"}[ch]
+            if delimiter_stack[-1] == expected:
+                delimiter_stack.pop()
+            i += 1
+            continue
         if ch == ":" and nxt == "=":
-            return i
+            visible_markers.append((i, len(delimiter_stack)))
+            i += 2
+            continue
         i += 1
-    return -1
+    if not visible_markers:
+        return -1
+    for marker, delimiter_depth in visible_markers:
+        if delimiter_depth:
+            continue
+        suffix = text[marker + 2 :].lstrip()
+        if re.match(r"by\b", suffix):
+            return marker
+    return visible_markers[0][0]
+
+
+def _statement_signature_text(text: str) -> str:
+    """Return a declaration slice through its top-level assignment marker.
+
+    The proof body is irrelevant to statement-fidelity review and changes on
+    nearly every prover attempt. Trimming at the comment/string-aware ``:=``
+    marker makes the audit hash stable until the declaration itself is re-stated.
+    """
+    proposed = str(text or "").strip()
+    marker = _find_assignment_marker_for_statement(proposed)
+    if marker < 0:
+        return proposed
+    return proposed[:marker].rstrip()
 
 
 def _extract_target_symbol(text: str) -> str:
@@ -236,10 +384,42 @@ def _extract_target_symbol(text: str) -> str:
 
 def _trim_declaration_region_end(lines: list[str], *, start: int, next_start: int | None) -> int:
     """Return the last line owned by a declaration before the next declaration preamble."""
-    if not next_start:
-        return len(lines)
-    end = max(start, min(len(lines), next_start - 1))
+    end = len(lines) if not next_start else max(start, min(len(lines), next_start - 1))
     idx = end
+
+    def _skip_standalone_attribute(value: int) -> int:
+        """Skip one comment-aware standalone attribute suffix, including multiline forms."""
+        if value < start:
+            return value
+        region_start = start - 1
+        sanitized = _strip_lean_comments_and_strings(
+            "\n".join(lines[region_start:value])
+        ).splitlines()
+        if not sanitized:
+            return value
+        last = sanitized[-1].strip()
+        if re.fullmatch(r"@[A-Za-z0-9_.]+", last):
+            return value - 1
+        if not last.endswith("]"):
+            return value
+        for candidate in range(len(sanitized) - 1, -1, -1):
+            fragment = "\n".join(sanitized[candidate:]).strip()
+            if not fragment.startswith("@["):
+                continue
+            depth = 0
+            closed_at = -1
+            for offset, char in enumerate(fragment[1:], start=1):
+                if char == "[":
+                    depth += 1
+                elif char == "]":
+                    depth -= 1
+                    if depth == 0:
+                        closed_at = offset
+                        break
+            if closed_at >= 0 and not fragment[closed_at + 1 :].strip():
+                return region_start + candidate
+            continue
+        return value
 
     def _skip_blank_lines(value: int) -> int:
         while value >= start and not lines[value - 1].strip():
@@ -250,6 +430,13 @@ def _trim_declaration_region_end(lines: list[str], *, start: int, next_start: in
     changed = True
     while changed and idx >= start:
         changed = False
+        while idx >= start:
+            attribute_start = _skip_standalone_attribute(idx)
+            if attribute_start == idx:
+                break
+            idx = attribute_start
+            changed = True
+        idx = _skip_blank_lines(idx)
         while idx >= start and lines[idx - 1].strip().startswith("--"):
             idx -= 1
             changed = True

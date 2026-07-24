@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+from core.project_resource_admission import (
+    ProjectLeanAdmission,
+    ProjectLeanAdmissionRetained,
+    project_lean_heavy_admission,
+    project_lean_service_reclaim_enabled,
+)
+from leanflow_cli.lean import lean_axiom_batch as _axiom_batch  # noqa: E402
+from leanflow_cli.lean import lean_proof_context_circuit as _proof_context_circuit  # noqa: E402
 
 # Phase 5: pure multi-attempt validation / path / comment text helpers (and the MULTI_ATTEMPT_*
 # bounds) were extracted to lean_attempt_helpers. Re-export them here so the in-module callers
@@ -28,6 +39,9 @@ from leanflow_cli.lean.lean_attempt_helpers import (  # noqa: E402
     _strip_comments_and_strings,
     _strip_diff_path_prefix,
     _summarize_attempt_diagnostics,
+)
+from leanflow_cli.lean.lean_attempt_location import (  # noqa: E402
+    _resolve_multi_attempt_location,
 )
 
 # Phase 5: pure auto-prove normalization / parsing helpers (native-backend failure classifiers and
@@ -57,6 +71,9 @@ from leanflow_cli.lean.lean_automation import (  # noqa: E402
 # stateful primitives (and their discovery / disable-for-run helpers) stay below; the JSON-tool /
 # Lake invocation call sites route through ``_BACKEND`` instead of calling the primitive directly.
 from leanflow_cli.lean.lean_backend import LeanBackend  # noqa: E402
+from leanflow_cli.lean.lean_command_timeout import (  # noqa: E402
+    effective_command_timeout_s,
+)
 
 # Phase 5: pure path-based declaration indexing / lookup helpers were extracted to
 # lean_declarations. Re-export them here (including LEAN_DECLARATION_PREAMBLE_RE) so existing
@@ -76,9 +93,11 @@ from leanflow_cli.lean.lean_declarations import (  # noqa: E402
 # and does NOT import lean_services / native_runner, so this introduces no import cycle.
 from leanflow_cli.lean.lean_diagnostics import (  # noqa: E402
     _diagnostic_reason_for_entry,
+    _goals_still_open,  # noqa: F401
     classify_blocker_kind,
     diagnostic_items,
 )
+from leanflow_cli.lean.lean_parsing import _trim_declaration_region_end  # noqa: E402
 
 # Phase 5: the pure local proof-context fallback assembler (_local_proof_context_payload rebuilds a
 # proof-context payload from an on-disk declaration slice, with no MCP backend or run state) was
@@ -87,6 +106,8 @@ from leanflow_cli.lean.lean_diagnostics import (  # noqa: E402
 # resolving it unchanged. lean_proof_context_local imports only stdlib plus lean_declarations and
 # does NOT import lean_services / native_runner, so this introduces no import cycle.
 from leanflow_cli.lean.lean_proof_context_local import (  # noqa: E402
+    _enrich_backend_proof_context,
+    _filter_backend_in_scope_source_order,
     _local_proof_context_payload,
 )
 
@@ -106,6 +127,7 @@ from leanflow_cli.lean.lean_search_providers import (  # noqa: E402
     _leanexplore_api_key,
     _leanexplore_api_search,
     _leanexplore_backend_preference,
+    _leanexplore_local_rerank_top,
     _leanexplore_local_status,
     _model_to_plain_dict,
     _quarantine_corrupt_leanexplore_db,
@@ -132,6 +154,7 @@ from leanflow_cli.workflows.project import (
     discover_leanflow_project,
     find_lean_project_root,
 )
+from leanflow_cli.workflows.workflow_activity_reader import iter_jsonl_dicts_reverse
 from leanflow_cli.workflows.workflow_state import append_workflow_outcome, workflow_outcomes_path
 
 logger = logging.getLogger(__name__)
@@ -188,6 +211,7 @@ MCP_CAPABILITY_DISABLED_LABELS = {
 }
 _DISABLED_MCP_TOOLS_BY_RUN: dict[str, set[str]] = {}
 LOCAL_INCREMENTAL_AUTO_PROBE_MIN_TIMEOUT_S = 60
+_OUTCOME_SCAN_MAX_RECORD_BYTES = 512 * 1024
 
 # Phase 5 (#4 lean backend): shared stateless façade over the backend primitives. The wrapper
 # forwards verbatim and resolves _invoke_json_tool / _run_command lazily off this module, so this
@@ -200,18 +224,11 @@ def recent_empty_search_streak(*, workflow_command: str, limit: int = 6) -> int:
     path = workflow_outcomes_path()
     if not path.is_file():
         return 0
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except Exception:
-        return 0
+    bounded_limit = max(1, int(limit))
     streak = 0
-    for line in reversed(lines):
-        try:
-            payload = json.loads(line)
-        except Exception:
-            continue
-        if not isinstance(payload, Mapping):
-            continue
+    for payload in iter_jsonl_dicts_reverse(
+        [path], max_record_bytes=_OUTCOME_SCAN_MAX_RECORD_BYTES
+    ):
         if str(payload.get("workflow_command", "") or "") != workflow_command:
             continue
         if str(payload.get("kind", "") or "") != "lean-search":
@@ -224,7 +241,7 @@ def recent_empty_search_streak(*, workflow_command: str, limit: int = 6) -> int:
         results = result_payload.get("results", [])
         if isinstance(results, list) and not results:
             streak += 1
-            if streak >= limit:
+            if streak >= bounded_limit:
                 break
             continue
         break
@@ -269,7 +286,9 @@ def _apply_disabled_mcp_tools(
     *,
     cwd: str | os.PathLike[str] | None = None,
 ) -> list[str]:
-    disabled = _disabled_mcp_tools_for_run(cwd)
+    run_disabled = _disabled_mcp_tools_for_run(cwd)
+    campaign_disabled = _proof_context_circuit.timed_out_tools(cwd=cwd)
+    disabled = run_disabled | campaign_disabled
     if not disabled:
         return []
     reasons: list[str] = []
@@ -277,7 +296,12 @@ def _apply_disabled_mcp_tools(
         if tool_name and tool_name in disabled:
             mcp_tools[capability] = ""
             label = MCP_CAPABILITY_DISABLED_LABELS.get(capability, f"{capability} MCP")
-            reasons.append(f"{label} disabled for current run after previous backend failure")
+            if tool_name in campaign_disabled:
+                reasons.append(
+                    f"{label} disabled for current campaign after previous backend timeout"
+                )
+            else:
+                reasons.append(f"{label} disabled for current run after previous backend failure")
     return reasons
 
 
@@ -420,19 +444,56 @@ def _project_root(cwd: str | os.PathLike[str] | None = None) -> tuple[Path | Non
 
 
 def _run_command(cmd: list[str], *, cwd: Path | None = None) -> tuple[int, str]:
+    """Run one subprocess with process-tree cleanup and the effective timeout policy."""
+    process: subprocess.Popen[str] | None = None
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             cmd,
             cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=120,
-            check=False,
+            start_new_session=os.name != "nt",
         )
-        return result.returncode, result.stdout.strip()
+        output, _ = process.communicate(timeout=effective_command_timeout_s(cmd))
+        return int(process.returncode or 0), output.strip()
+    except subprocess.TimeoutExpired as exc:
+        if process is not None:
+            try:
+                if os.name == "nt":
+                    process.terminate()
+                else:
+                    os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    if os.name == "nt":
+                        process.kill()
+                    else:
+                        os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            try:
+                process.communicate(timeout=1)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        return 1, str(exc)
     except Exception as exc:
         return 1, str(exc)
+
+
+def _reclaim_incremental_before_local_lean(admission: ProjectLeanAdmission) -> bool:
+    """Close an owned LeanProbe before launching another local Lean process."""
+    if not project_lean_service_reclaim_enabled():
+        return True
+    from leanflow_cli.lean.lean_incremental import close_incremental_sessions
+
+    reclaimed = close_incremental_sessions()
+    if not reclaimed:
+        admission.retain_until_process_exit(
+            "owned LeanProbe session close failed before local Lean command"
+        )
+    return reclaimed
 
 
 def _tool_parameter_names(tool_name: str) -> set[str]:
@@ -512,9 +573,12 @@ def _leanexplore_local_search(query: str, *, limit: int = 10) -> tuple[list[dict
                 rerank_top=rerank_top,
             )
 
+        rerank_top = _leanexplore_local_rerank_top()
         with _LEANEXPLORE_LOCAL_SERVICE_LOCK, _quiet_leanexplore_local_output():
             try:
-                response = asyncio.run(_run_search(0 if _LEANEXPLORE_LOCAL_RERANK_DISABLED else 50))
+                response = asyncio.run(
+                    _run_search(0 if _LEANEXPLORE_LOCAL_RERANK_DISABLED else rerank_top)
+                )
             except Exception as exc:
                 if not _is_leanexplore_reranker_load_error(exc):
                     raise
@@ -693,7 +757,7 @@ def probe_capabilities(cwd: str | os.PathLike[str] | None = None) -> LeanCapabil
         for entry in mcp_status
         if entry.get("managed") and str(entry.get("name", "") or "").strip()
     }
-    degraded: list[str] = _apply_disabled_mcp_tools(mcp_tools, cwd=base)
+    degraded: list[str] = _apply_disabled_mcp_tools(mcp_tools, cwd=project_root or base)
     if not binaries.get("lean"):
         degraded.append("lean binary unavailable")
     if not binaries.get("lake"):
@@ -797,6 +861,7 @@ def _scan_theorem_by_range(
     tool_name = _discover_internal_managed_mcp_tool("scan_theorem")
     if not tool_name:
         return {}
+    started = time.monotonic()
     raw = _BACKEND.invoke_tool(
         tool_name,
         {
@@ -804,8 +869,12 @@ def _scan_theorem_by_range(
             "target": {"range": {"start_line": int(start_line), "end_line": int(end_line)}},
         },
     )
+    elapsed_s = max(0.0, time.monotonic() - started)
     if raw.get("error"):
-        return {"error": str(raw.get("error", "") or "")}
+        return {
+            "error": str(raw.get("error", "") or ""),
+            "_backend_elapsed_s": elapsed_s,
+        }
     parsed = _decode_nested_result(raw)
     if isinstance(parsed, Mapping):
         return dict(parsed)
@@ -834,7 +903,16 @@ def _diagnostics_text(
         relative = str(file_path.resolve().relative_to(project_root.resolve()))
     except Exception:
         relative = str(file_path)
-    _, output = _BACKEND.run_command(["lake", "env", "lean", relative], cwd=project_root)
+    try:
+        with project_lean_heavy_admission(project_root) as admission:
+            if not _reclaim_incremental_before_local_lean(admission):
+                return (
+                    "Lean resource admission retained: an owned LeanProbe session "
+                    "could not be closed before diagnostics."
+                )
+            _, output = _BACKEND.run_command(["lake", "env", "lean", relative], cwd=project_root)
+    except ProjectLeanAdmissionRetained as exc:
+        return str(exc)
     return output or "no diagnostics available"
 
 
@@ -864,6 +942,47 @@ def _goals_text(
         if fragments:
             return "\n".join(fragments[:8])
     return "Lean goals unavailable."
+
+
+def lean_goals(
+    target: str,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    line: int | None = None,
+    symbol: str | None = None,
+    capability_report: Mapping[str, Any] | None = None,
+) -> str:
+    """Return current Lean goals without running broader inspection work.
+
+    A supplied capability report is authoritative, including an empty mapping,
+    so callers can reuse an earlier probe without starting another one. When no
+    report is supplied, probe once to preserve the standalone service behavior.
+    This path invokes only the goals backend: it never runs diagnostics or
+    file/project ``sorry`` scans.
+    """
+    if capability_report is None:
+        report = probe_capabilities(cwd)
+        project_root = Path(report.project_root).resolve() if report.project_root else None
+        mcp_tools: Mapping[str, str] = report.mcp_tools
+    else:
+        raw_project_root = str(capability_report.get("project_root", "") or "").strip()
+        project_root = Path(raw_project_root).expanduser().resolve() if raw_project_root else None
+        raw_mcp_tools = capability_report.get("mcp_tools", {})
+        mcp_tools = (
+            {
+                str(capability): str(tool_name or "")
+                for capability, tool_name in raw_mcp_tools.items()
+            }
+            if isinstance(raw_mcp_tools, Mapping)
+            else {}
+        )
+    return _goals_text(
+        Path(target).expanduser().resolve(),
+        project_root,
+        mcp_tools,
+        line=line,
+        symbol=symbol,
+    )
 
 
 def lean_sorries(
@@ -918,8 +1037,18 @@ def lean_inspect(
     report = probe_capabilities(cwd)
     file_path = Path(target).expanduser().resolve()
     project_root = Path(report.project_root).resolve() if report.project_root else None
+    requested_symbol = str(symbol or "").strip()
+    requested_symbol_line = (
+        _find_symbol_line(file_path, requested_symbol) if requested_symbol else None
+    )
     diagnostics = _diagnostics_text(file_path, project_root, report.mcp_tools)
-    goals = _goals_text(file_path, project_root, report.mcp_tools, line=line, symbol=symbol)
+    goals = _goals_text(
+        file_path,
+        project_root,
+        report.mcp_tools,
+        line=line or requested_symbol_line,
+        symbol=symbol,
+    )
     sorry_count = _count_sorries(file_path)
     project_sorry_count, _ = _project_sorry_stats(project_root)
     queue_items: list[dict[str, Any]] = []
@@ -960,7 +1089,24 @@ def lean_inspect(
         goals=goals,
         sorry_count=sorry_count,
         project_sorry_count=project_sorry_count,
-        blocker_kind=classify_blocker_kind("\n".join((diagnostics, goals))),
+        blocker_kind=classify_blocker_kind(
+            "",
+            diagnostics=diagnostics,
+            goals=goals,
+            queue_reasons=tuple(
+                str(reason)
+                for item in queue_items
+                if not requested_symbol
+                or (
+                    int(item.get("line", 0) or 0) == requested_symbol_line
+                    if requested_symbol_line is not None
+                    else str(item.get("label", "") or "").strip()
+                    in {requested_symbol, requested_symbol.split(".")[-1]}
+                )
+                for reason in item.get("reasons", []) or []
+                if str(reason).strip()
+            ),
+        ),
         queue_items=queue_items,
         capability_report=report.to_dict(),
     )
@@ -969,8 +1115,14 @@ def lean_inspect(
 
 
 def _module_name_for_file(project_root: Path, file_path: Path) -> str:
+    """Return the importable Lean module name for a project file.
+
+    Lean accepts numeric path components only as quoted identifiers, as used by
+    the Formal Conjectures modules (for example, ``ErdosProblems.\u00ab242\u00bb``).
+    """
     relative = file_path.resolve().relative_to(project_root.resolve())
-    return ".".join(relative.with_suffix("").parts)
+    parts = relative.with_suffix("").parts
+    return ".".join(f"\u00ab{part}\u00bb" if part.isdigit() else part for part in parts)
 
 
 def lean_verify(
@@ -995,7 +1147,20 @@ def lean_verify(
     else:
         normalized_mode = "project"
         command = ["lake", "build"]
-    code, output = _BACKEND.run_command(command, cwd=root)
+    if root is None:
+        code, output = _BACKEND.run_command(command, cwd=root)
+    else:
+        try:
+            with project_lean_heavy_admission(root) as admission:
+                if _reclaim_incremental_before_local_lean(admission):
+                    code, output = _BACKEND.run_command(command, cwd=root)
+                else:
+                    code, output = 1, (
+                        "Lean resource admission retained: an owned LeanProbe session "
+                        "could not be closed before verification."
+                    )
+        except ProjectLeanAdmissionRetained as exc:
+            code, output = 1, str(exc)
     result = LeanVerificationResult(
         ok=code == 0,
         mode=normalized_mode,
@@ -1044,6 +1209,7 @@ def lean_search(
     results: list[dict[str, Any]] = []
     degraded = list(report.degraded_reasons)
 
+    root = Path(report.project_root) if report.project_root else None
     mcp_order = []
     normalized_mode = str(mode or "auto").strip().lower()
     leanexplore_preference = _leanexplore_backend_preference()
@@ -1081,6 +1247,8 @@ def lean_search(
     if normalized_mode in {"auto", "semantic", "natural-language", "natural"}:
         _append_leanexplore_semantic_fallbacks(allow_remote_api=True)
     if normalized_mode == "local":
+        if root:
+            _append_provider("project_rg")
         _append_leanexplore_semantic_fallbacks(allow_remote_api=False)
     if normalized_mode in {"auto", "semantic"} and _BACKEND.is_available(report, "leanfinder"):
         _append_provider("leanfinder", report.mcp_tools["leanfinder"])
@@ -1114,6 +1282,17 @@ def lean_search(
             if api_error:
                 degraded.append(api_error)
             continue
+        if provider_key == "project_rg":
+            if root is None:
+                continue
+            results.extend(
+                {
+                    "provider": SEARCH_PROVIDER_LABELS["project_rg"],
+                    **match,
+                }
+                for match in _rg_search(root, query, limit=limit)
+            )
+            continue
         payload = _BACKEND.invoke_tool(
             tool_name,
             {
@@ -1137,8 +1316,7 @@ def lean_search(
             )
             break
 
-    root = Path(report.project_root) if report.project_root else None
-    if not results and root:
+    if not results and root and SEARCH_PROVIDER_LABELS["project_rg"] not in attempted:
         attempted.append(SEARCH_PROVIDER_LABELS["project_rg"])
         for match in _rg_search(root, query, limit=limit):
             results.append({"provider": SEARCH_PROVIDER_LABELS["project_rg"], **match})
@@ -1200,6 +1378,77 @@ def _wrapper_unavailable_result(
     return payload
 
 
+def _proof_context_local_fast_path(
+    file_path: str,
+    theorem_id: str,
+    *,
+    cwd: str | os.PathLike[str] | None,
+) -> dict[str, Any] | None:
+    """Return local context immediately when the managed backend is suppressed.
+
+    A durable timeout circuit is specifically evidence that capability discovery
+    would only reacquire the project Lean admission before disabling the same
+    backend. Process-local backend quarantine has the same property. Resolve the
+    project and declaration directly so both the public wrapper and callers such
+    as ``lean_lemma_suggest`` avoid that repeated admission wait.
+    """
+    project_root, _ = _project_root(cwd)
+    base = Path(
+        project_root
+        or cwd
+        or str(os.getenv("LEANFLOW_PROJECT_ROOT", "") or "").strip()
+        or os.getcwd()
+    ).expanduser()
+    scope = (base.parent if base.is_file() else base).resolve()
+    backend_tools = set(MANAGED_MCP_TOOL_MAP.get("proof_context", ()))
+    campaign_disabled = _proof_context_circuit.timed_out_tools(cwd=scope).intersection(
+        backend_tools
+    )
+    run_disabled = _disabled_mcp_tools_for_run(scope).intersection(backend_tools)
+    if not campaign_disabled and not run_disabled:
+        return None
+
+    degraded_reasons: list[str] = []
+    if campaign_disabled:
+        degraded_reasons.append(
+            "lean proof context MCP disabled for current campaign after previous backend timeout"
+        )
+    if run_disabled:
+        degraded_reasons.append(
+            "lean proof context MCP disabled for current run after previous backend failure"
+        )
+    degraded_reasons.append(
+        "using local declaration fallback without capability probing because the backend circuit is open"
+    )
+    canonical_file_path = _canonical_tool_file_path(file_path, cwd=scope)
+    target_path = (
+        Path(canonical_file_path).expanduser().resolve() if canonical_file_path else Path("")
+    )
+    local_payload = _local_proof_context_payload(
+        target_path,
+        theorem_id,
+        degraded_reasons=degraded_reasons,
+        scan_payload={},
+    )
+    if local_payload is not None:
+        append_workflow_outcome("lean-proof-context", local_payload)
+        return local_payload
+
+    payload: dict[str, Any] = {
+        "success": False,
+        "status": "local-fallback-unavailable",
+        "backend_tool": "",
+        "degraded_reasons": [
+            *degraded_reasons,
+            "local declaration fallback unavailable while proof context backend is suppressed",
+        ],
+        "file_path": canonical_file_path,
+        "theorem_id": str(theorem_id or "").strip(),
+    }
+    append_workflow_outcome("lean-proof-context", payload)
+    return payload
+
+
 def _invoke_native_mcp_wrapper(
     tool_name: str,
     arguments: dict[str, Any],
@@ -1220,20 +1469,28 @@ def _invoke_native_mcp_wrapper(
         return payload
     raw = _BACKEND.invoke_tool(tool_name, arguments)
     if raw.get("error"):
-        _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
+        recycle_pending = bool(raw.get("mcp_recycling"))
+        if not recycle_pending:
+            _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
         payload = _wrapper_unavailable_result(
             report=report,
             tool_name=tool_name,
             unavailable_reason=str(raw.get("error", unavailable_reason)),
             extra=extra,
         )
-        payload["degraded_reasons"] = list(
-            dict.fromkeys(
-                [
-                    *payload.get("degraded_reasons", []),
-                    "managed MCP wrapper disabled for current run after previous backend failure",
-                ]
+        if recycle_pending:
+            payload["retryable"] = True
+            payload["mcp_recycling"] = True
+            lifecycle_reason = (
+                "managed MCP server is completing bounded post-attempt recycle; "
+                "retry this capability on the next tool turn"
             )
+        else:
+            lifecycle_reason = (
+                "managed MCP wrapper disabled for current run after previous backend failure"
+            )
+        payload["degraded_reasons"] = list(
+            dict.fromkeys([*payload.get("degraded_reasons", []), lifecycle_reason])
         )
         append_workflow_outcome(outcome_kind, payload)
         return payload
@@ -1452,6 +1709,13 @@ def lean_proof_context(
     similarity_threshold: float = 0.7,
 ) -> dict[str, Any]:
     """Query the proof-context MCP for theorem statement, original proof, hypotheses, in-scope decls, and similar proofs, with fallback to local declaration extraction on backend failure."""
+    fast_local_payload = _proof_context_local_fast_path(
+        file_path,
+        theorem_id,
+        cwd=cwd,
+    )
+    if fast_local_payload is not None:
+        return fast_local_payload
     report = probe_capabilities(cwd)
     canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
     target_path = (
@@ -1460,9 +1724,13 @@ def lean_proof_context(
     declaration_entry = (
         _find_declaration_entry(target_path, theorem_id) if canonical_file_path else None
     )
+    tool_name = report.mcp_tools.get("proof_context", "")
     scan_payload: dict[str, Any] = {}
     resolved_theorem_id = str(theorem_id or "").strip()
-    if declaration_entry:
+    # The range scan is served by the same upstream proof-auto process.  When a
+    # durable timeout circuit is open, avoid waking that process before taking
+    # the exact local declaration fallback.
+    if declaration_entry and tool_name:
         scan_payload = _scan_theorem_by_range(
             target_path,
             start_line=int(declaration_entry.get("line", 0) or 0),
@@ -1477,8 +1745,49 @@ def lean_proof_context(
         if theorem_name:
             resolved_theorem_id = theorem_name
 
-    tool_name = report.mcp_tools.get("proof_context", "")
     extra = {"file_path": canonical_file_path, "theorem_id": resolved_theorem_id}
+    scan_elapsed_s = float(scan_payload.pop("_backend_elapsed_s", 0.0) or 0.0)
+    scan_error = str(scan_payload.get("error", "") or "").strip()
+    if (
+        tool_name
+        and scan_error
+        and _proof_context_circuit.is_timeout_failure(scan_error, elapsed_s=scan_elapsed_s)
+    ):
+        local_payload = _local_proof_context_payload(
+            target_path,
+            theorem_id,
+            degraded_reasons=[
+                *report.degraded_reasons,
+                f"proof context range scan timed out: {scan_error}",
+                "managed MCP wrapper disabled for current run after previous backend failure",
+                "using local declaration fallback after proof context backend timeout",
+            ],
+            scan_payload={},
+        )
+        if local_payload is not None:
+            local_payload["timing"] = {
+                "backend_phase": "range_scan",
+                "backend_elapsed_s": round(scan_elapsed_s, 3),
+            }
+            _disable_mcp_tool_for_run(tool_name, cwd=report.project_root or report.cwd)
+            if _proof_context_circuit.record_timeout(
+                tool_name,
+                scan_error,
+                cwd=report.project_root or report.cwd,
+                file_path=canonical_file_path,
+                theorem_id=resolved_theorem_id,
+                elapsed_s=scan_elapsed_s,
+            ):
+                local_payload["degraded_reasons"] = list(
+                    dict.fromkeys(
+                        [
+                            *local_payload.get("degraded_reasons", []),
+                            "proof context MCP disabled for current campaign after backend timeout",
+                        ]
+                    )
+                )
+            append_workflow_outcome("lean-proof-context", local_payload)
+            return local_payload
     if not tool_name:
         payload = _wrapper_unavailable_result(
             report=report,
@@ -1486,8 +1795,21 @@ def lean_proof_context(
             unavailable_reason="lean proof context MCP unavailable",
             extra=extra,
         )
+        local_payload = _local_proof_context_payload(
+            target_path,
+            theorem_id,
+            degraded_reasons=[
+                *payload["degraded_reasons"],
+                "using local declaration fallback because proof context MCP is unavailable",
+            ],
+            scan_payload=scan_payload,
+        )
+        if local_payload is not None:
+            append_workflow_outcome("lean-proof-context", local_payload)
+            return local_payload
         append_workflow_outcome("lean-proof-context", payload)
         return payload
+    backend_started = time.monotonic()
     raw = _BACKEND.invoke_tool(
         tool_name,
         {
@@ -1497,12 +1819,14 @@ def lean_proof_context(
             "similarity_threshold": similarity_threshold,
         },
     )
+    backend_elapsed_s = max(0.0, time.monotonic() - backend_started)
     if raw.get("error"):
-        _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
+        backend_error = str(raw.get("error", "lean proof context MCP unavailable"))
+        _disable_mcp_tool_for_run(tool_name, cwd=report.project_root or report.cwd)
         payload = _wrapper_unavailable_result(
             report=report,
             tool_name=tool_name,
-            unavailable_reason=str(raw.get("error", "lean proof context MCP unavailable")),
+            unavailable_reason=backend_error,
             extra=extra,
         )
         payload["degraded_reasons"] = list(
@@ -1523,6 +1847,26 @@ def lean_proof_context(
             scan_payload=scan_payload,
         )
         if local_payload is not None:
+            local_payload["timing"] = {
+                "backend_phase": "proof_context",
+                "backend_elapsed_s": round(backend_elapsed_s, 3),
+            }
+            if _proof_context_circuit.record_timeout(
+                tool_name,
+                backend_error,
+                cwd=report.project_root or report.cwd,
+                file_path=canonical_file_path,
+                theorem_id=resolved_theorem_id,
+                elapsed_s=backend_elapsed_s,
+            ):
+                local_payload["degraded_reasons"] = list(
+                    dict.fromkeys(
+                        [
+                            *local_payload.get("degraded_reasons", []),
+                            "proof context MCP disabled for current campaign after backend timeout",
+                        ]
+                    )
+                )
             append_workflow_outcome("lean-proof-context", local_payload)
             return local_payload
         append_workflow_outcome("lean-proof-context", payload)
@@ -1560,7 +1904,7 @@ def lean_proof_context(
                 "using local declaration fallback after theorem_not_found without disabling proof-auto MCP"
             )
         elif tool_name:
-            _disable_mcp_tool_for_run(tool_name, cwd=report.cwd)
+            _disable_mcp_tool_for_run(tool_name, cwd=report.project_root or report.cwd)
             degraded_reasons.append(
                 "managed MCP wrapper disabled for current run after previous backend failure"
             )
@@ -1574,6 +1918,26 @@ def lean_proof_context(
             scan_payload=scan_payload,
         )
         if local_payload is not None:
+            local_payload["timing"] = {
+                "backend_phase": "proof_context",
+                "backend_elapsed_s": round(backend_elapsed_s, 3),
+            }
+            if fail_code != "theorem_not_found" and _proof_context_circuit.record_timeout(
+                tool_name,
+                fail_message,
+                cwd=report.project_root or report.cwd,
+                file_path=canonical_file_path,
+                theorem_id=resolved_theorem_id,
+                elapsed_s=backend_elapsed_s,
+            ):
+                local_payload["degraded_reasons"] = list(
+                    dict.fromkeys(
+                        [
+                            *local_payload.get("degraded_reasons", []),
+                            "proof context MCP disabled for current campaign after backend timeout",
+                        ]
+                    )
+                )
             append_workflow_outcome("lean-proof-context", local_payload)
             return local_payload
         payload["success"] = False
@@ -1588,6 +1952,15 @@ def lean_proof_context(
     payload.setdefault("similar_proofs", [])
     payload.setdefault("metadata", {})
     payload.setdefault("timing", {})
+    if declaration_entry:
+        local_payload = _local_proof_context_payload(
+            target_path,
+            theorem_id,
+            degraded_reasons=[],
+            scan_payload=scan_payload,
+        )
+        payload = _enrich_backend_proof_context(payload, local_payload)
+        payload = _filter_backend_in_scope_source_order(payload, target_path, theorem_id)
     if (
         declaration_entry
         and not str(payload.get("theorem_statement", "") or "").strip()
@@ -1617,7 +1990,7 @@ def lean_multi_attempt(
     cwd: str | os.PathLike[str] | None = None,
     column: int | None = None,
 ) -> dict[str, Any]:
-    """Test a list of 2-6 short tactic candidates at one proof location via MCP, validating syntax and constraint bounds before backend submission."""
+    """Test 2-6 short tactics, correcting safe line-only proof locations."""
     report = probe_capabilities(cwd)
     normalized_attempts = _normalize_multi_attempt_candidates(attempts)
     validation_reasons = _multi_attempt_validation_reasons(normalized_attempts)
@@ -1643,23 +2016,39 @@ def lean_multi_attempt(
         }
         append_workflow_outcome("lean-multi-attempt", payload)
         return payload
+    requested_line = int(line)
+    resolved_line, resolved_column, adjustment = _resolve_multi_attempt_location(
+        Path(canonical_file_path), requested_line, column
+    )
+    location_details: dict[str, Any] = {
+        "file_path": canonical_file_path,
+        "line": resolved_line,
+        "column": resolved_column,
+        "attempts": normalized_attempts,
+    }
+    if adjustment == "previous_tactic_line_after_blank":
+        location_details.update(
+            {
+                "requested_line": requested_line,
+                "line_adjustment": "previous_tactic_line_after_blank",
+            }
+        )
+        if column is not None:
+            location_details["requested_column"] = column
+    if adjustment == "inline_tactic_body":
+        location_details["column_adjustment"] = adjustment
     return _invoke_native_mcp_wrapper(
         report.mcp_tools.get("multi_attempt", ""),
         {
             "file_path": canonical_file_path,
-            "line": line,
-            "column": column,
+            "line": resolved_line,
+            "column": resolved_column,
             "snippets": normalized_attempts,
         },
         report=report,
         unavailable_reason="lean multi-attempt MCP unavailable",
         outcome_kind="lean-multi-attempt",
-        extra={
-            "file_path": canonical_file_path,
-            "line": line,
-            "column": column,
-            "attempts": normalized_attempts,
-        },
+        extra=location_details,
     )
 
 
@@ -1776,8 +2165,27 @@ def lean_auto_search(
 ) -> dict[str, Any]:
     report = probe_capabilities(cwd)
     canonical_file_path = _canonical_tool_file_path(file_path, cwd=cwd or report.cwd)
-    return _invoke_native_mcp_wrapper(
-        report.mcp_tools.get("auto_search", ""),
+    tool_name = report.mcp_tools.get("auto_search", "")
+    extra = {
+        "file_path": canonical_file_path,
+        "theorem_id": theorem_id,
+        "objective": objective,
+    }
+    project_scope = report.project_root or report.cwd or cwd
+    if tool_name and _proof_context_circuit.declaration_scan_timed_out(cwd=project_scope):
+        payload = _wrapper_unavailable_result(
+            report=report,
+            tool_name=tool_name,
+            unavailable_reason=(
+                "lean automation search skipped because the shared proof-auto declaration "
+                "scanner timed out earlier in this campaign"
+            ),
+            extra=extra,
+        )
+        append_workflow_outcome("lean-auto-search", payload)
+        return payload
+    payload = _invoke_native_mcp_wrapper(
+        tool_name,
         {
             "file": canonical_file_path,
             "theorem_id": theorem_id,
@@ -1787,8 +2195,9 @@ def lean_auto_search(
         report=report,
         unavailable_reason="lean automation search MCP unavailable",
         outcome_kind="lean-auto-search",
-        extra={"file_path": canonical_file_path, "theorem_id": theorem_id, "objective": objective},
+        extra=extra,
     )
+    return payload
 
 
 def lean_auto_try(
@@ -1895,13 +2304,123 @@ def lean_auto_try(
     return payload
 
 
+def _axiom_harness_source(target_file: Path, target: str) -> str:
+    """Return current source with an axiom query inserted in declaration scope."""
+    source = target_file.read_text(encoding="utf-8")
+    lines = source.splitlines()
+    entries = _declaration_index(target_file)
+    wanted = str(target or "").strip()
+    short = wanted.split(".")[-1]
+    entry_index = next(
+        (
+            index
+            for index, entry in enumerate(entries)
+            if str(entry.get("name", "") or "").strip() == wanted
+            or str(entry.get("name", "") or "").strip().split(".")[-1] == short
+        ),
+        -1,
+    )
+    print_target = wanted
+    insertion_index = len(lines)
+    if entry_index >= 0:
+        entry = entries[entry_index]
+        print_target = str(entry.get("name", "") or wanted).strip()
+        if entry_index + 1 < len(entries):
+            # Insert after the target's proof, before the next declaration's
+            # doc comment and attributes. Inserting immediately before the
+            # next declaration keyword can attach its attributes to `#print`.
+            insertion_index = _trim_declaration_region_end(
+                lines,
+                start=max(1, int(entry.get("line", 1) or 1)),
+                next_start=max(1, int(entries[entry_index + 1].get("line", 1) or 1)),
+            )
+        else:
+            sanitized_lines = _strip_comments_and_strings(source).splitlines()
+            cursor = len(sanitized_lines) - 1
+            declaration_line = max(0, int(entry.get("line", 1) or 1) - 1)
+            while cursor >= declaration_line:
+                line = sanitized_lines[cursor].strip()
+                if not line:
+                    cursor -= 1
+                    continue
+                if re.fullmatch(r"end(?:\s+[A-Za-z0-9_'.\u00ab\u00bb]+)?", line):
+                    insertion_index = cursor
+                    cursor -= 1
+                    continue
+                break
+    lines.insert(insertion_index, f"#print axioms {print_target}")
+    return "\n".join(lines) + "\n"
+
+
+def _run_axiom_harness(root: Path, harness_source: str) -> tuple[int, str]:
+    """Run one system-temp axiom harness and always remove it on normal exit."""
+    # Keep the harness outside the project tree. A process-group kill cannot run
+    # ``finally``; system-temp placement prevents that interruption from leaving a
+    # stale root-level Lean file that contaminates project search and sorry scans.
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".lean", prefix="leanflow-axioms-", delete=False
+    ) as handle:
+        handle.write(harness_source)
+        temp_path = Path(handle.name)
+    try:
+        try:
+            relative = str(temp_path.relative_to(root))
+        except Exception:
+            relative = str(temp_path)
+        try:
+            with project_lean_heavy_admission(root) as admission:
+                if not _reclaim_incremental_before_local_lean(admission):
+                    return 1, (
+                        "Lean resource admission retained: an owned LeanProbe session "
+                        "could not be closed before axiom inspection."
+                    )
+                return _BACKEND.run_command(["lake", "env", "lean", relative], cwd=root)
+        except ProjectLeanAdmissionRetained as exc:
+            return 1, str(exc)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _axiom_report_from_profile(
+    target: str,
+    target_file: Path,
+    axioms: Sequence[str],
+    output: str,
+) -> LeanAxiomReport:
+    """Build one target-specific report from an isolated successful profile."""
+    normalized_axioms = sorted({str(axiom).strip() for axiom in axioms if str(axiom).strip()})
+    nonstandard = [axiom for axiom in normalized_axioms if axiom not in STANDARD_AXIOMS]
+    return LeanAxiomReport(
+        target=target,
+        file_path=str(target_file),
+        ok=not nonstandard,
+        axioms=normalized_axioms,
+        custom_axioms=nonstandard,
+        classical=any("Classical" in axiom for axiom in normalized_axioms),
+        choice="Classical.choice" in normalized_axioms,
+        note="no non-standard axioms found" if not nonstandard else output[:600],
+    )
+
+
+def _clear_axiom_batch_cache_for_tests() -> None:
+    """Clear process-local axiom evidence between unit tests."""
+    _axiom_batch.clear_cache()
+
+
 def lean_axioms(
     target: str,
     *,
     cwd: str | os.PathLike[str] | None = None,
     file_path: str = "",
+    prefetch_siblings: bool = True,
 ) -> LeanAxiomReport:
-    """Generate axiom report for a target declaration, identifying standard vs. custom axioms and flagging Classical/choice dependencies; return None if project or file path missing, or module resolution fails."""
+    """Report the current target's standard and custom axiom dependencies.
+
+    Keep sibling prefetch enabled for the public inspection surface so nearby
+    calls can share one source-revision cache. Parent acceptance gates disable
+    it because each proof edit changes that revision and needs only one exact
+    declaration profile.
+    """
     project_root, _ = _project_root(cwd)
     root = Path(project_root) if project_root else None
     target_file = Path(file_path).expanduser().resolve() if file_path else None
@@ -1915,14 +2434,13 @@ def lean_axioms(
             classical=False,
             choice=False,
             note="Provide both a Lean project and file_path to inspect axioms.",
+            inspection_succeeded=False,
         )
         append_workflow_outcome("lean-axioms", report.to_dict())
         return report
     try:
-        module_name = _module_name_for_file(root, target_file)
-    except Exception:
-        module_name = ""
-    if not module_name:
+        source = target_file.read_text(encoding="utf-8")
+    except OSError as exc:
         report = LeanAxiomReport(
             target=target,
             file_path=str(target_file),
@@ -1931,57 +2449,219 @@ def lean_axioms(
             custom_axioms=[],
             classical=False,
             choice=False,
-            note="Could not resolve module name for the target file.",
+            note=f"Could not read the target file for axiom inspection: {exc}",
+            inspection_succeeded=False,
         )
         append_workflow_outcome("lean-axioms", report.to_dict())
         return report
-    with tempfile.NamedTemporaryFile("w", suffix=".lean", delete=False, dir=str(root)) as handle:
-        handle.write(f"import {module_name}\n#print axioms {target}\n")
-        temp_path = Path(handle.name)
+
+    plan = _axiom_batch.build_axiom_batch_plan(
+        source,
+        _declaration_index(target_file),
+        target,
+        prefetch_siblings=prefetch_siblings,
+    )
+    if plan is not None:
+        source_revision = _axiom_batch.source_revision_sha256(source)
+        environment = _axiom_batch.import_environment_fingerprint(root)
+        key = _axiom_batch.cache_key(root, target_file, source_revision, environment)
+        cached = _axiom_batch.cached_profile(key, plan.requested_identity)
+        if cached is not None:
+            report = _axiom_report_from_profile(
+                target,
+                target_file,
+                cached.axioms,
+                cached.output,
+            )
+            append_workflow_outcome("lean-axioms", report.to_dict())
+            return report
+
+        batch_code, batch_output = _run_axiom_harness(root, plan.source)
+        current_source_revision = ""
+        with contextlib.suppress(OSError):
+            current_source_revision = _axiom_batch.source_revision_sha256(
+                target_file.read_text(encoding="utf-8")
+            )
+        current_environment = _axiom_batch.import_environment_fingerprint(root)
+        profiles = (
+            _axiom_batch.parse_axiom_batch_output(batch_output, plan.queries)
+            if batch_code == 0
+            and current_source_revision == source_revision
+            and current_environment == environment
+            else None
+        )
+        if profiles is not None:
+            _axiom_batch.store_profiles(key, profiles)
+            profile = profiles.get(plan.requested_identity)
+            if profile is not None:
+                report = _axiom_report_from_profile(
+                    target,
+                    target_file,
+                    profile.axioms,
+                    profile.output,
+                )
+                append_workflow_outcome("lean-axioms", report.to_dict())
+                return report
+
+    # A batch is an optimization only. If sibling queries cannot elaborate,
+    # output markers are unavailable, or the source/import revision moved while
+    # checking, rerun the historical one-target harness and fail closed there.
     try:
-        try:
-            relative = str(temp_path.relative_to(root))
-        except Exception:
-            relative = str(temp_path)
-        _, output = _BACKEND.run_command(["lake", "env", "lean", relative], cwd=root)
-    finally:
-        temp_path.unlink(missing_ok=True)
+        harness_source = _axiom_harness_source(target_file, target)
+    except OSError as exc:
+        report = LeanAxiomReport(
+            target=target,
+            file_path=str(target_file),
+            ok=False,
+            axioms=[],
+            custom_axioms=[],
+            classical=False,
+            choice=False,
+            note=f"Could not read the target file for axiom inspection: {exc}",
+            inspection_succeeded=False,
+        )
+        append_workflow_outcome("lean-axioms", report.to_dict())
+        return report
+    code, output = _run_axiom_harness(root, harness_source)
+    if code != 0:
+        report = LeanAxiomReport(
+            target=target,
+            file_path=str(target_file),
+            ok=False,
+            axioms=[],
+            custom_axioms=[],
+            classical=False,
+            choice=False,
+            note=output[:600] or f"Lean axiom inspection exited with status {code}.",
+            inspection_succeeded=False,
+        )
+        append_workflow_outcome("lean-axioms", report.to_dict())
+        return report
     axioms = sorted(
         {
             token
-            for token in re.findall(r"[A-Za-z0-9_.]+", output)
-            if "." in token or token in STANDARD_AXIOMS
-        }
-        - {
-            token
-            for token in (
-                target,
-                module_name,
-                *(
-                    f"{prefix}.{target.split('.')[-1]}"
-                    for prefix in {
-                        module_name,
-                        module_name.rsplit(".", 1)[0] if "." in module_name else "",
-                    }
-                    if prefix
-                ),
-            )
+            for dependency_list in re.findall(r"depends on axioms:\s*\[([^\]]*)\]", output)
+            for token in (item.strip() for item in dependency_list.split(","))
             if token
         }
     )
-    nonstandard = [axiom for axiom in axioms if axiom not in STANDARD_AXIOMS]
-    report = LeanAxiomReport(
-        target=target,
-        file_path=str(target_file),
-        ok=bool(output) and not nonstandard,
-        axioms=axioms,
-        custom_axioms=nonstandard,
-        classical=any("Classical" in axiom for axiom in axioms),
-        choice="Classical.choice" in axioms,
-        note="no non-standard axioms found" if output and not nonstandard else output[:600],
-    )
+    report = _axiom_report_from_profile(target, target_file, axioms, output)
     append_workflow_outcome("lean-axioms", report.to_dict())
     return report
+
+
+def lean_axioms_many(
+    targets: Sequence[str],
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    file_path: str = "",
+) -> dict[str, LeanAxiomReport]:
+    """Inspect several declarations with one exact, all-or-nothing Lean harness.
+
+    This is the resume-reconciliation surface: callers already hold separate
+    exact-target elaboration evidence and need transitive axiom profiles without
+    recompiling the same large source once per declaration.  Unlike
+    :func:`lean_axioms`, a malformed or incomplete batch never falls back to a
+    sequence of single-target compiles; every requested profile fails closed.
+    """
+    requested = tuple(
+        dict.fromkeys(str(target or "").strip() for target in targets if str(target or "").strip())
+    )
+    if not requested:
+        return {}
+
+    project_root, _ = _project_root(cwd)
+    root = Path(project_root) if project_root else None
+    target_file = Path(file_path).expanduser().resolve() if file_path else None
+
+    def unavailable(note: str) -> dict[str, LeanAxiomReport]:
+        reports: dict[str, LeanAxiomReport] = {}
+        for target in requested:
+            report = LeanAxiomReport(
+                target=target,
+                file_path=str(target_file or ""),
+                ok=False,
+                axioms=[],
+                custom_axioms=[],
+                classical=False,
+                choice=False,
+                note=note[:600],
+                inspection_succeeded=False,
+            )
+            reports[target] = report
+            append_workflow_outcome("lean-axioms", report.to_dict())
+        return reports
+
+    if root is None or target_file is None:
+        return unavailable("Provide both a Lean project and file_path to inspect axioms.")
+    try:
+        source = target_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        return unavailable(f"Could not read the target file for axiom inspection: {exc}")
+
+    plan = _axiom_batch.build_axiom_batch_plan(
+        source,
+        _declaration_index(target_file),
+        requested[0],
+        requested_targets=requested,
+        prefetch_siblings=False,
+    )
+    if plan is None:
+        return unavailable("Could not resolve every requested declaration in the source revision.")
+
+    requested_identities = dict(plan.requested_identities)
+    if set(requested_identities) != set(requested):
+        return unavailable("Axiom batch did not identify every requested declaration.")
+    source_revision = _axiom_batch.source_revision_sha256(source)
+    environment = _axiom_batch.import_environment_fingerprint(root)
+    key = _axiom_batch.cache_key(root, target_file, source_revision, environment)
+    profiles = {
+        target: cached
+        for target, identity in requested_identities.items()
+        if (cached := _axiom_batch.cached_profile(key, identity)) is not None
+    }
+    if len(profiles) != len(requested):
+        code, output = _run_axiom_harness(root, plan.source)
+        current_source_revision = ""
+        with contextlib.suppress(OSError):
+            current_source_revision = _axiom_batch.source_revision_sha256(
+                target_file.read_text(encoding="utf-8")
+            )
+        current_environment = _axiom_batch.import_environment_fingerprint(root)
+        parsed = (
+            _axiom_batch.parse_axiom_batch_output(output, plan.queries)
+            if code == 0
+            and current_source_revision == source_revision
+            and current_environment == environment
+            else None
+        )
+        if parsed is None:
+            detail = " ".join(str(output or "").split())[:450]
+            return unavailable(
+                "Axiom batch was incomplete, ambiguous, failed, or crossed a source/import revision."
+                + (f" Details: {detail}" if detail else "")
+            )
+        _axiom_batch.store_profiles(key, parsed)
+        profiles = {
+            target: parsed[identity]
+            for target, identity in requested_identities.items()
+            if identity in parsed
+        }
+        if len(profiles) != len(requested):
+            return unavailable("Axiom batch omitted a requested declaration profile.")
+
+    reports: dict[str, LeanAxiomReport] = {}
+    for target in requested:
+        profile = profiles[target]
+        report = _axiom_report_from_profile(
+            target,
+            target_file,
+            profile.axioms,
+            profile.output,
+        )
+        reports[target] = report
+        append_workflow_outcome("lean-axioms", report.to_dict())
+    return reports
 
 
 def route_workflow_step(
@@ -2001,13 +2681,18 @@ def route_workflow_step(
         part
         for part in (
             str(current.get("current_blocker", "") or ""),
-            str(current.get("diagnostics", "") or ""),
-            str(current.get("goals", "") or ""),
             str(current.get("build_status", "") or ""),
         )
         if part
     )
-    blocker_kind = classify_blocker_kind(blocker_text)
+    blocker_kind = classify_blocker_kind(
+        blocker_text,
+        diagnostics=str(current.get("diagnostics", "") or ""),
+        goals=str(current.get("goals", "") or ""),
+        queue_reasons=tuple(
+            str(reason) for reason in queue_item.get("reasons", []) or [] if str(reason).strip()
+        ),
+    )
     target_symbol = str(
         queue_item.get("label", "") or current.get("target_symbol", "") or ""
     ).strip()

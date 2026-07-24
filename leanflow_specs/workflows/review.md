@@ -82,7 +82,9 @@ labels in the review output:
   - the declaration shape is the blocker (sub-lemmas only; main-statement
     changes need a human ACK)
 - `park`
-  - no credible next path; park with a complete decision packet
+  - statement fidelity or required human approval prevents safe autonomous work;
+    pause with a complete decision packet
+  - difficulty, failed proof shapes, and exhausted route budgets are not parking reasons
 
 Do not invent alternate action labels — `deep`, `repair`, `redraft`,
 `golf`, `replan`, `falsify`, and `stop` are retired vocabulary. Actions

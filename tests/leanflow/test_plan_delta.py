@@ -103,6 +103,222 @@ def test_delta_cannot_touch_existing_status_or_statement(enabled):
     assert node.notes == "planner note"  # blanks may be filled
 
 
+def test_delta_private_name_signature_conflict_does_not_reuse_proved_node(enabled):
+    """A different private declaration must not alias kernel-proved graph truth."""
+    proved = _node(
+        "residue_split",
+        status="proved",
+        statement=(
+            "private lemma residue_split (k : ℕ) (hmod : k % 7 = 1) : "
+            "k % 35 = 1 ∨ k % 35 = 8 := by omega"
+        ),
+    )
+    bp = plan_state.Blueprint(nodes=(proved,))
+
+    merged, changes = plan_state.apply_delta(
+        bp,
+        {
+            "nodes": [
+                {
+                    "name": "residue_split",
+                    "file": "Demo.lean",
+                    "statement": (
+                        "private lemma residue_split (k : ℕ) (hk : 1 ≤ k) "
+                        "(hmod : k % 7 = 1) : "
+                        "k % 35 = 1 ∨ k % 35 = 8 := by sorry"
+                    ),
+                },
+                {
+                    "name": "residue_branch",
+                    "file": "Demo.lean",
+                    "statement": "private lemma residue_branch : True := by sorry",
+                    "depends_on": ["residue_split"],
+                },
+            ]
+        },
+    )
+
+    assert merged.node_by_id(proved.id) == proved
+    branch_id = plan_state.node_id_for("residue_branch", "Demo.lean")
+    assert merged.node_by_id(branch_id).status == "stated"
+    assert not any(edge.source == branch_id and edge.target == proved.id for edge in merged.edges)
+    conflict = [
+        change for change in changes if change.get("event") == "plan-delta-node-signature-conflict"
+    ]
+    assert len(conflict) == 1
+    assert conflict == [
+        {
+            "event": "plan-delta-node-signature-conflict",
+            "node_id": proved.id,
+            "name": "residue_split",
+            "file": "Demo.lean",
+            "existing_signature_sha256": conflict[0]["existing_signature_sha256"],
+            "proposed_signature_sha256": conflict[0]["proposed_signature_sha256"],
+        }
+    ]
+    assert conflict[0]["existing_signature_sha256"]
+    assert conflict[0]["proposed_signature_sha256"]
+    assert conflict[0]["existing_signature_sha256"] != conflict[0]["proposed_signature_sha256"]
+    assert any(
+        change.get("event") == "plan-delta-edge-skipped"
+        and change.get("reason") == "declaration signature conflict"
+        for change in changes
+    )
+
+
+def test_delta_same_private_signature_reuses_proved_node(enabled):
+    """Proof-body and whitespace changes preserve exact declaration reuse."""
+    proved = _node(
+        "reflexive",
+        status="proved",
+        statement="private lemma reflexive (k : ℕ) : k = k := by rfl",
+    )
+    bp = plan_state.Blueprint(nodes=(proved,))
+
+    merged, changes = plan_state.apply_delta(
+        bp,
+        {
+            "nodes": [
+                {
+                    "name": "reflexive",
+                    "file": "Demo.lean",
+                    "statement": ("private lemma reflexive\n    (k : ℕ) : k = k := by\n  sorry"),
+                    "notes": "same statement, new route",
+                }
+            ]
+        },
+    )
+
+    reused = merged.node_by_id(proved.id)
+    assert reused.status == "proved"
+    assert reused.statement == proved.statement
+    assert reused.notes == "same statement, new route"
+    assert not any(
+        change.get("event") == "plan-delta-node-signature-conflict" for change in changes
+    )
+
+
+def test_delta_cannot_fill_signatureless_proved_node_by_name(enabled):
+    """Legacy graph truth without a statement cannot authenticate a new declaration."""
+    proved = _node("legacy_private", status="proved")
+
+    merged, changes = plan_state.apply_delta(
+        plan_state.Blueprint(nodes=(proved,)),
+        {
+            "nodes": [
+                {
+                    "name": "legacy_private",
+                    "file": "Demo.lean",
+                    "statement": "private lemma legacy_private : False := by sorry",
+                }
+            ]
+        },
+    )
+
+    assert merged.node_by_id(proved.id) == proved
+    conflict = next(
+        change for change in changes if change.get("event") == "plan-delta-node-signature-conflict"
+    )
+    assert conflict["existing_signature_sha256"] == ""
+    assert conflict["proposed_signature_sha256"]
+
+
+def test_delta_rejects_edges_incident_to_signatureless_kernel_node(enabled):
+    """Name-only references cannot attach graph structure to legacy kernel truth."""
+    legacy = _node("legacy_private", status="proved")
+
+    merged, changes = plan_state.apply_delta(
+        plan_state.Blueprint(nodes=(legacy,)),
+        {
+            "nodes": [
+                {
+                    "name": "fresh_branch",
+                    "file": "Demo.lean",
+                    "statement": "private lemma fresh_branch : True := by sorry",
+                    "depends_on": ["legacy_private"],
+                }
+            ],
+            "edges": [
+                {
+                    "source": {"name": "legacy_private", "file": "Demo.lean"},
+                    "target": {"name": "fresh_branch", "file": "Demo.lean"},
+                    "kind": "evidence",
+                }
+            ],
+        },
+    )
+
+    assert merged.edges == ()
+    skipped = [
+        change
+        for change in changes
+        if change.get("event") == "plan-delta-edge-skipped"
+        and change.get("reason") == "unauthenticated kernel declaration"
+    ]
+    assert len(skipped) == 2
+
+
+def test_delta_migrates_equivalent_legacy_decomposer_statement_core(enabled):
+    """A full declaration authenticates the exact core stored by old decomposers."""
+    legacy = _node(
+        "reflexive",
+        status="proved",
+        statement="(k : Nat) : k = k",
+        generated_by="decomposer",
+    )
+    proposed = "private lemma reflexive\n    (k : Nat) : k = k := by\n  sorry"
+
+    merged, changes = plan_state.apply_delta(
+        plan_state.Blueprint(nodes=(legacy,)),
+        {
+            "nodes": [
+                {
+                    "name": "reflexive",
+                    "file": "Demo.lean",
+                    "statement": proposed,
+                }
+            ]
+        },
+    )
+
+    migrated = merged.node_by_id(legacy.id)
+    assert migrated.status == "proved"
+    assert migrated.statement == "private lemma reflexive (k : Nat) : k = k"
+    assert any(change.get("event") == "plan-delta-node-signature-migrated" for change in changes)
+    assert not any(
+        change.get("event") == "plan-delta-node-signature-conflict" for change in changes
+    )
+
+
+def test_delta_does_not_migrate_different_legacy_decomposer_statement_core(enabled):
+    """Legacy provenance permits migration only after an exact core comparison."""
+    legacy = _node(
+        "reflexive",
+        status="proved",
+        statement="(k : Nat) : k = k",
+        generated_by="decomposer",
+    )
+
+    merged, changes = plan_state.apply_delta(
+        plan_state.Blueprint(nodes=(legacy,)),
+        {
+            "nodes": [
+                {
+                    "name": "reflexive",
+                    "file": "Demo.lean",
+                    "statement": "private lemma reflexive (k : Nat) : k + 0 = k := by sorry",
+                }
+            ]
+        },
+    )
+
+    assert merged.node_by_id(legacy.id) == legacy
+    assert any(change.get("event") == "plan-delta-node-signature-conflict" for change in changes)
+    assert not any(
+        change.get("event") == "plan-delta-node-signature-migrated" for change in changes
+    )
+
+
 def test_delta_truncates_runaway_node_lists(enabled):
     nodes = [{"name": f"n{i}", "file": "Demo.lean"} for i in range(40)]
 
@@ -273,6 +489,35 @@ def test_merge_planner_findings_dedupes_and_caps():
     assert len(merged["strategy_notes"]) == 20  # capped, oldest kept
     assert merged["strategy_notes"][0] == "step 0"
     assert summary["strategy_notes"] == []  # input untouched (pure)
+
+
+def test_merge_planner_findings_resets_strategy_when_assignment_changes():
+    summary = {
+        "grounding_findings": ["historical factorization fact"],
+        "strategy_notes": ["Step 1: split the old exceptional family"],
+        "strategy_notes_scope": {
+            "target_symbol": "old_family",
+            "active_file": "Erdos242.lean",
+        },
+    }
+
+    merged = plan_state.merge_planner_findings(
+        summary,
+        grounding=["new residue fact"],
+        strategy=["Step 1: attack the current family"],
+        target_symbol="current_family",
+        active_file="Erdos242.lean",
+    )
+
+    assert merged["grounding_findings"] == [
+        "historical factorization fact",
+        "new residue fact",
+    ]
+    assert merged["strategy_notes"] == ["Step 1: attack the current family"]
+    assert merged["strategy_notes_scope"] == {
+        "target_symbol": "current_family",
+        "active_file": "Erdos242.lean",
+    }
 
 
 def test_render_plan_md_includes_strategy_section(enabled):

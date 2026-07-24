@@ -15,6 +15,10 @@ import threading
 _interrupt_event = threading.Event()
 
 
+class CooperativeInterrupt(KeyboardInterrupt):
+    """Abort owned work without letting ordinary error recovery swallow cancellation."""
+
+
 def set_interrupt(active: bool) -> None:
     """Called by the agent to signal or clear the interrupt."""
     if active:
@@ -26,3 +30,9 @@ def set_interrupt(active: bool) -> None:
 def is_interrupted() -> bool:
     """Check if an interrupt has been requested. Safe to call from any thread."""
     return _interrupt_event.is_set()
+
+
+def raise_if_interrupted(message: str = "operation interrupted") -> None:
+    """Raise a non-recoverable cooperative cancellation at one safe boundary."""
+    if is_interrupted():
+        raise CooperativeInterrupt(message)

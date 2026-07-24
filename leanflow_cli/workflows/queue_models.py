@@ -191,10 +191,16 @@ class VerificationRecord:
     target: str = ""  # for TARGET scope
     cache: str = ""  # "warm" / "cold" / "rebuilt"
     elapsed_s: float = 0.0
+    lean_command_elapsed_s: float = 0.0
+    probe_wall_elapsed_s: float = 0.0
+    tool_wall_elapsed_s: float = 0.0
     errors: int = 0
     warnings: int = 0
     sorry_count: int = 0
     summary: str = ""  # short single-line for handoff rendering
+    axiom_profile_checked: bool = False
+    axiom_profile_axioms: tuple[str, ...] = ()
+    axiom_profile_blockers: tuple[str, ...] = ()
 
 
 def verification_from_mapping(raw: Mapping[str, Any] | None) -> VerificationRecord | None:
@@ -202,6 +208,18 @@ def verification_from_mapping(raw: Mapping[str, Any] | None) -> VerificationReco
     if not isinstance(raw, Mapping) or not raw:
         return None
     try:
+        raw_axiom_blockers = raw.get("axiom_profile_blockers") or []
+        raw_axioms = raw.get("axiom_profile_axioms") or []
+        axiom_profile_axioms: tuple[str, ...]
+        if isinstance(raw_axioms, (str, bytes)):
+            axiom_profile_axioms = (str(raw_axioms),)
+        else:
+            axiom_profile_axioms = tuple(str(item) for item in raw_axioms)
+        axiom_profile_blockers: tuple[str, ...]
+        if isinstance(raw_axiom_blockers, (str, bytes)):
+            axiom_profile_blockers = (str(raw_axiom_blockers),)
+        else:
+            axiom_profile_blockers = tuple(str(item) for item in raw_axiom_blockers)
         raw_scope = str(raw.get("scope", "") or "")
         if raw_scope.startswith("target:"):
             scope = VerificationScope.TARGET
@@ -219,10 +237,16 @@ def verification_from_mapping(raw: Mapping[str, Any] | None) -> VerificationReco
             target=target,
             cache=str(raw.get("cache", "") or ""),
             elapsed_s=float(raw.get("elapsed_s", 0.0) or 0.0),
+            lean_command_elapsed_s=float(raw.get("lean_command_elapsed_s", 0.0) or 0.0),
+            probe_wall_elapsed_s=float(raw.get("probe_wall_elapsed_s", 0.0) or 0.0),
+            tool_wall_elapsed_s=float(raw.get("tool_wall_elapsed_s", 0.0) or 0.0),
             errors=int(raw.get("errors", 0) or 0),
             warnings=int(raw.get("warnings", 0) or 0),
             sorry_count=int(raw.get("sorry", raw.get("sorry_count", 0)) or 0),
             summary=str(raw.get("summary", "") or ""),
+            axiom_profile_checked=raw.get("axiom_profile_checked") is True,
+            axiom_profile_axioms=axiom_profile_axioms,
+            axiom_profile_blockers=axiom_profile_blockers,
         )
     except Exception:
         return None
@@ -238,7 +262,7 @@ def verification_to_mapping(record: VerificationRecord | None) -> dict[str, Any]
         scope = "file"
     else:
         scope = record.scope.value
-    return {
+    payload = {
         "scope": scope,
         "ok": record.ok,
         "tool": record.tool,
@@ -250,6 +274,18 @@ def verification_to_mapping(record: VerificationRecord | None) -> dict[str, Any]
         "sorry": record.sorry_count,
         "summary": record.summary,
     }
+    for key, value in (
+        ("lean_command_elapsed_s", record.lean_command_elapsed_s),
+        ("probe_wall_elapsed_s", record.probe_wall_elapsed_s),
+        ("tool_wall_elapsed_s", record.tool_wall_elapsed_s),
+    ):
+        if value:
+            payload[key] = value
+    if record.axiom_profile_checked or record.axiom_profile_axioms or record.axiom_profile_blockers:
+        payload["axiom_profile_checked"] = record.axiom_profile_checked
+        payload["axiom_profile_axioms"] = list(record.axiom_profile_axioms)
+        payload["axiom_profile_blockers"] = list(record.axiom_profile_blockers)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -311,17 +347,22 @@ class DecisionContext:
 
 @dataclass(frozen=True)
 class FailedAttempt:
+    """Record one semantically distinct kernel rejection within a prover turn."""
+
     key: TheoremKey
     attempt: int  # 1-indexed within (theorem, file)
     cycle: int  # workflow cycle number
     proof_shape: str  # short text: snippet of the body or its diff
     reason: str  # short text: blocker summary
+    declaration_hash: str = ""  # exact declaration content at the gate
+    gate_verdict: str = ""  # normalized kernel-gate rejection
+    turn_key: str = ""  # restart-safe provider-turn identity
 
 
 @dataclass(frozen=True)
 class TheoremOutcome:
     key: TheoremKey
-    status: str  # "solved" / "unresolved" / "skipped"
+    status: str  # "solved" / "unresolved" / "deferred" / legacy "blocked"
     note: str = ""
     build_status: str = ""
     verification: VerificationRecord | None = None
@@ -348,6 +389,10 @@ class Transition:
 #: Precedence rank at or above which an item is avoided while any
 #: better-ranked candidate exists (graph dependency false/blocked/parked).
 PRECEDENCE_AVOID = 2
+#: Absolute exclusion rank for authoritatively false or human-paused nodes.
+#: Unlike a blocked route, these items must not be retried merely because the
+#: rest of the queue is also difficult.
+PRECEDENCE_EXCLUDE = 3
 
 
 def select_next_item(
@@ -370,12 +415,12 @@ def select_next_item(
     Phase 4 graph-frontier option: ``precedence`` maps an item label to a
     rank — 0 = frontier-ready (dependencies proved), 1 = unknown (including
     project-scope file-path labels), >=2 = avoid (a dependency is
-    false/blocked/parked). Ranks order candidates stably WITHIN each bucket
-    (the diagnostic-first bucket rule is about unblocking compilation and
-    stays authoritative); avoid-ranked items are excluded only while a
-    better-ranked candidate exists somewhere, so a queue of only avoided
-    items still proves rather than falsely final-sweeping. ``None`` is the
-    byte-identical legacy path.
+    blocked), 3 = exclude (authoritatively false or human-paused). Ranks order
+    candidates stably WITHIN each bucket (the diagnostic-first bucket rule is
+    about unblocking compilation and stays authoritative); rank-2 items are
+    excluded only while a better-ranked candidate exists somewhere, so a
+    queue of only blocked items still proves. Rank-3 items are never selected.
+    ``None`` is the byte-identical legacy path.
 
     Phase 5 curriculum option: ``order_key`` breaks ties WITHIN the best
     precedence rank of a bucket (easy->hard ordering — smaller keys first);
@@ -444,6 +489,9 @@ def select_next_item(
         # Avoid-exclusion is PER BUCKET: the diagnostic-first rule stays
         # authoritative, so a rank-2 diagnostic still outranks any sorry
         # item and is only skipped for a better diagnostic candidate.
+        if not bucket:
+            return None
+        bucket = [item for item in bucket if ranks[id(item)] < PRECEDENCE_EXCLUDE]
         if not bucket:
             return None
         if any(ranks[id(item)] < PRECEDENCE_AVOID for item in bucket):

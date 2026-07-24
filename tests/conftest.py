@@ -37,6 +37,12 @@ def _isolate_leanflow_home(tmp_path, monkeypatch):
     # .env since PR #12 and changes prompt layout; tests that exercise it set it
     # explicitly via monkeypatch.setenv.
     monkeypatch.delenv("LEANFLOW_RCP_PREFIX_CACHE", raising=False)
+    # Native runner construction enables its contextual queue guard by setting
+    # this process-global escape hatch directly.  Pytest workers reuse the
+    # process, so register the key with monkeypatch for every test; teardown
+    # then removes a value written by _build_agent instead of leaking it into
+    # unrelated file-tool statement-guard tests.
+    monkeypatch.delenv("LEANFLOW_ALLOW_LEAN_STATEMENT_EDITS", raising=False)
 
     # Importing run_agent (and a few CLI entrypoints) runs load_leanflow_dotenv() at
     # module-import time, which is *before* this fixture runs on the first test that

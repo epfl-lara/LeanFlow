@@ -403,10 +403,27 @@ def _spec_summary(record: Any) -> dict[str, Any]:
     }
 
 
-def _spec_detail(record: Any) -> dict[str, Any]:
-    payload = _spec_summary(record)
-    payload["content"] = str(getattr(record, "content", "") or "")
-    return payload
+def _workflow_spec_file_payload(name: str, file_path: str | None) -> dict[str, Any] | None:
+    """Load an explicitly linked workflow spec through the skill-view boundary."""
+    requested = str(file_path or "").strip().replace("\\", "/").lstrip("./")
+    if not requested:
+        return None
+    records = list(specs_for_skill(name))
+    for record in records:
+        path = Path(str(getattr(record, "path", "") or ""))
+        normalized = str(path).replace("\\", "/")
+        if requested != normalized and not normalized.endswith(f"/{requested}"):
+            continue
+        return {
+            "success": True,
+            "name": name,
+            "file": normalized,
+            "content": str(getattr(record, "content", "") or ""),
+            "linked_files": {
+                "workflow_specs": [str(getattr(item, "path", "") or "") for item in records]
+            },
+        }
+    return None
 
 
 def check_skills_requirements() -> bool:
@@ -964,7 +981,9 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         JSON string with skill content or error message
     """
     try:
-        payload = _local_skill_payload(name, file_path)
+        payload = _workflow_spec_file_payload(name, file_path)
+        if payload is None:
+            payload = _local_skill_payload(name, file_path)
         if payload and not payload.get("success", True):
             return json.dumps(payload, ensure_ascii=False)
         if payload is None:
@@ -983,7 +1002,8 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
         workflow_specs = [
-            _spec_detail(record) for record in specs_for_skill(str(payload.get("name", "") or name))
+            _spec_summary(record)
+            for record in specs_for_skill(str(payload.get("name", "") or name))
         ]
         if workflow_specs:
             linked = dict(payload.get("linked_files") or {})
@@ -1083,7 +1103,7 @@ SKILL_VIEW_SCHEMA = {
             },
             "file_path": {
                 "type": "string",
-                "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
+                "description": "OPTIONAL: Path advertised in linked_files, including a skill-local reference/template/script or a linked native workflow spec. Omit to get the main SKILL.md content.",
             },
         },
         "required": ["name"],

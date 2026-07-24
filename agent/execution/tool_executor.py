@@ -25,17 +25,115 @@ always wins.
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import json
 import logging
 import os
 import random
 import time
+import uuid
+from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from agent.execution.admission_handoff import (
+    clear_initial_foreground_lease,
+    current_initial_foreground_lease,
+    reserve_post_tool_foreground_handoff,
+)
+from agent.execution.tool_batch_priority import OrderedCapacityGate, foreground_tool_priority
+from core.project_resource_admission import (
+    project_lean_admission_observer,
+    project_lean_heavy_admission,
+    project_lean_service_reclaim_enabled,
+)
+from core.runtime_modes import dispatch_worker_enabled
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from run_agent import AIAgent
 
 logger = logging.getLogger(__name__)
+
+_MEMORY_HEAVY_TOOL_WORKERS_ENV = "LEANFLOW_MAX_MEMORY_HEAVY_TOOL_WORKERS"
+_DEFAULT_MEMORY_HEAVY_TOOL_WORKERS = 1
+
+# These Lean tools only inspect already-materialized text or dispatch work to the
+# separately capacity-controlled research worker pool. Other ``lean_*`` tools
+# may start Lean/Lake or load a semantic-search index and therefore share the
+# memory-heavy gate below.
+_CHEAP_PARALLEL_LEAN_TOOLS = frozenset(
+    {
+        "lean_capabilities",
+        "lean_outline",
+        # This advisor launches an external provider request but never starts
+        # Lean/Lake or materializes a semantic index. Keeping it behind the
+        # Lean-memory gate turns its request timeout into queue time whenever
+        # it is batched with a real Lean search.
+        "lean_reasoning_help",
+        "lean_sorries",
+        "lean_worker_dispatch",
+    }
+)
+
+# Only these registry calls have a process/probe lifecycle LeanFlow itself can
+# contain. Semantic/MCP searches may be remote or own persistent services; do
+# not serialize them cross-process under a lease we cannot truthfully release.
+_PROJECT_ADMITTED_LEAN_TOOLS = frozenset(
+    {
+        "apply_verified_patch",
+        "lean_axioms",
+        "lean_incremental_check",
+        "lean_verify",
+    }
+)
+
+
+def _memory_heavy_tool_worker_limit() -> int:
+    """Return the per-batch worker limit for memory-heavy Lean tools."""
+    raw = str(os.environ.get(_MEMORY_HEAVY_TOOL_WORKERS_ENV, "") or "").strip()
+    if not raw:
+        return _DEFAULT_MEMORY_HEAVY_TOOL_WORKERS
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return _DEFAULT_MEMORY_HEAVY_TOOL_WORKERS
+    return parsed if parsed > 0 else _DEFAULT_MEMORY_HEAVY_TOOL_WORKERS
+
+
+def _is_memory_heavy_tool(function_name: str) -> bool:
+    """Return whether a tool may materialize a Lean semantic state or build."""
+    return function_name == "apply_verified_patch" or (
+        function_name.startswith("lean_") and function_name not in _CHEAP_PARALLEL_LEAN_TOOLS
+    )
+
+
+def _tool_project_root(function_args: dict[str, Any]) -> str:
+    """Return the project scope shared by foreground and dispatch workers."""
+    configured = str(os.getenv("LEANFLOW_PROJECT_ROOT", "") or "").strip()
+    if configured:
+        return configured
+    cwd = str(function_args.get("cwd", "") or "").strip()
+    if cwd:
+        return cwd
+    for key in ("file_path", "target"):
+        value = str(function_args.get(key, "") or "").strip()
+        if value.endswith(".lean"):
+            return str(Path(value).expanduser().parent)
+    return os.getcwd()
+
+
+def _project_admitted_tool(function_name: str) -> bool:
+    """Return whether this tool has a contained local Lean lifecycle."""
+    return function_name in _PROJECT_ADMITTED_LEAN_TOOLS
+
+
+def _close_admitted_incremental_session() -> bool | None:
+    """Close the owned LeanProbe session, preserving a truthful failure."""
+    if not project_lean_service_reclaim_enabled():
+        return None
+    from leanflow_cli.lean.lean_incremental import close_incremental_sessions
+
+    return close_incremental_sessions()
 
 
 class ToolExecutor:
@@ -88,15 +186,21 @@ class ToolExecutor:
         )
 
     # ── Single-tool invocation ──────────────────────────────────────────────
-    def invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str) -> str:
+    def invoke_tool(
+        self,
+        function_name: str,
+        function_args: dict,
+        effective_task_id: str,
+        *,
+        concurrent: bool = False,
+        iteration: int = 0,
+    ) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
         Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
-        import run_agent
-
         agent = self._agent
         preflight_result = self.preflight_tool_call(function_name, function_args)
         if preflight_result is not None:
@@ -153,6 +257,34 @@ class ToolExecutor:
                 parent_agent=agent,
             )
         else:
+            return self.invoke_registered_tool(
+                function_name,
+                function_args,
+                effective_task_id,
+                concurrent=concurrent,
+                iteration=iteration,
+            )
+
+    def invoke_registered_tool(
+        self,
+        function_name: str,
+        function_args: dict[str, Any],
+        effective_task_id: str,
+        *,
+        concurrent: bool = False,
+        iteration: int = 0,
+    ) -> str:
+        """Invoke one registry tool under any project-local Lean admission.
+
+        Both sequential and concurrent execution route through this boundary.
+        Persistent MCP search services remain outside because LeanFlow does not
+        yet own a service-specific, verified recycle lifecycle for them.
+        """
+        import run_agent
+
+        agent = self._agent
+
+        def invoke() -> str:
             return run_agent.handle_function_call(
                 function_name,
                 function_args,
@@ -161,6 +293,123 @@ class ToolExecutor:
                 owner_id=agent.session_id,
                 parent_agent=agent,
             )
+
+        if not _project_admitted_tool(function_name):
+            if not os.getenv("LEANFLOW_PROJECT_ROOT"):
+                return invoke()
+
+            def observe_inner_admission(
+                phase: str,
+                details: Mapping[str, object],
+            ) -> None:
+                initial_lease_active = bool(
+                    not dispatch_worker_enabled()
+                    and current_initial_foreground_lease(agent) is not None
+                )
+                event_type = {
+                    "waiting": "lean-resource-waiting",
+                    "admitted": "lean-resource-admission",
+                    "released": "lean-resource-released",
+                    "retained": "lean-resource-retained",
+                }.get(phase)
+                if event_type is None:
+                    return
+                message = {
+                    "waiting": f"Lean-heavy inner work waiting during: {function_name}",
+                    "admitted": f"Lean-heavy inner work admitted during: {function_name}",
+                    "released": f"Lean-heavy inner work released after: {function_name}",
+                    "retained": f"Lean-heavy inner work retained after: {function_name}",
+                }[phase]
+                run_agent._emit_workflow_event(
+                    event_type,
+                    message,
+                    **run_agent._workflow_agent_event_details(
+                        agent,
+                        tool=function_name,
+                        admission_source="inner_tool_call",
+                        initial_foreground_lease_active=initial_lease_active,
+                        concurrent=concurrent,
+                        iteration=iteration,
+                        **dict(details),
+                    ),
+                )
+
+            with project_lean_admission_observer(observe_inner_admission):
+                return invoke()
+
+        admission_request_id = uuid.uuid4().hex
+        admission_role = "background" if dispatch_worker_enabled() else "foreground"
+        if os.getenv("LEANFLOW_PROJECT_ROOT"):
+            run_agent._emit_workflow_event(
+                "lean-resource-waiting",
+                f"Lean-heavy tool waiting for project admission: {function_name}",
+                **run_agent._workflow_agent_event_details(
+                    agent,
+                    tool=function_name,
+                    concurrent=concurrent,
+                    iteration=iteration,
+                    admission_request_id=admission_request_id,
+                    admission_role=admission_role,
+                ),
+            )
+        with project_lean_heavy_admission(_tool_project_root(function_args)) as admission:
+            initial_lease_active = bool(
+                admission_role == "foreground"
+                and current_initial_foreground_lease(agent) is not None
+            )
+            if os.getenv("LEANFLOW_PROJECT_ROOT"):
+                run_agent._emit_workflow_event(
+                    "lean-resource-admission",
+                    f"Lean-heavy tool admitted: {function_name}",
+                    **run_agent._workflow_agent_event_details(
+                        agent,
+                        tool=function_name,
+                        concurrent=concurrent,
+                        iteration=iteration,
+                        admission_request_id=admission_request_id,
+                        admission_role=admission_role,
+                        initial_foreground_lease_active=initial_lease_active,
+                        **admission.to_dict(),
+                    ),
+                )
+            try:
+                result = invoke()
+                if admission_role == "foreground":
+                    reserve_post_tool_foreground_handoff(
+                        agent,
+                        admission,
+                        function_name=function_name,
+                        arguments=function_args,
+                        result=result,
+                    )
+                return result
+            finally:
+                reclaimed = _close_admitted_incremental_session()
+                if reclaimed is False:
+                    admission.retain_until_process_exit(
+                        "owned LeanProbe session close failed after registry tool"
+                    )
+                if reclaimed is not None and os.getenv("LEANFLOW_PROJECT_ROOT"):
+                    event_type = (
+                        "lean-resource-reclaimed" if reclaimed else "lean-resource-retained"
+                    )
+                    message = (
+                        f"LeanProbe close confirmed after: {function_name}"
+                        if reclaimed
+                        else f"LeanProbe close failed; slot retained after: {function_name}"
+                    )
+                    run_agent._emit_workflow_event(
+                        event_type,
+                        message,
+                        **run_agent._workflow_agent_event_details(
+                            agent,
+                            tool=function_name,
+                            incremental_session_reclaimed=reclaimed,
+                            admission_request_id=admission_request_id,
+                            admission_role=admission_role,
+                            **admission.to_dict(),
+                        ),
+                    )
 
     def preflight_tool_call(self, function_name: str, function_args: dict) -> str | None:
         agent = self._agent
@@ -198,6 +447,19 @@ class ToolExecutor:
 
         agent = self._agent
         tool_calls = assistant_message.tool_calls
+        if any(tc.function.name in run_agent._MANAGED_SOURCE_EDIT_TOOLS for tc in tool_calls):
+            # Defend the lower-level entry as well as the public dispatcher.
+            # Managed callbacks store one pending source snapshot on the agent;
+            # a sibling preflight must not overwrite it before post-edit
+            # verification closes the first tool's queue step.
+            return agent._execute_tool_calls_sequential(
+                assistant_message,
+                messages,
+                effective_task_id,
+                api_call_count,
+            )
+
+        foreground_batch_lease = current_initial_foreground_lease(agent)
         num_tools = len(tool_calls)
 
         # ── Pre-flight: interrupt check ──────────────────────────────────
@@ -263,12 +525,37 @@ class ToolExecutor:
 
             parsed_calls.append((tool_call, function_name, function_args))
 
+        memory_heavy_limit = _memory_heavy_tool_worker_limit()
+        memory_heavy_indices = [
+            index
+            for index, (_tool_call, name, _args) in enumerate(parsed_calls)
+            if _is_memory_heavy_tool(name)
+        ]
+        memory_heavy_count = len(memory_heavy_indices)
+        memory_heavy_priorities = {
+            index: (
+                foreground_tool_priority(parsed_calls[index][1], parsed_calls[index][2]),
+                index,
+            )
+            for index in memory_heavy_indices
+        }
+        memory_heavy_gate = OrderedCapacityGate(
+            memory_heavy_limit,
+            memory_heavy_priorities,
+        )
+        memory_heavy_limited = memory_heavy_count > memory_heavy_limit
+
         # ── Logging / callbacks ──────────────────────────────────────────
         tool_names_str = ", ".join(name for _, name, _ in parsed_calls)
         if not agent.quiet_mode:
             print(
                 f"\n{agent.log_prefix}┌─ Tools: {num_tools} concurrent call(s) — {tool_names_str}"
             )
+            if memory_heavy_limited:
+                print(
+                    f"{agent.log_prefix}│  Memory-heavy Lean concurrency capped at "
+                    f"{memory_heavy_limit} ({memory_heavy_count} call(s))"
+                )
             for i, (tc, name, args) in enumerate(parsed_calls, 1):
                 if agent.verbose_logging:
                     print(f"{agent.log_prefix}│  {i}. {name}")
@@ -299,14 +586,36 @@ class ToolExecutor:
             )
 
         # ── Concurrent execution ─────────────────────────────────────────
-        # Each slot holds (function_name, function_args, function_result, duration, error_flag)
-        results: list = [None] * num_tools
+        # Completion callbacks run on this dispatch thread as futures finish,
+        # while these slots preserve the model's original tool-call ordering.
+        result_slots: list[tuple[str, dict[str, Any], str, float, bool] | None] = [None] * num_tools
+        message_slots: list[dict[str, str] | None] = [None] * num_tools
 
-        def _run_tool(index, tool_call, function_name, function_args):
-            """Worker function executed in a thread."""
+        def _run_tool(
+            index: int,
+            function_name: str,
+            function_args: dict[str, Any],
+        ) -> tuple[str, dict[str, Any], str, float, bool]:
+            """Run one tool in a worker and return its complete result record."""
             start = time.time()
             try:
-                result = self.invoke_tool(function_name, function_args, effective_task_id)
+                if _is_memory_heavy_tool(function_name):
+                    with memory_heavy_gate.admit(index):
+                        result = self.invoke_tool(
+                            function_name,
+                            function_args,
+                            effective_task_id,
+                            concurrent=True,
+                            iteration=api_call_count,
+                        )
+                else:
+                    result = self.invoke_tool(
+                        function_name,
+                        function_args,
+                        effective_task_id,
+                        concurrent=True,
+                        iteration=api_call_count,
+                    )
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error(
@@ -314,43 +623,118 @@ class ToolExecutor:
                 )
             duration = time.time() - start
             is_error, _ = run_agent._detect_tool_failure(function_name, result)
-            results[index] = (function_name, function_args, result, duration, is_error)
+            return function_name, function_args, result, duration, is_error
+
+        def _prepare_tool_message(
+            index: int,
+            result_record: tuple[str, dict[str, Any], str, float, bool],
+        ) -> None:
+            """Run the managed completion hook and retain its ordered tool message."""
+            function_name, function_args, function_result, _duration, _is_error = result_record
+            max_tool_result_chars = agent._max_tool_result_chars(function_name)
+            if len(function_result) > max_tool_result_chars:
+                original_len = len(function_result)
+                function_result = (
+                    function_result[:max_tool_result_chars]
+                    + f"\n\n[Truncated: tool response was {original_len:,} chars, "
+                    f"exceeding the {max_tool_result_chars:,} char limit]"
+                )
+            tool_msg = {
+                "role": "tool",
+                "content": function_result,
+                "tool_call_id": parsed_calls[index][0].id,
+            }
+            if agent.post_tool_result_callback:
+                try:
+                    agent.post_tool_result_callback(function_name, function_args, function_result)
+                except Exception as cb_err:
+                    logger.debug("post_tool_result_callback error: %s", cb_err)
+                agent._apply_post_tool_result_appendix(tool_msg)
+            message_slots[index] = tool_msg
 
         # Start spinner for CLI mode
         spinner = None
         if agent.quiet_mode:
             face = random.choice(run_agent.KawaiiSpinner.KAWAII_WAITING)
+            batch_label = f"{num_tools} tools concurrently"
+            if memory_heavy_limited:
+                batch_label = f"{num_tools} batched tools (Lean concurrency {memory_heavy_limit})"
             spinner = run_agent.KawaiiSpinner(
-                f"{face} ⚡ running {num_tools} tools concurrently", spinner_type="dots"
+                f"{face} ⚡ running {batch_label}", spinner_type="dots"
             )
             spinner.start()
 
         try:
             max_workers = min(num_tools, run_agent._MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = []
-                for i, (tc, name, args) in enumerate(parsed_calls):
-                    f = executor.submit(_run_tool, i, tc, name, args)
-                    futures.append(f)
-
-                # Wait for all to complete (exceptions are captured inside _run_tool)
-                concurrent.futures.wait(futures)
+                execution_indices = sorted(
+                    range(len(parsed_calls)),
+                    key=lambda index: (
+                        memory_heavy_priorities.get(index, (10, index)),
+                        index,
+                    ),
+                )
+                future_indices = {
+                    executor.submit(
+                        contextvars.copy_context().run,
+                        _run_tool,
+                        index,
+                        parsed_calls[index][1],
+                        parsed_calls[index][2],
+                    ): index
+                    for index in execution_indices
+                }
+                for future in concurrent.futures.as_completed(future_indices):
+                    index = future_indices[future]
+                    try:
+                        result_record = future.result()
+                    except Exception as tool_error:
+                        # `_run_tool` contains ordinary tool exceptions. Keep a
+                        # defensive record for executor-level failures too.
+                        _tc, name, args = parsed_calls[index]
+                        result_record = (
+                            name,
+                            args,
+                            f"Error executing tool '{name}': {tool_error}",
+                            0.0,
+                            True,
+                        )
+                        logger.error(
+                            "concurrent tool future raised for %s: %s",
+                            name,
+                            tool_error,
+                            exc_info=True,
+                        )
+                    result_slots[index] = result_record
+                    # Invoke managed callbacks immediately on the single
+                    # dispatch thread. This exposes completed research while a
+                    # slower sibling tool is still running, without racing the
+                    # agent's one-shot appendix state across worker threads.
+                    _prepare_tool_message(index, result_record)
         finally:
+            if foreground_batch_lease is not None:
+                clear_initial_foreground_lease(
+                    agent,
+                    expected=foreground_batch_lease,
+                )
             if spinner:
                 # Build a summary message for the spinner stop
-                completed = sum(1 for r in results if r is not None)
-                total_dur = sum(r[3] for r in results if r is not None)
+                completed = sum(1 for result in result_slots if result is not None)
+                total_dur = sum(result[3] for result in result_slots if result is not None)
                 spinner.stop(
                     f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total"
                 )
 
         # ── Post-execution: display per-tool results ─────────────────────
         for i, (tc, name, args) in enumerate(parsed_calls):
-            r = results[i]
+            r = result_slots[i]
             if r is None:
                 # Shouldn't happen, but safety fallback
                 function_result = f"Error executing tool '{name}': thread did not return a result"
                 tool_duration = 0.0
+                r = (name, args, function_result, tool_duration, True)
+                result_slots[i] = r
+                _prepare_tool_message(i, r)
             else:
                 function_name, function_args, function_result, tool_duration, is_error = r
 
@@ -394,31 +778,14 @@ class ToolExecutor:
                 ),
             )
 
-            # Truncate oversized results. Lean advisor/decomposition tools get
-            # a larger cap because long proof-strategy notes are intentional.
-            max_tool_result_chars = agent._max_tool_result_chars(function_name)
-            if len(function_result) > max_tool_result_chars:
-                original_len = len(function_result)
-                function_result = (
-                    function_result[:max_tool_result_chars]
-                    + f"\n\n[Truncated: tool response was {original_len:,} chars, "
-                    f"exceeding the {max_tool_result_chars:,} char limit]"
-                )
-
-            # Append tool result message in order
-            tool_msg = {
-                "role": "tool",
-                "content": function_result,
-                "tool_call_id": tc.id,
-            }
-            messages.append(tool_msg)
-
-            if agent.post_tool_result_callback:
-                try:
-                    agent.post_tool_result_callback(name, args, function_result)
-                except Exception as cb_err:
-                    logger.debug("post_tool_result_callback error: %s", cb_err)
-                agent._apply_post_tool_result_appendix(tool_msg)
+            # Append the already prepared callback-enriched message only now,
+            # retaining the original tool-call order expected by providers.
+            tool_msg = message_slots[i]
+            if tool_msg is None:  # pragma: no cover - defensive fallback
+                _prepare_tool_message(i, r)
+                tool_msg = message_slots[i]
+            if tool_msg is not None:
+                messages.append(tool_msg)
 
         if not agent.quiet_mode:
             print(f"{agent.log_prefix}└─ Tool batch complete")
@@ -453,6 +820,7 @@ class ToolExecutor:
         import run_agent
 
         agent = self._agent
+        foreground_batch_lease = current_initial_foreground_lease(agent)
         for i, tool_call in enumerate(assistant_message.tool_calls, 1):
             # SAFETY: check interrupt BEFORE starting each tool.
             # If the user sent "stop" during a previous tool's execution,
@@ -665,15 +1033,12 @@ class ToolExecutor:
                 spinner.start()
                 _spinner_result = None
                 try:
-                    function_result = run_agent.handle_function_call(
+                    function_result = self.invoke_registered_tool(
                         function_name,
                         function_args,
                         effective_task_id,
-                        enabled_tools=(
-                            list(agent.valid_tool_names) if agent.valid_tool_names else None
-                        ),
-                        owner_id=agent.session_id,
-                        parent_agent=agent,
+                        concurrent=False,
+                        iteration=api_call_count,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -692,15 +1057,12 @@ class ToolExecutor:
                     spinner.stop(cute_msg)
             else:
                 try:
-                    function_result = run_agent.handle_function_call(
+                    function_result = self.invoke_registered_tool(
                         function_name,
                         function_args,
                         effective_task_id,
-                        enabled_tools=(
-                            list(agent.valid_tool_names) if agent.valid_tool_names else None
-                        ),
-                        owner_id=agent.session_id,
-                        parent_agent=agent,
+                        concurrent=False,
+                        iteration=api_call_count,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -804,6 +1166,12 @@ class ToolExecutor:
 
             if agent.tool_delay > 0 and i < len(assistant_message.tool_calls):
                 time.sleep(agent.tool_delay)
+
+        if foreground_batch_lease is not None:
+            clear_initial_foreground_lease(
+                agent,
+                expected=foreground_batch_lease,
+            )
 
         # ── Budget pressure injection ─────────────────────────────────
         # After all tool calls in this turn are processed, check if we're

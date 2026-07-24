@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from leanflow_cli.workflows.queue_manager import (
     Classification,
     DecisionContext,
@@ -73,6 +75,27 @@ def test_warning_cleanup_is_consumed_once_per_assignment(tmp_path) -> None:
     # Committing the accept clears the retry bookkeeping (legacy runner behavior).
     mgr.apply_decision(second_ctx, second)
     assert mgr.warning_retries_for_current() == 0
+
+
+def test_hard_feedback_window_completion_requests_a_new_route(tmp_path) -> None:
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    mgr = TheoremQueueManager(hard_retry_limit=1)
+    mgr.assign(QueueItem(label="demo"), active_file=str(active))
+    ctx = DecisionContext(
+        source=DecisionSource.FINAL_REPORT,
+        check=ManagerCheck(has_assigned_sorry=True),
+        signature="first-rejection",
+    )
+    mgr.apply_decision(ctx, mgr.decide(ctx))
+
+    decision = mgr.decide(ctx)
+
+    assert decision.action == "restore_baseline"
+    assert decision.restore_baseline is True
+    assert decision.reason == (
+        "local feedback window complete; restore baseline sorry and continue on a new route"
+    )
 
 
 def test_retry_signatures_are_idempotent_and_serialized(tmp_path) -> None:
@@ -160,6 +183,193 @@ def test_record_attempts_are_scoped_and_pruned_per_theorem(tmp_path) -> None:
     assert [attempt.cycle for attempt in mgr.attempts_for(mgr.current.key)] == [3, 4]
 
 
+def test_record_attempt_deduplicates_gate_presentations_within_one_turn(tmp_path) -> None:
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    mgr = TheoremQueueManager()
+    mgr.assign(QueueItem(label="demo"), active_file=str(active))
+
+    first = mgr.record_attempt(
+        cycle=2,
+        proof_shape="- sorry + exact candidate",
+        reason="warning: declaration uses 'sorry'",
+        declaration_hash="ABC123",
+        gate_verdict=" Warning:  declaration uses 'SORRY' ",
+        turn_key="run-1:cycle-2",
+    )
+    duplicate = mgr.record_attempt(
+        cycle=2,
+        proof_shape="theorem demo : True := by exact candidate",
+        reason="warning: declaration uses 'sorry'",
+        declaration_hash="abc123",
+        gate_verdict="warning: declaration uses 'sorry'",
+        turn_key="run-1:cycle-2",
+    )
+
+    assert first is not None
+    assert duplicate is None
+    assert mgr.attempt_count_for(mgr.current.key) == 1
+    assert mgr.attempts_for(mgr.current.key)[0].proof_shape.startswith("- sorry")
+
+
+def test_record_attempt_identity_allows_real_changes_and_new_turns(tmp_path) -> None:
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    mgr = TheoremQueueManager()
+    mgr.assign(QueueItem(label="demo"), active_file=str(active))
+
+    common = {
+        "cycle": 2,
+        "proof_shape": "shape",
+        "reason": "warning: declaration uses 'sorry'",
+        "declaration_hash": "decl-a",
+        "gate_verdict": "sorry",
+        "turn_key": "run-1:cycle-2",
+    }
+    assert mgr.record_attempt(**common) is not None
+    assert mgr.record_attempt(**{**common, "declaration_hash": "decl-b"}) is not None
+    assert mgr.record_attempt(**{**common, "gate_verdict": "type mismatch"}) is not None
+    assert mgr.record_attempt(**{**common, "turn_key": "run-1:cycle-3"}) is not None
+    assert mgr.attempt_count_for(mgr.current.key) == 4
+
+
+def test_failed_attempt_dedupe_identity_survives_checkpoint_resume(tmp_path) -> None:
+    active = tmp_path / "Main.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    mgr = TheoremQueueManager()
+    mgr.assign(QueueItem(label="demo"), active_file=str(active))
+    kwargs = {
+        "cycle": 7,
+        "proof_shape": "first presentation",
+        "reason": "unsolved goals",
+        "declaration_hash": "declaration-sha256",
+        "gate_verdict": "Unsolved   goals",
+        "turn_key": "run-resumed:cycle-7",
+    }
+    assert mgr.record_attempt(**kwargs) is not None
+
+    state = mgr.to_autonomy_state()
+    restored = TheoremQueueManager.from_autonomy_state(state)
+    duplicate = restored.record_attempt(
+        **{**kwargs, "proof_shape": "full declaration presentation"}
+    )
+
+    assert duplicate is None
+    attempts = restored.attempts_for(TheoremKey.make("demo", str(active)))
+    assert len(attempts) == 1
+    assert state["failed_attempts"][0]["declaration_hash"] == "declaration-sha256"
+    assert state["failed_attempts"][0]["gate_verdict"] == "unsolved goals"
+    assert state["failed_attempts"][0]["turn_key"] == "run-resumed:cycle-7"
+
+
+def test_successful_tool_results_are_not_failed_attempt_evidence(tmp_path) -> None:
+    active = tmp_path / "Main.lean"
+    mgr = TheoremQueueManager()
+    mgr.assign(QueueItem(label="demo"), active_file=str(active))
+
+    successful = mgr.record_attempt(
+        cycle=1,
+        proof_shape="prepare_file",
+        reason=json.dumps({"success": True, "ok": True, "status": "prepared"}),
+    )
+    operational_failure = mgr.record_attempt(
+        cycle=2,
+        proof_shape="check_target",
+        reason=json.dumps({"success": True, "ok": False, "error": "kernel rejected"}),
+    )
+
+    assert successful is None
+    assert operational_failure is not None
+    assert mgr.attempts_for_current() == 1
+
+
+def test_truncated_success_and_content_payloads_are_not_failed_attempt_evidence(
+    tmp_path,
+) -> None:
+    active = tmp_path / "Main.lean"
+    mgr = TheoremQueueManager()
+    mgr.assign(QueueItem(label="demo"), active_file=str(active))
+
+    truncated_success = mgr.record_attempt(
+        cycle=1,
+        proof_shape="research",
+        reason='{"success": true, "status": "answered", "response": "truncated...',
+    )
+    content_only = mgr.record_attempt(
+        cycle=2,
+        proof_shape="read_file",
+        reason=json.dumps({"content": "theorem demo : True := by sorry"}),
+    )
+
+    assert truncated_success is None
+    assert content_only is None
+    assert mgr.attempts_for_current() == 0
+
+
+def test_resume_discards_legacy_successful_tool_result_attempt(tmp_path) -> None:
+    active = tmp_path / "Main.lean"
+    state = {
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "attempt": 1,
+                "cycle": 1,
+                "proof_shape": "prepare_file",
+                "reason": json.dumps({"success": True, "ok": True}),
+            },
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "attempt": 2,
+                "cycle": 2,
+                "proof_shape": "exact True.intro",
+                "reason": (
+                    "target:demo passed | tool: lean_incremental_check | "
+                    "errors: 0, warnings: 0, sorry: 0"
+                ),
+            },
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "attempt": 3,
+                "cycle": 3,
+                "proof_shape": "exact missing",
+                "reason": "unknown identifier 'missing'",
+            },
+        ]
+    }
+
+    restored = TheoremQueueManager.from_autonomy_state(state)
+    attempts = restored.attempts_for(TheoremKey.make("demo", str(active)))
+
+    assert len(attempts) == 1
+    assert attempts[0].attempt == 1
+    assert attempts[0].proof_shape == "exact missing"
+
+
+def test_resume_preserves_full_history_ring_ordinals(tmp_path) -> None:
+    active = tmp_path / "Main.lean"
+    state = {
+        "failed_attempts": [
+            {
+                "target_symbol": "demo",
+                "active_file": str(active),
+                "attempt": number,
+                "cycle": number,
+                "proof_shape": f"attempt {number}",
+                "reason": "kernel rejected",
+            }
+            for number in range(11, 21)
+        ]
+    }
+
+    restored = TheoremQueueManager.from_autonomy_state(state)
+    attempts = restored.attempts_for(TheoremKey.make("demo", str(active)))
+
+    assert [attempt.attempt for attempt in attempts] == list(range(11, 21))
+
+
 def test_verification_and_disabled_tools_are_typed_run_state(tmp_path) -> None:
     active = tmp_path / "Main.lean"
     active.write_text("theorem demo : True := by\n  trivial\n", encoding="utf-8")
@@ -243,6 +453,91 @@ def test_outcome_verification_round_trips(tmp_path) -> None:
     assert outcome["last_verification"]["scope"] == "target:demo"
     restored = TheoremQueueManager.from_autonomy_state(state)
     assert restored.outcome_for(restored.current.key).verification.tool == "lean_incremental_check"
+
+
+def test_blocked_outcomes_reopen_idempotently_at_strategy_refresh(tmp_path) -> None:
+    active = tmp_path / "Main.lean"
+    mgr = TheoremQueueManager()
+    mgr.assign(QueueItem(label="blocked_demo"), active_file=str(active))
+    blocked_key = mgr.current.key
+    mgr.record_outcome(status="blocked", note="direct route exhausted")
+    mgr.assign(QueueItem(label="solved_demo"), active_file=str(active))
+    solved_key = mgr.current.key
+    mgr.record_outcome(status="solved", note="kernel accepted")
+
+    reopened = mgr.reopen_blocked_outcomes(trigger="campaign epoch refresh")
+
+    assert [outcome.key for outcome in reopened] == [blocked_key]
+    assert mgr.outcome_for(blocked_key).status == "unresolved"
+    assert "prior blocker: direct route exhausted" in mgr.outcome_for(blocked_key).note
+    assert mgr.outcome_for(solved_key).status == "solved"
+    assert mgr.reopen_blocked_outcomes(trigger="same refresh replay") == ()
+
+
+def test_deferred_route_outcomes_reopen_without_losing_attempt_evidence(tmp_path) -> None:
+    active = tmp_path / "Main.lean"
+    mgr = TheoremQueueManager()
+    mgr.assign(QueueItem(label="hard_demo"), active_file=str(active))
+    deferred_key = mgr.current.key
+    mgr.record_attempt(
+        cycle=7,
+        proof_shape="exact attempted_shape",
+        reason="route-specific blocker",
+    )
+    mgr.record_outcome(status="deferred", note="direct route exhausted")
+
+    reopened = mgr.reopen_blocked_outcomes(trigger="campaign epoch refresh")
+
+    assert [outcome.key for outcome in reopened] == [deferred_key]
+    assert mgr.outcome_for(deferred_key).status == "unresolved"
+    assert "prior blocker: direct route exhausted" in mgr.outcome_for(deferred_key).note
+    assert mgr.attempt_entries_for(deferred_key)[0]["proof_shape"] == "exact attempted_shape"
+
+
+def test_retire_theorem_state_removes_deleted_helper_scheduler_knowledge(tmp_path) -> None:
+    active = tmp_path / "Main.lean"
+    mgr = TheoremQueueManager()
+    mgr.replace_queue([QueueItem(label="bad_helper"), QueueItem(label="parent_goal")])
+    mgr.assign(QueueItem(label="bad_helper"), active_file=str(active))
+    helper_key = mgr.current.key
+    mgr.record_attempt(cycle=3, proof_shape="exact impossible", reason="false")
+    mgr.record_outcome(status="disproved", note="authoritative negation")
+
+    assert mgr.retire_theorem_state(helper_key) is True
+    assert mgr.current is None
+    assert mgr.outcome_for(helper_key) is None
+    assert mgr.attempt_entries_for(helper_key) == ()
+    assert [item.label for item in mgr.queue] == ["parent_goal"]
+    assert "bad_helper" not in json.dumps(mgr.to_checkpoint_state())
+    assert mgr.retire_theorem_state(helper_key) is False
+
+
+def test_checkpoint_state_preserves_knowledge_but_resets_process_local_state(tmp_path) -> None:
+    active = tmp_path / "Main.lean"
+    mgr = TheoremQueueManager()
+    mgr.assign(
+        QueueItem(label="demo"),
+        active_file=str(active),
+        prepare=PrepareState(success=True, ok=True, elapsed_s=1.0),
+    )
+    mgr.record_attempt(cycle=3, proof_shape="exact missing", reason="unknown identifier")
+    mgr.record_verification(
+        VerificationRecord(
+            scope=VerificationScope.TARGET,
+            ok=False,
+            tool="lean_incremental_check",
+            target="demo",
+            summary="target failed",
+        )
+    )
+    mgr.disable_tool("lean_auto_search", "provider unavailable")
+
+    state = mgr.to_checkpoint_state()
+
+    assert state["failed_attempts"][0]["proof_shape"] == "exact missing"
+    assert state["current_queue_assignment"]["incremental_prepare"]["success"] is False
+    assert "last_verification" not in state
+    assert "disabled_tools_this_run" not in state
 
 
 def test_pending_count_excludes_current_item(tmp_path) -> None:

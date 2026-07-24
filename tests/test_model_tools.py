@@ -136,6 +136,7 @@ print(json.dumps(sorted(set(entry.toolset for entry in registry._tools.values())
         "coordination",
         "delegation",
         "document",
+        "empirical-compute",
         "file",
         "lean",
         "session_search",

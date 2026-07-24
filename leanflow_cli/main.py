@@ -25,6 +25,7 @@ from leanflow_cli.cli.cli_handlers import (
     _print_mcp_status,
     _print_project_power_setup,
     _project_payload,
+    workflow_run_help_text,
 )
 from leanflow_cli.cli.commands import build_workflow_command_set
 from leanflow_cli.cli.doctor import run_doctor
@@ -328,6 +329,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sandbox":
         return _handle_sandbox(args)
     if args.command == "workflow":
+        if any(token in {"-h", "--help"} for token in args.args):
+            print(workflow_run_help_text(args.workflow))
+            return 0
         if args.workflow in {"status", "history", "activity", "log"}:
             payload = load_workflow_live_status()
             if args.workflow == "history":

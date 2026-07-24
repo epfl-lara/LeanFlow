@@ -27,13 +27,21 @@ AUXILIARY_WEB_EXTRACT_API_KEY) let callers route a specific auxiliary task to a
 custom OpenAI-compatible endpoint without touching the main model settings.
 """
 
+import asyncio
+import inspect
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from openai import OpenAI
 
 from core.constants import OPENROUTER_BASE_URL
+from core.provider_capacity import (
+    acquire_background_provider_lease,
+    background_actor_context_active,
+    background_provider_lease,
+)
 from leanflow_cli.runtime.auth import (
     CODEX_AUX_DEFAULT_MODEL,
     CODEX_BASE_URL,
@@ -78,6 +86,21 @@ auxiliary_is_nous: bool = False
 _AUXILIARY_TASK_FALLBACKS: dict[str, str] = {
     "lean_decompose_helpers": "lean_reasoning",
     "planner_synthesis": "orchestration",
+    # Fidelity is another short, strict verdict turn. Inherit the strong main
+    # endpoint so RCP can apply the same non-thinking JSON/text-turn controls;
+    # raw `auto` routing does not retain enough provider identity to attach
+    # RCP chat-template kwargs after client auto-detection.
+    "statement_fidelity": "orchestration",
+}
+
+# Orchestration, planner synthesis, and fidelity replies are strict structured
+# turns. On RCP thinking models, the default hidden reasoning can consume the
+# output allowance before any final JSON/text is emitted. Users can opt back
+# into reasoning through each task's AUXILIARY_*_REASONING_EFFORT or config.
+_AUXILIARY_TASK_REASONING_DEFAULTS: dict[str, str] = {
+    "orchestration": "off",
+    "planner_synthesis": "off",
+    "statement_fidelity": "off",
 }
 
 # Default auxiliary models per provider
@@ -435,6 +458,10 @@ def _to_async_client(sync_client, model: str):
     async_kwargs = {
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
+        # async_call_llm callers own their retry policy and timeout. Hidden SDK
+        # retries otherwise multiply a bounded web/coach call before control
+        # returns to that caller.
+        "max_retries": 0,
     }
     base_lower = str(sync_client.base_url).lower()
     if "openrouter" in base_lower:
@@ -738,6 +765,14 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 _client_cache: dict[tuple, tuple] = {}
 
 
+@dataclass(frozen=True)
+class AuxiliaryCallIdentity:
+    """Carry the credential-free provider/model identity for one auxiliary call."""
+
+    provider: str
+    model: str
+
+
 def _get_cached_client(
     provider: str,
     model: str = None,
@@ -751,7 +786,11 @@ def _get_cached_client(
     resolution is intentionally resolved fresh each call so auxiliary routing
     cannot be polluted by stale process-global state from earlier tasks/tests.
     """
-    use_cache = bool((base_url or "").strip() or (api_key or "").strip())
+    # Async clients are bound to the event loop that owns their connection
+    # pool. Auxiliary callers commonly use short-lived ``asyncio.run`` loops,
+    # so reusing one across calls both crosses loop boundaries and defers its
+    # destructor until after the owning loop has closed.
+    use_cache = not async_mode and bool((base_url or "").strip() or (api_key or "").strip())
     cache_key = (provider, async_mode, base_url or "", api_key or "")
     if use_cache and cache_key in _client_cache:
         cached_client, cached_default = _client_cache[cache_key]
@@ -766,6 +805,71 @@ def _get_cached_client(
     if use_cache and client is not None:
         _client_cache[cache_key] = (client, default_model)
     return client, model or default_model
+
+
+def _canonical_auxiliary_provider(provider: str, client: Any | None) -> str:
+    """Return a stable credential-free provider label for telemetry."""
+    normalized = str(provider or "auto").strip().lower() or "auto"
+    if normalized == "main":
+        return "custom"
+    if normalized == "codex":
+        return "openai-codex"
+    if normalized != "auto":
+        return normalized
+    if isinstance(client, CodexAuxiliaryClient):
+        return "openai-codex"
+    if isinstance(client, AnthropicAuxiliaryClient):
+        return "anthropic"
+
+    base_url = str(getattr(client, "base_url", "") or "").lower()
+    if "openrouter.ai" in base_url:
+        return "openrouter"
+    if "chatgpt.com/backend-api/codex" in base_url:
+        return "openai-codex"
+    if "api.anthropic.com" in base_url:
+        return "anthropic"
+    custom_base = _current_custom_base_url().lower()
+    if custom_base and base_url.rstrip("/") == custom_base.rstrip("/"):
+        return "custom"
+    return "auto"
+
+
+def resolve_auxiliary_call_identity(
+    task: str = None,
+    *,
+    provider: str = None,
+    model: str = None,
+    base_url: str = None,
+    api_key: str = None,
+) -> AuxiliaryCallIdentity:
+    """Resolve only the non-secret provider/model identity for an auxiliary call.
+
+    This performs the same local configuration and client selection as
+    ``call_llm`` without issuing a provider request. It is used after a failed
+    isolated request so telemetry can identify the failing route without
+    serializing endpoints or credentials.
+    """
+    resolved_provider, resolved_model, resolved_base_url, resolved_api_key = (
+        _resolve_task_provider_model(task, provider, model, base_url, api_key)
+    )
+    client, final_model = _get_cached_client(
+        resolved_provider,
+        resolved_model,
+        base_url=resolved_base_url,
+        api_key=resolved_api_key,
+    )
+    effective_provider = resolved_provider
+    if client is None and resolved_provider != "openrouter" and not resolved_base_url:
+        client, final_model = _get_cached_client(
+            "openrouter",
+            resolved_model or _OPENROUTER_MODEL,
+        )
+        if client is not None:
+            effective_provider = "openrouter"
+    return AuxiliaryCallIdentity(
+        provider=_canonical_auxiliary_provider(effective_provider, client),
+        model=str(final_model or resolved_model or "").strip(),
+    )
 
 
 def _resolve_task_provider_model(
@@ -940,9 +1044,19 @@ def _build_call_kwargs(
         custom_base = base_url or _current_custom_base_url()
         if provider in {"custom", "main"} and _is_rcp_base_url(custom_base):
             template_kwargs = dict(merged_extra.get("chat_template_kwargs") or {})
-            template_kwargs["enable_thinking"] = True
+            normalized_effort = str(reasoning_effort).strip().lower()
+            thinking_disabled = normalized_effort in {
+                "off",
+                "none",
+                "disabled",
+                "false",
+            }
+            template_kwargs["enable_thinking"] = not thinking_disabled
             merged_extra["chat_template_kwargs"] = template_kwargs
-            merged_extra["reasoning_effort"] = _map_rcp_reasoning_effort(reasoning_effort)
+            if thinking_disabled:
+                merged_extra.pop("reasoning_effort", None)
+            else:
+                merged_extra["reasoning_effort"] = _map_rcp_reasoning_effort(reasoning_effort)
     if provider == "nous" or auxiliary_is_nous:
         merged_extra.setdefault("tags", []).extend(["product=leanflow-agent"])
     if merged_extra:
@@ -985,7 +1099,7 @@ def _resolve_task_reasoning_effort(task: str = None) -> str | None:
         fallback_value = _task_config_text(fallback_config, "reasoning_effort")
         if fallback_value:
             return fallback_value
-    return None
+    return _AUXILIARY_TASK_REASONING_DEFAULTS.get(str(task or "").strip())
 
 
 def call_llm(
@@ -1063,16 +1177,20 @@ def call_llm(
         reasoning_effort=reasoning_effort,
     )
 
-    # Handle max_tokens vs max_completion_tokens retry
-    try:
-        return client.chat.completions.create(**kwargs)
-    except Exception as first_err:
-        err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
-            kwargs.pop("max_tokens", None)
-            kwargs["max_completion_tokens"] = max_tokens
+    # A tool-side helper invoked inside a background actor retains that actor's
+    # lease. Main-thread manager/orchestrator/synthesis calls remain part of
+    # the foreground control plane and must never wait for a long research job.
+    with background_provider_lease(enabled=background_actor_context_active()):
+        # Handle max_tokens vs max_completion_tokens retry under one lease.
+        try:
             return client.chat.completions.create(**kwargs)
-        raise
+        except Exception as first_err:
+            err_str = str(first_err)
+            if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+                kwargs.pop("max_tokens", None)
+                kwargs["max_completion_tokens"] = max_tokens
+                return client.chat.completions.create(**kwargs)
+            raise
 
 
 async def async_call_llm(
@@ -1130,12 +1248,38 @@ async def async_call_llm(
         reasoning_effort=reasoning_effort,
     )
 
+    lease = await asyncio.to_thread(
+        acquire_background_provider_lease,
+        enabled=background_actor_context_active(),
+    )
     try:
-        return await client.chat.completions.create(**kwargs)
-    except Exception as first_err:
-        err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
-            kwargs.pop("max_tokens", None)
-            kwargs["max_completion_tokens"] = max_tokens
+        try:
             return await client.chat.completions.create(**kwargs)
-        raise
+        except Exception as first_err:
+            err_str = str(first_err)
+            if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+                kwargs.pop("max_tokens", None)
+                kwargs["max_completion_tokens"] = max_tokens
+                return await client.chat.completions.create(**kwargs)
+            raise
+    finally:
+        if lease is not None:
+            lease.release()
+        await _close_async_client(client)
+
+
+async def _close_async_client(client: Any) -> None:
+    """Close one uncached async auxiliary client in its owning event loop."""
+    close = getattr(client, "close", None)
+    if not callable(close):
+        close = getattr(client, "aclose", None)
+    if not callable(close):
+        return
+    try:
+        outcome = close()
+        if inspect.isawaitable(outcome):
+            await outcome
+    except Exception:
+        # Cleanup must never replace the response or provider exception that
+        # the caller is already handling.
+        logger.debug("Failed to close async auxiliary client", exc_info=True)

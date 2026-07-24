@@ -72,6 +72,10 @@ Managed queue turns allow new helper declarations that directly support the assi
   - `blocker_kind`
   - `queue_items`
   - `capability_report`
+  - exact-symbol calls retain every file-wide error and aggregate `sorry` count while scoping
+    non-error diagnostics and queue rows to the declaration; their `capability_report` is an
+    explicitly lossy status digest with project-validity, error/degradation signals, a source
+    SHA-256, and omission counts. Use `lean_capabilities` for the full capability inventory.
 - `lean_verify`
   - `mode=file_exact|module|project`
   - `file_exact` is the acceptance path for file-scoped theorem turns
@@ -80,6 +84,10 @@ Managed queue turns allow new helper declarations that directly support the assi
   - MCP-first provider selection with `rg`/Mathlib fallback
   - provider provenance in `attempted_providers` and per-result metadata
   - explicit `degraded_reasons` when semantic providers are missing or skipped
+  - managed file-scoped assignments move only confirmed later declarations from the current file
+    into `source_order_inaccessible_results`; prior/imported results stay usable and ambiguous
+    matches fail open. The current disk declaration index, not stale provider line metadata, is
+    authoritative
 - `lean_proof_context`
   - theorem-local context retrieval from the managed automation backend
   - returns theorem statement, original proof, hypotheses, in-scope names, namespace, and optional similar proofs
@@ -122,6 +130,166 @@ LeanFlow installs and manages the Lean MCP backends by default:
   - the managed MCP server is still configured disabled by default; enable it for MCP `search_summary`/getter tools, or switch it to a prepared local backend after fetching LeanExplore data
 
 Those servers exist to back the native tools above. Raw `mcp_*` tools are not part of the normal native Lean workflow surface.
+
+Set `LEANFLOW_LOW_MEMORY=1` for a deliberately low-memory run. LeanFlow skips all
+configured MCP subprocesses, the in-process LeanExplore index, and LeanProbe's warm
+incremental environment cache for that process. Native Lean wrappers use exact Lean
+checks plus project/Mathlib text-search fallbacks. This reduces search and automation
+breadth; it does not weaken the final kernel gate. `LEANFLOW_DISABLE_MCP=1` remains a
+narrower switch when only MCP subprocesses should be disabled.
+
+Process-isolated research workers use a lighter profile even when the foreground runs
+with `LEANFLOW_LOW_MEMORY=0`: they start no MCP subprocesses and no local LeanExplore
+index by default. Native Lean checks, local declaration extraction, and project/Mathlib
+text-search fallbacks remain available. This avoids duplicating proof-auto, lean-lsp,
+local LeanExplore, and local Loogle service trees per worker. A memory-provisioned worker
+may first restore configured MCP servers with `LEANFLOW_DISPATCH_MCP_SERVERS=*`; enabling
+that worker's private local Loogle additionally requires
+`LEANFLOW_DISPATCH_LOCAL_LOOGLE=1`. Set
+`LEANFLOW_DISPATCH_LEANEXPLORE_BACKEND=local` only when each worker is also provisioned
+for its own local semantic index. These worker-only settings never narrow the foreground
+prover.
+
+`--research-workers N` is also the shared live-background-actor bound. Dispatch workers acquire a
+cross-process lease before building their agent, and planner delegates acquire the same lease before
+constructing a conversation. Nested auxiliary calls reuse that context-local lease. A busy planner
+lane defers after a bounded wait and is retried at a later safe orchestration boundary; it does not
+remain as an additional resident agent. With `--no-parallel`, process dispatch is disabled while
+planner lanes run one at a time.
+
+The research foreground retains `lean-lsp-mcp`, Lean diagnostics/goals, remote Loogle, and native
+text-search fallbacks. Its private local Loogle index is disabled by default because it remains a
+separate multi-gigabyte resident process alongside the Lean language server and background research
+portfolio. `LEANFLOW_RESEARCH_LOCAL_LOOGLE=1` explicitly restores that index for a
+memory-provisioned campaign. Non-research workflows keep the established local-Loogle default.
+
+Canonical `lake env lean FILE` verification keeps its 120-second default outside research mode. In
+research mode LeanFlow applies a 300-second cold-start floor, so `apply_verified_patch` and parent
+file gates do not expire earlier than the incremental checker on large fixtures. The bounded
+`LEANFLOW_LEAN_COMMAND_TIMEOUT_S` override may raise this budget but cannot lower the research floor.
+
+Research mode also bounds the lifetime of the primary Lean worker after
+`lean_multi_attempt`. The tactic evidence is returned unchanged, then LeanFlow retires that exact
+managed `lean-lsp` connection at the first request-idle boundary. Already-admitted concurrent calls
+finish under their own tool timeouts; a timed-out coroutine is canceled so it cannot hold retirement
+open forever. New calls wait and reconnect lazily across that boundary, so diagnostics, goals,
+search, and later multi-attempts remain available without retaining a several-gigabyte post-attempt
+peak for an unbounded interval. Set
+`LEANFLOW_RESEARCH_RECYCLE_MULTI_ATTEMPT_MCP=0` only for controlled short-run benchmarking where
+retaining a warmed server is intentional. Lazy reconnect consumes only the original tool call's
+remaining timeout. If retirement fails, LeanFlow retains fail-closed ownership of the old server,
+reports the teardown error, and refuses to start an overlapping replacement.
+A replacement that exceeds that deadline remains fenced until its canceled startup has completed
+transport cleanup, so the next call cannot create a second Lean worker prematurely. Process exit
+similarly waits for registered servers, unregistered startups, retire tasks, and startup fences;
+any retained identity is reported as native runtime cleanup failure rather than a successful stop.
+
+Manager, orchestrator, verifier, and planner-synthesis model turns use a separate text-only process
+boundary. The parent enforces their configured timeout against elapsed wall-clock time and kills
+and reaps the isolated process group on timeout or interruption. Provider SDK timeouts are still
+forwarded as transport hints, but cannot pin the foreground workflow past the parent deadline.
+Structured worker errors are bounded and credential-redacted unconditionally before persistence,
+including when optional display redaction is disabled.
+
+Each isolated research job also receives an explicit assignment-scoped recent-history window:
+prior worker routes and outcomes, foreground orchestrator routes, and kernel-rejected proof
+shapes. The journal read and serialized context are hard-capped, and changing this observational
+window does not change the stable route signature used for duplicate suppression. The worker must
+compare its result to the supplied records, and the parent retains that context in the structured
+deliverable so a later replacement can audit novelty without relying on an opaque digest.
+
+Before a new foreground persistence route is recorded, deterministic semantic admission compares
+its strategy family, exact theorem, concrete target hypothesis, and proof-shape evidence with the
+campaign's no-progress ledger. Operational prose, generation counters, timestamps, worker ids, and
+route hashes are ignored. A duplicate rotates to a distinct viable family; if none remains, the
+internal `refresh-portfolio` action requests a fresh epoch and background portfolio and continues.
+It never enters the parked-scope path or waits for a provider turn. The action uses the ordinary
+crash-durable in-flight marker, retires immediately after checkpointing its rollover request, and
+replays once without recharging if the process stopped before application. Kernel-gated graph
+progress clears the ledger, while a new mathematical target or proof shape is retained as genuine
+novelty.
+
+Research mode applies target-scoped foreground grace after a completed-job event interrupts a safe
+read/search boundary. During that grace period LeanFlow continues harvesting and replacing workers,
+publishing events, and staging target-matched findings for the prover, but it suppresses another
+research-event interruption. A successful foreground turn or authoritative queue/gate boundary
+releases grace; changing the assigned theorem resets it. Provider failures, user/signal
+interruptions, and research-event interruptions do not consume the owed foreground opportunity.
+
+Foreground research delivery is separately crash-consistent. LeanFlow stages target-scoped FIFO
+batches of at most three complete findings and caps each tagged research prompt at 64 KiB. Exact
+checked or unchecked replacement text travels alone; a single oversized result stays durable and
+unacknowledged while later bounded evidence may still flow. An ordered transcript scan acknowledges
+only delivery tokens that precede a later assistant message. Consequently, an internal safe-step
+boundary can commit an older consumed batch while leaving findings appended by the newest tool result
+pending. Provider failures and user/signal interrupts never acknowledge findings. Every receipt is
+scoped to `(job id, foreground target)`, so delivering parent evidence to a split child does not mark
+the parent itself delivered.
+
+An exact evidence-to-helper follow-up reserves its source finding from foreground delivery while
+active. After termination, only an actionable, schema-valid exact helper or replacement keeps the
+source reserved while awaiting harvest; every other result releases it. LeanFlow delivers a
+materialized actionable candidate first and couples the source and follow-up receipts after the next
+assistant response, preventing duplicate synthesis while preserving crash-consistent redelivery.
+
+Canonical worker-checked helpers also create a durable parent-action record when their foreground
+batch is staged. A later assistant response acknowledges delivery only; it does not clear that
+record. At the next safe outer boundary LeanFlow reruns the exact helper and axiom profile against
+the current file before consulting the orchestrator. A clean result receives one bounded foreground
+insertion opportunity, during which broad search/decomposition calls are fenced. Only the ordinary
+managed edit guard plus current-source helper gate can bank and retire the record; the assigned
+target remains unresolved. A changed source forces recheck, elaboration/axiom rejection retires the
+candidate, and operational unavailability remains checkpointed for resume.
+
+Semantic novelty also controls how a consumed finding is rendered, not whether it remains durable.
+A finding explicitly classified as duplicate, subsumed, malformed, or otherwise ineligible becomes
+`EVIDENCE_ONLY` before prompt sizing. A separate proof-use policy also makes a novel finite
+congruence/singleton leaf evidence-only after two rejected proof shapes when the finding explicitly
+admits it does not cover the remaining target and has no exact target-closing checked replacement.
+That leaf remains in semantic history for deduplication, but cannot fuel another recursive research
+refresh. LeanFlow retains its counterexamples, noncoverage facts,
+obstructions, issues, and unresolved dependencies, but suppresses worker objectives, candidate code,
+helper outlines, target deltas, proof shapes, and action clauses embedded in negative fields behind
+audit hashes. Foreground and orchestrator
+prompts may use that evidence to exclude spent routes only; it cannot define the next implementation
+action or raise queue priority. The ordinary delivery token still acknowledges the record, avoiding
+an undrainable evidence backlog.
+
+The consumed dispatch ledger is the lossless finding archive. The prompt-facing
+`research_findings` list is an active-scope materialization: at every scope/restart reconciliation it
+pages the current theorem into a 32-finding window. Safe same-file split ancestors receive a
+three-finding inherited window (one foreground batch), leaving the remaining capacity for the exact
+current target. Exact-target results are selected before inherited history.
+Switching targets de-stages process-local prompts and may dematerialize an inactive unacknowledged
+copy only after its exact ledger payload and hashes validate. Missing, malformed, ambiguous, or
+hash-mismatched records are retained and quarantined. Reopening a target rematerializes any archive
+record lacking that target's pair-scoped receipt; larger exact-target and inherited backlogs flow in
+later bounded pages as acknowledgements free slots. An inherited copy already acknowledged by the
+child is dematerialized immediately because the pair-scoped receipt and ledger remain authoritative.
+
+The parent stops launching replacement research jobs only when this active delivery window reaches
+32 undelivered findings. An ancestor can occupy at most three slots, so it cannot exert full
+backpressure on a new split child. LeanFlow continues to reap already-running workers, reports the
+exact target backlog in portfolio status, and records both backpressure and deferred-archive
+transitions in workflow activity.
+
+An empirical background JobSpec additionally receives `empirical_compute`, a dedicated
+process-isolated exact-arithmetic surface for bounded integer and rational experiments. It does not
+receive terminal access: arbitrary Python remains unavailable, and deep-search/decomposition/negation
+workers never receive the compute schema. The compute child has no filesystem or process API and is killed at a short hard
+timeout under memory and output ceilings.
+
+The dedicated background `decomposition` JobSpec uses the read/check-only `web-research` plus
+`lean-research` surfaces and returns a normalized `decomposition_report`. Every proposed subgoal and
+`depends_on`/`split_of` edge cites an exact source-basis identifier; malformed or unbacked entries are
+dropped or marked incomplete. The subprocess never writes Lean, plan, or graph state and returns no
+plan delta. The parent alone decides whether to materialize a proposal through the ordinary
+statement-fidelity and kernel gates.
+
+Every scratch archetype receives a non-empty explicit toolset allowlist. `lean-research` preserves
+deterministic Lean inspection and inline candidate checking but excludes shared-file patching and the
+LLM-backed `lean_reasoning_help`/`lean_decompose_helpers` advisors. Handler-level guards reject those
+advisors inside scratch dispatch even if a stale registry surface tries to invoke them.
 
 ## Queueing, Routing, And Workers
 
@@ -261,6 +429,54 @@ Relevant files under `.leanflow/workflow-state/` include:
 - `runs/`
 - `file_locks.json`
 - `outcomes.jsonl`
+- `plan.md`, `summary.json`, `blueprint.json`, and `journal.jsonl` for enabled living plan state
+
+At startup, LeanFlow keeps the newly selected run JSONL lossless and hot, then streams provably
+closed historical run and mirrored-agent JSONLs into `activity/archive/**/*.jsonl.gz`. Full raw
+bytes remain recoverable there. `activity/historical-summary.json` is a small crash-atomic evidence
+index with source/archive and status-shard checksums. Replaceable per-run agent/lifecycle summaries
+and bounded recent tails live as streamable JSONL under `activity/historical-runs/`. `/workflow
+status` and `/workflow activity` read those uncompressed shards plus live streams only; they never
+fingerprint or open the gzip evidence. Archive and status-shard commits precede index commit, which
+precedes source unlink, so startup can safely retry any interrupted boundary. Any recorded live
+parent or child process identity vetoes the run transaction.
+
+At process launch, the native runner immediately claims `live_status.json` with its current PID,
+launch-token fingerprint, process-group/session identity, and heartbeat. The phase advances through
+`starting` and `reconciling` before the potentially expensive checkpoint, plan, queue, and Lean
+preflight work. Any retained theorem, diagnostic, or `sorry` fields are the previous durable
+snapshot while `startup_reconciliation_pending` is true; the first rebuilt live proof state replaces
+the snapshot and clears that marker. Shell status renders those retained proof fields as a prior
+durable snapshot pending reconciliation rather than presenting them as current Lean truth.
+
+The prover sees `plan.md` through an 8,000-character generated file-tool view. It prioritizes the
+Goal, Current state, Strategy, and Frontier prefix while retaining the recent decision/final-report
+tail; every shortened view reports its source hash and source/returned/omitted character counts.
+The canonical `## Notes` heading and user-owned historical body are hidden, and offset pagination
+into them is rejected. Current queue assignment and Lean source/kernel diagnostics remain
+authoritative over stored plan or dependency-graph declaration snapshots. Model-facing raw reads
+of `summary.json` and
+`blueprint.json` are also rejected because these machine snapshots can grow with historical
+ledgers; managed prompts receive bounded graph and finding digests instead. Raw artifact inspection
+is reserved for explicit operator diagnostics with `LEANFLOW_DIAGNOSTIC_FILE_ACCESS=1`.
+The research orchestrator further scopes graph context to the current assignment: explicit target
+dependencies and the campaign-global scheduling frontier are rendered separately, proved same-file
+declarations carry conclusion-shape compatibility labels, and unsupported dependency references in
+an LLM route are discarded in favor of the deterministic floor.
+Its advisory prompt is capped at 12,000 characters. The assigned declaration, error-bearing target
+diagnostics, floor decision, and strict reply contract reserve space first; graph facts, failed
+routes, findings, generated plan state, and phase policy use explicit section caps with full-source
+hash/count omission telemetry. The isolated consult has a twenty-second research ceiling (the
+normal orchestrator timeout setting may lower it), after which the deterministic floor resumes and
+the project-local cooldown circuit suppresses repeated waits.
+
+Terminal `live_status.json` snapshots record the truthful `exit_code` and `reason` alongside
+the final mathematical state. A new startup clears those process-outcome fields while retaining
+the prior proof snapshot for reconciliation.
+After a signal stops owned writers, the runner refreshes the current queue assignment and
+source-derived file/project `sorry` counts without starting Lean, MCP, or a provider. The exit-130
+checkpoint and terminal live status therefore describe the bytes in the linked quiescent snapshot,
+even when the outer loop was interrupted before receiving a completed followup state.
 
 For project-scoped `/prove`, `live_status.json` stores `project_prove_manager`, `project_prove_file_queue`, `project_prove_completed_files`, `project_prove_plan_source`, and `project_prove_plan_reason` alongside the normal active-file, queue, diagnostics, build, route, checkpoint, and provider/model fields.
 

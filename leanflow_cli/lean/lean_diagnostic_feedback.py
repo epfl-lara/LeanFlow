@@ -17,12 +17,12 @@ so re-exporting these names back from there introduces no import cycle.
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.lean.lean_diagnostics import _goals_still_open  # noqa: F401
 from leanflow_cli.lean.lean_services import (
     diagnostic_items,
     diagnostics_indicate_actionable_failure,
@@ -258,52 +258,3 @@ def _diagnostics_indicate_hard_failure(diagnostics: str) -> bool:
         r"\btactic execution\b",
     )
     return any(re.search(pattern, lowered) for pattern in hard_patterns)
-
-
-def _goals_still_open(goals: str) -> bool:
-    def _structured_goals_still_open(value: Any) -> bool:
-        if value is None:
-            return False
-        if isinstance(value, str):
-            lowered_value = value.lower()
-            if not lowered_value or "unavailable" in lowered_value:
-                return False
-            cleared_tokens = (
-                "no goals",
-                "goals accomplished",
-                "proof complete",
-                "no remaining goals",
-            )
-            if any(token in lowered_value for token in cleared_tokens):
-                return False
-            return "⊢" in value or bool(re.search(r"\bgoal\b", lowered_value))
-        if isinstance(value, list):
-            return any(_structured_goals_still_open(item) for item in value)
-        if isinstance(value, Mapping):
-            if "goals" in value:
-                return _structured_goals_still_open(value.get("goals"))
-            if "goal" in value:
-                return _structured_goals_still_open(value.get("goal"))
-            if "term_goal" in value:
-                return _structured_goals_still_open(value.get("term_goal"))
-            return False
-        return False
-
-    lowered = (goals or "").lower()
-    if not lowered or "unavailable" in lowered:
-        return False
-    try:
-        parsed = json.loads(goals)
-    except Exception:
-        parsed = None
-    if parsed is not None:
-        return _structured_goals_still_open(parsed)
-    cleared_tokens = (
-        "no goals",
-        "goals accomplished",
-        "proof complete",
-        "no remaining goals",
-    )
-    if any(token in lowered for token in cleared_tokens):
-        return False
-    return "⊢" in goals or "goal" in lowered

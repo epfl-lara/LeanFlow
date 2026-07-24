@@ -30,8 +30,8 @@ from typing import Any
 
 
 def _native_backend_status_indicates_failure(payload: Mapping[str, Any]) -> bool:
-    failure_statuses = {"rejected", "failed", "failure", "error", "invalid"}
-    for key in ("status", "validation_status", "result_status"):
+    failure_statuses = {"fail", "rejected", "failed", "failure", "error", "invalid"}
+    for key in ("status", "outcome", "validation_status", "result_status"):
         status = str(payload.get(key, "") or "").strip().lower()
         if status in failure_statuses:
             return True

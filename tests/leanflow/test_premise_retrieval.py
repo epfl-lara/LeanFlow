@@ -74,6 +74,25 @@ def test_hints_computed_once_per_assignment(retrieval_enabled, monkeypatch):
     assert read_back == first
 
 
+def test_assignment_retrieval_uses_fast_nonblocking_profile(retrieval_enabled, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake(file_path, theorem_id, *, cwd=None, **kwargs):
+        captured.update(kwargs)
+        return {"success": True, "candidates": [], "degraded_reasons": []}
+
+    monkeypatch.setattr(runner, "lean_lemma_suggest", fake)
+
+    runner._inject_premise_hints({}, target_symbol="demo", active_file="Demo/Main.lean")
+
+    assert captured == {
+        "max_candidates": 6,
+        "max_queries": 2,
+        "search_modes": ("regex",),
+        "use_proof_context": False,
+    }
+
+
 def test_failure_caches_empty_and_never_raises(retrieval_enabled, monkeypatch):
     calls: list = []
     _stub_suggest(monkeypatch, calls, raise_error=True)

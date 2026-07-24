@@ -52,34 +52,23 @@ def classify_scope_outcome(
     """proved | disproved | report — the concrete-result trichotomy.
 
     ``proved`` is the caller's determination (a verified exit skips the
-    generator entirely); ``disproved`` requires a kernel-standard
-    negation-probe verdict on the CURRENT assignment; everything else is a
-    documented account.
+    generator entirely); ``disproved`` requires this run's revalidated,
+    ambiguity-free requested-root promotion payload. Raw summary rows and the
+    mutable current assignment are never mathematical verdict authority.
     """
-    assignment = dict(autonomy_state.get("current_queue_assignment") or {})
-    target = str(assignment.get("target_symbol", "") or "")
-    active_file = str(assignment.get("active_file", "") or "")
-    storage_key = ""
-    if target and active_file:
-        from leanflow_cli.workflows.queue_models import TheoremKey
+    from leanflow_cli.workflows import negation_promotion
 
-        storage_key = TheoremKey.make(target, active_file).storage_key()
-    for probe in (summary or {}).get("negation_probes") or []:
-        if not isinstance(probe, Mapping):
-            continue
-        negation = dict(probe.get("negation") or {})
-        # Exact key match: a stale disproof of a same-named theorem in a
-        # DIFFERENT file must never classify this scope disproved.
-        if (
-            storage_key
-            and str(probe.get("key", "") or "") == storage_key
-            and negation.get("verdict") == "negation_proved"
-            and negation.get("axioms_ok")
-        ):
-            return ScopeOutcome(
-                kind="disproved",
-                detail=f"negation of `{target}` proved in scratch (promotion pending, §4.11)",
-            )
+    promotion = negation_promotion.authoritative_runtime_main_promotion(
+        autonomy_state,
+        summary=summary,
+        cwd=str(os.getenv("LEANFLOW_PROJECT_ROOT", "") or ""),
+    )
+    if promotion is not None:
+        theorem = str(promotion.get("theorem", "") or "the requested root")
+        return ScopeOutcome(
+            kind="disproved",
+            detail=f"negation of `{theorem}` passed authoritative promotion",
+        )
     return ScopeOutcome(kind="report", detail="documented account of the attempt")
 
 

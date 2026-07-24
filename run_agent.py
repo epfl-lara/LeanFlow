@@ -57,6 +57,12 @@ else:
 
 # Import our tool system
 
+from agent.accounting.error_log import ensure_error_log_handler
+from agent.accounting.redact import (
+    RedactingFormatter,
+    redact_sensitive_text,
+    redact_sensitive_value,
+)
 from agent.accounting.token_accounting import TokenAccounter
 from agent.compression.compression_policy import CompressionPolicy
 from agent.compression.context_compressor import ContextCompressor
@@ -80,7 +86,12 @@ from agent.providers.anthropic_messages import (
     AnthropicMessagePreparer,
     content_has_image_parts,
 )
-from agent.providers.api_caller import ApiCaller
+from agent.providers.api_caller import (
+    TRANSIENT_PROVIDER_MAX_ATTEMPTS,
+    ApiCaller,
+    TransientProviderRetriesExhausted,
+    transient_provider_retry_delay_s,
+)
 from agent.providers.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_tokens_rough,
@@ -93,6 +104,10 @@ from agent.runtime.trajectory import (
     has_incomplete_scratchpad,
 )
 from core.constants import OPENROUTER_BASE_URL
+from core.provider_availability import (
+    extract_provider_usage_limit,
+    provider_reset_wait_max_seconds,
+)
 from model_tools import check_toolset_requirements, get_tool_definitions
 from tools.implementations.terminal_tool import cleanup_vm
 from tools.utilities.interrupt import set_interrupt as _set_interrupt
@@ -156,15 +171,24 @@ class IterationBudget:
             return max(0, self.max_total - self._used)
 
 
-# Tools that must never run concurrently (interactive / user-facing).
-# When any of these appear in a batch, we fall back to sequential execution.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
+# Managed source-edit callbacks use one assignment-bound snapshot on the agent.
+# Serializing the entire model-authored batch keeps each edit's preflight,
+# execution, and post-result verification atomic with respect to its siblings.
+_MANAGED_SOURCE_EDIT_TOOLS = frozenset({"patch", "write_file", "apply_verified_patch"})
+
+# Tools that must never run concurrently. Interactive tools need serialized
+# user interaction; decomposition must observe prerequisite source-discovery
+# results from earlier calls in the same model-authored batch.
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "lean_decompose_helpers"}).union(
+    _MANAGED_SOURCE_EDIT_TOOLS
+)
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
 _DEFAULT_MAX_TOOL_RESULT_CHARS = 100_000
 _LEAN_REASONING_HELP_MAX_TOOL_RESULT_CHARS = 260_000
+_POST_TOOL_TAIL_SLOW_THRESHOLD_S = 1.0
 
 # Re-exported leaf helpers extracted into the agent/ package, kept importable from
 # run_agent for backwards compatibility (tests + native_runner reference these paths):
@@ -234,6 +258,7 @@ from agent.prompting.prompt_builder import (
 from agent.runtime.workflow_events import (  # noqa: E402,F401
     _emit_workflow_event,
     _workflow_agent_event_details,
+    build_api_request_activity_details,
 )
 from model_tools import handle_function_call  # noqa: F401
 from utils import atomic_json_write  # noqa: F401
@@ -520,38 +545,9 @@ class AIAgent:
         except (TypeError, ValueError):
             self._advisor_result_context_reserve_tokens = 90000
 
-        # Persistent error log -- always writes WARNING+ to <LEANFLOW_HOME>/logs/errors.log
-        # so tool failures, API errors, etc. are inspectable after the fact.
-        # In gateway mode, each incoming message creates a new AIAgent instance,
-        # while the root logger is process-global. Re-adding the same errors.log
-        # handler would cause each warning/error line to be written multiple times.
-        from logging.handlers import RotatingFileHandler
-
-        root_logger = logging.getLogger()
-        error_log_dir = _leanflow_home / "logs"
-        error_log_path = error_log_dir / "errors.log"
-        resolved_error_log_path = error_log_path.resolve()
-        has_errors_log_handler = any(
-            isinstance(handler, RotatingFileHandler)
-            and Path(getattr(handler, "baseFilename", "")).resolve() == resolved_error_log_path
-            for handler in root_logger.handlers
-        )
-        if not has_errors_log_handler:
-            from agent.accounting.redact import RedactingFormatter
-
-            error_log_dir.mkdir(parents=True, exist_ok=True)
-            error_file_handler = RotatingFileHandler(
-                error_log_path,
-                maxBytes=2 * 1024 * 1024,
-                backupCount=2,
-            )
-            error_file_handler.setLevel(logging.WARNING)
-            error_file_handler.setFormatter(
-                RedactingFormatter(
-                    "%(asctime)s %(levelname)s %(name)s: %(message)s",
-                )
-            )
-            root_logger.addHandler(error_file_handler)
+        # Error logging is optional and follows the runtime LeanFlow home. The
+        # process-global handler manager owns deduplication and home changes.
+        ensure_error_log_handler()
 
         if self.verbose_logging:
             logging.basicConfig(
@@ -644,7 +640,7 @@ class AIAgent:
             if not self.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
                 if effective_key and len(effective_key) > 12:
-                    print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+                    print("🔑 Using configured API credentials")
         else:
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
@@ -669,14 +665,13 @@ class AIAgent:
                     print(f"🤖 AI Agent initialized with model: {self.model}")
                     if base_url:
                         print(f"🔗 Using custom base URL: {base_url}")
-                    # Always show API key info (masked) for debugging auth issues
+                    # Report only credential presence. Even a truncated key is
+                    # credential material and must not enter captured workflow logs.
                     key_used = client_kwargs.get("api_key", "none")
                     if key_used and key_used != "dummy-key" and len(key_used) > 12:
-                        print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                        print("🔑 Using configured API credentials")
                     else:
-                        print(
-                            f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')"
-                        )
+                        print("⚠️  Warning: API credentials appear invalid or missing")
             except Exception as e:
                 raise RuntimeError(f"Failed to initialize OpenAI client: {e}") from e
 
@@ -756,7 +751,11 @@ class AIAgent:
 
         # Session logs go into ~/.leanflow/sessions/ alongside gateway sessions
         self.logs_dir = leanflow_home() / "sessions"
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.logs_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # Session persistence is diagnostic and must not prevent proving.
+            pass
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
 
         # Track conversation messages for session logging
@@ -884,6 +883,8 @@ class AIAgent:
             quiet_mode=self.quiet_mode,
             base_url=self.base_url,
             api_key=self.api_key,
+            main_provider=self.provider,
+            main_api_mode=self.api_mode,
             reserved_output_tokens=compression_reserved_output,
             prune_tool_output=compression_prune_tool_output,
             prune_keep_recent_user_turns=compression_prune_keep_recent_user_turns,
@@ -1235,11 +1236,10 @@ class AIAgent:
         return _resolve_conversation_manager(self).save_trajectory(messages, user_query, completed)
 
     def _mask_api_key_for_logs(self, key: str | None) -> str | None:
+        """Return a fixed marker without retaining credential fragments."""
         if not key:
             return None
-        if len(key) <= 12:
-            return "***"
-        return f"{key[:8]}...{key[-4:]}"
+        return "[REDACTED]"
 
     def _dump_api_request_debug(
         self,
@@ -1304,6 +1304,12 @@ class AIAgent:
                         logger.debug("Could not extract error response details: %s", e)
 
                 dump_payload["error"] = error_info
+
+            exact_secrets = (str(api_key),) if api_key else ()
+            dump_payload = redact_sensitive_value(
+                dump_payload,
+                exact_secrets=exact_secrets,
+            )
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             dump_file = self.logs_dir / f"request_dump_{self.session_id}_{timestamp}.json"
@@ -2322,6 +2328,14 @@ class AIAgent:
                     "api_key": fb_client.api_key,
                     "base_url": fb_base_url,
                 }
+
+            self.context_compressor.bind_main_summary_route(
+                model=fb_model,
+                provider=fb_provider,
+                api_mode=fb_api_mode,
+                base_url=fb_base_url,
+                api_key=str(getattr(fb_client, "api_key", "") or ""),
+            )
 
             # Re-evaluate prompt caching for the new provider/model
             is_native_anthropic = fb_api_mode == "anthropic_messages"
@@ -3459,14 +3473,15 @@ class AIAgent:
                 f"API call #{api_call_count}",
                 **_workflow_agent_event_details(
                     self,
-                    iteration=api_call_count,
-                    message_count=len(api_messages),
-                    approx_tokens=approx_tokens,
-                    total_chars=total_chars,
-                    available_tools=(
-                        [tool["function"]["name"] for tool in self.tools] if self.tools else []
+                    **build_api_request_activity_details(
+                        api_messages,
+                        iteration=api_call_count,
+                        approx_tokens=approx_tokens,
+                        total_chars=total_chars,
+                        available_tools=(
+                            [tool["function"]["name"] for tool in self.tools] if self.tools else []
+                        ),
                     ),
-                    messages=api_messages,
                 ),
             )
 
@@ -3480,12 +3495,16 @@ class AIAgent:
 
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
+            # One initial provider call plus the managed-workflow 5/15/45s
+            # transient retry schedule.  The historical name ``retry_count``
+            # below counts failed attempts, so the attempt ceiling is four.
+            max_retries = TRANSIENT_PROVIDER_MAX_ATTEMPTS
             compression_attempts = 0
             max_compression_attempts = 3
             codex_auth_retry_attempted = False
             anthropic_auth_retry_attempted = False
             nous_auth_retry_attempted = False
+            usage_limit_wait_attempted = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
 
@@ -3620,14 +3639,14 @@ class AIAgent:
                         error_msg = "Unknown"
                         provider_name = "Unknown"
                         if response and hasattr(response, "error") and response.error:
-                            error_msg = str(response.error)
+                            error_msg = redact_sensitive_text(str(response.error))
                             # Try to extract provider from error metadata
                             if hasattr(response.error, "metadata") and response.error.metadata:
                                 provider_name = response.error.metadata.get(
                                     "provider_name", "Unknown"
                                 )
                         elif response and hasattr(response, "message") and response.message:
-                            error_msg = str(response.message)
+                            error_msg = redact_sensitive_text(str(response.message))
 
                         # Try to get provider from model field (OpenRouter often returns actual model used)
                         if (
@@ -3673,11 +3692,23 @@ class AIAgent:
                                 retry_count = 0
                                 continue
                             self._vprint(
-                                f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.",
+                                f"{self.log_prefix}❌ Provider attempts exhausted ({max_retries} attempts, 3 retries) for invalid responses. Pausing.",
                                 force=True,
                             )
+                            _emit_workflow_event(
+                                "provider-retry-exhausted",
+                                "Transient provider retries exhausted after invalid responses",
+                                **_workflow_agent_event_details(
+                                    self,
+                                    failed_attempt=retry_count,
+                                    max_attempts=max_retries,
+                                    retries=retry_count - 1,
+                                    error_type="invalid_response",
+                                    error=", ".join(error_details)[:300],
+                                ),
+                            )
                             logging.error(
-                                f"{self.log_prefix}Invalid API response after {max_retries} retries."
+                                f"{self.log_prefix}Invalid API response after {max_retries} attempts."
                             )
                             self._persist_session(messages, conversation_history)
                             return {
@@ -3686,15 +3717,35 @@ class AIAgent:
                                 "api_calls": api_call_count,
                                 "error": "Invalid API response shape. Likely rate limited or malformed provider response.",
                                 "failed": True,  # Mark as failure for filtering
+                                # The native workflow wrapper historically
+                                # supplied its own retry loop.  Mark this
+                                # failure so it does not multiply the complete
+                                # provider-level 5/15/45 schedule.
+                                "provider_retries_exhausted": True,
                             }
 
-                        # Longer backoff for rate limiting (likely cause of None choices)
-                        wait_time = min(
-                            5 * (2 ** (retry_count - 1)), 120
-                        )  # 5s, 10s, 20s, 40s, 80s, 120s
+                        # Invalid/empty provider responses are usually rate
+                        # limiting in disguise; use the same deterministic
+                        # transient schedule as explicit provider errors.
+                        wait_time = transient_provider_retry_delay_s(retry_count)
+                        if wait_time is None:  # Defensive; exhaustion returned above.
+                            raise RuntimeError("provider retry schedule exhausted")
                         self._vprint(
-                            f"{self.log_prefix}⏳ Retrying in {wait_time}s (extended backoff for possible rate limit)...",
+                            f"{self.log_prefix}⏳ Retrying in {wait_time:g}s (managed transient-provider backoff)...",
                             force=True,
+                        )
+                        _emit_workflow_event(
+                            "provider-retry-scheduled",
+                            f"Provider retry {retry_count}/3 scheduled in {wait_time:g}s",
+                            **_workflow_agent_event_details(
+                                self,
+                                failed_attempt=retry_count,
+                                max_attempts=max_retries,
+                                retry_number=retry_count,
+                                wait_seconds=wait_time,
+                                error_type="invalid_response",
+                                error=", ".join(error_details)[:300],
+                            ),
                         )
                         logging.warning(
                             f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}"
@@ -3957,6 +4008,105 @@ class AIAgent:
                         self.thinking_callback("")
 
                     status_code = getattr(api_error, "status_code", None)
+                    safe_api_error = redact_sensitive_text(str(api_error))
+                    usage_limit = extract_provider_usage_limit(
+                        api_error,
+                        now_epoch=time.time(),
+                    )
+                    if usage_limit is not None:
+                        retry_after = usage_limit.to_mapping()
+                        max_reset_wait = provider_reset_wait_max_seconds()
+                        _emit_workflow_event(
+                            "provider-usage-limit",
+                            "Provider usage limit reached",
+                            **_workflow_agent_event_details(
+                                self,
+                                **retry_after,
+                                max_wait_seconds=max_reset_wait,
+                            ),
+                        )
+                        if self._try_activate_fallback():
+                            continue
+                        wait_seconds = int(usage_limit.retry_after_seconds)
+                        if not usage_limit_wait_attempted and wait_seconds <= max_reset_wait:
+                            usage_limit_wait_attempted = True
+                            self._vprint(
+                                f"{self.log_prefix}⏳ Provider usage resets in "
+                                f"{wait_seconds}s; waiting without spending a transient retry...",
+                                force=True,
+                            )
+                            _emit_workflow_event(
+                                "provider-reset-wait",
+                                f"Waiting {wait_seconds}s for the provider usage reset",
+                                **_workflow_agent_event_details(
+                                    self,
+                                    **retry_after,
+                                    max_wait_seconds=max_reset_wait,
+                                ),
+                            )
+                            sleep_end = time.time() + wait_seconds
+                            while time.time() < sleep_end:
+                                if self._interrupt_requested:
+                                    self._persist_session(messages, conversation_history)
+                                    self.clear_interrupt()
+                                    return {
+                                        "final_response": (
+                                            "Operation interrupted while waiting for the "
+                                            "provider usage reset."
+                                        ),
+                                        "messages": messages,
+                                        "api_calls": api_call_count,
+                                        "completed": False,
+                                        "interrupted": True,
+                                        "provider_retry_after": retry_after,
+                                    }
+                                time.sleep(min(0.2, max(0.0, sleep_end - time.time())))
+                            _emit_workflow_event(
+                                "provider-reset-wait-finished",
+                                "Provider reset wait finished; retrying once",
+                                **_workflow_agent_event_details(self, **retry_after),
+                            )
+                            continue
+
+                        pause_callback = getattr(
+                            self,
+                            "_managed_provider_usage_limit_callback",
+                            None,
+                        )
+                        if callable(pause_callback):
+                            try:
+                                # Publish before session persistence and resource
+                                # cleanup. Those can be slow enough for a parent
+                                # research heartbeat to launch another request.
+                                pause_callback(retry_after)
+                            except Exception:
+                                # The returned structured result remains the
+                                # durable fallback for the native supervisor.
+                                pass
+                        self._vprint(
+                            f"{self.log_prefix}⏸️  Provider usage limit remains active for "
+                            f"{wait_seconds}s; checkpointing instead of hammering the API.",
+                            force=True,
+                        )
+                        self._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": None,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "partial": True,
+                            "error": (
+                                "Provider usage limit reached; available after epoch "
+                                f"{usage_limit.unavailable_until_epoch}."
+                            ),
+                            # This dedicated pause owns the retry timing. The native
+                            # wrapper must not multiply it by its ordinary 5/15/45
+                            # transient-provider schedule.
+                            "provider_retries_exhausted": True,
+                            "provider_globally_unavailable": True,
+                            "provider_retry_after": retry_after,
+                        }
                     if (
                         self.api_mode == "codex_responses"
                         and self.provider == "openai-codex"
@@ -4004,11 +4154,8 @@ class AIAgent:
                         )
                         print(f"{self.log_prefix}🔐 Anthropic 401 — authentication failed.")
                         print(f"{self.log_prefix}   Auth method: {auth_method}")
-                        print(
-                            f"{self.log_prefix}   Token prefix: {key[:12]}..."
-                            if key and len(key) > 12
-                            else f"{self.log_prefix}   Token: (empty or short)"
-                        )
+                        credential_status = "configured" if key and len(key) > 12 else "missing"
+                        print(f"{self.log_prefix}   Credential status: {credential_status}")
                         print(f"{self.log_prefix}   Troubleshooting:")
                         print(
                             f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in ~/.leanflow/.env for LeanFlow-managed OAuth/setup tokens"
@@ -4041,7 +4188,7 @@ class AIAgent:
                         max_retries,
                         error_type,
                         self._client_log_context(),
-                        api_error,
+                        safe_api_error,
                     )
 
                     self._vprint(
@@ -4052,7 +4199,7 @@ class AIAgent:
                         f"{self.log_prefix}   ⏱️  Time elapsed before failure: {elapsed_time:.2f}s"
                     )
                     self._vprint(
-                        f"{self.log_prefix}   📝 Error: {str(api_error)[:200]}", force=True
+                        f"{self.log_prefix}   📝 Error: {safe_api_error[:200]}", force=True
                     )
                     self._vprint(
                         f"{self.log_prefix}   📊 Request context: {len(api_messages)} messages, ~{approx_tokens:,} tokens, {len(self.tools) if self.tools else 0} tools"
@@ -4067,7 +4214,7 @@ class AIAgent:
                         self._persist_session(messages, conversation_history)
                         self.clear_interrupt()
                         return {
-                            "final_response": f"Operation interrupted: handling API error ({error_type}: {str(api_error)[:80]}).",
+                            "final_response": f"Operation interrupted: handling API error ({error_type}: {safe_api_error[:80]}).",
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
@@ -4304,7 +4451,9 @@ class AIAgent:
                             f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.",
                             force=True,
                         )
-                        logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")
+                        logging.error(
+                            f"{self.log_prefix}Non-retryable client error: {safe_api_error}"
+                        )
                         self._persist_session(messages, conversation_history)
                         return {
                             "final_response": None,
@@ -4312,7 +4461,7 @@ class AIAgent:
                             "api_calls": api_call_count,
                             "completed": False,
                             "failed": True,
-                            "error": str(api_error),
+                            "error": safe_api_error,
                         }
 
                     if retry_count >= max_retries:
@@ -4321,33 +4470,57 @@ class AIAgent:
                             retry_count = 0
                             continue
                         self._vprint(
-                            f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.",
+                            f"{self.log_prefix}❌ Provider attempts exhausted ({max_retries} attempts, 3 retries). Pausing.",
                             force=True,
                         )
+                        _emit_workflow_event(
+                            "provider-retry-exhausted",
+                            "Transient provider retries exhausted",
+                            **_workflow_agent_event_details(
+                                self,
+                                failed_attempt=retry_count,
+                                max_attempts=max_retries,
+                                retries=retry_count - 1,
+                                error_type=error_type,
+                                error=safe_api_error[:300],
+                            ),
+                        )
                         logging.error(
-                            f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}"
+                            f"{self.log_prefix}API call failed after {max_retries} attempts. Last error: {safe_api_error}"
                         )
                         logging.error(
                             f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}"
                         )
-                        raise api_error
+                        raise TransientProviderRetriesExhausted(api_error) from api_error
 
-                    wait_time = min(
-                        2**retry_count, 60
-                    )  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
+                    wait_time = transient_provider_retry_delay_s(retry_count)
+                    if wait_time is None:  # Defensive; exhaustion raised above.
+                        raise api_error
                     logger.warning(
                         "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                         wait_time,
                         retry_count,
                         max_retries,
                         self._client_log_context(),
-                        api_error,
+                        safe_api_error,
                     )
-                    if retry_count >= max_retries:
-                        self._vprint(
-                            f"{self.log_prefix}⚠️  API call failed after {retry_count} attempts: {str(api_error)[:100]}"
-                        )
-                        self._vprint(f"{self.log_prefix}⏳ Final retry in {wait_time}s...")
+                    self._vprint(
+                        f"{self.log_prefix}⏳ Provider retry {retry_count}/3 in {wait_time:g}s...",
+                        force=True,
+                    )
+                    _emit_workflow_event(
+                        "provider-retry-scheduled",
+                        f"Provider retry {retry_count}/3 scheduled in {wait_time:g}s",
+                        **_workflow_agent_event_details(
+                            self,
+                            failed_attempt=retry_count,
+                            max_attempts=max_retries,
+                            retry_number=retry_count,
+                            wait_seconds=wait_time,
+                            error_type=error_type,
+                            error=safe_api_error[:300],
+                        ),
+                    )
 
                     # Sleep in small increments so we can respond to interrupts quickly
                     # instead of blocking the entire wait_time in one sleep() call
@@ -4795,6 +4968,7 @@ class AIAgent:
                     self._execute_tool_calls(
                         assistant_message, messages, effective_task_id, api_call_count
                     )
+                    _post_tool_tail_started = time.monotonic()
 
                     # Refund the iteration if the ONLY tool(s) called were
                     # execute_code (programmatic tool calling).  These are
@@ -4815,6 +4989,7 @@ class AIAgent:
                     # context past the limit that last_prompt_tokens alone misses
                     # (e.g. large file reads, web extractions).
                     _compressor = self.context_compressor
+                    _next_prompt_estimate_started = time.monotonic()
                     _new_tool_msgs = messages[_msg_count_before_tools:]
                     _new_chars = sum(len(str(m.get("content", "") or "")) for m in _new_tool_msgs)
                     _estimated_next_prompt = (
@@ -4822,9 +4997,15 @@ class AIAgent:
                         + _compressor.last_completion_tokens
                         + _new_chars // 3  # conservative: JSON-heavy tool results ≈ 3 chars/token
                     )
-                    if self.compression_enabled and _compressor.should_compress(
-                        _estimated_next_prompt
-                    ):
+                    _next_prompt_estimate_elapsed = max(
+                        0.0, time.monotonic() - _next_prompt_estimate_started
+                    )
+                    _compression_triggered = (
+                        self.compression_enabled
+                        and _compressor.should_compress(_estimated_next_prompt)
+                    )
+                    _compression_started = time.monotonic()
+                    if _compression_triggered:
                         if advisor_suffix_start is not None:
                             messages, active_system_prompt = (
                                 self._compress_context_preserving_suffix(
@@ -4842,10 +5023,32 @@ class AIAgent:
                                 approx_tokens=_estimated_next_prompt,
                                 task_id=effective_task_id,
                             )
+                    _compression_elapsed = max(0.0, time.monotonic() - _compression_started)
 
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages
+                    _session_log_started = time.monotonic()
                     self._save_session_log(messages)
+                    _session_log_elapsed = max(0.0, time.monotonic() - _session_log_started)
+                    _post_tool_tail_elapsed = max(0.0, time.monotonic() - _post_tool_tail_started)
+                    if _post_tool_tail_elapsed >= _POST_TOOL_TAIL_SLOW_THRESHOLD_S:
+                        _emit_workflow_event(
+                            "post-tool-tail-slow",
+                            f"Post-tool turn preparation took {_post_tool_tail_elapsed:.1f}s",
+                            **_workflow_agent_event_details(
+                                self,
+                                iteration=api_call_count,
+                                tools=sorted(_tc_names),
+                                elapsed_s=round(_post_tool_tail_elapsed, 3),
+                                compression_triggered=_compression_triggered,
+                                estimated_next_prompt_tokens=_estimated_next_prompt,
+                                phase_seconds={
+                                    "next_prompt_estimate": round(_next_prompt_estimate_elapsed, 3),
+                                    "compression": round(_compression_elapsed, 3),
+                                    "session_log": round(_session_log_elapsed, 3),
+                                },
+                            ),
+                        )
 
                     # Continue loop for next response
                     continue

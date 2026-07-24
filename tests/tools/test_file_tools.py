@@ -34,6 +34,35 @@ class TestFileToolsList:
             assert "properties" in schema["parameters"]
 
 
+def test_scratch_worker_file_writers_are_denied_before_backend_access(monkeypatch):
+    from tools.implementations import file_tools
+
+    get_ops = MagicMock()
+    monkeypatch.setattr(file_tools, "_get_file_ops", get_ops)
+    monkeypatch.setenv("LEANFLOW_DISPATCH_SCRATCH_ONLY", "1")
+
+    write = json.loads(file_tools.write_file_tool("Scratch.lean", "import Mathlib\n"))
+    replace = json.loads(
+        file_tools.patch_tool(
+            mode="replace",
+            path="Scratch.lean",
+            old_string="a",
+            new_string="b",
+        )
+    )
+    v4a = json.loads(
+        file_tools.patch_tool(
+            mode="patch",
+            patch="*** Begin Patch\n*** Add File: Scratch.lean\n+x\n*** End Patch",
+        )
+    )
+
+    assert write["status"] == "scratch_only_write_denied"
+    assert replace["status"] == "scratch_only_write_denied"
+    assert v4a["status"] == "scratch_only_write_denied"
+    get_ops.assert_not_called()
+
+
 class TestReadFileHandler:
     @patch("tools.implementations.file_tools._get_file_ops")
     def test_returns_file_content(self, mock_get):

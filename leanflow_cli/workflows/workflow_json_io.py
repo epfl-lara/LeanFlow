@@ -63,6 +63,25 @@ def update_json_file(path: Path, mutate: Callable[[dict[str, Any]], Any]) -> Any
     return outcome
 
 
+def update_json_file_if_changed(
+    path: Path,
+    mutate: Callable[[dict[str, Any]], tuple[Any, bool]],
+) -> Any:
+    """Transactionally update ``path`` only when ``mutate`` reports a change.
+
+    The callback executes under the same cross-process lock as
+    :func:`update_json_file` and returns ``(outcome, changed)``. This avoids a
+    second full-size state snapshot merely to compare payloads while retaining
+    the existing crash-atomic write contract whenever durable state changes.
+    """
+    with json_write_lock(path):
+        payload = read_json_file(path)
+        outcome, changed = mutate(payload)
+        if changed:
+            atomic_json_write(path, payload, sort_keys=True)
+    return outcome
+
+
 class WorkflowStateCorruptionError(RuntimeError):
     """A workflow-state JSON file exists, is non-empty, and cannot be parsed.
 

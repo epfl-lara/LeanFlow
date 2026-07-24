@@ -53,7 +53,7 @@ def test_api_steps_accumulate_and_round_trip(tmp_path):
     assert restored.api_steps_for(key) == 65
 
 
-def test_flag_off_is_inert(monkeypatch, tmp_path):
+def test_flag_off_records_effort_without_breakpoint_semantics(monkeypatch, tmp_path):
     monkeypatch.delenv("LEANFLOW_BUDGET_BREAKPOINT", raising=False)
     events = _events(monkeypatch)
     autonomy_state = _autonomy_state(str(tmp_path / "Main.lean"))
@@ -67,7 +67,7 @@ def test_flag_off_is_inert(monkeypatch, tmp_path):
     )
 
     assert tripped is False
-    assert "theorem_api_steps" not in autonomy_state
+    assert list(autonomy_state["theorem_api_steps"].values()) == [10_000]
     assert "budget_breakpoint" not in autonomy_state
     assert "consecutive_exhausted_assignments" not in autonomy_state
     assert events == []

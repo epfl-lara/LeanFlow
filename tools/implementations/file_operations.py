@@ -34,6 +34,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tools.utilities.workflow_artifact_guard import (
+    diagnostic_workflow_file_access_enabled,
+    is_leanflow_internal_path,
+    workflow_log_read_error,
+    workflow_state_search_error,
+)
+
+_RG_FIELD_SEPARATOR = ":::LEANFLOW-RG-FIELD:::"
+
 # ---------------------------------------------------------------------------
 # Write-path deny list — blocks writes to sensitive system/credential files
 # ---------------------------------------------------------------------------
@@ -563,6 +572,10 @@ class ShellFileOperations(FileOperations):
         Returns:
             ReadResult with content, metadata, or error info
         """
+        guard_error = workflow_log_read_error(path)
+        if guard_error:
+            return ReadResult(error=guard_error)
+
         # Expand ~ and other shell paths
         path = self._expand_path(path)
 
@@ -667,6 +680,18 @@ class ShellFileOperations(FileOperations):
     # =========================================================================
 
     def write_file(self, path: str, content: str) -> WriteResult:
+        """Write content, atomically when the selected environment supports it."""
+        return self._write_file(path, content, complete_on_interrupt=False)
+
+    def write_file_transactional(self, path: str, content: str) -> WriteResult:
+        """Complete one bounded recovery write despite an existing interrupt.
+
+        Managed-artifact reconciliation uses this path for normalization and
+        rollback. Remote backends retain their existing shell write behavior.
+        """
+        return self._write_file(path, content, complete_on_interrupt=True)
+
+    def _write_file(self, path: str, content: str, *, complete_on_interrupt: bool) -> WriteResult:
         """
         Write content to a file, creating parent directories as needed.
 
@@ -693,6 +718,23 @@ class ShellFileOperations(FileOperations):
         guard_error = self._validate_lean_statement_write(path, content)
         if guard_error:
             return WriteResult(error=guard_error)
+
+        atomic_writer = getattr(self.env, "write_text_atomic", None)
+        if getattr(self.env, "supports_atomic_text_writes", False) is True and callable(
+            atomic_writer
+        ):
+            atomic_result = atomic_writer(
+                path,
+                content,
+                cwd=self.cwd,
+                complete_on_interrupt=complete_on_interrupt,
+            )
+            if atomic_result.get("returncode", 0) != 0:
+                return WriteResult(error=f"Failed to write file: {atomic_result.get('output', '')}")
+            return WriteResult(
+                bytes_written=int(atomic_result.get("bytes_written", len(content.encode("utf-8")))),
+                dirs_created=bool(atomic_result.get("dirs_created", False)),
+            )
 
         # Create parent directories
         parent = os.path.dirname(path)
@@ -904,6 +946,10 @@ class ShellFileOperations(FileOperations):
         Returns:
             SearchResult with matches or file list
         """
+        guard_error = workflow_state_search_error(path)
+        if guard_error:
+            return SearchResult(error=guard_error, total_count=0)
+
         # Expand ~ and other shell paths
         path = self._expand_path(path)
 
@@ -942,20 +988,38 @@ class ShellFileOperations(FileOperations):
         # Use find with modification time sorting
         # -printf '%T@ %p\n' outputs: timestamp path
         # sort -rn sorts by timestamp descending (newest first)
+        state_prune = ""
+        if not diagnostic_workflow_file_access_enabled():
+            state_prune = "-type d -name '.leanflow' -prune -o "
         cmd = (
-            f"find {self._escape_shell_arg(path)} -type f -name {self._escape_shell_arg(search_pattern)} "
+            f"find {self._escape_shell_arg(path)} {state_prune}"
+            f"-type f -name {self._escape_shell_arg(search_pattern)} "
             f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn | tail -n +{offset + 1} | head -n {limit}"
         )
 
         result = self._exec(cmd, timeout=60)
 
-        if not result.stdout.strip():
+        visible_primary_lines = []
+        for line in result.stdout.strip().splitlines():
+            parts = line.split(" ", 1)
+            if len(parts) != 2 or not parts[0].replace(".", "").isdigit():
+                continue
+            candidate = parts[1]
+            if diagnostic_workflow_file_access_enabled() or not is_leanflow_internal_path(
+                candidate
+            ):
+                visible_primary_lines.append(line)
+
+        if not visible_primary_lines:
             # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = (
-                f"find {self._escape_shell_arg(path)} -type f -name {self._escape_shell_arg(search_pattern)} "
+                f"find {self._escape_shell_arg(path)} {state_prune}"
+                f"-type f -name {self._escape_shell_arg(search_pattern)} -print "
                 f"2>/dev/null | head -n {limit + offset} | tail -n +{offset + 1}"
             )
             result = self._exec(cmd_simple, timeout=60)
+        else:
+            result.stdout = "\n".join(visible_primary_lines)
 
         files = []
         for line in result.stdout.strip().split("\n"):
@@ -964,9 +1028,14 @@ class ShellFileOperations(FileOperations):
             # Parse "timestamp path" format
             parts = line.split(" ", 1)
             if len(parts) == 2 and parts[0].replace(".", "").isdigit():
-                files.append(parts[1])
+                candidate = parts[1]
             else:
-                files.append(line)
+                candidate = line
+            if not diagnostic_workflow_file_access_enabled() and is_leanflow_internal_path(
+                candidate
+            ):
+                continue
+            files.append(candidate)
 
         return SearchResult(files=files, total_count=len(files))
 
@@ -1009,6 +1078,23 @@ class ShellFileOperations(FileOperations):
     ) -> SearchResult:
         """Search using ripgrep."""
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
+        if not diagnostic_workflow_file_access_enabled():
+            cmd_parts.extend(["--glob", self._escape_shell_arg("!**/.leanflow/**")])
+
+        # Ripgrep normally separates context records as ``path-line-content``. Absolute paths and
+        # checkout names routinely contain ``-<digits>-`` themselves, so parsing that format with
+        # a regex can silently turn a path component into the reported line number. Use an explicit
+        # field separator for structured content output instead.
+        if output_mode == "content":
+            escaped_separator = self._escape_shell_arg(_RG_FIELD_SEPARATOR)
+            cmd_parts.extend(
+                [
+                    "--field-match-separator",
+                    escaped_separator,
+                    "--field-context-separator",
+                    escaped_separator,
+                ]
+            )
 
         # Add context if requested
         if context > 0:
@@ -1064,43 +1150,22 @@ class ShellFileOperations(FileOperations):
             return SearchResult(counts=counts, total_count=sum(counts.values()))
 
         else:
-            # Parse content matches and context lines.
-            # rg match lines:   "file:lineno:content"  (colon separator)
-            # rg context lines: "file-lineno-content"   (dash separator)
-            # rg group seps:    "--"
-            # Note: on Windows, paths contain drive letters (e.g. C:\path),
-            # so naive split(":") breaks. Use regex to handle both platforms.
-            _match_re = re.compile(r"^([A-Za-z]:)?(.*?):(\d+):(.*)$")
-            _ctx_re = re.compile(r"^([A-Za-z]:)?(.*?)-(\d+)-(.*)$")
+            # Match and context records use the same unambiguous separator configured above.
             matches = []
             for line in result.stdout.strip().split("\n"):
                 if not line or line == "--":
                     continue
-
-                # Try match line first (colon-separated: file:line:content)
-                m = _match_re.match(line)
-                if m:
+                fields = line.split(_RG_FIELD_SEPARATOR, 2)
+                if len(fields) != 3:
+                    continue
+                with contextlib.suppress(ValueError):
                     matches.append(
                         SearchMatch(
-                            path=(m.group(1) or "") + m.group(2),
-                            line_number=int(m.group(3)),
-                            content=m.group(4)[:500],
+                            path=fields[0],
+                            line_number=int(fields[1]),
+                            content=fields[2][:500],
                         )
                     )
-                    continue
-
-                # Try context line (dash-separated: file-line-content)
-                # Only attempt if context was requested to avoid false positives
-                if context > 0:
-                    m = _ctx_re.match(line)
-                    if m:
-                        matches.append(
-                            SearchMatch(
-                                path=(m.group(1) or "") + m.group(2),
-                                line_number=int(m.group(3)),
-                                content=m.group(4)[:500],
-                            )
-                        )
 
             total = len(matches)
             page = matches[offset : offset + limit]
@@ -1118,6 +1183,8 @@ class ShellFileOperations(FileOperations):
     ) -> SearchResult:
         """Fallback search using grep."""
         cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
+        if not diagnostic_workflow_file_access_enabled():
+            cmd_parts.append("--exclude-dir=.leanflow")
 
         # Add context if requested
         if context > 0:

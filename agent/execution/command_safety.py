@@ -27,7 +27,7 @@ _DESTRUCTIVE_PATTERNS = re.compile(
         truncate\s|
         dd\s|
         shred\s|
-        git\s+(?:reset|clean|checkout)\s
+        git\s+(?:reset|clean|checkout|restore|switch|revert|merge|rebase|cherry-pick|apply|am)\s
     )""",
     re.VERBOSE,
 )

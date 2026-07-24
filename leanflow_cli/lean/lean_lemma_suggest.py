@@ -76,9 +76,16 @@ _STOPWORD_IDENTS = frozenset(
         "Type",
         "Prop",
         "Sort",
+        "private",
+        "protected",
+        "noncomputable",
+        "unsafe",
+        "partial",
         "sorry",
     }
 )
+
+_DECLARATION_NAME_RE = re.compile(r"\b(?:theorem|lemma|example|def)\s+([A-Za-z_][A-Za-z0-9_'.-]*)")
 
 
 def _proof_context(file_path: str, theorem_id: str, cwd: str | None) -> Mapping[str, Any]:
@@ -121,7 +128,9 @@ def _hypothesis_text(hypotheses: Any) -> list[str]:
         if isinstance(item, str):
             text = item.strip()
         elif isinstance(item, Mapping):
-            text = str(item.get("type", "") or item.get("statement", "") or "").strip()
+            hyp_type = str(item.get("type", "") or item.get("statement", "") or "").strip()
+            name = str(item.get("name", "") or "").strip()
+            text = f"{name} : {hyp_type}" if name and hyp_type else hyp_type
         else:
             text = ""
         if text:
@@ -180,13 +189,66 @@ def _operators_in(text: str) -> list[str]:
     return found
 
 
-def _goal_symbols(*, conclusion: str, hypotheses: list[str]) -> list[str]:
-    """Collect the ranked symbol vocabulary of a goal: conclusion idents first, then hypotheses."""
-    symbols: list[str] = list(_significant_idents(conclusion))
+def _hypothesis_binder_names(hypotheses: list[str]) -> set[str]:
+    """Return source-level local names from ``name : type`` hypothesis strings."""
+    names: set[str] = set()
+    for hypothesis in hypotheses:
+        if ":" not in hypothesis:
+            continue
+        binder_text = hypothesis.split(":", 1)[0]
+        names.update(_IDENT_RE.findall(binder_text))
+    return names
+
+
+def _hypothesis_type_fragment(hypothesis: str) -> str:
+    """Return a hypothesis's type without its low-signal local binder names."""
+    return hypothesis.split(":", 1)[-1].strip() if ":" in hypothesis else hypothesis.strip()
+
+
+def _statement_semantic_queries(statement: str, hypotheses: list[str]) -> list[str]:
+    """Build semantic fallbacks from types, expressions, and the declaration name.
+
+    This path is used only when the live goal contains no searchable symbol after local binder
+    names are removed. Unicode Lean type notation is translated to retriever-friendly language so
+    declarations involving ``ℕ``/``ℚ`` still produce useful semantic probes.
+    """
+    combined = "\n".join([statement, *hypotheses])
+    has_nat = "ℕ" in combined or bool(re.search(r"\bNat(?:\.|\b)", combined))
+    has_rational = "ℚ" in combined or bool(re.search(r"\b(?:Rat|Rational)(?:\.|\b)", combined))
+    queries: list[str] = []
+
+    if "%" in combined or "Nat.mod" in combined:
+        queries.append("Nat modulo" if has_nat else "modulo")
+    elif has_nat:
+        queries.append("Nat")
+
+    has_reciprocal = "⁻¹" in combined or bool(re.search(r"(?:^|[\s(=+])1\s*/", combined))
+    if has_rational and has_reciprocal:
+        queries.append("rational reciprocal")
+    elif has_rational:
+        queries.append("rational")
+
+    declaration_match = _DECLARATION_NAME_RE.search(statement)
+    if declaration_match:
+        queries.append(declaration_match.group(1))
+    return queries
+
+
+def _goal_symbols(*, conclusion: str, hypotheses: list[str], statement: str = "") -> list[str]:
+    """Collect searchable goal symbols while excluding theorem-local binder names."""
+    binder_names = _hypothesis_binder_names(hypotheses)
+    symbols: list[str] = [
+        ident for ident in _significant_idents(conclusion) if ident not in binder_names
+    ]
     for hyp in hypotheses:
-        for ident in _significant_idents(hyp):
-            if ident not in symbols:
+        for ident in _significant_idents(_hypothesis_type_fragment(hyp)):
+            if ident not in binder_names and ident not in symbols:
                 symbols.append(ident)
+    if not symbols:
+        for query in _statement_semantic_queries(statement, hypotheses):
+            for ident in _significant_idents(query):
+                if ident not in binder_names and ident not in symbols:
+                    symbols.append(ident)
     return symbols
 
 
@@ -198,7 +260,8 @@ def derive_queries(*, goal: str, hypotheses: list[str], statement: str) -> list[
     can spend its rate-limited search budget on the most promising probes first.
     """
     conclusion = _conclusion_fragment(goal) or _conclusion_fragment(statement)
-    concl_idents = _significant_idents(conclusion)
+    binder_names = _hypothesis_binder_names(hypotheses)
+    concl_idents = [ident for ident in _significant_idents(conclusion) if ident not in binder_names]
     concl_ops = _operators_in(conclusion)
     queries: list[str] = []
 
@@ -222,13 +285,23 @@ def derive_queries(*, goal: str, hypotheses: list[str], statement: str) -> list[
         _push(f"{concl_idents[0]} {concl_idents[1]}")
     # 4. Hypothesis-type query — the key symbols the target is proved *from*.
     for hyp in hypotheses:
-        hyp_idents = _significant_idents(hyp)
+        hyp_idents = [
+            ident
+            for ident in _significant_idents(_hypothesis_type_fragment(hyp))
+            if ident not in binder_names
+        ]
         if hyp_idents:
             _push(" ".join(hyp_idents[:2]))
             break
-    # Last resort: fall back to raw statement idents so the tool never returns zero queries.
+    # Last resort: translate source notation into semantic hints before using raw identifiers.
+    # A goal such as bare `ht` is a local proof term, not a library-search concept.
+    if not queries:
+        for query in _statement_semantic_queries(statement, hypotheses):
+            _push(query)
     if not queries:
         for ident in _significant_idents(statement):
+            if ident in binder_names:
+                continue
             _push(ident)
     return queries
 
@@ -327,12 +400,17 @@ def lean_lemma_suggest(
     *,
     cwd: str | os.PathLike[str] | None = None,
     max_candidates: int = MAX_CANDIDATES,
+    max_queries: int = MAX_DERIVED_QUERIES,
+    search_modes: Sequence[str] | None = None,
+    use_proof_context: bool = True,
 ) -> dict[str, Any]:
     """Suggest ranked candidate lemmas for the assigned declaration's current goal.
 
     Reads the goal/hypotheses, derives targeted queries, searches semantic + type-pattern modes,
     then returns a compact ranked candidate list plus the queries and any degraded reasons so the
-    caller can see how the suggestions were produced.
+    caller can see how the suggestions were produced. Set ``use_proof_context`` false for latency-
+    sensitive callers that must derive queries from declaration text without starting an LSP or
+    proof-context REPL.
     """
     file_path = str(file_path or "").strip()
     theorem_id = str(theorem_id or "").strip()
@@ -347,19 +425,24 @@ def lean_lemma_suggest(
             "degraded_reasons": ["file_path and theorem_id are required"],
         }
 
-    context = _proof_context(file_path, theorem_id, cwd_text)
+    context = _proof_context(file_path, theorem_id, cwd_text) if use_proof_context else {}
     degraded: list[str] = [str(r) for r in context.get("degraded_reasons", []) or []]
     statement = str(context.get("theorem_statement", "") or "").strip()
     if not statement:
         statement = _statement_from_disk(file_path, theorem_id)
     hypotheses = _hypothesis_text(context.get("hypotheses"))
     goal = str(context.get("goals", "") or context.get("goal", "") or "").strip()
-    if not goal:
+    local_context = (
+        str(context.get("status", "") or "") == "local-fallback"
+        or str(context.get("backend_tool", "") or "") == "local-declaration-slice"
+    )
+    if not goal and use_proof_context and not local_context:
         goal = _inspect_goals(file_path, theorem_id, cwd_text)
     if not goal:
         goal = statement
 
-    queries = derive_queries(goal=goal, hypotheses=hypotheses, statement=statement)
+    query_limit = max(1, min(MAX_DERIVED_QUERIES, int(max_queries or MAX_DERIVED_QUERIES)))
+    queries = derive_queries(goal=goal, hypotheses=hypotheses, statement=statement)[:query_limit]
     if not queries:
         degraded.append("could not derive any search query from the goal")
         return {
@@ -374,10 +457,16 @@ def lean_lemma_suggest(
     goal_symbols = _goal_symbols(
         conclusion=_conclusion_fragment(goal) or _conclusion_fragment(statement),
         hypotheses=hypotheses,
+        statement=statement,
     )
+    modes = tuple(
+        mode
+        for mode in (str(value or "").strip().lower() for value in (search_modes or ()))
+        if mode
+    ) or ("semantic", "type-pattern")
     raw_hits: list[tuple[str, str, dict[str, Any]]] = []
     for query in queries:
-        for mode in ("semantic", "type-pattern"):
+        for mode in modes:
             for hit in _run_search(query, mode=mode, cwd=cwd_text, file_path=file_path):
                 if not isinstance(hit, Mapping):
                     continue
@@ -395,6 +484,8 @@ def lean_lemma_suggest(
         "file_path": file_path,
         "theorem_id": theorem_id,
         "queries": queries,
+        "search_modes": list(modes),
+        "used_proof_context": use_proof_context,
         "goal_symbols": goal_symbols[:12],
         "candidates": candidates,
         "degraded_reasons": list(dict.fromkeys(degraded)),

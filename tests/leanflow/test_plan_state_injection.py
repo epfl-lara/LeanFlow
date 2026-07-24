@@ -60,6 +60,10 @@ def test_system_prompt_carries_static_artifact_line(plan_enabled, monkeypatch):
 
     assert "Living plan artifacts" in text
     assert str(plan_enabled / "blueprint.json") in text
+    assert "bounded, read-only generated plan.md view" in text
+    assert "never edit or paginate the hidden historical user-owned Notes body" in text
+    assert "append" not in text
+    assert "Lean source/kernel diagnostics outrank stored plan" in text
     # Static line only — no volatile digest in the system prompt.
     assert "Dependency graph digest:" not in text
 
@@ -114,6 +118,10 @@ def test_worker_prompt_carries_plan_artifacts(plan_enabled):
 
     assert "Plan artifacts:" in prompt
     assert str(plan_enabled / "blueprint.json") in prompt
+    assert "read-only generated sections" in prompt
+    assert "never edit or paginate the historical user-owned Notes body" in prompt
+    assert "append below" not in prompt
+    assert "summary machine snapshot (do not read directly)" in prompt
 
 
 def test_spawn_env_carries_artifact_paths(plan_enabled, tmp_path, monkeypatch):

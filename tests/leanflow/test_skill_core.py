@@ -241,6 +241,18 @@ def test_theorem_queue_worker_skill_is_loadable(monkeypatch, tmp_path):
     assert "adding and iterating on new helper declarations" in prompt
     assert "lean_decompose_helpers" in prompt
     assert "sublemma/invariant split" in prompt
+    assert "Plan-State Freshness" in prompt
+    assert "read-only generated sections" in prompt
+    assert "Do not edit or paginate that file" in prompt
+    assert "user-owned historical Notes tail" in prompt
+    assert "Structured planner state is persisted" in prompt
+    assert "append below" not in prompt
+    assert "append planning findings" not in prompt
+    assert "current queue assignment, Lean source, or kernel diagnostics" in prompt
+    assert "Do not read raw `summary.json` or `blueprint.json`" in prompt
+    normalized = " ".join(prompt.lower().split())
+    assert "blocker is never permission to end an unresolved theorem" in normalized
+    assert "stopping with failure" not in normalized
 
 
 def test_proof_loop_skill_mentions_helper_decomposition(monkeypatch, tmp_path):
@@ -261,6 +273,19 @@ def test_all_curated_builtin_skills_are_discoverable(monkeypatch, tmp_path):
 
     for skill_name in CURATED_BUILTIN_SKILLS:
         assert skill_name in discovered, f"Curated builtin skill {skill_name!r} not discoverable"
+
+
+def test_builtin_skill_names_use_current_leanflow_brand(monkeypatch, tmp_path):
+    """Keep the retired EPFLemma name out of the active skill surface."""
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+
+    discovered = {
+        record.name.lower() for record in discover_skills(tmp_path) if record.source == "builtin"
+    }
+
+    assert all("epflemma" not in skill_name for skill_name in CURATED_BUILTIN_SKILLS)
+    assert all("epflemma" not in skill_name for skill_name in discovered)
 
 
 def test_skill_with_linked_files_reports_them(monkeypatch, tmp_path):

@@ -7,6 +7,7 @@ import logging
 import threading
 
 from agent.accounting.redact import redact_sensitive_text
+from core.runtime_modes import scratch_only_dispatch_worker_enabled
 from leanflow_cli.runtime.file_locks import ensure_file_lock
 from tools.implementations.file_operations import ShellFileOperations
 from tools.response import dumps, error
@@ -15,6 +16,15 @@ from tools.utilities.read_freshness import (
     clear_freshness,
     note_write,
     record_read,
+)
+from tools.utilities.workflow_artifact_guard import (
+    diagnostic_workflow_file_access_enabled,
+    is_managed_plan_path,
+    managed_plan_read_view,
+    workflow_log_read_error,
+    workflow_machine_snapshot_read_error,
+    workflow_plan_pagination_error,
+    workflow_state_search_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -181,11 +191,39 @@ def clear_file_ops_cache(task_id: str = None):
 def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
+        guard_error = workflow_log_read_error(path)
+        if guard_error:
+            return dumps({"error": guard_error, "path": path, "workflow_log_blocked": True})
+        snapshot_error = workflow_machine_snapshot_read_error(path)
+        if snapshot_error:
+            return dumps(
+                {
+                    "error": snapshot_error,
+                    "path": path,
+                    "workflow_snapshot_blocked": True,
+                }
+            )
+        plan_error = workflow_plan_pagination_error(path, offset)
+        if plan_error:
+            return dumps({"error": plan_error, "path": path, "workflow_plan_blocked": True})
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
         if result.content:
-            result.content = redact_sensitive_text(result.content)
+            result.content = managed_plan_read_view(path, redact_sensitive_text(result.content))
+        plan_view_applied = (
+            is_managed_plan_path(path) and not diagnostic_workflow_file_access_enabled()
+        )
+        if plan_view_applied and not getattr(result, "error", None):
+            result.truncated = False
+            result.hint = (
+                "Read-only managed plan view; historical user Notes are excluded and model "
+                "writes to plan.md are blocked. Do not paginate this file. Refresh the queue "
+                "assignment and Lean diagnostics for current inventory and declaration truth."
+            )
         result_dict = result.to_dict()
+        if plan_view_applied and not getattr(result, "error", None):
+            result_dict["managed_plan_view"] = True
+            result_dict["historical_notes_excluded"] = True
 
         # D2 read-before-edit freshness: record the hash of the raw on-disk file
         # so a later patch can detect it editing stale content. We hash the full
@@ -307,6 +345,29 @@ def _guard_file_lock(path: str, owner_id: str, purpose: str) -> dict | None:
 
 def write_file_tool(path: str, content: str, task_id: str = "default", owner_id: str = "") -> str:
     """Write content to a file."""
+    if scratch_only_dispatch_worker_enabled():
+        return dumps(
+            {
+                "success": False,
+                "status": "scratch_only_write_denied",
+                "path": path,
+                "error": "Scratch-only research jobs cannot write project files.",
+            }
+        )
+    if is_managed_plan_path(path) and not diagnostic_workflow_file_access_enabled():
+        return dumps(
+            {
+                "success": False,
+                "status": "managed_plan_write_denied",
+                "path": path,
+                "error": (
+                    "Managed plan.md cannot be overwritten because that would erase hidden "
+                    "historical Notes and machine-owned generated sections. The managed plan is "
+                    "read-only to model file tools; use current queue/kernel state and structured "
+                    "planner findings instead."
+                ),
+            }
+        )
     try:
         if owner_id:
             conflict = _guard_file_lock(path, owner_id, "write_file")
@@ -374,6 +435,59 @@ def patch_tool(
     `strict` makes the edit exact-or-fail (no fuzzy/whitespace relocation) — for
     high-risk edits where applying to a merely-similar region would be wrong.
     """
+    if scratch_only_dispatch_worker_enabled():
+        return dumps(
+            {
+                "success": False,
+                "status": "scratch_only_write_denied",
+                "path": path or "",
+                "error": "Scratch-only research jobs cannot patch project files.",
+            }
+        )
+    if not diagnostic_workflow_file_access_enabled():
+        if mode == "replace" and path and is_managed_plan_path(path):
+            return dumps(
+                {
+                    "success": False,
+                    "status": "managed_plan_patch_denied",
+                    "path": path,
+                    "error": (
+                        "Managed plan.md is read-only to model file tools. Historical Notes "
+                        "are user-owned and generated Strategy/Grounding state is persisted "
+                        "by the workflow manager."
+                    ),
+                }
+            )
+        if mode == "patch" and patch:
+            from tools.utilities.patch_parser import OperationType, parse_v4a_patch
+
+            preflight_ops, _preflight_error = parse_v4a_patch(patch)
+            for operation in preflight_ops or []:
+                source_is_managed = is_managed_plan_path(operation.file_path)
+                destination_is_managed = bool(
+                    operation.operation == OperationType.MOVE
+                    and operation.new_path
+                    and is_managed_plan_path(operation.new_path)
+                )
+                if not source_is_managed and not destination_is_managed:
+                    continue
+                blocked_path = (
+                    operation.new_path
+                    if destination_is_managed and operation.new_path
+                    else operation.file_path
+                )
+                return dumps(
+                    {
+                        "success": False,
+                        "status": "managed_plan_operation_denied",
+                        "path": blocked_path,
+                        "error": (
+                            "Managed plan.md is read-only to model file tools and cannot be "
+                            "added, updated, deleted, or moved. Historical Notes are user-owned; "
+                            "the workflow manager persists generated planning state."
+                        ),
+                    }
+                )
     try:
         file_ops = _get_file_ops(task_id)
         freshness_warning: str | None = None
@@ -472,6 +586,15 @@ def search_tool(
 ) -> str:
     """Search for content or files."""
     try:
+        guard_error = workflow_state_search_error(path)
+        if guard_error:
+            return dumps(
+                {
+                    "error": guard_error,
+                    "path": path,
+                    "workflow_state_blocked": True,
+                }
+            )
         # Track searches to detect *consecutive* repeated search loops.
         search_key = ("search", pattern, target, str(path), file_glob or "")
         with _read_tracker_lock:
@@ -565,7 +688,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. NOTE: Cannot read images or binary files.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Managed workflow logs are blocked to prevent recursive self-ingestion; campaign findings arrive through structured workflow context. NOTE: Cannot read images or binary files.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -651,7 +774,7 @@ PATCH_SCHEMA = {
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. Repository-wide searches exclude .leanflow managed state and logs to prevent recursive self-ingestion.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
     "parameters": {
         "type": "object",
         "properties": {

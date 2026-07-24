@@ -1,7 +1,12 @@
-# LeanFlow `/prove` Next-Gen Architecture — Roadmap v3 (items 17–22)
+# LeanFlow `/prove` Next-Gen Architecture — Shipped Roadmap v4
 
-Status: **planning / not yet implemented; implementation-ready.** v1 = grounded design (4-agent
-study). v2 folded in the product owner's answers. **v3 (2026-07-02) goes beyond the owner's
+Status: **implemented on `prove-redesign`; promotion evidence in progress.** v1 = grounded design
+(4-agent study). v2 folded in the product owner's answers. v3 (2026-07-02) adversarially audited
+the plan. **v4 (2026-07-14) records the promoted relentless-prover implementation:** persistence
+coaching on every rejected turn, a public research profile, process-isolated research jobs,
+campaign epochs, authoritative negation promotion, truthful headless exits, and frozen T2/T3/
+adversarial evaluation inventories. The historical phase ordering remains below as a rollout
+record; it is no longer a list of unimplemented phases. v3 went beyond the owner's
 comments: every design choice was adversarially verified against the north-star goal by three
 independent audit agents, and every phase was ground into an implementation-ready spec by four
 deep-grounding agents.** This document is the plan; its two companions carry the depth:
@@ -32,21 +37,21 @@ retriever). The 2026 frontier confirms the shape (audit Part C); the highest-pro
    one-lemma file is legitimate for a hard probe); orders probes; interprets failures via the
    graph. Never a cheap model — nobody at the frontier routes consequential decisions to a small
    model (audit C). All roles configurable in `config.yaml` (§4.8).
-2. **LLM-manager (nudger) = small/fast, ADVISORY-ONLY, STRUGGLE-TRIGGERED, message-shaping only.**
-   Invoked by the deterministic manager only when struggle signals fire (§4.4) — never per prover
-   step, never on the happy path. **v3 narrowing (audit A, choice 4): the nudger never initiates
-   feasibility actions** — probe/dispatch proposals are raised deterministically and confirmed by
-   the orchestrator; the nudger crafts the optimistic-but-strict message. Kernel verdicts are
-   untouchable.
+2. **Persistence coach = small/fast, ADVISORY-ONLY, message-shaping only.** It runs after every
+   kernel-rejected prover turn and every unresolved/no-tool final response, deduplicated per
+   theorem/attempt/verdict. Its schema contains only a message, acknowledged verified progress,
+   and a commitment to the assigned route. It has no action or verdict vocabulary. Disabled,
+   malformed, surrendering, or unavailable model output receives the deterministic positive
+   fallback, so coach coverage remains 100%. Kernel verdicts and routes are untouchable.
 3. **Routing is TASK-ADAPTIVE with a deterministic floor — which INVERTS in research mode.** Easy
    runs stay byte-identical (`direct-prove` floor, no LLM call). In `RESEARCH_MODE` the orchestrator
    is consulted unconditionally at scope entry (an open problem is syntactically indistinguishable
    from a homework lemma; audit A, choice 3), and hardness/splits are discovered dynamically
    through failure→probe cycles.
-4. **Budget exhaustion is a real BREAKPOINT.** Per-theorem and queue-level exhaustion interrupt the
-   queue with a persisted decision packet; the orchestrator decides (split / plan / negate / park /
-   re-state / abort). In research mode, breakpoints resolve to **strategy changes** —
-   park-and-advance, never stop — abort only on a kernel-proved negation of the main goal (§4.3).
+4. **Budget exhaustion is a routing BREAKPOINT, never a mathematical stop.** Per-theorem and
+   queue-level exhaustion persists a decision packet. The orchestrator selects split, plan,
+   negate, re-state, or a fresh route portfolio. `park` is reserved for statement-fidelity or
+   human-approval pauses; only promoted negation of the main goal resolves as disproved.
 5. **The failure→feasibility FEEDBACK LOOP** (Hilbert-style recursion): can't-close ⇒ (a) too hard
    or (b) not solvable. Feasibility pipeline (v3, audit A choice 10): **EMPIRICAL counterexample
    search first** (Python/enumeration — the strongest engine), then `plausible` where applicable
@@ -54,21 +59,36 @@ retriever). The 2026 frontier confirms the shape (audit Part C); the highest-pro
    was wrong ⇒ backtrack/re-decompose (non-destructively, via OR-routes §4.1). On the main
    statement ⇒ **not solvable ⇒ kernel-verified disproof is the deliverable**. Inconclusive ⇒ too
    hard ⇒ split.
-6. **Dispatch = general sub-JOB launching at MULTIPLE levels, lifecycle designed first, DECOUPLED.**
+6. **Dispatch = production process-isolated sub-JOB launching at multiple levels.**
    Orchestrator, planner, and decomposer can dispatch ANY archetype (prover / empirical /
-   deep-search / negation); the LLM-manager suggests; the prover escalates. **v3 (audit A choice
+   deep-search / negation / decomposition); the LLM-manager suggests; the prover escalates. **v3 (audit A choice
    9): dispatched jobs get INDEPENDENT budgets** (never the prover's shared iteration budget) and
-   wall-clock timeouts; deep-search jobs are fire-and-continue in research mode; the Phase-3a
-   lifecycle design is written async-ready; research runs are the trigger for promoting async.
-   Sync-blocking cap-3 remains the v1 default for easy runs.
+   wall-clock timeouts. Deep-search, empirical, decomposition, and negation jobs are
+   fire-and-continue subprocesses in research mode; children return structured deliverables and
+   the parent is the sole graph/plan writer. The decomposition deliverable is a bounded normalized,
+   source-backed subgoal/dependency proposal: its web/Lean tools are genuinely read/check-only, its
+   accepted subgoals must connect to the target and state why they are strictly easier, and malformed
+   output cannot become a successful finding. It cannot mutate files or graph state, and duplicate
+   assignment objectives are suppressed. Exact evidence-to-helper follow-ups reserve their source
+   while active; after termination, only an actionable, schema-valid exact helper or replacement
+   keeps the reservation, and foreground delivery couples both receipts. A staged canonical helper
+   also creates a durable parent-action record: acknowledgement is not completion, the parent exact
+   gate runs before orchestration, and one fenced insertion opportunity precedes broad search. Only
+   the current-source helper gate retires it. Prover jobs retain locked stubs and parent-side gates.
 7. **Hierarchical job LINEAGE (owner N3):** every job id carries its dotted dispatch chain —
    `root.orchestrator.planner.ds-042` — persisted in the ledger; **every ancestor can list, track,
    and kill its descendants.**
-8. **CONCRETE-RESULT GUARANTEE (owner N1) — a hard invariant, mechanized.** Every scope ends in one
-   of exactly three artifacts: **proved** (kernel) | **disproved** (negation PROMOTED through the
-   authoritative gate, §4.11) | a **scope-exit research report** (machine-written from
-   graph+ledger+journal; §4.12). A run that ends without one of these is a bug, same tier as a
-   kernel-gate violation.
+8. **TRUTHFUL OUTCOME GUARANTEE (owner N1) — a hard invariant, mechanized.** Mathematical terminal
+   states are **proved** (kernel), **disproved** (main-goal negation promoted through the
+   authoritative gate), and explicit user cancellation. Infrastructure failure is a resumable
+   operational pause. Headless exits are `0=verified`, `3=disproved`, `2=checkpointed unresolved`,
+   `1=startup/runtime failure`, and `130=signal`; unresolved `sorry` can never exit zero. A
+   provider/API pause after campaign start forces a deterministic post-quiescence filesystem
+   checkpoint, without asking the failed provider to summarize it. Negation promotion is a durable
+   evidence/graph transaction; restart revalidates current source, signature, proof, and axioms
+   before preserving `disproved`, otherwise it quarantines the stale record and resumes proving.
+   Signal checkpoints likewise refresh the durable queue assignment and source-derived `sorry`
+   counts after writers quiesce, without starting Lean/MCP/provider work during cleanup.
 9. **Documentation-driven proving.** Living `plan.md` + `summary.json` + `blueprint.json` (the
    graph) + an append-only `journal.jsonl` (v3; the lab notebook and the source of truth for
    rebuildable snapshots). Every deployed agent receives the artifact paths. The orchestrator may
@@ -78,12 +98,20 @@ retriever). The 2026 frontier confirms the shape (audit Part C); the highest-pro
     libraries (`repo_clone`), available to orchestrator/planner/decomposer and deep-search jobs.
     **v3 (audit C): premise retrieval becomes mandatory from Phase 1** (`lean_lemma_suggest`
     injected at assignment — Hilbert's ablation: +accuracy AND −43% tokens).
-11. **Research-pusher stance, as SEMANTICS not just prompts (v3, audit A choices 1/3/6/18).**
-    `LEANFLOW_RESEARCH_MODE=1` is a profile: orchestrator consulted unconditionally; the
-    120-cycle ceiling and `stalled`/`blocked` become orchestrator invocations (never terminal
-    stops); breakpoints → strategy changes; thrift caps lifted (feedback cap, reasoning-replay
-    trim, compression floors); orchestrator/planner context is context-RICH (full plan.md,
-    grounding, journal tail); progress is measured as **graph delta**, not proved-delta.
+11. **Research-pusher stance is a public complete profile.** `--research` (or
+    `LEANFLOW_RESEARCH_MODE=1`) enables plan state, retrieval, breakpoints, both orchestrator
+    layers, fidelity auditing, graph frontier selection, planner lanes, process dispatch,
+    negation probing, reports, learnings, and coaching. Two background workers are the default.
+    Explicit CLI activation forces the required feature switches on over stale inherited `0`
+    values. Environment-only activation supplies those values as defaults while retaining
+    deliberate per-feature diagnostic overrides; router availability never grants surrender
+    authority in either form.
+    The 120-cycle ceiling, four no-progress routes, and context pressure roll a fresh campaign
+    epoch while preserving verified and negative knowledge; they never terminate the campaign.
+    A fresh epoch durably requires a distinct non-direct route and replaces still-open workers
+    from the spent route portfolio after harvesting completed deliverables. The atomic epoch record
+    carries a replayable refresh token: crashes cannot strand old workers, stale route selections
+    cannot clear the obligation, and provider failure leaves it pending for resume.
 12. **LeanProbe is the guy** — probes, experiments, negation, decomposition validation — with the
     Lake-backed gate (`_manager_check_queue_item`) as the sole acceptance authority. **v3: any
     scratch result that drives an irreversible decision (a `false` mark, a banked lemma) must be
@@ -119,8 +147,8 @@ untouched **queue + deterministic manager-prover core keeps proving and remains 
 on correctness**. The orchestrator owns file organization and the **dependency graph** (with
 OR-routes for rival decompositions); failures flow back through the Hilbert-style loop
 (fail → empirical/`plausible`/negation feasibility → re-decompose | promoted disproof | split).
-A small struggle-triggered **LLM-manager** crafts nudges that keep the prover moving without
-touching verdicts. All agents read and write **living documentation** — plan, summary, graph,
+A small **persistence coach** reinforces the already-selected route after every rejected turn
+without touching strategy or verdicts. All agents read and write **living documentation** — plan, summary, graph,
 journal — which replaces checkpoint prose as the resume/coordination authority, and **tracked,
 lineage-addressed dispatch** launches prover, empirical, and deep-search jobs from any
 decision-making level with independent budgets. Every scope terminates in a kernel-verified proof,
@@ -263,8 +291,14 @@ accounting seams and stop-reason plumbing: specs Part I.
 - **Invocations (v3):** scope-entry · stall · breakpoint · **job-done-with-findings** ·
   **graph-frontier change** (`false`/`proved` on nodes with dependents) · **research-mode cadence**
   (every N cycles / M wall-clock hours). The first three exist as seams today; the event triggers
-  are mechanical checks at the per-cycle reconciliation point — near-zero cost when nothing
-  changed.
+  use a theorem-scoped monotonic watermark. Parent maintenance may publish many job completions
+  during one foreground model turn, but it never calls the orchestrator from inside that turn.
+  The next read/search tool result closes a normal step boundary; edit, terminal, and Lean
+  verification callbacks retain exclusive ownership of their commit/gate. At the outer loop, one
+  consultation atomically captures the current event prefix and acknowledges only that prefix on
+  success. Later events remain pending and failed consultations retry without duplicate publication
+  or event loss. Per-cycle frontier/cadence discovery feeds the same coalescer, with near-zero cost
+  when nothing changed.
 - **Struggle signals** (deterministic, all already tracked — table in v2 §4.4) summon the
   **nudger** for message-shaping only. **v3:** ≥2 genuine failed attempts also *deterministically
   proposes a feasibility probe* into the decision packet; the orchestrator confirms or vetoes.
@@ -334,6 +368,14 @@ finally adopted only ~10 attempts later, reformulated. Root causes and fixes:
   theorem is then written into the project and passed through `_manager_check_queue_item` + the
   axiom profile. Only then does `false` poison ancestors — and the disproof becomes a bankable,
   kernel-verified artifact (half of the concrete-result guarantee).
+- **False-branch retirement:** an authoritatively false decomposition child invalidates the exact
+  same-parent unresolved branch above it. Current-source decomposer declarations are removed from
+  source and graph; source-less planner/decomposer artifacts are removed only from graph. The parent
+  is reopened, unrelated proved helpers and negation evidence survive, and any external, verified,
+  evidence-bearing, or identity-drifted dependent forces a resumable quarantine. A historical
+  committed cleanup that retains only its evidence tombstone has no branch left to migrate and is a
+  read-only startup no-op; the exact obsolete no-work evidence quarantine auto-resolves without
+  weakening any active cleanup gate.
 
 ### 4.12 Scope-exit research report (v3 — N1 mechanized)
 A deterministic generator over graph + ledger + journal (LLM-polished in research mode):
@@ -343,13 +385,14 @@ next attack. Produced at EVERY scope end that lacks a proof/promoted-disproof; s
 user. This is the artifact that makes "never give up silently" auditable.
 
 ### 4.13 Phase E — the evaluation harness (v3)
-Runs alongside Phase 1; gates every enable-flag. **T1 regression** (demo projects; flags-off
-byte-identical); **T2 capability** (~40 frozen: miniF2F-hard slice + PutnamBench slice +
-decomposition-required set); **T3 research-grade** (~10 multi-hour/day tasks incl. re-deriving
-recent mathlib results against a pre-dating snapshot; terminal-artifact compliance = 100%);
-**adversarial fixtures**: false-lemma, false-decomposition, vacuous-statement, axiom-temptation
-sets. Per-phase gates (incl. Phase 2's enable rule: ≥70% human-rated-helpful nudges, zero
-verdict-adjacent) and the regression protocol: audit Part B §5.
+Implemented in `evals/harness.py` and `evals/corpus_manifest.json`. **T1 regression** inventories
+the demo projects. **T2 capability** freezes 40 exact Lean 4 declarations across miniF2F and
+PutnamBench. **T3 research-grade** freezes ten multi-hour campaigns, including IMOMath3 and nine
+solved Formal Conjectures declarations at `bench-v1-lean4.27.0`. **Adversarial fixtures** ship as
+local false-lemma, false-decomposition, vacuous-statement, and axiom-temptation files. Campaign
+scoring reports voluntary give-up termination rate, unresolved-success exit rate, coach coverage,
+route/proof-shape diversity, jobs launched/consumed/replaced, verified graph progress, and epoch
+rollovers.
 
 ---
 
@@ -382,24 +425,24 @@ verdict-adjacent) and the regression protocol: audit Part B §5.
 
 ## 6. Phased plan (v3)
 
-### Wave −1 — Immediate fixes (shippable now, no design dependencies)
+### Wave −1 — Immediate fixes — **implemented**
 Decomposition-confidence prompt fixes (§4.10: SKILL.md optionality, `lean_experts.py:701`
 "proposal only", helper-`sorry` legitimization, attempt-count framing) + the persistence bug
 (atomic writes via `core/utils.py:13`; loud corruption failure in `workflow_json_io.py`).
 **~2 days / near-zero risk / immediate behavioral value.**
 
-### Phase 0 — Queue-verdict unification *(scope corrected)*
+### Phase 0 — Queue-verdict unification — **implemented**
 Route production verdicts through `decide()` (`queue_manager.py:484`, dead in production);
 consolidate the **four** drifting copies (`:1890`, `:1834`, `:5815`, and `_finish_queue_step_
 boundary` `:3032`); make `TheoremQueueManager` the live authority (19 reconstruct call-sites →
 one instance). Shadow-compare for one release; axiom guard stays inside the unified path.
 Function-level plan: specs Part I. **~1–1.5 wk / Low-Med.**
 
-### Phase E — Evaluation harness *(new; alongside Phase 1)*
+### Phase E — Evaluation harness — **implemented; live result collection ongoing**
 §4.13. Runner + fixtures + scorer over artifacts the redesign produces anyway. Gates every later
 enable-flag. **~1 wk initial, then continuous.**
 
-### Phase 1 — Plan-state + graph + journal + breakpoint (mechanical) + retrieval + checkpoint retirement
+### Phase 1 — Plan-state + graph + journal + breakpoint + retrieval — **implemented**
 v2 scope **plus**: `journal.jsonl` (append-only truth, rebuildable snapshots); OR-route graph
 schema (§4.1); **premise-retrieval injection at assignment** (§4.6); immutable-proved invariant;
 **breakpoint-decider-lite** (prompt-level orchestrator at mechanical breakpoints — research runs
@@ -407,38 +450,46 @@ get a decider years before Phase 6); research-profile skeleton (§4.7 flags). Ch
 retirement per corrected seams (`:9602/:9623/:9642`); baseline-`sorry` restore + git-shadow kept.
 Spec: Part I. **~2.5 wk / Low.**
 
-### Phase 2 — Struggle detector + LLM-manager (dark) + deterministic probe proposals
+### Phase 2 — Struggle signals + persistence coach — **implemented and default-on for prove**
 v2 scope **plus**: ≥2-failures auto-proposes a feasibility probe into the decision packet
 (orchestrator-confirmed); partial-credit feedback for kernel-verified helpers (§4.10). Enable gate
 defined by Phase E. Spec: Part II. **~1 wk dark + enable / Low→Med.**
 
-### Phase 3 — Dispatch: design (3a), then build (3b)
+### Phase 3 — Dispatch and negation promotion — **implemented**
 **3a (design, owner-review gate):** lifecycle per §4.2 — JobSpec with lineage ids, ledger,
 independent budgets, patience/kill, async-ready semantics, resume-reconciliation (ledger says
 `running`, child dead, lock held). **3b (build):** dispatch service over `delegate_task`/
 `dispatch_worker`; **feasibility archetype first** (empirical → `plausible` → `¬P`, with **negation
 promotion** §4.11 and vacuity probes); **deep-search archetype** (pulled forward; `repo_clone`
-lands here); ledger + lineage live. Spec: Part II. **~3 wk / Med.**
+lands here); ledger + lineage live. Promoted false sublemmas now transactionally retract their
+same-revision unresolved dependent decomposition chain from source, graph, and queue state while
+preserving unrelated verified source; ambiguous or verified dependents pause for quarantine. Exact
+stale tombstones from already-committed version-1 cleanups are upgraded through a predecessor-bound,
+source-first migration rather than being left active or heuristically rewritten.
+Spec: Part II. **~3 wk / Med.**
 
-### Phase 4 — Orchestrator (deterministic + event-driven) + decomposer role + reports
+### Phase 4 — Deterministic/event-driven orchestrator + decomposer + reports — **implemented**
 v2 scope **plus**: event triggers + research cadence (§4.4); statement-fidelity audit (§4.11);
 axiom-scan on orchestrator/decomposer writes; **scope-exit report generator** (§4.12);
 `ask-human` route + re-state ACK; graph-frontier queue selection option; breakpoint decisions
 replace the Phase-1 mechanical stop. Spec: Part III. **~3 wk / Med.**
 
-### Phase 5 — Planner fan-out + parallel frontier discharge + learnings
+### Phase 5 — Planner fan-out + frontier discharge + learnings — **implemented**
 v2 scope **plus**: **multi-direction proving** (N4 — several stub-file prove jobs over the graph
 frontier; sequential v1, parallel as async lands); fire-and-continue deep-search; cross-run
 `learnings.md` + scope-entry priors; **curriculum ordering** of the stub frontier (easy→hard —
 pulled from optional; LeanAgent/AlphaProof evidence). Spec: Part III. **~3 wk / Med-High.**
 
-### Phase 6 — LLM orchestrator (full) + spec rewrite + research mode (complete)
+### Phase 6 — LLM orchestrator + complete research mode — **implemented**
 v2 scope (strong-model routing over the floor; spec fold **and rewrite to the current quality
 bar** incl. the golf/refactor overhaul) **plus**: full research-profile semantics (§4.7);
-`models.prover_light`. Spec: Part III. **~2.5–3 wk / Med.**
+`models.prover_light`. Research routing uses a target-scoped 12,000-character digest with explicit
+per-section omission hashes/counts. Advisory latency is bounded by a twenty-second isolated
+foreground deadline and a persisted two-minute circuit after timeout; the deterministic route
+floor continues immediately while the circuit is open. Spec: Part III. **~2.5–3 wk / Med.**
 
-### Later (named workstreams, promoted-by-evidence)
-Async dispatch with stuck-agent reclaim (research-run experience is the trigger);
+### Remaining promotion work
+Run and publish the pinned live campaign results; harden stuck-worker reclaim from observed runs;
 **proof-artifact reuse** (kernel-proved lemma pool + hashed goal→proof cache — frontier-universal);
 **verification-environment scaling** (parallel Lean runtimes/goal cache — the binding constraint
 at research scale, per Gauss); graph web view.

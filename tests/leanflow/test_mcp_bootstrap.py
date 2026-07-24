@@ -181,6 +181,48 @@ def test_patch_lean_lsp_loogle_build_lock_is_valid_and_idempotent(tmp_path):
     assert (pkg / "loogle.py").read_text(encoding="utf-8") == patched
 
 
+def test_patch_lean_lsp_loogle_lifecycle_is_valid_and_idempotent(tmp_path):
+    import ast
+
+    pkg = tmp_path / "lib" / "python3.12" / "site-packages" / "lean_lsp_mcp"
+    pkg.mkdir(parents=True)
+    loogle_path = pkg / "loogle.py"
+    loogle_path.write_text(
+        "import asyncio\n"
+        "class LocalLoogle:\n"
+        "    async def start(self):\n"
+        "        try:\n"
+        "            await self.ready()\n"
+        "        except asyncio.TimeoutError:\n"
+        '            logger.error("Loogle startup timeout")\n'
+        "            return False\n",
+        encoding="utf-8",
+    )
+    server_path = pkg / "server.py"
+    server_path.write_text(
+        "async def app_lifespan():\n"
+        "    try:\n"
+        "        yield\n"
+        "    finally:\n"
+        '        logger.info("Session ending — cleaning up per-session resources")\n'
+        "\n"
+        "        cleanup()\n",
+        encoding="utf-8",
+    )
+
+    assert loogle_local.patch_lean_lsp_loogle_lifecycle(tmp_path) is True
+    patched_loogle = loogle_path.read_text(encoding="utf-8")
+    patched_server = server_path.read_text(encoding="utf-8")
+    ast.parse(patched_loogle)
+    ast.parse(patched_server)
+    assert "await self.stop()" in patched_loogle
+    assert "await context.loogle_manager.stop()" in patched_server
+
+    assert loogle_local.patch_lean_lsp_loogle_lifecycle(tmp_path) is True
+    assert loogle_path.read_text(encoding="utf-8") == patched_loogle
+    assert server_path.read_text(encoding="utf-8") == patched_server
+
+
 def test_bootstrap_patches_lean_lsp_loogle_project_paths(tmp_path):
     venv = tmp_path / "venv"
     package_dir = venv / "lib" / "python3.11" / "site-packages" / "lean_lsp_mcp"

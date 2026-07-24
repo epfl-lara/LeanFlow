@@ -21,16 +21,17 @@ fabricate prompt structure. The file is a rolling record (oldest past
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import os
 import re
 import tempfile
+from collections import deque
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from leanflow_cli.workflows.workflow_activity_reader import iter_jsonl_dicts
 from leanflow_cli.workflows.workflow_json_io import json_write_lock
 from leanflow_cli.workflows.workflow_state import workflow_run_activity_path
 from leanflow_cli.workflows.workflow_state_paths import workflow_state_root
@@ -86,19 +87,15 @@ def _routes_from_run_activity(run_id: str, limit: int = 6) -> list[str]:
         path = workflow_run_activity_path(run_id)
         if not path.is_file():
             return []
-        routes: list[str] = []
-        for raw in path.read_text(encoding="utf-8").splitlines():
-            try:
-                event = json.loads(raw)
-            except Exception:
-                continue
+        routes: deque[str] = deque(maxlen=max(1, int(limit)))
+        for event in iter_jsonl_dicts([path]):
             if event.get("type") == "orchestrator-route":
                 details = event.get("details")
                 details = details if isinstance(details, dict) else {}
                 trigger = details.get("trigger", event.get("trigger", "?"))
                 route = details.get("route", event.get("route", "?"))
                 routes.append(_line(f"{trigger}->{route}", cap=40))
-        return routes[-limit:]
+        return list(routes)
     except Exception:
         return []
 

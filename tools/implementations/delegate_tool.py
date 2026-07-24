@@ -28,6 +28,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
+from core.provider_availability import normalize_provider_retry_after
+from core.provider_capacity import BackgroundCapacityUnavailable, background_actor_lease
+from tools.utilities.delegate_handoff import build_managed_interrupt_handoff
+
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
@@ -80,6 +84,56 @@ def _strip_blocked_tools(toolsets: list[str]) -> list[str]:
         "code_execution",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
+
+
+def _format_task_completion_line(
+    *,
+    status: str,
+    task_index: int,
+    task_count: int,
+    label: str,
+    duration_seconds: object,
+) -> str:
+    """Render one delegated-task outcome without presenting deferral as failure."""
+    normalized = str(status or "").strip().lower()
+    if normalized == "completed":
+        icon = "✓"
+        outcome = ""
+    elif normalized == "capacity-deferred":
+        icon = "↻"
+        outcome = "capacity deferred; retry later, "
+    elif normalized == "interrupted":
+        icon = "⏸"
+        outcome = "interrupted, "
+    else:
+        icon = "✗"
+        outcome = f"{normalized or 'unknown'}, "
+    timing = f"{outcome}{duration_seconds}s"
+    return f"{icon} [{task_index + 1}/{task_count}] {label}  ({timing})"
+
+
+def _report_effective_child_tools(parent_agent: Any, child: Any, toolsets: list[str]) -> None:
+    """Report the child's post-filter tool schemas when its parent requests telemetry."""
+    parent_attributes = getattr(parent_agent, "__dict__", {})
+    reporter = (
+        parent_attributes.get("_delegated_tool_availability_reporter")
+        if isinstance(parent_attributes, dict)
+        else None
+    )
+    if not callable(reporter):
+        return
+    raw_names = getattr(child, "valid_tool_names", set()) or set()
+    if not isinstance(raw_names, (list, tuple, set, frozenset)):
+        raw_names = set()
+    effective_names = sorted({str(name) for name in raw_names if str(name).strip()})
+    try:
+        reporter(
+            requested_toolsets=list(toolsets),
+            effective_tool_names=effective_names,
+        )
+    except Exception:
+        # Observability must never change delegation behavior.
+        logger.debug("Could not report effective delegated tools", exc_info=True)
 
 
 def _build_child_progress_callback(
@@ -166,12 +220,69 @@ def _run_single_child(
     max_iterations: int,
     parent_agent,
     task_count: int = 1,
+    override_provider: str | None = None,
+    override_base_url: str | None = None,
+    override_api_key: str | None = None,
+    override_api_mode: str | None = None,
+    isolate_budget: bool = False,
+    pre_tool_call_callback: Callable[[str, dict[str, Any]], Any] | None = None,
+    post_tool_result_callback: Callable[[str, dict[str, Any], str], Any] | None = None,
+    background_capacity_timeout_s: float | None = None,
+) -> dict[str, Any]:
+    """Run one delegated conversation under a research actor-capacity lease.
+
+    The lease is acquired before constructing ``AIAgent``. Normal delegation
+    runs remain unchanged because the gate is only configured by research or
+    dispatch workflows. Nested provider and auxiliary calls retain this same
+    context-local lease.
+    """
+    try:
+        with background_actor_lease(timeout_s=background_capacity_timeout_s):
+            return _run_single_child_unleased(
+                task_index=task_index,
+                goal=goal,
+                context=context,
+                toolsets=toolsets,
+                model=model,
+                max_iterations=max_iterations,
+                parent_agent=parent_agent,
+                task_count=task_count,
+                override_provider=override_provider,
+                override_base_url=override_base_url,
+                override_api_key=override_api_key,
+                override_api_mode=override_api_mode,
+                isolate_budget=isolate_budget,
+                pre_tool_call_callback=pre_tool_call_callback,
+                post_tool_result_callback=post_tool_result_callback,
+            )
+    except BackgroundCapacityUnavailable as exc:
+        return {
+            "task_index": task_index,
+            "status": "capacity-deferred",
+            "summary": None,
+            "error": str(exc),
+            "api_calls": 0,
+            "duration_seconds": 0,
+        }
+
+
+def _run_single_child_unleased(
+    task_index: int,
+    goal: str,
+    context: str | None,
+    toolsets: list[str] | None,
+    model: str | None,
+    max_iterations: int,
+    parent_agent,
+    task_count: int = 1,
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: str | None = None,
     override_base_url: str | None = None,
     override_api_key: str | None = None,
     override_api_mode: str | None = None,
     isolate_budget: bool = False,
+    pre_tool_call_callback: Callable[[str, dict[str, Any]], Any] | None = None,
+    post_tool_result_callback: Callable[[str, dict[str, Any], str], Any] | None = None,
 ) -> dict[str, Any]:
     """
     Spawn and run a single child agent. Called from within a thread.
@@ -185,6 +296,7 @@ def _run_single_child(
     from run_agent import AIAgent
 
     child_start = time.monotonic()
+    child: Any = None
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -205,6 +317,31 @@ def _run_single_child(
 
         # Build progress callback to relay tool calls to parent display
         child_progress_cb = _build_child_progress_callback(task_index, parent_agent, task_count)
+        managed_post_result_hook = getattr(
+            parent_agent, "_managed_delegated_post_tool_result_callback", None
+        )
+        requested_post_result_hook = post_tool_result_callback
+        child_post_result_cb = None
+        if callable(managed_post_result_hook) or callable(requested_post_result_hook):
+
+            def _child_post_result_callback(name: str, args: dict[str, Any], result: str) -> None:
+                """Forward one child result to managed and caller-owned observers."""
+                if child is not None and callable(managed_post_result_hook):
+                    try:
+                        managed_post_result_hook(child, name, args, result)
+                    except Exception:
+                        # Managed telemetry remains observational and must not
+                        # prevent a dispatch-owned exact-evidence collector.
+                        logger.debug("Managed delegated post-result hook failed", exc_info=True)
+                if callable(requested_post_result_hook):
+                    try:
+                        requested_post_result_hook(name, args, result)
+                    except Exception:
+                        # An internal evidence collector is observational. A
+                        # malformed tool result must not fail the delegated job.
+                        logger.debug("Delegated post-result observer failed", exc_info=True)
+
+            child_post_result_cb = _child_post_result_callback
 
         # Share the parent's iteration budget so subagent tool calls count
         # toward the session-wide limit — unless the caller asked for an
@@ -247,8 +384,11 @@ def _run_single_child(
             providers_order=parent_agent.providers_order,
             provider_sort=parent_agent.provider_sort,
             tool_progress_callback=child_progress_cb,
+            pre_tool_call_callback=pre_tool_call_callback,
+            post_tool_result_callback=child_post_result_cb,
             iteration_budget=shared_budget,
         )
+        _report_effective_child_tools(parent_agent, child, child_toolsets)
 
         # Set delegation depth so children can't spawn grandchildren
         child._delegate_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
@@ -351,6 +491,20 @@ def _run_single_child(
             },
             "tool_trace": tool_trace,
         }
+        provider_retry_after = normalize_provider_retry_after(result.get("provider_retry_after"))
+        if provider_retry_after:
+            # Keep reset authority structured across the process boundary.
+            # The parent portfolio, not this child, owns campaign admission.
+            entry.update(
+                {
+                    "provider_retry_after": provider_retry_after,
+                    "provider_globally_unavailable": True,
+                    "provider_retries_exhausted": True,
+                }
+            )
+        interrupted_handoff = build_managed_interrupt_handoff(result)
+        if interrupted_handoff:
+            entry["interrupted_handoff"] = interrupted_handoff
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
@@ -371,14 +525,13 @@ def _run_single_child(
     finally:
         # Unregister child from interrupt propagation. Prefer the thread-safe
         # unregister_child() (mirrors register_child above); fall back to direct
-        # list mutation. The UnboundLocalError guard covers the case where child
-        # creation raised before ``child`` was bound.
+        # list mutation. The explicit ``None`` guard covers construction failure.
         try:
-            if hasattr(parent_agent, "unregister_child"):
+            if child is not None and hasattr(parent_agent, "unregister_child"):
                 parent_agent.unregister_child(child)
-            elif hasattr(parent_agent, "_active_children"):
+            elif child is not None and hasattr(parent_agent, "_active_children"):
                 parent_agent._active_children.remove(child)
-        except (ValueError, UnboundLocalError) as e:
+        except ValueError as e:
             logger.debug("Could not remove child from active_children: %s", e)
         try:
             from leanflow_cli.runtime.file_locks import release_all_file_locks
@@ -398,6 +551,7 @@ def delegate_task(
     max_iterations: int | None = None,
     parent_agent=None,
     isolate_budget: bool = False,
+    post_tool_result_callback: Callable[[str, dict[str, Any], str], Any] | None = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -478,6 +632,11 @@ def delegate_task(
             override_api_key=creds["api_key"],
             override_api_mode=creds["api_mode"],
             isolate_budget=isolate_budget,
+            pre_tool_call_callback=t.get("_pre_tool_call_callback"),
+            post_tool_result_callback=(
+                t.get("_post_tool_result_callback") or post_tool_result_callback
+            ),
+            background_capacity_timeout_s=t.get("_background_capacity_timeout_s"),
         )
         results.append(result)
     else:
@@ -508,6 +667,11 @@ def delegate_task(
                     override_api_key=creds["api_key"],
                     override_api_mode=creds["api_mode"],
                     isolate_budget=isolate_budget,
+                    pre_tool_call_callback=t.get("_pre_tool_call_callback"),
+                    post_tool_result_callback=(
+                        t.get("_post_tool_result_callback") or post_tool_result_callback
+                    ),
+                    background_capacity_timeout_s=t.get("_background_capacity_timeout_s"),
                 )
                 futures[future] = i
 
@@ -532,9 +696,14 @@ def delegate_task(
                 label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
                 dur = entry.get("duration_seconds", 0)
                 status = entry.get("status", "?")
-                icon = "✓" if status == "completed" else "✗"
                 remaining = n_tasks - completed_count
-                completion_line = f"{icon} [{idx + 1}/{n_tasks}] {label}  ({dur}s)"
+                completion_line = _format_task_completion_line(
+                    status=str(status),
+                    task_index=idx,
+                    task_count=n_tasks,
+                    label=label,
+                    duration_seconds=dur,
+                )
                 if spinner_ref:
                     try:
                         spinner_ref.print_above(completion_line)

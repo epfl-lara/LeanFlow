@@ -38,6 +38,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.runtime_modes import scratch_only_dispatch_worker_enabled
+from tools.utilities.scratch_terminal_guard import validate_scratch_terminal_command
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -880,6 +883,61 @@ def terminal_tool(
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
+
+        # Scratch research workers share the foreground checkout. Enforce their
+        # read-only contract before environment creation and independently of
+        # the ordinary interactive approval/force mechanism.
+        if scratch_only_dispatch_worker_enabled():
+            if env_type != "local":
+                return json.dumps(
+                    {
+                        "output": "",
+                        "exit_code": -1,
+                        "error": (
+                            "Scratch-only research terminal denied: the audited read-only "
+                            "terminal surface is available only on the local backend. Use "
+                            "read_file/search_files or Lean check tools for this worker."
+                        ),
+                        "status": "scratch_only_terminal_denied",
+                    },
+                    ensure_ascii=False,
+                )
+            if background or pty:
+                return json.dumps(
+                    {
+                        "output": "",
+                        "exit_code": -1,
+                        "error": (
+                            "Scratch-only research terminal denied: background and PTY "
+                            "commands are outside the bounded read-only diagnostic surface."
+                        ),
+                        "status": "scratch_only_terminal_denied",
+                    },
+                    ensure_ascii=False,
+                )
+            decision = validate_scratch_terminal_command(
+                command,
+                workdir=workdir or str(config.get("cwd", "") or ""),
+                project_root=str(
+                    os.getenv("LEANFLOW_PROJECT_ROOT", "") or config.get("cwd", "") or ""
+                ),
+            )
+            if not decision.allowed:
+                return json.dumps(
+                    {
+                        "output": "",
+                        "exit_code": -1,
+                        "error": (
+                            "Scratch-only research terminal denied: "
+                            f"{decision.reason}. Use read_file/search_files, Lean check tools, "
+                            "or a read-only diagnostic command."
+                        ),
+                        "status": "scratch_only_terminal_denied",
+                    },
+                    ensure_ascii=False,
+                )
+            command = decision.command or command
+            workdir = decision.workdir or workdir
 
         # Use task_id for environment isolation
         effective_task_id = task_id or "default"

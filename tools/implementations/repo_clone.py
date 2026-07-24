@@ -22,7 +22,7 @@ from tools.response import dumps, error
 
 REPO_CLONE_DIRNAME = ".leanflow/workspace/repos"
 REPO_CLONE_MAX_BYTES = 500 * 1024 * 1024  # post-clone size cap (bytes)
-REPO_CLONE_TIMEOUT_SECONDS = 600
+REPO_CLONE_TIMEOUT_SECONDS = 180
 
 _ALLOWED_SCHEMES = {"https", "git"}
 # `--branch` values reach git argv: keep them boring (tag/branch/short-sha).
@@ -49,6 +49,16 @@ def _tree_bytes(root: Path) -> int:
             except OSError:
                 continue
     return total
+
+
+def _clone_timeout_seconds() -> int:
+    """Return the bounded clone timeout, honoring the LeanFlow env contract."""
+    raw = str(os.getenv("LEANFLOW_REPO_CLONE_TIMEOUT_SECONDS", "") or "").strip()
+    try:
+        value = int(raw) if raw else REPO_CLONE_TIMEOUT_SECONDS
+    except ValueError:
+        value = REPO_CLONE_TIMEOUT_SECONDS
+    return max(5, min(600, value))
 
 
 def repo_clone_tool(
@@ -127,17 +137,18 @@ def repo_clone_tool(
     if ref:
         argv += ["--branch", ref]
     argv += ["--", url, str(dest)]
+    timeout_s = _clone_timeout_seconds()
     try:
         proc = subprocess.run(
             argv,
             capture_output=True,
             text=True,
-            timeout=REPO_CLONE_TIMEOUT_SECONDS,
+            timeout=timeout_s,
             check=False,
         )
     except subprocess.TimeoutExpired:
         shutil.rmtree(dest, ignore_errors=True)
-        return error(f"git clone timed out after {REPO_CLONE_TIMEOUT_SECONDS}s for {url}")
+        return error(f"git clone timed out after {timeout_s}s for {url}")
     except Exception as exc:
         shutil.rmtree(dest, ignore_errors=True)
         return error(f"Failed to clone {url}: {exc}")

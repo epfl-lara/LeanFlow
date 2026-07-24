@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import signal
 import time
 from pathlib import Path
 from typing import Any
@@ -22,6 +21,7 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from rich.console import Console
 
+from core.process_identity import PROCESS_TOKEN_ENV, process_token_sha256
 from leanflow_cli.cli.banner import (
     build_welcome_banner,
     render_help,
@@ -103,6 +103,7 @@ from leanflow_cli.workflows.project import (
 )
 from leanflow_cli.workflows.workflow_state import (
     enqueue_workflow_agent_message,
+    interrupt_workflow_process,
     load_workflow_checkpoints,
     load_workflow_live_status,
     read_workflow_activity,
@@ -820,13 +821,22 @@ class InteractiveShell:
                 }
             )
         save_workflow_live_status(status_payload)
-        _, process = spawn_workflow(
+        launched_plan, process = spawn_workflow(
             raw,
             active_cwd=self.cwd,
             active_skill=self.active_skill or None,
             interactive=False,
         )
-        status_payload["process_id"] = process.pid
+        status_payload.update(
+            {
+                "process_id": process.pid,
+                "process_group_id": process.pid if os.name == "posix" else 0,
+                "process_session_id": process.pid if os.name == "posix" else 0,
+                "process_token_sha256": process_token_sha256(
+                    launched_plan.child_env.get(PROCESS_TOKEN_ENV, "")
+                ),
+            }
+        )
         status_payload["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         save_workflow_live_status(status_payload)
         self.console.print()
@@ -885,7 +895,8 @@ class InteractiveShell:
                     time.sleep(0.1)
             if not remaining:
                 self.console.print(
-                    f"[dim]Requested clean exit for {len(queued)} workflow runner(s) in {project_root} before exiting the shell.[/]"
+                    f"[dim]Requested clean exit for {len(queued)} workflow runner(s) in {project_root} before exiting the shell.[/]",
+                    soft_wrap=True,
                 )
                 return
 
@@ -893,7 +904,8 @@ class InteractiveShell:
         count = int(result.get("count", 0) or 0)
         if count:
             self.console.print(
-                f"[dim]Interrupted {count} workflow agent(s) for {project_root} before exiting the shell.[/]"
+                f"[dim]Interrupted {count} workflow agent(s) for {project_root} before exiting the shell.[/]",
+                soft_wrap=True,
             )
             return
 
@@ -909,17 +921,12 @@ class InteractiveShell:
             process_id = 0
         if process_id <= 0 or process_id == os.getpid():
             return
-        try:
-            os.killpg(process_id, signal.SIGINT)
-        except Exception:
-            try:
-                os.kill(process_id, signal.SIGINT)
-            except ProcessLookupError:
-                return
-            except Exception:
-                return
+        interrupted = interrupt_workflow_process(status)
+        if not interrupted.get("success"):
+            return
         self.console.print(
-            f"[dim]Interrupted background workflow runner (pid {process_id}) for {project_root} before exiting the shell.[/]"
+            f"[dim]Interrupted background workflow runner (pid {process_id}) for {project_root} before exiting the shell.[/]",
+            soft_wrap=True,
         )
 
     def _handle_command(self, raw: str) -> bool:

@@ -52,6 +52,37 @@ def _extract_active_files(text: str) -> list[str]:
     return seen[:8]
 
 
+def _checkpoint_active_files(live_state: Mapping[str, Any] | None, text: str) -> list[str]:
+    """Return real checkpoint files, preferring the structured active file.
+
+    Conversation history can contain unified-diff headers such as
+    ``a/Project/Main.lean`` or truncated fragments. Keep extra history files
+    only when they exist under the project root so those artifacts cannot
+    poison a resume handoff.
+    """
+    state = dict(live_state or {})
+    structured = _extract_active_files(
+        "\n".join(str(state.get(key, "") or "") for key in ("active_file_label", "active_file"))
+    )
+    candidates = _extract_active_files(text)
+    if not structured:
+        return candidates
+    root = Path(_project_root()).expanduser().resolve()
+    result = list(structured)
+    for candidate in candidates:
+        path = Path(candidate).expanduser()
+        resolved = path.resolve() if path.is_absolute() else (root / path).resolve()
+        if not resolved.is_file():
+            continue
+        try:
+            normalized = str(resolved.relative_to(root))
+        except ValueError:
+            normalized = str(resolved)
+        if normalized not in result:
+            result.append(normalized)
+    return result[:8]
+
+
 def _resolve_active_file(
     history: list[dict[str, Any]], checkpoint_state: Mapping[str, Any] | None = None
 ) -> str:

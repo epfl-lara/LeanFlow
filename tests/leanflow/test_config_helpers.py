@@ -35,6 +35,10 @@ def test_load_config_returns_defaults_on_fresh_home(monkeypatch, tmp_path):
     assert config["auxiliary"]["lean_decompose_helpers"]["provider"] == ""
     assert config["auxiliary"]["lean_decompose_helpers"]["model"] == ""
     assert config["auxiliary"]["lean_decompose_helpers"]["reasoning_effort"] == ""
+    assert config["auxiliary"]["manager_nudge"]["provider"] == "auto"
+    assert config["auxiliary"]["manager_nudge"]["model"] == ""
+    assert config["auxiliary"]["manager_nudge"]["reasoning_effort"] == "low"
+    assert config["auxiliary"]["orchestration"]["reasoning_effort"] == "off"
     assert config["agent"]["max_turns"] == 200
     assert config["agent"]["reasoning_effort"] == "auto"
     assert config["agent"]["seed"] == 42
@@ -52,6 +56,7 @@ def test_load_config_returns_defaults_on_fresh_home(monkeypatch, tmp_path):
     assert "Main workflow model" in rendered
     assert "Auxiliary theorem advisor" in rendered
     assert "Auxiliary helper decomposer" in rendered
+    assert "Persistence coach" in rendered
 
 
 def test_load_config_falls_back_to_defaults_on_malformed_yaml(monkeypatch, tmp_path):
@@ -184,6 +189,7 @@ def test_ensure_leanflow_home_creates_expected_subdirectories(monkeypatch, tmp_p
     config_text = (home / "config.yaml").read_text(encoding="utf-8")
     assert "Auxiliary helper decomposer" in config_text
     assert "lean_decompose_helpers:" in config_text
+    assert "manager_nudge:" in config_text
     assert "blueprint_verification:" in config_text
     assert "autoformalizer_verification:" in config_text
     env_text = (home / ".env").read_text(encoding="utf-8")
@@ -193,6 +199,11 @@ def test_ensure_leanflow_home_creates_expected_subdirectories(monkeypatch, tmp_p
     assert "AUXILIARY_LEAN_REASONING_REASONING_EFFORT=" in env_text
     assert "AUXILIARY_LEAN_DECOMPOSE_HELPERS_MODEL=" in env_text
     assert "AUXILIARY_LEAN_DECOMPOSE_HELPERS_REASONING_EFFORT=" in env_text
+    assert "AUXILIARY_MANAGER_NUDGE_MODEL=" in env_text
+    assert "AUXILIARY_MANAGER_NUDGE_REASONING_EFFORT=" in env_text
+    assert "AUXILIARY_ORCHESTRATION_MODEL=" in env_text
+    assert "AUXILIARY_ORCHESTRATION_REASONING_EFFORT=" in env_text
+    assert "LEANFLOW_ORCHESTRATOR_LLM_TIMEOUT_S=" in env_text
     assert "AUXILIARY_BLUEPRINT_VERIFICATION_PROVIDER=" in env_text
     assert "AUXILIARY_AUTOFORMALIZER_VERIFICATION_PROVIDER=" in env_text
 
@@ -249,6 +260,7 @@ def test_ensure_leanflow_home_backfills_missing_config_defaults(monkeypatch, tmp
     assert config["auxiliary"]["lean_reasoning"]["provider"] == "codex"
     assert config["auxiliary"]["lean_decompose_helpers"]["provider"] == ""
     assert config["auxiliary"]["lean_decompose_helpers"]["model"] == ""
+    assert config["auxiliary"]["manager_nudge"]["reasoning_effort"] == "low"
     assert config["auxiliary"]["blueprint_verification"]["provider"] == "main"
     assert config["auxiliary"]["autoformalizer_verification"]["provider"] == "local"
     assert config["mcp_servers"]["lean-lsp"]["command"] == "/tmp/lean-lsp-mcp"

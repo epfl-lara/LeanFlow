@@ -79,6 +79,7 @@ def _discover_tools():
         "tools.implementations.file_tools",
         "tools.implementations.file_lock_tool",
         "tools.implementations.terminal_tool",
+        "tools.implementations.empirical_compute",
         "tools.implementations.session_search_tool",
         "tools.implementations.skills_tool",
         "tools.implementations.document_tool",

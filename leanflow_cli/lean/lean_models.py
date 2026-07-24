@@ -94,6 +94,7 @@ class LeanAxiomReport:
     classical: bool
     choice: bool
     note: str
+    inspection_succeeded: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

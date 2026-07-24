@@ -42,7 +42,7 @@ Built-in skills:
   - emphasizes: inspect diagnostics/goals first, make minimal edits, rebuild, and do not stop until the project is actually verified
 - `lean-theorem-queue-worker`
   - single-declaration worker used during file-scoped autonomous proving when the runner has assigned a concrete theorem/lemma queue item
-  - emphasizes: stay on the assigned target, use target-scoped failed-attempt history, and hand control back after the declaration is solved or concretely blocked
+  - emphasizes: stay on the assigned target, use target-scoped failed-attempt history, and hand control back after the declaration is solved or the manager requests a concrete route change
 - `lean-diagnostics`
   - focused diagnostic mode for `review`
   - emphasizes: current blockers, open goals, verification state, and project-wide remaining `sorry`
@@ -308,6 +308,8 @@ Run a workflow:
 
 ```bash
 leanflow workflow prove Main.lean
+leanflow workflow prove Main.lean --provider codex --research
+leanflow workflow prove Main.lean --provider codex --research --research-workers 2
 leanflow workflow prove Main.lean --agents 3
 leanflow workflow prove Main.lean --no-parallel
 leanflow workflow formalize docs/paper.tex
@@ -391,7 +393,18 @@ The shell also reads persisted managed-workflow state so these commands work acr
 - `/diagnostics`
 - `/proof-state`
 
-`/exit` now asks the current project's managed runner to shut down cleanly first, waits briefly for that exit request to land, and only then escalates to direct interrupts/PID termination if the runner is still alive.
+A newly launched runner publishes `starting` and then `reconciling` before it loads the potentially
+expensive checkpoint, plan, queue, and Lean preflight state. These phases carry the new process's
+verified ownership identity and heartbeat immediately. Proof fields retained from the prior durable
+snapshot remain explicitly marked with `startup_reconciliation_pending: true` until fresh Lean state
+replaces them, so startup visibility does not claim that historical mathematical state is current.
+The shell status panel labels those retained fields as a prior durable snapshot pending
+reconciliation.
+
+`/exit` now asks the current project's managed runner to shut down cleanly first and waits briefly
+for that exit request to land. Any later direct interrupt requires the live process to match the
+per-launch ownership-token fingerprint plus its recorded process-group/session identity. Historical
+PID-only records are never signaled, so PID reuse cannot redirect cleanup at an unrelated process.
 
 ## Autonomous Lean Behavior
 
@@ -403,7 +416,8 @@ What the autonomous runner tries to do:
 - inspect diagnostics and goals first
 - make the smallest useful edit
 - rebuild or re-check diagnostics after meaningful edits
-- continue until the target is verified or a concrete blocker remains
+- continue until the target is verified or the main statement is authoritatively disproved;
+  concrete blockers trigger route changes rather than mathematical stops
 
 What counts as success:
 
@@ -414,6 +428,235 @@ What counts as success:
 5. there are no remaining `sorry` elsewhere in the project outside dependencies
 
 Autonomous workflows are intentionally stricter than a local file-only loop. `prove` and `formalize` should keep going until the project is clean, not merely until the current theorem looks finished.
+
+### Relentless Proving And Research Mode
+
+Every rejected `prove`/`autoprove` turn is followed by a persistence-coach message. The small
+manager model can acknowledge verified progress and reinforce the route already chosen by the
+orchestrator, but cannot choose a route, launch work, alter verification, or stop the campaign.
+`LEANFLOW_MANAGER_LLM_MODE=off|dark|live` controls the model call only; a deterministic positive
+fallback gives complete coach coverage when the model is disabled or unavailable. The optional
+model request defaults to a five-second parent-enforced wall-clock deadline and is always capped at
+ten seconds; `LEANFLOW_MANAGER_NUDGE_TIMEOUT_S` can lower or tune that bounded deadline without
+allowing the message-only coach to hold the foreground proof loop for a general model timeout.
+
+`--research` promotes the optional redesign components into one complete profile:
+
+```bash
+leanflow workflow prove Main.lean --provider codex --research
+leanflow workflow prove Main.lean --provider codex --research --research-workers 2
+```
+
+The default is a foreground prover plus capacity for two live background research actors.
+Process-isolated jobs and in-process planner lanes share those two actor slots for their full
+conversation lifetime; nested model helpers retain their actor's slot. Foreground prover,
+manager, orchestrator, and planner-synthesis control turns remain outside the background pool.
+If all slots are occupied, a planner lane records `capacity-deferred` after a short bounded wait
+and the route is retried at the next safe orchestration boundary instead of freezing the prover.
+Once a planner route is pending, portfolio maintenance continues harvesting completed findings but
+temporarily leaves the next freed actor slot unfilled. This gives the planner lane a bounded path to
+capacity instead of letting immediate replacement jobs starve it. The same harvest tick records one
+assignment-scoped replacement obligation in durable workflow state. Repeated planner heartbeats do
+not duplicate it, the next refill-enabled maintenance tick fulfills it after capacity is released,
+and a campaign-epoch refresh immediately launches a distinct replacement portfolio when that refresh
+intervenes first. Capacity reservation can delay a background launch, but cannot discard it or end the
+mathematical campaign.
+Synchronous manager, orchestrator, verifier, and planner-synthesis text turns run in a short-lived
+isolated process. Their configured timeout is a parent-enforced wall-clock deadline: an overrun or
+signal kills and reaps the worker process group, then the deterministic control-plane fallback
+continues instead of leaving the main loop blocked inside a provider SDK. Worker and parent error
+paths apply bounded credential redaction unconditionally before telemetry persistence.
+Research-mode orchestrator advice has a tighter foreground contract: its user prompt is a
+target-scoped 12,000-character digest that preserves the assigned declaration and error-bearing
+diagnostics, with per-section hashes and omission counts for bounded graph, route, finding, plan,
+and phase histories. The isolated consult may wait at most twenty seconds (the normal timeout
+setting may lower this ceiling), and its first timeout opens a project-local two-minute circuit.
+While that circuit is open the deterministic orchestrator route is used immediately; a later
+successful half-open call closes it. The LLM remains an optional route refinement and cannot
+starve proving progress.
+Each worker receives a fresh process-ownership token. The dispatch ledger stores only its hash
+with the worker's process-group/session identity, and timeout or cancellation signals are sent only
+after that exact identity is revalidated; stale PID-only ledger entries fail closed.
+The async launcher also persists a random launch nonce and a capacity-counted `deployed` reservation
+before it writes the worker spec or calls `Popen`. It publishes `running` only after `Popen` returns
+an exact PID/group/session/token identity. A per-job thread/POSIX sidecar lock spans reservation or
+recovery rotation, spec publication, `Popen`, and the running-state compare-and-swap. A delayed
+launcher rechecks the ledger nonce under that lock before it may write or spawn. Both parent and
+child publish a nonce-bound identity receipt for the launch/ledger-commit crash window. Retry
+rotation writes the new shared spec fence before committing its ledger nonce, so a crash between
+those writes rejects stale work. Same-process recovery adopts a live exact identity, while a new
+runner PID exact-terminates the old parent-guarded worker and retries with a new nonce. An incomplete
+handshake is likewise retried after a short grace period. The atomically
+replaced job-global spec is the authoritative current-nonce fence and every worker reads it again
+under the same sidecar lock immediately before backend entry, then synchronously verifies that its
+expected parent still exists. A new runner waits for the old exact process boundary to disappear
+after bounded TERM/KILL escalation before rotating the nonce or starting replacement provider work;
+permission or transient identity lookup failures keep the launch reserved and fail closed. Modern identity and result filenames
+contain a safe digest of their launch nonce, and completed payloads must also carry that nonce. A
+delayed old child therefore cannot overwrite or complete a newer launch. Shared identity/result
+paths remain only for legacy non-nonce ledger entries. Portfolio ticks poll both launching and
+running entries before deciding
+whether a background lane needs refill.
+`--research-workers N` implies research. `--no-parallel` launches no process workers and keeps
+planner research sequential through one synchronous actor slot. `LEANFLOW_RESEARCH_MODE=1` remains
+the environment-compatible form. The CLI flags are authoritative: inherited feature-disable values
+such as `LEANFLOW_ORCHESTRATOR_ENABLED=0` cannot silently turn an explicit research request into a
+partial profile. Environment-only activation applies the complete defaults while preserving
+deliberate per-feature overrides for advanced diagnostics. In either form, an unavailable or
+disabled orchestrator cannot make `stalled`, `blocked`, `budget-breakpoint`, or `parked` terminal.
+
+Canonical `lake env lean FILE` gates normally use a 120-second subprocess timeout. Research mode
+raises that gate to a deterministic 300-second cold-start floor, matching the incremental checker;
+otherwise a kernel-valid edit in a large fixture can be written and then labeled `check_failed`
+solely because the broad file check has a shorter budget. `LEANFLOW_LEAN_COMMAND_TIMEOUT_S` is a
+bounded expert override, but it cannot lower the research floor.
+
+Research keeps the foreground `lean-lsp` diagnostics, goals, remote Loogle, and native search
+fallbacks, but disables that server's separate local Loogle index by default. This avoids retaining
+another multi-gigabyte process throughout a full campaign. Set
+`LEANFLOW_RESEARCH_LOCAL_LOOGLE=1` to restore local Loogle for an explicitly
+memory-provisioned research run. Non-research behavior is unchanged.
+
+Research mode enables plan/graph state, premise retrieval, breakpoints, both orchestrator layers,
+fidelity auditing, planner lanes, background dispatch, negation probes, reports, learnings, and
+coaching. It launches a grounding job at scope entry. After two rejected proof attempts, the
+default two-worker portfolio is deep-search plus empirical work. A semantically saturated empirical
+lane rotates first to negation; an inconclusive or spent negation lane can then rotate to the
+dedicated decomposition archetype without increasing capacity. Completed findings are consumed once
+and replacement objectives are assignment-scoped and deduplicated while the goal remains unresolved.
+
+Background decomposition is process-isolated and proposal-only. Its normalized
+`decomposition_report` contains exact source references, source-backed subgoal statements, and
+source-backed `depends_on`/`split_of` dependency proposals. Unbacked or malformed proposals are
+downgraded deterministically. The child cannot write Lean files, `plan.md`, or `blueprint.json`, and
+always returns an empty state delta; only the parent may review and materialize a proposal through
+the ordinary fidelity and Lean verification gates.
+
+Findings that the deterministic semantic audit marks duplicate, subsumed, or otherwise ineligible
+are delivered as `EVIDENCE_ONLY`, not as suggested proof work. Their explicit counterexamples and
+route exclusions remain visible, while candidate code, helper outlines, objectives, target deltas,
+and proof shapes are suppressed before prompt truncation. They cannot promote a queue target, but
+they retain normal one-shot delivery receipts so research backlogs continue to drain.
+
+Mathematical novelty is intentionally weaker than foreground actionability. After two rejected proof
+shapes, a new congruence or singleton finding that explicitly covers only a strict subcase and leaves
+the terminal target unresolved is also `EVIDENCE_ONLY` unless it carries an exact target-closing
+checked replacement. The result stays in durable semantic knowledge, but it cannot instruct an edit,
+raise queue priority, or seed recursive evidence-to-helper/audit work. This prevents an endless
+finite-sieve campaign in which each fresh modulus is technically novel but never approaches an
+exhaustive proof.
+
+Epoch rollover is crash-consistent across both foreground and background work. Its durable token
+keeps the distinct non-direct route obligation open until a matching managed turn actually returns;
+failed scope consultations and provider pauses retry it instead of accepting a stale route. A paired
+worker-refresh record is replayed by portfolio maintenance before refill, harvesting successful
+results and retiring only jobs from an older epoch.
+
+Foreground route admission is semantic across the complete no-progress campaign, not merely
+label- or epoch-based. LeanFlow persists a provenance-free identity for the exact theorem, strategy
+family, target hypothesis, and proof shape. Reworded encouragement, generation counters, worker ids,
+timestamps, and route hashes cannot repeat an already-spent intent. A concrete new hypothesis or
+proof shape remains admissible; otherwise admission rotates to another viable route family. When all
+families are spent, the internal `refresh-portfolio` action checkpoints the negative evidence and
+rolls the epoch/worker portfolio without calling the prover, parking the theorem, or recording a
+mathematical outcome. It is reserved through the crash-durable in-flight marker, not the fresh
+executable-route token, and retires immediately after the rollover request is checkpointed; a crash
+before application replays that exact action once without another route charge. Kernel-gated graph
+progress is the only event that clears this semantic ledger.
+
+Consumed job results remain losslessly owned by the dispatch ledger. LeanFlow materializes only the
+current theorem's due evidence into a 32-finding foreground window. Safe same-file split ancestors
+receive at most one three-finding foreground batch, while exact-target findings take priority for the
+remaining slots. A target change archives inactive prompt copies only after exact ledger/hash
+validation; malformed or mismatched evidence is retained in quarantine. Delivery receipts are scoped
+to the exact `(job, foreground target)` pair, so a split child's acknowledgement cannot hide evidence
+when its parent is reopened. Larger backlogs page forward as receipts free slots, but inherited history
+cannot fill the window and block research refill for a new child scope.
+
+An exact evidence-to-helper follow-up reserves its source finding from foreground delivery while
+active. After termination, only an actionable, schema-valid exact helper or replacement keeps the
+source reserved while awaiting harvest; every other result releases it. A materialized actionable
+candidate is delivered first and couples its receipt with the source receipt after the next assistant
+response, avoiding duplicate synthesis without weakening crash recovery.
+
+Planner empirical work is a bounded pilot, not an exhaustive foreground search: its prompt permits
+at most 12 deliberately selected small cases, and the runtime permits at most two terminal calls
+with a 20-second timeout each and no detached background command. While a synchronous planner wave
+runs, the parent process continues polling the research portfolio in harvest-only mode. Finished
+workers are reaped and their findings consumed, but their slots remain reserved until the planner
+wave finishes. Each resulting vacancy is checkpointed as a deduplicated replacement intent and is
+fulfilled once on planner release or immediately after an intervening epoch refresh. Planner lanes
+are chunked to the shared actor capacity, and capacity deferral is journaled instead of constructing
+extra waiting agents.
+
+Background empirical dispatch workers use a separate `empirical_compute` tool for exact integer and
+`Fraction` experiments. It is exposed only when the isolated worker's JobSpec archetype is
+`empirical`; general terminal Python remains denied for every scratch worker. Each computation runs
+foreground-only in a fresh subprocess and ephemeral directory with a restricted arithmetic AST,
+minimal environment, 1–8 second hard timeout, and CPU, memory, source, and output limits. Project
+inspection remains available through project-confined read/check tools, while writes, renames,
+unlinks, process spawning, dynamic imports, background execution, and PTYs have no compute surface.
+Scratch dispatch workers receive no terminal tool. Their Lean surface preserves deterministic
+inspection and inline checking but excludes patch authority and nested LLM advisor calls.
+
+An LLM route remains advisory even before Lean proof checking begins. A narrow deterministic
+arithmetic preflight expands recorded affine aliases and rejects plainly false affine identities or
+divisibility claims when a concrete modular countercheck is available. The rejected claim and
+counterevidence are recorded as failed-route evidence, and the deterministic orchestrator floor
+immediately supplies the route instead. Nonlinear, ambiguous, or otherwise unsupported mathematics
+fails open to ordinary probing and eventual Lean verification; this check is not a general theorem
+prover and cannot accept a proof.
+
+Graph names are not dependency evidence. The routing prompt separates the current target's explicit
+dependency edges from the campaign-global frontier, labels same-file proved declarations by
+deterministic conclusion-shape compatibility, and rejects structured graph-identity relabeling:
+`target_node` must be the active assignment, and a newly stated declaration cannot reuse an
+incompatible existing graph name. Rationale and probes may cite proved helpers with different
+conclusions; only Lean elaboration and the kernel gate decide whether their use closes a branch.
+The campaign-global frontier remains scheduling inventory, not a dependency claim.
+
+Hard ceilings are model-context boundaries, not mathematical limits. At 120 managed cycles, four
+route decisions without graph progress, or context pressure, LeanFlow checkpoints the campaign and
+starts a fresh epoch under the same campaign ID. Verified helpers, failed proof shapes, findings,
+the graph, and the job ledger survive the rollover. The fresh epoch must start a distinct
+non-direct strategy before direct proving resumes. Just-completed worker results are harvested,
+still-open old-epoch workers are retired, and the next portfolio tick refills distinct routes.
+Semantic-cooldown evidence survives the rollover. Only when ordinary uncooled selection cannot
+fill configured capacity may refill relax a cooldown produced in an older epoch, and the
+history-wide selector must still produce a distinct route objective and signature. Same-epoch
+cooldowns remain authoritative.
+
+Only the deterministic Lean gate can accept a proof. A scratch negation is evidence only; it must
+be rerun against the current declaration with a matching signature/source revision, no `sorry`,
+and the standard-axiom allowlist before it is promoted. Only promoted negation of the main goal
+returns `disproved`; a false campaign-created sublemma retracts only the exactly owned helper,
+restores the parent declaration from durable pre-edit provenance, and triggers replanning. The
+cleanup fails closed and quarantines stale or user-edited source instead of deleting an ambiguous
+declaration; valid negation helpers/evidence survive unless their own creation transaction proves
+they belonged to the rejected decomposition.
+Promotion writes are crash-consistent: full evidence is durable before graph falsity, and startup
+replays or quarantines any pending transaction. A restarted `disproved` campaign reruns the exact
+evidence before constructing a provider; current evidence exits `3`, while stale source, signature,
+or axiom evidence is quarantined and the theorem resumes.
+
+Headless outcome codes are truthful:
+
+- `0` — requested scope verified
+- `3` — main statement authoritatively disproved
+- `2` — unresolved but checkpointed/resumable pause, including infrastructure pause or early exit
+- `1` — configuration/runtime failure before a valid campaign starts
+- `130` — signal interruption
+
+An unresolved requested scope can never exit `0`.
+Provider/API infrastructure pauses force a deterministic, provider-free filesystem checkpoint
+after owned workers quiesce and before file locks are released, so an edit completed immediately
+before provider failure is present in the exit-`2` resume handoff. A transient failure is retried
+three times with interruptible 5/15/45-second backoff (four total provider attempts). Each wait is
+recorded as `provider-retry-scheduled`; exhaustion is recorded as `provider-retry-exhausted` before
+the runner enters the infrastructure-pause path.
+Signal exit `130` uses the same post-quiescence ordering and refreshes the current durable queue
+assignment plus source-derived `sorry` counts before writing status and checkpoint metadata; it does
+not start a new Lean or provider process during cleanup.
 
 ### Document Formalization
 
@@ -459,16 +702,33 @@ The project prove manager pipeline is:
 
 This keeps the manager responsible for file order only. The existing theorem queue remains responsible for theorem-level repair, diagnostics, failed-attempt history, incremental verification, final file sweeps, and blocker handling.
 
-Parallel agents are disabled by default. The manager assigns one file at a time unless the user explicitly starts a swarm workflow with an agent-count flag such as `--agents 3`.
+Parallel proof-editing agents are disabled by default. The manager assigns one file at a time unless
+the user explicitly starts a swarm workflow with an agent-count flag such as `--agents 3`.
+Research workers are a separate scratch/deliverable portfolio enabled only by `--research`; the
+parent remains the single writer for shared plan and graph state.
 
 ### Logging And Inspection
 
 Project prove-manager state is visible in the same surfaces as other managed workflows:
 
 - `/workflow status` reads `.leanflow/workflow-state/live_status.json`
-- `/workflow activity` reads structured JSONL events under `.leanflow/workflow-state/activity/runs/`
+- `/workflow activity` reads the current structured JSONL events under
+  `.leanflow/workflow-state/activity/runs/` plus bounded historical tails from
+  `.leanflow/workflow-state/activity/historical-runs/`, indexed by
+  `.leanflow/workflow-state/activity/historical-summary.json`
 - `/workflow log 120` tails the saved raw runner transcript from `.leanflow/workflow-state/latest-run.log` or the timestamped file under `.leanflow/workflow-state/runs/`
 - `/proof-state` includes the live proof-state message that is also sent back into autonomous continuation prompts
+
+When living plan state is enabled, prover and research-agent file reads of
+`.leanflow/workflow-state/plan.md` return a bounded generated view plus the existing canonical
+`## Notes` append anchor; its historical body stays hidden and cannot be paginated. The
+deterministic queue assignment and current Lean source/kernel diagnostics—not copied Notes
+inventories or stored declaration bodies—remain the
+authority. Raw model-facing reads of `summary.json` and `blueprint.json` are also rejected: these
+machine snapshots can contain large historical ledgers and stale declaration bodies, while their
+bounded graph and finding digests are already injected into managed prompts. Operators can inspect
+the raw artifacts only by explicitly enabling
+`LEANFLOW_DIAGNOSTIC_FILE_ACCESS=1`.
 
 For fileless `/prove`, `live_status.json` includes:
 
@@ -497,6 +757,16 @@ Those events sit alongside the existing theorem-level and runner-level events:
 - `runner-start` / `runner-exit`
 
 The structured activity feed is the right source for programmatic inspection and training-data curation because it preserves event types and details as JSON. The raw workflow log is the right source when a human needs the chronological transcript, provider previews, tool output head/tail, token usage, and cost estimates. Preview sizes are bounded and configurable through `logging.preview_lines`, `logging.preview_chars`, `logging.tool_output_head_lines`, `logging.tool_output_tail_lines`, and `logging.activity_preview_chars`.
+
+Long campaigns do not keep every completed run on the status hot path. On the next native startup,
+LeanFlow streams each closed, non-current run and its eligible mirrored agent stream into
+`activity/archive/` as checksum-verified gzip evidence. The original JSONL bytes remain recoverable;
+the small `historical-summary.json` evidence index points to per-run JSONL shards under
+`historical-runs/` that retain exact agent ancestry, run scope, lifecycle state, API/tool counters,
+and bounded recent previews. Status streams one agent summary at a time instead of materializing the
+historical payload. A live parent/worker identity prevents archival. The transaction is retryable
+across archive, shard, index, and unlink crash boundaries, and ordinary status commands never
+decompress cold evidence.
 
 The verification loop is intentionally Lean-LSP-first:
 
@@ -534,6 +804,18 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
   - run the fast LeanProbe/LeanInteract-backed verifier for ordered same-file theorem queues
   - `prepare_file` warms imports/header and optionally advances cached environments to a target declaration
   - `check_target` verifies the assigned declaration or replacement chunk with `allow_sorry=False`
+  - `include_axiom_profile=true` embeds marker-bound transitive axiom evidence in the same exact
+    target check; managed assigned-target replacements enable it automatically
+  - foreground `check_helper` uses LeanProbe for fast elaboration feedback; adding
+    `include_axiom_profile=true` switches to the one-shot exact-project Lake harness and requires a
+    complete allowed-axiom profile before model-authored insertion
+  - dispatch research workers always use that exact helper harness instead of retaining LeanProbe;
+    it keeps the exact pre-anchor source, rejects placeholders and disallowed axioms, and always
+    requires the parent recheck
+  - staging a canonical worker-checked helper creates a durable exact-assignment action record;
+    the parent rechecks it before orchestration, fences one immediate insertion opportunity, and
+    retires it only after the ordinary current-source helper gate banks it. Merely acknowledging
+    the research prompt is not action, and operational recheck failures remain resumable
   - `feedback` returns diagnostics and optional tactic/proof-state annotations for repair prompts
   - default usage for queue progress:
     - `lean_incremental_check(file_path="Demo/Main.lean", theorem_id="my_theorem", action="check_target")`
@@ -548,6 +830,9 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
 - `lean_search`
   - search in `auto`, `local`, `semantic`, `type-pattern`, or `natural-language` mode
   - prefers MCP/LSP-backed providers first and falls back to local `rg`/Mathlib search with explicit provider provenance and degraded reasons
+  - managed file-scoped proving marks confirmed later same-file declarations as source-order
+    inaccessible using the current disk declaration index; imported, prior, and ambiguous results
+    remain in the usable result list
 - `lean_proof_context`
   - theorem-context retrieval from the managed automation backend: theorem statement, original proof text, hypotheses, in-scope names, namespace, and similar proofs
   - this is not a replacement for `lean_inspect` goals
@@ -565,6 +850,11 @@ The agent now has a repo-owned Lean tool surface instead of relying on prompt te
   - list remaining `sorry` findings across a project or a single file with declaration names and line numbers
 - `lean_axioms`
   - run a best-effort `#print axioms` check for one declaration and report `axioms`, `custom_axioms`, `classical`, and `choice`
+- `lean_reasoning_help` / `lean_decompose_helpers`
+  - request advisory mathematical strategy or a structured helper split without granting either
+    advisor proof or stopping authority
+  - the decomposition `timeout_s` is one whole-request deadline shared by the advisor and all
+    subsequent Lean skeleton checks; an inner research cold-start floor cannot extend it
 ## Theorem-By-Theorem Proving Loop
 
 For file-scoped autonomous workflows (`prove` / `formalize` with an active Lean file), LeanFlow drives the agent one declaration at a time instead of letting it roam the whole file. The runner owns the queue; the agent only owns the current assignment.
@@ -584,6 +874,16 @@ What the runner does each cycle:
 
 3. Select one current queue item.
    - If the queue is non-empty, store the assignment in `current_queue_assignment` as `(target_symbol, active_file, slice)`.
+   - Graph-frontier selection keeps a frontier-ready current assignment first, then prefers ready
+     members of its transitive `depends_on` family over unrelated ready nodes. Once the current
+     helper is proved or disappears from the unresolved source queue, exactly one `split_of` level
+     opens for ready siblings or the parent; older ancestor branches remain unrelated.
+     Research-priority and easy-to-hard curriculum ordering only break ties within the same graph
+     rank.
+   - Frontier identity is the active file plus declaration name. False/parked dependencies exclude
+     their transitive dependents. If unresolved source declarations remain but every graph item is
+     excluded, the manager clears the stale assignment and routes to replanning; it does not start a
+     final sweep or retry the excluded theorem.
    - While this assignment is active, the runner switches the active skill to `lean-theorem-queue-worker`.
    - The assignment is the worker boundary. The model owns the assigned proof task, may add small helper declarations that directly support it, and must not modify pre-existing non-assigned declarations or future queue items.
 
@@ -608,8 +908,10 @@ What the runner does each cycle:
    - `patch` and `write_file` are preferred in managed queue workflows; the manager warms LeanProbe with `prepare_file` at assignment time, and after a successful edit it first runs `lean_incremental_check(check_target)` for the assigned declaration.
    - If LeanProbe is unavailable, crashes, times out, or cannot rebuild a valid cache, the manager falls back to the canonical file verification gate.
    - Direct terminal verification commands are not the normal managed path because the manager cannot classify them as precisely, but they remain available as an emergency/manual fallback if the Lean tool surface is broken.
-   - `apply_verified_patch` remains available when the atomic checkpoint plus verification payload is useful.
+   - `apply_verified_patch` remains available when the atomic checkpoint plus verification payload is useful. Its tool-level file/module/project check is reported as `patch_elaborated`, not as target proof; the queue manager's exact declaration and axiom gate remains authoritative. In normal incremental mode, the parent appends one marker-isolated `#print axioms` query to that exact LeanProbe declaration request and applies the allowlist only after the complete profile parses. Low-memory mode or incomplete inline evidence retains the independent exact-harness fallback.
+   - Gate-backed graph reconciliation refreshes the stored declaration body and source SHA-256 from the current file; orchestration never treats an older `by sorry` snapshot as the text of a proved helper.
    - An explicit `lean_incremental_check(check_target)` or `lean_verify(mode=file_exact)` can also close the assigned theorem turn because the manager falls back to the saved assignment even if no pending-feedback flag is set.
+   - `lean_incremental_check(feedback)` is diagnostic-only: it enriches the current repair context but cannot close a theorem boundary, record a failed attempt, consume a retry, or trigger attempt-based coaching/routing by itself.
    - If the model claims "solved" in a final report, the manager still runs deterministic review before accepting the claim.
 
 6. Classify the post-edit or final-report state.
@@ -628,7 +930,7 @@ What the runner does each cycle:
 7. Branch on the classification.
    - If the assigned declaration has hard blockers:
      - keep the same theorem turn alive
-     - record a theorem-local failed attempt for that exact `(theorem, file)`; this feeds `PREVIOUS ATTEMPTS` context and reasoning-effort escalation if the same theorem continues or returns later
+     - record a theorem-local failed attempt for that exact `(theorem, file)`; this feeds `PREVIOUS ATTEMPTS` context and reasoning-effort escalation if the same theorem continues or returns later. Within one provider turn, the same declaration hash and normalized gate verdict count once even if both a patch/diff result and a full declaration check expose it; a changed declaration, verdict, or later turn remains a new attempt. Provider turns carry a campaign-wide monotonic nonce plus campaign epoch and local cycle, so an epoch rollover or process resume cannot collapse two genuine attempts that happen to share a cycle number.
      - append manager feedback to the next model step
      - do not advance the queue
    - If the assigned declaration has warning-only cleanup:
@@ -650,7 +952,8 @@ What the runner does each cycle:
    - If the model claims success but manager review finds hard blockers:
      - reject the claim
      - continue the same theorem
-     - after the hard retry limit is exhausted, preserve the failed proof state, restore the baseline `sorry` slice when possible, mark the theorem unresolved, and let the queue continue from a safe file state
+     - when the theorem-local feedback window is complete, preserve the failed proof state, restore the baseline `sorry` slice when possible, record a non-terminal `deferred` route outcome, and immediately continue the campaign from a safe file state on a changed route
+     - `deferred` is a scheduler cooldown, not a mathematical verdict: another queue item may run first, but the theorem remains unresolved and rank-2 queue work is selected once no better-ranked sibling remains
 
 8. Handle API step-budget exhaustion.
    - If the API step budget expires while the assigned theorem is still hard-blocked by errors, open goals, or assigned-declaration `sorry`, record a theorem-local failed attempt.
@@ -731,6 +1034,8 @@ Queue handoff invariants:
 - Hard blockers keep the same theorem turn alive and become theorem-local failed-attempt context.
 - Warning-only cleanup never becomes a failed proof attempt and cannot stall the queue indefinitely.
 - Failed-attempt memory has two effects: it is scoped to the same `(theorem, file)` so the model can see prior proof shapes when that theorem continues or returns later, and hard exhaustion can restore the declaration to its baseline `sorry` slice so the queue can continue from a safe file state.
+- A deferred route remains queue-eligible. Its handoff says explicitly that the theorem is unresolved; campaign epochs and verified graph progress clear the cooldown, while a queue containing only deferred work selects it directly.
+- Kernel-verified helpers always remain proved graph facts, but route-streak progress is mechanism-aware. Every helper introduced by a prover edit begins as non-structural evidence, regardless of the active route or a progress-shaped name; only an exact identifier reference in the current target proof promotes it to proof support. Managed decomposer placements remain structural. The campaign summary's `campaign.verified_mechanisms` ledger scopes a signature by explicit blocked parent and derives it from exact local proof dependencies (or normalized proof-body provenance for direct certificates). Only the first eligible helper using one `(parent, mechanism)` pair resets the no-progress route streak; repeats emit `plan-graph-mechanism-repeat` with `campaign_progress=false`. Closing the parent or completing an explicit exhaustive managed `split` still resets unconditionally. Resume migrations remove obsolete prover-helper and repeated-mechanism credit, restore the route-streak floor from current-epoch history, and immediately rehydrate the same runner so a due rollover cannot disappear across an upgrade.
 - A final report from the model is a claim, not proof. The manager accepts it only after deterministic file verification and assigned-declaration checks.
 - Queue transitions rebuild the prompt from compact manager state instead of carrying previous-theorem reasoning into the next theorem.
 - The final file sweep is the only mode where the worker may clean whole-file residual warnings without a single assigned declaration.
@@ -1208,6 +1513,11 @@ proof advice is not prematurely clipped; override with
 `LEANFLOW_LEAN_REASONING_HELP_MAX_TOKENS` when a provider needs a lower cap.
 Main model calls wait up to `1200` seconds by default before LeanFlow treats the
 provider request as timed out; override with `LEANFLOW_API_TIMEOUT` if needed.
+Model and command responses pass through the same persistence guard: accurate
+open-problem or blocker evidence is retained, terminal surrender recommendations
+are removed, and the response is framed as evidence for a distinct route, job,
+portfolio refresh, or fresh campaign epoch. Advisor prose remains unverified and
+cannot establish proof, disproof, or campaign termination.
 
 For opt-in command advisors, set `auxiliary.lean_reasoning.provider` or pass
 `--expert-provider codex` / `--expert-provider claude-code` on a workflow.
@@ -1327,6 +1637,40 @@ leanflow mcp bootstrap lean
 Local Loogle requires Unix-like systems (Linux, macOS, or WSL), `git`, `lake`/`elan`, and roughly 2GB of disk. The first local Loogle build can take 5-10 minutes; later starts are fast. If local Loogle is unavailable, LeanFlow allows public remote Lean search fallbacks. Paid or API-key backends are never required by the installer.
 
 Raw `mcp_*` tools are still available through explicit `mcp-{server}` toolsets for debugging, but they are not part of the normal native Lean workflow surface. The model should use the native Lean wrappers instead.
+
+In research mode, a completed `lean_multi_attempt` triggers bounded reclamation of its exact
+managed `lean-lsp` server after the result has been preserved. The client lets already-admitted
+concurrent requests finish under their own timeouts, closes the server process tree, and leaves the
+remaining MCP portfolio running. A pre-probed handler or later capability probe reconnects
+lean-lsp lazily; a pending recycle is retryable and never circuits the capability off for the run.
+This prevents a tactic screening call's multi-gigabyte Lean worker peak from remaining resident
+indefinitely while keeping the full proof workflow available.
+`LEANFLOW_RESEARCH_RECYCLE_MULTI_ATTEMPT_MCP=0` is an explicit
+short-run benchmarking opt-out; it is not recommended for long campaigns. Reconnect is bounded by
+the waiting tool call's original deadline. A retirement error keeps the old server identity owned
+and blocks replacement startup, so failed teardown cannot silently overlap two heavy Lean workers.
+A timed-out replacement keeps its per-server startup fence until asynchronous cancellation cleanup
+has finished, preventing an immediate retry from starting another worker. Native runtime shutdown
+also owns unregistered startups and active retire tasks, retains exact identities that fail to
+close, and reports those names as cleanup failure instead of stopping the shared loop or claiming a
+clean exit.
+
+For memory-constrained runs, `LEANFLOW_LOW_MEMORY=1` skips every configured MCP
+subprocess, the in-process LeanExplore index, and LeanProbe's warm incremental
+environment cache for that process. Native Lean tools then report degraded capability
+provenance and use exact Lean checks plus project/Mathlib text-search fallbacks; final
+file/project acceptance still uses Lean/Lake and is unchanged. Use the narrower
+`LEANFLOW_DISABLE_MCP=1` switch to disable only MCP subprocesses.
+
+Background research processes default to a worker-specific light profile: the foreground
+keeps its configured MCP and LeanExplore portfolio, while each worker starts no MCP
+subprocesses and no local LeanExplore index. Native Lean checks, local proof-context
+extraction, and project/Mathlib text-search fallbacks remain available. Advanced
+deployments can opt workers back into configured MCP servers with
+`LEANFLOW_DISPATCH_MCP_SERVERS=*`; after lean-lsp is enabled, its private local Loogle
+still requires the additional `LEANFLOW_DISPATCH_LOCAL_LOOGLE=1` opt-in. Choose a worker
+LeanExplore backend separately with
+`LEANFLOW_DISPATCH_LEANEXPLORE_BACKEND=api|local|auto`.
 
 For theorem-local automation, the important behavior is:
 

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 ACTIONABLE_DIAGNOSTIC_SEVERITIES = {"error", "warning"}
@@ -39,6 +39,7 @@ __all__ = [
     "diagnostics_indicate_actionable_failure",
     "_diagnostic_line_numbers",
     "_diagnostic_reason_for_entry",
+    "_goals_still_open",
     "classify_blocker_kind",
 ]
 
@@ -261,21 +262,153 @@ def _diagnostic_reason_for_entry(entry: Mapping[str, Any], diagnostic_lines: lis
     return ""
 
 
-def classify_blocker_kind(text: str) -> str:
+def _goals_still_open(goals: str) -> bool:
+    """Return whether a goal payload contains a current open Lean goal.
+
+    Structured backend envelopes are decided only from their current
+    ``goals``/``goal``/``term_goal`` field. Historical ``goals_before`` and
+    ``goals_after`` metadata therefore cannot fabricate an active goal.
+    """
+
+    def unavailable_status(value: str) -> bool:
+        normalized = " ".join(str(value or "").lower().split())
+        return normalized == "unavailable" or bool(
+            re.match(r"^(?:lean\s+)?goals?\s+unavailable\b", normalized)
+        )
+
+    def structured_goals_still_open(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            lowered_value = value.lower()
+            if not lowered_value:
+                return False
+            if "⊢" in value:
+                return True
+            if unavailable_status(value):
+                return False
+            cleared_tokens = (
+                "no goals",
+                "goals accomplished",
+                "proof complete",
+                "no remaining goals",
+            )
+            if any(token in lowered_value for token in cleared_tokens):
+                return False
+            return bool(re.search(r"\bgoal\b", lowered_value))
+        if isinstance(value, list):
+            return any(structured_goals_still_open(item) for item in value)
+        if isinstance(value, Mapping):
+            if "goals" in value:
+                return structured_goals_still_open(value.get("goals"))
+            if "goal" in value:
+                return structured_goals_still_open(value.get("goal"))
+            if "term_goal" in value:
+                return structured_goals_still_open(value.get("term_goal"))
+            return False
+        return False
+
+    lowered = str(goals or "").lower()
+    if not lowered:
+        return False
+    try:
+        parsed = json.loads(goals)
+    except Exception:
+        parsed = None
+    if parsed is not None:
+        return structured_goals_still_open(parsed)
+    if "⊢" in goals:
+        return True
+    if unavailable_status(goals):
+        return False
+    cleared_tokens = (
+        "no goals",
+        "goals accomplished",
+        "proof complete",
+        "no remaining goals",
+    )
+    if any(token in lowered for token in cleared_tokens):
+        return False
+    return "goal" in lowered
+
+
+def _leading_blocker_kind(text: str) -> str:
+    """Return a high-priority blocker kind from diagnostic prose."""
     lowered = str(text or "").lower()
-    if not lowered.strip():
-        return "none"
     patterns = {
         "axiom-risk": ("axiom", "#print axioms", "classical.choice"),
         "unknown_ident": ("unknown constant", "unknown identifier", "unknown namespace"),
         "synth_instance": ("failed to synthesize", "type class", "instance"),
         "type_mismatch": ("type mismatch", "application type mismatch"),
         "timeout": ("timeout", "maximum recursion depth", "maximum number of heartbeats"),
-        "open_goals": ("⊢", "unsolved goals", "goal"),
-        "sorry": ("sorry",),
-        "warnings": ("warning:",),
+        "open_goals": ("⊢", "unsolved goals"),
     }
     for name, tokens in patterns.items():
         if any(token in lowered for token in tokens):
             return name
-    return "diagnostics"
+    return ""
+
+
+def classify_blocker_kind(
+    text: str,
+    *,
+    diagnostics: str = "",
+    goals: str = "",
+    queue_reasons: Sequence[str] = (),
+) -> str:
+    """Classify blocker evidence without treating goal-envelope keys as goals.
+
+    ``text`` carries opaque build output and deterministic summaries.
+    ``diagnostics`` is parsed by severity before lower-priority queue evidence,
+    while ``goals`` is parsed structurally so null, empty, historical, or
+    unavailable goal payloads cannot become ``open_goals`` merely because they
+    contain the word ``goal``. Queue reasons let callers include source-backed
+    ``sorry`` evidence without flattening structured backend envelopes.
+    """
+    narrative = str(text or "")
+    diagnostic_text = str(diagnostics or "")
+    parsed_diagnostics = diagnostic_items(diagnostic_text or narrative)
+    if parsed_diagnostics and not diagnostic_text:
+        diagnostic_text = narrative
+        narrative = ""
+    errors = [
+        item
+        for item in parsed_diagnostics
+        if str(item.get("severity", "") or "").strip().lower() == "error"
+    ]
+    if errors:
+        error_kind = _leading_blocker_kind(
+            "\n".join(str(item.get("message", "") or "") for item in errors)
+        )
+        return error_kind or "diagnostics"
+
+    opaque_diagnostics = diagnostic_text if not parsed_diagnostics else ""
+    narrative_kind = _leading_blocker_kind("\n".join((narrative, opaque_diagnostics)))
+    if narrative_kind and narrative_kind != "open_goals":
+        return narrative_kind
+    if _goals_still_open(goals):
+        return "open_goals"
+
+    queue_text = "\n".join(str(reason or "") for reason in queue_reasons if str(reason or ""))
+    queue_kind = _leading_blocker_kind(queue_text)
+    if queue_kind:
+        return queue_kind
+
+    trailing_text = "\n".join((narrative, opaque_diagnostics, queue_text)).lower()
+    if "sorry" in trailing_text:
+        return "sorry"
+    if narrative_kind:
+        return narrative_kind
+    if (
+        any(
+            str(item.get("severity", "") or "").strip().lower() == "warning"
+            for item in parsed_diagnostics
+        )
+        or "warning:" in trailing_text
+    ):
+        return "warnings"
+    if parsed_diagnostics or any(
+        part.strip() for part in (narrative, opaque_diagnostics, queue_text)
+    ):
+        return "diagnostics"
+    return "none"

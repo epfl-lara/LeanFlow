@@ -7,6 +7,7 @@ Point it at a Lean file or project and it inspects diagnostics and goals, edits 
 ```bash
 leanflow                          # interactive shell
 leanflow workflow prove Main.lean # or run a workflow directly
+leanflow workflow prove Main.lean --provider codex --research
 ```
 
 ## Features
@@ -82,7 +83,19 @@ LeanFlow reaches that by working in small, Lean-verified steps rather than one b
 
 - **`prove <file>`** drives the model one declaration at a time, re-checking with Lean after every edit and advancing only when the target is clean. Failed attempts are recorded and the original `sorry` is restored, so the file always stays buildable.
 - **`prove`** (no file) scans the project for remaining `sorry`s, ranks the files, and works them one at a time. Parallel agents stay off unless you opt into swarm mode.
+- **`prove --research`** keeps the foreground prover moving while two process-isolated research
+  workers explore grounding and alternate routes. That worker count is also the shared live-actor
+  cap for process jobs and in-process planner lanes, so a planner wave cannot silently add three
+  more resident conversations. Rejected turns receive a non-authoritative persistence coach, and
+  cycle/route ceilings roll durable campaign epochs instead of stopping. Foreground `lean-lsp`
+  stays enabled, but its additional multi-gigabyte local Loogle index is off for this profile;
+  set `LEANFLOW_RESEARCH_LOCAL_LOOGLE=1` only for a memory-provisioned campaign.
 - **`formalize` / `autoformalize`** turn a LaTeX/PDF source into a buildable Lean draft with source-linked statements and intentional `sorry`s. The draft is handed off once it builds and its statement/source review is approved; you then run `/prove` to fill in the proofs.
+
+Headless proof outcomes are explicit: `0` means verified, `3` means an authoritatively promoted
+main-goal disproof, `2` means unresolved but checkpointed/resumable, `1` is a startup/runtime
+failure, and `130` is a signal interruption. LeanFlow never returns success while the requested
+scope still contains `sorry`.
 
 The deeper mechanics (LaTeX preflight, the blueprint/verifier handoff, the project prove-manager, queue and checkpoint internals) are in the [product reference](docs/product-reference.md).
 
@@ -166,7 +179,11 @@ LeanFlow keeps user-level state separate from per-project workflow state:
 - project manifest: `.leanflow/project.yaml`  ·  project workflow state: `.leanflow/workflow-state/`
 
 Workflow state holds activity, logs, checkpoints, file locks, route decisions, failed-attempt
-history, project prove-manager plans, and outcomes — this is what lets long Lean runs resume.
+history, provider-turn identities, project prove-manager plans, and outcomes — this is what lets
+long Lean runs resume. Provider/infrastructure pauses take a final deterministic source checkpoint
+before exit, including edits made immediately before the provider became unavailable. Transient
+provider failures receive three interruptible retries after 5, 15, and 45 seconds; only exhaustion
+of that full recovery window produces the resumable exit-`2` pause.
 
 ## Skills and specs
 

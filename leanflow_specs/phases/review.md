@@ -27,7 +27,8 @@ floor or the kernel gate.
 - `negate` — the statement smells false; a feasibility probe is due.
 - `re-state` — the declaration shape is the blocker (sub-lemmas only;
   main-statement changes need a human ACK).
-- `park` — no credible next path; park with a complete decision packet.
+- `park` — statement fidelity or required human approval prevents safe autonomous work;
+  pause with a complete decision packet. Difficulty and exhausted routes are not parking reasons.
 
 Do not invent labels outside this list; `deep`, `repair`, `redraft`,
 `golf`, `replan`, `falsify`, and `stop` are retired vocabulary.
