@@ -1,0 +1,19 @@
+name = "IMO2026"
+defaultTargets = ["IMO2026"]
+
+[leanOptions]
+autoImplicit = false
+relaxedAutoImplicit = false
+pp.unicode.fun = true
+pp.proofs.withType = false
+weak.linter.mathlibStandardSet = true
+linter.style.header = false
+
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4.git"
+rev = "3b5afa97c31c95c69273cc3724eb50c78399405c"
+
+[[lean_lib]]
+name = "IMO2026"
+
