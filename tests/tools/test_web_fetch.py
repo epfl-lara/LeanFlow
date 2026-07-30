@@ -114,6 +114,28 @@ def test_web_fetch_falls_back_to_direct_get_on_jina_error(monkeypatch):
     assert calls["n"] == 2  # one Jina attempt + one fallback
 
 
+def test_web_fetch_cools_down_repeated_terminal_failure(monkeypatch):
+    calls = {"n": 0}
+    url = "https://example.net/unavailable-on-both-backends"
+
+    def fake_get(*_args, **_kwargs):
+        calls["n"] += 1
+        raise TimeoutError("read timeout")
+
+    web_fetch._FETCH_FAILURE_CACHE.clear()
+    monkeypatch.setattr(web_fetch.requests, "get", fake_get)
+
+    first = json.loads(_run(web_fetch.web_fetch_tool(url)))
+    second = json.loads(_run(web_fetch.web_fetch_tool(url)))
+
+    assert first["provider_called"] is True
+    assert first["cached"] is False
+    assert second["provider_called"] is False
+    assert second["cached"] is True
+    assert second["retry_after_seconds"] >= 1
+    assert calls["n"] == 2  # Jina and direct once, not twice each.
+
+
 def test_web_fetch_uses_direct_get_for_raw_github_text(monkeypatch):
     captured = {}
     source = "import Mathlib\n\ntheorem demo : True := by\n  trivial\n"

@@ -18,12 +18,16 @@ TRACKED_TOOLS = frozenset(
         "lean_multi_attempt",
         "lean_outline",
         "lean_proof_context",
+        "lean_advisor",
     }
 )
 NUDGE_LIMIT = 3
 HARD_LIMIT = 6
 OUTLINE_NUDGE_LIMIT = 8
 OUTLINE_HARD_LIMIT = 16
+ADVISOR_NUDGE_LIMIT = 2
+ADVISOR_HARD_LIMIT = 3
+_ADVISOR_TOOL_NAMES = frozenset({"lean_reasoning_help", "lean_decompose_helpers"})
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,8 @@ class LoopDecision:
 def tool_key(function_name: str, args: Mapping[str, Any] | None = None) -> str:
     """Return the tracked tool identity, including modes with different semantics."""
     name = str(function_name or "").strip()
+    if name in _ADVISOR_TOOL_NAMES:
+        return "lean_advisor"
     if name == "lean_incremental_check":
         action = (
             str(dict(args or {}).get("action", "check_target") or "check_target")
@@ -171,6 +177,42 @@ def _made_progress(payload: Mapping[str, Any]) -> bool:
     )
 
 
+def _advisor_failed(payload: Mapping[str, Any]) -> bool:
+    """Return whether an advisor result supplied no usable answer."""
+    if payload.get("success") is True:
+        return False
+    status = str(payload.get("status", "") or "").strip().lower()
+    return payload.get("success") is False or status in {
+        "error",
+        "invalid_json",
+        "no_answer",
+        "timeout",
+        "unavailable",
+    }
+
+
+def advisor_preflight_blocked(
+    state: Mapping[str, Any],
+    *,
+    function_name: str,
+    target_symbol: str,
+    active_file: str,
+    source_revision_sha256: str,
+) -> bool:
+    """Return whether two unchanged-source advisor failures already occurred."""
+    if str(function_name or "").strip() not in _ADVISOR_TOOL_NAMES:
+        return False
+    previous = dict(state.get(STATE_KEY) or {})
+    return bool(
+        str(previous.get("target_symbol", "") or "") == str(target_symbol or "")
+        and str(previous.get("active_file", "") or "") == str(active_file or "")
+        and str(previous.get("source_revision_sha256", "") or "")
+        == str(source_revision_sha256 or "")
+        and str(previous.get("tool_key", "") or "") == "lean_advisor"
+        and int(previous.get("streak", 0) or 0) >= ADVISOR_NUDGE_LIMIT
+    )
+
+
 def observe(
     state: dict[str, Any],
     *,
@@ -191,14 +233,22 @@ def observe(
         payload = json.loads(str(result_text or ""))
     except (TypeError, ValueError, json.JSONDecodeError):
         payload = {}
-    if isinstance(payload, Mapping) and _made_progress(payload):
+    if key == "lean_advisor":
+        if not isinstance(payload, Mapping) or not _advisor_failed(payload):
+            state.pop(STATE_KEY, None)
+            return LoopDecision(tool_key=key)
+    elif isinstance(payload, Mapping) and _made_progress(payload):
         state.pop(STATE_KEY, None)
         return LoopDecision(tool_key=key)
 
     # Varying candidate text and backend rejection shapes do not constitute
     # progress when the model keeps screening the same unchanged proof site.
     # Other tools retain their diagnostic-sensitive blocker fingerprint.
-    if key == "lean_multi_attempt":
+    if key == "lean_advisor":
+        # Reasoning and decomposition advisors share one expensive provider
+        # family. Alternating them after equivalent failures is not progress.
+        signature = "unchanged-source-advisor-failure"
+    elif key == "lean_multi_attempt":
         signature = _multi_attempt_site_signature(args)
     elif key == "lean_incremental_check:check_helper":
         signature = _helper_candidate_statement_signature(args)
@@ -238,6 +288,9 @@ def observe(
     if key == "lean_outline":
         bounded_nudge = max(2, OUTLINE_NUDGE_LIMIT)
         bounded_hard = max(bounded_nudge + 1, OUTLINE_HARD_LIMIT)
+    elif key == "lean_advisor":
+        bounded_nudge = ADVISOR_NUDGE_LIMIT
+        bounded_hard = ADVISOR_HARD_LIMIT
     else:
         bounded_nudge = max(2, int(nudge_limit))
         bounded_hard = max(bounded_nudge + 1, int(hard_limit))

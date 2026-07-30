@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+_PLANNER_EMPIRICAL_LANE: ContextVar[bool] = ContextVar(
+    "leanflow_planner_empirical_lane",
+    default=False,
+)
 
 
 def env_flag_enabled(name: str) -> bool:
@@ -35,3 +42,18 @@ def empirical_dispatch_worker_enabled() -> bool:
         and scratch_only_dispatch_worker_enabled()
         and archetype == "empirical"
     )
+
+
+def empirical_compute_enabled() -> bool:
+    """Return whether the current isolated execution owns empirical compute."""
+    return empirical_dispatch_worker_enabled() or _PLANNER_EMPIRICAL_LANE.get()
+
+
+@contextmanager
+def planner_empirical_lane(*, enabled: bool = True) -> Iterator[None]:
+    """Grant empirical compute to one synchronous planner child context."""
+    token = _PLANNER_EMPIRICAL_LANE.set(bool(enabled))
+    try:
+        yield
+    finally:
+        _PLANNER_EMPIRICAL_LANE.reset(token)

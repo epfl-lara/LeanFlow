@@ -33,6 +33,18 @@ def _read_provider_env(*names: str) -> str:
     return ""
 
 
+def _read_provider_env_with_source(*names: str) -> tuple[str, str]:
+    """Return the first configured provider value and its exact variable name."""
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value, name
+        file_value = str(get_env_value(name, "") or "").strip()
+        if file_value:
+            return file_value, name
+    return "", ""
+
+
 def _validate_openai_compatible_base_url(base_url: str) -> str:
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
@@ -93,6 +105,7 @@ PROVIDER_DESCRIPTIONS: dict[str, str] = {
     "auto": "Resolve from config and environment, preferring direct keys or custom OpenAI-compatible endpoints.",
     "local": "Use the active managed local runtime such as vllm, ollama, or llama.cpp.",
     "custom": "Use an OpenAI-compatible remote endpoint such as RCP.",
+    "rcp": "Use EPFL RCP with model-family-specific credentials when available.",
     "openrouter": "Use the OpenRouter chat-completions endpoint.",
     "codex": "Use the Codex CLI/ChatGPT OAuth session through the Codex Responses endpoint.",
     "anthropic": "Use Anthropic's native Messages API directly.",
@@ -120,6 +133,11 @@ def list_runtime_provider_targets() -> list[dict[str, str]]:
             "name": "custom",
             "kind": "openai-compatible",
             "description": PROVIDER_DESCRIPTIONS["custom"],
+        },
+        {
+            "name": "rcp",
+            "kind": "openai-compatible",
+            "description": PROVIDER_DESCRIPTIONS["rcp"],
         },
         {
             "name": "openrouter",
@@ -265,6 +283,79 @@ def _resolve_openai_compatible_runtime(
     }
 
 
+def _resolve_rcp_runtime(model: str) -> dict[str, Any]:
+    """Resolve EPFL RCP credentials for the selected model family.
+
+    RCP deployments can issue disjoint virtual keys for GLM and general model
+    pools. Selecting a model must therefore select its matching key before the
+    first request instead of reusing whichever OpenAI-compatible key happens
+    to be the global default.
+    """
+    normalized_model = str(model or "").strip()
+    glm_model = "glm" in normalized_model.lower()
+    if glm_model:
+        api_key, source = _read_provider_env_with_source(
+            "GLM_API_KEY",
+            "RCP_OPENAI_API_KEY",
+            "LEANFLOW_OPENAI_API_KEY",
+            "OPENAI_API_KEY",
+        )
+        base_url = _read_provider_env(
+            "GLM_BASE_URL",
+            "RCP_OPENAI_BASE_URL",
+            "LEANFLOW_OPENAI_BASE_URL",
+            "OPENAI_BASE_URL",
+        )
+    else:
+        api_key, source = _read_provider_env_with_source(
+            "RCP_OPENAI_API_KEY",
+            "LEANFLOW_OPENAI_API_KEY",
+            "OPENAI_API_KEY",
+        )
+        base_url = _read_provider_env(
+            "RCP_OPENAI_BASE_URL",
+            "LEANFLOW_OPENAI_BASE_URL",
+            "OPENAI_BASE_URL",
+        )
+    if not api_key:
+        expected = "GLM_API_KEY or RCP_OPENAI_API_KEY" if glm_model else "RCP_OPENAI_API_KEY"
+        raise RuntimeProviderError(
+            f"No EPFL RCP credential found for model {normalized_model or '[unset]'}. "
+            f"Set {expected}."
+        )
+    if not base_url:
+        raise RuntimeProviderError(
+            "No EPFL RCP base URL found. Set RCP_OPENAI_BASE_URL or GLM_BASE_URL."
+        )
+    return {
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "base_url": _validate_openai_compatible_base_url(base_url),
+        "api_key": api_key,
+        "source": source,
+        "requested_provider": "rcp",
+        "model": normalized_model,
+    }
+
+
+def apply_runtime_model_override(
+    runtime: Mapping[str, Any],
+    *,
+    requested_provider: str,
+    model: str,
+) -> dict[str, Any]:
+    """Apply one workflow-local model override and refresh coupled credentials."""
+    normalized_model = str(model or "").strip()
+    if not normalized_model:
+        return dict(runtime)
+    normalized_provider = _normalize_provider_name(requested_provider or "")
+    if normalized_provider == "rcp":
+        return _resolve_rcp_runtime(normalized_model)
+    resolved = dict(runtime)
+    resolved["model"] = normalized_model
+    return resolved
+
+
 def _resolve_anthropic_runtime() -> dict[str, Any]:
     token = (
         os.getenv("ANTHROPIC_TOKEN")
@@ -382,6 +473,10 @@ def resolve_runtime_provider(
 ) -> dict[str, Any]:
     """Return a resolved runtime provider configuration dict by dispatching on the requested provider (local, codex, anthropic, named custom, or OpenAI-compatible). Explicit API key/base_url override env/config values; missing model defaults to config. Raises RuntimeProviderError if credentials cannot be located."""
     requested_provider = resolve_requested_provider(requested)
+    configured_model = str(_get_model_config().get("default", "") or "")
+
+    if requested_provider == "rcp":
+        return _resolve_rcp_runtime(configured_model)
 
     if requested_provider == "local":
         resolved = _resolve_local_runtime()

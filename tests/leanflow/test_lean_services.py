@@ -3170,6 +3170,23 @@ def test_project_root_prefers_native_project_env_when_cwd_omitted(monkeypatch, t
     assert error == ""
 
 
+def test_project_root_normalizes_dependency_package_cwd_to_native_project(monkeypatch, tmp_path):
+    project = tmp_path / "Demo"
+    dependency = project / ".lake" / "packages" / "mathlib"
+    dependency.mkdir(parents=True)
+    (project / "lakefile.toml").write_text('[package]\nname = "Demo"\n', encoding="utf-8")
+    (dependency / "lakefile.toml").write_text(
+        '[package]\nname = "mathlib"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(project))
+
+    root, error = lean_services._project_root(dependency)
+
+    assert root == project.resolve()
+    assert error == ""
+
+
 def test_auto_probe_surfaces_attempt_diagnostic_summary(monkeypatch, tmp_path):
     project = tmp_path / "Demo"
     project.mkdir()

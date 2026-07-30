@@ -447,6 +447,33 @@ def test_sandbox_status_includes_recent_runs(
     assert payload["recent_runs"][0]["run_id"] == "run-a"
 
 
+def test_sandbox_status_can_skip_engine_probe_and_bound_history(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    settings = _settings(tmp_path)
+    for index in range(5):
+        run_dir = settings.runs_dir / f"run-{index}"
+        run_dir.mkdir(parents=True)
+        (run_dir / "status.json").write_text(
+            json.dumps({"run_id": f"run-{index}", "status": "failed"}),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        "leanflow_cli.runtime.sandbox_runtime.settings_from_config", lambda **_kwargs: settings
+    )
+    monkeypatch.setattr(
+        "leanflow_cli.runtime.sandbox_runtime.resolve_container_engine",
+        lambda _requested: pytest.fail("bounded status probed the container engine"),
+    )
+
+    payload = sandbox_status(probe_engine=False, recent_run_limit=2)
+
+    assert payload["engine_probe"] == "skipped"
+    assert payload["engine_ready"] is None
+    assert payload["image_ready"] is None
+    assert len(payload["recent_runs"]) == 2
+
+
 def test_sandbox_containerfile_installs_workflow_cli_dependencies() -> None:
     repo = Path(__file__).resolve().parents[2]
     containerfile = (repo / "containers" / "leanflow-sandbox.Containerfile").read_text(

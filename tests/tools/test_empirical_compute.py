@@ -9,7 +9,7 @@ import time
 import pytest
 
 from core.model_tools import get_tool_definitions
-from core.runtime_modes import empirical_dispatch_worker_enabled
+from core.runtime_modes import empirical_dispatch_worker_enabled, planner_empirical_lane
 from tools.implementations.empirical_compute import (
     EMPIRICAL_COMPUTE_MAX_TIMEOUT_S,
     EMPIRICAL_COMPUTE_SCHEMA,
@@ -57,6 +57,21 @@ def test_tool_is_exposed_only_to_empirical_worker(monkeypatch):
 
     assert deep_tools == []
     assert [item["function"]["name"] for item in empirical_tools] == ["empirical_compute"]
+
+
+def test_tool_is_exposed_inside_synchronous_planner_empirical_context(monkeypatch):
+    monkeypatch.delenv("LEANFLOW_DISPATCH_WORKER", raising=False)
+    monkeypatch.delenv("LEANFLOW_DISPATCH_SCRATCH_ONLY", raising=False)
+    monkeypatch.delenv("LEANFLOW_DISPATCH_ARCHETYPE", raising=False)
+
+    assert get_tool_definitions(["empirical-compute"], quiet_mode=True) == []
+    with planner_empirical_lane():
+        tools = get_tool_definitions(["empirical-compute"], quiet_mode=True)
+        result = _payload("print(2 + 2)")
+    assert [item["function"]["name"] for item in tools] == ["empirical_compute"]
+    assert result["success"] is True
+    assert result["output"] == "4\n"
+    assert get_tool_definitions(["empirical-compute"], quiet_mode=True) == []
 
 
 def test_erdos_fraction_and_factor_computation_runs_exactly(monkeypatch):
@@ -174,7 +189,5 @@ def test_direct_call_outside_empirical_worker_is_structured_denial(monkeypatch):
         "success": False,
         "status": "empirical_compute_denied",
         "output": "",
-        "error": (
-            "empirical_compute is available only inside a scratch-only empirical dispatch worker"
-        ),
+        "error": ("empirical_compute is available only inside an isolated empirical planner actor"),
     }

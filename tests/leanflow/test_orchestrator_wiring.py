@@ -334,6 +334,83 @@ def test_capacity_deferred_plan_keeps_fresh_selection_for_exact_replay(
     assert not completed_campaign.get("inflight_route")
 
 
+def test_evidence_interrupted_plan_forces_construction_before_replanning(
+    enabled, monkeypatch, tmp_path
+):
+    """Preserved planner evidence must not trigger unchanged-source fanout again."""
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("LEANFLOW_WORKFLOW_RUN_ID", "fresh-plan-evidence-interrupted")
+    monkeypatch.setattr(runner.orchestrator_llm, "orchestrator_llm_enabled", lambda: False)
+    monkeypatch.setattr(runner.planner_phase, "planner_enabled", lambda: True)
+    events = _events(monkeypatch)
+    active = tmp_path / "Demo.lean"
+    active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")
+    state = _autonomy_state(str(active))
+    runner.campaign_epoch.record_route_decision(
+        state,
+        route="direct-prove",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    runner.campaign_epoch.roll_epoch(
+        state,
+        reason="context-pressure",
+        cycle=1,
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    monkeypatch.setattr(
+        runner.orchestrator_floor,
+        "orchestrator_route",
+        lambda _ctx: OrchestratorRoute(route="plan", reason="fresh planner route"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_planner_phase_with_parent_maintenance",
+        lambda *_args, **_kwargs: runner.planner_phase.PlannerOutcome(
+            ok=False,
+            reason="lane evidence preserved before synthesis boundary",
+            synthesis_status=runner.planner_phase.PLANNER_EVIDENCE_INTERRUPTED_STATUS,
+            lanes=({"lane": "mathlib", "status": "completed"},),
+        ),
+    )
+
+    selected = runner._orchestrator_consult("scope-entry", state, {})
+    assert selected is not None and selected.route == "plan"
+    history: list[dict[str, str]] = []
+    assert (
+        runner._apply_orchestrator_route_with_completion(selected, history, state, {}) == "continue"
+    )
+
+    assert runner.campaign_epoch.EPOCH_ROUTE_SELECTION_STATE_KEY not in state
+    execution = runner._current_orchestrator_route_execution(state)
+    assert execution is not None and execution.completed
+    assert execution.evidence_kind == "plan-route-obstacle"
+    marker = state[runner.route_execution.PLANNER_TERMINAL_OBSTACLE_STATE_KEY]
+    assert marker["outcome"] == runner.planner_phase.PLANNER_EVIDENCE_INTERRUPTED_STATUS
+    assert "preserved" in history[-1]["content"].lower()
+    assert "construct" in history[-1]["content"]
+
+    monkeypatch.setattr(
+        runner,
+        "_run_planner_phase_with_parent_maintenance",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unchanged source must attempt preserved evidence before replanning"
+        ),
+    )
+    assert (
+        runner._orchestrator_apply_route(
+            OrchestratorRoute(route="plan", reason="repeated planner request"),
+            history,
+            state,
+            {},
+            agent=None,
+        )
+        == "continue"
+    )
+    assert any(event[0] == "planner-route-suppressed" for event, _details in events)
+
+
 def test_timed_out_plan_retires_fresh_selection_for_new_route(enabled, monkeypatch, tmp_path):
     """A bounded synthesis timeout must not replay the same planner forever."""
     monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))

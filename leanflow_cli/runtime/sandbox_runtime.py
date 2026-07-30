@@ -668,25 +668,32 @@ def sandbox_status(
     engine: str | None = None,
     image: str | None = None,
     env_file: str | Path | None = None,
+    probe_engine: bool = True,
+    recent_run_limit: int = 8,
 ) -> dict[str, Any]:
-    """Probe container engine, image availability, and recent sandbox runs; return aggregated status dict. Includes engine_ready flag, image_ready flag, and last 8 status.json files sorted by mtime."""
+    """Return sandbox configuration, bounded history, and optional engine probes."""
     settings = settings_from_config(engine=engine, image=image, env_file=env_file)
     engine_error = ""
     resolved_engine = ""
-    image_ready = False
-    try:
-        resolved_engine = resolve_container_engine(settings.engine)
-        engine_error = check_container_engine_usable(resolved_engine)
-        if not engine_error:
-            image_ready = image_exists(resolved_engine, settings.image)
-    except Exception as exc:
-        engine_error = str(exc)
+    engine_ready: bool | None = None
+    image_ready: bool | None = None
+    if probe_engine:
+        try:
+            resolved_engine = resolve_container_engine(settings.engine)
+            engine_error = check_container_engine_usable(resolved_engine)
+            engine_ready = bool(resolved_engine and not engine_error)
+            image_ready = image_exists(resolved_engine, settings.image) if engine_ready else False
+        except Exception as exc:
+            engine_error = str(exc)
+            engine_ready = False
+            image_ready = False
     runs_dir = settings.runs_dir.expanduser()
     runs: list[dict[str, Any]] = []
+    history_limit = max(0, min(100, int(recent_run_limit)))
     if runs_dir.exists():
         for status_path in sorted(
             runs_dir.glob("*/status.json"), key=lambda path: path.stat().st_mtime, reverse=True
-        )[:8]:
+        )[:history_limit]:
             try:
                 payload = json.loads(status_path.read_text(encoding="utf-8"))
             except Exception:
@@ -695,8 +702,9 @@ def sandbox_status(
     return {
         "engine": resolved_engine or settings.engine,
         "engine_requested": settings.engine,
-        "engine_ready": bool(resolved_engine and not engine_error),
+        "engine_ready": engine_ready,
         "engine_error": engine_error,
+        "engine_probe": "complete" if probe_engine else "skipped",
         "image": settings.image,
         "image_ready": image_ready,
         "env_file": str(settings.env_file),
@@ -713,12 +721,18 @@ def sandbox_status(
 def format_sandbox_status(payload: Mapping[str, Any]) -> str:
     lines = ["LeanFlow sandbox status"]
     engine = str(payload.get("engine", "") or "[missing]")
-    lines.append(f"- engine: {engine} ({'ready' if payload.get('engine_ready') else 'not ready'})")
+    engine_ready = payload.get("engine_ready")
+    engine_state = (
+        "ready" if engine_ready is True else "not ready" if engine_ready is False else "not probed"
+    )
+    lines.append(f"- engine: {engine} ({engine_state})")
     if payload.get("engine_error"):
         lines.append(f"  error: {payload.get('engine_error')}")
-    lines.append(
-        f"- image: {payload.get('image')} ({'built' if payload.get('image_ready') else 'missing'})"
+    image_ready = payload.get("image_ready")
+    image_state = (
+        "built" if image_ready is True else "missing" if image_ready is False else "not probed"
     )
+    lines.append(f"- image: {payload.get('image')} ({image_state})")
     lines.append(
         f"- env file: {payload.get('env_file')} ({'present' if payload.get('env_file_exists') else 'missing'})"
     )

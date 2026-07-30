@@ -5198,6 +5198,45 @@ def test_portfolio_consumes_boundary_evidence_and_launches_synthesis_route(monke
     finding = next(item for item in summary["research_findings"] if item["job_id"] == first_job_id)
     assert finding["deliverable"]["status"] == "interrupted_with_evidence"
 
+    replacement_boundary = dispatch_service._managed_boundary_deliverable(
+        replacement.spec,
+        {
+            "kind": "managed_search_route_boundary",
+            "boundary_marker": "[leanflow-native workflow step boundary]",
+            "completed_tool_calls": 2,
+            "evidence": [
+                {
+                    "tool": "lean_check",
+                    "arguments": '{"code":"example : True := by trivial"}',
+                    "result_excerpt": "The candidate compiles but does not close the target.",
+                }
+            ],
+            "reasoning": ["The synthesis lane exhausted its bounded turn."],
+        },
+    )
+    service._transition(
+        replacement_id,
+        "done",
+        finished_at=dispatch_service._now_iso(),
+        result={
+            "status": "done",
+            "deliverable": replacement_boundary,
+            "artifact_paths": [],
+            "plan_delta": [],
+        },
+    )
+
+    rotated = research_portfolio.maintain_portfolio(
+        campaign_id="campaign-demo",
+        target_symbol="erdos_242_residual_mod_seven_eq_five",
+        active_file="ErdosProblems/242.lean",
+        attempt_count=0,
+        workers=1,
+    )
+
+    rotated_entry = service._entry(rotated["launched"][0])
+    assert not str(rotated_entry.spec.inputs["route_key"]).startswith("handoff-synthesis-after:")
+
 
 def test_empirical_evidence_to_helper_carries_live_em121_finding_into_em122_prompt(
     monkeypatch, tmp_path

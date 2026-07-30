@@ -63,6 +63,7 @@ PLANNER_EVIDENCE_INTERRUPTED_STATUS = "evidence-interrupted"
 
 #: Per-lane child budget (delegate max_iterations) — bounded research, not a prover run.
 LANE_MAX_ITERATIONS = 24
+EMPIRICAL_LANE_MAX_ITERATIONS = 8
 PLANNER_CAPACITY_WAIT_DEFAULT_S = 1.0
 
 _EQUALITY_MARKER_RE = re.compile(r"(?<![:<>!=%])=(?!=)")
@@ -79,7 +80,7 @@ _NON_ASSERTION_PROSE_RE = re.compile(
 # Full structured lane payloads live in the journal/outcome.  The summary is
 # prompt-facing, so keep each deterministic fallback line compact while
 # retaining the authoritative payload elsewhere.
-_UNSYNTHESIZED_GROUNDING_MAX_CHARS = 3000
+_UNSYNTHESIZED_GROUNDING_MAX_CHARS = 1200
 
 _SYNTH_SYSTEM_PROMPT = (
     "You are the planning synthesizer of an autonomous Lean 4 proving harness. "
@@ -444,6 +445,14 @@ def _run_lanes(
                 parent_agent=agent,
                 max_iterations=research_mode.scaled_lane_iterations(LANE_MAX_ITERATIONS),
                 isolate_budget=True,  # research lanes never drain the prover budget
+                empirical_task_indexes=frozenset(
+                    index for index, lane in enumerate(wave_lanes) if lane.key == "empirical"
+                ),
+                task_iteration_limits={
+                    index: EMPIRICAL_LANE_MAX_ITERATIONS
+                    for index, lane in enumerate(wave_lanes)
+                    if lane.key == "empirical"
+                },
             )
             payload = json.loads(raw)
             payload = payload if isinstance(payload, Mapping) else {}
@@ -519,7 +528,11 @@ def _run_lanes(
 
 
 def _persist_unsynthesized_deliverables(
-    deliverables: Mapping[str, Mapping[str, Any]], *, reason: str
+    deliverables: Mapping[str, Mapping[str, Any]],
+    *,
+    reason: str,
+    target_symbol: str = "",
+    active_file: str = "",
 ) -> int:
     """Persist lane evidence deterministically when synthesis is unavailable.
 
@@ -539,13 +552,27 @@ def _persist_unsynthesized_deliverables(
             )
         grounding.append(f"Unsynthesized planner lane {lane}: {encoded}")
 
-    summary = plan_state.merge_planner_findings(plan_state.load_summary(), grounding=grounding)
+    summary = plan_state.load_summary()
+    replaced_prefixes = tuple(f"Unsynthesized planner lane {lane}:" for lane in deliverables)
+    summary["grounding_findings"] = [
+        str(item)
+        for item in (summary.get("grounding_findings") or [])
+        if not str(item).startswith(replaced_prefixes)
+    ]
+    summary = plan_state.merge_planner_findings(
+        summary,
+        grounding=grounding,
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
     plan_state.save_summary(summary)
     plan_state.save_plan_md(plan_state.load_blueprint(), summary)
     plan_state.append_journal_event(
         {
             "event": "planner-unsynthesized-findings",
             "reason": reason,
+            "target_symbol": target_symbol,
+            "active_file": active_file,
             "lanes": list(deliverables),
             "grounding": grounding,
         }
@@ -865,7 +892,12 @@ def run_planner_phase(
         )
         if any(record.get("status") == "capacity-deferred" for record in lane_records):
             reason = "planner background capacity busy; lane wave deferred"
-            grounding_count = _persist_unsynthesized_deliverables(deliverables, reason=reason)
+            grounding_count = _persist_unsynthesized_deliverables(
+                deliverables,
+                reason=reason,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
             return PlannerOutcome(
                 ok=False,
                 reason=reason,
@@ -877,7 +909,12 @@ def run_planner_phase(
         interrupted_lanes = planner_candidate_admission.interrupted_lane_records(lane_records)
         if interrupted_lanes:
             reason = "planner evidence portfolio interrupted; synthesis deferred"
-            grounding_count = _persist_unsynthesized_deliverables(deliverables, reason=reason)
+            grounding_count = _persist_unsynthesized_deliverables(
+                deliverables,
+                reason=reason,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
             plan_state.append_journal_event(
                 {
                     "event": "planner-synthesis-deferred-incomplete-evidence",
@@ -918,7 +955,12 @@ def run_planner_phase(
         status = str(getattr(result, "status", "") or "").strip().lower()
         if status and status != "ok":
             reason = f"synthesizer unavailable ({status})"
-            grounding_count = _persist_unsynthesized_deliverables(deliverables, reason=reason)
+            grounding_count = _persist_unsynthesized_deliverables(
+                deliverables,
+                reason=reason,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
             return PlannerOutcome(
                 ok=False,
                 reason=reason,
@@ -929,7 +971,12 @@ def run_planner_phase(
         synthesis = _extract_json_object(str(getattr(result, "response", "") or ""))
         if synthesis is None:
             reason = "synthesizer reply was not parseable JSON"
-            grounding_count = _persist_unsynthesized_deliverables(deliverables, reason=reason)
+            grounding_count = _persist_unsynthesized_deliverables(
+                deliverables,
+                reason=reason,
+                target_symbol=target_symbol,
+                active_file=active_file,
+            )
             return PlannerOutcome(
                 ok=False,
                 reason=reason,

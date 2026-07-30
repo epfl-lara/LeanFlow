@@ -25,11 +25,13 @@ logger = logging.getLogger(__name__)
 import os
 import sys
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
 from core.provider_availability import normalize_provider_retry_after
 from core.provider_capacity import BackgroundCapacityUnavailable, background_actor_lease
+from core.runtime_modes import planner_empirical_lane
 from tools.utilities.delegate_handoff import build_managed_interrupt_handoff
 
 # Tools that children must never have access to
@@ -228,6 +230,7 @@ def _run_single_child(
     pre_tool_call_callback: Callable[[str, dict[str, Any]], Any] | None = None,
     post_tool_result_callback: Callable[[str, dict[str, Any], str], Any] | None = None,
     background_capacity_timeout_s: float | None = None,
+    empirical_compute: bool = False,
 ) -> dict[str, Any]:
     """Run one delegated conversation under a research actor-capacity lease.
 
@@ -237,24 +240,25 @@ def _run_single_child(
     context-local lease.
     """
     try:
-        with background_actor_lease(timeout_s=background_capacity_timeout_s):
-            return _run_single_child_unleased(
-                task_index=task_index,
-                goal=goal,
-                context=context,
-                toolsets=toolsets,
-                model=model,
-                max_iterations=max_iterations,
-                parent_agent=parent_agent,
-                task_count=task_count,
-                override_provider=override_provider,
-                override_base_url=override_base_url,
-                override_api_key=override_api_key,
-                override_api_mode=override_api_mode,
-                isolate_budget=isolate_budget,
-                pre_tool_call_callback=pre_tool_call_callback,
-                post_tool_result_callback=post_tool_result_callback,
-            )
+        with planner_empirical_lane(enabled=empirical_compute):
+            with background_actor_lease(timeout_s=background_capacity_timeout_s):
+                return _run_single_child_unleased(
+                    task_index=task_index,
+                    goal=goal,
+                    context=context,
+                    toolsets=toolsets,
+                    model=model,
+                    max_iterations=max_iterations,
+                    parent_agent=parent_agent,
+                    task_count=task_count,
+                    override_provider=override_provider,
+                    override_base_url=override_base_url,
+                    override_api_key=override_api_key,
+                    override_api_mode=override_api_mode,
+                    isolate_budget=isolate_budget,
+                    pre_tool_call_callback=pre_tool_call_callback,
+                    post_tool_result_callback=post_tool_result_callback,
+                )
     except BackgroundCapacityUnavailable as exc:
         return {
             "task_index": task_index,
@@ -552,6 +556,8 @@ def delegate_task(
     parent_agent=None,
     isolate_budget: bool = False,
     post_tool_result_callback: Callable[[str, dict[str, Any], str], Any] | None = None,
+    empirical_task_indexes: frozenset[int] | None = None,
+    task_iteration_limits: Mapping[int, int] | None = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -560,7 +566,9 @@ def delegate_task(
       - Single: provide goal (+ optional context, toolsets)
       - Batch:  provide tasks array [{goal, context, toolsets}, ...]
 
-    Returns JSON with results array, one entry per task.
+    Returns JSON with results array, one entry per task. Empirical ownership
+    and per-lane limits are private call-site controls unavailable in the
+    public tool schema.
     """
     if parent_agent is None:
         return json.dumps({"error": "delegate_task requires a parent agent context."})
@@ -612,6 +620,18 @@ def delegate_task(
     results = []
 
     n_tasks = len(task_list)
+    empirical_indexes = frozenset(empirical_task_indexes or ())
+    iteration_limits = dict(task_iteration_limits or {})
+
+    def task_max_iterations(index: int) -> int:
+        """Return one internal lane limit without exceeding the public cap."""
+        raw = iteration_limits.get(index, effective_max_iter)
+        try:
+            requested = int(raw)
+        except (TypeError, ValueError):
+            requested = effective_max_iter
+        return max(1, min(effective_max_iter, requested))
+
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
@@ -624,7 +644,7 @@ def delegate_task(
             context=t.get("context"),
             toolsets=t.get("toolsets") or toolsets,
             model=creds["model"],
-            max_iterations=effective_max_iter,
+            max_iterations=task_max_iterations(0),
             parent_agent=parent_agent,
             task_count=1,
             override_provider=creds["provider"],
@@ -637,6 +657,7 @@ def delegate_task(
                 t.get("_post_tool_result_callback") or post_tool_result_callback
             ),
             background_capacity_timeout_s=t.get("_background_capacity_timeout_s"),
+            empirical_compute=0 in empirical_indexes,
         )
         results.append(result)
     else:
@@ -659,7 +680,7 @@ def delegate_task(
                     context=t.get("context"),
                     toolsets=t.get("toolsets") or toolsets,
                     model=creds["model"],
-                    max_iterations=effective_max_iter,
+                    max_iterations=task_max_iterations(i),
                     parent_agent=parent_agent,
                     task_count=n_tasks,
                     override_provider=creds["provider"],
@@ -672,6 +693,7 @@ def delegate_task(
                         t.get("_post_tool_result_callback") or post_tool_result_callback
                     ),
                     background_capacity_timeout_s=t.get("_background_capacity_timeout_s"),
+                    empirical_compute=i in empirical_indexes,
                 )
                 futures[future] = i
 

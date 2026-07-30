@@ -134,6 +134,79 @@ class TestPlacement:
         assert content.index("abs_step") < content.index("theorem demo")
         assert calls == ["abs_step"]
 
+    def test_exact_existing_helper_is_reused_without_duplicate_insertion(
+        self, monkeypatch, tmp_path
+    ):
+        active = _file(tmp_path, f"{GOOD_STUB}\n\n{PARENT}\n")
+        before = active.read_text(encoding="utf-8")
+        monkeypatch.setattr(
+            "leanflow_cli.lean.lean_incremental.lean_incremental_check",
+            lambda **_kwargs: pytest.fail("existing helper was redundantly revalidated"),
+        )
+
+        outcome = place_helpers(
+            active_file=str(active),
+            target_symbol="demo",
+            skeletons=[GOOD_STUB],
+            allowed_axioms=("propext",),
+        )
+
+        assert outcome.ok
+        assert outcome.placed == ("abs_step",)
+        assert outcome.skipped == ("abs_step",)
+        assert "reinsertion skipped" in outcome.reason
+        assert active.read_text(encoding="utf-8") == before
+        assert active.read_text(encoding="utf-8").count("lemma abs_step") == 1
+
+    def test_existing_helper_name_with_different_statement_fails_closed(
+        self, monkeypatch, tmp_path
+    ):
+        active = _file(
+            tmp_path,
+            "lemma abs_step (a : ℝ) : |a| = |a| := by sorry\n\n" + PARENT + "\n",
+        )
+        before = active.read_text(encoding="utf-8")
+
+        outcome = place_helpers(
+            active_file=str(active),
+            target_symbol="demo",
+            skeletons=[GOOD_STUB],
+            allowed_axioms=("propext",),
+        )
+
+        assert not outcome.ok
+        assert "different statement" in outcome.reason
+        assert active.read_text(encoding="utf-8") == before
+
+    def test_mixed_existing_and_new_helpers_validates_only_new_tail(self, monkeypatch, tmp_path):
+        active = _file(tmp_path, f"{GOOD_STUB}\n\n{PARENT}\n")
+        new_stub = "private lemma second_step : True := by sorry"
+        calls: list[str] = []
+
+        def check_tail(**kwargs):
+            calls.append(kwargs["theorem_id"])
+            content = active.read_text(encoding="utf-8")
+            assert content.count("lemma abs_step") == 1
+            assert content.count("lemma second_step") == 1
+            return {"success": True, "has_errors": False, "has_sorry": True}
+
+        monkeypatch.setattr(
+            "leanflow_cli.lean.lean_incremental.lean_incremental_check",
+            check_tail,
+        )
+
+        outcome = place_helpers(
+            active_file=str(active),
+            target_symbol="demo",
+            skeletons=[GOOD_STUB, new_stub],
+            allowed_axioms=("propext",),
+        )
+
+        assert outcome.ok
+        assert outcome.placed == ("abs_step", "second_step")
+        assert outcome.skipped == ("abs_step",)
+        assert calls == ["second_step"]
+
     def test_batch_validation_checks_only_the_tail_after_every_stub_is_written(
         self, monkeypatch, tmp_path
     ):

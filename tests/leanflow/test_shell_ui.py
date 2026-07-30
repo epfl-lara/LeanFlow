@@ -602,7 +602,36 @@ def test_workflow_leaf_help_never_launches_runtime(monkeypatch, tmp_path, capsys
     output = capsys.readouterr().out
     assert "usage: leanflow workflow prove FILE" in output
     assert "--research-workers N" in output
+    assert "--model MODEL" in output
+    assert "--clean-room" in output
+    assert "--clean-room-label VALUE" in output
     assert "--no-parallel" in output
+
+
+def test_combined_status_skips_expensive_sandbox_probe_unless_verbose(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+    monkeypatch.setenv("LEANFLOW_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(main_module, "load_workflow_live_status", lambda: {})
+    monkeypatch.setattr(
+        main_module,
+        "sandbox_status",
+        lambda **kwargs: calls.append(kwargs)
+        or {
+            "engine": "auto",
+            "engine_ready": None,
+            "image": "leanflow",
+            "image_ready": None,
+            "recent_runs": [],
+        },
+    )
+
+    assert main(["status", "--json"]) == 0
+    assert calls[-1] == {"probe_engine": False, "recent_run_limit": 3}
+    capsys.readouterr()
+    assert main(["status", "--json", "--verbose"]) == 0
+    assert calls[-1] == {"probe_engine": True, "recent_run_limit": 8}
 
 
 def test_interactive_project_init_reports_already_initialized(monkeypatch, tmp_path, capsys):

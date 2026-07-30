@@ -114,6 +114,31 @@ def test_workflow_log_tee_reports_slow_owner_log_append(monkeypatch):
     assert slow["text_chars"] == len("manager verification\n")
 
 
+def test_workflow_log_tee_collapses_carriage_return_spinner_frames(monkeypatch):
+    durable = []
+    visible = []
+
+    class _Stream:
+        def write(self, data):
+            visible.append(data)
+            return len(data)
+
+    monkeypatch.setattr(runner, "append_workflow_run_log", durable.append)
+    tee = runner._WorkflowLogTee(_Stream())
+
+    tee.write("\r⠋ Searching (0.1s)")
+    tee.write("\r⠙ Searching (0.2s)")
+    tee.write("\r                              \r")
+    tee.write("Search complete")
+    tee.write("\n")
+
+    assert "".join(visible) == (
+        "\r⠋ Searching (0.1s)\r⠙ Searching (0.2s)"
+        "\r                              \rSearch complete\n"
+    )
+    assert durable == ["Search complete\n"]
+
+
 def test_verified_workflow_exits_without_prompt_when_stdin_is_not_interactive(monkeypatch):
     class _Stdin:
         def isatty(self):
@@ -21571,6 +21596,87 @@ def test_parent_turn_can_revise_generated_dependency_and_reopens_its_gate(monkey
     assert helper is not None
     assert "(j : Nat)" in helper.statement
     assert helper.status == "proving"
+
+
+@pytest.mark.parametrize("placeholder", ("sorry", "admit"))
+def test_parent_turn_cannot_regress_proved_generated_dependency_to_placeholder(
+    monkeypatch, tmp_path, placeholder
+):
+    """A broad parent edit must preserve a banked helper with an unchanged statement."""
+    active = tmp_path / "Main.lean"
+    before = (
+        "private lemma derived_helper : True := by\n"
+        "  trivial\n\n"
+        "theorem result : True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(before, encoding="utf-8")
+    active_file = str(active.resolve())
+    target_id = runner.plan_state.node_id_for("result", active_file)
+    helper_id = runner.plan_state.node_id_for("derived_helper", active_file)
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "result",
+                "active_file": active_file,
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    runner.plan_state.save_blueprint(
+        runner.plan_state.Blueprint(
+            nodes=(
+                runner.plan_state.GraphNode(
+                    id=target_id,
+                    name="result",
+                    file=active_file,
+                    status="proving",
+                    generated_by="queue-sync",
+                ),
+                runner.plan_state.GraphNode(
+                    id=helper_id,
+                    kind="lemma",
+                    name="derived_helper",
+                    file=active_file,
+                    statement="private lemma derived_helper : True := by\n  trivial",
+                    status="proved",
+                    generated_by="decomposer",
+                ),
+            ),
+            edges=(
+                runner.plan_state.GraphEdge(helper_id, target_id, "split_of"),
+                runner.plan_state.GraphEdge(target_id, helper_id, "depends_on"),
+            ),
+        )
+    )
+    agent = _Agent()
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": active_file}) is None
+    active.write_text(
+        before.replace("  trivial", f"  {placeholder}").replace(
+            "theorem result : True := by\n  sorry",
+            "theorem result : True := by\n  exact derived_helper",
+        ),
+        encoding="utf-8",
+    )
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    current = active.read_text(encoding="utf-8")
+    assert verdict.accepted is False
+    assert "PROVED HELPER REGRESSION GUARD" in verdict.feedback
+    assert "derived_helper : True := by\n  trivial" in current
+    assert "theorem result : True := by\n  exact derived_helper" in current
 
 
 def test_verified_patch_queue_rollback_rewrites_durable_success(monkeypatch, tmp_path):

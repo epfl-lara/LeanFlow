@@ -145,8 +145,8 @@ tool is reachable through the public registry.
   Lean shaping, and the statement-review handoff.
 - `workflows/` owns proof queues, verification transactions, persistent
   plan/graph state, orchestration, research portfolios, decomposition,
-  negation, project proving, campaign epochs, repeated-tool loop boundaries,
-  and activity retention.
+  monolithic partial-proof detection, negation, project proving, campaign
+  epochs, repeated-tool loop boundaries, and activity retention.
 - `native/` owns the managed workflow process, startup/resume reconciliation,
   assignment transitions, completion policy, durable bounded-search synthesis
   admission (`search_synthesis_admission.py`), checkpoints, and shutdown.

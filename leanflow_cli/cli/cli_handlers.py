@@ -58,6 +58,7 @@ def workflow_run_help_text(workflow: str) -> str:
         "",
         "options:",
         "  --provider PROVIDER       Override the configured runtime provider",
+        "  --model MODEL             Override the model for this workflow",
         "  --no-parallel             Disable parallel prover/research execution",
     ]
     if name in {"prove", "autoprove"}:
@@ -65,6 +66,8 @@ def workflow_run_help_text(workflow: str) -> str:
             [
                 "  --research                Enable the complete research profile",
                 "  --research-workers N      Set background workers (implies --research)",
+                "  --clean-room              Disable repository and prior-solution research",
+                "  --clean-room-label VALUE  Add a protected task spelling (repeatable)",
             ]
         )
     lines.append("  -h, --help                Show this help and exit")

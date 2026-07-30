@@ -10,6 +10,7 @@ Point it at a Lean file or project and it inspects diagnostics and goals, edits 
 leanflow                          # interactive shell
 leanflow workflow prove Main.lean # or run a workflow directly
 leanflow workflow prove Main.lean --provider codex --research
+leanflow workflow prove Main.lean --provider rcp --model zai-org/GLM-5.2
 ```
 
 ## Features
@@ -70,6 +71,10 @@ leanflow
 /skills   /provider   /doctor   /mcp status   /exit
 ```
 
+From another terminal, `leanflow status` returns a bounded live summary without
+waiting on the sandbox engine. Use `leanflow status --verbose` only when you
+also want the larger run history and a live sandbox-engine probe.
+
 When it can do so safely, `project init` also prepares Lean REPL acceleration (adds the
 `leanprover-community/repl` dependency and builds it) and local `lean-lsp-mcp` power modes — local
 Loogle, REPL-backed tactic screening for `lean_multi_attempt`, and optional local LeanExplore
@@ -96,6 +101,10 @@ LeanFlow reaches that by working in small, Lean-verified steps rather than one b
   instead of rediscovered. Repository and prior-solution research can be
   disabled for clean-room benchmarks; see the
   [product reference](docs/product-reference.md#relentless-proving-and-research-mode).
+- **`prove --clean-room`** disables repository-backed and task-specific
+  prior-solution research for one benchmark run while retaining general web,
+  paper, and local library search. Add one or more `--clean-room-label`
+  spellings when the file name alone does not identify the benchmark.
 - **`formalize` / `autoformalize`** turn a LaTeX/PDF source into a buildable Lean draft with source-linked statements and intentional `sorry`s. The draft is handed off once it builds and its statement/source review is approved; you then run `/prove` to fill in the proofs.
 
 Headless proof outcomes are explicit: `0` means verified, `3` means an authoritatively promoted
@@ -132,13 +141,21 @@ and exports the final diff as `changes.patch` under `~/.leanflow/sandbox/runs/<r
 
 ## Providers and local runtimes
 
-Inspect the active route with `leanflow provider`. To point at an OpenAI-compatible endpoint:
+Inspect the active route with `leanflow provider`. For an RCP deployment with
+model-family-specific credentials:
 
 ```bash
-export LEANFLOW_OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
-export LEANFLOW_OPENAI_API_KEY="..."
-leanflow provider --requested custom
+export GLM_BASE_URL="https://inference.rcp.epfl.ch/v1"
+export GLM_API_KEY="..."
+export RCP_OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
+export RCP_OPENAI_API_KEY="..."
+leanflow workflow prove Main.lean --provider rcp --model zai-org/GLM-5.2
 ```
+
+`--model` is scoped to that workflow and is propagated to its foreground,
+manager, planner, advisor, and compression calls. The general `custom` route
+remains available for other OpenAI-compatible endpoints through
+`LEANFLOW_OPENAI_BASE_URL` and `LEANFLOW_OPENAI_API_KEY`.
 
 To use an existing Codex CLI login (model and reasoning effort are read from `~/.codex/config.toml`
 unless `LEANFLOW_CODEX_MODEL` / `LEANFLOW_CODEX_REASONING_EFFORT` are set):
@@ -159,6 +176,14 @@ Override the provider for a single run without changing the saved default:
 
 ```bash
 leanflow workflow --provider codex prove Main.lean
+```
+
+Run a clean-room benchmark without weakening normal research for later work:
+
+```bash
+leanflow workflow prove Benchmarks/P2.lean \
+  --provider rcp --model zai-org/GLM-5.2 --research \
+  --clean-room --clean-room-label "Benchmark Problem 2"
 ```
 
 ## Multi-agent mode

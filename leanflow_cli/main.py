@@ -94,6 +94,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser("status", help="Show workflow and sandbox status")
     status_parser.add_argument("--json", action="store_true", dest="json_output")
+    status_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Probe the container engine and include the full sandbox history",
+    )
 
     config_parser = subparsers.add_parser("config", help="Inspect or modify config")
     config_sub = config_parser.add_subparsers(dest="config_command")
@@ -246,7 +251,11 @@ def _handle_project(args: argparse.Namespace) -> int:
 
 def _handle_status(args: argparse.Namespace) -> int:
     workflow = load_workflow_live_status()
-    sandbox = sandbox_status()
+    verbose = bool(getattr(args, "verbose", False))
+    sandbox = sandbox_status(
+        probe_engine=verbose,
+        recent_run_limit=8 if verbose else 3,
+    )
     payload = {
         "workflow": workflow or {"phase": "idle", "workflow_kind": "[none]"},
         "sandbox": sandbox,

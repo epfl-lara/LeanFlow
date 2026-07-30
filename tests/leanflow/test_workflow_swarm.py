@@ -52,6 +52,26 @@ def test_parse_workflow_command_extracts_provider_override():
     assert spec.provider_override == "codex"
 
 
+def test_parse_workflow_command_extracts_model_and_clean_room_options():
+    spec = parse_workflow_command(
+        "/prove IMO2026/P2.lean --provider rcp --model zai-org/GLM-5.2 "
+        "--clean-room --clean-room-label 'IMO 2026 Problem 2' "
+        "--clean-room-label IMO2026P2"
+    )
+
+    assert spec.workflow_args == "IMO2026/P2.lean"
+    assert spec.model_override == "zai-org/GLM-5.2"
+    assert spec.clean_room is True
+    assert spec.clean_room_labels == ("IMO 2026 Problem 2", "IMO2026P2")
+
+    with pytest.raises(ValueError, match="requires a value"):
+        parse_workflow_command("/prove Main.lean --model")
+    with pytest.raises(ValueError, match="requires a value"):
+        parse_workflow_command("/prove Main.lean --clean-room-label")
+    with pytest.raises(ValueError, match="only for prove"):
+        parse_workflow_command("/formalize notes.tex --clean-room")
+
+
 def test_parse_workflow_command_extracts_research_profile():
     spec = parse_workflow_command(
         "/prove Main.lean --provider codex --research --research-workers 3"
@@ -195,6 +215,64 @@ def test_resolve_workflow_request_uses_inline_provider_override(monkeypatch, tmp
     assert plan.runtime["provider"] == "openai-codex"
     assert plan.child_env["LEANFLOW_NATIVE_REASONING_EFFORT"] == "xhigh"
     assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_PROVIDER"] == "codex"
+
+
+def test_resolve_clean_room_model_is_scoped_to_one_launch(monkeypatch, tmp_path):
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        workflow_mod,
+        "discover_leanflow_project",
+        lambda cwd: type("Project", (), {"label": "Demo", "root": Path(tmp_path)})(),
+    )
+
+    def fake_runtime(requested=None):
+        captured["requested"] = str(requested or "")
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://rcp.example/v1",
+            "api_key": "kimi-key",
+            "model": "moonshotai/Kimi-K2.7-Code",
+        }
+
+    def fake_model_override(runtime, *, requested_provider, model):
+        captured["model"] = model
+        captured["model_provider"] = requested_provider
+        return {
+            **runtime,
+            "api_key": "glm-key",
+            "model": model,
+            "requested_provider": requested_provider,
+        }
+
+    monkeypatch.setattr(workflow_mod, "resolve_runtime_provider", fake_runtime)
+    monkeypatch.setattr(workflow_mod, "apply_runtime_model_override", fake_model_override)
+
+    plan = resolve_workflow_request(
+        "/prove IMO2026/P2.lean --provider rcp --model zai-org/GLM-5.2 "
+        "--clean-room --clean-room-label 'IMO 2026 Problem 2'",
+        active_cwd=tmp_path,
+    )
+
+    assert captured == {
+        "requested": "rcp",
+        "model": "zai-org/GLM-5.2",
+        "model_provider": "rcp",
+    }
+    assert plan.runtime["api_key"] == "glm-key"
+    assert plan.child_env["LEANFLOW_NATIVE_MODEL"] == "zai-org/GLM-5.2"
+    assert plan.child_env["CONTEXT_COMPRESSION_MODEL"] == "zai-org/GLM-5.2"
+    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_PROVIDER"] == "custom"
+    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_BASE_URL"] == "https://rcp.example/v1"
+    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_API_KEY"] == "glm-key"
+    assert plan.child_env["LEANFLOW_NATIVE_AUXILIARY_MODEL"] == "zai-org/GLM-5.2"
+    assert plan.child_env["LEANFLOW_DISABLE_REPOSITORY_RESEARCH"] == "1"
+    assert plan.child_env["LEANFLOW_DISABLE_SOLUTION_RESEARCH"] == "1"
+    labels = plan.child_env["LEANFLOW_CLEAN_ROOM_TASK_LABELS"].split("|")
+    assert "IMO2026/P2.lean" in labels
+    assert "P2.lean" in labels
+    assert "P2" in labels
+    assert "IMO 2026 Problem 2" in labels
 
 
 def test_resolve_research_profile_activates_complete_child_env(monkeypatch, tmp_path):

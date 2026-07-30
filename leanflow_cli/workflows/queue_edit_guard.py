@@ -31,6 +31,8 @@ __all__ = [
     "_queue_edit_preserves_doc_comments",
     "_queue_edit_protected_declarations",
     "_queue_edit_changed_protected_declarations",
+    "_queue_edit_named_declarations",
+    "_queue_edit_placeholder_regressions",
     "_queue_edit_declaration_delta",
     "QueueEditDeclarationDelta",
     "_restore_changed_protected_declarations",
@@ -286,6 +288,86 @@ def _queue_edit_protected_declarations(content: str, target_symbol: str) -> list
             }
         )
     return protected
+
+
+def _queue_edit_named_declarations(
+    content: str,
+    names: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Return exact declaration snapshots for the requested names."""
+    wanted = {str(name or "").strip() for name in names if str(name or "").strip()}
+    if not wanted:
+        return []
+    declarations: list[dict[str, Any]] = []
+    for entry in _declaration_line_index_from_text(content):
+        name = str(entry.get("name", "") or "").strip()
+        if not name or not any(_declaration_matches_target(entry, item) for item in wanted):
+            continue
+        key = _declaration_stable_key(entry)
+        if key is None:
+            continue
+        declarations.append(
+            {
+                "kind": key[0],
+                "name": key[1],
+                "text": str(entry.get("text", "") or "").strip(),
+                "line": int(entry.get("line", 0) or 0),
+            }
+        )
+    return declarations
+
+
+def _queue_edit_placeholder_regressions(
+    before_declarations: Sequence[Mapping[str, Any]],
+    current_text: str,
+) -> list[dict[str, Any]]:
+    """Return proved declarations regressed to placeholders without statement changes.
+
+    Generated dependency helpers remain editable so a parent theorem can repair
+    their statements. This narrower check prevents a broad later edit from
+    erasing an already-banked proof while preserving that statement-revision
+    workflow.
+    """
+
+    def placeholders(source: str) -> tuple[str, ...]:
+        sanitized = _strip_lean_comments_and_strings(str(source or ""))
+        return tuple(
+            token
+            for token in ("sorry", "admit")
+            if re.search(rf"\b{re.escape(token)}\b", sanitized)
+        )
+
+    current_by_key = {
+        key: entry
+        for entry in _declaration_line_index_from_text(current_text)
+        if (key := _declaration_stable_key(entry)) is not None
+    }
+    regressions: list[dict[str, Any]] = []
+    for before in before_declarations:
+        key = (str(before.get("kind", "") or ""), str(before.get("name", "") or ""))
+        if not key[0] or not key[1]:
+            continue
+        before_source = str(before.get("text", "") or "")
+        if placeholders(before_source):
+            continue
+        current = current_by_key.get(key)
+        if current is None:
+            continue
+        current_source = str(current.get("text", "") or "")
+        current_placeholders = placeholders(current_source)
+        if not current_placeholders:
+            continue
+        if _queue_edit_statement_signature(before) != _queue_edit_statement_signature(current):
+            continue
+        regressions.append(
+            {
+                "reason": "placeholder_regression",
+                "protected": dict(before),
+                "current": current,
+                "placeholders": current_placeholders,
+            }
+        )
+    return regressions
 
 
 def _queue_edit_changed_protected_declarations(

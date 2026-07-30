@@ -8,6 +8,7 @@ import yaml
 from leanflow_cli.runtime.runtime_provider import (
     PROVIDER_SPECS,
     RuntimeProviderError,
+    apply_runtime_model_override,
     list_runtime_provider_targets,
     resolve_requested_provider,
     resolve_runtime_provider,
@@ -37,6 +38,8 @@ PROVIDER_ENV_VARS = (
     "LEANFLOW_INFERENCE_PROVIDER",
     "CODEX_HOME",
     "GLM_BASE_URL",
+    "RCP_OPENAI_API_KEY",
+    "RCP_OPENAI_BASE_URL",
     "KIMI_BASE_URL",
     "MINIMAX_BASE_URL",
     "MINIMAX_CN_BASE_URL",
@@ -58,7 +61,7 @@ def test_list_runtime_provider_targets_includes_every_direct_provider():
     names = {entry["name"] for entry in list_runtime_provider_targets()}
 
     # Meta selectors
-    assert {"auto", "local", "custom", "openrouter", "codex", "anthropic"} <= names
+    assert {"auto", "local", "custom", "rcp", "openrouter", "codex", "anthropic"} <= names
     # All direct providers are exposed
     assert set(PROVIDER_SPECS.keys()) <= names
 
@@ -280,3 +283,69 @@ def test_resolve_runtime_provider_carries_requested_provider_label(monkeypatch):
     resolved = resolve_runtime_provider(requested="zai")
 
     assert resolved["requested_provider"] == "zai"
+
+
+def test_rcp_model_override_selects_glm_specific_credential(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "home" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(
+        yaml.safe_dump({"model": {"default": "moonshotai/Kimi-K2.7-Code"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LEANFLOW_OPENAI_API_KEY", "generic-key")
+    monkeypatch.setenv("LEANFLOW_OPENAI_BASE_URL", "https://generic.example/v1")
+    monkeypatch.setenv("RCP_OPENAI_API_KEY", "kimi-rcp-key")
+    monkeypatch.setenv("RCP_OPENAI_BASE_URL", "https://rcp.example/v1")
+    monkeypatch.setenv("GLM_API_KEY", "glm-rcp-key")
+    monkeypatch.setenv("GLM_BASE_URL", "https://glm-rcp.example/v1")
+
+    runtime = resolve_runtime_provider(requested="rcp")
+    overridden = apply_runtime_model_override(
+        runtime,
+        requested_provider="rcp",
+        model="zai-org/GLM-5.2",
+    )
+
+    assert runtime["api_key"] == "kimi-rcp-key"
+    assert runtime["model"] == "moonshotai/Kimi-K2.7-Code"
+    assert overridden["api_key"] == "glm-rcp-key"
+    assert overridden["base_url"] == "https://glm-rcp.example/v1"
+    assert overridden["model"] == "zai-org/GLM-5.2"
+    assert overridden["requested_provider"] == "rcp"
+
+
+def test_rcp_kimi_model_prefers_general_rcp_credential(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "home" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(
+        yaml.safe_dump({"model": {"default": "moonshotai/Kimi-K2.7-Code"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RCP_OPENAI_API_KEY", "kimi-rcp-key")
+    monkeypatch.setenv("RCP_OPENAI_BASE_URL", "https://rcp.example/v1")
+    monkeypatch.setenv("GLM_API_KEY", "glm-rcp-key")
+    monkeypatch.setenv("GLM_BASE_URL", "https://glm-rcp.example/v1")
+
+    resolved = resolve_runtime_provider(requested="rcp")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "kimi-rcp-key"
+    assert resolved["base_url"] == "https://rcp.example/v1"
+    assert resolved["model"] == "moonshotai/Kimi-K2.7-Code"
+
+
+def test_rcp_source_reports_the_credential_that_was_actually_selected(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "home" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(
+        yaml.safe_dump({"model": {"default": "zai-org/GLM-5.2"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    monkeypatch.setenv("RCP_OPENAI_API_KEY", "fallback-rcp-key")
+    monkeypatch.setenv("GLM_BASE_URL", "https://glm-rcp.example/v1")
+
+    resolved = resolve_runtime_provider(requested="rcp")
+
+    assert resolved["api_key"] == "fallback-rcp-key"
+    assert resolved["source"] == "RCP_OPENAI_API_KEY"

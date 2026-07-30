@@ -552,3 +552,68 @@ def test_clean_room_terminal_denies_git_before_environment_creation(monkeypatch,
     assert payload["status"] == "repository_research_denied"
     assert payload["exit_code"] == -1
     assert "Git commands are disabled" in payload["error"]
+
+
+def test_clean_room_foreground_terminal_cannot_read_outside_project(monkeypatch, tmp_path):
+    outside = tmp_path.parent / "prior-solution.lean"
+    outside.write_text("theorem leaked : True := by trivial\n", encoding="utf-8")
+    monkeypatch.setenv("LEANFLOW_DISABLE_REPOSITORY_RESEARCH", "1")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(terminal_module, "_get_env_config", lambda: _terminal_config(str(tmp_path)))
+    monkeypatch.setattr(
+        terminal_module,
+        "_create_environment",
+        lambda **_kwargs: pytest.fail("escaped clean-room read created an environment"),
+    )
+
+    payload = json.loads(
+        terminal_module.terminal_tool(
+            f"cat {outside}",
+            task_id="clean-room",
+            force=True,
+        )
+    )
+
+    assert payload["status"] == "clean_room_terminal_denied"
+    assert payload["exit_code"] == -1
+    assert "inside the assigned project" in payload["error"]
+
+
+def test_clean_room_foreground_terminal_keeps_project_lean_checks(monkeypatch, tmp_path):
+    source = tmp_path / "Main.lean"
+    source.write_text("theorem demo : True := by trivial\n", encoding="utf-8")
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def execute(command, **kwargs):
+        calls.append((command, kwargs))
+        return {"output": "", "returncode": 0}
+
+    monkeypatch.setenv("LEANFLOW_DISABLE_REPOSITORY_RESEARCH", "1")
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(terminal_module, "_get_env_config", lambda: _terminal_config(str(tmp_path)))
+    monkeypatch.setattr(
+        terminal_module,
+        "_active_environments",
+        {"clean-room": SimpleNamespace(execute=execute)},
+    )
+    monkeypatch.setattr(terminal_module, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_module,
+        "_check_all_guards",
+        lambda command, env_type: {"approved": True},
+    )
+
+    payload = json.loads(
+        terminal_module.terminal_tool(
+            "lake env lean Main.lean",
+            task_id="clean-room",
+        )
+    )
+
+    assert payload["exit_code"] == 0
+    assert calls == [
+        (
+            "/usr/bin/lake env lean Main.lean",
+            {"timeout": 30, "cwd": str(tmp_path.resolve())},
+        )
+    ]

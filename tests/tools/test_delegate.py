@@ -256,6 +256,34 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIs(calls_by_goal["empirical"].kwargs["pre_tool_call_callback"], callback)
 
     @patch("tools.implementations.delegate_tool._run_single_child")
+    def test_internal_empirical_mode_and_iteration_limit_are_index_scoped(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+
+        delegate_task(
+            tasks=[
+                {"goal": "ordinary", "_empirical_compute_enabled": True},
+                {"goal": "empirical"},
+            ],
+            max_iterations=48,
+            empirical_task_indexes=frozenset({1}),
+            task_iteration_limits={1: 8},
+            parent_agent=parent,
+        )
+
+        calls_by_goal = {call.kwargs["goal"]: call for call in mock_run.call_args_list}
+        self.assertFalse(calls_by_goal["ordinary"].kwargs["empirical_compute"])
+        self.assertEqual(calls_by_goal["ordinary"].kwargs["max_iterations"], 48)
+        self.assertTrue(calls_by_goal["empirical"].kwargs["empirical_compute"])
+        self.assertEqual(calls_by_goal["empirical"].kwargs["max_iterations"], 8)
+
+    @patch("tools.implementations.delegate_tool._run_single_child")
     def test_batch_capped_at_3(self, mock_run):
         mock_run.return_value = {
             "task_index": 0,

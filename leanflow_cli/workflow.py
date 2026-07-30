@@ -23,13 +23,26 @@ from leanflow_cli.formalization.formalization_documents import (
     ensure_formalization_blueprint_skill,
     prepare_formalization_document_context,
 )
-from leanflow_cli.runtime.env_loader import NATIVE_AUXILIARY_PROVIDER_ENV
-from leanflow_cli.runtime.runtime_provider import resolve_runtime_provider
+from leanflow_cli.runtime.env_loader import (
+    NATIVE_AUXILIARY_API_KEY_ENV,
+    NATIVE_AUXILIARY_BASE_URL_ENV,
+    NATIVE_AUXILIARY_MODEL_ENV,
+    NATIVE_AUXILIARY_PROVIDER_ENV,
+)
+from leanflow_cli.runtime.runtime_provider import (
+    apply_runtime_model_override,
+    resolve_runtime_provider,
+)
 from leanflow_cli.runtime.skill_core import default_workflow_skill
 from leanflow_cli.workflows.plan_state import plan_state_enabled, plan_state_paths
 from leanflow_cli.workflows.project import (
     LeanFlowProject,
     discover_leanflow_project,
+)
+from tools.utilities.repository_research_policy import (
+    CLEAN_ROOM_TASK_LABELS_ENV,
+    DISABLE_REPOSITORY_RESEARCH_ENV,
+    DISABLE_SOLUTION_RESEARCH_ENV,
 )
 
 # Routing tables derived from the single COMMAND_REGISTRY in leanflow_cli.cli.commands.
@@ -52,6 +65,9 @@ class NativeWorkflowSpec:
     parallel_agents: int = 1
     explicit_goal: str = ""
     provider_override: str = ""
+    model_override: str = ""
+    clean_room: bool = False
+    clean_room_labels: tuple[str, ...] = ()
     expert_provider: str = ""
     expert_command_template: str = ""
     blueprint_verifier_provider: str = ""
@@ -219,6 +235,10 @@ def describe_launch_plan(plan: NativeLaunchPlan) -> dict[str, str]:
         summary["additional_skills"] = ", ".join(plan.additional_skills)
     if plan.workflow.explicit_goal:
         summary["prompt"] = plan.workflow.explicit_goal
+    if plan.workflow.model_override:
+        summary["model_override"] = plan.workflow.model_override
+    if plan.workflow.clean_room:
+        summary["clean_room"] = ", ".join(plan.workflow.clean_room_labels) or "enabled"
     if plan.workflow.expert_provider:
         summary["expert_provider"] = plan.workflow.expert_provider
     if plan.workflow.expert_command_template:
@@ -263,6 +283,9 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
     no_parallel = False
     explicit_goal = ""
     provider_override = ""
+    model_override = ""
+    clean_room = False
+    clean_room_labels: list[str] = []
     expert_provider = ""
     expert_command_template = ""
     blueprint_verifier_provider = ""
@@ -316,6 +339,23 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
             if idx + 1 >= len(remaining):
                 raise ValueError("--provider requires a value")
             provider_override = remaining[idx + 1].strip()
+            idx += 2
+            continue
+        if token == "--model":
+            if idx + 1 >= len(remaining):
+                raise ValueError("--model requires a value")
+            model_override = remaining[idx + 1].strip()
+            idx += 2
+            continue
+        if token == "--clean-room":
+            clean_room = True
+            idx += 1
+            continue
+        if token == "--clean-room-label":
+            if idx + 1 >= len(remaining):
+                raise ValueError("--clean-room-label requires a value")
+            clean_room = True
+            clean_room_labels.append(remaining[idx + 1].strip())
             idx += 2
             continue
         if token == "--expert-provider":
@@ -380,6 +420,8 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
     workflow_kind, canonical_command, backend_command = WORKFLOW_ALIAS_MAP[command_name]
     if research_mode and workflow_kind != "prove":
         raise ValueError("--research is supported only for prove/autoprove workflows")
+    if clean_room and workflow_kind != "prove":
+        raise ValueError("--clean-room is supported only for prove/autoprove workflows")
     effective_research_workers = 0
     if research_mode:
         effective_research_workers = (
@@ -397,6 +439,9 @@ def parse_workflow_command(command: str) -> NativeWorkflowSpec:
         no_parallel=no_parallel,
         explicit_goal=explicit_goal,
         provider_override=provider_override,
+        model_override=model_override,
+        clean_room=clean_room,
+        clean_room_labels=tuple(label for label in clean_room_labels if label),
         expert_provider=expert_provider,
         expert_command_template=expert_command_template,
         blueprint_verifier_provider=blueprint_verifier_provider,
@@ -424,6 +469,21 @@ def _dedupe_skills(values: list[str]) -> tuple[str, ...]:
         seen.add(normalized)
         result.append(normalized)
     return tuple(result)
+
+
+def _clean_room_labels(
+    workflow: NativeWorkflowSpec,
+    *,
+    normalized_active_file: str,
+) -> tuple[str, ...]:
+    """Return explicit and path-derived labels for one clean-room target."""
+    values: list[str] = []
+    active = str(normalized_active_file or workflow.workflow_args or "").strip()
+    if active:
+        path = Path(active)
+        values.extend((active, path.name, path.stem))
+    values.extend(workflow.clean_room_labels)
+    return _dedupe_skills(values)
 
 
 def resolve_workflow_request(
@@ -462,9 +522,16 @@ def resolve_workflow_request(
             ensure_local_loogle_for_project_async(project.root)
         except Exception:
             pass
-    runtime = resolve_runtime_provider(
-        requested=requested_provider or workflow.provider_override or None
-    )
+    effective_provider = str(requested_provider or workflow.provider_override or "").strip()
+    runtime = resolve_runtime_provider(requested=effective_provider or None)
+    if workflow.model_override:
+        runtime = apply_runtime_model_override(
+            runtime,
+            requested_provider=(
+                effective_provider or str(runtime.get("requested_provider", "") or "")
+            ),
+            model=workflow.model_override,
+        )
     formalization_document: FormalizationDocumentContext | None = None
     normalized_workflow_args = _normalize_workflow_args(project.root, cwd, workflow.workflow_args)
     if workflow.workflow_kind == "formalize":
@@ -553,11 +620,29 @@ def resolve_workflow_request(
             "LEANFLOW_NATIVE_ACTIVE_FILE": normalized_active_file,
         }
     )
+    if workflow.model_override:
+        # A workflow-local model choice applies to every model call that would
+        # otherwise silently reuse the global compression model.
+        child_env["CONTEXT_COMPRESSION_MODEL"] = workflow.model_override
+    if workflow.clean_room:
+        labels = _clean_room_labels(
+            workflow,
+            normalized_active_file=normalized_active_file,
+        )
+        workflow = replace(workflow, clean_room_labels=labels)
+        child_env[DISABLE_REPOSITORY_RESEARCH_ENV] = "1"
+        child_env[DISABLE_SOLUTION_RESEARCH_ENV] = "1"
+        child_env[CLEAN_ROOM_TASK_LABELS_ENV] = "|".join(labels)
     explicit_provider = str(requested_provider or workflow.provider_override or "").strip()
     if explicit_provider:
         # An explicit workflow provider is an all-lanes user choice. Preserve
         # it across dotenv reloads in foreground and dispatch-worker processes.
-        child_env[NATIVE_AUXILIARY_PROVIDER_ENV] = explicit_provider
+        auxiliary_provider = "custom" if str(runtime["provider"]) == "custom" else explicit_provider
+        child_env[NATIVE_AUXILIARY_PROVIDER_ENV] = auxiliary_provider
+        if str(runtime["provider"]) == "custom":
+            child_env[NATIVE_AUXILIARY_BASE_URL_ENV] = str(runtime["base_url"])
+            child_env[NATIVE_AUXILIARY_API_KEY_ENV] = str(runtime.get("api_key", ""))
+            child_env[NATIVE_AUXILIARY_MODEL_ENV] = str(runtime.get("model", ""))
     if workflow.research_mode:
         child_env["LEANFLOW_RESEARCH_MODE"] = "1"
         apply_research_profile_env(
@@ -662,6 +747,12 @@ def spawn_workflow(
         # Dispatch backends use this to give spawned jobs their own run id
         # (LEANFLOW_WORKFLOW_RUN_ID=""), the parent-run edge, and job env.
         child_env.update({str(key): str(value) for key, value in extra_env.items()})
+    if plan.workflow.clean_room:
+        # Dispatch metadata may add environment fields but cannot weaken an
+        # explicit clean-room launch boundary.
+        child_env[DISABLE_REPOSITORY_RESEARCH_ENV] = "1"
+        child_env[DISABLE_SOLUTION_RESEARCH_ENV] = "1"
+        child_env[CLEAN_ROOM_TASK_LABELS_ENV] = "|".join(plan.workflow.clean_room_labels)
     # A fresh opaque token makes the persisted PID safe to revalidate before
     # later status/cleanup code signals it. Set this last so nested workflows
     # cannot accidentally inherit the parent runner's ownership identity.

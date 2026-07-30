@@ -320,9 +320,19 @@ Run a workflow:
 leanflow workflow prove Main.lean
 leanflow workflow prove Main.lean --provider codex --research
 leanflow workflow prove Main.lean --provider codex --research --research-workers 2
+leanflow workflow prove Main.lean --provider rcp --model zai-org/GLM-5.2
+leanflow workflow prove Main.lean --clean-room --clean-room-label "Benchmark Problem 2"
 leanflow workflow prove Main.lean --agents 3
 leanflow workflow prove Main.lean --no-parallel
 leanflow workflow formalize docs/paper.tex
+```
+
+Monitor a run without coupling the default status path to Docker/Podman
+availability:
+
+```bash
+leanflow status
+leanflow status --verbose  # larger history plus a live sandbox-engine probe
 ```
 
 ## Workflow Example Projects
@@ -540,13 +550,21 @@ Search snippets are discovery only: planner and deep-search workers must inspect
 sources with `web_fetch`, clone concrete public proof developments when allowed, and retain the
 queries, providers, sources read, and rejected branches before they may report research exhausted.
 
-For a clean-room benchmark, set `LEANFLOW_DISABLE_REPOSITORY_RESEARCH=1`. Repository cloning,
+For a clean-room benchmark, prefer the workflow-scoped
+`--clean-room` flag and provide additional task spellings with repeatable
+`--clean-room-label VALUE` options when the target path is not sufficient.
+LeanFlow derives path, file-name, and stem labels automatically. The launch
+boundary cannot be weakened by dispatch-worker environment metadata. The
+environment-compatible form is `LEANFLOW_DISABLE_REPOSITORY_RESEARCH=1`.
+Repository cloning,
 repository-host web results and fetches, Sourcegraph code search, and Git/repository-host terminal
 commands are then denied. Model file tools are also confined to `LEANFLOW_PROJECT_ROOT`, with
-canonical path and symlink checks. `leanflow sandbox run` propagates the flag into the container,
-whose worktree supplies the stronger host-filesystem boundary. This flag is intentionally off by
-default; normal open-problem campaigns keep repository research because reusing public
-formalizations can save substantial time.
+canonical path and symlink checks. On the regular local backend the terminal is
+reduced to an audited, read-only, project-confined diagnostic surface; sandbox
+runs additionally receive the container's host-filesystem boundary.
+This policy is intentionally off by default: normal open-problem campaigns keep
+repository research because reusing public formalizations can save substantial
+time.
 
 To prohibit prior solutions while retaining general research, also set
 `LEANFLOW_DISABLE_SOLUTION_RESEARCH=1` and provide pipe-separated task spellings
@@ -1362,6 +1380,7 @@ leanflow provider
 leanflow provider --requested zai
 leanflow provider --requested local
 leanflow provider --requested custom
+leanflow provider --requested rcp
 ```
 
 LeanFlow supports three provider classes:
@@ -1399,7 +1418,7 @@ leanflow provider --requested zai
 
 ### OpenAI-Compatible Remote Endpoints
 
-RCP-style endpoints work through the `custom` path:
+Generic OpenAI-compatible endpoints use the `custom` path:
 
 ```bash
 export LEANFLOW_OPENAI_BASE_URL="https://inference.rcp.epfl.ch/v1"
@@ -1409,6 +1428,23 @@ leanflow provider --requested custom
 
 Preferred env var names for LeanFlow are `LEANFLOW_OPENAI_BASE_URL` and `LEANFLOW_OPENAI_API_KEY`.
 Legacy/generic names such as `OPENAI_BASE_URL` and `OPENAI_API_KEY` are still accepted, but the LeanFlow-prefixed names are the stable user-facing ones.
+
+EPFL RCP also has a first-class `rcp` route. It resolves GLM credentials from
+`GLM_API_KEY` / `GLM_BASE_URL` and other RCP models from
+`RCP_OPENAI_API_KEY` / `RCP_OPENAI_BASE_URL`, with explicit documented
+fallbacks. A workflow-local model choice refreshes the coupled credential and
+endpoint before launch:
+
+```bash
+leanflow workflow prove Main.lean \
+  --provider rcp --model zai-org/GLM-5.2 --research
+```
+
+For a custom/RCP launch, LeanFlow propagates the resolved provider, endpoint,
+credential, and model to isolated manager, planner, advisor, verifier, worker,
+and compression calls after dotenv reload. This prevents an auxiliary role
+from silently reverting to a globally configured model or an incompatible
+model-family key.
 
 The `LEANFLOW_NATIVE_*` variables are internal workflow-launcher plumbing. The CLI sets those automatically when it starts `leanflow-native`; you should not need to export them manually.
 

@@ -58,6 +58,51 @@ def test_spawn_workflow_mints_a_fresh_child_ownership_token(monkeypatch, tmp_pat
     assert second_plan.child_env[PROCESS_TOKEN_ENV] == second
 
 
+def test_spawn_workflow_cannot_weaken_clean_room_with_extra_env(monkeypatch, tmp_path):
+    captured_envs: list[dict[str, str]] = []
+    plan = workflow.NativeLaunchPlan(
+        project=SimpleNamespace(root=tmp_path),
+        workflow=workflow.NativeWorkflowSpec(
+            workflow_kind="prove",
+            frontend_command="/prove",
+            canonical_command="/prove",
+            backend_command="/lean4:prove",
+            workflow_args="IMO2026/P2.lean",
+            clean_room=True,
+            clean_room_labels=("P2", "IMO 2026 Problem 2"),
+        ),
+        runtime={},
+        child_env={},
+        argv=[sys.executable, "-m", "leanflow_cli.native.native_runner"],
+        active_skill="lean-proof-loop",
+        toolset_name="leanflow-native",
+    )
+
+    class _Process:
+        pid = 24680
+
+    def launch(*_args, **kwargs):
+        captured_envs.append(dict(kwargs["env"]))
+        return _Process()
+
+    monkeypatch.setattr(workflow, "resolve_workflow_request", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(workflow.subprocess, "Popen", launch)
+
+    launched, _ = workflow.spawn_workflow(
+        "/prove IMO2026/P2.lean --clean-room",
+        extra_env={
+            "LEANFLOW_DISABLE_REPOSITORY_RESEARCH": "0",
+            "LEANFLOW_DISABLE_SOLUTION_RESEARCH": "0",
+            "LEANFLOW_CLEAN_ROOM_TASK_LABELS": "weakened",
+        },
+    )
+
+    assert captured_envs[0]["LEANFLOW_DISABLE_REPOSITORY_RESEARCH"] == "1"
+    assert captured_envs[0]["LEANFLOW_DISABLE_SOLUTION_RESEARCH"] == "1"
+    assert captured_envs[0]["LEANFLOW_CLEAN_ROOM_TASK_LABELS"] == ("P2|IMO 2026 Problem 2")
+    assert launched.child_env == captured_envs[0]
+
+
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX process sessions")
 def test_interrupt_workflow_process_rejects_reused_identity_before_signal():
     token = "workflow-owner-token"

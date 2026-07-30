@@ -283,6 +283,19 @@ def _normalize_stub_newlines(stub: str, newline: str) -> str:
     return newline.join(stub.splitlines())
 
 
+def _existing_declarations_by_name(source: str) -> dict[str, str]:
+    """Return exact parsed declaration slices keyed by unqualified source name."""
+    try:
+        entries = _declaration_line_index_from_text(source)
+    except Exception:
+        return {}
+    return {
+        str(entry.get("name", "") or "").strip(): str(entry.get("text", "") or "").strip()
+        for entry in entries
+        if str(entry.get("name", "") or "").strip()
+    }
+
+
 def place_helpers(
     *,
     active_file: str,
@@ -344,7 +357,60 @@ def _place_helpers_under_lease(
                 reason="stub-shape violation: stated stubs are `theorem/lemma … := by sorry`",
             )
     newline = _source_newline(before_text)
-    source_stubs = [_normalize_stub_newlines(stub, newline) for stub in stubs]
+    normalized_stubs = [_normalize_stub_newlines(stub, newline) for stub in stubs]
+    requested_names = [_helper_name(stub) for stub in normalized_stubs]
+    if any(not name for name in requested_names) or len(set(requested_names)) != len(
+        requested_names
+    ):
+        return DecomposeOutcome(
+            ok=False,
+            reason="helper skeleton names are missing or duplicated",
+        )
+    existing_declarations = _existing_declarations_by_name(before_text)
+    existing_names: list[str] = []
+    source_stubs: list[str] = []
+    graph_skeletons: dict[str, str] = {}
+    for name, stub in zip(requested_names, normalized_stubs, strict=True):
+        existing = existing_declarations.get(name, "")
+        if existing:
+            if _statement_core(existing) != _statement_core(stub):
+                return DecomposeOutcome(
+                    ok=False,
+                    reason=(
+                        f"existing declaration {name} has a different statement; "
+                        "refusing duplicate helper insertion"
+                    ),
+                )
+            existing_names.append(name)
+            graph_skeletons[name] = existing
+            continue
+        source_stubs.append(stub)
+        graph_skeletons[name] = stub
+    if not source_stubs:
+        try:
+            graph_helpers = _record_split_in_graph(
+                target_symbol=target_symbol,
+                active_file=str(path),
+                placed=requested_names,
+                skeletons=graph_skeletons,
+            )
+        except Exception as exc:
+            return DecomposeOutcome(
+                ok=False,
+                reason=f"existing helper graph reconciliation failed: {exc}",
+            )
+        if plan_state.plan_state_enabled() and set(graph_helpers) != set(requested_names):
+            return DecomposeOutcome(
+                ok=False,
+                reason="dependency graph did not retain every existing helper",
+            )
+        return DecomposeOutcome(
+            ok=True,
+            reason="exact helper declarations already present; reinsertion skipped",
+            placed=tuple(requested_names),
+            skipped=tuple(existing_names),
+            file=str(path),
+        )
     block = (newline * 2).join(source_stubs) + (newline * 2)
     after_text = before_text[:offset] + block + before_text[offset:]
     after_bytes = after_text.encode("utf-8")
@@ -429,7 +495,7 @@ def _place_helpers_under_lease(
     from leanflow_cli.lean.lean_incremental import lean_incremental_check
 
     placed: list[str] = []
-    names = [name for stub in stubs if (name := _helper_name(stub))]
+    names = [name for stub in source_stubs if (name := _helper_name(stub))]
 
     def reject_and_rollback(reason: str) -> DecomposeOutcome:
         """Rollback only the exact inserted revision, preserving concurrent edits."""
@@ -484,7 +550,7 @@ def _place_helpers_under_lease(
         reject_and_rollback("helper placement interrupted before Lean validation")
         raise
 
-    if len(names) != len(stubs):
+    if len(names) != len(source_stubs):
         return reject_and_rollback(
             "could not resolve every placed helper's exact declaration name",
         )
@@ -561,18 +627,17 @@ def _place_helpers_under_lease(
             ),
             requires_pause=True,
         )
-    skeleton_by_name = {_helper_name(stub): stub for stub in source_stubs if _helper_name(stub)}
     try:
         graph_helpers = _record_split_in_graph(
             target_symbol=target_symbol,
             active_file=str(path),
-            placed=placed,
-            skeletons=skeleton_by_name,
+            placed=requested_names,
+            skeletons=graph_skeletons,
         )
     except Exception as exc:
         logger.debug("decomposer graph transaction failed", exc_info=True)
         return reject_and_rollback(f"dependency graph persistence failed: {exc}")
-    if plan_state.plan_state_enabled() and set(graph_helpers) != set(placed):
+    if plan_state.plan_state_enabled() and set(graph_helpers) != set(requested_names):
         # A successful graph save returns every materialized helper. Missing
         # ownership would make later negation cleanup impossible to authorize.
         _transitioned, transition_error = finish_transaction(
@@ -597,7 +662,12 @@ def _place_helpers_under_lease(
             ),
             requires_pause=True,
         )
-    return DecomposeOutcome(ok=True, placed=tuple(placed), file=str(path))
+    return DecomposeOutcome(
+        ok=True,
+        placed=tuple(requested_names),
+        skipped=tuple(existing_names),
+        file=str(path),
+    )
 
 
 def _helper_name(skeleton: str) -> str:

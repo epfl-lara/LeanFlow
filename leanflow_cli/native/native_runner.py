@@ -141,6 +141,7 @@ from leanflow_cli.workflows import (
     orchestrator_coverage,
     orchestrator_event_watermark,
     orchestrator_llm,
+    partial_proof_structure,
     plan_state,
     planner_evidence,
     planner_phase,
@@ -568,6 +569,8 @@ from leanflow_cli.workflows.queue_edit_guard import (  # noqa: E402
     _queue_edit_declaration_delta,
     _queue_edit_guard_key,
     _queue_edit_initial_declaration_keys,
+    _queue_edit_named_declarations,
+    _queue_edit_placeholder_regressions,
     _queue_edit_preserves_doc_comments,
     _queue_edit_protected_declarations,
     _queue_edit_statement_signature,
@@ -8556,6 +8559,45 @@ def _managed_pre_tool_call(
                 )
             return json.dumps(banked_inspection, ensure_ascii=False)
         assignment = dict(autonomy_state.get("current_queue_assignment") or {})
+        advisor_target = str(assignment.get("target_symbol", "") or "").strip()
+        advisor_file = str(assignment.get("active_file", "") or "").strip()
+        if tool_result_loop_guard.advisor_preflight_blocked(
+            autonomy_state,
+            function_name=function_name,
+            target_symbol=advisor_target,
+            active_file=advisor_file,
+            source_revision_sha256=(_source_revision_sha256(advisor_file) if advisor_file else ""),
+        ):
+            with contextlib.suppress(Exception):
+                _record_agent_activity(
+                    agent,
+                    "advisor-failure-family-blocked",
+                    (
+                        "Blocked another expensive advisor request after two "
+                        "unchanged-source failures"
+                    ),
+                    target_symbol=advisor_target,
+                    active_file=advisor_file,
+                    blocked_tool=function_name,
+                    provider_called=False,
+                    campaign_progress=False,
+                )
+            return json.dumps(
+                {
+                    "success": False,
+                    "status": "advisor_retry_exhausted",
+                    "blocked_tool": function_name,
+                    "provider_called": False,
+                    "error": (
+                        "Two reasoning/decomposition advisor requests already failed for this "
+                        "unchanged declaration. A third expensive provider call was not made. "
+                        "Use preserved source, diagnostic, plan, and graph evidence to make a "
+                        "concrete proof edit/check or choose a distinct local route; continue "
+                        "working on the theorem."
+                    ),
+                },
+                ensure_ascii=False,
+            )
         placeholder_block = (
             source_placeholder_guard.block_unchanged_target_check(
                 function_name,
@@ -8775,6 +8817,10 @@ def _managed_pre_tool_call(
             guard_state.get("assigned_statement_signature", "") or ""
         ),
         "protected_declarations": guard_state.get("protected_declarations") or (),
+        "editable_dependency_declarations": _queue_edit_named_declarations(
+            before_text,
+            tuple(guard_state.get("editable_dependency_helpers") or ()),
+        ),
     }
     return None
 
@@ -9158,6 +9204,34 @@ def _restore_out_of_scope_queue_edit(agent: Any, function_name: str) -> str:
             "state. Preserve declaration docs byte-for-byte; if a misplaced helper must move "
             "across a doc/attribute preamble, perform the complete relocation in one atomic patch."
         )
+    placeholder_regressions = _queue_edit_placeholder_regressions(
+        list(snapshot.get("editable_dependency_declarations") or ()),
+        current_text,
+    )
+    if placeholder_regressions:
+        restored_text = _restore_changed_protected_declarations(
+            current_text,
+            placeholder_regressions,
+        )
+        if restored_text is None:
+            restored_text = before_text
+        try:
+            path.write_text(restored_text, encoding="utf-8")
+        except Exception:
+            return ""
+        names = ", ".join(
+            str(dict(item.get("protected") or {}).get("name", "") or "")
+            for item in placeholder_regressions
+            if str(dict(item.get("protected") or {}).get("name", "") or "").strip()
+        )
+        return (
+            "[LEANFLOW-NATIVE PROVED HELPER REGRESSION GUARD]\n"
+            f"The `{function_name}` edit replaced an already placeholder-free generated "
+            f"dependency ({names}) with the same statement containing `sorry` or `admit`. "
+            "The manager restored the banked helper proof while preserving other in-scope "
+            "changes. Change the helper statement when a genuine repair is required, or keep "
+            "the verified proof intact."
+        )
     current_entry = _find_declaration_entry(active_file, target_symbol)
     if not current_entry:
         try:
@@ -9274,6 +9348,11 @@ def _queue_edit_snapshot_is_accepted(snapshot: Mapping[str, Any]) -> bool:
     if _workflow_kind() == "prove":
         if not _queue_edit_preserves_doc_comments(before_text, current_text):
             return False
+    if _queue_edit_placeholder_regressions(
+        list(snapshot.get("editable_dependency_declarations") or ()),
+        current_text,
+    ):
+        return False
         before_preamble = _queue_edit_assigned_preamble(before_text, target_symbol)
         current_preamble = _queue_edit_assigned_preamble(current_text, target_symbol)
         if (
@@ -11255,6 +11334,24 @@ def _finish_queue_step_boundary(
                     attempt=attempt_number,
                     verification_tool=verification_tool,
                 )
+            if still_blocked and post_edit_verification:
+                partial_declaration = _declaration_slice_text(pending_file, pending_target)
+                structure_guidance = partial_proof_structure.feedback_lines(
+                    pending_target,
+                    partial_declaration,
+                )
+                if structure_guidance:
+                    feedback_lines.extend(structure_guidance)
+                    structure = partial_proof_structure.assess(partial_declaration)
+                    _record_activity(
+                        "partial-proof-decomposition-nudge",
+                        f"Requested graph-visible helper decomposition for {pending_target}",
+                        target_symbol=pending_target,
+                        active_file=pending_file,
+                        milestone_count=structure.milestone_count,
+                        proof_line_count=structure.proof_line_count,
+                        campaign_progress=False,
+                    )
             if still_blocked and isinstance(autonomy_state, dict):
                 # This is a safe verification-callback seam: the exact-target
                 # gate, restore, accounting, and coaching work above is already
@@ -12313,20 +12410,43 @@ def _managed_agent_float(value: Any) -> float | None:
 class _WorkflowLogTee:
     def __init__(self, stream: Any) -> None:
         self._stream = stream
+        self._durable_line = ""
+        self._carriage_mode = False
+        self._durable_lock = threading.Lock()
+
+    def _durable_text(self, data: str) -> str:
+        """Collapse carriage-return progress frames into their final line."""
+        with self._durable_lock:
+            if "\r" not in data and not self._carriage_mode:
+                return data
+            emitted: list[str] = []
+            for char in data:
+                if char == "\r":
+                    self._carriage_mode = True
+                    self._durable_line = ""
+                elif char == "\n":
+                    if self._durable_line.strip():
+                        emitted.append(f"{self._durable_line}\n")
+                    self._durable_line = ""
+                else:
+                    self._durable_line = (self._durable_line + char)[-8192:]
+            return "".join(emitted)
 
     def write(self, data: str) -> int:
-        started = time.monotonic()
-        append_workflow_run_log(data)
-        elapsed_s = max(0.0, time.monotonic() - started)
-        if elapsed_s >= 1.0:
-            with contextlib.suppress(Exception):
-                _record_activity(
-                    "workflow-log-append-slow",
-                    "Workflow console log append was slow",
-                    elapsed_s=round(elapsed_s, 3),
-                    text_chars=len(data),
-                    stream_type=type(self._stream).__name__,
-                )
+        durable = self._durable_text(data)
+        if durable:
+            started = time.monotonic()
+            append_workflow_run_log(durable)
+            elapsed_s = max(0.0, time.monotonic() - started)
+            if elapsed_s >= 1.0:
+                with contextlib.suppress(Exception):
+                    _record_activity(
+                        "workflow-log-append-slow",
+                        "Workflow console log append was slow",
+                        elapsed_s=round(elapsed_s, 3),
+                        text_chars=len(durable),
+                        stream_type=type(self._stream).__name__,
+                    )
         return self._stream.write(data)
 
     def flush(self) -> None:
@@ -26952,12 +27072,9 @@ def _orchestrator_apply_route(
                             "inventory truth.",
                         ]
                     )
-                elif plan_outcome.synthesis_status in {
-                    "capacity-deferred",
-                    planner_phase.PLANNER_EVIDENCE_INTERRUPTED_STATUS,
-                }:
-                    # Capacity and incomplete evidence can change at the next
-                    # safe boundary, so preserve the exact route reservation.
+                elif plan_outcome.synthesis_status == "capacity-deferred":
+                    # Capacity can change at the next safe boundary without
+                    # spending another planner portfolio.
                     pass
                 else:
                     obstacle_reason = plan_outcome.reason or "planner produced no durable result"
@@ -27001,6 +27118,21 @@ def _orchestrator_apply_route(
                         outcome=plan_outcome.synthesis_status,
                         reason=obstacle_reason,
                     )
+                    if (
+                        plan_outcome.synthesis_status
+                        == planner_phase.PLANNER_EVIDENCE_INTERRUPTED_STATUS
+                    ):
+                        planner_banner = "\n".join(
+                            [
+                                "[LEANFLOW PLANNER EVIDENCE PRESERVED]",
+                                "- planner lanes already persisted their useful evidence; "
+                                "do not launch another unchanged-source planner fanout",
+                                "- read the managed plan.md Grounding/Strategy view, then "
+                                "construct, edit, check, or decompose the first concrete "
+                                "proof step from that evidence",
+                                "- only a material target edit may reopen this planner route",
+                            ]
+                        )
             except Exception as exc:
                 logger.debug("planner phase failed", exc_info=True)
                 _record_orchestrator_route_execution(

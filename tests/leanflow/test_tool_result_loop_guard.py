@@ -292,3 +292,79 @@ def test_outline_budget_counts_different_symbols_until_source_changes():
 
     assert changed.streak == 1
     assert changed.close_turn is False
+
+
+def test_alternating_advisor_failures_share_one_bounded_family():
+    state: dict = {}
+    common = {
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    first = tool_result_loop_guard.observe(
+        state,
+        function_name="lean_reasoning_help",
+        args={"theorem_id": "demo"},
+        result_text=json.dumps({"success": False, "status": "timeout"}),
+        **common,
+    )
+    second = tool_result_loop_guard.observe(
+        state,
+        function_name="lean_decompose_helpers",
+        args={"theorem_id": "demo"},
+        result_text=json.dumps({"success": False, "status": "unavailable"}),
+        **common,
+    )
+
+    assert first.tool_key == second.tool_key == "lean_advisor"
+    assert first.streak == 1
+    assert second.streak == tool_result_loop_guard.ADVISOR_NUDGE_LIMIT == 2
+    assert second.nudge is True
+    assert tool_result_loop_guard.advisor_preflight_blocked(
+        state,
+        function_name="lean_reasoning_help",
+        **common,
+    )
+
+    blocked = tool_result_loop_guard.observe(
+        state,
+        function_name="lean_reasoning_help",
+        args={"theorem_id": "demo"},
+        result_text=json.dumps(
+            {
+                "success": False,
+                "status": "advisor_retry_exhausted",
+                "provider_called": False,
+            }
+        ),
+        **common,
+    )
+    assert blocked.close_turn is True
+    assert blocked.streak == tool_result_loop_guard.ADVISOR_HARD_LIMIT == 3
+
+
+def test_successful_advisor_answer_clears_failure_family():
+    state: dict = {}
+    common = {
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    tool_result_loop_guard.observe(
+        state,
+        function_name="lean_reasoning_help",
+        args={},
+        result_text=json.dumps({"success": False, "status": "timeout"}),
+        **common,
+    )
+    decision = tool_result_loop_guard.observe(
+        state,
+        function_name="lean_decompose_helpers",
+        args={},
+        result_text=json.dumps({"success": True, "status": "completed"}),
+        **common,
+    )
+
+    assert decision.tool_key == "lean_advisor"
+    assert decision.streak == 0
+    assert tool_result_loop_guard.STATE_KEY not in state

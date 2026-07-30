@@ -1,4 +1,4 @@
-"""Expose bounded exact arithmetic only to empirical dispatch workers."""
+"""Expose bounded exact arithmetic only to isolated empirical actors."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Final
 
-from core.runtime_modes import empirical_dispatch_worker_enabled
+from core.runtime_modes import empirical_compute_enabled
 from tools.registry import registry
 from tools.utilities.empirical_compute_runtime import MAX_PROGRAM_BYTES
 
@@ -25,7 +25,7 @@ EMPIRICAL_COMPUTE_PARENT_OUTPUT_LIMIT: Final[int] = 64 * 1024
 
 def check_empirical_compute_requirements() -> bool:
     """Return whether this process owns an empirical scratch assignment."""
-    return empirical_dispatch_worker_enabled()
+    return empirical_compute_enabled()
 
 
 def _denied(message: str) -> str:
@@ -97,9 +97,9 @@ def empirical_compute_tool(program: str, *, timeout_s: int = 4) -> str:
     a restricted AST, empty ephemeral working directory, isolated Python mode,
     a minimal environment, and hard parent wall-clock kill.
     """
-    if not empirical_dispatch_worker_enabled():
+    if not empirical_compute_enabled():
         return _denied(
-            "empirical_compute is available only inside a scratch-only empirical dispatch worker"
+            "empirical_compute is available only inside an isolated empirical planner actor"
         )
     source = str(program or "")
     if not source.strip():

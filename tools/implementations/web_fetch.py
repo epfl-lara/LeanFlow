@@ -20,6 +20,8 @@ file tools / Lean can consume it.
 import logging
 import os
 import re
+import threading
+import time
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -46,6 +48,8 @@ WEB_FETCH_TIMEOUT_SECONDS = 30
 DEFAULT_MAX_CHARS = 5000
 # Upper bound the model may request, to keep a single fetch from dominating context.
 MAX_ALLOWED_CHARS = 20000
+FETCH_FAILURE_COOLDOWN_SECONDS = 60.0
+FETCH_FAILURE_CACHE_CAP = 128
 
 _FETCH_USER_AGENT = "LeanFlow/0.3 web-fetch (+https://github.com/leanflow)"
 _DIRECT_TEXT_HOSTS = frozenset(
@@ -55,6 +59,45 @@ _DIRECT_TEXT_HOSTS = frozenset(
         "raw.github.com",
     }
 )
+_FETCH_FAILURE_CACHE_LOCK = threading.Lock()
+_FETCH_FAILURE_CACHE: dict[str, tuple[float, str, str]] = {}
+
+
+def _cached_fetch_failure(url: str) -> str | None:
+    """Return a recent terminal fetch failure without repeating both network calls."""
+    now = time.monotonic()
+    with _FETCH_FAILURE_CACHE_LOCK:
+        cached = _FETCH_FAILURE_CACHE.get(url)
+        if cached is None:
+            return None
+        expires_at, message, backend = cached
+        if expires_at <= now:
+            _FETCH_FAILURE_CACHE.pop(url, None)
+            return None
+    return error(
+        message,
+        backend=backend,
+        cached=True,
+        provider_called=False,
+        retry_after_seconds=max(1, int(expires_at - now)),
+    )
+
+
+def _remember_fetch_failure(url: str, message: str, *, backend: str) -> str:
+    """Cache one dual-backend fetch failure briefly and return its tool payload."""
+    expires_at = time.monotonic() + FETCH_FAILURE_COOLDOWN_SECONDS
+    with _FETCH_FAILURE_CACHE_LOCK:
+        if len(_FETCH_FAILURE_CACHE) >= FETCH_FAILURE_CACHE_CAP:
+            oldest = min(_FETCH_FAILURE_CACHE, key=lambda key: _FETCH_FAILURE_CACHE[key][0])
+            _FETCH_FAILURE_CACHE.pop(oldest, None)
+        _FETCH_FAILURE_CACHE[url] = (expires_at, message, backend)
+    return error(message, backend=backend, cached=False, provider_called=True)
+
+
+def _clear_fetch_failure(url: str) -> None:
+    """Forget a prior terminal failure after a successful retrieval."""
+    with _FETCH_FAILURE_CACHE_LOCK:
+        _FETCH_FAILURE_CACHE.pop(url, None)
 
 
 class _TextExtractor(HTMLParser):
@@ -189,6 +232,9 @@ async def web_fetch_tool(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
     blocked = repository_url_block_reason(url) or solution_research_url_block_reason(url)
     if blocked:
         return error(blocked)
+    cached_failure = _cached_fetch_failure(url)
+    if cached_failure is not None:
+        return cached_failure
 
     try:
         bound = int(max_chars)
@@ -207,7 +253,11 @@ async def web_fetch_tool(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
         try:
             text = _fallback_fetch(url)
         except Exception as direct_exc:
-            return error(f"Failed to fetch {url} directly: {direct_exc}")
+            return _remember_fetch_failure(
+                url,
+                f"Failed to fetch {url} directly: {direct_exc}",
+                backend="direct",
+            )
     else:
         try:
             text = _jina_fetch(url)
@@ -222,14 +272,23 @@ async def web_fetch_tool(url: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
             try:
                 text = _fallback_fetch(url)
             except Exception as fallback_exc:
-                return error(
-                    f"Failed to fetch {url}: jina error: {jina_error}; "
-                    f"fallback error: {fallback_exc}"
+                return _remember_fetch_failure(
+                    url,
+                    (
+                        f"Failed to fetch {url}: jina error: {jina_error}; "
+                        f"fallback error: {fallback_exc}"
+                    ),
+                    backend="fallback",
                 )
 
     text = clean_base64_images(text or "").strip()
     if not text:
-        return error(f"No readable content found at {url}", backend=backend)
+        return _remember_fetch_failure(
+            url,
+            f"No readable content found at {url}",
+            backend=backend,
+        )
+    _clear_fetch_failure(url)
 
     truncated = False
     # Reuse the (otherwise-dead) summarizer for long pages so output stays bounded.

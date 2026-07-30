@@ -147,6 +147,8 @@ def test_happy_path_merges_graph_and_prose(enabled, monkeypatch):
     assert len(call["tasks"]) == 3
     assert call["isolate_budget"] is True
     assert call["max_iterations"] == planner_phase.LANE_MAX_ITERATIONS
+    assert call["empirical_task_indexes"] == frozenset({2})
+    assert call["task_iteration_limits"] == {2: planner_phase.EMPIRICAL_LANE_MAX_ITERATIONS}
 
     # Only the shape-valid target-file stub went through the guarded door
     # (the non-stub 'theorem demo : True' and the statement-less node did not).
@@ -743,6 +745,36 @@ def test_synthesizer_unavailable_fails_soft(enabled, monkeypatch):
     assert "lane evidence survives" in journal
 
 
+def test_unsynthesized_lane_projection_replaces_stale_payload_and_records_outcome(enabled):
+    planner_phase._persist_unsynthesized_deliverables(
+        {"web": {"finding": "old route", "raw": "x" * 4000}},
+        reason="synthesizer timed out",
+        target_symbol="demo",
+        active_file="Demo.lean",
+    )
+    planner_phase._persist_unsynthesized_deliverables(
+        {"web": {"finding": "new route", "raw": "y" * 4000}},
+        reason="synthesizer timed out again",
+        target_symbol="demo",
+        active_file="Demo.lean",
+    )
+
+    grounding = plan_state.load_summary()["grounding_findings"]
+    assert len(grounding) == 1
+    assert "new route" in grounding[0]
+    assert "old route" not in grounding[0]
+    assert len(grounding[0]) <= planner_phase._UNSYNTHESIZED_GROUNDING_MAX_CHARS + 40
+    outcomes = plan_state.recent_exploration_outcomes(
+        plan_state.load_blueprint(),
+        {"target_symbol": "demo", "active_file": "Demo.lean"},
+    )
+    assert outcomes[-1]["type"] == "research_preserved"
+    assert outcomes[-1]["subject"] == "demo"
+    journal = plan_state.plan_state_paths().journal_jsonl.read_text(encoding="utf-8")
+    assert "old route" in journal
+    assert "new route" in journal
+
+
 def test_interrupt_after_synthesis_never_enters_graph_or_stub_validation(enabled, monkeypatch):
     from tools.utilities.interrupt import CooperativeInterrupt, set_interrupt
 
@@ -894,6 +926,10 @@ def test_lane_and_synthesis_prompts_embed_phase_fragments(enabled, monkeypatch):
     compute_args = {"program": "print(2 + 2)", "timeout_s": 180}
     assert empirical_policy("empirical_compute", compute_args) is None
     assert compute_args["timeout_s"] == 8
+    assert delegate_calls[0]["empirical_task_indexes"] == frozenset({2})
+    assert delegate_calls[0]["task_iteration_limits"] == {
+        2: planner_phase.EMPIRICAL_LANE_MAX_ITERATIONS
+    }
     synth_prompt = synth_calls[0]["prompt"]
     assert "[PHASE SPEC: phase-planning]" in synth_prompt
     assert "[PHASE SPEC: phase-draft]" in synth_prompt

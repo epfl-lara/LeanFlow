@@ -739,6 +739,13 @@ def recent_exploration_outcomes(
         elif event_name.endswith("-rejected"):
             outcome_type = "rejected_by_admission"
             detail = str(event.get("reason") or event.get("detail") or event_name).strip()
+        elif event_name == "planner-unsynthesized-findings":
+            outcome_type = "research_preserved"
+            reason = str(event.get("reason", "") or "").strip()
+            lanes = ", ".join(str(lane) for lane in (event.get("lanes") or []) if str(lane))
+            detail = " — ".join(
+                part for part in (reason, f"lanes: {lanes}" if lanes else "") if part
+            )
         elif "superseded" in event_name:
             outcome_type = "superseded"
             detail = str(event.get("reason") or event.get("detail") or event_name).strip()

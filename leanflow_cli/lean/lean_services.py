@@ -430,10 +430,18 @@ def _repo_root() -> Path:
 def _project_root(cwd: str | os.PathLike[str] | None = None) -> tuple[Path | None, str]:
     explicit = str(os.getenv("LEANFLOW_PROJECT_ROOT", "") or "").strip()
     base = Path(cwd or explicit or os.getcwd()).expanduser().resolve()
-    if cwd is None and explicit:
-        lean_root = find_lean_project_root(base)
-        if lean_root is not None:
-            return lean_root, ""
+    if explicit:
+        explicit_path = Path(explicit).expanduser().resolve()
+        explicit_root = find_lean_project_root(explicit_path)
+        if explicit_root is not None and (
+            cwd is None or base == explicit_root or explicit_root in base.parents
+        ):
+            # Tool calls may originate from `.lake/packages/<dependency>`,
+            # which is itself a Lean project. The workflow root remains the
+            # authority for REPL/MCP/search configuration throughout a native
+            # run; otherwise dependency-local calls silently lose the main
+            # project's prepared search environment.
+            return explicit_root, ""
     try:
         project = discover_leanflow_project(base)
         return project.root, ""

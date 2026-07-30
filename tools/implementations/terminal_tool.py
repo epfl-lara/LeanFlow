@@ -41,6 +41,7 @@ from typing import Any
 from core.runtime_modes import scratch_only_dispatch_worker_enabled
 from tools.utilities.repository_research_policy import (
     repository_command_block_reason,
+    repository_research_disabled,
     solution_research_command_block_reason,
 )
 from tools.utilities.scratch_terminal_guard import validate_scratch_terminal_command
@@ -911,21 +912,28 @@ def terminal_tool(
                 ensure_ascii=False,
             )
 
-        # Scratch research workers share the foreground checkout. Enforce their
-        # read-only contract before environment creation and independently of
-        # the ordinary interactive approval/force mechanism.
-        if scratch_only_dispatch_worker_enabled():
+        scratch_only = scratch_only_dispatch_worker_enabled()
+        clean_room_local = repository_research_disabled() and env_type == "local"
+        # Scratch workers and regular clean-room foreground turns share the
+        # host checkout. Keep both on the same audited, project-confined
+        # diagnostic surface before environment creation; sandbox backends
+        # already provide the stronger host-filesystem boundary.
+        if scratch_only or clean_room_local:
+            boundary_name = "Scratch-only research" if scratch_only else "Clean-room"
+            status = (
+                "scratch_only_terminal_denied" if scratch_only else "clean_room_terminal_denied"
+            )
             if env_type != "local":
                 return json.dumps(
                     {
                         "output": "",
                         "exit_code": -1,
                         "error": (
-                            "Scratch-only research terminal denied: the audited read-only "
+                            f"{boundary_name} terminal denied: the audited read-only "
                             "terminal surface is available only on the local backend. Use "
                             "read_file/search_files or Lean check tools for this worker."
                         ),
-                        "status": "scratch_only_terminal_denied",
+                        "status": status,
                     },
                     ensure_ascii=False,
                 )
@@ -935,10 +943,10 @@ def terminal_tool(
                         "output": "",
                         "exit_code": -1,
                         "error": (
-                            "Scratch-only research terminal denied: background and PTY "
+                            f"{boundary_name} terminal denied: background and PTY "
                             "commands are outside the bounded read-only diagnostic surface."
                         ),
-                        "status": "scratch_only_terminal_denied",
+                        "status": status,
                     },
                     ensure_ascii=False,
                 )
@@ -955,11 +963,11 @@ def terminal_tool(
                         "output": "",
                         "exit_code": -1,
                         "error": (
-                            "Scratch-only research terminal denied: "
+                            f"{boundary_name} terminal denied: "
                             f"{decision.reason}. Use read_file/search_files, Lean check tools, "
                             "or a read-only diagnostic command."
                         ),
-                        "status": "scratch_only_terminal_denied",
+                        "status": status,
                     },
                     ensure_ascii=False,
                 )

@@ -2000,24 +2000,40 @@ def _select_distinct_route(
     # A hard search boundary is an explicit synthesis checkpoint, not a failed
     # route. Consume its bounded evidence through one non-search proof-shaping
     # turn before launching another generic grounding route.
-    boundary_anchor: LedgerEntry | None = None
-    boundary_payload: dict[str, Any] = {}
-    for candidate in reversed(matching):
-        candidate_boundary = _route_boundary_handoff(candidate)
-        if candidate_boundary and _is_progress_route_evidence(
-            candidate,
-            semantic_entries=assignment_entries,
-        ):
-            boundary_anchor = candidate
-            boundary_payload = candidate_boundary
-            break
-    if boundary_anchor is not None:
+    prior_boundary_synthesis = any(
+        str(dict(entry.spec.inputs or {}).get("route_key", "") or "").startswith(
+            "handoff-synthesis-after:"
+        )
+        for entry in matching
+    )
+    boundary_anchors: list[tuple[LedgerEntry, dict[str, Any]]] = []
+    if not prior_boundary_synthesis:
+        for candidate in matching:
+            candidate_boundary = _route_boundary_handoff(candidate)
+            if candidate_boundary and _is_progress_route_evidence(
+                candidate,
+                semantic_entries=assignment_entries,
+            ):
+                boundary_anchors.append((candidate, candidate_boundary))
+    if boundary_anchors:
+        # One synthesis turn receives every currently preserved boundary. Once
+        # that lane has started, later refills must rotate instead of creating
+        # one synthesis worker per boundary or recursively synthesizing a
+        # capped synthesis worker.
+        boundary_anchor, _ = boundary_anchors[-1]
+        preserved_handoffs = "\n\n".join(
+            (
+                f"Boundary job {candidate.spec.job_id}:\n"
+                f"{_boundary_synthesis_excerpt(candidate_boundary)}"
+            )
+            for candidate, candidate_boundary in boundary_anchors
+        )
         focus = (
-            f"synthesize preserved evidence from route-boundary job "
-            f"{boundary_anchor.spec.job_id} without broad web/library search; derive one "
+            f"synthesize preserved evidence from {len(boundary_anchors)} route-boundary job(s), "
+            f"anchored by {boundary_anchor.spec.job_id}, without broad web/library search; derive one "
             "concrete formula, helper lemma, or proof shape and run a direct check before any "
-            "new retrieval. Preserved handoff:\n"
-            f"{_boundary_synthesis_excerpt(boundary_payload)}"
+            "new retrieval. Preserved handoffs:\n"
+            f"{preserved_handoffs}"
         )
         route_key = f"handoff-synthesis-after:{boundary_anchor.spec.job_id}"
         objective = _job_objective(
