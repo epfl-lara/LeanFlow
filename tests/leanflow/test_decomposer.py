@@ -16,9 +16,11 @@ from leanflow_cli.workflows.decomposer import (
     DecomposeOutcome,
     _target_proof_dependency_names,
     backfill_known_prover_helpers,
+    editable_dependency_helper_names,
     migrate_legacy_prover_helper_edges,
     place_helpers,
     prover_edit_evidence_helper_names,
+    record_prover_helpers_from_edit,
     refresh_queue_edit_guard,
     rollback_decomposition_graph,
     run_decomposer,
@@ -653,6 +655,75 @@ def _legacy_negation_helper_graph(active):
         )
     )
     return blueprint, active_file, parent_id, helper_id
+
+
+def test_generated_dependency_revision_invalidates_prior_gate(tmp_path, plan_enabled):
+    active = _file(
+        tmp_path,
+        body=(
+            "private lemma derived_helper (j : Fin 5) : True := by\n"
+            "  trivial\n\n"
+            "theorem demo (j : Nat) : True := by\n"
+            "  sorry\n"
+        ),
+    )
+    active_file = str(active.resolve())
+    target_id = plan_state.node_id_for("demo", active_file)
+    helper_id = plan_state.node_id_for("derived_helper", active_file)
+    plan_state.save_blueprint(
+        plan_state.Blueprint(
+            nodes=(
+                plan_state.GraphNode(
+                    id=target_id,
+                    name="demo",
+                    file=active_file,
+                    status="proving",
+                    generated_by="queue-sync",
+                ),
+                plan_state.GraphNode(
+                    id=helper_id,
+                    kind="lemma",
+                    name="derived_helper",
+                    file=active_file,
+                    statement=(
+                        "private lemma derived_helper (j : Fin 5) : True := by\n" "  trivial"
+                    ),
+                    source_sha256="old-gate",
+                    status="proved",
+                    generated_by="decomposer",
+                ),
+            ),
+            edges=(
+                plan_state.GraphEdge(source=helper_id, target=target_id, kind="split_of"),
+                plan_state.GraphEdge(source=target_id, target=helper_id, kind="depends_on"),
+            ),
+        )
+    )
+    before = active.read_text(encoding="utf-8")
+
+    assert editable_dependency_helper_names(
+        target_symbol="demo",
+        active_file=active_file,
+    ) == frozenset({"derived_helper"})
+
+    active.write_text(
+        before.replace("(j : Fin 5)", "(j : Nat)"),
+        encoding="utf-8",
+    )
+    update = record_prover_helpers_from_edit(
+        target_symbol="demo",
+        active_file=active_file,
+        before_text=before,
+    )
+
+    assert update.introduced == ()
+    assert update.updated == ("derived_helper",)
+    helper = plan_state.load_blueprint().node_by_id(helper_id)
+    assert helper is not None
+    assert "(j : Nat)" in helper.statement
+    assert helper.status == "proving"
+    assert helper.source_sha256 == ""
+    assert helper.generated_by == "decomposer"
 
 
 def _journal_legacy_helper_split(

@@ -931,6 +931,46 @@ def save_verified_patch_status(payload: Mapping[str, Any]) -> None:
     update_json_file(workflow_verified_patch_status_path(), mutate)
 
 
+def mark_verified_patch_queue_rejected(
+    checkpoint_id: str,
+    *,
+    restored_source_sha256: str,
+    message: str,
+) -> bool:
+    """Mark a matching verified patch as rolled back by the queue guard."""
+    expected = str(checkpoint_id or "").strip()
+    if not expected:
+        return False
+
+    def mutate(current: dict[str, Any]) -> bool:
+        latest = current.get("latest")
+        if (
+            not isinstance(latest, Mapping)
+            or str(latest.get("checkpoint_id", "") or "").strip() != expected
+        ):
+            return False
+        status = dict(latest)
+        status.update(
+            {
+                "success": False,
+                "status": "queue_guard_rejected",
+                "patch_applied_before_queue_guard": bool(status.get("patch_applied")),
+                "patch_applied": False,
+                "patch_retained": False,
+                "queue_edit_accepted": False,
+                "target_verified": False,
+                "verified": False,
+                "restored_source_revision_sha256": str(restored_source_sha256 or "").strip(),
+                "message": str(message or "").strip(),
+                "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat(),
+            }
+        )
+        current["latest"] = status
+        return True
+
+    return bool(update_json_file(workflow_verified_patch_status_path(), mutate))
+
+
 def load_verified_patch_status() -> dict[str, Any]:
     payload = read_json_file(workflow_verified_patch_status_path())
     latest = payload.get("latest")

@@ -14,8 +14,10 @@ import pytest
 
 from leanflow_cli.native import native_runner as runner
 from leanflow_cli.workflows.workflow_state import (
+    load_verified_patch_status,
     load_workflow_live_status,
     read_workflow_activity,
+    save_verified_patch_status,
     save_workflow_live_status,
 )
 
@@ -21493,6 +21495,161 @@ def test_queue_statement_guard_allows_resumed_generated_helper_statement_change(
 
     assert runner._restore_out_of_scope_queue_edit(agent, "patch") == ""
     assert "(h : True)" in active.read_text(encoding="utf-8")
+
+
+def test_parent_turn_can_revise_generated_dependency_and_reopens_its_gate(monkeypatch, tmp_path):
+    """A parent may repair its generated helper without losing source scope."""
+    active = tmp_path / "Main.lean"
+    before = (
+        "private lemma derived_helper (j : Fin 5) : True := by\n"
+        "  trivial\n\n"
+        "theorem result (j : Nat) : True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(before, encoding="utf-8")
+    active_file = str(active.resolve())
+    target_id = runner.plan_state.node_id_for("result", active_file)
+    helper_id = runner.plan_state.node_id_for("derived_helper", active_file)
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "result",
+                "active_file": active_file,
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    runner.plan_state.save_blueprint(
+        runner.plan_state.Blueprint(
+            nodes=(
+                runner.plan_state.GraphNode(
+                    id=target_id,
+                    name="result",
+                    file=active_file,
+                    status="proving",
+                    generated_by="queue-sync",
+                ),
+                runner.plan_state.GraphNode(
+                    id=helper_id,
+                    kind="lemma",
+                    name="derived_helper",
+                    file=active_file,
+                    statement=(
+                        "private lemma derived_helper (j : Fin 5) : True := by\n" "  trivial"
+                    ),
+                    status="proved",
+                    generated_by="decomposer",
+                ),
+            ),
+            edges=(
+                runner.plan_state.GraphEdge(helper_id, target_id, "split_of"),
+                runner.plan_state.GraphEdge(target_id, helper_id, "depends_on"),
+            ),
+        )
+    )
+    agent = _Agent()
+
+    assert runner._managed_pre_tool_call(agent, "patch", {"path": active_file}) is None
+    active.write_text(before.replace("(j : Fin 5)", "(j : Nat)"), encoding="utf-8")
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "patch",
+        json.dumps({"success": True}),
+    )
+
+    assert verdict.accepted is True
+    assert verdict.declaration_delta.helper_names == ("derived_helper",)
+    assert "(j : Nat)" in active.read_text(encoding="utf-8")
+    helper = runner.plan_state.load_blueprint().node_by_id(helper_id)
+    assert helper is not None
+    assert "(j : Nat)" in helper.statement
+    assert helper.status == "proving"
+
+
+def test_verified_patch_queue_rollback_rewrites_durable_success(monkeypatch, tmp_path):
+    """A queue rollback must supersede the tool's earlier broad success."""
+    active = tmp_path / "Main.lean"
+    before = (
+        "theorem protected_source : True := by\n"
+        "  trivial\n\n"
+        "theorem result : True := by\n"
+        "  sorry\n"
+    )
+    active.write_text(before, encoding="utf-8")
+
+    class _Agent(_ManagedRunAgentStub):
+        _managed_autonomy_state = {
+            "current_queue_assignment": {
+                "target_symbol": "result",
+                "active_file": str(active),
+            }
+        }
+
+        def is_interrupted(self):
+            return False
+
+    monkeypatch.setenv("LEANFLOW_NATIVE_WORKFLOW_KIND", "prove")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE", "1")
+    monkeypatch.setenv("LEANFLOW_PLAN_STATE_DIR", str(tmp_path / "plan-state"))
+    monkeypatch.setenv("LEANFLOW_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    checkpoint_id = "vpatch-queue-rollback"
+    save_verified_patch_status(
+        {
+            "checkpoint_id": checkpoint_id,
+            "success": True,
+            "status": "patch_elaborated",
+            "patch_applied": True,
+            "patch_retained": True,
+            "verified": True,
+            "target_verified": True,
+        }
+    )
+    agent = _Agent()
+    args = {
+        "path": str(active),
+        "theorem_id": "result",
+        "patch": "*** Begin Patch\n*** End Patch\n",
+    }
+
+    assert runner._managed_pre_tool_call(agent, "apply_verified_patch", args) is None
+    active.write_text(
+        before.replace("protected_source : True", "protected_source : False"),
+        encoding="utf-8",
+    )
+    verdict = runner._finalize_managed_queue_edit_details(
+        agent,
+        "apply_verified_patch",
+        json.dumps(
+            {
+                "success": True,
+                "status": "patch_elaborated",
+                "patch_applied": True,
+                "checkpoint_id": checkpoint_id,
+            }
+        ),
+    )
+
+    assert verdict.accepted is False
+    assert "QUEUE EDIT GUARD" in verdict.feedback
+    assert active.read_text(encoding="utf-8") == before
+    status = load_verified_patch_status()
+    assert status["status"] == "queue_guard_rejected"
+    assert status["success"] is False
+    assert status["patch_applied_before_queue_guard"] is True
+    assert status["patch_applied"] is False
+    assert status["patch_retained"] is False
+    assert status["queue_edit_accepted"] is False
+    assert status["verified"] is False
+    assert status["target_verified"] is False
+    assert status["restored_source_revision_sha256"] == runner._source_revision_sha256(str(active))
 
 
 def test_queue_statement_guard_keeps_resumed_source_node_immutable(monkeypatch, tmp_path):

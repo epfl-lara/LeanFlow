@@ -247,3 +247,48 @@ def test_exact_check_is_not_tracked_but_feedback_is():
         tool_result_loop_guard.tool_key("lean_incremental_check", {"action": "feedback"})
         == "lean_incremental_check:feedback"
     )
+
+
+def test_outline_budget_counts_different_symbols_until_source_changes():
+    state: dict = {}
+    decisions = [
+        tool_result_loop_guard.observe(
+            state,
+            function_name="lean_outline",
+            args={"file_path": "/tmp/Main.lean", "symbol": f"helper_{index}"},
+            result_text=json.dumps(
+                {
+                    "success": True,
+                    "symbol": f"helper_{index}",
+                    "declaration": {"name": f"helper_{index}"},
+                }
+            ),
+            target_symbol="demo",
+            active_file="/tmp/Main.lean",
+            source_revision_sha256="same-source",
+        )
+        for index in range(tool_result_loop_guard.OUTLINE_HARD_LIMIT)
+    ]
+
+    assert decisions[tool_result_loop_guard.OUTLINE_NUDGE_LIMIT - 1].nudge is True
+    assert decisions[-1].close_turn is True
+    assert decisions[-1].streak == tool_result_loop_guard.OUTLINE_HARD_LIMIT
+
+    changed = tool_result_loop_guard.observe(
+        state,
+        function_name="lean_outline",
+        args={"file_path": "/tmp/Main.lean", "symbol": "after_edit"},
+        result_text=json.dumps(
+            {
+                "success": True,
+                "symbol": "after_edit",
+                "declaration": {"name": "after_edit"},
+            }
+        ),
+        target_symbol="demo",
+        active_file="/tmp/Main.lean",
+        source_revision_sha256="changed-source",
+    )
+
+    assert changed.streak == 1
+    assert changed.close_turn is False

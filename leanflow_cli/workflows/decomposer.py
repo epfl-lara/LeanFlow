@@ -76,6 +76,7 @@ _ORDER_RELATION_RE = re.compile(r"(?:<=|>=|≤|≥|<|>)")
 _PROVER_EDIT_EVIDENCE_EDGE_MIGRATION = "prover-edit-unused-helper-evidence-v3"
 _LEAN_IDENTIFIER_RE = re.compile(r"(?:[^\W\d]|_)[\w']*(?:\.(?:[^\W\d]|_)[\w']*)*")
 _FIRST_CONCRETE_NEXT_EDIT_LIMIT = 1600
+_EDITABLE_DEPENDENCY_GENERATORS = frozenset({"decomposer", "prover-edit", "prover-edit-backfill"})
 
 
 def _bounded_first_concrete_next_edit(value: Any) -> str:
@@ -127,6 +128,7 @@ class ProverHelperGraphUpdate:
     """Report helper relationships written by one accepted prover edit."""
 
     introduced: tuple[str, ...] = ()
+    updated: tuple[str, ...] = ()
     evidence: tuple[str, ...] = ()
     proof_support: tuple[str, ...] = ()
     promoted: tuple[str, ...] = ()
@@ -672,6 +674,7 @@ def _record_helper_entries_in_graph(
     target_id = plan_state.node_id_for(target, file_path)
     changed = False
     created_helpers: list[tuple[str, str]] = []
+    updated_helpers: list[tuple[str, str]] = []
     linked_helpers: list[tuple[str, str, bool]] = []
     if bp.node_by_id(target_id) is None:
         bp = bp.replace_node(
@@ -736,6 +739,25 @@ def _record_helper_entries_in_graph(
                 )
             )
             changed = True
+        elif (
+            existing.generated_by in _EDITABLE_DEPENDENCY_GENERATORS
+            and statement
+            and existing.statement.strip() != statement
+        ):
+            # A generated dependency stays provisional until its parent
+            # verifies. Revising it invalidates the earlier kernel status, so
+            # force the exact new declaration through the helper gate again.
+            bp = bp.replace_node(
+                replace(
+                    existing,
+                    kind=kind,
+                    statement=statement,
+                    source_sha256="",
+                    status=status,
+                )
+            )
+            updated_helpers.append((helper_id, name))
+            changed = True
 
         helper_linked = False
         helper_is_evidence = name in evidence_names
@@ -775,6 +797,24 @@ def _record_helper_entries_in_graph(
             )
         except Exception:
             logger.debug("decomposer node journal write failed", exc_info=True)
+    for helper_id, name in updated_helpers:
+        try:
+            plan_state.append_journal_event(
+                {
+                    "event": "generated-helper-revised",
+                    "node_id": helper_id,
+                    "name": name,
+                    "target": target,
+                    "via": generated_by,
+                    "status": next(
+                        helper_status
+                        for helper_name, _kind, _statement, helper_status in helpers
+                        if helper_name == name
+                    ),
+                }
+            )
+        except Exception:
+            logger.debug("decomposer revised-node journal write failed", exc_info=True)
     for helper_id, name, helper_is_evidence in linked_helpers:
         try:
             plan_state.append_journal_event(
@@ -971,14 +1011,13 @@ def record_prover_helpers_from_edit(
     before_text: str,
     assigned_changed: bool = False,
 ) -> ProverHelperGraphUpdate:
-    """Record theorem/lemma declarations introduced by one accepted prover edit.
+    """Record generated helper declarations changed by one accepted prover edit.
 
-    Declaration names present in the pre-tool snapshot are excluded even if
-    their bodies or declaration kinds changed.  This keeps an accepted edit
-    from retroactively claiming unrelated historical declarations as helper
-    splits. Every spontaneous helper remains non-structural evidence until the
-    current target proof body references its exact Lean identifier. Route names
-    and helper names cannot grant proof-progress authority.
+    Historical declarations remain excluded unless the graph already records
+    them as generated dependencies of the current target. Every spontaneous
+    helper remains non-structural evidence until the target proof body
+    references its exact Lean identifier. Route names and helper names cannot
+    grant proof-progress authority.
     """
     if not plan_state.plan_state_enabled():
         return ProverHelperGraphUpdate()
@@ -986,15 +1025,30 @@ def record_prover_helpers_from_edit(
         after_text = Path(active_file).read_text(encoding="utf-8")
     except OSError:
         return ProverHelperGraphUpdate()
-    before_names = {
-        str(entry.get("name", "") or "").strip()
-        for entry in _declaration_line_index_from_text(before_text)
+    before_entries = _declaration_line_index_from_text(before_text)
+    before_by_name = {
+        str(entry.get("name", "") or "").strip(): entry
+        for entry in before_entries
         if str(entry.get("name", "") or "").strip()
     }
+    before_names = set(before_by_name)
+    after_entries = _declaration_line_index_from_text(after_text)
     introduced = [
         entry
-        for entry in _declaration_line_index_from_text(after_text)
+        for entry in after_entries
         if str(entry.get("name", "") or "").strip() not in before_names
+    ]
+    editable_dependencies = editable_dependency_helper_names(
+        target_symbol=target_symbol,
+        active_file=active_file,
+    )
+    updated = [
+        entry
+        for entry in after_entries
+        if (name := str(entry.get("name", "") or "").strip()) in editable_dependencies
+        and name in before_by_name
+        and str(entry.get("text", "") or "").strip()
+        != str(before_by_name[name].get("text", "") or "").strip()
     ]
     introduced_names = tuple(
         str(entry.get("name", "") or "").strip()
@@ -1010,7 +1064,7 @@ def record_prover_helpers_from_edit(
     recorded = _record_helper_entries_in_graph(
         target_symbol=target_symbol,
         active_file=active_file,
-        entries=introduced,
+        entries=(*introduced, *updated),
         generated_by="prover-edit",
         evidence_helper_names=evidence_names,
     )
@@ -1024,8 +1078,15 @@ def record_prover_helpers_from_edit(
         else ()
     )
     evidence = tuple(name for name in recorded if name in set(evidence_names))
+    introduced_set = set(introduced_names)
+    updated_names = {
+        str(entry.get("name", "") or "").strip()
+        for entry in updated
+        if str(entry.get("name", "") or "").strip()
+    }
     return ProverHelperGraphUpdate(
-        introduced=recorded,
+        introduced=tuple(name for name in recorded if name in introduced_set),
+        updated=tuple(name for name in recorded if name in updated_names),
         evidence=evidence,
         proof_support=tuple(name for name in recorded if name not in set(evidence_names)),
         promoted=promoted,
@@ -1038,6 +1099,68 @@ def _canonical_graph_file(value: Any) -> str:
     if not text:
         return ""
     return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(text))))
+
+
+def editable_dependency_helper_names(
+    *,
+    target_symbol: str,
+    active_file: str,
+) -> frozenset[str]:
+    """Return generated same-file dependencies that may evolve with a target.
+
+    Fail closed when graph state is absent or unreadable. Original queue
+    declarations and model-created nodes outside the target's transitive
+    dependency closure remain immutable.
+    """
+    if not plan_state.plan_state_enabled():
+        return frozenset()
+    target = str(target_symbol or "").strip()
+    file_path = str(active_file or "").strip()
+    canonical_file = _canonical_graph_file(file_path)
+    if not target or not canonical_file:
+        return frozenset()
+    try:
+        blueprint = plan_state.load_blueprint()
+    except Exception:
+        logger.debug("editable dependency graph read failed", exc_info=True)
+        return frozenset()
+    target_id = plan_state.node_id_for(target, file_path)
+    if blueprint.node_by_id(target_id) is None:
+        target_aliases = {target, target.split(".")[-1]}
+        candidates = [
+            node
+            for node in blueprint.nodes
+            if node.name in target_aliases and _canonical_graph_file(node.file) == canonical_file
+        ]
+        if len(candidates) != 1:
+            return frozenset()
+        target_id = candidates[0].id
+
+    dependencies: dict[str, list[str]] = {}
+    for edge in blueprint.edges:
+        if edge.kind == "depends_on":
+            dependencies.setdefault(edge.source, []).append(edge.target)
+    by_id = {node.id: node for node in blueprint.nodes}
+    editable: set[str] = set()
+    pending = list(dependencies.get(target_id, ()))
+    visited: set[str] = set()
+    while pending:
+        node_id = pending.pop()
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        pending.extend(dependencies.get(node_id, ()))
+        node = by_id.get(node_id)
+        if (
+            node is not None
+            and node.id != target_id
+            and node.kind in {"theorem", "lemma"}
+            and node.generated_by in _EDITABLE_DEPENDENCY_GENERATORS
+            and _canonical_graph_file(node.file) == canonical_file
+            and node.name
+        ):
+            editable.add(node.name)
+    return frozenset(editable)
 
 
 def _prover_edit_evidence_migration_complete() -> bool:

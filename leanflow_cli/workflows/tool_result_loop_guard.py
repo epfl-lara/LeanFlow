@@ -16,11 +16,14 @@ TRACKED_TOOLS = frozenset(
         "lean_incremental_check:feedback",
         "lean_inspect",
         "lean_multi_attempt",
+        "lean_outline",
         "lean_proof_context",
     }
 )
 NUDGE_LIMIT = 3
 HARD_LIMIT = 6
+OUTLINE_NUDGE_LIMIT = 8
+OUTLINE_HARD_LIMIT = 16
 
 
 @dataclass(frozen=True)
@@ -199,6 +202,11 @@ def observe(
         signature = _multi_attempt_site_signature(args)
     elif key == "lean_incremental_check:check_helper":
         signature = _helper_candidate_statement_signature(args)
+    elif key == "lean_outline":
+        # Different symbols can still form one inspection cycle. Count the
+        # whole unchanged-source sequence instead of waiting for an exact
+        # consecutive symbol repeat.
+        signature = "unchanged-source-outline-budget"
     else:
         signature = result_signature(result_text)
     previous = dict(state.get(STATE_KEY) or {})
@@ -227,8 +235,12 @@ def observe(
     }
     state[STATE_KEY] = tracker
 
-    bounded_nudge = max(2, int(nudge_limit))
-    bounded_hard = max(bounded_nudge + 1, int(hard_limit))
+    if key == "lean_outline":
+        bounded_nudge = max(2, OUTLINE_NUDGE_LIMIT)
+        bounded_hard = max(bounded_nudge + 1, OUTLINE_HARD_LIMIT)
+    else:
+        bounded_nudge = max(2, int(nudge_limit))
+        bounded_hard = max(bounded_nudge + 1, int(hard_limit))
     return LoopDecision(
         tool_key=key,
         signature=signature,

@@ -233,6 +233,7 @@ from leanflow_cli.workflows.workflow_state import (
     append_workflow_activity,
     append_workflow_run_log,
     compact_closed_workflow_activity,
+    mark_verified_patch_queue_rejected,
     mark_workflow_live_status_startup,
     read_workflow_activity,
     read_workflow_agent_inbox,
@@ -8745,9 +8746,13 @@ def _managed_pre_tool_call(
             consumer_target=target_symbol,
             consumer_file=active_file,
         )
+        editable_dependencies = decomposer.editable_dependency_helper_names(
+            target_symbol=target_symbol,
+            active_file=active_file,
+        )
         protected_declarations = determine_answer_policy.without_editable_answers(
             protected_declarations,
-            editable_answers,
+            (*editable_answers, *editable_dependencies),
         )
         guard_state = {
             "key": guard_key,
@@ -8755,6 +8760,7 @@ def _managed_pre_tool_call(
             "active_file": active_file,
             "assigned_statement_signature": assigned_statement_signature,
             "protected_declarations": protected_declarations,
+            "editable_dependency_helpers": tuple(sorted(editable_dependencies)),
         }
         agent._managed_queue_edit_guard_state = guard_state
     agent._managed_queue_edit_snapshot = {
@@ -9459,6 +9465,29 @@ def _finalize_managed_queue_edit_details(
     )
     phase_seconds["structural_acceptance"] = max(0.0, time.monotonic() - phase_started)
     if not accepted:
+        if function_name == "apply_verified_patch" and guard_feedback:
+            payload = _json_tool_result_payload(result)
+            checkpoint_id = str(payload.get("checkpoint_id", "") or "").strip()
+            if checkpoint_id:
+                restored_source_sha256 = _source_revision_sha256(active_file)
+                if mark_verified_patch_queue_rejected(
+                    checkpoint_id,
+                    restored_source_sha256=restored_source_sha256,
+                    message=guard_feedback,
+                ):
+                    with contextlib.suppress(Exception):
+                        _record_activity(
+                            "verified-patch-queue-rollback",
+                            (
+                                f"Queue guard rolled back verified patch for "
+                                f"{target_symbol or '[unknown]'}"
+                            ),
+                            target_symbol=target_symbol,
+                            active_file=active_file,
+                            checkpoint_id=checkpoint_id,
+                            restored_source_revision_sha256=restored_source_sha256,
+                            campaign_progress=False,
+                        )
         return finish(_ManagedQueueEditVerdict(feedback=guard_feedback, accepted=False))
     phase_started = time.monotonic()
     try:
