@@ -127,6 +127,92 @@ def test_multi_attempt_tracks_same_location_across_varying_failure_shapes():
     assert decisions[-1].streak == tool_result_loop_guard.HARD_LIMIT
 
 
+def test_helper_check_tracks_same_statement_across_varying_proof_failures():
+    state: dict = {}
+    decisions = []
+    for index in range(tool_result_loop_guard.HARD_LIMIT):
+        decisions.append(
+            tool_result_loop_guard.observe(
+                state,
+                function_name="lean_incremental_check",
+                args={
+                    "action": "check_helper",
+                    "replacement": (
+                        "private lemma helper_false {n : ℕ} (h : n ≤ 1) : n = 1 := by\n"
+                        f"  have attempt_{index} : n ≤ 1 := h\n"
+                        "  omega\n"
+                    ),
+                },
+                result_text=json.dumps(
+                    {
+                        "success": True,
+                        "ok": False,
+                        "action": "check_helper",
+                        "messages": [
+                            {
+                                "severity": "error",
+                                "message": f"proof variant {index} failed",
+                                "file_start": {"line": 12 + index, "column": 3},
+                            }
+                        ],
+                    }
+                ),
+                target_symbol="demo",
+                active_file="/tmp/Main.lean",
+                source_revision_sha256="same-source",
+            )
+        )
+
+    assert decisions[tool_result_loop_guard.NUDGE_LIMIT - 1].nudge is True
+    assert decisions[-1].close_turn is True
+    assert decisions[-1].streak == tool_result_loop_guard.HARD_LIMIT
+
+
+def test_helper_check_changed_statement_resets_the_streak():
+    state: dict = {}
+    common = {
+        "function_name": "lean_incremental_check",
+        "result_text": json.dumps(
+            {
+                "success": True,
+                "ok": False,
+                "action": "check_helper",
+                "messages": [{"severity": "error", "message": "failed"}],
+            }
+        ),
+        "target_symbol": "demo",
+        "active_file": "/tmp/Main.lean",
+        "source_revision_sha256": "same-source",
+    }
+    first = tool_result_loop_guard.observe(
+        state,
+        args={
+            "action": "check_helper",
+            "replacement": "private lemma helper_a : False := by\n  omega\n",
+        },
+        **common,
+    )
+    second = tool_result_loop_guard.observe(
+        state,
+        args={
+            "action": "check_helper",
+            "replacement": "private lemma helper_a : False := by\n  simp\n",
+        },
+        **common,
+    )
+    changed = tool_result_loop_guard.observe(
+        state,
+        args={
+            "action": "check_helper",
+            "replacement": "private lemma helper_a : True := by\n  simp\n",
+        },
+        **common,
+    )
+
+    assert (first.streak, second.streak) == (1, 2)
+    assert changed.streak == 1
+
+
 def test_verified_result_clears_prior_loop_state():
     state: dict = {}
     common = {

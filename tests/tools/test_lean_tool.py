@@ -925,6 +925,9 @@ def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
     assert "monotonicity lemma" in payload["advice"]
     assert "advice only" in payload["next_step"]
     assert "placeholder proof" in payload["next_step"]
+    assert "source-authored declaration" in payload["next_step"]
+    assert "generated helper" in payload["next_step"]
+    assert "preserve the declaration exactly" not in payload["next_step"]
     assert captured["task"] == "lean_reasoning"
     assert captured["max_tokens"] == 64000
     assert captured["timeout"] == 360
@@ -935,6 +938,8 @@ def test_lean_reasoning_help_tool_returns_advice(monkeypatch):
     assert "Mathlib expertise" in system_prompt
     assert "not verification evidence" in system_prompt
     assert "Do not suggest deleting, weakening, renaming, moving, or splitting" in system_prompt
+    assert "runtime-generated private helper" in system_prompt
+    assert "boundary cases such as zero, one, empty, and constant inputs" in system_prompt
     assert "sorry, admit, axiom, unsafe code, or a placeholder" in system_prompt
 
 

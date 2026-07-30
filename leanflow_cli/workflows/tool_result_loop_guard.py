@@ -12,6 +12,7 @@ from typing import Any
 STATE_KEY = "tool_result_loop_guard"
 TRACKED_TOOLS = frozenset(
     {
+        "lean_incremental_check:check_helper",
         "lean_incremental_check:feedback",
         "lean_inspect",
         "lean_multi_attempt",
@@ -132,6 +133,32 @@ def _multi_attempt_site_signature(args: Mapping[str, Any] | None) -> str:
     return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def _helper_candidate_statement_signature(args: Mapping[str, Any] | None) -> str:
+    """Return a proof-insensitive fingerprint for checked helper statements."""
+    replacement = str(dict(args or {}).get("replacement", "") or "")
+    declaration_starts = list(
+        re.finditer(
+            r"(?m)^\s*(?:private\s+)?" r"(?:theorem|lemma|example|def|instance|class|structure)\b",
+            replacement,
+        )
+    )
+    statements: list[str] = []
+    for index, start in enumerate(declaration_starts):
+        end = (
+            declaration_starts[index + 1].start()
+            if index + 1 < len(declaration_starts)
+            else len(replacement)
+        )
+        block = replacement[start.start() : end]
+        proof = re.search(r"\s*:=\s*by\b", block)
+        statement = block[: proof.start()] if proof else block
+        normalized = " ".join(statement.split())
+        if normalized:
+            statements.append(normalized)
+    material = "\n".join(statements) or " ".join(replacement.split())
+    return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()[:16]
+
+
 def _made_progress(payload: Mapping[str, Any]) -> bool:
     verified_attempts = payload.get("verified_attempts")
     return bool(
@@ -168,11 +195,12 @@ def observe(
     # Varying candidate text and backend rejection shapes do not constitute
     # progress when the model keeps screening the same unchanged proof site.
     # Other tools retain their diagnostic-sensitive blocker fingerprint.
-    signature = (
-        _multi_attempt_site_signature(args)
-        if key == "lean_multi_attempt"
-        else result_signature(result_text)
-    )
+    if key == "lean_multi_attempt":
+        signature = _multi_attempt_site_signature(args)
+    elif key == "lean_incremental_check:check_helper":
+        signature = _helper_candidate_statement_signature(args)
+    else:
+        signature = result_signature(result_text)
     previous = dict(state.get(STATE_KEY) or {})
     identity = (
         target_symbol,

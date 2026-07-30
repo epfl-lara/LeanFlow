@@ -41,12 +41,15 @@ PERSISTENCE_CONTRACT = (
 )
 
 REASONING_ADVISOR_NEXT_STEP = (
-    "Use this as advice only and preserve the declaration exactly. If it identifies an open-"
-    "problem or other blocker, treat that only as route-change evidence: request a distinct "
-    "proof route, helper decomposition, empirical or negation job, portfolio refresh, or fresh "
-    "campaign epoch and continue. Ignore any suggestion that changes the declaration or uses a "
-    "placeholder proof. Apply a concrete proof edit only when supported by the advice, then "
-    "verify the assigned queue declaration with "
+    "Use this as advice only. Preserve every source-authored declaration exactly. If the assigned "
+    "declaration is a runtime-generated helper and independent evidence shows its statement is "
+    "false or omitted a required premise, the runtime provenance-aware edit guard may permit the "
+    "smallest sound statement repair together with all caller/dependency updates; advisor prose "
+    "alone is never edit authority. If the advice identifies an open problem or other blocker, "
+    "treat that only as route-change evidence: request a distinct proof route, helper "
+    "decomposition, empirical or negation job, portfolio refresh, or fresh campaign epoch and "
+    "continue. Ignore any suggestion that uses a placeholder proof. Apply a concrete proof edit "
+    "only when supported by independent evidence, then verify the assigned queue declaration with "
     "lean_incremental_check(check_target)."
 )
 
