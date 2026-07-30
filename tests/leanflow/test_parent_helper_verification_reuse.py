@@ -15,11 +15,16 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _ready_candidate(tmp_path, *, axioms: tuple[str, ...] = ("Classical.choice",)):
+def _ready_candidate(
+    tmp_path,
+    *,
+    axioms: tuple[str, ...] = ("Classical.choice",),
+    declaration_prefix: str = "",
+):
     """Stage one accepted parent helper check against the original source."""
     active = tmp_path / "Main.lean"
     before = "theorem demo : True := by\n  sorry\n"
-    declaration = "private lemma checked_family : True := by\n  trivial"
+    declaration = declaration_prefix + "private lemma checked_family : True := by\n  trivial"
     active.write_text(before, encoding="utf-8")
     declaration_hash = _sha256(declaration)
     finding = {
@@ -81,6 +86,27 @@ def _ready_candidate(tmp_path, *, axioms: tuple[str, ...] = ("Classical.choice",
     )
     assert ready is not None and ready.ready
     return active, before, expected, declaration, state, ready
+
+
+def test_scoped_option_parent_helper_has_authenticated_insertion_image(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Bind a parent check to the exact source image including its option wrapper."""
+    monkeypatch.setattr(
+        runner.research_helper_candidate_priority.plan_state,
+        "plan_state_enabled",
+        lambda: False,
+    )
+
+    _active, _before, expected, declaration, _state, ready = _ready_candidate(
+        tmp_path,
+        declaration_prefix="set_option maxRecDepth 100000 in\n",
+    )
+
+    assert expected.startswith(declaration)
+    assert ready.expected_integrated_source_revision_sha256 == _sha256(expected)
+    assert runner.research_helper_candidate_priority.parent_recheck_evidence_authenticated(ready)
 
 
 def test_exact_parent_helper_insertion_reuses_gate_and_records_progress(

@@ -11938,6 +11938,17 @@ def _handle_managed_tool_result(
                 _reset_search_progress(agent)
 
     if function_name == "apply_verified_patch":
+        apply_payload = _json_tool_result_payload(_result)
+        if (
+            not _managed_tool_result_succeeded(_result)
+            and str(apply_payload.get("blocked_tool", "") or "").strip() == "apply_verified_patch"
+            and apply_payload.get("patch_applied") is not True
+        ):
+            # A managed pre-tool fence can return a synthetic
+            # ``apply_verified_patch`` rejection before the tool captures an
+            # edit snapshot or touches source. Do not turn that guidance into
+            # theorem feedback, a failed proof attempt, or a verified boundary.
+            return
         managed_autonomy = getattr(agent, "_managed_autonomy_state", {}) or {}
         baseline = dict(managed_autonomy).get("current_queue_assignment", {})
         live_state_for_apply: Mapping[str, Any] | None = None

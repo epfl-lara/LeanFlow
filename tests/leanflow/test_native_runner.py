@@ -8918,6 +8918,61 @@ def test_apply_verified_patch_counts_as_edit_and_verification_feedback(monkeypat
     assert agent._managed_pending_theorem_feedback is None
 
 
+def test_apply_verified_patch_preflight_rejection_does_not_close_queue_boundary(
+    monkeypatch, capsys
+):
+    """Treat a synthetic helper-priority rejection as guidance, not proof evidence."""
+
+    class _Agent(_ManagedRunAgentStub):
+        def __init__(self):
+            self._session_messages = [{"role": "assistant", "content": "partial"}]
+            self._managed_autonomy_state = {
+                "current_queue_assignment": {
+                    "target_symbol": "demo",
+                    "active_file": "Demo/Main.lean",
+                    "slice": "theorem demo : True := by\n  sorry",
+                }
+            }
+            self._managed_pending_theorem_feedback = None
+            self.interrupt_messages: list[str | None] = []
+
+        def is_interrupted(self):
+            return False
+
+        def interrupt(self, message=None):
+            self.interrupt_messages.append(message)
+
+    monkeypatch.setattr(runner, "_single_queue_item_turn_enabled", lambda: True)
+    monkeypatch.setattr(runner, "_poll_research_portfolio_after_tool_result", lambda *_: None)
+    monkeypatch.setattr(
+        runner,
+        "_finish_queue_step_boundary",
+        lambda *_args, **_kwargs: pytest.fail(
+            "preflight rejection must not enter theorem verification"
+        ),
+    )
+    agent = _Agent()
+
+    runner._handle_managed_tool_result(
+        agent,
+        "apply_verified_patch",
+        {"path": "Demo/Main.lean", "theorem_id": "demo"},
+        json.dumps(
+            {
+                "success": False,
+                "status": "checked_helper_integration_required",
+                "blocked_tool": "apply_verified_patch",
+                "patch_applied": False,
+            }
+        ),
+    )
+
+    assert agent.interrupt_messages == []
+    assert agent._managed_pending_theorem_feedback is None
+    assert "failed_attempts" not in agent._managed_autonomy_state
+    assert "Workflow step verified" not in capsys.readouterr().out
+
+
 def test_verified_patch_file_gate_is_rechecked_for_exact_assignment_and_proves_graph(
     monkeypatch, tmp_path
 ):

@@ -956,13 +956,24 @@ def inserted_candidate_matches_source(
     if queue_edit_guard._queue_edit_assigned_preamble(source, record.helper_name):
         return False
     current = str(helper_region.get("text", "") or "").strip()
+    declaration = record.declaration.strip()
+    source_lines = str(source or "").splitlines(keepends=True)
+    helper_end_offset = sum(
+        len(line) for line in source_lines[: int(helper_region.get("end_line", 0) or 0)]
+    )
+    source_through_helper = str(source or "")[:helper_end_offset].rstrip()
+    exact_source_declaration = bool(
+        declaration
+        and source_through_helper.endswith(declaration)
+        and declaration.endswith(current)
+    )
     helper_end = int(helper_region.get("end_line", 0) or 0)
     target_start = int(target_region.get("line", 0) or 0)
     return bool(
         helper_end > 0
         and target_start > helper_end
-        and current == record.declaration
-        and _sha256(current) == record.declaration_sha256
+        and exact_source_declaration
+        and _sha256(declaration) == record.declaration_sha256
     )
 
 

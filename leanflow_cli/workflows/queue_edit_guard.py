@@ -331,7 +331,10 @@ def _queue_edit_changed_protected_declarations(
         declaration_local_prefix = bool(
             appended
             and all(
-                re.fullmatch(r"(?:open(?:\s+scoped)?|include|omit)\b.*\bin", line.strip())
+                re.fullmatch(
+                    r"(?:open(?:\s+scoped)?|include|omit|set_option)\b.*\bin",
+                    line.strip(),
+                )
                 for line in appended.splitlines()
                 if line.strip()
             )

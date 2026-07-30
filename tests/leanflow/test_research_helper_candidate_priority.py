@@ -591,6 +591,35 @@ def test_inserted_match_requires_exact_current_declaration(monkeypatch, tmp_path
     assert priority.inserted_candidate_matches(record) is True
 
 
+def test_inserted_match_includes_declaration_local_option_wrapper(monkeypatch, tmp_path):
+    active = tmp_path / "Demo.lean"
+    target = "theorem demo : True := by\n  sorry\n"
+    active.write_text(target, encoding="utf-8")
+    monkeypatch.setattr(priority.plan_state, "plan_state_enabled", lambda: False)
+    finding = _finding(str(active))
+    helper = finding["deliverable"]["checked_helpers"][0]
+    declaration = (
+        "set_option maxRecDepth 100000 in\n"
+        "private lemma checked_helper : True := by\n"
+        "  trivial"
+    )
+    helper["declaration"] = declaration
+    helper["declaration_sha256"] = hashlib.sha256(declaration.encode()).hexdigest()
+    state: dict = {}
+    record = priority.remember_from_findings(
+        state,
+        (finding,),
+        campaign_id="campaign",
+        target_symbol="demo",
+        active_file=str(active),
+    )
+    assert record is not None
+
+    integrated = declaration + "\n\n" + target
+
+    assert priority.inserted_candidate_matches_source(record, integrated) is True
+
+
 def test_inserted_match_rejects_helper_after_assigned_target(monkeypatch, tmp_path):
     active = tmp_path / "Demo.lean"
     active.write_text("theorem demo : True := by\n  sorry\n", encoding="utf-8")

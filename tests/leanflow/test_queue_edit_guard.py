@@ -135,6 +135,35 @@ theorem assigned_thm""",
     assert delta.helper_names == ("checked_helper",)
 
 
+def test_declaration_local_option_prefix_is_not_stripped_from_new_helper():
+    before = """\
+theorem protected_item : True := by
+  trivial
+
+theorem assigned_thm : True := by
+  sorry
+"""
+    after = before.replace(
+        "theorem assigned_thm",
+        """set_option maxRecDepth 100000 in
+private lemma checked_helper : True := by
+  trivial
+
+theorem assigned_thm""",
+    )
+    protected = queue_edit_guard._queue_edit_protected_declarations(before, "assigned_thm")
+
+    assert queue_edit_guard._queue_edit_changed_protected_declarations(protected, after) == []
+    delta = queue_edit_guard._queue_edit_declaration_delta(
+        before,
+        after,
+        "assigned_thm",
+        protected,
+    )
+    assert delta.assigned_changed is False
+    assert delta.helper_names == ("checked_helper",)
+
+
 def test_restore_returns_none_when_protected_declaration_is_missing():
     protected = queue_edit_guard._queue_edit_protected_declarations(FILE, "assigned_thm")
     # Drop the protected declaration entirely -> reported as "missing".
